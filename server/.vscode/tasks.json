@@ -22,7 +22,7 @@
 				"containerName": "server",
 				"image": "server:latest",
 				"env": {
-					"FLASK_APP": "main.py",
+					"FLASK_APP": "main:app",
 					"FLASK_ENV": "development"
 				},
 				"volumes": [
