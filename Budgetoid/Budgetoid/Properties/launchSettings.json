@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "Budgetoid": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7045",
+      "launchBrowser": false
+    }
+  }
+}
