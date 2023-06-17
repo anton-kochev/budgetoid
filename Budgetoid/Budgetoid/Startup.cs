@@ -1,6 +1,7 @@
 using System;
-using System.Configuration;
+using System.Reflection;
 using Budgetoid;
+using Budgetoid.Transactions.Commands.CreateTransaction;
 using Microsoft.Azure.Cosmos.Fluent;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
@@ -17,7 +18,7 @@ public class Startup : FunctionsStartup
         .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
         .AddEnvironmentVariables()
         .Build();
-    
+
     public override void Configure(IFunctionsHostBuilder builder)
     {
         builder.Services.AddSingleton(s =>
@@ -31,5 +32,8 @@ public class Startup : FunctionsStartup
 
             return new CosmosClientBuilder(connectionString).Build();
         });
+        builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly()));
+        // builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+        // builder.Services.AddSingleton<IValidator<GetUserQuery>, GetUserQueryValidator>();
     }
 }
