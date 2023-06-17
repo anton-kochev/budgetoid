@@ -1,17 +1,12 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using System.Text.Json;
-using System.Web.Http;
 using Budgetoid.Dto;
-using Budgetoid.Models;
 using Budgetoid.Transactions.Commands.CreateTransaction;
 using Budgetoid.Transactions.Commands.DeleteTransaction;
 using Budgetoid.Transactions.Queries.GetTransaction;
