@@ -10,7 +10,7 @@ namespace Budgetoid.Transactions.Commands.DeleteTransaction;
 public record DeleteTransactionCommand : IRequest
 {
     public Guid Id { get; init; }
-    public Guid UserId { get; init; }
+    public Guid AccountId { get; init; }
 }
 
 public sealed class DeleteTransactionCommandHandler : IRequestHandler<DeleteTransactionCommand>
@@ -26,7 +26,7 @@ public sealed class DeleteTransactionCommandHandler : IRequestHandler<DeleteTran
     {
         await _container.DeleteItemAsync<Transaction>(
             request.Id.ToString(),
-            new PartitionKey(request.UserId.ToString()),
+            new PartitionKey(request.AccountId.ToString()),
             cancellationToken: cancellationToken);
     }
 }
