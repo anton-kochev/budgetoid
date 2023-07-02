@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Budgetoid.Dto;
 using Budgetoid.Transactions.Commands.CreateTransaction;
 using Budgetoid.Transactions.Commands.DeleteTransaction;
+using Budgetoid.Transactions.Commands.UpdateTransaction;
 using Budgetoid.Transactions.Queries.GetTransaction;
 using Budgetoid.Transactions.Queries.GetTransactions;
 using MediatR;
@@ -71,15 +72,25 @@ public sealed class TransactionApi
         return new OkObjectResult(id);
     }
 
-    // [FunctionName("PutTransaction")]
-    // public async Task<IActionResult> UpdateTransactionAsync(
-    //     [HttpTrigger(AuthorizationLevel.Anonymous, "put", Route = "transaction")] HttpRequest req,
-    //     ILogger log)
-    // {
-    //     TransactionDto transaction = await req.DeserializeBodyAsync<TransactionDto>();
-    //     
-    //     return new OkObjectResult(transaction);
-    // }
+    [FunctionName("PutTransaction")]
+    public async Task<IActionResult> UpdateTransactionAsync(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "put", Route = "transaction/{accountId}/{id}")]
+        HttpRequest req,
+        ILogger log,
+        string accountId,
+        string id)
+    {
+        log.LogInformation("Create transaction");
+        UpdateTransactionDto update = await req.DeserializeBodyAsync<UpdateTransactionDto>();
+        await _mediator.Send(new UpdateTransactionCommand
+        {
+            AccountId = Guid.Parse(accountId),
+            Id = Guid.Parse(id),
+            Update = update
+        });
+
+        return new NoContentResult();
+    }
 
     [FunctionName("DeleteTransaction")]
     public async Task<IActionResult> DeleteTransactionAsync(
