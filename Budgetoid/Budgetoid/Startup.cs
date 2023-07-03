@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Reflection;
 using Budgetoid;
 using Microsoft.Azure.Cosmos.Fluent;
@@ -14,8 +13,8 @@ namespace Budgetoid;
 public class Startup : FunctionsStartup
 {
     private static readonly IConfigurationRoot Configuration = new ConfigurationBuilder()
-        .SetBasePath(Directory.GetCurrentDirectory())
-        .AddJsonFile("appsettings.json", true, true)
+        .SetBasePath(Environment.CurrentDirectory)
+        .AddJsonFile("local.settings.json", true, true)
         .AddEnvironmentVariables()
         .Build();
 
@@ -23,7 +22,8 @@ public class Startup : FunctionsStartup
     {
         builder.Services.AddSingleton(s =>
         {
-            string connectionString = Configuration.GetConnectionString("CosmosDb");
+            string connectionString = Environment.GetEnvironmentVariable("CUSTOMCONNSTR_CosmosDb") ??
+                                      Configuration.GetConnectionString("CosmosDb");
             if (string.IsNullOrWhiteSpace(connectionString))
                 throw new InvalidOperationException(
                     "The CosmosDb connection string is not defined in appsettings.json");
