@@ -1,8 +1,8 @@
-using Domain.Entities;
+using Budgetoid.Domain.Entities;
 using MediatR;
 using Microsoft.Azure.Cosmos;
 
-namespace Application.Transactions.Commands.DeleteTransaction;
+namespace Budgetoid.Application.Transactions.Commands.DeleteTransaction;
 
 public record DeleteTransactionCommand : IRequest
 {

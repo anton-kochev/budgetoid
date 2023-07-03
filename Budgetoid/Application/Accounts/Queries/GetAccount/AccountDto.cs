@@ -1,4 +1,4 @@
-namespace Application.Accounts.Queries.GetAccount;
+namespace Budgetoid.Application.Accounts.Queries.GetAccount;
 
 public record AccountDto
 {

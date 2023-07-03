@@ -1,4 +1,4 @@
-namespace Application.Transactions.Queries.GetTransaction;
+namespace Budgetoid.Application.Transactions.Queries.GetTransaction;
 
 public record TransactionDto
 {

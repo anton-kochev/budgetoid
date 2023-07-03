@@ -1,8 +1,8 @@
-using Budgetoid.Models;
+using Budgetoid.Domain.Entities;
 using MediatR;
 using Microsoft.Azure.Cosmos;
 
-namespace Application.Accounts.Commands.CreateAccount;
+namespace Budgetoid.Application.Accounts.Commands.CreateAccount;
 
 public record CreateAccountCommand : IRequest<Guid>
 {

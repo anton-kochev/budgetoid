@@ -1,9 +1,9 @@
-using Application.Accounts.Queries.GetAccount;
-using Budgetoid.Models;
+using Budgetoid.Application.Accounts.Queries.GetAccount;
+using Budgetoid.Domain.Entities;
 using MediatR;
 using Microsoft.Azure.Cosmos;
 
-namespace Application.Accounts.Queries.GetAccounts;
+namespace Budgetoid.Application.Accounts.Queries.GetAccounts;
 
 public record GetAccountsQuery : IRequest<IEnumerable<AccountDto>>
 {

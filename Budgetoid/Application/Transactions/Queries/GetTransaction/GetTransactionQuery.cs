@@ -1,11 +1,11 @@
 using System.Net;
-using Application.Common.Exceptions;
-using Domain;
-using Domain.Entities;
+using Budgetoid.Application.Common.Exceptions;
+using Budgetoid.Domain;
+using Budgetoid.Domain.Entities;
 using MediatR;
 using Microsoft.Azure.Cosmos;
 
-namespace Application.Transactions.Queries.GetTransaction;
+namespace Budgetoid.Application.Transactions.Queries.GetTransaction;
 
 public record GetTransactionQuery : IRequest<TransactionDto>
 {

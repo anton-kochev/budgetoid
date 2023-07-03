@@ -1,7 +1,7 @@
 using System;
 using System.Reflection;
-using Application.Transactions.Queries.GetTransaction;
 using Budgetoid;
+using Budgetoid.Application.Transactions.Queries.GetTransaction;
 using Microsoft.Azure.Cosmos.Fluent;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;

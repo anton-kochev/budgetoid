@@ -1,7 +1,7 @@
 using Microsoft.WindowsAzure.Storage.Table;
 using Newtonsoft.Json;
 
-namespace Domain.Entities;
+namespace Budgetoid.Domain.Entities;
 
 public sealed class Transaction : TableEntity
 {

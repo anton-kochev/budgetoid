@@ -1,4 +1,4 @@
-namespace Domain;
+namespace Budgetoid.Domain;
 
 public static class DateTimeExtensions
 {

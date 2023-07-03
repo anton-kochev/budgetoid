@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 
-namespace Application.Common;
+namespace Budgetoid.Application.Common;
 
 public static class HttpRequestExtensions
 {

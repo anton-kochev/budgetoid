@@ -1,8 +1,8 @@
-using Domain.Entities;
+using Budgetoid.Domain.Entities;
 using MediatR;
 using Microsoft.Azure.Cosmos;
 
-namespace Application.Transactions.Commands.CreateTransaction;
+namespace Budgetoid.Application.Transactions.Commands.CreateTransaction;
 
 public record CreateTransactionCommand : IRequest<Guid>
 {

@@ -1,10 +1,10 @@
-using Application.Transactions.Queries.GetTransaction;
-using Domain;
-using Domain.Entities;
+using Budgetoid.Application.Transactions.Queries.GetTransaction;
+using Budgetoid.Domain;
+using Budgetoid.Domain.Entities;
 using MediatR;
 using Microsoft.Azure.Cosmos;
 
-namespace Application.Transactions.Queries.GetTransactions;
+namespace Budgetoid.Application.Transactions.Queries.GetTransactions;
 
 public class GetTransactionsQuery : IRequest<IEnumerable<TransactionDto>>
 {

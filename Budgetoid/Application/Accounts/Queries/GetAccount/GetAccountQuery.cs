@@ -1,10 +1,10 @@
 using System.Net;
-using Application.Common.Exceptions;
-using Budgetoid.Models;
+using Budgetoid.Application.Common.Exceptions;
+using Budgetoid.Domain.Entities;
 using MediatR;
 using Microsoft.Azure.Cosmos;
 
-namespace Application.Accounts.Queries.GetAccount;
+namespace Budgetoid.Application.Accounts.Queries.GetAccount;
 
 public record GetAccountQuery : IRequest<AccountDto>
 {

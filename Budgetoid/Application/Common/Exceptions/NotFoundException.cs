@@ -1,4 +1,4 @@
-namespace Application.Common.Exceptions;
+namespace Budgetoid.Application.Common.Exceptions;
 
 public sealed class NotFoundException : Exception
 {

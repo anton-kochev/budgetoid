@@ -1,8 +1,7 @@
-using System;
 using Microsoft.WindowsAzure.Storage.Table;
 using Newtonsoft.Json;
 
-namespace Budgetoid.Models;
+namespace Budgetoid.Domain.Entities;
 
 /// <summary>
 ///     ISO_4217 three letters currency code

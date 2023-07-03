@@ -1,10 +1,10 @@
 using System.Net;
-using Application.Common.Exceptions;
-using Domain.Entities;
+using Budgetoid.Application.Common.Exceptions;
+using Budgetoid.Domain.Entities;
 using MediatR;
 using Microsoft.Azure.Cosmos;
 
-namespace Application.Transactions.Commands.UpdateTransaction;
+namespace Budgetoid.Application.Transactions.Commands.UpdateTransaction;
 
 public record UpdateTransactionCommand : IRequest
 {
