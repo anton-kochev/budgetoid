@@ -1,6 +1,6 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Budgetoid", "Budgetoid\Budgetoid.csproj", "{BC0F3E6B-2B3A-4215-8231-ADD79868FA2B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WebApi", "WebApi\WebApi.csproj", "{BC0F3E6B-2B3A-4215-8231-ADD79868FA2B}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Application", "Application\Application.csproj", "{08A63B6B-169D-4DB2-91B5-5828BB39B561}"
 EndProject

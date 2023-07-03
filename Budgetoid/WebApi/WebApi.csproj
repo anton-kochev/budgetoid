@@ -2,6 +2,8 @@
     <PropertyGroup>
         <TargetFramework>net6.0</TargetFramework>
         <AzureFunctionsVersion>V4</AzureFunctionsVersion>
+        <AssemblyName>WebApi</AssemblyName>
+        <RootNamespace>Budgetoid</RootNamespace>
     </PropertyGroup>
     <ItemGroup>
         <None Update="host.json">
