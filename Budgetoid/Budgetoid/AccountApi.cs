@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using Budgetoid.Accounts.Commands.CreateAccount;
-using Budgetoid.Accounts.Queries.GetAccountQuery;
-using Budgetoid.Accounts.Queries.GetAccounts;
-using Budgetoid.Dto;
+using Application.Accounts.Commands.CreateAccount;
+using Application.Accounts.Queries.GetAccount;
+using Application.Accounts.Queries.GetAccounts;
+using Application.Common;
 using MediatR;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;

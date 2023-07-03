@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using Application.Transactions.Queries.GetTransaction;
 using Budgetoid;
 using Microsoft.Azure.Cosmos.Fluent;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
@@ -30,7 +31,8 @@ public class Startup : FunctionsStartup
 
             return new CosmosClientBuilder(connectionString).Build();
         });
-        builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly()));
+        builder.Services.AddMediatR(cfg =>
+            cfg.RegisterServicesFromAssembly(Assembly.GetAssembly(typeof(GetTransactionHandler))!));
         // builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
         // builder.Services.AddSingleton<IValidator<GetUserQuery>, GetUserQueryValidator>();
     }

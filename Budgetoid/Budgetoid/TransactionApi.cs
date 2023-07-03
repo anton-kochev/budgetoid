@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Threading.Tasks;
+using Application.Common;
+using Application.Transactions.Commands.CreateTransaction;
+using Application.Transactions.Commands.DeleteTransaction;
+using Application.Transactions.Commands.UpdateTransaction;
+using Application.Transactions.Queries.GetTransaction;
+using Application.Transactions.Queries.GetTransactions;
 using Budgetoid.Dto;
-using Budgetoid.Transactions.Commands.CreateTransaction;
-using Budgetoid.Transactions.Commands.DeleteTransaction;
-using Budgetoid.Transactions.Commands.UpdateTransaction;
-using Budgetoid.Transactions.Queries.GetTransaction;
-using Budgetoid.Transactions.Queries.GetTransactions;
 using MediatR;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -85,8 +86,13 @@ public sealed class TransactionApi
         await _mediator.Send(new UpdateTransactionCommand
         {
             AccountId = Guid.Parse(accountId),
+            Amount = update.Amount,
+            CategoryId = update.CategoryId,
+            Comment = update.Comment,
+            Date = update.Date,
             Id = Guid.Parse(id),
-            Update = update
+            PayeeId = update.PayeeId,
+            Tags = update.Tags
         });
 
         return new NoContentResult();
