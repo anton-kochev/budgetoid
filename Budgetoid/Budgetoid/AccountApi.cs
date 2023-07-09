@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Budgetoid.Application.Accounts.Commands.CreateAccount;
 using Budgetoid.Application.Accounts.Queries.GetAccount;
 using Budgetoid.Application.Accounts.Queries.GetAccounts;
 using Budgetoid.Application.Common;
+using Budgetoid.Application.Transactions.Queries.GetTransaction;
+using Budgetoid.Application.Transactions.Queries.GetTransactions;
 using MediatR;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -48,8 +51,10 @@ public sealed class AccountApi
             Id = Guid.Parse(id),
             UserId = Guid.Parse(userId)
         });
+        IEnumerable<TransactionDto> transactions =
+            await _mediator.Send(new GetTransactionsQuery { AccountId = Guid.Parse(id) });
 
-        if (result == null) return new NotFoundResult();
+        result = result with { Balance = transactions.Sum(t => t.Amount) };
 
         return new OkObjectResult(result);
     }

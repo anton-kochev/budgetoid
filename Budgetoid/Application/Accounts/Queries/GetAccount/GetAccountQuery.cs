@@ -1,5 +1,4 @@
 using System.Net;
-using Budgetoid.Application.Common.Exceptions;
 using Budgetoid.Domain.Entities;
 using MediatR;
 using Microsoft.Azure.Cosmos;
@@ -33,7 +32,7 @@ public sealed class GetAccountQueryHandler : IRequestHandler<GetAccountQuery, Ac
         }
         catch (CosmosException e) when (e.StatusCode == HttpStatusCode.NotFound)
         {
-            throw new NotFoundException();
+            throw;
         }
 
         return new AccountDto

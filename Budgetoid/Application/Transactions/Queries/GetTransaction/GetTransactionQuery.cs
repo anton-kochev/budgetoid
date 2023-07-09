@@ -1,5 +1,4 @@
 using System.Net;
-using Budgetoid.Application.Common.Exceptions;
 using Budgetoid.Domain;
 using Budgetoid.Domain.Entities;
 using MediatR;
@@ -34,7 +33,7 @@ public sealed class GetTransactionHandler : IRequestHandler<GetTransactionQuery,
         }
         catch (CosmosException e) when (e.StatusCode == HttpStatusCode.NotFound)
         {
-            throw new NotFoundException();
+            throw;
         }
 
         return new TransactionDto

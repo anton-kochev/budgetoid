@@ -19,9 +19,19 @@ public class Startup : FunctionsStartup
         .AddEnvironmentVariables()
         .Build();
 
+    // public override void ConfigureAppConfiguration(IFunctionsConfigurationBuilder builder)
+    // {
+    //     FunctionsHostBuilderContext context = builder.GetContext();
+    //
+    //     builder.ConfigurationBuilder
+    //         .AddJsonFile(Path.Combine(context.ApplicationRootPath, "local.settings.json"), true, false)
+    //         .AddJsonFile(Path.Combine(context.ApplicationRootPath, $"appsettings.{context.EnvironmentName}.json"), true, false)
+    //         .AddEnvironmentVariables();
+    // }
+
     public override void Configure(IFunctionsHostBuilder builder)
     {
-        builder.Services.AddSingleton(s =>
+        builder.Services.AddSingleton(_ =>
         {
             string connectionString = Environment.GetEnvironmentVariable("CUSTOMCONNSTR_CosmosDb") ??
                                       Configuration.GetConnectionString("CosmosDb");
