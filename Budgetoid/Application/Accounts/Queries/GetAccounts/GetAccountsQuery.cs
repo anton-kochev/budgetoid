@@ -12,25 +12,37 @@ public record GetAccountsQuery : IRequest<IEnumerable<AccountDto>>
 
 public sealed class GetAccountsHandler : IRequestHandler<GetAccountsQuery, IEnumerable<AccountDto>>
 {
-    private readonly Container _container;
+    private readonly Container _accounts;
+    private readonly Container _transactions;
 
     public GetAccountsHandler(CosmosClient cosmosClient)
     {
-        _container = cosmosClient.GetContainer("Budgetoid", "Accounts");
+        _accounts = cosmosClient.GetContainer("Budgetoid", "Accounts");
+        _transactions = cosmosClient.GetContainer("Budgetoid", "Transactions");
     }
 
     public async Task<IEnumerable<AccountDto>> Handle(GetAccountsQuery request, CancellationToken cancellationToken)
     {
-        FeedIterator<Account> accounts = _container.GetItemQueryIterator<Account>();
-        IEnumerable<AccountDto> result = (await accounts.ReadNextAsync(cancellationToken))
-            .Where(a => a.UserId == request.UserId.ToString())
-            .Select(a => new AccountDto
-            {
-                Id = Guid.Parse(a.Id),
-                Currency = a.Currency,
-                Name = a.Name
-            });
+        // Read the account from DB based on the provided Id and UserId
+        IEnumerable<Account> accounts =
+            (await _accounts.GetItemQueryIterator<Account>().ReadNextAsync(cancellationToken)).Where(a =>
+                a.UserId == request.UserId.ToString());
 
-        return result;
+        // Retrieve transactions associated with the accounts
+        IEnumerable<Transaction> transactions =
+            (await _transactions.GetItemQueryIterator<Transaction>().ReadNextAsync(cancellationToken))
+            .Where(t => accounts.Any(a => a.Id == t.AccountId));
+
+        return accounts.Select(a =>
+        {
+            decimal balance = transactions.Where(t => t.AccountId == a.Id).Sum(t => t.Amount);
+            return new AccountDto
+            {
+                Balance = balance,
+                Currency = a.Currency,
+                Id = Guid.Parse(a.Id),
+                Name = a.Name
+            };
+        });
     }
 }
