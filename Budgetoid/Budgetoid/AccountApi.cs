@@ -47,9 +47,9 @@ public sealed class AccountApi
         string id)
     {
         AccountDto result =
-            await _mediator.Send(new GetAccountQuery { Id = Guid.Parse(id), UserId = Guid.Parse(userId) });
+            await _mediator.Send(new GetAccountQuery(Guid.Parse(id), Guid.Parse(userId)));
         IEnumerable<TransactionDto> transactions =
-            await _mediator.Send(new GetTransactionsQuery { AccountId = Guid.Parse(id) });
+            await _mediator.Send(new GetTransactionsQuery(Guid.Parse(id)));
 
         result = result with { Balance = transactions.Sum(t => t.Amount) };
 
@@ -63,7 +63,7 @@ public sealed class AccountApi
         string userId,
         ILogger log)
     {
-        IEnumerable<AccountDto> result = await _mediator.Send(new GetAccountsQuery { UserId = Guid.Parse(userId) });
+        IEnumerable<AccountDto> result = await _mediator.Send(new GetAccountsQuery(Guid.Parse(userId)));
 
         return new OkObjectResult(result);
     }

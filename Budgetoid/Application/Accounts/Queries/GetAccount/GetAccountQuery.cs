@@ -5,11 +5,7 @@ using Microsoft.Azure.Cosmos;
 
 namespace Budgetoid.Application.Accounts.Queries.GetAccount;
 
-public record GetAccountQuery : IRequest<AccountDto>
-{
-    public Guid Id { get; init; }
-    public Guid UserId { get; init; }
-}
+public record GetAccountQuery(Guid Id, Guid UserId) : IRequest<AccountDto>;
 
 public sealed class GetAccountQueryHandler : IRequestHandler<GetAccountQuery, AccountDto>
 {

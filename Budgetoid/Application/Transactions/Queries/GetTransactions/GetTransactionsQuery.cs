@@ -6,10 +6,7 @@ using Microsoft.Azure.Cosmos;
 
 namespace Budgetoid.Application.Transactions.Queries.GetTransactions;
 
-public class GetTransactionsQuery : IRequest<IEnumerable<TransactionDto>>
-{
-    public Guid AccountId { get; init; }
-}
+public record GetTransactionsQuery(Guid AccountId) : IRequest<IEnumerable<TransactionDto>>;
 
 public sealed class GetTransactionsHandler : IRequestHandler<GetTransactionsQuery, IEnumerable<TransactionDto>>
 {
@@ -23,8 +20,8 @@ public sealed class GetTransactionsHandler : IRequestHandler<GetTransactionsQuer
     public async Task<IEnumerable<TransactionDto>> Handle(
         GetTransactionsQuery request, CancellationToken cancellationToken)
     {
-        FeedIterator<Transaction> transactions = _container.GetItemQueryIterator<Transaction>();
-        IEnumerable<TransactionDto> result = (await transactions.ReadNextAsync(cancellationToken))
+        IEnumerable<TransactionDto> result =
+            (await _container.GetItemQueryIterator<Transaction>().ReadNextAsync(cancellationToken))
             .Where(t => t.AccountId == request.AccountId.ToString())
             .Select(t => new TransactionDto
             {

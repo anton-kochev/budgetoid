@@ -6,11 +6,7 @@ using Microsoft.Azure.Cosmos;
 
 namespace Budgetoid.Application.Transactions.Queries.GetTransaction;
 
-public record GetTransactionQuery : IRequest<TransactionDto>
-{
-    public Guid Id { get; init; }
-    public Guid AccountId { get; init; }
-}
+public record GetTransactionQuery(Guid Id, Guid AccountId) : IRequest<TransactionDto>;
 
 public sealed class GetTransactionHandler : IRequestHandler<GetTransactionQuery, TransactionDto>
 {

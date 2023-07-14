@@ -32,7 +32,6 @@ public sealed class CreateTransactionHandler : IRequestHandler<CreateTransaction
             Amount = request.Amount,
             CategoryId = request.CategoryId,
             Comment = request.Comment,
-            CreatedOn = DateTime.UtcNow,
             Date = request.Date,
             PayeeId = request.PayeeId,
             Tags = request.Tags

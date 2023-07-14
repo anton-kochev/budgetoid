@@ -44,8 +44,6 @@ public sealed class UpdateTransactionHandler : IRequestHandler<UpdateTransaction
         Transaction updated = new()
         {
             Id = transaction.Id,
-            CreatedOn = transaction.CreatedOn,
-
             AccountId = request.AccountId.ToString(),
             Amount = request.Amount,
             CategoryId = request.CategoryId,

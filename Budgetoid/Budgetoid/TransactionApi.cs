@@ -36,7 +36,7 @@ public sealed class TransactionApi
         string accountId)
     {
         IEnumerable<TransactionDto> result = await _mediator.Send(
-            new GetTransactionsQuery { AccountId = Guid.Parse(accountId) });
+            new GetTransactionsQuery(Guid.Parse(accountId)));
 
         return new OkObjectResult(result);
     }
@@ -49,11 +49,7 @@ public sealed class TransactionApi
         string accountId,
         string id)
     {
-        TransactionDto result = await _mediator.Send(new GetTransactionQuery
-        {
-            Id = Guid.Parse(id),
-            AccountId = Guid.Parse(accountId)
-        });
+        TransactionDto result = await _mediator.Send(new GetTransactionQuery(Guid.Parse(id), Guid.Parse(accountId)));
 
         if (result == null) return new NotFoundResult();
 
