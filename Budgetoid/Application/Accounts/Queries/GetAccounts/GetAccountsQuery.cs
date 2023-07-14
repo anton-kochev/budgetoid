@@ -23,16 +23,13 @@ public sealed class GetAccountsHandler : IRequestHandler<GetAccountsQuery, IEnum
 
     public async Task<IEnumerable<AccountDto>> Handle(GetAccountsQuery request, CancellationToken cancellationToken)
     {
-        // Read the account from DB based on the provided Id and UserId
-        IEnumerable<Account> accounts =
-            (await _accounts.GetItemQueryIterator<Account>().ReadNextAsync(cancellationToken)).Where(a =>
-                a.UserId == request.UserId.ToString());
+        // Retrieve all accounts associated with the provided UserId
+        IEnumerable<Account> accounts = await GetAccountsAsync(request.UserId, cancellationToken);
 
         // Retrieve transactions associated with the accounts
-        IEnumerable<Transaction> transactions =
-            (await _transactions.GetItemQueryIterator<Transaction>().ReadNextAsync(cancellationToken))
-            .Where(t => accounts.Any(a => a.Id == t.AccountId));
+        IEnumerable<Transaction> transactions = await GetTransactionsAsync(accounts, cancellationToken);
 
+        // Calculate the balance for each account
         return accounts.Select(a =>
         {
             decimal balance = transactions.Where(t => t.AccountId == a.Id).Sum(t => t.Amount);
@@ -44,5 +41,22 @@ public sealed class GetAccountsHandler : IRequestHandler<GetAccountsQuery, IEnum
                 Name = a.Name
             };
         });
+    }
+
+    private async Task<IList<Account>> GetAccountsAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        return (await _accounts.GetItemQueryIterator<Account>().ReadNextAsync(cancellationToken))
+            .Where(a => a.UserId == userId.ToString())
+            .ToList();
+    }
+
+    private async Task<IList<Transaction>> GetTransactionsAsync(IEnumerable<Account> accounts,
+        CancellationToken cancellationToken)
+    {
+        IEnumerable<Guid> accountIds = accounts.Select(a => Guid.Parse(a.Id));
+
+        return (await _transactions.GetItemQueryIterator<Transaction>().ReadNextAsync(cancellationToken))
+            .Where(t => accountIds.Contains(Guid.Parse(t.AccountId)))
+            .ToList();
     }
 }
