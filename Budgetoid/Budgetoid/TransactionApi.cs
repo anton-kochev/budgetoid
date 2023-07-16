@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net;
 using System.Threading.Tasks;
 using Budgetoid.Application.Common;
+using Budgetoid.Application.Payees.Commands.AddPayee;
 using Budgetoid.Application.Transactions.Commands.CreateTransaction;
 using Budgetoid.Application.Transactions.Commands.DeleteTransaction;
 using Budgetoid.Application.Transactions.Commands.UpdateTransaction;
@@ -57,16 +58,17 @@ public sealed class TransactionApi
     }
 
     [FunctionName("PostTransaction")]
-    public async Task<ActionResult<Guid>> CreateTransactionAsync(
+    public async Task<IActionResult> CreateTransactionAsync(
         [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "transactions")]
         HttpRequest req,
         ILogger log)
     {
         log.LogInformation("Create transaction");
         CreateTransactionCommand command = await req.DeserializeBodyAsync<CreateTransactionCommand>();
-        Guid id = await _mediator.Send(command);
+        await _mediator.Send(command);
+        await _mediator.Send(new AddPayeeCommand { Name = command.Payee, UserId = command.UserId });
 
-        return new OkObjectResult(id);
+        return new NoContentResult();
     }
 
     [FunctionName("PutTransaction")]
@@ -87,7 +89,7 @@ public sealed class TransactionApi
             Comment = update.Comment,
             Date = update.Date,
             Id = Guid.Parse(id),
-            PayeeId = update.PayeeId,
+            Payee = update.Payee,
             Tags = update.Tags
         });
 
@@ -104,11 +106,7 @@ public sealed class TransactionApi
     {
         try
         {
-            await _mediator.Send(new DeleteTransactionCommand
-            {
-                Id = Guid.Parse(id),
-                AccountId = Guid.Parse(accountId)
-            });
+            await _mediator.Send(new DeleteTransactionCommand(Guid.Parse(id), Guid.Parse(accountId)));
         }
         catch (CosmosException e) when (e.StatusCode == HttpStatusCode.NotFound)
         {

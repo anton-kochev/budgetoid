@@ -29,7 +29,7 @@ public sealed class GetAccountsHandler : IRequestHandler<GetAccountsQuery, IEnum
         // Calculate the balance for each account
         return accounts.Select(a =>
         {
-            decimal balance = transactions.Where(t => t.AccountId == a.Id).Sum(t => t.Amount);
+            decimal balance = transactions.Where(t => t.AccountId.ToString() == a.Id).Sum(t => t.Amount);
             return new AccountDto
             {
                 Balance = balance,
@@ -53,7 +53,7 @@ public sealed class GetAccountsHandler : IRequestHandler<GetAccountsQuery, IEnum
         IEnumerable<Guid> accountIds = accounts.Select(a => Guid.Parse(a.Id));
 
         return (await _transactions.GetItemQueryIterator<Transaction>().ReadNextAsync(cancellationToken))
-            .Where(t => accountIds.Contains(Guid.Parse(t.AccountId)))
+            .Where(t => accountIds.Contains(t.AccountId))
             .ToList();
     }
 }

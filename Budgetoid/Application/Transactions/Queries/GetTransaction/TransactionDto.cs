@@ -8,6 +8,6 @@ public record TransactionDto
     public string Comment { get; init; } = string.Empty;
     public DateOnly Date { get; init; }
     public Guid Id { get; init; }
-    public Guid PayeeId { get; init; }
+    public string Payee { get; init; } = string.Empty;
     public string[] Tags { get; init; } = Array.Empty<string>();
 }

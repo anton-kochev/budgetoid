@@ -4,11 +4,7 @@ using Microsoft.Azure.Cosmos;
 
 namespace Budgetoid.Application.Transactions.Commands.DeleteTransaction;
 
-public record DeleteTransactionCommand : IRequest
-{
-    public Guid Id { get; init; }
-    public Guid AccountId { get; init; }
-}
+public record DeleteTransactionCommand(Guid Id, Guid AccountId) : IRequest;
 
 public sealed class DeleteTransactionCommandHandler : IRequestHandler<DeleteTransactionCommand>
 {

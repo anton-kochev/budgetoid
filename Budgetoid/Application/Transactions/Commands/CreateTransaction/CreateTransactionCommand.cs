@@ -4,43 +4,45 @@ using Microsoft.Azure.Cosmos;
 
 namespace Budgetoid.Application.Transactions.Commands.CreateTransaction;
 
-public record CreateTransactionCommand : IRequest<Guid>
+public record CreateTransactionCommand : IRequest<Unit>
 {
-    public Guid AccountId { get; init; }
+    public Guid AccountId { get; init; } = Guid.Empty;
     public decimal Amount { get; init; }
-    public Guid CategoryId { get; init; }
+    public Guid CategoryId { get; init; } = Guid.Empty;
     public string Comment { get; init; } = string.Empty;
     public DateTime Date { get; init; }
-    public Guid PayeeId { get; init; }
+    public string Payee { get; init; } = string.Empty;
     public string[] Tags { get; init; } = Array.Empty<string>();
+    public Guid UserId { get; init; } = Guid.Empty;
 }
 
-public sealed class CreateTransactionHandler : IRequestHandler<CreateTransactionCommand, Guid>
+public sealed class CreateTransactionHandler : IRequestHandler<CreateTransactionCommand, Unit>
 {
-    private readonly Container _container;
+    private readonly Container _transactions;
 
     public CreateTransactionHandler(CosmosClient cosmosClient)
     {
-        _container = cosmosClient.GetContainer("Budgetoid", "Transactions");
+        _transactions = cosmosClient.GetContainer("Budgetoid", "Transactions");
     }
 
-    public async Task<Guid> Handle(CreateTransactionCommand request, CancellationToken cancellationToken)
+    public async Task<Unit> Handle(CreateTransactionCommand request, CancellationToken cancellationToken)
     {
         Transaction transaction = new()
         {
-            AccountId = request.AccountId.ToString(),
+            AccountId = request.AccountId,
             Amount = request.Amount,
             CategoryId = request.CategoryId,
             Comment = request.Comment,
             Date = request.Date,
-            PayeeId = request.PayeeId,
-            Tags = request.Tags
+            Payee = request.Payee,
+            Tags = request.Tags,
+            UserId = request.UserId.ToString()
         };
 
-        await _container
-            .CreateItemAsync(transaction, new PartitionKey(transaction.AccountId),
+        await _transactions
+            .CreateItemAsync(transaction, new PartitionKey(transaction.UserId),
                 cancellationToken: cancellationToken);
 
-        return Guid.Parse(transaction.Id);
+        return Unit.Value;
     }
 }

@@ -38,7 +38,7 @@ public sealed class GetAccountQueryHandler : IRequestHandler<GetAccountQuery, Ac
         // Retrieve transactions associated with the account
         IEnumerable<Transaction> transactions =
             (await _transactions.GetItemQueryIterator<Transaction>().ReadNextAsync(cancellationToken))
-            .Where(t => t.AccountId == a.Id);
+            .Where(t => t.AccountId.ToString() == a.Id);
 
         // Calculate the account balance based on the sum of transaction amounts
         decimal balance = transactions.Sum(t => t.Amount);

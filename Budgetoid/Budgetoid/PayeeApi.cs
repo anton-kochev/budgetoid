@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using Budgetoid.Application.Accounts.Queries.GetAccount;
 using Budgetoid.Application.Payees.Queries.GetPayees;
 using MediatR;
 using Microsoft.AspNetCore.Http;
@@ -22,7 +21,7 @@ public sealed class PayeeApi
     }
 
     [FunctionName("GetPayees")]
-    public async Task<ActionResult<IEnumerable<AccountDto>>> GetPayeesAsync(
+    public async Task<ActionResult<IEnumerable<PayeeDto>>> GetPayeesAsync(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "payees/{userId}")]
         HttpRequest req,
         string userId,

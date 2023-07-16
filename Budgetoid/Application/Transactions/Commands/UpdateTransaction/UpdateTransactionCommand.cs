@@ -13,7 +13,7 @@ public record UpdateTransactionCommand : IRequest
     public Guid CategoryId { get; init; }
     public string Comment { get; init; } = string.Empty;
     public DateTime Date { get; init; }
-    public Guid PayeeId { get; init; }
+    public string Payee { get; init; } = string.Empty;
     public string[] Tags { get; init; } = Array.Empty<string>();
 }
 
@@ -44,15 +44,15 @@ public sealed class UpdateTransactionHandler : IRequestHandler<UpdateTransaction
         Transaction updated = new()
         {
             Id = transaction.Id,
-            AccountId = request.AccountId.ToString(),
+            AccountId = request.AccountId,
             Amount = request.Amount,
             CategoryId = request.CategoryId,
             Comment = request.Comment,
             Date = request.Date,
-            PayeeId = request.PayeeId,
+            Payee = request.Payee,
             Tags = request.Tags
         };
         await _container
-            .UpsertItemAsync(updated, new PartitionKey(updated.AccountId), cancellationToken: cancellationToken);
+            .UpsertItemAsync(updated, new PartitionKey(updated.UserId), cancellationToken: cancellationToken);
     }
 }

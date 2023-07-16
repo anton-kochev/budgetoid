@@ -22,15 +22,15 @@ public sealed class GetTransactionsHandler : IRequestHandler<GetTransactionsQuer
     {
         IEnumerable<TransactionDto> result =
             (await _container.GetItemQueryIterator<Transaction>().ReadNextAsync(cancellationToken))
-            .Where(t => t.AccountId == request.AccountId.ToString())
+            .Where(t => t.AccountId == request.AccountId)
             .Select(t => new TransactionDto
             {
                 Id = Guid.Parse(t.Id),
-                AccountId = Guid.Parse(t.AccountId),
+                AccountId = t.AccountId,
                 Amount = t.Amount,
                 Comment = t.Comment,
                 Date = t.Date.ToDateOnly(),
-                PayeeId = t.PayeeId,
+                Payee = t.Payee,
                 Tags = t.Tags
             });
 

@@ -35,12 +35,12 @@ public sealed class GetTransactionHandler : IRequestHandler<GetTransactionQuery,
         return new TransactionDto
         {
             Id = Guid.Parse(t.Id),
-            AccountId = Guid.Parse(t.AccountId),
+            AccountId = t.AccountId,
             Amount = t.Amount,
             Comment = t.Comment,
             CategoryId = t.CategoryId,
             Date = t.Date.ToDateOnly(),
-            PayeeId = t.PayeeId,
+            Payee = t.Payee,
             Tags = t.Tags
         };
     }
