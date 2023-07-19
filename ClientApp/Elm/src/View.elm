@@ -1,28 +1,34 @@
 module View exposing (view)
 
 import Debug exposing (toString)
-import Html exposing (Html, div, text)
+import Entities.Account exposing (Account)
+import Html exposing (Html, button, div, span, text)
+import Html.Events exposing (onClick)
 import Model exposing (Model)
+import Update exposing (Msg(..))
 
 
-view : Model -> Html msg
+view : Model -> Html Msg
 view model =
     div []
         [ div [] [ text "User ID: ", text model.userId ]
         , div [] [ text "Accounts: ", accountsView model.accounts ]
+        , div [] [ text "Selected Account: ", text (toString model.selectedAccount) ]
+        , button [ onClick FetchAccounts ] [ text "Fetch accounts" ]
         ]
 
 
-accountsView : List Model.Account -> Html msg
+accountsView : List Account -> Html Msg
 accountsView accounts =
-    div []
-        (List.map accountView accounts)
+    div [] (List.map accountView accounts)
 
 
-accountView : Model.Account -> Html msg
+accountView : Account -> Html Msg
 accountView account =
-    div []
-        [ div [] [ text ("Account ID: " ++ account.id) ]
-        , div [] [ text ("Account Name: " ++ account.name) ]
-        , div [] [ text ("Account Balance: " ++ toString account.balance) ]
+    div
+        [ onClick (SelectAccount account.id) ]
+        [ span []
+            [ text account.name ]
+        , span []
+            [ text (":" ++ toString account.balance ++ " " ++ account.currency) ]
         ]

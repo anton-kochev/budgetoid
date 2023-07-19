@@ -13,16 +13,26 @@ import View
 
 main : Program () Model Msg
 main =
-    Browser.sandbox { init = init, update = update, view = view }
+    Browser.element
+        { init = initApp
+        , subscriptions = subscriptionsApp
+        , update = update
+        , view = view
+        }
+
+
+subscriptionsApp : Model -> Sub Msg
+subscriptionsApp model =
+    Sub.none
 
 
 
 -- Initialize the model
 
 
-init : Model
-init =
-    initialModel
+initApp : flags -> ( Model, Cmd msg )
+initApp _ =
+    ( initialModel, Cmd.none )
 
 
 
@@ -38,9 +48,6 @@ view model =
 -- Update function to handle messages
 
 
-update : Msg -> Model -> Model
+update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
-    case msg of
-        -- Handle different messages and update the model accordingly
-        NoOp ->
-            model
+    Update.update msg model
