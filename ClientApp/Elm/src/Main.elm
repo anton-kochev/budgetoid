@@ -4,6 +4,7 @@ import Browser
 import Html exposing (Html)
 import Model exposing (Model, initialModel)
 import Update exposing (Msg(..), update)
+import Url exposing (Url)
 import View
 
 
@@ -30,9 +31,9 @@ subscriptionsApp model =
 -- Initialize the model
 
 
-initApp : flags -> ( Model, Cmd msg )
+initApp : flags -> ( Model, Cmd Msg )
 initApp _ =
-    ( initialModel, Cmd.none )
+    ( initialModel, Update.fetchAccountsCommand initialModel.userId )
 
 
 

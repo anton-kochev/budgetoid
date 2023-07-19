@@ -14,7 +14,6 @@ view model =
         [ div [] [ text "User ID: ", text model.userId ]
         , div [] [ text "Accounts: ", accountsView model.accounts ]
         , div [] [ text "Selected Account: ", text (toString model.selectedAccount) ]
-        , button [ onClick FetchAccounts ] [ text "Fetch accounts" ]
         ]
 
 

@@ -1,4 +1,4 @@
-module Update exposing (Msg(..), update)
+module Update exposing (Msg(..), fetchAccountsCommand, update)
 
 import Entities.Account as Account exposing (Account)
 import Http
