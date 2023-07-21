@@ -5,5 +5,7 @@ Budgetoid/Application/bin/
 Budgetoid/Application/obj/
 Budgetoid/Domain/bin/
 Budgetoid/Domain/obj/
+Budgetoid/Infrastructure/bin/
+Budgetoid/Infrastructure/obj/
 ClientApp/Elm/elm-stuff/
 ClientApp/Elm/public/

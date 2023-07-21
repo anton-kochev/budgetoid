@@ -41,6 +41,10 @@ public class Startup : FunctionsStartup
 
             return new CosmosClientBuilder(connectionString).Build();
         });
+
+        // Call the InitializeCosmosDbStructure method here
+        // CosmosDbInitializer.InitializeCosmosDbStructure(connectionString).Wait();
+
         builder.Services.AddMediatR(cfg =>
             cfg.RegisterServicesFromAssembly(Assembly.GetAssembly(typeof(GetTransactionHandler))!));
         // builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
