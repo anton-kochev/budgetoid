@@ -30,13 +30,12 @@ public sealed class GetAccountsHandler : IRequestHandler<GetAccountsQuery, IEnum
         return accounts.Select(a =>
         {
             decimal balance = transactions.Where(t => t.AccountId.ToString() == a.Id).Sum(t => t.Amount);
-            return new AccountDto
-            {
-                Balance = balance,
-                Currency = a.Currency,
-                Id = Guid.Parse(a.Id),
-                Name = a.Name
-            };
+            return new AccountDto(
+                Balance: balance,
+                Currency: a.Currency,
+                Id: Guid.Parse(a.Id),
+                Name: a.Name
+            );
         });
     }
 

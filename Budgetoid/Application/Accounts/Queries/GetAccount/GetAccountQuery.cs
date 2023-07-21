@@ -44,11 +44,11 @@ public sealed class GetAccountQueryHandler : IRequestHandler<GetAccountQuery, Ac
         decimal balance = transactions.Sum(t => t.Amount);
 
         return new AccountDto
-        {
-            Balance = balance,
-            Currency = a.Currency,
-            Id = Guid.Parse(a.Id),
-            Name = a.Name
-        };
+        (
+            Balance: balance,
+            Currency: a.Currency,
+            Id: Guid.Parse(a.Id),
+            Name: a.Name
+        );
     }
 }

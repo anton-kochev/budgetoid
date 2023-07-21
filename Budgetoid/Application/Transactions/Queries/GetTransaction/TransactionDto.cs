@@ -1,13 +1,12 @@
 namespace Budgetoid.Application.Transactions.Queries.GetTransaction;
 
-public record TransactionDto
-{
-    public Guid AccountId { get; init; }
-    public decimal Amount { get; init; }
-    public Guid CategoryId { get; init; }
-    public string Comment { get; init; } = string.Empty;
-    public DateOnly Date { get; init; }
-    public Guid Id { get; init; }
-    public string Payee { get; init; } = string.Empty;
-    public string[] Tags { get; init; } = Array.Empty<string>();
-}
+public record TransactionDto(
+    Guid AccountId,
+    decimal Amount,
+    Guid CategoryId,
+    string Comment,
+    DateOnly Date,
+    Guid Id,
+    string Payee,
+    string[] Tags
+);

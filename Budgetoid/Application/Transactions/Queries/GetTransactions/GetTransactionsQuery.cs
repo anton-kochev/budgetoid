@@ -24,15 +24,16 @@ public sealed class GetTransactionsHandler : IRequestHandler<GetTransactionsQuer
             (await _container.GetItemQueryIterator<Transaction>().ReadNextAsync(cancellationToken))
             .Where(t => t.AccountId == request.AccountId)
             .Select(t => new TransactionDto
-            {
-                Id = Guid.Parse(t.Id),
-                AccountId = t.AccountId,
-                Amount = t.Amount,
-                Comment = t.Comment,
-                Date = t.Date.ToDateOnly(),
-                Payee = t.Payee,
-                Tags = t.Tags
-            });
+            (
+                Id: Guid.Parse(t.Id),
+                AccountId: t.AccountId,
+                Amount: t.Amount,
+                CategoryId: t.CategoryId,
+                Comment: t.Comment,
+                Date: t.Date.ToDateOnly(),
+                Payee: t.Payee,
+                Tags: t.Tags
+            ));
 
         return result;
     }
