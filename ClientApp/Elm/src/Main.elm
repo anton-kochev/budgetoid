@@ -1,10 +1,11 @@
 module Main exposing (main)
 
 import Browser
-import Html exposing (Html)
+import Browser.Navigation as Nav
 import Model exposing (Model, initialModel)
+import Ports
 import Update exposing (Msg(..), update)
-import Url exposing (Url)
+import Url
 import View
 
 
@@ -14,25 +15,27 @@ import View
 
 main : Program () Model Msg
 main =
-    Browser.element
+    Browser.application
         { init = initApp
         , subscriptions = subscriptionsApp
         , update = update
         , view = view
+        , onUrlRequest = UrlRequested
+        , onUrlChange = UrlChanged
         }
 
 
 subscriptionsApp : Model -> Sub Msg
-subscriptionsApp model =
-    Sub.none
+subscriptionsApp _ =
+    Ports.messageReceiver Receive
 
 
 
 -- Initialize the model
 
 
-initApp : flags -> ( Model, Cmd Msg )
-initApp _ =
+initApp : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
+initApp _ _ _ =
     ( initialModel, Update.fetchAccountsCommand initialModel.userId )
 
 
@@ -40,9 +43,11 @@ initApp _ =
 -- View function to render the HTML
 
 
-view : Model -> Html Msg
+view : Model -> Browser.Document Msg
 view model =
-    View.view model
+    { title = "Budgetoid"
+    , body = [ View.view model ]
+    }
 
 
 

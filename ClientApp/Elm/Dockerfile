@@ -20,8 +20,8 @@ RUN elm make src/Main.elm --optimize --output=main.js
 FROM nginx:alpine as production-stage
 
 # Copy the built JavaScript bundle and static files from the build stage
-COPY --from=build-stage /app/main.js /usr/share/nginx/html/
 COPY --from=build-stage /app/public/ /usr/share/nginx/html/
+COPY --from=build-stage /app/main.js /usr/share/nginx/html/
 
 # Expose the port for the application to listen on
 EXPOSE 80
