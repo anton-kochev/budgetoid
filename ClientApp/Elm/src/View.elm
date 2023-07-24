@@ -1,21 +1,40 @@
 module View exposing (view)
 
 import Account.View exposing (accountsView)
-import Html exposing (Html, div, li, section, text, ul)
+import Html exposing (Html, div, li, nav, section, text, ul)
 import Maybe exposing (withDefault)
 import Model exposing (Model)
+import Transaction.View exposing (transactionsView)
 import Update exposing (Msg(..))
 
 
 view : Model -> Html Msg
 view model =
     div []
-        [ div [] [ text "User ID: ", text model.userId ]
-        , ul []
-            [ li [] [ text "Budget" ]
-            , li [] [ text "Report" ]
-            , li [] [ text "All accounts" ]
+        [ nav []
+            [ section []
+                [ ul []
+                    [ li [] [ text "Budget" ]
+                    , li [] [ text "Report" ]
+                    , li [] [ text "All accounts" ]
+                    ]
+                ]
+            , section []
+                [ text "Accounts"
+                , fallback accountsView model.accounts "Loading..."
+                ]
             ]
-        , section [] [ text "Accounts", accountsView model.accounts ]
-        , div [] [ text "Selected Account: ", text (withDefault "empty" (Maybe.map .id model.selectedAccount)) ]
+        , section []
+            [ text ("Selected Account: " ++ withDefault "empty" (Maybe.map .id model.selectedAccount))
+            , fallback transactionsView model.transactions "Loading..."
+            ]
         ]
+
+
+fallback : (List a -> Html msg) -> Maybe (List a) -> String -> Html msg
+fallback v x fallbackText =
+    if x == Nothing then
+        div [] [ text fallbackText ]
+
+    else
+        v (Maybe.withDefault [] x)

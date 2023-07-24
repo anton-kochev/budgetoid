@@ -47,7 +47,7 @@ public sealed class AccountApi
         string id)
     {
         AccountDto result =
-            await _mediator.Send(new GetAccountQuery(Guid.Parse(id), Guid.Parse(userId)));
+            await _mediator.Send(new GetAccountQuery(Guid.Parse(userId), Guid.Parse(id)));
         IEnumerable<TransactionDto> transactions =
             await _mediator.Send(new GetTransactionsQuery(Guid.Parse(id)));
 

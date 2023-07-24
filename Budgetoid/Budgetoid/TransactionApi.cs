@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using Budgetoid.Application.Common;
 using Budgetoid.Application.Payees.Commands.AddPayee;
@@ -29,10 +30,11 @@ public sealed class TransactionApi
         _mediator = mediator;
     }
 
-    [FunctionName("GetTransactions")]
-    public async Task<ActionResult<IEnumerable<TransactionDto>>> GetTransactionsAsync(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "transactions/{accountId}")]
+    [FunctionName("GetAccountTransactions")]
+    public async Task<ActionResult<IEnumerable<TransactionDto>>> GetAccountTransactionsAsync(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "account/{accountId}/transactions")]
         HttpRequest req,
+        ClaimsPrincipal claimsPrincipal,
         ILogger log,
         string accountId)
     {
@@ -42,9 +44,19 @@ public sealed class TransactionApi
         return new OkObjectResult(result);
     }
 
+    [FunctionName("GetUserTransactions")]
+    public ActionResult<IEnumerable<TransactionDto>> GetUserTransactionsAsync(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "user/{userId}/transactions")]
+        HttpRequest req,
+        ILogger log,
+        string userId)
+    {
+        return new OkObjectResult(Array.Empty<TransactionDto>());
+    }
+
     [FunctionName("GetTransaction")]
     public async Task<ActionResult<TransactionDto>> GetTransactionAsync(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "transactions/{accountId}/{id}")]
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "account/{accountId}/transactions/{id}")]
         HttpRequest req,
         ILogger log,
         string accountId,
@@ -73,7 +85,7 @@ public sealed class TransactionApi
 
     [FunctionName("PutTransaction")]
     public async Task<IActionResult> UpdateTransactionAsync(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "put", Route = "transaction/{accountId}/{id}")]
+        [HttpTrigger(AuthorizationLevel.Anonymous, "put", Route = "account/{accountId}/transaction/{id}")]
         HttpRequest req,
         ILogger log,
         string accountId,
@@ -98,7 +110,7 @@ public sealed class TransactionApi
 
     [FunctionName("DeleteTransaction")]
     public async Task<IActionResult> DeleteTransactionAsync(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "transactions/{accountId}/{id}")]
+        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "account/{accountId}/transactions/{id}")]
         HttpRequest req,
         ILogger log,
         string accountId,
