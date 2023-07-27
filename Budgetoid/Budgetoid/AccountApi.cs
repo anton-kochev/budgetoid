@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using Budgetoid.Application.Accounts.Commands.CreateAccount;
 using Budgetoid.Application.Accounts.Queries.GetAccount;
@@ -9,6 +10,7 @@ using Budgetoid.Application.Common;
 using Budgetoid.Application.Transactions.Queries.GetTransaction;
 using Budgetoid.Application.Transactions.Queries.GetTransactions;
 using MediatR;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
@@ -56,11 +58,13 @@ public sealed class AccountApi
         return new OkObjectResult(result);
     }
 
+    [Authorize]
     [FunctionName("GetAccounts")]
     public async Task<ActionResult<IEnumerable<AccountDto>>> GetAccountsAsync(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "accounts/{userId}")]
+        [HttpTrigger(AuthorizationLevel.User, "get", Route = "accounts/{userId}")]
         HttpRequest req,
         string userId,
+        ClaimsPrincipal claimsPrincipal,
         ILogger log)
     {
         IEnumerable<AccountDto> result = await _mediator.Send(new GetAccountsQuery(Guid.Parse(userId)));
