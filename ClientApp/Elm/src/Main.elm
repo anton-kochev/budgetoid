@@ -3,7 +3,6 @@ module Main exposing (main)
 import Browser
 import Browser.Navigation as Nav
 import Model exposing (Model, initialModel)
-import Ports
 import Update exposing (Msg(..), update)
 import Url
 import View
@@ -27,7 +26,7 @@ main =
 
 subscriptionsApp : Model -> Sub Msg
 subscriptionsApp _ =
-    Ports.messageReceiver Receive
+    Sub.none
 
 
 
@@ -35,7 +34,7 @@ subscriptionsApp _ =
 
 
 initApp : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
-initApp _ _ _ =
+initApp _ url key =
     ( initialModel, Update.fetchAccountsCommand initialModel.userId )
 
 

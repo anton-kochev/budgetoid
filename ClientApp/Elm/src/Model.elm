@@ -11,6 +11,7 @@ type alias Model =
     , accounts : Maybe (List Account)
     , transactions : Maybe (List Transaction)
     , selectedAccount : Maybe Account
+    , location : String
     }
 
 
@@ -20,4 +21,5 @@ initialModel =
     , selectedAccount = Nothing
     , transactions = Nothing
     , userId = "00000000-0000-0000-0000-000000000002"
+    , location = "/"
     }

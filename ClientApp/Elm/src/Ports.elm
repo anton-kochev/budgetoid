@@ -4,9 +4,3 @@ port module Ports exposing (..)
 
 
 port output : String -> Cmd msg
-
-
-port messageReceiver : (String -> msg) -> Sub msg
-
-
-port sendMessage : String -> Cmd msg

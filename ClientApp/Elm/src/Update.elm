@@ -22,8 +22,11 @@ type Msg
     | UrlRequested Browser.UrlRequest
       -- Ports
     | LogMessage String
-    | Send
-    | Receive String
+
+
+gotoAccount : String -> Cmd Msg
+gotoAccount accountId =
+    Nav.pushUrl accountId
 
 
 logMessage : String -> Cmd Msg
@@ -82,20 +85,21 @@ update msg model =
             ( model, logMessage message )
 
         SelectAccount accountId ->
-            ( { model
-                | selectedAccount =
-                    List.head
-                        (Maybe.withDefault []
-                            model.accounts
-                            |> List.filter (\a -> a.id == accountId)
-                        )
-              }
-            , fetchTransactionsCommand accountId
-            )
+            gotoAccount accountId
 
+        -- ( { model
+        --     | selectedAccount =
+        --         List.head
+        --             (Maybe.withDefault []
+        --                 model.accounts
+        --                 |> List.filter (\a -> a.id == accountId)
+        --             )
+        --   }
+        -- , fetchTransactionsCommand accountId
+        -- )
         UrlChanged url ->
-            ( model
-            , logMessage (Url.toString url)
+            ( { model | location = url }
+            , Cmd.none
             )
 
         UrlRequested urlRequest ->
@@ -106,9 +110,3 @@ update msg model =
 
                 Browser.External href ->
                     ( model, Nav.load href )
-
-        Send ->
-            ( model, Ports.sendMessage "Ping" )
-
-        Receive message ->
-            ( model, logMessage message )

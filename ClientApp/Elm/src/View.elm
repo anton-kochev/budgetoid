@@ -28,6 +28,7 @@ view model =
             [ text ("Selected Account: " ++ withDefault "empty" (Maybe.map .id model.selectedAccount))
             , fallback transactionsView model.transactions "Loading..."
             ]
+        , text ("Location: " ++ model.location)
         ]
 
 
