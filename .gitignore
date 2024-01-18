@@ -9,3 +9,14 @@ Budgetoid/Infrastructure/bin/
 Budgetoid/Infrastructure/obj/
 ClientApp/Elm/elm-stuff/
 ClientApp/Elm/public/
+BudgetoidApp/Application/obj/
+BudgetoidApp/Application/bin/
+BudgetoidApp/Application/obj/
+BudgetoidApp/Domain/obj/
+BudgetoidApp/Domain/bin/
+BudgetoidApp/Infrastructure/obj/
+BudgetoidApp/Infrastructure/bin/
+BudgetoidApp/Domain/obj/
+BudgetoidApp/Domain/bin/
+
+BudgetoidApp/.idea/**

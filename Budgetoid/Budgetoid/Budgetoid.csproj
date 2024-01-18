@@ -4,6 +4,7 @@
         <AzureFunctionsVersion>V4</AzureFunctionsVersion>
         <RootNamespace>Budgetoid</RootNamespace>
         <PackageId>Budgetoid</PackageId>
+        <LangVersion>12</LangVersion>
     </PropertyGroup>
     <ItemGroup>
         <None Update="host.json">
