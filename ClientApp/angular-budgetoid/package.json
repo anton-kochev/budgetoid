@@ -3,10 +3,11 @@
   "version": "0.0.0",
   "scripts": {
     "ng": "ng",
-    "start": "ng serve",
     "build": "ng build",
-    "format": "prettier --write src/**/*.ts",
-    "watch": "ng build --watch --configuration development"
+    "start": "ng serve",
+    "watch": "ng build --watch --configuration development",
+    "lint": "ng lint --fix",
+    "format": "prettier --write src/**/*.ts"
   },
   "private": true,
   "dependencies": {
@@ -26,7 +27,11 @@
     "@angular-devkit/build-angular": "^18.2.0",
     "@angular/cli": "^18.2.0",
     "@angular/compiler-cli": "^18.2.0",
+    "angular-eslint": "18.3.0",
+    "eslint": "^9.9.0",
+    "eslint-plugin-prefer-arrow": "^1.2.3",
     "prettier": "^3.3.3",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "typescript-eslint": "8.1.0"
   }
 }
