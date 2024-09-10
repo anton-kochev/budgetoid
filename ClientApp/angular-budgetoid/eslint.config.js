@@ -2,13 +2,24 @@
 const eslint = require('@eslint/js');
 const tseslint = require('typescript-eslint');
 const angular = require('angular-eslint');
+const tsParser = require('@typescript-eslint/parser');
+const angularParser = require('@angular-eslint/template-parser');
 
 module.exports = tseslint.config(
   {
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaFeatures: { modules: true },
+        ecmaVersion: 'latest',
+        project: './tsconfig.json',
+        tsconfigRootDir: __dirname,
+      },
+    },
     files: ['**/*.ts'],
     extends: [
       eslint.configs.recommended,
-      ...tseslint.configs.recommended,
+      ...tseslint.configs.strict,
       ...tseslint.configs.stylistic,
       ...angular.configs.tsRecommended,
     ],
@@ -49,23 +60,6 @@ module.exports = tseslint.config(
           next: ['const', 'let', 'var'],
         },
       ],
-      // 'prefer-arrow/prefer-arrow-functions': [
-      //   'warn',
-      //   {
-      //     allowStandaloneDeclarations: true,
-      //     classPropertiesAllowed: false,
-      //     disallowPrototype: true,
-      //     singleReturnOnly: false,
-      //   },
-      // ],
-      '@angular-eslint/directive-selector': [
-        'error',
-        {
-          type: 'attribute',
-          prefix: 'app',
-          style: 'camelCase',
-        },
-      ],
       '@angular-eslint/component-selector': [
         'error',
         {
@@ -74,77 +68,89 @@ module.exports = tseslint.config(
           style: 'kebab-case',
         },
       ],
-      // '@typescript-eslint/explicit-function-return-type': [
-      //   'error',
-      //   {
-      //     allowExpressions: true,
-      //     allowTypedFunctionExpressions: true,
-      //     allowHigherOrderFunctions: true,
-      //   },
-      // ],
-      // '@typescript-eslint/explicit-member-accessibility': [
-      //   'error',
-      //   {
-      //     accessibility: 'explicit',
-      //     overrides: {
-      //       constructors: 'no-public',
-      //     },
-      //   },
-      // ],
-      // '@typescript-eslint/naming-convention': [
-      //   'error',
-      //   {
-      //     selector: 'default',
-      //     format: ['camelCase'],
-      //   },
-      //   {
-      //     selector: 'variable',
-      //     format: ['camelCase', 'UPPER_CASE'],
-      //   },
-      //   {
-      //     selector: 'memberLike',
-      //     format: ['camelCase'],
-      //   },
-      //   {
-      //     selector: 'memberLike',
-      //     modifiers: ['readonly'],
-      //     format: ['camelCase', 'UPPER_CASE'],
-      //   },
-      //   {
-      //     selector: 'typeLike',
-      //     format: ['PascalCase'],
-      //   },
-      //   {
-      //     selector: 'enumMember',
-      //     format: ['PascalCase'],
-      //   },
-      //   {
-      //     selector: 'function',
-      //     format: ['camelCase'],
-      //   },
-      // ],
-      // '@typescript-eslint/no-explicit-any': [
-      //   'warn',
-      //   {
-      //     fixToUnknown: true,
-      //   },
-      // ],
-      // '@typescript-eslint/no-shadow': ['error', {}],
-      // '@typescript-eslint/no-unused-vars': [
-      //   'error',
-      //   {
-      //     args: 'none',
-      //   },
-      // ],
-      // '@typescript-eslint/prefer-readonly': 'error',
+      '@angular-eslint/directive-selector': [
+        'error',
+        {
+          type: 'attribute',
+          prefix: 'app',
+          style: 'camelCase',
+        },
+      ],
+      '@typescript-eslint/explicit-function-return-type': [
+        'error',
+        {
+          allowExpressions: true,
+          allowTypedFunctionExpressions: true,
+          allowHigherOrderFunctions: true,
+        },
+      ],
+      '@typescript-eslint/explicit-member-accessibility': [
+        'error',
+        {
+          accessibility: 'explicit',
+          overrides: {
+            constructors: 'no-public',
+          },
+        },
+      ],
+      '@angular-eslint/prefer-standalone': 'error',
+      '@typescript-eslint/naming-convention': [
+        'error',
+        {
+          selector: 'default',
+          format: ['camelCase'],
+        },
+        {
+          selector: 'variable',
+          format: ['camelCase', 'UPPER_CASE'],
+        },
+        {
+          selector: 'memberLike',
+          format: ['camelCase'],
+        },
+        {
+          selector: 'memberLike',
+          modifiers: ['readonly'],
+          format: ['camelCase', 'UPPER_CASE'],
+        },
+        {
+          selector: 'typeLike',
+          format: ['PascalCase'],
+        },
+        {
+          selector: 'enumMember',
+          format: ['PascalCase'],
+        },
+        {
+          selector: 'function',
+          format: ['camelCase'],
+        },
+      ],
+      '@typescript-eslint/no-explicit-any': ['warn', { fixToUnknown: true }],
+      '@typescript-eslint/no-extraneous-class': [
+        'error',
+        { allowWithDecorator: true },
+      ],
+      '@typescript-eslint/no-shadow': ['error', {}],
+      '@typescript-eslint/no-unused-vars': ['error', { args: 'none' }],
+      '@typescript-eslint/prefer-readonly': 'error',
     },
   },
   {
+    languageOptions: {
+      parser: angularParser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+      },
+    },
     files: ['**/*.html'],
     extends: [
       ...angular.configs.templateRecommended,
       ...angular.configs.templateAccessibility,
     ],
-    rules: {},
+    rules: {
+      '@angular-eslint/template/prefer-control-flow': 'error',
+    },
   },
 );

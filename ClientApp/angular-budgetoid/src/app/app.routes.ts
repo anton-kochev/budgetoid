@@ -5,12 +5,12 @@ export const routes: Routes = [
   {
     path: 'welcome',
     // prettier-ignore
-    loadChildren: () => import('./welcome/welcome.module').then(m => m.WelcomeModule),
+    loadComponent: () => import('./welcome/welcome.component').then(x => x.WelcomeComponent),
   },
   {
     path: 'transactions',
     // prettier-ignore
-    loadChildren: () => import('./transactions/transactions.module').then(m => m.TransactionsModule),
+    loadComponent: () => import('./transactions/transactions.component').then(x => x.TransactionsComponent),
   },
   { path: '', redirectTo: '/welcome', pathMatch: 'full' },
 ];
