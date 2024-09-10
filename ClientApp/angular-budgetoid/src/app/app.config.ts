@@ -8,6 +8,7 @@ import { provideRouter } from '@angular/router';
 import { provideHttpClient, withFetch } from '@angular/common/http';
 import { provideStore } from '@ngrx/store';
 
+import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideAppCore } from '@app-core/core.providers';
 import { metaReducers, reducers } from '@app-state/index';
 import { provideStoreDevtools } from '@ngrx/store-devtools';
@@ -20,6 +21,7 @@ export const appConfig: ApplicationConfig = {
     provideRouter(routes),
     provideStore(reducers, { metaReducers: metaReducers }),
     provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
+    provideAnimationsAsync('noop'),
     provideAppCore(),
   ],
 };
