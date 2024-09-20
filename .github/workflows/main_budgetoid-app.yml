@@ -1,7 +1,7 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/azure/functions-action
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 
-name: Build and deploy dotnet core project to Azure Function App - budgetoid-app
+name: Build and Deploy dotnet core project to Azure Function App - budgetoid-app
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
         shell: bash
         run: |
           pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
-          dotnet build --configuration Release ./Budgetoid --output ./output 
+          dotnet build --configuration Release ./Budgetoid --output ./output
           popd
 
       - name: "Run Azure Functions Action"

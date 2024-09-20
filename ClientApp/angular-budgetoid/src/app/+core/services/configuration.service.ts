@@ -3,7 +3,7 @@ import { Injectable } from '@angular/core';
 import { firstValueFrom, map, tap } from 'rxjs';
 
 interface Configuration {
-  api: string;
+  apiBaseUrl: string;
 }
 
 @Injectable()
@@ -13,8 +13,8 @@ export class ConfigurationService {
   private readonly required: (keyof Configuration)[];
 
   constructor(handler: HttpBackend) {
-    this.config = { api: '' };
-    this.required = ['api'];
+    this.config = { apiBaseUrl: '' };
+    this.required = ['apiBaseUrl'];
     this.httpClient = new HttpClient(handler);
   }
 
@@ -49,10 +49,10 @@ export class ConfigurationService {
     // so we have to check it manually for typos and mistakes
     this.validateConfiguration(config);
 
-    const { api } = config as Configuration;
+    const { apiBaseUrl } = config as Configuration;
 
     this.config = {
-      api,
+      apiBaseUrl,
     };
   }
 }

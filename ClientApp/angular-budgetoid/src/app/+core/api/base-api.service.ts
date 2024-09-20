@@ -1,13 +1,18 @@
 import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { inject } from '@angular/core';
+import { ConfigurationService } from '@app-core/services/configuration.service';
 import { Observable } from 'rxjs';
 
 type ContentType = 'json' | 'json-patch';
 
 export abstract class BaseApiService {
-  constructor(
-    private readonly http: HttpClient,
-    private readonly baseUrl: string,
-  ) {}
+  private readonly http: HttpClient;
+  private readonly baseUrl: string;
+
+  constructor() {
+    this.http = inject(HttpClient);
+    this.baseUrl = inject(ConfigurationService).getConfig().apiBaseUrl;
+  }
 
   protected get<T>(path: string): Observable<T> {
     const opts = { headers: BaseApiService.headers() };

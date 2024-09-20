@@ -4,9 +4,11 @@ const tseslint = require('typescript-eslint');
 const angular = require('angular-eslint');
 const tsParser = require('@typescript-eslint/parser');
 const angularParser = require('@angular-eslint/template-parser');
+const globals = require('globals');
 
 module.exports = tseslint.config(
   {
+    files: ['**/*.ts'],
     languageOptions: {
       parser: tsParser,
       parserOptions: {
@@ -16,7 +18,6 @@ module.exports = tseslint.config(
         tsconfigRootDir: __dirname,
       },
     },
-    files: ['**/*.ts'],
     extends: [
       eslint.configs.recommended,
       ...tseslint.configs.strict,
@@ -137,6 +138,7 @@ module.exports = tseslint.config(
     },
   },
   {
+    files: ['**/*.html'],
     languageOptions: {
       parser: angularParser,
       parserOptions: {
@@ -144,13 +146,19 @@ module.exports = tseslint.config(
         sourceType: 'module',
       },
     },
-    files: ['**/*.html'],
     extends: [
       ...angular.configs.templateRecommended,
       ...angular.configs.templateAccessibility,
     ],
     rules: {
       '@angular-eslint/template/prefer-control-flow': 'error',
+    },
+  },
+  {
+    files: ['**/*.spec.ts'],
+    languageOptions: {
+      parserOptions: { project: './tsconfig.spec.json' },
+      globals: { ...globals.jasmine },
     },
   },
 );
