@@ -24,7 +24,7 @@ export class ConfigurationService {
 
   public load(): Promise<boolean> {
     return firstValueFrom(
-      this.httpClient.get<Configuration>('./assets/app-config.json').pipe(
+      this.httpClient.get<Configuration>('./assets/app-config.local.json').pipe(
         tap(config => this.setConfig(config)),
         map(() => true),
       ),
