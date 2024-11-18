@@ -23,3 +23,4 @@ BudgetoidApp/.idea/**
 /ClientApp/angular-budgetoid/.angular
 /ClientApp/angular-budgetoid/dist
 /ClientApp/angular-budgetoid/node_modules
+/ClientApp/angular-bugetoid/public/
