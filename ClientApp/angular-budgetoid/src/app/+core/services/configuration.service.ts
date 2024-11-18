@@ -4,17 +4,22 @@ import { firstValueFrom, map, tap } from 'rxjs';
 
 interface Configuration {
   apiBaseUrl: string;
+  auth: Partial<{ google: GoogleAuthConfig }>;
+}
+
+interface GoogleAuthConfig {
+  clientId: string;
+  redirectUri: string;
+  scope: string;
 }
 
 @Injectable()
 export class ConfigurationService {
   private config: Configuration;
   private readonly httpClient: HttpClient;
-  private readonly required: (keyof Configuration)[];
 
   constructor(handler: HttpBackend) {
-    this.config = { apiBaseUrl: '' };
-    this.required = ['apiBaseUrl'];
+    this.config = { apiBaseUrl: '', auth: {} };
     this.httpClient = new HttpClient(handler);
   }
 
@@ -32,14 +37,28 @@ export class ConfigurationService {
   }
 
   private validateConfiguration(config: unknown): void {
-    const missing = Object.keys(config as Configuration).filter(
-      attr => this.required.includes(attr as keyof Configuration) === false,
-    );
+    // Check and throw an error if the auth object lacks the required keys.
+    // There is no type-safe between json and interface describes its structure,
+    // so we have to check it manually for typos and mistakes
 
-    if (missing.length > 0) {
-      throw new Error(
-        `Configuration is missing required fields: ${missing.join(', ')}`,
-      );
+    const { apiBaseUrl, auth } = config as Configuration;
+
+    if (apiBaseUrl == null) {
+      throw new Error('Configuration is missing "apiBaseUrl" field');
+    }
+
+    if (auth == null) {
+      throw new Error('Configuration is missing "auth" field"');
+    }
+
+    if (auth?.google) {
+      const { clientId, redirectUri, scope } = auth.google;
+
+      if (clientId == null || redirectUri == null || scope == null) {
+        throw new Error(
+          'Google auth configuration is required to have "clientId", "redirectUri" and "scope" fields',
+        );
+      }
     }
   }
 
@@ -49,10 +68,11 @@ export class ConfigurationService {
     // so we have to check it manually for typos and mistakes
     this.validateConfiguration(config);
 
-    const { apiBaseUrl } = config as Configuration;
+    const { apiBaseUrl, auth } = config as Configuration;
 
     this.config = {
       apiBaseUrl,
+      auth,
     };
   }
 }

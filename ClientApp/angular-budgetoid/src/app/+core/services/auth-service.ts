@@ -1,15 +1,25 @@
 import { inject, Injectable } from '@angular/core';
 import { OAuthService } from 'angular-oauth2-oidc';
-import { authConfig } from 'assets/auth-config';
+import { ConfigurationService } from './configuration.service';
 
 @Injectable({
   providedIn: 'root',
 })
 export class AuthService {
+  private readonly config = inject(ConfigurationService);
   private readonly oAuth = inject(OAuthService);
 
   constructor() {
-    this.oAuth.configure(authConfig);
+    const { auth } = this.config.getConfig();
+
+    this.oAuth.configure({
+      clientId: auth.google?.clientId,
+      issuer: 'https://accounts.google.com',
+      redirectUri: auth.google?.redirectUri,
+      strictDiscoveryDocumentValidation: false,
+      scope: auth.google?.scope,
+      // showDebugInformation: true,
+    });
     this.oAuth.loadDiscoveryDocumentAndTryLogin();
     this.oAuth.setupAutomaticSilentRefresh();
   }
