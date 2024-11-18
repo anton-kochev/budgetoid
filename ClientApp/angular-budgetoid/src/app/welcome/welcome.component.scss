@@ -1,0 +1,27 @@
+:host {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  padding: 2rem;
+}
+
+.welcome {
+  &__about {
+    flex-grow: 1;
+    margin-bottom: 2rem;
+    text-align: center;
+  }
+  &__title {
+    font-size: 4rem;
+    font-weight: 400;
+    text-align: center;
+    width: 100%;
+  }
+  &__login {
+    display: grid;
+    place-content: center;
+  }
+  &__main {
+    align-content: center;
+    display: grid;
+  }
+}

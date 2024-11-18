@@ -152,6 +152,7 @@ module.exports = tseslint.config(
     ],
     rules: {
       '@angular-eslint/template/prefer-control-flow': 'error',
+      '@angular-eslint/template/click-events-have-key-events': 'off',
     },
   },
   {
