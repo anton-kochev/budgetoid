@@ -1,6 +1,7 @@
 import { Component, inject } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
-import { AuthService } from '@app-core/services/auth-service';
+import { authActions } from '@app-state/authentication/authentication.actions';
+import { Store } from '@ngrx/store';
 
 @Component({
   imports: [MatButtonModule],
@@ -14,13 +15,13 @@ import { AuthService } from '@app-core/services/auth-service';
   `,
 })
 export class LoginComponent {
-  private readonly authService = inject(AuthService);
+  private readonly store = inject(Store);
 
   public signInWithGoogle(): void {
-    this.authService.signIn();
+    this.store.dispatch(authActions.login());
   }
 
   public signOut(): void {
-    this.authService.signOut();
+    this.store.dispatch(authActions.logout());
   }
 }
