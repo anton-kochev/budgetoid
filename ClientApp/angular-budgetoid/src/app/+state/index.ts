@@ -1,13 +1,13 @@
 import { isDevMode } from '@angular/core';
 import { ActionReducerMap, MetaReducer } from '@ngrx/store';
-import { accountReducer, AccountState } from './account';
+import { profileReducer, ProfileState } from './profile';
 
 export interface State {
-  account: AccountState;
+  account: ProfileState;
 }
 
 export const reducers: ActionReducerMap<State> = {
-  account: accountReducer,
+  account: profileReducer,
 };
 
 export const metaReducers: MetaReducer<State>[] = isDevMode() ? [] : [];
