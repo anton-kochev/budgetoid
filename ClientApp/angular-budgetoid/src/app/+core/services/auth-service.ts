@@ -1,6 +1,13 @@
 import { inject, Injectable } from '@angular/core';
 import { OAuthService } from 'angular-oauth2-oidc';
+import { filter, map, Observable } from 'rxjs';
 import { ConfigurationService } from './configuration.service';
+
+interface Profile {
+  email: string;
+  name: string;
+  picture: string;
+}
 
 @Injectable({
   providedIn: 'root',
@@ -8,6 +15,8 @@ import { ConfigurationService } from './configuration.service';
 export class AuthService {
   private readonly config = inject(ConfigurationService);
   private readonly oAuth = inject(OAuthService);
+
+  public readonly userProfile$: Observable<Profile>;
 
   constructor() {
     const { auth } = this.config.getConfig();
@@ -22,6 +31,24 @@ export class AuthService {
     });
     this.oAuth.loadDiscoveryDocumentAndTryLogin();
     this.oAuth.setupAutomaticSilentRefresh();
+
+    // This observable will emit the user profile information
+    // when the user is authenticated.
+    this.userProfile$ = this.oAuth.events.pipe(
+      filter(
+        e =>
+          (e.type === 'discovery_document_loaded' ||
+            e.type === 'token_received') &&
+          this.oAuth.hasValidAccessToken() &&
+          this.oAuth.hasValidIdToken(),
+      ),
+      map(() => this.oAuth.getIdentityClaims()),
+      map(claims => ({
+        email: claims['email'],
+        name: claims['name'],
+        picture: claims['picture'],
+      })),
+    );
   }
 
   public isAuthenticated(): boolean {
