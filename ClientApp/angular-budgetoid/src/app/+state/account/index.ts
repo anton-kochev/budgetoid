@@ -1,3 +1,4 @@
+import { authActions } from '@app-state/authentication/authentication.actions';
 import { createReducer, on } from '@ngrx/store';
 import { guid, Guid } from 'app/+common/guid';
 import { produce } from 'immer';
@@ -27,4 +28,5 @@ export const accountReducer = createReducer(
       state.userName = name;
     }),
   ),
+  on(authActions.logout, () => initialState),
 );
