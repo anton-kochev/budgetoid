@@ -1,10 +1,10 @@
 import { Component, inject } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
-import { authActions } from '@app-state/authentication/authentication.actions';
-import { Store } from '@ngrx/store';
+import { LoginFacade } from './login.facade';
 
 @Component({
   imports: [MatButtonModule],
+  providers: [LoginFacade],
   selector: 'app-login',
   standalone: true,
   template: `
@@ -15,13 +15,13 @@ import { Store } from '@ngrx/store';
   `,
 })
 export class LoginComponent {
-  private readonly store = inject(Store);
+  private readonly facade = inject(LoginFacade);
 
   public signInWithGoogle(): void {
-    this.store.dispatch(authActions.login());
+    this.facade.login();
   }
 
   public signOut(): void {
-    this.store.dispatch(authActions.logout());
+    this.facade.logout();
   }
 }
