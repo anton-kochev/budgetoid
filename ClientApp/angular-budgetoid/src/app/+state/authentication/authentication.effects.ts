@@ -1,6 +1,6 @@
 import { inject } from '@angular/core';
 import { AuthService } from '@app-core/services/auth-service';
-import { accountActions } from '@app-state/account/account.actions';
+import { profileActions } from '@app-state/profile/profile.actions';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import { map, tap } from 'rxjs';
 import { authActions } from './authentication.actions';
@@ -8,7 +8,7 @@ import { authActions } from './authentication.actions';
 export const userProfileInformation = createEffect(
   (authService = inject(AuthService)) => {
     return authService.userProfile$.pipe(
-      map(profile => accountActions.setAccountInformation(profile)),
+      map(profile => profileActions.setUserProfile(profile)),
     );
   },
   { functional: true },

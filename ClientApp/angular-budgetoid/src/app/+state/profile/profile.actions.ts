@@ -1,9 +1,9 @@
 import { createActionGroup, props } from '@ngrx/store';
 
-export const accountActions = createActionGroup({
-  source: 'user account',
+export const profileActions = createActionGroup({
+  source: 'user profile',
   events: {
-    setAccountInformation: props<{
+    setUserProfile: props<{
       name: string;
       email: string;
       picture: string;

@@ -7,7 +7,6 @@ import {
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideRouter } from '@angular/router';
 import { provideAppCore } from '@app-core/core.providers';
-import { metaReducers, reducers } from '@app-state/index';
 import { provideEffects } from '@ngrx/effects';
 import { provideStore } from '@ngrx/store';
 import { provideStoreDevtools } from '@ngrx/store-devtools';
@@ -20,7 +19,7 @@ export const appConfig: ApplicationConfig = {
     provideHttpClient(withFetch()),
     provideRouter(routes),
     provideOAuthClient(),
-    provideStore(reducers, { metaReducers: metaReducers }),
+    provideStore(),
     provideEffects(),
     provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
     provideAnimationsAsync('noop'),

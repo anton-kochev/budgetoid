@@ -1,14 +1,19 @@
 import { Routes } from '@angular/router';
 import { authGuard } from '@app-core/guards/auth.guard';
 import * as authenticationEffects from '@app-state/authentication/authentication.effects';
+import { profileFeatureKey, profileReducer } from '@app-state/profile';
 import { provideEffects } from '@ngrx/effects';
+import { provideState } from '@ngrx/store';
 import { accountsResolver } from './accounts/accounts.resolver';
 import { transactionsResolver } from './transactions/transactions.resolver';
 
 export const routes: Routes = [
   {
     path: '',
-    providers: [provideEffects(authenticationEffects)],
+    providers: [
+      provideState({ name: profileFeatureKey, reducer: profileReducer }),
+      provideEffects(authenticationEffects),
+    ],
     children: [
       // { path: 'home', component: HomeComponent },
       {
