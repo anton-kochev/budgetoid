@@ -50,7 +50,7 @@ jobs:
       shell: bash
       run: |
         pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
-        dotnet build --configuration Release ./Budgetoid --output ./output
+        dotnet build --configuration Release ./BudgetoidApp --output ./output
         popd
 
     - name: 'Run Azure Functions Action'
