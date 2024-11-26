@@ -22,4 +22,9 @@ internal static class AccountExtensions
             Name = entity.Name
         };
     }
+
+    public static IEnumerable<AccountDto> ToDto(this IEnumerable<Account> entities)
+    {
+        return entities.Select(e => e.ToDto());
+    }
 }
