@@ -37,6 +37,6 @@ jobs:
         id: fa
         with:
           app-name: "budgetoid-app"
-          slot-name: "Production"
+          slot-name: "staging"
           package: "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output"
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_6291B6FB41F14143AAD244C4798F6A0A }}
