@@ -32,11 +32,13 @@ jobs:
           dotnet build --configuration Release ./Budgetoid --output ./output
           popd
 
-      - name: "Run Azure Functions Action"
-        uses: Azure/functions-action@v1
-        id: fa
+      - name: Azure Functions Action
+        uses: Azure/functions-action@v1.5.1
         with:
-          app-name: "budgetoid-app"
-          slot-name: "staging"
-          package: "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output"
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_6291B6FB41F14143AAD244C4798F6A0A }}
+          # Name of the Azure Function App
+          app-name: bugetoid-app
+          # Function app slot to be deployed to
+          slot-name: staging
+          # Publish profile (*.publishsettings) file contents with web deploy secrets
+          publish-profile: ${{ env.AZURE_BUDGETOID_PUBLISH_PROFILE_STAGING }}
+                
