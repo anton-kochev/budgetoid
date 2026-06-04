@@ -19,6 +19,12 @@ export const appConfig: ApplicationConfig = {
     provideHttpClient(withFetch()),
     provideRouter(routes),
     provideOAuthClient(),
+    // provideOAuthClient({
+    //   resourceServer: {
+    //     allowedUrls: ['http://localhost:3000'],
+    //     sendAccessToken: true,
+    //   },
+    // }),
     provideStore(),
     provideEffects(),
     provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
