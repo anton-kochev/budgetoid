@@ -1,12 +1,12 @@
+using System.Text.Json.Serialization;
 using Domain.Common;
-using Newtonsoft.Json;
 
 namespace Domain.Entities;
 
 public sealed class Transaction
 {
-    [JsonProperty("id")] public string Id { get; init; } = Guid.NewGuid().ToString();
-    [JsonProperty("userId")] public string UserId { get; init; } = Guid.Empty.ToString();
+    [JsonPropertyName("id")] public string Id { get; init; } = Guid.NewGuid().ToString();
+    [JsonPropertyName("userId")] public string UserId { get; init; } = Guid.Empty.ToString();
     public Guid AccountId { get; init; } = Guid.Empty;
     public decimal Amount { get; init; } = 0.0m;
     public Guid CategoryId { get; init; } = Guid.Empty;
