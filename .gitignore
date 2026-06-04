@@ -24,3 +24,16 @@ BudgetoidApp/.idea/**
 /ClientApp/angular-budgetoid/dist
 /ClientApp/angular-budgetoid/node_modules
 /ClientApp/angular-budgetoid/public/assets/app-config.local.json
+
+# Root tooling
+/node_modules/
+/package-lock.json
+.pithos.d/
+
+# Azurite storage emulator data
+__azurite_db_*.json
+__blobstorage__/
+__queuestorage__/
+
+# IDE run configurations
+.run/
