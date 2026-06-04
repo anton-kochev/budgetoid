@@ -15,7 +15,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Api.Controllers;
 
-public sealed class TransactionController(ILoggerFactory loggerFactory, IMediator mediator, IMapperBase mapper)
+public sealed class TransactionController(ILoggerFactory loggerFactory, IMediator mediator, IMapper mapper)
 {
     private readonly ILogger _logger = loggerFactory.CreateLogger<TransactionController>();
 
@@ -97,13 +97,14 @@ public sealed class TransactionController(ILoggerFactory loggerFactory, IMediato
 
     [Function("DeleteTransaction")]
     public async Task<HttpResponseData> DeleteTransaction(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "transactions/{transactionId}")]
+        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "user/{userId}/transactions/{transactionId}")]
         HttpRequestData req,
+        string userId,
         string transactionId)
     {
         _logger.LogInformation("DeleteTransaction");
 
-        await mediator.Send(new DeleteTransactionCommand(Guid.Parse(transactionId)));
+        await mediator.Send(new DeleteTransactionCommand(Guid.Parse(userId), Guid.Parse(transactionId)));
 
         HttpResponseData response = req.CreateResponse(HttpStatusCode.NoContent);
 
@@ -112,16 +113,17 @@ public sealed class TransactionController(ILoggerFactory loggerFactory, IMediato
 
     [Function("UpdateTransaction")]
     public async Task<HttpResponseData> UpdateTransaction(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "patch", Route = "transactions/{transactionId}")]
+        [HttpTrigger(AuthorizationLevel.Anonymous, "patch", Route = "user/{userId}/transactions/{transactionId}")]
         HttpRequestData req,
+        string userId,
         string transactionId)
     {
         _logger.LogInformation("UpdateTransaction");
-        Guid userId = Guid.Empty; // TODO: Get user id from claims
 
         JsonPatchDocument? patch = await req.DeserializeBodyAsync<JsonPatchDocument>();
 
-        TransactionDto? transaction = await mediator.Send(new GetTransactionQuery(userId, Guid.Parse(transactionId)));
+        TransactionDto? transaction = await mediator.Send(
+            new GetTransactionQuery(Guid.Parse(userId), Guid.Parse(transactionId)));
         if (transaction is null)
         {
             return req.CreateResponse(HttpStatusCode.NotFound);

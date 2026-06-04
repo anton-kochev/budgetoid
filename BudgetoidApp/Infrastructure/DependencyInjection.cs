@@ -12,6 +12,7 @@ public static class DependencyInjection
             // .AddSingleton(new CosmosClient(Environment.GetEnvironmentVariable("COSMOS_CONNECTION_STRING")!))
             .AddScoped<IAccountsRepository, AccountsRepository>()
             .AddScoped<IPayeesRepository, PayeesRepository>()
-            .AddScoped<ITransactionsRepository, TransactionsRepository>();
+            .AddScoped<ITransactionsRepository, TransactionsRepository>()
+            .AddScoped<IUsersRepository, UsersRepository>();
     }
 }

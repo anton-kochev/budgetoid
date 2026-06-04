@@ -8,7 +8,7 @@ namespace Application.Transactions.Commands.UpdateTransaction;
 
 public record UpdateTransactionCommand(TransactionDto TransactionDto) : IRequest<Unit>;
 
-public sealed class UpdateTransactionCommandHandler(ITransactionsRepository transactionsRepository, IMapperBase mapper)
+public sealed class UpdateTransactionCommandHandler(ITransactionsRepository transactionsRepository, IMapper mapper)
     : IRequestHandler<UpdateTransactionCommand, Unit>
 {
     public async Task<Unit> Handle(UpdateTransactionCommand request, CancellationToken cancellationToken)

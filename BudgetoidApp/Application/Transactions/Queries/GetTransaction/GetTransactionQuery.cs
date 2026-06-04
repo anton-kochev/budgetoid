@@ -7,7 +7,7 @@ namespace Application.Transactions.Queries.GetTransaction;
 
 public record GetTransactionQuery(Guid UserId, Guid TransactionId) : IRequest<TransactionDto?>;
 
-public sealed class GetTransactionHandler(ITransactionsRepository transactionsRepository, IMapperBase mapper)
+public sealed class GetTransactionHandler(ITransactionsRepository transactionsRepository, IMapper mapper)
     : IRequestHandler<GetTransactionQuery, TransactionDto?>
 {
     public async Task<TransactionDto?> Handle(GetTransactionQuery request, CancellationToken cancellationToken)

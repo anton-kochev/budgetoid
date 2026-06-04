@@ -7,7 +7,7 @@ namespace Application.Transactions.Queries.GetAccountTransactions;
 
 public record GetAccountTransactionsQuery(Guid UserId, Guid AccountId) : IRequest<IList<TransactionDto>>;
 
-public sealed class GetAccountTransactionsHandler(ITransactionsRepository transactionsRepository, IMapperBase mapper)
+public sealed class GetAccountTransactionsHandler(ITransactionsRepository transactionsRepository, IMapper mapper)
     : IRequestHandler<GetAccountTransactionsQuery, IList<TransactionDto>>
 {
     public async Task<IList<TransactionDto>> Handle(GetAccountTransactionsQuery request,
