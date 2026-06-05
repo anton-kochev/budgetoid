@@ -1,4 +1,3 @@
-using AutoMapper;
 using Domain.Common;
 using Domain.Entities;
 
@@ -6,22 +5,51 @@ namespace Application.Transactions.Queries.GetTransaction;
 
 public record TransactionDto
 {
-    public Guid AccountId { get; init; } = Guid.Empty;
-    public decimal Amount { get; init; }
-    public Guid CategoryId { get; init; } = Guid.Empty;
-    public string Comment { get; init; } = string.Empty;
-    public DateOnly Date { get; init; }
-    public Guid Id { get; init; } = Guid.Empty;
-    public string Payee { get; init; } = string.Empty;
-    public string[] Tags { get; init; } = Array.Empty<string>();
+    public Guid AccountId { get; set; } = Guid.Empty;
+    public decimal Amount { get; set; }
+    public Guid CategoryId { get; set; } = Guid.Empty;
+    public string Comment { get; set; } = string.Empty;
+    public DateOnly Date { get; set; }
+    public Guid Id { get; set; } = Guid.Empty;
+    public string Payee { get; set; } = string.Empty;
+    public string[] Tags { get; set; } = Array.Empty<string>();
 }
 
-internal sealed class TransactionProfile : Profile
+internal static class TransactionExtensions
 {
-    public TransactionProfile()
+    public static TransactionDto ToDto(this Transaction entity)
     {
-        CreateMap<Transaction, TransactionDto>()
-            .ForMember(dest => dest.Id, opt => opt.MapFrom(src => Guid.Parse(src.Id)))
-            .ForMember(dest => dest.Date, opt => opt.MapFrom(src => src.Date.ToDateOnly()));
+        return new TransactionDto
+        {
+            AccountId = entity.AccountId,
+            Amount = entity.Amount,
+            CategoryId = entity.CategoryId,
+            Comment = entity.Comment,
+            Date = entity.Date.ToDateOnly(),
+            Id = Guid.Parse(entity.Id),
+            Payee = entity.Payee,
+            Tags = entity.Tags
+        };
+    }
+
+    public static IEnumerable<TransactionDto> ToDto(this IEnumerable<Transaction> entities)
+    {
+        return entities.Select(e => e.ToDto());
+    }
+
+    public static Transaction ToEntity(this TransactionDto dto, Guid userId)
+    {
+        return new Transaction
+        {
+            Id = dto.Id.ToString(),
+            UserId = userId.ToString(),
+            AccountId = dto.AccountId,
+            Amount = dto.Amount,
+            CategoryId = dto.CategoryId,
+            Comment = dto.Comment,
+            Date = dto.Date.ToDateTime(),
+            Payee = dto.Payee,
+            Tags = dto.Tags
+        };
     }
 }

@@ -1,5 +1,4 @@
 using Application.Abstractions;
-using AutoMapper;
 using Domain.Entities;
 using MediatR;
 
@@ -7,7 +6,7 @@ namespace Application.Transactions.Queries.GetTransaction;
 
 public record GetTransactionQuery(Guid UserId, Guid TransactionId) : IRequest<TransactionDto?>;
 
-public sealed class GetTransactionHandler(ITransactionsRepository transactionsRepository, IMapper mapper)
+public sealed class GetTransactionHandler(ITransactionsRepository transactionsRepository)
     : IRequestHandler<GetTransactionQuery, TransactionDto?>
 {
     public async Task<TransactionDto?> Handle(GetTransactionQuery request, CancellationToken cancellationToken)
@@ -15,8 +14,6 @@ public sealed class GetTransactionHandler(ITransactionsRepository transactionsRe
         Transaction? entity =
             await transactionsRepository.GetAsync(request.TransactionId, request.UserId, cancellationToken);
 
-        return entity is not null
-            ? mapper.Map<TransactionDto>(entity)
-            : null;
+        return entity?.ToDto();
     }
 }

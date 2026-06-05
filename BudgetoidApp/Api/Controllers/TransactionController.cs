@@ -6,16 +6,16 @@ using Application.Transactions.Commands.UpdateTransaction;
 using Application.Transactions.Queries.GetAccountTransactions;
 using Application.Transactions.Queries.GetTransaction;
 using Application.Transactions.Queries.GetUserTransactions;
-using AutoMapper;
-using Azure;
 using MediatR;
+using Microsoft.AspNetCore.JsonPatch.SystemTextJson;
+using Microsoft.AspNetCore.JsonPatch.SystemTextJson.Exceptions;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
 
 namespace Api.Controllers;
 
-public sealed class TransactionController(ILoggerFactory loggerFactory, IMediator mediator, IMapper mapper)
+public sealed class TransactionController(ILoggerFactory loggerFactory, IMediator mediator)
 {
     private readonly ILogger _logger = loggerFactory.CreateLogger<TransactionController>();
 
@@ -120,7 +120,10 @@ public sealed class TransactionController(ILoggerFactory loggerFactory, IMediato
     {
         _logger.LogInformation("UpdateTransaction");
 
-        JsonPatchDocument? patch = await req.DeserializeBodyAsync<JsonPatchDocument>();
+        if (!req.TryDeserializeBody(out JsonPatchDocument<TransactionDto>? patch) || patch is null)
+        {
+            return req.CreateResponse(HttpStatusCode.BadRequest);
+        }
 
         TransactionDto? transaction = await mediator.Send(
             new GetTransactionQuery(Guid.Parse(userId), Guid.Parse(transactionId)));
@@ -129,8 +132,16 @@ public sealed class TransactionController(ILoggerFactory loggerFactory, IMediato
             return req.CreateResponse(HttpStatusCode.NotFound);
         }
 
-        mapper.Map(patch, transaction);
-        await mediator.Send(new UpdateTransactionCommand(transaction));
+        try
+        {
+            patch.ApplyTo(transaction);
+        }
+        catch (JsonPatchException)
+        {
+            return req.CreateResponse(HttpStatusCode.BadRequest);
+        }
+
+        await mediator.Send(new UpdateTransactionCommand(Guid.Parse(userId), transaction));
 
         HttpResponseData response = req.CreateResponse(HttpStatusCode.NoContent);
 

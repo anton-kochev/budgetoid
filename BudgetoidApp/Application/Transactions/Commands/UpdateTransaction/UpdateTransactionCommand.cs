@@ -1,19 +1,18 @@
 using Application.Abstractions;
 using Application.Transactions.Queries.GetTransaction;
-using AutoMapper;
 using Domain.Entities;
 using MediatR;
 
 namespace Application.Transactions.Commands.UpdateTransaction;
 
-public record UpdateTransactionCommand(TransactionDto TransactionDto) : IRequest<Unit>;
+public record UpdateTransactionCommand(Guid UserId, TransactionDto TransactionDto) : IRequest<Unit>;
 
-public sealed class UpdateTransactionCommandHandler(ITransactionsRepository transactionsRepository, IMapper mapper)
+public sealed class UpdateTransactionCommandHandler(ITransactionsRepository transactionsRepository)
     : IRequestHandler<UpdateTransactionCommand, Unit>
 {
     public async Task<Unit> Handle(UpdateTransactionCommand request, CancellationToken cancellationToken)
     {
-        Transaction transaction = mapper.Map<Transaction>(request.TransactionDto);
+        Transaction transaction = request.TransactionDto.ToEntity(request.UserId);
 
         return await transactionsRepository.UpdateAsync(transaction, cancellationToken);
     }

@@ -1,13 +1,12 @@
 using Application.Abstractions;
 using Application.Transactions.Queries.GetTransaction;
-using AutoMapper;
 using MediatR;
 
 namespace Application.Transactions.Queries.GetAccountTransactions;
 
 public record GetAccountTransactionsQuery(Guid UserId, Guid AccountId) : IRequest<IList<TransactionDto>>;
 
-public sealed class GetAccountTransactionsHandler(ITransactionsRepository transactionsRepository, IMapper mapper)
+public sealed class GetAccountTransactionsHandler(ITransactionsRepository transactionsRepository)
     : IRequestHandler<GetAccountTransactionsQuery, IList<TransactionDto>>
 {
     public async Task<IList<TransactionDto>> Handle(GetAccountTransactionsQuery request,
@@ -16,7 +15,7 @@ public sealed class GetAccountTransactionsHandler(ITransactionsRepository transa
         return
             (await transactionsRepository
                 .GetAccountTransactionsAsync(request.UserId, request.AccountId, cancellationToken))
-            .Select(mapper.Map<TransactionDto>)
+            .ToDto()
             .ToList();
     }
 }
