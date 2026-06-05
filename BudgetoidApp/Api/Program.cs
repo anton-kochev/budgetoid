@@ -33,7 +33,9 @@ IHost host = new HostBuilder()
                             "The CosmosDb connection string is not defined in local.settings.json");
                     }
 
-                    return new CosmosClientBuilder(connectionString).Build();
+                    return new CosmosClientBuilder(connectionString)
+                        .WithSystemTextJsonSerializerOptions(new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                        .Build();
                 })
         // .AddSingleton<ICosmosDbInitializer, CosmosDbInitializer>()
         // .AddSingleton<ICosmosDbContainerFactory, CosmosDbContainerFactory>()
