@@ -14,6 +14,9 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: BudgetoidApp
 
     steps:
       - name: Checkout
@@ -29,13 +32,13 @@ jobs:
             BudgetoidApp/**/packages.lock.json
 
       - name: Restore
-        run: dotnet restore BudgetoidApp/BudgetoidApp.sln
+        run: dotnet restore BudgetoidApp.sln
 
       - name: Build
-        run: dotnet build BudgetoidApp/BudgetoidApp.sln --configuration Release --no-restore
+        run: dotnet build BudgetoidApp.sln --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test BudgetoidApp/BudgetoidApp.sln --configuration Release --no-build
+        run: dotnet test BudgetoidApp.sln --configuration Release --no-build
 
   frontend:
     name: Frontend
