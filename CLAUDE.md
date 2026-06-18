@@ -80,3 +80,10 @@ Auth is deferred behind `IUserContext`; slice 1 uses `FakeUserContext`.
 - ESLint 9 flat config (`eslint.config.js`) with `angular-eslint` + `typescript-eslint`
 - Prettier: single quotes, trailing commas, 80 char width, 2-space indent
 - camelCase JSON serialization
+
+## Workflow
+
+- Backend: run `dotnet build BudgetoidApp.sln` and `dotnet test` before committing
+- Frontend: run `npm run lint` and `npm run format` before committing
+- Commits follow Conventional Commits (`feat:`, `fix:`, `ci:`, `chore:`, …)
+- One logical change per commit
