@@ -1,11 +1,34 @@
 import { Injectable } from '@angular/core';
-import { Guid } from 'app/+common/guid';
 import { Observable } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 
-@Injectable()
+export interface CreateTransactionRequest {
+  amount: number;
+  date: string;
+  description: string;
+}
+
+export interface TransactionDto {
+  id: string;
+  amount: number;
+  date: string;
+  description: string;
+  createdAtUtc: string;
+}
+
+export interface TransactionListResponse {
+  items: TransactionDto[];
+}
+
+@Injectable({ providedIn: 'root' })
 export class TransactionsApiService extends BaseApiService {
-  public getUserTransactions(userId: Guid): Observable<unknown> {
-    return this.get(`api/user/${userId}/transactions`);
+  public getTransactions(): Observable<TransactionListResponse> {
+    return this.get<TransactionListResponse>('api/transactions');
+  }
+
+  public createTransaction(
+    request: CreateTransactionRequest,
+  ): Observable<TransactionDto> {
+    return this.post<TransactionDto>('api/transactions', request);
   }
 }

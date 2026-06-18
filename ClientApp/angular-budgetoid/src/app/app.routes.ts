@@ -6,7 +6,6 @@ import { provideEffects } from '@ngrx/effects';
 import { provideState } from '@ngrx/store';
 import { AccountsFacade } from './accounts/accounts.facade';
 import { accountsResolver } from './accounts/accounts.resolver';
-import { transactionsResolver } from './transactions/transactions.resolver';
 
 export const routes: Routes = [
   {
@@ -32,7 +31,6 @@ export const routes: Routes = [
         path: 'transactions',
         // prettier-ignore
         loadComponent: () => import('./transactions/transactions.component').then(x => x.TransactionsComponent),
-        resolve: { transactions: transactionsResolver },
         canActivate: [authGuard],
       },
       {

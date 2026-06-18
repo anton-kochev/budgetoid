@@ -1,4 +1,4 @@
-using Application.Abstractions;
+using Application.Transactions;
 using Infrastructure.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -6,13 +6,9 @@ namespace Infrastructure;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddInfrastructureServices(this IServiceCollection services)
+    public static IServiceCollection AddInfrastructure(this IServiceCollection services)
     {
-        return services
-            // .AddSingleton(new CosmosClient(Environment.GetEnvironmentVariable("COSMOS_CONNECTION_STRING")!))
-            .AddScoped<IAccountsRepository, AccountsRepository>()
-            .AddScoped<IPayeesRepository, PayeesRepository>()
-            .AddScoped<ITransactionsRepository, TransactionsRepository>()
-            .AddScoped<IUsersRepository, UsersRepository>();
+        services.AddScoped<ITransactionRepository, TransactionRepository>();
+        return services;
     }
 }

@@ -2,7 +2,11 @@
   "profiles": {
     "budgetoid.api": {
       "commandName": "Project",
-      "launchBrowser": false
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:5080",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
     }
   }
 }

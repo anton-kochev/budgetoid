@@ -1,13 +1,18 @@
-using System.Reflection;
+using Application.Abstractions;
+using Application.Transactions.CreateTransaction;
+using Application.Transactions.GetTransactions;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Application;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddApplicationServices(this IServiceCollection services)
+    public static IServiceCollection AddApplication(this IServiceCollection services)
     {
-        return services
-            .AddMediatR(cfg => cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly()));
+        services.AddScoped<IUserContext, FakeUserContext>();
+        services.AddScoped<CreateTransactionHandler>();
+        services.AddScoped<GetTransactionsHandler>();
+
+        return services;
     }
 }

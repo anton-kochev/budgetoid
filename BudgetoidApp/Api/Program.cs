@@ -1,46 +1,51 @@
-using System.Text.Json;
+using Api.Endpoints;
+using Api.Infrastructure;
 using Application;
 using Infrastructure;
-using Microsoft.Azure.Cosmos.Fluent;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+using Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using ServiceDefaults;
 
-IConfigurationRoot configuration = new ConfigurationBuilder()
-    .SetBasePath(Environment.CurrentDirectory)
-    .AddJsonFile("local.settings.json", true, true)
-    .AddEnvironmentVariables()
-    .Build();
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
-IHost host = new HostBuilder()
-    .ConfigureFunctionsWorkerDefaults()
-    .ConfigureServices(services =>
-            services
-                .AddApplicationServices()
-                .AddInfrastructureServices()
-                .Configure<JsonSerializerOptions>(options =>
-                {
-                    options.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
-                })
-                .AddSingleton(_ =>
-                {
-                    string connectionString =
-                        Environment.GetEnvironmentVariable("CUSTOMCONNSTR_CosmosDb") ??
-                        configuration.GetConnectionString("CosmosDb");
-                    if (string.IsNullOrWhiteSpace(connectionString))
-                    {
-                        throw new InvalidOperationException(
-                            "The CosmosDb connection string is not defined in local.settings.json");
-                    }
+builder.AddServiceDefaults();
 
-                    return new CosmosClientBuilder(connectionString)
-                        .WithSystemTextJsonSerializerOptions(new JsonSerializerOptions(JsonSerializerDefaults.Web))
-                        .Build();
-                })
-        // .AddSingleton<ICosmosDbInitializer, CosmosDbInitializer>()
-        // .AddSingleton<ICosmosDbContainerFactory, CosmosDbContainerFactory>()
-        // .AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
-        // .AddSingleton<IValidator<GetUserQuery>, GetUserQueryValidator>();
-    ).Build();
+// Registered non-pooled (AddDbContext, scoped) so the scoped IUserContext can be injected into
+// the DbContext constructor for the per-user query filter. Aspire's AddNpgsqlDbContext pools the
+// context, which forbids scoped ctor injection. EnrichNpgsqlDbContext re-applies Aspire's
+// retry/health/telemetry defaults to this self-registered context.
+builder.Services.AddDbContext<BudgetoidDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("budgetoid")));
+builder.EnrichNpgsqlDbContext<BudgetoidDbContext>();
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure();
+builder.Services.AddProblemDetails();
+builder.Services.AddCors(options =>
+    options.AddDefaultPolicy(policy =>
+        policy.WithOrigins("http://localhost:4200")
+            .AllowAnyHeader()
+            .AllowAnyMethod()));
+builder.Services.AddExceptionHandler<ValidationExceptionHandler>();
+builder.Services.AddExceptionHandler<BadRequestExceptionHandler>();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddOpenApi();
 
-await host.RunAsync();
+WebApplication app = builder.Build();
+
+app.UseExceptionHandler();
+app.UseStatusCodePages();
+app.UseCors();
+
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+
+    await using AsyncServiceScope scope = app.Services.CreateAsyncScope();
+    BudgetoidDbContext db = scope.ServiceProvider.GetRequiredService<BudgetoidDbContext>();
+    await db.Database.MigrateAsync();
+}
+
+app.MapDefaultEndpoints();
+app.MapTransactionEndpoints();
+
+await app.RunAsync();
