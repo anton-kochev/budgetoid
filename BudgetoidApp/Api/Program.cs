@@ -26,14 +26,17 @@ builder.Services.AddInfrastructure();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<IUserContext, HttpContextUserContext>();
+// Read and validate required auth config at startup so a missing value fails fast on boot
+// instead of throwing lazily inside the JwtBearer options factory on the first authenticated
+// request (which surfaces as an opaque 500). Set via user-secrets, environment, or appsettings.
+string googleClientId = builder.Configuration["Authentication:Google:ClientId"]
+    ?? throw new InvalidOperationException("Authentication:Google:ClientId is required.");
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        string clientId = builder.Configuration["Authentication:Google:ClientId"]
-            ?? throw new InvalidOperationException("Authentication:Google:ClientId is required.");
-
         options.Authority = "https://accounts.google.com";
-        options.Audience = clientId;
+        options.Audience = googleClientId;
         options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
