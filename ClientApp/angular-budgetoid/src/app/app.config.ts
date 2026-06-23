@@ -1,4 +1,8 @@
-import { provideHttpClient, withFetch } from '@angular/common/http';
+import {
+  provideHttpClient,
+  withFetch,
+  withInterceptorsFromDi,
+} from '@angular/common/http';
 import {
   ApplicationConfig,
   isDevMode,
@@ -16,15 +20,9 @@ import { routes } from './app.routes';
 export const appConfig: ApplicationConfig = {
   providers: [
     provideZoneChangeDetection({ eventCoalescing: true }),
-    provideHttpClient(withFetch()),
+    provideHttpClient(withFetch(), withInterceptorsFromDi()),
     provideRouter(routes),
     provideOAuthClient(),
-    // provideOAuthClient({
-    //   resourceServer: {
-    //     allowedUrls: ['http://localhost:3000'],
-    //     sendAccessToken: true,
-    //   },
-    // }),
     provideStore(),
     provideEffects(),
     provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
