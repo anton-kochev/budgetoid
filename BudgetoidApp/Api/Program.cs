@@ -26,17 +26,13 @@ builder.Services.AddInfrastructure();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<IUserContext, HttpContextUserContext>();
-// Read and validate required auth config at startup so a missing value fails fast on boot
-// instead of throwing lazily inside the JwtBearer options factory on the first authenticated
-// request (which surfaces as an opaque 500). Set via user-secrets, environment, or appsettings.
-string googleClientId = builder.Configuration["Authentication:Google:ClientId"]
-    ?? throw new InvalidOperationException("Authentication:Google:ClientId is required.");
-
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.Authority = "https://accounts.google.com";
-        options.Audience = googleClientId;
+        // Read lazily: this options factory runs post-Build, so it sees the fully-composed
+        // configuration. The presence of the value is enforced at boot (see post-Build check).
+        options.Audience = builder.Configuration["Authentication:Google:ClientId"];
         options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
@@ -63,6 +59,14 @@ builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddOpenApi();
 
 WebApplication app = builder.Build();
+
+// Fail fast at boot if the required auth config is missing, instead of letting the JwtBearer
+// options factory throw lazily on the first authenticated request (an opaque 500). Read here,
+// post-Build, so the value resolves from the fully-composed configuration — including in-memory
+// sources contributed by the test host, which are only merged as the host is built. Set via
+// user-secrets, environment, or appsettings.
+_ = app.Configuration["Authentication:Google:ClientId"]
+    ?? throw new InvalidOperationException("Authentication:Google:ClientId is required.");
 
 app.UseExceptionHandler();
 app.UseStatusCodePages(async statusCodeContext =>
