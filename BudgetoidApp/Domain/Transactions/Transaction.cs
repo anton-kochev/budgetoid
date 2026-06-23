@@ -15,7 +15,7 @@ public sealed class Transaction
     public string Description { get; private set; } = string.Empty;
     public DateTime CreatedAtUtc { get; private set; }
 
-    public static Transaction Create(Guid userId, decimal amount, DateOnly date, string? description)
+    public static Transaction Create(Guid userId, decimal amount, DateOnly date, string? description, DateTime createdAtUtc)
     {
         var errors = new Dictionary<string, string[]>();
 
@@ -59,7 +59,7 @@ public sealed class Transaction
             Amount = amount,
             Date = date,
             Description = trimmedDescription,
-            CreatedAtUtc = DateTime.UtcNow,
+            CreatedAtUtc = createdAtUtc,
         };
     }
 }

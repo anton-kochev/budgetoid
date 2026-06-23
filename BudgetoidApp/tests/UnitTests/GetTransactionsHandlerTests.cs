@@ -1,5 +1,6 @@
 using Application.Transactions.CreateTransaction;
 using Application.Transactions.GetTransactions;
+using Microsoft.Extensions.Time.Testing;
 using UnitTests.Fakes;
 
 namespace UnitTests;
@@ -16,10 +17,15 @@ public sealed class GetTransactionsHandlerTests
         var repository = new InMemoryTransactionRepository();
         var userId = Guid.CreateVersion7();
 
-        await new CreateTransactionHandler(repository, new StubUserContext(userId))
+        await new CreateTransactionHandler(
+                repository,
+                new StubUserContext(userId),
+                new FakeTimeProvider(new DateTimeOffset(2026, 6, 11, 13, 14, 15, TimeSpan.Zero)))
             .HandleAsync(new CreateTransactionCommand(10m, new DateOnly(2026, 6, 11), "Older"));
-        await Task.Delay(2);
-        await new CreateTransactionHandler(repository, new StubUserContext(userId))
+        await new CreateTransactionHandler(
+                repository,
+                new StubUserContext(userId),
+                new FakeTimeProvider(new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero)))
             .HandleAsync(new CreateTransactionCommand(20m, new DateOnly(2026, 6, 12), "Newest"));
 
         var response = await new GetTransactionsHandler(repository)

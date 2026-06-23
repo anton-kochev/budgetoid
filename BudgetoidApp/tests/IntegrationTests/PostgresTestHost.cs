@@ -20,9 +20,8 @@ public sealed class PostgresTestHost : IAsyncDisposable
         Factory = new ApiFactory(ConnectionString);
     }
 
-    // Builds a factory whose requests run as the given user, over the same database container.
-    // Caller owns disposal (use `await using`).
-    public ApiFactory CreateFactory(Guid userId) => new(ConnectionString, userId);
+    // Builds a factory over the same database container. Caller owns disposal (use `await using`).
+    public ApiFactory CreateFactory(string? defaultSubject = "test-subject") => new(ConnectionString, defaultSubject);
 
     public async ValueTask DisposeAsync()
     {

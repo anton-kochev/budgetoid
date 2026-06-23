@@ -13,12 +13,17 @@ public sealed class TransactionRepositoryTests
     {
         await using RepositoryTestHost host = await StartHostAsync();
         DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
-        Guid userId = Guid.CreateVersion7();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
 
-        await using (BudgetoidDbContext db = new(options, new TestUserContext(userId)))
+        await using (BudgetoidDbContext db = new(options))
         {
-            await new TransactionRepository(db).AddAsync(Transaction.Create(userId, 1m, new DateOnly(2026, 6, 12),
-                "Test"));
+            await new TransactionRepository(db).AddAsync(
+                Transaction.Create(
+                    userId,
+                    1m,
+                    new DateOnly(2026, 6, 12),
+                    "Test",
+                    new DateTime(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc)));
         }
 
         await using NpgsqlConnection connection = new(host.ConnectionString);

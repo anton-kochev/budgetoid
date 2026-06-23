@@ -6,12 +6,18 @@
         <Nullable>enable</Nullable>
         <RootNamespace>Api</RootNamespace>
         <ContainerFamily>noble-chiseled</ContainerFamily>
+        <UserSecretsId>11832ff7-30b3-434f-b739-e96a265952c8</UserSecretsId>
     </PropertyGroup>
     <ItemGroup>
-        <PackageReference Include="Aspire.Npgsql.EntityFrameworkCore.PostgreSQL" Version="13.4.5"/>
+        <PackageReference Include="Aspire.Npgsql.EntityFrameworkCore.PostgreSQL" Version="13.4.6"/>
+        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.9"/>
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9"/>
-        <!-- Aspire.Npgsql.EntityFrameworkCore.PostgreSQL 13.4.5 pulls EF Core Relational 10.0.8
-             transitively; pin to 10.0.9 to match Infrastructure and avoid MSB3277. -->
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <!-- Aspire.Npgsql.EntityFrameworkCore.PostgreSQL pulls EF Core Relational transitively;
+             pin to 10.0.9 to match Infrastructure and avoid MSB3277. -->
         <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.9"/>
     </ItemGroup>
     <ItemGroup>

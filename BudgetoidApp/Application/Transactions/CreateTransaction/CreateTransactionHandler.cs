@@ -5,7 +5,8 @@ namespace Application.Transactions.CreateTransaction;
 
 public sealed class CreateTransactionHandler(
     ITransactionRepository repository,
-    IUserContext userContext)
+    IUserContext userContext,
+    TimeProvider timeProvider)
     : ICommandHandler<CreateTransactionCommand, TransactionDto>
 {
     public async Task<TransactionDto> HandleAsync(
@@ -16,7 +17,8 @@ public sealed class CreateTransactionHandler(
             userContext.UserId,
             command.Amount,
             command.Date,
-            command.Description);
+            command.Description,
+            timeProvider.GetUtcNow().UtcDateTime);
 
         await repository.AddAsync(transaction, cancellationToken);
 

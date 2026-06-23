@@ -1,4 +1,5 @@
 using Domain.Transactions;
+using Domain.Users;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -20,5 +21,10 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
 
         builder.HasIndex(transaction => new { transaction.UserId, transaction.Date, transaction.CreatedAtUtc })
             .IsDescending(false, true, true);
+
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(transaction => transaction.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }

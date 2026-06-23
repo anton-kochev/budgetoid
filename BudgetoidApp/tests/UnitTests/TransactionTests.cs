@@ -24,57 +24,61 @@ public sealed class TransactionTests
         var userId = Guid.CreateVersion7();
         var date = new DateOnly(2026, 6, 12);
 
-        var transaction = Transaction.Create(userId, -42.50m, date, " Groceries ");
+        DateTime createdAtUtc = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
+
+        var transaction = Transaction.Create(userId, -42.50m, date, " Groceries ", createdAtUtc);
 
         await Assert.That(transaction.Id).IsNotEqualTo(Guid.Empty);
         await Assert.That(transaction.UserId).IsEqualTo(userId);
         await Assert.That(transaction.Amount).IsEqualTo(-42.50m);
         await Assert.That(transaction.Date).IsEqualTo(date);
         await Assert.That(transaction.Description).IsEqualTo("Groceries");
-        await Assert.That(transaction.CreatedAtUtc.Kind).IsEqualTo(DateTimeKind.Utc);
+        await Assert.That(transaction.CreatedAtUtc).IsEqualTo(createdAtUtc);
     }
 
     [Test]
     public async Task Create_WithEmptyUserId_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.Empty, 1m, DateOnly.FromDateTime(DateTime.UtcNow), "Test"));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.Empty, 1m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
     }
 
     [Test]
     public async Task Create_WithZeroAmount_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 0m, DateOnly.FromDateTime(DateTime.UtcNow), "Test"));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 0m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
     }
 
     [Test]
     public async Task Create_WithMoreThanTwoDecimalPlaces_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1.234m, DateOnly.FromDateTime(DateTime.UtcNow), "Test"));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1.234m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
     }
 
     [Test]
     public async Task Create_WithAmountAbsoluteValueOverLimit_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1_000_000_000.01m, DateOnly.FromDateTime(DateTime.UtcNow), "Test"));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1_000_000_000.01m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
     }
 
     [Test]
     public async Task Create_WithBlankDescription_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), "   "));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), "   ", UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("Description")).IsTrue();
     }
 
     [Test]
     public async Task Create_WithDescriptionLongerThan500Characters_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), new string('x', 501)));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), new string('x', 501), UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("Description")).IsTrue();
     }
+
+    private static DateTime UtcNow() => new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
     private static ValidationException ThrowsValidationException(Action action)
     {

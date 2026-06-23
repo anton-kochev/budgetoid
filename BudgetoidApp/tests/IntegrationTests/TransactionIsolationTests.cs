@@ -13,13 +13,18 @@ public sealed class TransactionIsolationTests
     public async Task QueryFilter_HidesOtherUsersTransactions_EvenWithoutAnExplicitWhere()
     {
         await using RepositoryTestHost host = await StartHostAsync();
-        Guid userA = Guid.CreateVersion7();
-        Guid userB = Guid.CreateVersion7();
+        Guid userA = await host.SeedUserAsync("google-a", "a@example.com");
+        Guid userB = await host.SeedUserAsync("google-b", "b@example.com");
 
         Guid transactionId;
         await using (BudgetoidDbContext dbA = CreateDb(host, userA))
         {
-            Transaction transaction = Transaction.Create(userA, -10m, new DateOnly(2026, 6, 12), "User A groceries");
+            Transaction transaction = Transaction.Create(
+                userA,
+                -10m,
+                new DateOnly(2026, 6, 12),
+                "User A groceries",
+                new DateTime(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc));
             transactionId = transaction.Id;
             dbA.Transactions.Add(transaction);
             await dbA.SaveChangesAsync();
@@ -51,15 +56,14 @@ public sealed class TransactionIsolationTests
     {
         await using PostgresTestHost host = new();
         await host.StartAsync();
-        Guid userA = Guid.CreateVersion7();
-        Guid userB = Guid.CreateVersion7();
+        const string userA = "google-a";
+        const string userB = "google-b";
 
-        // Two factories over the SAME database container — one per user (identity is fixed at
-        // factory build, so a single factory cannot serve two users).
+        // Two factories over the SAME database container — one per user.
         await using ApiFactory factoryA = host.CreateFactory(userA);
         await using ApiFactory factoryB = host.CreateFactory(userB);
 
-        HttpClient clientA = factoryA.CreateClient();
+        HttpClient clientA = factoryA.CreateAuthenticatedClient();
         HttpResponseMessage created = await clientA.PostAsJsonAsync("/api/transactions", new
         {
             amount = -42.50m,
@@ -69,7 +73,7 @@ public sealed class TransactionIsolationTests
         await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
 
         // User B must not see user A's transaction.
-        HttpClient clientB = factoryB.CreateClient();
+        HttpClient clientB = factoryB.CreateAuthenticatedClient();
         HttpResponseMessage listB = await clientB.GetAsync("/api/transactions");
         await Assert.That(listB.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode? jsonB = await JsonNode.ParseAsync(await listB.Content.ReadAsStreamAsync());

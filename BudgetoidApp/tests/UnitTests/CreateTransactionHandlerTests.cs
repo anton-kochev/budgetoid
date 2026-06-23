@@ -1,5 +1,6 @@
 using Application.Transactions.CreateTransaction;
 using Domain.Common;
+using Microsoft.Extensions.Time.Testing;
 using UnitTests.Fakes;
 
 namespace UnitTests;
@@ -11,7 +12,11 @@ public sealed class CreateTransactionHandlerTests
     {
         var repository = new InMemoryTransactionRepository();
         var userId = Guid.CreateVersion7();
-        var handler = new CreateTransactionHandler(repository, new StubUserContext(userId));
+        var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
+        var handler = new CreateTransactionHandler(
+            repository,
+            new StubUserContext(userId),
+            new FakeTimeProvider(createdAtUtc));
         var date = new DateOnly(2026, 6, 12);
 
         var dto = await handler.HandleAsync(new CreateTransactionCommand(-42.50m, date, "Groceries"));
@@ -24,14 +29,18 @@ public sealed class CreateTransactionHandlerTests
         await Assert.That(dto.Amount).IsEqualTo(-42.50m);
         await Assert.That(dto.Date).IsEqualTo(date);
         await Assert.That(dto.Description).IsEqualTo("Groceries");
-        await Assert.That(dto.CreatedAtUtc).IsEqualTo(stored[0].CreatedAtUtc);
+        await Assert.That(dto.CreatedAtUtc).IsEqualTo(createdAtUtc.UtcDateTime);
+        await Assert.That(stored[0].CreatedAtUtc).IsEqualTo(createdAtUtc.UtcDateTime);
     }
 
     [Test]
     public async Task HandleAsync_WithInvalidCommand_DoesNotPersist()
     {
         var repository = new InMemoryTransactionRepository();
-        var handler = new CreateTransactionHandler(repository, new StubUserContext(Guid.CreateVersion7()));
+        var handler = new CreateTransactionHandler(
+            repository,
+            new StubUserContext(Guid.CreateVersion7()),
+            new FakeTimeProvider(new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero)));
 
         try
         {

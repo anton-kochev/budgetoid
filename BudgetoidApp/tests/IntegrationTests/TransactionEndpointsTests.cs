@@ -11,7 +11,7 @@ public sealed class TransactionEndpointsTests
     public async Task PostValidTransaction_ReturnsCreatedLocationAndCamelCaseDto()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateClient();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
 
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
@@ -33,7 +33,7 @@ public sealed class TransactionEndpointsTests
     public async Task PostInvalidTransaction_ReturnsValidationProblemDetails()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpResponseMessage response = await host.Factory.CreateClient().PostAsJsonAsync("/api/transactions", new
+        HttpResponseMessage response = await host.Factory.CreateAuthenticatedClient().PostAsJsonAsync("/api/transactions", new
         {
             amount = 0,
             date = "2026-06-12",
@@ -51,7 +51,7 @@ public sealed class TransactionEndpointsTests
     public async Task PostMalformedJson_ReturnsBadRequest()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpResponseMessage response = await host.Factory.CreateClient().PostAsync(
+        HttpResponseMessage response = await host.Factory.CreateAuthenticatedClient().PostAsync(
             "/api/transactions",
             new StringContent("{", Encoding.UTF8, "application/json"));
 
@@ -62,7 +62,7 @@ public sealed class TransactionEndpointsTests
     public async Task GetTransactions_ReturnsNewestFirst()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateClient();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
         await client.PostAsJsonAsync("/api/transactions",
             new { amount = 1m, date = "2026-06-11", description = "Older" });
         await Task.Delay(2);
@@ -80,7 +80,7 @@ public sealed class TransactionEndpointsTests
     {
         await using PostgresTestHost host = await StartHostAsync();
         JsonNode? json =
-            await JsonNode.ParseAsync(await host.Factory.CreateClient().GetStreamAsync("/api/transactions"));
+            await JsonNode.ParseAsync(await host.Factory.CreateAuthenticatedClient().GetStreamAsync("/api/transactions"));
 
         await Assert.That(json!["items"]!.AsArray().Count).IsEqualTo(0);
     }
@@ -89,7 +89,7 @@ public sealed class TransactionEndpointsTests
     public async Task PostThenGet_PreservesDecimalAndDateFidelity()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateClient();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
         await client.PostAsJsonAsync("/api/transactions",
             new { amount = -42.50m, date = "2026-06-12", description = "Groceries" });
 

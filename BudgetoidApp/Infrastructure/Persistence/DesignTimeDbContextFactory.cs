@@ -1,4 +1,3 @@
-using Application.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 
@@ -12,13 +11,6 @@ public sealed class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<Bud
             .UseNpgsql("Host=localhost;Port=5432;Database=budgetoid;Username=postgres;Password=postgres")
             .Options;
 
-        // Design-time only builds the model (for migration scaffolding); it never runs a query,
-        // so the query filter's user value is irrelevant. The query filter adds no schema.
-        return new BudgetoidDbContext(options, new DesignTimeUserContext());
-    }
-
-    private sealed class DesignTimeUserContext : IUserContext
-    {
-        public Guid UserId => Guid.Empty;
+        return new BudgetoidDbContext(options);
     }
 }

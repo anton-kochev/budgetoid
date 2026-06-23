@@ -1,36 +1,55 @@
-using Application.Abstractions;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace IntegrationTests;
 
-public sealed class ApiFactory(string connectionString, Guid? userId = null) : WebApplicationFactory<Program>
+public sealed class ApiFactory(
+    string connectionString,
+    string? defaultSubject = "test-subject",
+    string environment = "Development") : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseEnvironment("Development");
+        builder.UseEnvironment(environment);
         builder.ConfigureAppConfiguration(configuration =>
         {
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:budgetoid"] = connectionString,
+                ["Authentication:Google:ClientId"] = "test-client-id",
             });
         });
 
-        if (userId is { } id)
+        builder.ConfigureTestServices(services =>
         {
-            // ConfigureTestServices runs after the app's own ConfigureServices, so this override
-            // wins. Identity is fixed at factory build, so use a separate factory per user to
-            // exercise cross-user isolation.
-            builder.ConfigureTestServices(services =>
-            {
-                services.RemoveAll<IUserContext>();
-                services.AddScoped<IUserContext>(_ => new TestUserContext(id));
-            });
-        }
+            services.AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = TestAuthHandler.SchemeName;
+                    options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
+                })
+                .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
+        });
+    }
+
+    public HttpClient CreateAuthenticatedClient(string? subject = null, string? email = null, string? name = null)
+    {
+        HttpClient client = CreateClient();
+        client.DefaultRequestHeaders.Add(TestAuthHandler.SubjectHeader, subject ?? defaultSubject ?? "test-subject");
+        client.DefaultRequestHeaders.Add(TestAuthHandler.EmailHeader, email ?? $"{subject ?? defaultSubject ?? "test-subject"}@example.com");
+        client.DefaultRequestHeaders.Add(TestAuthHandler.NameHeader, name ?? "Test User");
+        return client;
+    }
+
+    public HttpClient CreateAuthenticatedClientWithoutEmail(string? subject = null, string? name = null)
+    {
+        HttpClient client = CreateClient();
+        client.DefaultRequestHeaders.Add(TestAuthHandler.SubjectHeader, subject ?? defaultSubject ?? "test-subject");
+        client.DefaultRequestHeaders.Add(TestAuthHandler.OmitEmailHeader, "true");
+        client.DefaultRequestHeaders.Add(TestAuthHandler.NameHeader, name ?? "Test User");
+        return client;
     }
 }
