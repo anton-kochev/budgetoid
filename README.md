@@ -24,6 +24,22 @@ cd ClientApp/angular-budgetoid && npm install && npm start
 cd BudgetoidApp && dotnet test
 ```
 
+## Development workflow
+
+Frontend commits use Lefthook to run linting and formatting on staged files before commit. Hooks are installed automatically when frontend dependencies are installed:
+
+```sh
+cd ClientApp/angular-budgetoid
+npm install
+```
+
+If dependencies are already installed, install or refresh hooks manually:
+
+```sh
+cd ClientApp/angular-budgetoid
+npm run prepare
+```
+
 See [CLAUDE.md](CLAUDE.md) for architecture and deploy notes, [TECH_DEBT.md](TECH_DEBT.md) for known debt.
 
 ## License

@@ -1,0 +1,28 @@
+pre-commit:
+  jobs:
+    - name: lint staged frontend files
+      root: ClientApp/angular-budgetoid/
+      glob:
+        - "*.{ts,html}"
+        - "**/*.{ts,html}"
+      exclude:
+        - node_modules/**
+        - dist/**
+        - .angular/**
+        - coverage/**
+      run: npx eslint --fix {staged_files}
+      stage_fixed: true
+
+    - name: format staged frontend files
+      root: ClientApp/angular-budgetoid/
+      glob:
+        - "*.{ts,html,scss,json,jsonc}"
+        - "**/*.{ts,html,scss,json,jsonc}"
+      exclude:
+        - package-lock.json
+        - node_modules/**
+        - dist/**
+        - .angular/**
+        - coverage/**
+      run: npx prettier --write --cache {staged_files}
+      stage_fixed: true

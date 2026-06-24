@@ -3,6 +3,8 @@
   "version": "0.0.0",
   "scripts": {
     "ng": "ng",
+    "prepare": "lefthook install",
+    "lefthook:run": "lefthook run pre-commit",
     "build": "ng build",
     "start": "ng serve",
     "watch": "ng build --watch --configuration development",
@@ -41,6 +43,7 @@
     "eslint": "^9.9.0",
     "eslint-plugin-prefer-arrow": "^1.2.3",
     "immer": "^10.1.1",
+    "lefthook": "^2.1.9",
     "prettier": "^3.3.3",
     "typescript": "^5.5.4",
     "typescript-eslint": "8.1.0"
