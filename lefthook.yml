@@ -1,4 +1,7 @@
 pre-commit:
+  skip:
+    - merge
+    - rebase
   jobs:
     - name: format staged backend files
       root: BudgetoidApp/
