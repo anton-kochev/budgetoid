@@ -15,7 +15,7 @@ public sealed record TransactionDto(
         transaction.Id,
         transaction.Amount,
         transaction.Date,
-        transaction.Description,
+        transaction.Description ?? string.Empty,
         transaction.CreatedAtUtc,
         transaction.PayeeId,
         payeeName);

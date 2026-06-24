@@ -104,7 +104,7 @@ export class TransactionsComponent implements OnInit {
   protected readonly form = this.formBuilder.nonNullable.group({
     amount: [0, [Validators.required]],
     date: [new Date(), [Validators.required]],
-    description: ['', [Validators.required, Validators.maxLength(500)]],
+    description: ['', [Validators.maxLength(500)]],
     payee: ['', [Validators.maxLength(200)]],
   });
 

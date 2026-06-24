@@ -112,10 +112,23 @@ public sealed class TransactionTests
     }
 
     [Test]
-    public async Task Create_WithBlankDescription_ThrowsValidationException()
+    public async Task Create_WithBlankDescription_SetsDescriptionToNull()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), "   ", UtcNow()));
-        await Assert.That(exception.Errors.ContainsKey("Description")).IsTrue();
+        // Act — description is optional, so a blank value is allowed
+        var transaction = Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), "   ", UtcNow());
+
+        // Assert
+        await Assert.That(transaction.Description).IsNull();
+    }
+
+    [Test]
+    public async Task Create_WithNullDescription_SetsDescriptionToNull()
+    {
+        // Act
+        var transaction = Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), null, UtcNow());
+
+        // Assert
+        await Assert.That(transaction.Description).IsNull();
     }
 
     [Test]

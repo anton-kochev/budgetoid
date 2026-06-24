@@ -32,19 +32,59 @@ public sealed class TransactionEndpointsTests
     [Test]
     public async Task PostInvalidTransaction_ReturnsValidationProblemDetails()
     {
+        // Arrange
         await using PostgresTestHost host = await StartHostAsync();
+
+        // Act
         HttpResponseMessage response = await host.Factory.CreateAuthenticatedClient().PostAsJsonAsync("/api/transactions", new
         {
             amount = 0,
+            date = "2026-06-12",
+            description = "Groceries"
+        });
+        JsonNode? json = await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync());
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo("application/problem+json");
+        await Assert.That(json!["errors"]!["Amount"] is not null).IsTrue();
+    }
+
+    [Test]
+    public async Task PostTransaction_WithoutDescription_ReturnsCreatedWithEmptyDescription()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+
+        // Act
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
+        {
+            amount = -42.50m,
             date = "2026-06-12",
             description = ""
         });
         JsonNode? json = await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync());
 
-        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo("application/problem+json");
-        await Assert.That(json!["errors"]!["Amount"] is not null).IsTrue();
-        await Assert.That(json["errors"]!["Description"] is not null).IsTrue();
+        // Assert — backend normalises a missing description to an empty string for the client
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(json!["description"]!.GetValue<string>()).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task GetTransactions_WithoutDescription_ReturnsEmptyDescription()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        await client.PostAsJsonAsync("/api/transactions",
+            new { amount = 1m, date = "2026-06-12", description = "" });
+
+        // Act
+        JsonNode? json = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
+
+        // Assert
+        await Assert.That(json!["items"]!.AsArray()[0]!["description"]!.GetValue<string>()).IsEqualTo("");
     }
 
     [Test]

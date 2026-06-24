@@ -43,6 +43,29 @@ public sealed class CreateTransactionHandlerTests
     }
 
     [Test]
+    public async Task HandleAsync_WithBlankDescription_ReturnsEmptyDescription()
+    {
+        // Arrange
+        var repository = new InMemoryTransactionRepository();
+        var userId = Guid.CreateVersion7();
+        var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
+        var payees = new InMemoryPayeeRepository(userId, new FakeTimeProvider(createdAtUtc));
+        var handler = new CreateTransactionHandler(
+            repository,
+            payees,
+            new StubUserContext(userId),
+            new FakeTimeProvider(createdAtUtc));
+
+        // Act — blank description is stored as null on the entity but normalised to "" in the dto
+        var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), "   "));
+        var stored = (await repository.GetAllAsync()).Single();
+
+        // Assert
+        await Assert.That(stored.Description).IsNull();
+        await Assert.That(dto.Description).IsEqualTo("");
+    }
+
+    [Test]
     public async Task HandleAsync_WithNewPayeeName_CreatesPayeeLinksTransactionAndReturnsPayeeFields()
     {
         // Arrange

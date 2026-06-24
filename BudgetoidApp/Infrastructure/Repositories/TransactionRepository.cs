@@ -34,7 +34,7 @@ public sealed class TransactionRepository(BudgetoidDbContext dbContext) : ITrans
                     transaction.Id,
                     transaction.Amount,
                     transaction.Date,
-                    transaction.Description,
+                    transaction.Description ?? string.Empty,
                     transaction.CreatedAtUtc,
                     transaction.PayeeId,
                     payee == null ? null : payee.Name))

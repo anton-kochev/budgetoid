@@ -12,7 +12,7 @@ public sealed class Transaction
     public Guid UserId { get; private set; }
     public decimal Amount { get; private set; }
     public DateOnly Date { get; private set; }
-    public string Description { get; private set; } = string.Empty;
+    public string? Description { get; private set; }
     public Guid? PayeeId { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
 
@@ -38,10 +38,11 @@ public sealed class Transaction
             errors[nameof(Amount)] = ["Amount must be less than or equal to 1000000000 in absolute value."];
         }
 
-        var trimmedDescription = description?.Trim() ?? string.Empty;
+        // Description is optional: a blank value becomes null. Only the length cap is enforced.
+        var trimmedDescription = description?.Trim();
         if (string.IsNullOrWhiteSpace(trimmedDescription))
         {
-            errors[nameof(Description)] = ["Description is required."];
+            trimmedDescription = null;
         }
         else if (trimmedDescription.Length > 500)
         {
