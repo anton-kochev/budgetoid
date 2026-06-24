@@ -30,7 +30,7 @@ export class ConfigurationService {
   public load(): Promise<boolean> {
     return firstValueFrom(
       this.httpClient.get<Configuration>('./assets/app-config.local.json').pipe(
-        tap(config => this.setConfig(config)),
+        tap((config) => this.setConfig(config)),
         map(() => true),
       ),
     );

@@ -8,7 +8,7 @@ import { authActions } from './authentication.actions';
 export const userProfileInformation = createEffect(
   (authService = inject(AuthService)) => {
     return authService.userProfile$.pipe(
-      map(profile => profileActions.setUserProfile(profile)),
+      map((profile) => profileActions.setUserProfile(profile)),
     );
   },
   { functional: true },

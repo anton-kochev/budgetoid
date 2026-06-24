@@ -54,7 +54,12 @@ import { TransactionsService } from './transactions.service';
         <input matInput formControlName="description" maxlength="500" />
       </mat-form-field>
 
-      <button mat-flat-button color="primary" type="submit" [disabled]="form.invalid">
+      <button
+        mat-flat-button
+        color="primary"
+        type="submit"
+        [disabled]="form.invalid"
+      >
         Add transaction
       </button>
     </form>

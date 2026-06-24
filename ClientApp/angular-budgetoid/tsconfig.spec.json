@@ -5,13 +5,7 @@
   "compilerOptions": {
     "outDir": "./dist/out-tsc/spec",
     "baseUrl": "./",
-    "types": [
-      "jasmine",
-      "node"
-    ]
+    "types": ["jasmine", "node"]
   },
-  "include": [
-    "src/**/*.spec.ts",
-    "src/**/*.d.ts"
-  ]
+  "include": ["src/**/*.spec.ts", "src/**/*.d.ts"]
 }

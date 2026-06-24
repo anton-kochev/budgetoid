@@ -20,7 +20,7 @@ export class TransactionsService {
     this.api
       .getTransactions()
       .pipe(finalize(() => this.loadingSignal.set(false)))
-      .subscribe(response => this.transactionsSignal.set(response.items));
+      .subscribe((response) => this.transactionsSignal.set(response.items));
   }
 
   public add(request: CreateTransactionRequest): void {

@@ -23,7 +23,7 @@ function createInstances(...instances: unknown[]): unknown[] {
 
 function bootstrapEffects(effects: Type<unknown>[], sources: EffectSources) {
   return (): void => {
-    effects.forEach(effect => sources.addEffects(effect));
+    effects.forEach((effect) => sources.addEffects(effect));
   };
 }
 

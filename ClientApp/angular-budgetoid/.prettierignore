@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Angular and build output
+.angular/
+dist/
+out-tsc/
+coverage/
+
+# Generated/package-manager files
+package-lock.json
+npm-debug.log*
+yarn-error.log*
+
+# System files
+.DS_Store
+Thumbs.db

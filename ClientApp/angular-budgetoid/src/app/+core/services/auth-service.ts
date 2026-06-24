@@ -36,14 +36,14 @@ export class AuthService {
     // when the user is authenticated.
     this.userProfile$ = this.oAuth.events.pipe(
       filter(
-        e =>
+        (e) =>
           (e.type === 'discovery_document_loaded' ||
             e.type === 'token_received') &&
           this.oAuth.hasValidAccessToken() &&
           this.oAuth.hasValidIdToken(),
       ),
       map(() => this.oAuth.getIdentityClaims() as Record<string, unknown>),
-      map(claims => ({
+      map((claims) => ({
         email: this.getStringClaim(claims, 'email'),
         name: this.getStringClaim(claims, 'name'),
         picture: this.getStringClaim(claims, 'picture'),
