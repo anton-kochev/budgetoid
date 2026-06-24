@@ -96,5 +96,6 @@ if (app.Environment.IsDevelopment())
 
 app.MapDefaultEndpoints();
 app.MapTransactionEndpoints();
+app.MapPayeeEndpoints();
 
 await app.RunAsync();

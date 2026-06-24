@@ -6,6 +6,7 @@ export interface CreateTransactionRequest {
   amount: number;
   date: string;
   description: string;
+  payeeName?: string;
 }
 
 export interface TransactionDto {
@@ -14,6 +15,8 @@ export interface TransactionDto {
   date: string;
   description: string;
   createdAtUtc: string;
+  payeeId?: string | null;
+  payeeName?: string | null;
 }
 
 export interface TransactionListResponse {

@@ -6,6 +6,7 @@ import {
 } from '@angular/core';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { AccountApiService } from './api/account-api.service';
+import { PayeesApiService } from './api/payees-api.service';
 import { TransactionsApiService } from './api/transactions-api.service';
 import { AuthInterceptor } from './interceptors/auth.interceptor';
 
@@ -13,6 +14,7 @@ export const provideAppCore = (): EnvironmentProviders =>
   makeEnvironmentProviders([
     // API services
     AccountApiService,
+    PayeesApiService,
     TransactionsApiService,
     // Configuration
     ConfigurationService,

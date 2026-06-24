@@ -1,5 +1,4 @@
 using Application.Abstractions;
-using Domain.Transactions;
 
 namespace Application.Transactions.GetTransactions;
 
@@ -10,8 +9,8 @@ public sealed class GetTransactionsHandler(ITransactionRepository repository)
         GetTransactionsQuery query,
         CancellationToken cancellationToken = default)
     {
-        IReadOnlyList<Transaction> transactions = await repository.GetAllAsync(cancellationToken);
+        IReadOnlyList<TransactionDto> transactions = await repository.GetAllWithPayeeAsync(cancellationToken);
 
-        return new TransactionListResponse([.. transactions.Select(TransactionDto.FromTransaction)]);
+        return new TransactionListResponse(transactions);
     }
 }

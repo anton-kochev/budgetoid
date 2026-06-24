@@ -1,3 +1,4 @@
+using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
 using Microsoft.EntityFrameworkCore;
@@ -17,14 +18,21 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         builder.Property(transaction => transaction.Amount).HasColumnName("amount").HasColumnType("numeric(14,2)").IsRequired();
         builder.Property(transaction => transaction.Date).HasColumnName("date").HasColumnType("date").IsRequired();
         builder.Property(transaction => transaction.Description).HasColumnName("description").HasMaxLength(500).IsRequired();
+        builder.Property(transaction => transaction.PayeeId).HasColumnName("payee_id");
         builder.Property(transaction => transaction.CreatedAtUtc).HasColumnName("created_at_utc").HasColumnType("timestamp with time zone").IsRequired();
 
         builder.HasIndex(transaction => new { transaction.UserId, transaction.Date, transaction.CreatedAtUtc })
             .IsDescending(false, true, true);
+        builder.HasIndex(transaction => transaction.PayeeId);
 
         builder.HasOne<User>()
             .WithMany()
             .HasForeignKey(transaction => transaction.UserId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne<Payee>()
+            .WithMany()
+            .HasForeignKey(transaction => transaction.PayeeId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }

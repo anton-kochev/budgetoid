@@ -7,14 +7,18 @@ public sealed record TransactionDto(
     decimal Amount,
     DateOnly Date,
     string Description,
-    DateTime CreatedAtUtc)
+    DateTime CreatedAtUtc,
+    Guid? PayeeId,
+    string? PayeeName)
 {
-    public static TransactionDto FromTransaction(Transaction transaction) => new(
+    public static TransactionDto FromTransaction(Transaction transaction, string? payeeName = null) => new(
         transaction.Id,
         transaction.Amount,
         transaction.Date,
         transaction.Description,
-        transaction.CreatedAtUtc);
+        transaction.CreatedAtUtc,
+        transaction.PayeeId,
+        payeeName);
 }
 
 public sealed record TransactionListResponse(IReadOnlyList<TransactionDto> Items);

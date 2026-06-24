@@ -13,6 +13,7 @@ public sealed class Transaction
     public decimal Amount { get; private set; }
     public DateOnly Date { get; private set; }
     public string Description { get; private set; } = string.Empty;
+    public Guid? PayeeId { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
 
     public static Transaction Create(Guid userId, decimal amount, DateOnly date, string? description, DateTime createdAtUtc)
@@ -61,5 +62,17 @@ public sealed class Transaction
             Description = trimmedDescription,
             CreatedAtUtc = createdAtUtc,
         };
+    }
+
+    public void AssignPayee(Guid payeeId)
+    {
+        // An empty id here is a programmer/invariant error (the caller always passes a real
+        // payee id), not user-facing validation — so ArgumentException, not ValidationException.
+        if (payeeId == Guid.Empty)
+        {
+            throw new ArgumentException("Payee id is required.", nameof(payeeId));
+        }
+
+        PayeeId = payeeId;
     }
 }

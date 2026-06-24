@@ -1,4 +1,5 @@
 using Application.Abstractions;
+using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
 using Microsoft.EntityFrameworkCore;
@@ -10,11 +11,17 @@ public sealed class BudgetoidDbContext(
     IUserContext? userContext = null) : DbContext(options)
 {
     public DbSet<Transaction> Transactions => Set<Transaction>();
+    public DbSet<Payee> Payees => Set<Payee>();
     public DbSet<User> Users => Set<User>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(BudgetoidDbContext).Assembly);
+
+        // Nondeterministic ICU collation: case-insensitive, accent-sensitive. The payee name
+        // column uses it so equality comparisons and the unique index fold case in PostgreSQL
+        // itself (see PayeeConfiguration) — no lower() and no C#-side case folding to drift apart.
+        modelBuilder.HasCollation("case_insensitive", locale: "und-u-ks-level2", provider: "icu", deterministic: false);
 
         // Read-side isolation: every query against Transactions is scoped to the current user,
         // read live from the scoped IUserContext at query time (after the auth middleware runs),
@@ -27,5 +34,7 @@ public sealed class BudgetoidDbContext(
         // has a DI-injected (production) or test-supplied provider.
         modelBuilder.Entity<Transaction>()
             .HasQueryFilter("UserIsolation", transaction => transaction.UserId == userContext!.UserId);
+        modelBuilder.Entity<Payee>()
+            .HasQueryFilter("UserIsolation", payee => payee.UserId == userContext!.UserId);
     }
 }

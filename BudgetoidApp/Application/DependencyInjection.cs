@@ -1,3 +1,4 @@
+using Application.Payees.GetPayees;
 using Application.Transactions.CreateTransaction;
 using Application.Transactions.GetTransactions;
 using Application.Users.EnsureUser;
@@ -12,6 +13,7 @@ public static class DependencyInjection
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<CreateTransactionHandler>();
         services.AddScoped<GetTransactionsHandler>();
+        services.AddScoped<GetPayeesHandler>();
         services.AddScoped<EnsureUserHandler>();
 
         return services;

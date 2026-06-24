@@ -5,6 +5,8 @@ import {
   inject,
 } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { PayeeDto } from '@app-core/api/payees-api.service';
+import { MatAutocompleteModule } from '@angular/material/autocomplete';
 import { MatButtonModule } from '@angular/material/button';
 import { provideNativeDateAdapter } from '@angular/material/core';
 import { MatDatepickerModule } from '@angular/material/datepicker';
@@ -18,6 +20,7 @@ import { TransactionsService } from './transactions.service';
   providers: [provideNativeDateAdapter()],
   imports: [
     ReactiveFormsModule,
+    MatAutocompleteModule,
     MatButtonModule,
     MatDatepickerModule,
     MatFormFieldModule,
@@ -54,6 +57,21 @@ import { TransactionsService } from './transactions.service';
         <input matInput formControlName="description" maxlength="500" />
       </mat-form-field>
 
+      <mat-form-field>
+        <mat-label>Payee</mat-label>
+        <input
+          matInput
+          formControlName="payee"
+          maxlength="200"
+          [matAutocomplete]="payeeAutocomplete"
+        />
+        <mat-autocomplete #payeeAutocomplete="matAutocomplete">
+          @for (payee of filteredPayees(); track payee.id) {
+            <mat-option [value]="payee.name">{{ payee.name }}</mat-option>
+          }
+        </mat-autocomplete>
+      </mat-form-field>
+
       <button
         mat-flat-button
         color="primary"
@@ -69,7 +87,8 @@ import { TransactionsService } from './transactions.service';
         <mat-list-item>
           <span matListItemTitle>{{ transaction.description }}</span>
           <span matListItemLine>
-            {{ transaction.date }} · {{ transaction.amount }}
+            {{ transaction.payeeName ? transaction.payeeName + ' · ' : ''
+            }}{{ transaction.date }} · {{ transaction.amount }}
           </span>
         </mat-list-item>
       } @empty {
@@ -86,10 +105,24 @@ export class TransactionsComponent implements OnInit {
     amount: [0, [Validators.required]],
     date: [new Date(), [Validators.required]],
     description: ['', [Validators.required, Validators.maxLength(500)]],
+    payee: ['', [Validators.maxLength(200)]],
   });
 
   public ngOnInit(): void {
     this.transactions.load();
+    this.transactions.loadPayees();
+  }
+
+  protected filteredPayees(): PayeeDto[] {
+    const filter = this.form.controls.payee.value.trim().toLocaleLowerCase();
+
+    if (!filter) {
+      return this.transactions.payees();
+    }
+
+    return this.transactions
+      .payees()
+      .filter((payee) => payee.name.toLocaleLowerCase().includes(filter));
   }
 
   protected add(): void {
@@ -99,12 +132,20 @@ export class TransactionsComponent implements OnInit {
 
     const value = this.form.getRawValue();
 
+    const payeeName = value.payee.trim();
+
     this.transactions.add({
       amount: value.amount,
       date: this.toDateOnlyString(value.date),
       description: value.description,
+      ...(payeeName ? { payeeName } : {}),
     });
-    this.form.reset({ amount: 0, date: new Date(), description: '' });
+    this.form.reset({
+      amount: 0,
+      date: new Date(),
+      description: '',
+      payee: '',
+    });
   }
 
   private toDateOnlyString(date: Date): string {

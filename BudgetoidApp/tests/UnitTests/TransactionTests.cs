@@ -34,6 +34,53 @@ public sealed class TransactionTests
         await Assert.That(transaction.Date).IsEqualTo(date);
         await Assert.That(transaction.Description).IsEqualTo("Groceries");
         await Assert.That(transaction.CreatedAtUtc).IsEqualTo(createdAtUtc);
+        await Assert.That(transaction.PayeeId).IsNull();
+    }
+
+    [Test]
+    public async Task AssignPayee_SetsPayeeId()
+    {
+        // Arrange
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            -42.50m,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+        var payeeId = Guid.CreateVersion7();
+
+        // Act
+        transaction.AssignPayee(payeeId);
+
+        // Assert
+        await Assert.That(transaction.PayeeId).IsEqualTo(payeeId);
+    }
+
+    [Test]
+    public async Task AssignPayee_WithEmptyPayeeId_ThrowsArgumentException()
+    {
+        // Arrange
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            -42.50m,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        ArgumentException? caught = null;
+        try
+        {
+            transaction.AssignPayee(Guid.Empty);
+        }
+        catch (ArgumentException exception)
+        {
+            caught = exception;
+        }
+
+        // Assert
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ParamName).IsEqualTo("payeeId");
     }
 
     [Test]
