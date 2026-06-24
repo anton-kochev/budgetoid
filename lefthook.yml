@@ -1,5 +1,16 @@
 pre-commit:
   jobs:
+    - name: format staged backend files
+      root: BudgetoidApp/
+      glob:
+        - "*.cs"
+        - "**/*.cs"
+      exclude:
+        - "**/bin/**"
+        - "**/obj/**"
+      run: dotnet format BudgetoidApp.sln --include {staged_files} --verbosity minimal
+      stage_fixed: true
+
     - name: lint staged frontend files
       root: ClientApp/angular-budgetoid/
       glob:

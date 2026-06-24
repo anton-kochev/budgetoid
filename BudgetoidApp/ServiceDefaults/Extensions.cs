@@ -24,9 +24,9 @@ public static class Extensions
         // Do not include dependency checks here: a failing database should not cause the platform
         // to restart otherwise healthy API containers.
         app.MapHealthChecks("/health", new HealthCheckOptions
-            {
-                Predicate = _ => false,
-            })
+        {
+            Predicate = _ => false,
+        })
             .AllowAnonymous();
 
         return app;

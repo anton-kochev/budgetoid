@@ -1,8 +1,8 @@
 using Api.Endpoints;
 using Api.Infrastructure;
 using Application;
-using Infrastructure;
 using Application.Abstractions;
+using Infrastructure;
 using Infrastructure.Persistence;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;

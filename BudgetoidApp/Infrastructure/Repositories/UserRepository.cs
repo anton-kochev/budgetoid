@@ -24,7 +24,7 @@ public sealed class UserRepository(BudgetoidDbContext dbContext) : IUserReposito
             return true;
         }
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
-               { SqlState: PostgresErrorCodes.UniqueViolation })
+        { SqlState: PostgresErrorCodes.UniqueViolation })
         {
             dbContext.Entry(user).State = EntityState.Detached;
             return false;

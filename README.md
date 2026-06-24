@@ -26,7 +26,7 @@ cd BudgetoidApp && dotnet test
 
 ## Development workflow
 
-Frontend commits use Lefthook to run linting and formatting on staged files before commit. Hooks are installed automatically when frontend dependencies are installed:
+Commits use Lefthook to run formatting and linting on staged frontend and backend files before commit. Backend formatting follows `BudgetoidApp/.editorconfig`. Hooks are installed automatically when frontend dependencies are installed:
 
 ```sh
 cd ClientApp/angular-budgetoid

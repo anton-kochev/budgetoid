@@ -32,7 +32,10 @@ public sealed class User
         }
         catch (ValidationException exception)
         {
-            foreach (KeyValuePair<string, string[]> error in exception.Errors) errors[error.Key] = error.Value;
+            foreach (KeyValuePair<string, string[]> error in exception.Errors)
+            {
+                errors[error.Key] = error.Value;
+            }
         }
 
         if (errors.Count > 0)
