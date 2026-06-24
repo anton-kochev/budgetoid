@@ -13,15 +13,12 @@
 // Alternatively, you can import and @include the theme mixins for each component
 // that you are using.
 :root {
-  @include mat.core-theme(default-theme.$light);
-  @include mat.button-theme(default-theme.$light);
+  // Theme every Material component, not just buttons — otherwise form-field, input,
+  // autocomplete, datepicker, list, etc. render unstyled.
+  @include mat.all-component-themes(default-theme.$light);
 }
 
 html {
-  // Apply the dark theme by default
-  @include mat.core-color(default-theme.$light);
-  @include mat.button-color(default-theme.$light);
-
   // Comment out the line below if you want to use the pre-defined typography utility classes.
   // For more information: https://material.angular.io/guide/typography#using-typography-styles-in-your-application.
   @include mat.typography-hierarchy(default-theme.$light);
@@ -30,18 +27,14 @@ html {
   @include mat.system-level-colors(default-theme.$light);
   @include mat.system-level-typography(default-theme.$light);
 
-  // Apply the light theme only when the user prefers light themes.
+  // Apply the dark theme only when the user prefers dark themes.
   @media (prefers-color-scheme: dark) {
     // Use the `-color` mixins to only apply color styles without reapplying the same
     // typography and density styles.
-    @include mat.core-color(default-theme.$dark);
-    @include mat.button-color(default-theme.$dark);
-
-    @include mat.typography-hierarchy(default-theme.$dark);
+    @include mat.all-component-colors(default-theme.$dark);
 
     // When using system variables, remember to provide values for them..
     @include mat.system-level-colors(default-theme.$dark);
-    @include mat.system-level-typography(default-theme.$dark);
   }
 }
 
@@ -58,6 +51,10 @@ body {
 
 .budgetoid-app {
   display: grid;
-  grid-template-rows: 0;
-  height: 100vh;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 1rem;
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 1.5rem 2rem;
 }
