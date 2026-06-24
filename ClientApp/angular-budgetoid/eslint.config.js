@@ -2,65 +2,31 @@
 const eslint = require('@eslint/js');
 const tseslint = require('typescript-eslint');
 const angular = require('angular-eslint');
-const tsParser = require('@typescript-eslint/parser');
-const angularParser = require('@angular-eslint/template-parser');
 const globals = require('globals');
 
 module.exports = tseslint.config(
   {
-    files: ['**/*.ts'],
-    languageOptions: {
-      parser: tsParser,
-      parserOptions: {
-        ecmaFeatures: { modules: true },
-        ecmaVersion: 'latest',
-        project: './tsconfig.json',
-        tsconfigRootDir: __dirname,
-      },
+    ignores: ['.angular/**', 'coverage/**', 'dist/**', 'node_modules/**'],
+    linterOptions: {
+      reportUnusedDisableDirectives: 'error',
     },
+  },
+  {
+    files: ['**/*.ts'],
     extends: [
       eslint.configs.recommended,
-      ...tseslint.configs.strict,
+      ...tseslint.configs.recommendedTypeChecked,
       ...tseslint.configs.stylistic,
       ...angular.configs.tsRecommended,
     ],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: __dirname,
+      },
+    },
     processor: angular.processInlineTemplates,
     rules: {
-      'lines-between-class-members': [
-        'error',
-        'always',
-        { exceptAfterSingleLine: true },
-      ],
-      'max-classes-per-file': ['warn', 1],
-      'max-len': 'off',
-      'no-shadow': 'off',
-      'no-undef': 'error',
-      'no-undef-init': 'error',
-      'no-undefined': 'warn',
-      'no-void': 'error',
-      'no-underscore-dangle': [
-        'warn',
-        { allow: ['_desc'], allowAfterThis: true },
-      ],
-      'no-unused-vars': 'off',
-      'padding-line-between-statements': [
-        'warn',
-        {
-          blankLine: 'always',
-          prev: '*',
-          next: 'return',
-        },
-        {
-          blankLine: 'always',
-          prev: ['const', 'let', 'var'],
-          next: '*',
-        },
-        {
-          blankLine: 'any',
-          prev: ['const', 'let', 'var'],
-          next: ['const', 'let', 'var'],
-        },
-      ],
       '@angular-eslint/component-selector': [
         'error',
         {
@@ -77,12 +43,15 @@ module.exports = tseslint.config(
           style: 'camelCase',
         },
       ],
+      '@angular-eslint/prefer-standalone': 'error',
+
+      // Team conventions: explicit, consistent application code.
       '@typescript-eslint/explicit-function-return-type': [
         'error',
         {
           allowExpressions: true,
-          allowTypedFunctionExpressions: true,
           allowHigherOrderFunctions: true,
+          allowTypedFunctionExpressions: true,
         },
       ],
       '@typescript-eslint/explicit-member-accessibility': [
@@ -94,9 +63,13 @@ module.exports = tseslint.config(
           },
         },
       ],
-      '@angular-eslint/prefer-standalone': 'error',
       '@typescript-eslint/naming-convention': [
         'error',
+        {
+          selector: ['objectLiteralProperty', 'typeProperty'],
+          modifiers: ['requiresQuotes'],
+          format: null,
+        },
         {
           selector: 'default',
           format: ['camelCase'],
@@ -127,39 +100,36 @@ module.exports = tseslint.config(
           format: ['camelCase'],
         },
       ],
-      '@typescript-eslint/no-explicit-any': ['warn', { fixToUnknown: true }],
       '@typescript-eslint/no-extraneous-class': [
         'error',
         { allowWithDecorator: true },
       ],
-      '@typescript-eslint/no-shadow': ['error', {}],
+      '@typescript-eslint/no-explicit-any': ['warn', { fixToUnknown: true }],
+      '@typescript-eslint/no-shadow': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { args: 'none' }],
       '@typescript-eslint/prefer-readonly': 'error',
+      '@typescript-eslint/unbound-method': ['error', { ignoreStatic: true }],
     },
   },
   {
     files: ['**/*.html'],
-    languageOptions: {
-      parser: angularParser,
-      parserOptions: {
-        ecmaVersion: 'latest',
-        sourceType: 'module',
-      },
-    },
     extends: [
       ...angular.configs.templateRecommended,
       ...angular.configs.templateAccessibility,
     ],
     rules: {
       '@angular-eslint/template/prefer-control-flow': 'error',
-      '@angular-eslint/template/click-events-have-key-events': 'off',
     },
   },
   {
     files: ['**/*.spec.ts'],
     languageOptions: {
-      parserOptions: { project: './tsconfig.spec.json' },
-      globals: { ...globals.jasmine },
+      globals: {
+        ...globals.jasmine,
+      },
+    },
+    rules: {
+      '@typescript-eslint/unbound-method': 'off',
     },
   },
 );

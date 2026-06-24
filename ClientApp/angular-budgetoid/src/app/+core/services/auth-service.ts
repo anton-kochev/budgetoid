@@ -29,7 +29,7 @@ export class AuthService {
       scope: auth.google?.scope,
       // showDebugInformation: true,
     });
-    this.oAuth.loadDiscoveryDocumentAndTryLogin();
+    void this.oAuth.loadDiscoveryDocumentAndTryLogin();
     this.oAuth.setupAutomaticSilentRefresh();
 
     // This observable will emit the user profile information
@@ -42,13 +42,19 @@ export class AuthService {
           this.oAuth.hasValidAccessToken() &&
           this.oAuth.hasValidIdToken(),
       ),
-      map(() => this.oAuth.getIdentityClaims()),
+      map(() => this.oAuth.getIdentityClaims() as Record<string, unknown>),
       map(claims => ({
-        email: claims['email'],
-        name: claims['name'],
-        picture: claims['picture'],
+        email: this.getStringClaim(claims, 'email'),
+        name: this.getStringClaim(claims, 'name'),
+        picture: this.getStringClaim(claims, 'picture'),
       })),
     );
+  }
+
+  private getStringClaim(claims: Record<string, unknown>, key: string): string {
+    const value = claims[key];
+
+    return typeof value === 'string' ? value : '';
   }
 
   public isAuthenticated(): boolean {

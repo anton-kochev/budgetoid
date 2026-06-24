@@ -38,7 +38,6 @@ export abstract class BaseApiService {
     return this.http.put<T>(`${this.baseUrl}/${path}`, body, opts);
   }
 
-  /* eslint-disable @typescript-eslint/naming-convention */
   private static contentTypeHeader(contentType: ContentType): {
     'Content-Type': string;
   } {
@@ -51,7 +50,6 @@ export abstract class BaseApiService {
         return { 'Content-Type': 'application/json' };
     }
   }
-  /* eslint-enable @typescript-eslint/naming-convention */
 
   private static headers(contentType: ContentType = 'json'): HttpHeaders {
     return new HttpHeaders({
