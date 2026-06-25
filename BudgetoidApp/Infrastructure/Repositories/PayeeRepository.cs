@@ -12,14 +12,6 @@ public sealed class PayeeRepository(
     IUserContext userContext,
     TimeProvider timeProvider) : IPayeeRepository
 {
-    public async Task<IReadOnlyList<Payee>> GetAllAsync(CancellationToken cancellationToken = default)
-    {
-        return await dbContext.Payees
-            .AsNoTracking()
-            .OrderBy(payee => payee.Name)
-            .ToListAsync(cancellationToken);
-    }
-
     public async Task<Payee> GetOrCreateAsync(string name, CancellationToken cancellationToken = default)
     {
         string normalizedName = name.Trim();

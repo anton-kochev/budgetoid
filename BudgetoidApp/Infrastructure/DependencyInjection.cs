@@ -1,6 +1,7 @@
 using Application.Payees;
 using Application.Transactions;
 using Application.Users;
+using Infrastructure.ReadServices;
 using Infrastructure.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -13,6 +14,8 @@ public static class DependencyInjection
         services.AddScoped<ITransactionRepository, TransactionRepository>();
         services.AddScoped<IPayeeRepository, PayeeRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
+        services.AddScoped<ITransactionReadService, TransactionReadService>();
+        services.AddScoped<IPayeeReadService, PayeeReadService>();
         return services;
     }
 }

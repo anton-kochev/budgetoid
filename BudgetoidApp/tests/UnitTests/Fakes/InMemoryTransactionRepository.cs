@@ -3,7 +3,7 @@ using Domain.Transactions;
 
 namespace UnitTests.Fakes;
 
-public sealed class InMemoryTransactionRepository : ITransactionRepository
+public sealed class InMemoryTransactionRepository : ITransactionRepository, ITransactionReadService
 {
     private readonly List<Transaction> _transactions = [];
     private readonly Dictionary<Guid, string> _payeeNames = [];

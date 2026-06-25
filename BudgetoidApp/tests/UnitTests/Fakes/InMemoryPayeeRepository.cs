@@ -3,16 +3,17 @@ using Domain.Payees;
 
 namespace UnitTests.Fakes;
 
-public sealed class InMemoryPayeeRepository(Guid userId, TimeProvider timeProvider) : IPayeeRepository
+public sealed class InMemoryPayeeRepository(Guid userId, TimeProvider timeProvider) : IPayeeRepository, IPayeeReadService
 {
     private readonly List<Payee> _payees = [];
 
     public int GetOrCreateCallCount { get; private set; }
 
-    public Task<IReadOnlyList<Payee>> GetAllAsync(CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<PayeeDto>> GetAllAsync(CancellationToken cancellationToken = default)
     {
-        IReadOnlyList<Payee> payees = _payees
+        IReadOnlyList<PayeeDto> payees = _payees
             .OrderBy(payee => payee.Name)
+            .Select(payee => new PayeeDto(payee.Id, payee.Name))
             .ToList();
 
         return Task.FromResult(payees);
