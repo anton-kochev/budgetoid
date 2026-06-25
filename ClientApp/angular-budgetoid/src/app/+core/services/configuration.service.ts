@@ -1,5 +1,5 @@
 import { HttpBackend, HttpClient } from '@angular/common/http';
-import { Injectable } from '@angular/core';
+import { inject, Injectable } from '@angular/core';
 import { firstValueFrom, map, tap } from 'rxjs';
 
 interface Configuration {
@@ -15,13 +15,8 @@ interface GoogleAuthConfig {
 
 @Injectable()
 export class ConfigurationService {
-  private config: Configuration;
-  private readonly httpClient: HttpClient;
-
-  constructor(handler: HttpBackend) {
-    this.config = { apiBaseUrl: '', auth: {} };
-    this.httpClient = new HttpClient(handler);
-  }
+  private config: Configuration = { apiBaseUrl: '', auth: {} };
+  private readonly httpClient: HttpClient = new HttpClient(inject(HttpBackend));
 
   public getConfig(): Configuration {
     return this.config;
