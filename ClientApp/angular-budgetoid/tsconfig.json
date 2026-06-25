@@ -20,7 +20,6 @@
     "importHelpers": true,
     "target": "ES2022",
     "module": "ES2022",
-    "lib": ["ES2022", "dom"],
     "paths": {
       "@app-core/*": ["./app/+core/*"],
       "@app-shared/*": ["./app/+shared/*"],
