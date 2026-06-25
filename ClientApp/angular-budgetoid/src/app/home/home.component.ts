@@ -6,7 +6,6 @@ import { Store } from '@ngrx/store';
 @Component({
   imports: [CommonModule],
   selector: 'app-home',
-  standalone: true,
   templateUrl: './home.component.html',
 })
 export class HomeComponent {
