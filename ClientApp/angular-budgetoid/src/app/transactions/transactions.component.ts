@@ -27,7 +27,6 @@ import { TransactionsService } from './transactions.service';
     MatInputModule,
     MatListModule,
   ],
-  standalone: true,
   styles: `
     form {
       display: grid;

@@ -6,7 +6,6 @@ import { LoginFacade } from './login.facade';
   imports: [MatButtonModule],
   providers: [LoginFacade],
   selector: 'app-login',
-  standalone: true,
   template: `
     <button mat-stroked-button (click)="signInWithGoogle()">
       Login with Google

@@ -143,6 +143,7 @@ $light: mat.define-theme(
       primary: $_primary,
       tertiary: $_tertiary,
       use-system-variables: true,
+      system-variables-prefix: sys,
     ),
     typography: (
       brand-family: 'Mohave',
@@ -151,6 +152,7 @@ $light: mat.define-theme(
       medium-weight: 500,
       regular-weight: 400,
       use-system-variables: true,
+      system-variables-prefix: sys,
     ),
   )
 );
@@ -161,6 +163,7 @@ $dark: mat.define-theme(
       primary: mat.$violet-palette,
       tertiary: mat.$magenta-palette,
       use-system-variables: true,
+      system-variables-prefix: sys,
     ),
     typography: (
       brand-family: 'Mohave',
@@ -169,6 +172,7 @@ $dark: mat.define-theme(
       medium-weight: 500,
       regular-weight: 400,
       use-system-variables: true,
+      system-variables-prefix: sys,
     ),
   )
 );
