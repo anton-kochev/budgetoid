@@ -1,6 +1,6 @@
 # Budgetoid
 
-Personal budget management app. .NET 10 backend + Angular 18 frontend.
+Personal budget management app. .NET 10 backend + Angular 21 frontend.
 
 ## Project Layout
 
@@ -12,7 +12,7 @@ Personal budget management app. .NET 10 backend + Angular 18 frontend.
   - `Infrastructure/` — EF Core 10 + Npgsql PostgreSQL persistence
   - `Api/` — ASP.NET Core minimal API
   - `tests/UnitTests/`, `tests/IntegrationTests/` — TUnit tests
-- `ClientApp/angular-budgetoid/` — current frontend (Angular 18)
+- `ClientApp/angular-budgetoid/` — current frontend (Angular 21)
 
 Legacy `Budgetoid/`, Vue, and Elm projects have been removed.
 
@@ -45,7 +45,7 @@ Auth is deferred behind `IUserContext`; slice 1 uses `FakeUserContext`.
 
 ## Frontend Architecture
 
-- Angular 18 standalone components (no NgModules)
+- Angular 21 standalone components (no NgModules)
 - Slice-1 transaction state uses an Angular signal-based service; NgRx remains for existing auth/profile scaffolding only
 - `+core/` — API services, guards, interceptors, app-wide providers
 - `+shared/` — shared components and utilities

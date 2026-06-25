@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/anton-kochev/budgetoid/actions/workflows/ci.yml/badge.svg)](https://github.com/anton-kochev/budgetoid/actions/workflows/ci.yml)
 
-Personal budget app: .NET 10 backend (Clean Architecture + CQRS, .NET Aspire) and Angular 18 frontend.
+Personal budget app: .NET 10 backend (Clean Architecture + CQRS, .NET Aspire) and Angular 21 frontend.
 
 ## Prerequisites
 
