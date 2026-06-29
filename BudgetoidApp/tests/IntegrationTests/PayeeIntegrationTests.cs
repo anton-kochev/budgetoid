@@ -69,10 +69,12 @@ public sealed class PayeeIntegrationTests
         HttpClient client = host.Factory.CreateAuthenticatedClient();
 
         // Act
+        Guid accountId = await CreateAccountAsync(client);
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
             amount = -10m,
             date = "2026-06-24",
+            accountId,
             description = "Coffee",
             payeeName = "  Starbucks  ",
         });
@@ -210,15 +212,31 @@ public sealed class PayeeIntegrationTests
 
     private static async Task<JsonNode> PostTransactionAsync(HttpClient client, string payeeName)
     {
+        Guid accountId = await CreateAccountAsync(client);
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
             amount = -10m,
             date = "2026-06-24",
+            accountId,
             description = "Coffee",
             payeeName,
         });
         response.EnsureSuccessStatusCode();
         return (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+    }
+
+    private static async Task<Guid> CreateAccountAsync(HttpClient client)
+    {
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
+        {
+            name = $"Checking {Guid.CreateVersion7()}",
+            type = "Checking",
+            openingBalance = 0m,
+            currencyCode = "USD",
+        });
+        response.EnsureSuccessStatusCode();
+        JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        return json["id"]!.GetValue<Guid>();
     }
 
     private static async Task<PostgresTestHost> StartApiHostAsync()

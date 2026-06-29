@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using Domain.Accounts;
 using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -19,8 +20,13 @@ public sealed class TransactionIsolationTests
         Guid transactionId;
         await using (BudgetoidDbContext dbA = CreateDb(host, userA))
         {
+            Account account = Account.Create(userA, "Checking", AccountType.Checking, 0m, "USD", DateTime.UtcNow);
+            dbA.Accounts.Add(account);
+            await dbA.SaveChangesAsync();
+
             Transaction transaction = Transaction.Create(
                 userA,
+                account.Id,
                 -10m,
                 new DateOnly(2026, 6, 12),
                 "User A groceries",
@@ -64,10 +70,12 @@ public sealed class TransactionIsolationTests
         await using ApiFactory factoryB = host.CreateFactory(userB);
 
         HttpClient clientA = factoryA.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(clientA);
         HttpResponseMessage created = await clientA.PostAsJsonAsync("/api/transactions", new
         {
             amount = -42.50m,
             date = "2026-06-12",
+            accountId,
             description = "User A lunch",
         });
         await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
@@ -83,6 +91,20 @@ public sealed class TransactionIsolationTests
         HttpResponseMessage listA = await clientA.GetAsync("/api/transactions");
         JsonNode? jsonA = await JsonNode.ParseAsync(await listA.Content.ReadAsStreamAsync());
         await Assert.That(jsonA!["items"]!.AsArray().Count).IsEqualTo(1);
+    }
+
+    private static async Task<Guid> CreateAccountAsync(HttpClient client)
+    {
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
+        {
+            name = "Checking",
+            type = "Checking",
+            openingBalance = 0m,
+            currencyCode = "USD",
+        });
+        response.EnsureSuccessStatusCode();
+        JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        return json["id"]!.GetValue<Guid>();
     }
 
     private static BudgetoidDbContext CreateDb(RepositoryTestHost host, Guid userId)

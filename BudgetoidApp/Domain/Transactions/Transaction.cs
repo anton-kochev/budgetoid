@@ -10,19 +10,25 @@ public sealed class Transaction
 
     public Guid Id { get; private set; }
     public Guid UserId { get; private set; }
+    public Guid AccountId { get; private set; }
     public decimal Amount { get; private set; }
     public DateOnly Date { get; private set; }
     public string? Description { get; private set; }
     public Guid? PayeeId { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
 
-    public static Transaction Create(Guid userId, decimal amount, DateOnly date, string? description, DateTime createdAtUtc)
+    public static Transaction Create(Guid userId, Guid accountId, decimal amount, DateOnly date, string? description, DateTime createdAtUtc)
     {
         var errors = new Dictionary<string, string[]>();
 
         if (userId == Guid.Empty)
         {
             errors[nameof(UserId)] = ["User id is required."];
+        }
+
+        if (accountId == Guid.Empty)
+        {
+            errors[nameof(AccountId)] = ["Account id is required."];
         }
 
         if (amount == 0)
@@ -58,6 +64,7 @@ public sealed class Transaction
         {
             Id = Guid.CreateVersion7(),
             UserId = userId,
+            AccountId = accountId,
             Amount = amount,
             Date = date,
             Description = trimmedDescription,

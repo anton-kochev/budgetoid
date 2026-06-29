@@ -1,3 +1,4 @@
+using Domain.Accounts;
 using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
@@ -15,6 +16,7 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
 
         builder.Property(transaction => transaction.Id).HasColumnName("id");
         builder.Property(transaction => transaction.UserId).HasColumnName("user_id").IsRequired();
+        builder.Property(transaction => transaction.AccountId).HasColumnName("account_id").IsRequired();
         builder.Property(transaction => transaction.Amount).HasColumnName("amount").HasColumnType("numeric(14,2)").IsRequired();
         builder.Property(transaction => transaction.Date).HasColumnName("date").HasColumnType("date").IsRequired();
         builder.Property(transaction => transaction.Description).HasColumnName("description").HasMaxLength(500);
@@ -24,11 +26,17 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         builder.HasIndex(transaction => new { transaction.UserId, transaction.Date, transaction.CreatedAtUtc })
             .IsDescending(false, true, true);
         builder.HasIndex(transaction => transaction.PayeeId);
+        builder.HasIndex(transaction => transaction.AccountId);
 
         builder.HasOne<User>()
             .WithMany()
             .HasForeignKey(transaction => transaction.UserId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne<Account>()
+            .WithMany()
+            .HasForeignKey(transaction => transaction.AccountId)
+            .OnDelete(DeleteBehavior.NoAction);
 
         builder.HasOne<Payee>()
             .WithMany()

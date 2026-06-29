@@ -43,10 +43,12 @@ public sealed class AuthenticationTests
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient("google-auth", "auth@example.com", "Auth User");
 
+        Guid accountId = await CreateAccountAsync(client);
         HttpResponseMessage created = await client.PostAsJsonAsync("/api/transactions", new
         {
             amount = 10m,
             date = "2026-06-12",
+            accountId,
             description = "Authenticated",
         });
         JsonNode? list = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
@@ -70,6 +72,20 @@ public sealed class AuthenticationTests
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo("application/problem+json");
+    }
+
+    private static async Task<Guid> CreateAccountAsync(HttpClient client)
+    {
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
+        {
+            name = "Checking",
+            type = "Checking",
+            openingBalance = 0m,
+            currencyCode = "USD",
+        });
+        response.EnsureSuccessStatusCode();
+        JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        return json["id"]!.GetValue<Guid>();
     }
 
     private static ApiFactory CreateFactoryWithoutDatabaseMigration() =>

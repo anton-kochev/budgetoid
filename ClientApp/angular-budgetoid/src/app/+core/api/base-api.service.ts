@@ -38,6 +38,12 @@ export abstract class BaseApiService {
     return this.http.put<T>(`${this.baseUrl}/${path}`, body, opts);
   }
 
+  protected delete<T = unknown>(path: string): Observable<T> {
+    const opts = { headers: BaseApiService.headers() };
+
+    return this.http.delete<T>(`${this.baseUrl}/${path}`, opts);
+  }
+
   private static contentTypeHeader(contentType: ContentType): {
     'Content-Type': string;
   } {

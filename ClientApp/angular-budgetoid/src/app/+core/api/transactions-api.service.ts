@@ -5,6 +5,7 @@ import { BaseApiService } from './base-api.service';
 export interface CreateTransactionRequest {
   amount: number;
   date: string;
+  accountId: string;
   description: string;
   payeeName?: string;
 }
@@ -15,6 +16,10 @@ export interface TransactionDto {
   date: string;
   description: string;
   createdAtUtc: string;
+  accountId: string;
+  accountName: string;
+  currencyCode: string;
+  currencySymbol: string;
   payeeId?: string | null;
   payeeName?: string | null;
 }

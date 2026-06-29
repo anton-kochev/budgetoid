@@ -1,3 +1,8 @@
+using Application.Accounts.CreateAccount;
+using Application.Accounts.DeleteAccount;
+using Application.Accounts.GetAccounts;
+using Application.Accounts.UpdateAccount;
+using Application.Currencies.GetCurrencies;
 using Application.Payees.GetPayees;
 using Application.Transactions.CreateTransaction;
 using Application.Transactions.GetTransactions;
@@ -11,6 +16,11 @@ public static class DependencyInjection
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
         services.AddSingleton(TimeProvider.System);
+        services.AddScoped<CreateAccountHandler>();
+        services.AddScoped<GetAccountsHandler>();
+        services.AddScoped<UpdateAccountHandler>();
+        services.AddScoped<DeleteAccountHandler>();
+        services.AddScoped<GetCurrenciesHandler>();
         services.AddScoped<CreateTransactionHandler>();
         services.AddScoped<GetTransactionsHandler>();
         services.AddScoped<GetPayeesHandler>();
