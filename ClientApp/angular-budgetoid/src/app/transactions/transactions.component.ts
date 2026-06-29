@@ -13,6 +13,8 @@ import { MatDatepickerModule } from '@angular/material/datepicker';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatListModule } from '@angular/material/list';
+import { MatSelectModule } from '@angular/material/select';
+import { AccountsService } from '../accounts/accounts.service';
 import { TransactionsService } from './transactions.service';
 
 @Component({
@@ -26,6 +28,7 @@ import { TransactionsService } from './transactions.service';
     MatFormFieldModule,
     MatInputModule,
     MatListModule,
+    MatSelectModule,
   ],
   styles: `
     form {
@@ -52,6 +55,19 @@ import { TransactionsService } from './transactions.service';
       </mat-form-field>
 
       <mat-form-field>
+        <mat-label>Account</mat-label>
+        <mat-select formControlName="accountId">
+          @for (account of accounts.accounts(); track account.id) {
+            <mat-option [value]="account.id">{{ account.name }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      @if (!accounts.loading() && accounts.accounts().length === 0) {
+        <p>Create an account before adding transactions.</p>
+      }
+
+      <mat-form-field>
         <mat-label>Description</mat-label>
         <input matInput formControlName="description" maxlength="500" />
       </mat-form-field>
@@ -75,7 +91,7 @@ import { TransactionsService } from './transactions.service';
         mat-flat-button
         color="primary"
         type="submit"
-        [disabled]="form.invalid"
+        [disabled]="form.invalid || accounts.accounts().length === 0"
       >
         Add transaction
       </button>
@@ -86,8 +102,10 @@ import { TransactionsService } from './transactions.service';
         <mat-list-item>
           <span matListItemTitle>{{ transaction.description }}</span>
           <span matListItemLine>
+            {{ transaction.accountName }} ·
             {{ transaction.payeeName ? transaction.payeeName + ' · ' : ''
-            }}{{ transaction.date }} · {{ transaction.amount }}
+            }}{{ transaction.date }} · {{ transaction.currencySymbol
+            }}{{ transaction.amount }}
           </span>
         </mat-list-item>
       } @empty {
@@ -98,16 +116,19 @@ import { TransactionsService } from './transactions.service';
 })
 export class TransactionsComponent implements OnInit {
   protected readonly transactions = inject(TransactionsService);
+  protected readonly accounts = inject(AccountsService);
   private readonly formBuilder = inject(FormBuilder);
 
   protected readonly form = this.formBuilder.nonNullable.group({
     amount: [0, [Validators.required]],
     date: [new Date(), [Validators.required]],
+    accountId: ['', [Validators.required]],
     description: ['', [Validators.maxLength(500)]],
     payee: ['', [Validators.maxLength(200)]],
   });
 
   public ngOnInit(): void {
+    this.accounts.load();
     this.transactions.load();
     this.transactions.loadPayees();
   }
@@ -136,12 +157,14 @@ export class TransactionsComponent implements OnInit {
     this.transactions.add({
       amount: value.amount,
       date: this.toDateOnlyString(value.date),
+      accountId: value.accountId,
       description: value.description,
       ...(payeeName ? { payeeName } : {}),
     });
     this.form.reset({
       amount: 0,
       date: new Date(),
+      accountId: '',
       description: '',
       payee: '',
     });

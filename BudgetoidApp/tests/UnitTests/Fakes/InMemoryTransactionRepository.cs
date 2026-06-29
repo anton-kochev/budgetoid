@@ -7,10 +7,13 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
 {
     private readonly List<Transaction> _transactions = [];
     private readonly Dictionary<Guid, string> _payeeNames = [];
+    private readonly Dictionary<Guid, string> _accountNames = [];
 
     public int AddCallCount { get; private set; }
 
     public void SetPayeeProjection(Guid payeeId, string payeeName) => _payeeNames[payeeId] = payeeName;
+
+    public void SetAccountProjection(Guid accountId, string accountName) => _accountNames[accountId] = accountName;
 
     public Task AddAsync(Transaction transaction, CancellationToken cancellationToken = default)
     {
@@ -34,6 +37,9 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
         IReadOnlyList<TransactionDto> results = OrderedTransactions()
             .Select(transaction => TransactionDto.FromTransaction(
                 transaction,
+                _accountNames.TryGetValue(transaction.AccountId, out string? accountName) ? accountName : "Account",
+                "USD",
+                "$",
                 transaction.PayeeId is { } payeeId && _payeeNames.TryGetValue(payeeId, out string? name)
                     ? name
                     : null))

@@ -4,8 +4,6 @@ import * as authenticationEffects from '@app-state/authentication/authentication
 import { profileFeatureKey, profileReducer } from '@app-state/profile';
 import { provideEffects } from '@ngrx/effects';
 import { provideState } from '@ngrx/store';
-import { AccountsFacade } from './accounts/accounts.facade';
-import { accountsResolver } from './accounts/accounts.resolver';
 
 export const routes: Routes = [
   {
@@ -34,11 +32,9 @@ export const routes: Routes = [
         canActivate: [authGuard],
       },
       {
-        providers: [AccountsFacade],
         path: 'accounts',
         // prettier-ignore
         loadComponent: () => import('./accounts/accounts.component').then(x => x.AccountsComponent),
-        resolve: { accounts: accountsResolver },
         canActivate: [authGuard],
       },
       { path: '', redirectTo: '/home', pathMatch: 'full' },

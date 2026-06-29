@@ -26,10 +26,13 @@ public sealed class TransactionTests
 
         DateTime createdAtUtc = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
-        var transaction = Transaction.Create(userId, -42.50m, date, " Groceries ", createdAtUtc);
+        var accountId = Guid.CreateVersion7();
+
+        var transaction = Transaction.Create(userId, accountId, -42.50m, date, " Groceries ", createdAtUtc);
 
         await Assert.That(transaction.Id).IsNotEqualTo(Guid.Empty);
         await Assert.That(transaction.UserId).IsEqualTo(userId);
+        await Assert.That(transaction.AccountId).IsEqualTo(accountId);
         await Assert.That(transaction.Amount).IsEqualTo(-42.50m);
         await Assert.That(transaction.Date).IsEqualTo(date);
         await Assert.That(transaction.Description).IsEqualTo("Groceries");
@@ -42,6 +45,7 @@ public sealed class TransactionTests
     {
         // Arrange
         var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
             Guid.CreateVersion7(),
             -42.50m,
             new DateOnly(2026, 6, 12),
@@ -61,6 +65,7 @@ public sealed class TransactionTests
     {
         // Arrange
         var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
             Guid.CreateVersion7(),
             -42.50m,
             new DateOnly(2026, 6, 12),
@@ -86,28 +91,28 @@ public sealed class TransactionTests
     [Test]
     public async Task Create_WithEmptyUserId_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.Empty, 1m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.Empty, Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
     }
 
     [Test]
     public async Task Create_WithZeroAmount_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 0m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), Guid.CreateVersion7(), 0m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
     }
 
     [Test]
     public async Task Create_WithMoreThanTwoDecimalPlaces_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1.234m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), Guid.CreateVersion7(), 1.234m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
     }
 
     [Test]
     public async Task Create_WithAmountAbsoluteValueOverLimit_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1_000_000_000.01m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), Guid.CreateVersion7(), 1_000_000_000.01m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
     }
 
@@ -115,7 +120,7 @@ public sealed class TransactionTests
     public async Task Create_WithBlankDescription_SetsDescriptionToNull()
     {
         // Act — description is optional, so a blank value is allowed
-        var transaction = Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), "   ", UtcNow());
+        var transaction = Transaction.Create(Guid.CreateVersion7(), Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), "   ", UtcNow());
 
         // Assert
         await Assert.That(transaction.Description).IsNull();
@@ -125,7 +130,7 @@ public sealed class TransactionTests
     public async Task Create_WithNullDescription_SetsDescriptionToNull()
     {
         // Act
-        var transaction = Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), null, UtcNow());
+        var transaction = Transaction.Create(Guid.CreateVersion7(), Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), null, UtcNow());
 
         // Assert
         await Assert.That(transaction.Description).IsNull();
@@ -134,7 +139,7 @@ public sealed class TransactionTests
     [Test]
     public async Task Create_WithDescriptionLongerThan500Characters_ThrowsValidationException()
     {
-        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), new string('x', 501), UtcNow()));
+        var exception = ThrowsValidationException(() => Transaction.Create(Guid.CreateVersion7(), Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), new string('x', 501), UtcNow()));
         await Assert.That(exception.Errors.ContainsKey("Description")).IsTrue();
     }
 

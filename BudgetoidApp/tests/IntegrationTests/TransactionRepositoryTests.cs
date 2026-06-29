@@ -1,3 +1,4 @@
+using Domain.Accounts;
 using Domain.Transactions;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
@@ -17,9 +18,14 @@ public sealed class TransactionRepositoryTests
 
         await using (BudgetoidDbContext db = new(options))
         {
+            Account account = Account.Create(userId, "Checking", AccountType.Checking, 0m, "USD", DateTime.UtcNow);
+            db.Accounts.Add(account);
+            await db.SaveChangesAsync();
+
             await new TransactionRepository(db).AddAsync(
                 Transaction.Create(
                     userId,
+                    account.Id,
                     1m,
                     new DateOnly(2026, 6, 12),
                     "Test",

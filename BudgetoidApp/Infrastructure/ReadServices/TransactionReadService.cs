@@ -8,9 +8,15 @@ public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITran
 {
     public async Task<IReadOnlyList<TransactionDto>> GetAllWithPayeeAsync(CancellationToken cancellationToken = default)
     {
-        // Both Transactions and Payees are scoped by BudgetoidDbContext global query filters.
+        // Transactions, Accounts and Payees are scoped by BudgetoidDbContext global query filters.
         return await (
                 from transaction in dbContext.Transactions.AsNoTracking()
+                join account in dbContext.Accounts.AsNoTracking()
+                    on transaction.AccountId equals account.Id
+                // Inner join is safe: the accounts.currency_code FK (Restrict) guarantees a
+                // matching currency row always exists, so no transaction is silently dropped.
+                join currency in dbContext.Currencies.AsNoTracking()
+                    on account.CurrencyCode equals currency.Code
                 join payee in dbContext.Payees.AsNoTracking()
                     on transaction.PayeeId equals (Guid?)payee.Id into payees
                 from payee in payees.DefaultIfEmpty()
@@ -21,6 +27,10 @@ public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITran
                     transaction.Date,
                     transaction.Description ?? string.Empty,
                     transaction.CreatedAtUtc,
+                    transaction.AccountId,
+                    account.Name,
+                    account.CurrencyCode,
+                    currency.Symbol,
                     transaction.PayeeId,
                     payee == null ? null : payee.Name))
             .ToListAsync(cancellationToken);

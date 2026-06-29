@@ -1,4 +1,5 @@
 using Application.Transactions.CreateTransaction;
+using Domain.Accounts;
 using Domain.Common;
 using Microsoft.Extensions.Time.Testing;
 using UnitTests.Fakes;
@@ -8,32 +9,34 @@ namespace UnitTests;
 public sealed class CreateTransactionHandlerTests
 {
     [Test]
-    public async Task HandleAsync_WithValidCommand_PersistsWithContextUserIdAndReturnsDto()
+    public async Task HandleAsync_WithValidCommand_PersistsAccountIdAndReturnsAccountName()
     {
-        // Arrange
         var repository = new InMemoryTransactionRepository();
         var userId = Guid.CreateVersion7();
         var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
-        var payees = new InMemoryPayeeRepository(userId, new FakeTimeProvider(createdAtUtc));
-        var handler = new CreateTransactionHandler(
-            repository,
-            payees,
-            new StubUserContext(userId),
-            new FakeTimeProvider(createdAtUtc));
+        var timeProvider = new FakeTimeProvider(createdAtUtc);
+        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var currencies = new InMemoryCurrencyReadService();
+        Account account = await accounts.CreateAsync("Checking");
+        var payees = new InMemoryPayeeRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
         var date = new DateOnly(2026, 6, 12);
 
-        // Act
-        var dto = await handler.HandleAsync(new CreateTransactionCommand(-42.50m, date, "Groceries"));
+        var dto = await handler.HandleAsync(new CreateTransactionCommand(-42.50m, date, account.Id, "Groceries"));
         var stored = await repository.GetAllAsync();
 
-        // Assert
         await Assert.That(repository.AddCallCount).IsEqualTo(1);
         await Assert.That(stored.Count).IsEqualTo(1);
         await Assert.That(stored[0].UserId).IsEqualTo(userId);
+        await Assert.That(stored[0].AccountId).IsEqualTo(account.Id);
         await Assert.That(dto.Id).IsEqualTo(stored[0].Id);
         await Assert.That(dto.Amount).IsEqualTo(-42.50m);
         await Assert.That(dto.Date).IsEqualTo(date);
         await Assert.That(dto.Description).IsEqualTo("Groceries");
+        await Assert.That(dto.AccountId).IsEqualTo(account.Id);
+        await Assert.That(dto.AccountName).IsEqualTo("Checking");
+        await Assert.That(dto.CurrencyCode).IsEqualTo("USD");
+        await Assert.That(dto.CurrencySymbol).IsEqualTo("$");
         await Assert.That(dto.CreatedAtUtc).IsEqualTo(createdAtUtc.UtcDateTime);
         await Assert.That(stored[0].CreatedAtUtc).IsEqualTo(createdAtUtc.UtcDateTime);
         await Assert.That(dto.PayeeId).IsNull();
@@ -43,24 +46,48 @@ public sealed class CreateTransactionHandlerTests
     }
 
     [Test]
-    public async Task HandleAsync_WithBlankDescription_ReturnsEmptyDescription()
+    public async Task HandleAsync_WithUnknownAccountId_ThrowsValidationExceptionAndDoesNotPersist()
     {
-        // Arrange
         var repository = new InMemoryTransactionRepository();
         var userId = Guid.CreateVersion7();
         var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
-        var payees = new InMemoryPayeeRepository(userId, new FakeTimeProvider(createdAtUtc));
-        var handler = new CreateTransactionHandler(
-            repository,
-            payees,
-            new StubUserContext(userId),
-            new FakeTimeProvider(createdAtUtc));
+        var timeProvider = new FakeTimeProvider(createdAtUtc);
+        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var currencies = new InMemoryCurrencyReadService();
+        var payees = new InMemoryPayeeRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
 
-        // Act — blank description is stored as null on the entity but normalised to "" in the dto
-        var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), "   "));
+        try
+        {
+            await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), Guid.CreateVersion7(), "Coffee", "Starbucks"));
+        }
+        catch (ValidationException exception)
+        {
+            await Assert.That(exception.Errors.ContainsKey("AccountId")).IsTrue();
+            await Assert.That(repository.AddCallCount).IsEqualTo(0);
+            await Assert.That(payees.GetOrCreateCallCount).IsEqualTo(0);
+            return;
+        }
+
+        throw new InvalidOperationException("Expected ValidationException.");
+    }
+
+    [Test]
+    public async Task HandleAsync_WithBlankDescription_ReturnsEmptyDescription()
+    {
+        var repository = new InMemoryTransactionRepository();
+        var userId = Guid.CreateVersion7();
+        var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
+        var timeProvider = new FakeTimeProvider(createdAtUtc);
+        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var currencies = new InMemoryCurrencyReadService();
+        Account account = await accounts.CreateAsync();
+        var payees = new InMemoryPayeeRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
+
+        var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), account.Id, "   "));
         var stored = (await repository.GetAllAsync()).Single();
 
-        // Assert
         await Assert.That(stored.Description).IsNull();
         await Assert.That(dto.Description).IsEqualTo("");
     }
@@ -68,23 +95,20 @@ public sealed class CreateTransactionHandlerTests
     [Test]
     public async Task HandleAsync_WithNewPayeeName_CreatesPayeeLinksTransactionAndReturnsPayeeFields()
     {
-        // Arrange
         var repository = new InMemoryTransactionRepository();
         var userId = Guid.CreateVersion7();
         var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
-        var payees = new InMemoryPayeeRepository(userId, new FakeTimeProvider(createdAtUtc));
-        var handler = new CreateTransactionHandler(
-            repository,
-            payees,
-            new StubUserContext(userId),
-            new FakeTimeProvider(createdAtUtc));
+        var timeProvider = new FakeTimeProvider(createdAtUtc);
+        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var currencies = new InMemoryCurrencyReadService();
+        Account account = await accounts.CreateAsync();
+        var payees = new InMemoryPayeeRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
 
-        // Act
-        var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), "Coffee", "  Starbucks  "));
+        var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), account.Id, "Coffee", "  Starbucks  "));
         var stored = (await repository.GetAllAsync()).Single();
         var payee = (await payees.GetAllAsync()).Single();
 
-        // Assert
         await Assert.That(stored.PayeeId).IsEqualTo(payee.Id);
         await Assert.That(dto.PayeeId).IsEqualTo(payee.Id);
         await Assert.That(dto.PayeeName).IsEqualTo("Starbucks");
@@ -94,23 +118,20 @@ public sealed class CreateTransactionHandlerTests
     [Test]
     public async Task HandleAsync_WithExistingPayeeNameDifferentCase_ReusesPayee()
     {
-        // Arrange
         var repository = new InMemoryTransactionRepository();
         var userId = Guid.CreateVersion7();
         var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
-        var payees = new InMemoryPayeeRepository(userId, new FakeTimeProvider(createdAtUtc));
+        var timeProvider = new FakeTimeProvider(createdAtUtc);
+        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var currencies = new InMemoryCurrencyReadService();
+        Account account = await accounts.CreateAsync();
+        var payees = new InMemoryPayeeRepository(userId, timeProvider);
         await payees.GetOrCreateAsync("Starbucks");
         var existing = (await payees.GetAllAsync()).Single();
-        var handler = new CreateTransactionHandler(
-            repository,
-            payees,
-            new StubUserContext(userId),
-            new FakeTimeProvider(createdAtUtc));
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
 
-        // Act
-        var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), "Coffee", "starbucks"));
+        var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), account.Id, "Coffee", "starbucks"));
 
-        // Assert
         await Assert.That((await payees.GetAllAsync()).Count).IsEqualTo(1);
         await Assert.That(dto.PayeeId).IsEqualTo(existing.Id);
         await Assert.That(dto.PayeeName).IsEqualTo("Starbucks");
@@ -119,24 +140,22 @@ public sealed class CreateTransactionHandlerTests
     [Test]
     public async Task HandleAsync_WithInvalidCommand_DoesNotPersistOrCreatePayee()
     {
-        // Arrange
         var repository = new InMemoryTransactionRepository();
         var userId = Guid.CreateVersion7();
-        var payees = new InMemoryPayeeRepository(userId, new FakeTimeProvider(new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero)));
-        var handler = new CreateTransactionHandler(
-            repository,
-            payees,
-            new StubUserContext(userId),
-            new FakeTimeProvider(new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero)));
+        var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
+        var timeProvider = new FakeTimeProvider(createdAtUtc);
+        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var currencies = new InMemoryCurrencyReadService();
+        Account account = await accounts.CreateAsync();
+        var payees = new InMemoryPayeeRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
 
-        // Act
         try
         {
-            await handler.HandleAsync(new CreateTransactionCommand(0m, DateOnly.FromDateTime(DateTime.UtcNow), "Invalid", "Starbucks"));
+            await handler.HandleAsync(new CreateTransactionCommand(0m, DateOnly.FromDateTime(DateTime.UtcNow), account.Id, "Invalid", "Starbucks"));
         }
         catch (ValidationException)
         {
-            // Assert
             await Assert.That(repository.AddCallCount).IsEqualTo(0);
             await Assert.That(payees.GetOrCreateCallCount).IsEqualTo(0);
             await Assert.That((await payees.GetAllAsync()).Count).IsEqualTo(0);

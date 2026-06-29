@@ -12,11 +12,13 @@ public sealed class TransactionEndpointsTests
     {
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
 
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
             amount = -42.50m,
             date = "2026-06-12",
+            accountId,
             description = "Groceries"
         });
         JsonNode? json = await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync());
@@ -25,6 +27,8 @@ public sealed class TransactionEndpointsTests
         await Assert.That(response.Headers.Location?.ToString().StartsWith("/api/transactions/")).IsTrue();
         await Assert.That(json!["amount"]!.GetValue<decimal>()).IsEqualTo(-42.50m);
         await Assert.That(json["date"]!.GetValue<string>()).IsEqualTo("2026-06-12");
+        await Assert.That(json["accountId"]!.GetValue<Guid>()).IsEqualTo(accountId);
+        await Assert.That(json["accountName"]!.GetValue<string>()).IsEqualTo("Checking");
         await Assert.That(json["description"]!.GetValue<string>()).IsEqualTo("Groceries");
         await Assert.That(json["createdAtUtc"] is not null).IsTrue();
     }
@@ -32,19 +36,19 @@ public sealed class TransactionEndpointsTests
     [Test]
     public async Task PostInvalidTransaction_ReturnsValidationProblemDetails()
     {
-        // Arrange
         await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
 
-        // Act
-        HttpResponseMessage response = await host.Factory.CreateAuthenticatedClient().PostAsJsonAsync("/api/transactions", new
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
             amount = 0,
             date = "2026-06-12",
+            accountId,
             description = "Groceries"
         });
         JsonNode? json = await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync());
 
-        // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
         await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo("application/problem+json");
         await Assert.That(json!["errors"]!["Amount"] is not null).IsTrue();
@@ -53,20 +57,19 @@ public sealed class TransactionEndpointsTests
     [Test]
     public async Task PostTransaction_WithoutDescription_ReturnsCreatedWithEmptyDescription()
     {
-        // Arrange
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
 
-        // Act
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
             amount = -42.50m,
             date = "2026-06-12",
+            accountId,
             description = ""
         });
         JsonNode? json = await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync());
 
-        // Assert — backend normalises a missing description to an empty string for the client
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Created);
         await Assert.That(json!["description"]!.GetValue<string>()).IsEqualTo("");
     }
@@ -74,16 +77,14 @@ public sealed class TransactionEndpointsTests
     [Test]
     public async Task GetTransactions_WithoutDescription_ReturnsEmptyDescription()
     {
-        // Arrange
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
         await client.PostAsJsonAsync("/api/transactions",
-            new { amount = 1m, date = "2026-06-12", description = "" });
+            new { amount = 1m, date = "2026-06-12", accountId, description = "" });
 
-        // Act
         JsonNode? json = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
 
-        // Assert
         await Assert.That(json!["items"]!.AsArray()[0]!["description"]!.GetValue<string>()).IsEqualTo("");
     }
 
@@ -103,11 +104,12 @@ public sealed class TransactionEndpointsTests
     {
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
         await client.PostAsJsonAsync("/api/transactions",
-            new { amount = 1m, date = "2026-06-11", description = "Older" });
+            new { amount = 1m, date = "2026-06-11", accountId, description = "Older" });
         await Task.Delay(2);
         await client.PostAsJsonAsync("/api/transactions",
-            new { amount = 2m, date = "2026-06-12", description = "Newest" });
+            new { amount = 2m, date = "2026-06-12", accountId, description = "Newest" });
 
         JsonNode? json = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
 
@@ -126,18 +128,35 @@ public sealed class TransactionEndpointsTests
     }
 
     [Test]
-    public async Task PostThenGet_PreservesDecimalAndDateFidelity()
+    public async Task PostThenGet_PreservesDecimalDateAndAccountProjection()
     {
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
         await client.PostAsJsonAsync("/api/transactions",
-            new { amount = -42.50m, date = "2026-06-12", description = "Groceries" });
+            new { amount = -42.50m, date = "2026-06-12", accountId, description = "Groceries" });
 
         JsonNode? json = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
         JsonNode item = json!["items"]!.AsArray()[0]!;
 
         await Assert.That(item["amount"]!.GetValue<decimal>()).IsEqualTo(-42.50m);
         await Assert.That(item["date"]!.GetValue<string>()).IsEqualTo("2026-06-12");
+        await Assert.That(item["accountId"]!.GetValue<Guid>()).IsEqualTo(accountId);
+        await Assert.That(item["accountName"]!.GetValue<string>()).IsEqualTo("Checking");
+    }
+
+    private static async Task<Guid> CreateAccountAsync(HttpClient client)
+    {
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
+        {
+            name = "Checking",
+            type = "Checking",
+            openingBalance = 0m,
+            currencyCode = "USD",
+        });
+        response.EnsureSuccessStatusCode();
+        JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        return json["id"]!.GetValue<Guid>();
     }
 
     private static async Task<PostgresTestHost> StartHostAsync()

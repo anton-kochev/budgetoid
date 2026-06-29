@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using ServiceDefaults;
+using System.Text.Json.Serialization;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -47,6 +48,8 @@ builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build());
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddProblemDetails();
 builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
@@ -55,6 +58,7 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod()));
 builder.Services.AddExceptionHandler<ValidationExceptionHandler>();
 builder.Services.AddExceptionHandler<BadRequestExceptionHandler>();
+builder.Services.AddExceptionHandler<NotFoundExceptionHandler>();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddOpenApi();
 
@@ -95,6 +99,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapDefaultEndpoints();
+app.MapAccountEndpoints();
+app.MapCurrencyEndpoints();
 app.MapTransactionEndpoints();
 app.MapPayeeEndpoints();
 
