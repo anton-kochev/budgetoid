@@ -37,6 +37,12 @@ export const routes: Routes = [
         loadComponent: () => import('./accounts/accounts.component').then(x => x.AccountsComponent),
         canActivate: [authGuard],
       },
+      {
+        path: 'groups',
+        // prettier-ignore
+        loadComponent: () => import('./groups/groups.component').then(x => x.GroupsComponent),
+        canActivate: [authGuard],
+      },
       { path: '', redirectTo: '/home', pathMatch: 'full' },
     ],
   },
