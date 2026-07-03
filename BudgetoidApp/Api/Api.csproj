@@ -12,6 +12,10 @@
         <PackageReference Include="Aspire.Npgsql.EntityFrameworkCore.PostgreSQL" Version="13.4.6"/>
         <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.9"/>
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9"/>
+        <!-- Pin Microsoft.OpenApi above the 2.0.0 that Microsoft.AspNetCore.OpenApi 10.0.9 pulls
+             transitively: 2.0.0 has GHSA-v5pm-xwqc-g5wc (high). Patched in 2.7.5, same major so
+             API-compatible. Remove once the AspNetCore.OpenApi package references a patched version. -->
+        <PackageReference Include="Microsoft.OpenApi" Version="2.7.5"/>
         <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
