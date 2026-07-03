@@ -15,6 +15,7 @@ public sealed class Transaction
     public DateOnly Date { get; private set; }
     public string? Description { get; private set; }
     public Guid? PayeeId { get; private set; }
+    public Guid? GroupId { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
 
     public static Transaction Create(Guid userId, Guid accountId, decimal amount, DateOnly date, string? description, DateTime createdAtUtc)
@@ -82,5 +83,17 @@ public sealed class Transaction
         }
 
         PayeeId = payeeId;
+    }
+
+    public void AssignGroup(Guid groupId)
+    {
+        // An empty id here is a programmer/invariant error (the caller always passes a real
+        // group id), not user-facing validation — so ArgumentException, not ValidationException.
+        if (groupId == Guid.Empty)
+        {
+            throw new ArgumentException("Group id is required.", nameof(groupId));
+        }
+
+        GroupId = groupId;
     }
 }

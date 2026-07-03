@@ -89,6 +89,54 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task AssignGroup_SetsGroupId()
+    {
+        // Arrange
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+        var groupId = Guid.CreateVersion7();
+
+        // Act
+        transaction.AssignGroup(groupId);
+
+        // Assert
+        await Assert.That(transaction.GroupId).IsEqualTo(groupId);
+    }
+
+    [Test]
+    public async Task AssignGroup_WithEmptyGroupId_ThrowsArgumentException()
+    {
+        // Arrange
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        ArgumentException? caught = null;
+        try
+        {
+            transaction.AssignGroup(Guid.Empty);
+        }
+        catch (ArgumentException exception)
+        {
+            caught = exception;
+        }
+
+        // Assert
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ParamName).IsEqualTo("groupId");
+    }
+
+    [Test]
     public async Task Create_WithEmptyUserId_ThrowsValidationException()
     {
         var exception = ThrowsValidationException(() => Transaction.Create(Guid.Empty, Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
