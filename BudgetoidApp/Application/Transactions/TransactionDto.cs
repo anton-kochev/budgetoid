@@ -14,8 +14,8 @@ public sealed record TransactionDto(
     string CurrencySymbol,
     Guid? PayeeId,
     string? PayeeName,
-    Guid? GroupId = null,
-    string? GroupName = null)
+    Guid? GroupId,
+    string? GroupName)
 {
     public static TransactionDto FromTransaction(
         Transaction transaction,
