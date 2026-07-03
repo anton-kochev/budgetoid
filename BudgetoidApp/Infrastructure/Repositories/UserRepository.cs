@@ -1,4 +1,3 @@
-using Application.Users;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;

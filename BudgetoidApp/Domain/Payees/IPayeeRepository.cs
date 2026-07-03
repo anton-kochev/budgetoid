@@ -1,6 +1,4 @@
-using Domain.Payees;
-
-namespace Application.Payees;
+namespace Domain.Payees;
 
 public interface IPayeeRepository
 {

@@ -1,6 +1,4 @@
-using Domain.Transactions;
-
-namespace Application.Transactions;
+namespace Domain.Transactions;
 
 public interface ITransactionRepository
 {

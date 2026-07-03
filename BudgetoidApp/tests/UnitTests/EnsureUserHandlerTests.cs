@@ -1,4 +1,3 @@
-using Application.Users;
 using Application.Users.EnsureUser;
 using Domain.Users;
 using Microsoft.Extensions.Time.Testing;

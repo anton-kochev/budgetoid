@@ -1,6 +1,4 @@
-using Domain.Accounts;
-
-namespace Application.Accounts;
+namespace Domain.Accounts;
 
 public interface IAccountRepository
 {

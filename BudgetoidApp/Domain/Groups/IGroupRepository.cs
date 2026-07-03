@@ -1,6 +1,4 @@
-using Domain.Groups;
-
-namespace Application.Groups;
+namespace Domain.Groups;
 
 public interface IGroupRepository
 {

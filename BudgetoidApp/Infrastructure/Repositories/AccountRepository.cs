@@ -1,4 +1,3 @@
-using Application.Accounts;
 using Domain.Accounts;
 using Domain.Common;
 using Infrastructure.Persistence;

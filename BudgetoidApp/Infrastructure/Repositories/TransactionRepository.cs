@@ -1,4 +1,3 @@
-using Application.Transactions;
 using Domain.Transactions;
 using Infrastructure.Persistence;
 

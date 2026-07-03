@@ -1,5 +1,4 @@
 using Application.Abstractions;
-using Application.Payees;
 using Domain.Payees;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;

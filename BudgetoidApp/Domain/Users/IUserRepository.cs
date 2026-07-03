@@ -1,6 +1,4 @@
-using Domain.Users;
-
-namespace Application.Users;
+namespace Domain.Users;
 
 public interface IUserRepository
 {

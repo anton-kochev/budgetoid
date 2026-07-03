@@ -1,4 +1,3 @@
-using Application.Groups;
 using Domain.Common;
 using Domain.Groups;
 using Infrastructure.Persistence;
