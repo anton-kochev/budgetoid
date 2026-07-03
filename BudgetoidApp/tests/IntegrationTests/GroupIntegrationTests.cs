@@ -263,6 +263,42 @@ public sealed class GroupIntegrationTests
         await Assert.That(list["items"]!.AsArray().Count).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task UpdateGroup_ForAnotherUsersGroup_ReturnsNotFound()
+    {
+        // Arrange
+        await using PostgresTestHost host = new();
+        await host.StartAsync();
+        await using ApiFactory factoryA = host.CreateFactory("google-a");
+        await using ApiFactory factoryB = host.CreateFactory("google-b");
+        Guid groupA = await CreateGroupAsync(factoryA.CreateAuthenticatedClient(), "Groceries");
+
+        // Act
+        HttpResponseMessage response = await factoryB.CreateAuthenticatedClient()
+            .PutAsJsonAsync($"/api/groups/{groupA}", new { name = "Hacked", description = (string?)null });
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+    }
+
+    [Test]
+    public async Task DeleteGroup_ForAnotherUsersGroup_ReturnsNotFound()
+    {
+        // Arrange
+        await using PostgresTestHost host = new();
+        await host.StartAsync();
+        await using ApiFactory factoryA = host.CreateFactory("google-a");
+        await using ApiFactory factoryB = host.CreateFactory("google-b");
+        Guid groupA = await CreateGroupAsync(factoryA.CreateAuthenticatedClient(), "Groceries");
+
+        // Act
+        HttpResponseMessage response = await factoryB.CreateAuthenticatedClient()
+            .DeleteAsync($"/api/groups/{groupA}");
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+    }
+
     private static async Task<Guid> CreateGroupAsync(HttpClient client, string name)
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/groups", new
