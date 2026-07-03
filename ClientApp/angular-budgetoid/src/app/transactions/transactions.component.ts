@@ -87,6 +87,16 @@ import { TransactionsService } from './transactions.service';
         </mat-autocomplete>
       </mat-form-field>
 
+      <mat-form-field>
+        <mat-label>Group</mat-label>
+        <mat-select formControlName="groupId">
+          <mat-option [value]="''">None</mat-option>
+          @for (group of transactions.groups(); track group.id) {
+            <mat-option [value]="group.id">{{ group.name }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
       <button
         mat-flat-button
         color="primary"
@@ -104,6 +114,7 @@ import { TransactionsService } from './transactions.service';
           <span matListItemLine>
             {{ transaction.accountName }} ·
             {{ transaction.payeeName ? transaction.payeeName + ' · ' : ''
+            }}{{ transaction.groupName ? transaction.groupName + ' · ' : ''
             }}{{ transaction.date }} · {{ transaction.currencySymbol
             }}{{ transaction.amount }}
           </span>
@@ -125,12 +136,14 @@ export class TransactionsComponent implements OnInit {
     accountId: ['', [Validators.required]],
     description: ['', [Validators.maxLength(500)]],
     payee: ['', [Validators.maxLength(200)]],
+    groupId: [''],
   });
 
   public ngOnInit(): void {
     this.accounts.load();
     this.transactions.load();
     this.transactions.loadPayees();
+    this.transactions.loadGroups();
   }
 
   protected filteredPayees(): PayeeDto[] {
@@ -153,6 +166,7 @@ export class TransactionsComponent implements OnInit {
     const value = this.form.getRawValue();
 
     const payeeName = value.payee.trim();
+    const groupId = value.groupId;
 
     this.transactions.add({
       amount: value.amount,
@@ -160,6 +174,7 @@ export class TransactionsComponent implements OnInit {
       accountId: value.accountId,
       description: value.description,
       ...(payeeName ? { payeeName } : {}),
+      ...(groupId ? { groupId } : {}),
     });
     this.form.reset({
       amount: 0,
@@ -167,6 +182,7 @@ export class TransactionsComponent implements OnInit {
       accountId: '',
       description: '',
       payee: '',
+      groupId: '',
     });
   }
 

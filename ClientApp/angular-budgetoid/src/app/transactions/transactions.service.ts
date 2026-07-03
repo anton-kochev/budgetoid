@@ -1,4 +1,5 @@
 import { Injectable, inject, signal } from '@angular/core';
+import { GroupDto, GroupsApiService } from '@app-core/api/groups-api.service';
 import { PayeeDto, PayeesApiService } from '@app-core/api/payees-api.service';
 import {
   CreateTransactionRequest,
@@ -11,12 +12,15 @@ import { finalize, tap } from 'rxjs';
 export class TransactionsService {
   private readonly api = inject(TransactionsApiService);
   private readonly payeesApi = inject(PayeesApiService);
+  private readonly groupsApi = inject(GroupsApiService);
   private readonly transactionsSignal = signal<TransactionDto[]>([]);
   private readonly payeesSignal = signal<PayeeDto[]>([]);
+  private readonly groupsSignal = signal<GroupDto[]>([]);
   private readonly loadingSignal = signal(false);
 
   public readonly transactions = this.transactionsSignal.asReadonly();
   public readonly payees = this.payeesSignal.asReadonly();
+  public readonly groups = this.groupsSignal.asReadonly();
   public readonly loading = this.loadingSignal.asReadonly();
 
   public load(): void {
@@ -31,6 +35,12 @@ export class TransactionsService {
     this.payeesApi
       .getPayees()
       .subscribe((response) => this.payeesSignal.set(response.items));
+  }
+
+  public loadGroups(): void {
+    this.groupsApi
+      .getGroups()
+      .subscribe((response) => this.groupsSignal.set(response.items));
   }
 
   public add(request: CreateTransactionRequest): void {
