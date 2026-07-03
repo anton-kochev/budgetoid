@@ -20,6 +20,9 @@ public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITran
                 join payee in dbContext.Payees.AsNoTracking()
                     on transaction.PayeeId equals (Guid?)payee.Id into payees
                 from payee in payees.DefaultIfEmpty()
+                join grp in dbContext.Groups.AsNoTracking()
+                    on transaction.GroupId equals (Guid?)grp.Id into groups
+                from grp in groups.DefaultIfEmpty()
                 orderby transaction.Date descending, transaction.CreatedAtUtc descending
                 select new TransactionDto(
                     transaction.Id,
@@ -32,7 +35,9 @@ public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITran
                     account.CurrencyCode,
                     currency.Symbol,
                     transaction.PayeeId,
-                    payee == null ? null : payee.Name))
+                    payee == null ? null : payee.Name,
+                    transaction.GroupId,
+                    grp == null ? null : grp.Name))
             .ToListAsync(cancellationToken);
     }
 }

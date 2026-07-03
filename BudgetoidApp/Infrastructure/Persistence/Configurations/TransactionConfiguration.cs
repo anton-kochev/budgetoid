@@ -1,4 +1,5 @@
 using Domain.Accounts;
+using Domain.Groups;
 using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
@@ -21,11 +22,13 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         builder.Property(transaction => transaction.Date).HasColumnName("date").HasColumnType("date").IsRequired();
         builder.Property(transaction => transaction.Description).HasColumnName("description").HasMaxLength(500);
         builder.Property(transaction => transaction.PayeeId).HasColumnName("payee_id");
+        builder.Property(transaction => transaction.GroupId).HasColumnName("group_id");
         builder.Property(transaction => transaction.CreatedAtUtc).HasColumnName("created_at_utc").HasColumnType("timestamp with time zone").IsRequired();
 
         builder.HasIndex(transaction => new { transaction.UserId, transaction.Date, transaction.CreatedAtUtc })
             .IsDescending(false, true, true);
         builder.HasIndex(transaction => transaction.PayeeId);
+        builder.HasIndex(transaction => transaction.GroupId);
         builder.HasIndex(transaction => transaction.AccountId);
 
         builder.HasOne<User>()
@@ -42,5 +45,12 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
             .WithMany()
             .HasForeignKey(transaction => transaction.PayeeId)
             .OnDelete(DeleteBehavior.SetNull);
+
+        // Restrict, not SetNull: a group with linked transactions must not be deletable. This is the
+        // database backstop for the app-level HasTransactionsAsync guard in GroupRepository.
+        builder.HasOne<Group>()
+            .WithMany()
+            .HasForeignKey(transaction => transaction.GroupId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

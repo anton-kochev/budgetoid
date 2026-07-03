@@ -1,6 +1,7 @@
 using Application.Abstractions;
 using Domain.Accounts;
 using Domain.Currencies;
+using Domain.Groups;
 using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
@@ -16,6 +17,7 @@ public sealed class BudgetoidDbContext(
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<Currency> Currencies => Set<Currency>();
     public DbSet<Payee> Payees => Set<Payee>();
+    public DbSet<Group> Groups => Set<Group>();
     public DbSet<User> Users => Set<User>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -42,6 +44,8 @@ public sealed class BudgetoidDbContext(
             .HasQueryFilter("UserIsolation", account => account.UserId == userContext!.UserId);
         modelBuilder.Entity<Payee>()
             .HasQueryFilter("UserIsolation", payee => payee.UserId == userContext!.UserId);
+        modelBuilder.Entity<Group>()
+            .HasQueryFilter("UserIsolation", group => group.UserId == userContext!.UserId);
 
         // Currencies are global ISO-4217 reference data seeded by migrations. They deliberately
         // have no UserId and no query filter, unlike user-owned accounts, transactions and payees.

@@ -1,5 +1,6 @@
 using Application.Accounts;
 using Application.Currencies;
+using Application.Groups;
 using Application.Payees;
 using Application.Transactions;
 using Application.Users;
@@ -16,11 +17,13 @@ public static class DependencyInjection
         services.AddScoped<IAccountRepository, AccountRepository>();
         services.AddScoped<ITransactionRepository, TransactionRepository>();
         services.AddScoped<IPayeeRepository, PayeeRepository>();
+        services.AddScoped<IGroupRepository, GroupRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<ITransactionReadService, TransactionReadService>();
         services.AddScoped<IAccountReadService, AccountReadService>();
         services.AddScoped<ICurrencyReadService, CurrencyReadService>();
         services.AddScoped<IPayeeReadService, PayeeReadService>();
+        services.AddScoped<IGroupReadService, GroupReadService>();
         return services;
     }
 }
