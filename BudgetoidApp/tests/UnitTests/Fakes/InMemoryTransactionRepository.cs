@@ -7,11 +7,14 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
 {
     private readonly List<Transaction> _transactions = [];
     private readonly Dictionary<Guid, string> _payeeNames = [];
+    private readonly Dictionary<Guid, string> _groupNames = [];
     private readonly Dictionary<Guid, string> _accountNames = [];
 
     public int AddCallCount { get; private set; }
 
     public void SetPayeeProjection(Guid payeeId, string payeeName) => _payeeNames[payeeId] = payeeName;
+
+    public void SetGroupProjection(Guid groupId, string groupName) => _groupNames[groupId] = groupName;
 
     public void SetAccountProjection(Guid accountId, string accountName) => _accountNames[accountId] = accountName;
 
@@ -42,6 +45,9 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
                 "$",
                 transaction.PayeeId is { } payeeId && _payeeNames.TryGetValue(payeeId, out string? name)
                     ? name
+                    : null,
+                transaction.GroupId is { } groupId && _groupNames.TryGetValue(groupId, out string? groupName)
+                    ? groupName
                     : null))
             .ToList();
 

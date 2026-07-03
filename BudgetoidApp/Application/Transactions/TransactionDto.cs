@@ -13,14 +13,17 @@ public sealed record TransactionDto(
     string CurrencyCode,
     string CurrencySymbol,
     Guid? PayeeId,
-    string? PayeeName)
+    string? PayeeName,
+    Guid? GroupId = null,
+    string? GroupName = null)
 {
     public static TransactionDto FromTransaction(
         Transaction transaction,
         string accountName,
         string currencyCode,
         string currencySymbol,
-        string? payeeName = null) => new(
+        string? payeeName = null,
+        string? groupName = null) => new(
         transaction.Id,
         transaction.Amount,
         transaction.Date,
@@ -31,7 +34,9 @@ public sealed record TransactionDto(
         currencyCode,
         currencySymbol,
         transaction.PayeeId,
-        payeeName);
+        payeeName,
+        transaction.GroupId,
+        groupName);
 }
 
 public sealed record TransactionListResponse(IReadOnlyList<TransactionDto> Items);

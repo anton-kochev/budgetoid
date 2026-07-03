@@ -1,8 +1,10 @@
 using Application.Abstractions;
 using Application.Accounts;
 using Application.Currencies;
+using Application.Groups;
 using Application.Payees;
 using Domain.Accounts;
+using Domain.Groups;
 using Domain.Payees;
 using Domain.Transactions;
 using DomainValidationException = Domain.Common.ValidationException;
@@ -14,6 +16,7 @@ public sealed class CreateTransactionHandler(
     IAccountRepository accounts,
     ICurrencyReadService currencies,
     IPayeeRepository payees,
+    IGroupRepository groups,
     IUserContext userContext,
     TimeProvider timeProvider)
     : ICommandHandler<CreateTransactionCommand, TransactionDto>
@@ -54,9 +57,24 @@ public sealed class CreateTransactionHandler(
             transaction.AssignPayee(payee.Id);
         }
 
+        Group? group = null;
+        if (command.GroupId is { } groupId)
+        {
+            group = await groups.GetByIdAsync(groupId, cancellationToken);
+            if (group is null)
+            {
+                throw new DomainValidationException(new Dictionary<string, string[]>
+                {
+                    [nameof(command.GroupId)] = ["Group was not found."]
+                });
+            }
+
+            transaction.AssignGroup(group.Id);
+        }
+
         await repository.AddAsync(transaction, cancellationToken);
 
         return TransactionDto.FromTransaction(transaction, account.Name, account.CurrencyCode, currency.Symbol,
-            payee?.Name);
+            payee?.Name, group?.Name);
     }
 }

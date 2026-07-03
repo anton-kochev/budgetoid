@@ -5,4 +5,5 @@ public sealed record CreateTransactionCommand(
     DateOnly Date,
     Guid AccountId,
     string? Description,
-    string? PayeeName = null);
+    string? PayeeName = null,
+    Guid? GroupId = null);

@@ -19,7 +19,8 @@ public sealed class CreateTransactionHandlerTests
         var currencies = new InMemoryCurrencyReadService();
         Account account = await accounts.CreateAsync("Checking");
         var payees = new InMemoryPayeeRepository(userId, timeProvider);
-        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
+        var groups = new InMemoryGroupRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, groups, new StubUserContext(userId), timeProvider);
         var date = new DateOnly(2026, 6, 12);
 
         var dto = await handler.HandleAsync(new CreateTransactionCommand(-42.50m, date, account.Id, "Groceries"));
@@ -55,7 +56,8 @@ public sealed class CreateTransactionHandlerTests
         var accounts = new InMemoryAccountRepository(userId, timeProvider);
         var currencies = new InMemoryCurrencyReadService();
         var payees = new InMemoryPayeeRepository(userId, timeProvider);
-        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
+        var groups = new InMemoryGroupRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, groups, new StubUserContext(userId), timeProvider);
 
         try
         {
@@ -83,7 +85,8 @@ public sealed class CreateTransactionHandlerTests
         var currencies = new InMemoryCurrencyReadService();
         Account account = await accounts.CreateAsync();
         var payees = new InMemoryPayeeRepository(userId, timeProvider);
-        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
+        var groups = new InMemoryGroupRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, groups, new StubUserContext(userId), timeProvider);
 
         var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), account.Id, "   "));
         var stored = (await repository.GetAllAsync()).Single();
@@ -103,7 +106,8 @@ public sealed class CreateTransactionHandlerTests
         var currencies = new InMemoryCurrencyReadService();
         Account account = await accounts.CreateAsync();
         var payees = new InMemoryPayeeRepository(userId, timeProvider);
-        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
+        var groups = new InMemoryGroupRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, groups, new StubUserContext(userId), timeProvider);
 
         var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), account.Id, "Coffee", "  Starbucks  "));
         var stored = (await repository.GetAllAsync()).Single();
@@ -126,9 +130,10 @@ public sealed class CreateTransactionHandlerTests
         var currencies = new InMemoryCurrencyReadService();
         Account account = await accounts.CreateAsync();
         var payees = new InMemoryPayeeRepository(userId, timeProvider);
+        var groups = new InMemoryGroupRepository(userId, timeProvider);
         await payees.GetOrCreateAsync("Starbucks");
         var existing = (await payees.GetAllAsync()).Single();
-        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, groups, new StubUserContext(userId), timeProvider);
 
         var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), account.Id, "Coffee", "starbucks"));
 
@@ -148,7 +153,8 @@ public sealed class CreateTransactionHandlerTests
         var currencies = new InMemoryCurrencyReadService();
         Account account = await accounts.CreateAsync();
         var payees = new InMemoryPayeeRepository(userId, timeProvider);
-        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, new StubUserContext(userId), timeProvider);
+        var groups = new InMemoryGroupRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, groups, new StubUserContext(userId), timeProvider);
 
         try
         {
@@ -159,6 +165,88 @@ public sealed class CreateTransactionHandlerTests
             await Assert.That(repository.AddCallCount).IsEqualTo(0);
             await Assert.That(payees.GetOrCreateCallCount).IsEqualTo(0);
             await Assert.That((await payees.GetAllAsync()).Count).IsEqualTo(0);
+            return;
+        }
+
+        throw new InvalidOperationException("Expected ValidationException.");
+    }
+
+    [Test]
+    public async Task HandleAsync_WithoutGroupId_LeavesGroupNull()
+    {
+        // Arrange
+        var repository = new InMemoryTransactionRepository();
+        var userId = Guid.CreateVersion7();
+        var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
+        var timeProvider = new FakeTimeProvider(createdAtUtc);
+        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var currencies = new InMemoryCurrencyReadService();
+        Account account = await accounts.CreateAsync();
+        var payees = new InMemoryPayeeRepository(userId, timeProvider);
+        var groups = new InMemoryGroupRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, groups, new StubUserContext(userId), timeProvider);
+
+        // Act
+        var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), account.Id, "Coffee"));
+        var stored = (await repository.GetAllAsync()).Single();
+
+        // Assert
+        await Assert.That(dto.GroupId).IsNull();
+        await Assert.That(dto.GroupName).IsNull();
+        await Assert.That(stored.GroupId).IsNull();
+    }
+
+    [Test]
+    public async Task HandleAsync_WithGroupId_LinksGroupAndReturnsGroupFields()
+    {
+        // Arrange
+        var repository = new InMemoryTransactionRepository();
+        var userId = Guid.CreateVersion7();
+        var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
+        var timeProvider = new FakeTimeProvider(createdAtUtc);
+        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var currencies = new InMemoryCurrencyReadService();
+        Account account = await accounts.CreateAsync();
+        var payees = new InMemoryPayeeRepository(userId, timeProvider);
+        var groups = new InMemoryGroupRepository(userId, timeProvider);
+        Domain.Groups.Group group = await groups.CreateAsync("Groceries");
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, groups, new StubUserContext(userId), timeProvider);
+
+        // Act
+        var dto = await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), account.Id, "Coffee", GroupId: group.Id));
+        var stored = (await repository.GetAllAsync()).Single();
+
+        // Assert
+        await Assert.That(stored.GroupId).IsEqualTo(group.Id);
+        await Assert.That(dto.GroupId).IsEqualTo(group.Id);
+        await Assert.That(dto.GroupName).IsEqualTo("Groceries");
+    }
+
+    [Test]
+    public async Task HandleAsync_WithUnknownGroupId_ThrowsValidationExceptionAndDoesNotPersist()
+    {
+        // Arrange
+        var repository = new InMemoryTransactionRepository();
+        var userId = Guid.CreateVersion7();
+        var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
+        var timeProvider = new FakeTimeProvider(createdAtUtc);
+        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var currencies = new InMemoryCurrencyReadService();
+        Account account = await accounts.CreateAsync();
+        var payees = new InMemoryPayeeRepository(userId, timeProvider);
+        var groups = new InMemoryGroupRepository(userId, timeProvider);
+        var handler = new CreateTransactionHandler(repository, accounts, currencies, payees, groups, new StubUserContext(userId), timeProvider);
+
+        // Act
+        try
+        {
+            await handler.HandleAsync(new CreateTransactionCommand(-4.50m, new DateOnly(2026, 6, 12), account.Id, "Coffee", GroupId: Guid.CreateVersion7()));
+        }
+        catch (ValidationException exception)
+        {
+            // Assert
+            await Assert.That(exception.Errors.ContainsKey("GroupId")).IsTrue();
+            await Assert.That(repository.AddCallCount).IsEqualTo(0);
             return;
         }
 
