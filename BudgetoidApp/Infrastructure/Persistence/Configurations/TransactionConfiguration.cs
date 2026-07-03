@@ -39,7 +39,7 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         builder.HasOne<Account>()
             .WithMany()
             .HasForeignKey(transaction => transaction.AccountId)
-            .OnDelete(DeleteBehavior.NoAction);
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne<Payee>()
             .WithMany()
