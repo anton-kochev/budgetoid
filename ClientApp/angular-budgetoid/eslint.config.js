@@ -2,7 +2,6 @@
 const eslint = require('@eslint/js');
 const tseslint = require('typescript-eslint');
 const angular = require('angular-eslint');
-const globals = require('globals');
 
 module.exports = tseslint.config(
   {
@@ -122,12 +121,9 @@ module.exports = tseslint.config(
     },
   },
   {
+    // Vitest test globals are imported explicitly from 'vitest' in specs,
+    // so no ambient test globals are declared here.
     files: ['**/*.spec.ts'],
-    languageOptions: {
-      globals: {
-        ...globals.jasmine,
-      },
-    },
     rules: {
       '@typescript-eslint/unbound-method': 'off',
     },

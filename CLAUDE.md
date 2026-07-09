@@ -33,9 +33,17 @@ Aspire starts PostgreSQL and the API. The connection name is `budgetoid` and mus
 ```sh
 npm start        # ng serve (dev server)
 npm run build    # production build
+npm test         # Vitest unit tests (single run)
+npm run test:watch     # Vitest watch mode
+npm run test:coverage  # Vitest with coverage
 npm run lint     # ESLint with --fix
 npm run format   # Prettier
 ```
+
+Tests run via the `@angular/build:unit-test` builder (Vitest runner, Node/jsdom).
+Specs live next to their subject as `*.spec.ts`. Import test globals explicitly
+from `vitest` (`import { describe, it, expect } from 'vitest'`) — no ambient
+globals are configured for ESLint. Use `// Arrange // Act // Assert` comments.
 
 ## Backend Architecture
 
@@ -84,6 +92,6 @@ Auth is deferred behind `IUserContext`; slice 1 uses `FakeUserContext`.
 ## Workflow
 
 - Backend: run `dotnet build BudgetoidApp.sln` and `dotnet test` before committing
-- Frontend: run `npm run lint` and `npm run format` before committing
+- Frontend: run `npm test`, `npm run lint`, and `npm run format` before committing
 - Commits follow Conventional Commits (`feat:`, `fix:`, `ci:`, `chore:`, …)
 - One logical change per commit

@@ -8,6 +8,9 @@
     "build": "ng build",
     "start": "ng serve",
     "watch": "ng build --watch --configuration development",
+    "test": "ng test",
+    "test:watch": "ng test --watch",
+    "test:coverage": "ng test --coverage",
     "lint": "ng lint --fix",
     "format": "prettier . --write --cache",
     "format:check": "prettier . --check --cache"
@@ -37,15 +40,16 @@
     "@angular-devkit/build-angular": "^21.2.17",
     "@angular/cli": "^21.2.17",
     "@angular/compiler-cli": "^21.2.17",
-    "@types/jasmine": "^5.1.4",
-    "@types/jest": "^29.5.13",
+    "@vitest/coverage-v8": "^4.1.10",
     "angular-eslint": "21.4.0",
     "eslint": "^9.28.0",
     "eslint-plugin-prefer-arrow": "^1.2.3",
     "immer": "^10.1.1",
+    "jsdom": "^29.1.1",
     "lefthook": "^2.1.9",
     "prettier": "^3.3.3",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.33.1"
+    "typescript-eslint": "^8.33.1",
+    "vitest": "^4.1.10"
   }
 }
