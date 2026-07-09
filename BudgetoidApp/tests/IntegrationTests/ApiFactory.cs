@@ -10,18 +10,29 @@ namespace IntegrationTests;
 public sealed class ApiFactory(
     string connectionString,
     string? defaultSubject = "test-subject",
-    string environment = "Development") : WebApplicationFactory<Program>
+    string environment = "Development",
+    IReadOnlyDictionary<string, string?>? settings = null) : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(environment);
         builder.ConfigureAppConfiguration(configuration =>
         {
-            configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            Dictionary<string, string?> values = new()
             {
                 ["ConnectionStrings:budgetoid"] = connectionString,
                 ["Authentication:Google:ClientId"] = "test-client-id",
-            });
+            };
+
+            if (settings is not null)
+            {
+                foreach ((string key, string? value) in settings)
+                {
+                    values[key] = value;
+                }
+            }
+
+            configuration.AddInMemoryCollection(values);
         });
 
         builder.ConfigureTestServices(services =>
