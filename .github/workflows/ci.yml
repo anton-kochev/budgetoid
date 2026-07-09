@@ -64,5 +64,8 @@ jobs:
       - name: Lint
         run: npx ng lint
 
+      - name: Test
+        run: npm test
+
       - name: Build
         run: npm run build

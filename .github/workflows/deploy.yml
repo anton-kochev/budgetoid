@@ -78,6 +78,10 @@ jobs:
         working-directory: ClientApp/angular-budgetoid
         run: npm ci
 
+      - name: Test
+        working-directory: ClientApp/angular-budgetoid
+        run: npm test
+
       - name: Build
         working-directory: ClientApp/angular-budgetoid
         run: npm run build
