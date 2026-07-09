@@ -27,21 +27,10 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      # Run schema migrations against Neon BEFORE deploying the new API, using a self-contained
-      # EF bundle (per project convention: migrations run from CI, never at API startup).
-      - name: Build EF migration bundle
-        working-directory: BudgetoidApp
-        run: |
-          dotnet tool install --global dotnet-ef --version 10.0.0
-          dotnet ef migrations bundle \
-            --project Infrastructure \
-            --startup-project Api \
-            --configuration Release \
-            --self-contained -r linux-x64 \
-            --output ${{ github.workspace }}/efbundle
-
-      - name: Apply migrations to Neon
-        run: ${{ github.workspace }}/efbundle --connection "${{ secrets.BUDGETOID_DB_CONNECTION }}"
+      # NOTE: schema migrations are applied out-of-band for now (see DEPLOYMENT.md Step 3) because
+      # the Postgres Flexible Server is passwordless (Entra/managed identity). Automating them here
+      # means granting this pipeline identity DB access and running the EF bundle with an Entra
+      # access token — a hardening follow-up, tracked in the scale-up ladder.
 
       - name: Install azd
         uses: Azure/setup-azd@v2

@@ -1,4 +1,5 @@
 using Aspire.Hosting.Azure;
+using Azure.Provisioning.PostgreSql;
 using Projects;
 
 IDistributedApplicationBuilder builder = DistributedApplication.CreateBuilder(args);
@@ -7,10 +8,41 @@ IResourceBuilder<ProjectResource> api = builder.AddProject<Api>("api");
 
 if (builder.ExecutionContext.IsPublishMode)
 {
-    // In publish mode the API talks to an external Neon PostgreSQL. The connection string is
-    // resolved at deploy time from an azd/ACA secret, so we don't provision Azure Postgres here.
-    // WaitFor isn't valid on a bare connection-string resource, so it's omitted.
-    IResourceBuilder<IResourceWithConnectionString> db = builder.AddConnectionString("budgetoid");
+    // In publish mode azd provisions a real Azure Database for PostgreSQL Flexible Server (no
+    // RunAsContainer here). Aspire's default auth model is Microsoft Entra / managed identity —
+    // passwordless — so we don't call WithPasswordAuthentication; the API connects via its
+    // managed identity and CI migrations must do the same.
+    IResourceBuilder<AzurePostgresFlexibleServerResource> postgres = builder
+        .AddAzurePostgresFlexibleServer("postgres")
+        .ConfigureInfrastructure(infrastructure =>
+        {
+            // Pin the cheapest tier that still gets automated backups: Burstable Standard_B1ms,
+            // 32 GB storage, 7-day backup retention, geo-redundant backup off. These map straight
+            // to the generated server Bicep.
+            PostgreSqlFlexibleServer flexibleServer = infrastructure
+                .GetProvisionableResources()
+                .OfType<PostgreSqlFlexibleServer>()
+                .Single();
+
+            flexibleServer.Sku = new PostgreSqlFlexibleServerSku
+            {
+                Name = "Standard_B1ms",
+                Tier = PostgreSqlFlexibleServerSkuTier.Burstable,
+            };
+            flexibleServer.Storage = new PostgreSqlFlexibleServerStorage
+            {
+                StorageSizeInGB = 32,
+            };
+            flexibleServer.Backup = new PostgreSqlFlexibleServerBackupProperties
+            {
+                BackupRetentionDays = 7,
+                GeoRedundantBackup = PostgreSqlFlexibleServerGeoRedundantBackupEnum.Disabled,
+            };
+        });
+
+    // Keep the connection name "budgetoid"; the API reads GetConnectionString("budgetoid").
+    // WaitFor is a run-mode orchestration primitive, so it's omitted for this provisioned resource.
+    IResourceBuilder<AzurePostgresFlexibleServerDatabaseResource> db = postgres.AddDatabase("budgetoid");
 
     api.WithReference(db);
 
