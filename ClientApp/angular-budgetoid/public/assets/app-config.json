@@ -1,3 +1,10 @@
 {
-  "apiBaseUrl": "https://budgetoid-app.azurewebsites.net"
+  "apiBaseUrl": "https://REPLACE_WITH_ACA_API_URL",
+  "auth": {
+    "google": {
+      "clientId": "618255022627-48nqq9jhf3tbfsbiaq92q936tb46hed5.apps.googleusercontent.com",
+      "redirectUri": "https://REPLACE_WITH_SWA_FRONTEND_URL",
+      "scope": "openid profile email"
+    }
+  }
 }

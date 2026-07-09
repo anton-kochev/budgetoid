@@ -1,6 +1,6 @@
 import { HttpBackend, HttpClient } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
-import { firstValueFrom, map, tap } from 'rxjs';
+import { catchError, firstValueFrom, map, tap } from 'rxjs';
 
 interface Configuration {
   apiBaseUrl: string;
@@ -23,8 +23,14 @@ export class ConfigurationService {
   }
 
   public load(): Promise<boolean> {
+    // Prefer the gitignored dev override (localhost URLs); when it is absent
+    // (e.g. a production build where the local file 404s), fall back to the
+    // committed production config.
     return firstValueFrom(
       this.httpClient.get<Configuration>('./assets/app-config.local.json').pipe(
+        catchError(() =>
+          this.httpClient.get<Configuration>('./assets/app-config.json'),
+        ),
         tap((config) => this.setConfig(config)),
         map(() => true),
       ),
