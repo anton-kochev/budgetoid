@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql;
 using ServiceDefaults;
 using System.Text.Json.Serialization;
 
@@ -21,7 +22,9 @@ builder.AddServiceDefaults();
 // dependencies. Aspire's AddNpgsqlDbContext pools contexts; EnrichNpgsqlDbContext re-applies
 // Aspire's retry/health/telemetry defaults here.
 builder.Services.AddDbContext<BudgetoidDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("budgetoid")));
+    options.UseNpgsql(BuildConnectionString(
+        builder.Configuration.GetConnectionString("budgetoid"),
+        builder.Environment.IsDevelopment())));
 builder.EnrichNpgsqlDbContext<BudgetoidDbContext>();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure();
@@ -116,3 +119,30 @@ app.MapPayeeEndpoints();
 app.MapGroupEndpoints();
 
 await app.RunAsync();
+
+// Force TLS on the PostgreSQL connection outside local development. Azure Database for PostgreSQL
+// Flexible Server rejects unencrypted connections (28000: no pg_hba.conf entry ... no encryption)
+// and enforces TLS server-side, but the connection string injected from the Key Vault secret via
+// Aspire carries only host/user/password/database and omits SslMode — so Npgsql would otherwise
+// attempt an unencrypted connection. Rebuild the string with SslMode=Require, which (Npgsql 8+)
+// encrypts without validating the server certificate, so Azure's cert chain need not be in the
+// chiseled container's trust store.
+//
+// Development is deliberately left untouched: the local Aspire and Testcontainers PostgreSQL images
+// have no TLS configured, and SslMode=Require against them fails with "No SSL enabled connection
+// from this host is configured." A null connection string is returned unchanged so the null case
+// preserves the existing fail-later behavior.
+static string? BuildConnectionString(string? connectionString, bool isDevelopment)
+{
+    if (connectionString is null || isDevelopment)
+    {
+        return connectionString;
+    }
+
+    NpgsqlConnectionStringBuilder connectionStringBuilder = new(connectionString)
+    {
+        SslMode = SslMode.Require,
+    };
+
+    return connectionStringBuilder.ConnectionString;
+}

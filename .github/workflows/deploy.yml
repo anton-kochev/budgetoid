@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  # ---- API → Azure Container Apps (via azd) + Neon migrations -------------------------------
+  # ---- API → Azure Container Apps (via azd) -------------------------------------------------
   deploy-backend:
     name: Deploy API (Azure Container Apps)
     runs-on: ubuntu-latest
@@ -27,26 +27,46 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      # NOTE: schema migrations are applied out-of-band for now (see DEPLOYMENT.md Step 3) because
-      # the Postgres Flexible Server is passwordless (Entra/managed identity). Automating them here
-      # means granting this pipeline identity DB access and running the EF bundle with an Entra
-      # access token — a hardening follow-up, tracked in the scale-up ladder.
+      # NOTE: schema migrations are applied out-of-band for now (see DEPLOYMENT.md Step 3): the EF
+      # bundle is run against Postgres using the admin password from Key Vault. Automating it in
+      # this pipeline is a hardening follow-up.
 
       - name: Install azd
         uses: Azure/setup-azd@v2
 
-      - name: Log in to Azure (federated)
+      - name: Log in to azd (federated)
         run: |
           azd auth login \
             --client-id "${{ vars.AZURE_CLIENT_ID }}" \
             --federated-credential-provider "github" \
             --tenant-id "${{ vars.AZURE_TENANT_ID }}"
 
+      - name: Log in to Azure CLI (federated)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - name: Provision infrastructure
         run: azd provision --no-prompt
 
       - name: Deploy API
         run: azd deploy --no-prompt
+
+      # WORKAROUND (see docs/decisions/0001): azd writes a BARE connection-string secret that omits
+      # the DB credentials, so the app can't reach Postgres after a deploy. Re-apply the full
+      # connection string from Key Vault and restart the revision. Requires this pipeline identity
+      # to have "Key Vault Secrets User" on postgreskv-* and Container App write access.
+      - name: Repair Container App connection-string secret
+        run: |
+          FULL=$(az keyvault secret show --vault-name postgreskv-bq7exijxgtbdu \
+            --name connectionstrings--budgetoid --query value -o tsv)
+          az containerapp secret set -n api -g budgetoid-prod-rg \
+            --secrets "connectionstrings--budgetoid=${FULL};Ssl Mode=Require"
+          REV=$(az containerapp revision list -n api -g budgetoid-prod-rg \
+            --query "[?properties.active].name | [0]" -o tsv)
+          az containerapp revision restart -n api -g budgetoid-prod-rg --revision "$REV"
 
   # ---- Frontend → Azure Static Web Apps -----------------------------------------------------
   deploy-frontend:

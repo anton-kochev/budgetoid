@@ -9,9 +9,12 @@ IResourceBuilder<ProjectResource> api = builder.AddProject<Api>("api");
 if (builder.ExecutionContext.IsPublishMode)
 {
     // In publish mode azd provisions a real Azure Database for PostgreSQL Flexible Server (no
-    // RunAsContainer here). Aspire's default auth model is Microsoft Entra / managed identity —
-    // passwordless — so we don't call WithPasswordAuthentication; the API connects via its
-    // managed identity and CI migrations must do the same.
+    // RunAsContainer here). Aspire's default auth model is Microsoft Entra / managed identity, but
+    // that path produced an incomplete connection string end-to-end (the app connected as OS user
+    // "app" without SSL and was rejected). Per docs/decisions/0001 we switch to password
+    // authentication: the parameterless WithPasswordAuthentication() auto-generates the admin
+    // username and a random password stored as a secure parameter, which azd surfaces as a
+    // Container App secret and Aspire wires into a complete connection string.
     IResourceBuilder<AzurePostgresFlexibleServerResource> postgres = builder
         .AddAzurePostgresFlexibleServer("postgres")
         .ConfigureInfrastructure(infrastructure =>
@@ -38,7 +41,8 @@ if (builder.ExecutionContext.IsPublishMode)
                 BackupRetentionDays = 7,
                 GeoRedundantBackup = PostgreSqlFlexibleServerGeoRedundantBackupEnum.Disabled,
             };
-        });
+        })
+        .WithPasswordAuthentication();
 
     // Keep the connection name "budgetoid"; the API reads GetConnectionString("budgetoid").
     // WaitFor is a run-mode orchestration primitive, so it's omitted for this provisioned resource.
