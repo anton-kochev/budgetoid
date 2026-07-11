@@ -20,6 +20,11 @@ jobs:
       AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      # azd reads infra parameters from these env vars (config store is empty in CI);
+      # they map to infra.parameters.frontend_origin / .google_client_id in the AppHost.
+      AZURE_FRONTEND_ORIGIN: ${{ vars.AZURE_FRONTEND_ORIGIN }}
+      AZURE_GOOGLE_CLIENT_ID: ${{ vars.AZURE_GOOGLE_CLIENT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
