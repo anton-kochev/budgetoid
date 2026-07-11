@@ -1,8 +1,10 @@
 name: Deploy
 
-# Manual trigger until the secrets below are configured (see DEPLOYMENT.md). Once ready, you can
-# add `push: { branches: ["main"] }` to make deploys fully GitOps.
+# GitOps: every push to main deploys. `workflow_dispatch` stays for manual re-runs.
+# Requires the Azure vars/secrets from `azd pipeline config` + the SWA token (see DEPLOYMENT.md).
 on:
+  push:
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -79,7 +81,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: ClientApp/angular-budgetoid/package-lock.json
 
