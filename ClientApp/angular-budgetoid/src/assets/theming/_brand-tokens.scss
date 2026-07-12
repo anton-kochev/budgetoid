@@ -1,0 +1,57 @@
+// Budgetoid brand design tokens — source of truth: branding/tokens.css
+// Generated from branding/BRAND.md. Keep the two files in sync.
+
+:root {
+  /* Brand — the mark's colors. Never used for UI status. */
+  --bud-brand-forest: #0e5b43;
+  --bud-brand-gold: #e8a83c; /* accent stamp only on light; never leads on paper */
+  --bud-brand-mint: #35d0a0; /* UI accent; never inside the mark */
+
+  /* Neutrals — warm, faint forest cast */
+  --bud-bg: #faf8f3;
+  --bud-surface: #ffffff;
+  --bud-hairline: #e4dfd3;
+  --bud-text: #1e231e;
+  --bud-text-muted: #68706a;
+
+  /* Semantic — budget states; deliberately off-hue from brand gold/mint */
+  --bud-positive: #35d0a0; /* graphic uses: bars, sparklines, chips */
+  --bud-positive-text: #0f7a57; /* text-safe on light surfaces */
+  --bud-caution: #c25e0f; /* near-limit; burnt orange, distinct from gold */
+  --bud-over: #b23a2e; /* over-budget, "in the red" */
+
+  /* Interactive */
+  --bud-accent: var(--bud-brand-mint);
+  --bud-accent-text: #0f7a57; /* mint is too light for text on paper */
+  --bud-focus-ring: #35d0a0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Brand, dark-surface pairs */
+    --bud-brand-forest: #149a72;
+    --bud-brand-gold: #f0b44e;
+
+    /* Neutrals */
+    --bud-bg: #111815;
+    --bud-surface: #19211c;
+    --bud-hairline: #2a342e;
+    --bud-text: #ebeae3;
+    --bud-text-muted: #909a92;
+
+    /* Semantic */
+    --bud-positive: #35d0a0;
+    --bud-positive-text: #4fdcae;
+    --bud-caution: #e88433;
+    --bud-over: #e06a55;
+
+    /* Interactive */
+    --bud-accent-text: #4fdcae;
+  }
+}
+
+/* Monetary figures are typography: always tabular. */
+.bud-figures,
+[data-figures] {
+  font-variant-numeric: tabular-nums;
+}
