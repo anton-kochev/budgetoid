@@ -25,6 +25,11 @@ jobs:
       # they map to infra.parameters.frontend_origin / .google_client_id in the AppHost.
       AZURE_FRONTEND_ORIGIN: ${{ vars.AZURE_FRONTEND_ORIGIN }}
       AZURE_GOOGLE_CLIENT_ID: ${{ vars.AZURE_GOOGLE_CLIENT_ID }}
+      # Postgres admin credentials. The AppHost now builds the connection string from these
+      # (infra.parameters.postgres_username / .postgres_password), so azd requires them as
+      # provision inputs. Values come from the repo var/secret set by `azd pipeline config`.
+      AZURE_POSTGRES_USERNAME: ${{ vars.AZURE_POSTGRES_USERNAME }}
+      AZURE_POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
