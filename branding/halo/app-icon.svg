@@ -1,0 +1,16 @@
+<svg viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Budgetoid app icon">
+  <defs>
+    <mask id="haloi" maskUnits="userSpaceOnUse" x="-24" y="-24" width="144" height="144">
+      <rect x="-24" y="-24" width="144" height="144" fill="#fff"/>
+      <polyline points="0,64 32,64 64,32 96,32" fill="none" stroke="#000" stroke-width="9.5"/>
+      <circle cx="48" cy="48" r="17" fill="#000"/>
+    </mask>
+  </defs>
+  <!-- App icon / PWA source: gold-dark mark on forest field, rx 22%.
+       Export PNGs with rsvg-convert (see branding/BRAND.md). -->
+  <rect width="96" height="96" rx="21" fill="#0E5B43"/>
+  <g transform="translate(15.36,15.36) scale(0.68)">
+    <circle cx="48" cy="48" r="32" fill="#F0B44E" mask="url(#haloi)"/>
+    <circle cx="48" cy="48" r="8.5" fill="#F0B44E"/>
+  </g>
+</svg>

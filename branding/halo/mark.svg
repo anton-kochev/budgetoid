@@ -1,0 +1,15 @@
+<svg viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Budgetoid mark" color="#0E5B43">
+  <defs>
+    <mask id="halo" maskUnits="userSpaceOnUse" x="0" y="0" width="96" height="96">
+      <rect width="96" height="96" fill="#fff"/>
+      <polyline points="0,64 32,64 64,32 96,32" fill="none" stroke="#000" stroke-width="9.5"/>
+      <circle cx="48" cy="48" r="17" fill="#000"/>
+    </mask>
+  </defs>
+  <!-- Halo Seam, production master. Single color: recolor via CSS `color`.
+       Colorways: forest #0E5B43 (light surfaces) · paper #FAF8F3 (knockout)
+       · forest-dark #149A72 / gold-dark #F0B44E (dark surfaces).
+       Full spec: branding/BRAND.md -->
+  <circle cx="48" cy="48" r="32" fill="currentColor" mask="url(#halo)"/>
+  <circle cx="48" cy="48" r="8.5" fill="currentColor"/>
+</svg>
