@@ -112,4 +112,3 @@ jobs:
           # and ignores output_location — so point it straight at the browser dist.
           app_location: ClientApp/angular-budgetoid/dist/angular-budgetoid/browser
           skip_app_build: true
-          skip_api_build: true
