@@ -15,6 +15,14 @@ if (builder.ExecutionContext.IsPublishMode)
     // authentication: the parameterless WithPasswordAuthentication() auto-generates the admin
     // username and a random password stored as a secure parameter, which azd surfaces as a
     // Container App secret and Aspire wires into a complete connection string.
+    // Admin credentials for password auth. Declaring them as explicit parameters (instead of
+    // letting the parameterless overload auto-generate anonymous ones) gives us handles to build
+    // the full connection string below — see the ConnectionStrings__budgetoid override. These map
+    // to the same manifest params azd already provisions (AZURE_POSTGRES_USERNAME / _PASSWORD), so
+    // the stored admin password is unchanged.
+    IResourceBuilder<ParameterResource> postgresUsername = builder.AddParameter("postgres-username");
+    IResourceBuilder<ParameterResource> postgresPassword = builder.AddParameter("postgres-password", secret: true);
+
     IResourceBuilder<AzurePostgresFlexibleServerResource> postgres = builder
         .AddAzurePostgresFlexibleServer("postgres")
         .ConfigureInfrastructure(infrastructure =>
@@ -42,13 +50,24 @@ if (builder.ExecutionContext.IsPublishMode)
                 GeoRedundantBackup = PostgreSqlFlexibleServerGeoRedundantBackupEnum.Disabled,
             };
         })
-        .WithPasswordAuthentication();
+        .WithPasswordAuthentication(postgresUsername, postgresPassword);
 
     // Keep the connection name "budgetoid"; the API reads GetConnectionString("budgetoid").
     // WaitFor is a run-mode orchestration primitive, so it's omitted for this provisioned resource.
     IResourceBuilder<AzurePostgresFlexibleServerDatabaseResource> db = postgres.AddDatabase("budgetoid");
 
     api.WithReference(db);
+
+    // ROOT FIX for docs/decisions/0001 gotcha #1: WithReference resolves the connection string to a
+    // Key Vault secret reference ({postgres-kv.secrets.connectionstrings--budgetoid}), which azd
+    // mis-renders into a BARE Container App secret (host only, no credentials) — so the app couldn't
+    // reach Postgres until a post-deploy step rewrote the secret. Instead, build the full connection
+    // string here from the admin parameters + the server host output and inject it directly, so azd
+    // emits a complete, self-contained secret and no repair step is needed. SslMode stays in
+    // Api/Program.cs as the single source of TLS config; this host/user/password/db shape matches
+    // what that code expects.
+    api.WithEnvironment("ConnectionStrings__budgetoid", ReferenceExpression.Create(
+        $"Host={postgres.GetOutput("hostName")};Username={postgresUsername.Resource};Password={postgresPassword.Resource};Database=budgetoid"));
 
     // Deploy-time azd parameters (non-secret) baked into the generated Bicep; azd provision prompts
     // for them. ASP.NET binds the double-underscore/index env-var names to configuration keys, so

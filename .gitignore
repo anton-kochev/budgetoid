@@ -39,3 +39,8 @@ __queuestorage__/
 .run/
 /.claude/grimoire/sessions
 /.claude/logs
+
+# azd-synthesized infra (generated from the Aspire AppHost, which is the source of
+# truth). azd regenerates it at provision/deploy time; committing it would drift.
+/infra/
+/BudgetoidApp/AppHost/infra/

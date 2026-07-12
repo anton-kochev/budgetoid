@@ -76,28 +76,15 @@ they land in the committed Bicep — no manual container-app edits):
 | `frontend-origin` | the Static Web App URL from Step 1 |
 
 The database needs **no** connection-string prompt — Aspire's `.WithPasswordAuthentication()`
-generates a strong admin password, stores it in the provisioned **Key Vault**, and produces the
-full connection string. Note the API's public URL from the output. To change a parameter later:
-`azd env set <name> <value>` then `azd up`.
+generates a strong admin password, stores it in the provisioned **Key Vault**, and the AppHost
+builds the full connection string (host + admin user/password) into the Container App secret. Note
+the API's public URL from the output. To change a parameter later: `azd env set <name> <value>`
+then `azd up`.
 
-> ⚠️ **Post-deploy secret repair (known azd gotcha).** Every `azd deploy` overwrites the Container
-> App's `connectionstrings--budgetoid` secret with a **bare** value (`Host=…;Database=budgetoid` —
-> no user/password), so the app can't reach Postgres until it's repaired. The CI pipeline does this
-> automatically (see `.github/workflows/deploy.yml` → *Repair Container App connection-string
-> secret*). If you ever `azd deploy` **by hand**, re-run the repair yourself:
->
-> ```sh
-> FULL=$(az keyvault secret show --vault-name postgreskv-bq7exijxgtbdu \
->   --name connectionstrings--budgetoid --query value -o tsv)
-> az containerapp secret set -n api -g budgetoid-prod-rg \
->   --secrets "connectionstrings--budgetoid=${FULL};Ssl Mode=Require"
-> REV=$(az containerapp revision list -n api -g budgetoid-prod-rg \
->   --query "[?properties.active].name | [0]" -o tsv)
-> az containerapp revision restart -n api -g budgetoid-prod-rg --revision "$REV"
-> ```
->
-> This is gotcha #1 in [ADR 0001](docs/decisions/0001-postgres-password-authentication.md); a root
-> fix (build the connection string in the AppHost from the password parameter) is a follow-up.
+> **Note.** Earlier deploys needed a post-deploy step to repair a bare connection-string secret azd
+> wrote. That is **root-fixed** — `AppHost/Program.cs` now injects the full connection string
+> directly, so every `azd deploy` produces a complete, self-contained secret. See gotcha #1 in
+> [ADR 0001](docs/decisions/0001-postgres-password-authentication.md).
 
 ## Step 3 — Apply database migrations
 
@@ -158,17 +145,13 @@ Run these once, in order:
 # 1) mint the federated (OIDC) app registration + set the AZURE_* GitHub vars automatically
 azd pipeline config --provider github
 
-# 2) the post-deploy repair step reads Key Vault, which Contributor does NOT cover.
-#    Grant the pipeline identity data-plane secret access:
-PIPELINE_CLIENT_ID=$(gh variable get AZURE_CLIENT_ID)   # or read it from `azd pipeline config` output
-az role assignment create --assignee "$PIPELINE_CLIENT_ID" \
-  --role "Key Vault Secrets User" \
-  --scope "$(az keyvault show -n postgreskv-bq7exijxgtbdu --query id -o tsv)"
-
-# 3) the SWA token is out-of-band (not an azd concept) — set it manually
+# 2) the SWA token is out-of-band (not an azd concept) — set it manually
 gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN \
   --body "$(az staticwebapp secrets list -n budgetoid-web --query 'properties.apiKey' -o tsv)"
 ```
+
+The pipeline identity needs only management-plane access (`Contributor`) — it no longer reads Key
+Vault, since the connection-string secret is built by the AppHost at deploy time.
 
 After that, pushing to `main` provisions + deploys automatically. You can still trigger a manual
 run from the **Actions** tab.

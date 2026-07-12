@@ -60,16 +60,18 @@ production practice. It unblocks the deployment now, versus iterating on custom 
   is dropped and re-migrated under the password admin so ownership/access are correct.
 - Slightly less pure than passwordless (no standing secret is the passwordless benefit).
 
-### Two gotchas discovered during rollout (both worked around)
+### Two gotchas discovered during rollout
 
-1. **azd does not wire the Key Vault reference into the Container App.** The Aspire manifest
-   resolves the app's connection string to `{postgres-kv.secrets.connectionstrings--budgetoid}`
-   (a Key Vault reference to the full string), but every `azd deploy` writes a **bare** plain
-   secret `Host=…;Database=budgetoid` instead — no username/password. **Workaround:** after each
-   `azd deploy`, re-apply the full connection string from Key Vault to the Container App secret and
-   restart the revision. This is automated as a post-deploy step in `.github/workflows/deploy.yml`
-   and documented in `DEPLOYMENT.md`. A cleaner root fix (construct the connection-string env in
-   the AppHost from the password parameter, bypassing the broken reference) is a follow-up.
+1. **azd mis-rendered the Key Vault connection-string reference (root-fixed).** When the app's
+   connection string is left as Aspire's default reference
+   (`{postgres-kv.secrets.connectionstrings--budgetoid}`), every `azd deploy` wrote a **bare** plain
+   secret `Host=…;Database=budgetoid` — no username/password — so the app couldn't reach Postgres.
+   Originally worked around with a post-deploy repair step that rewrote the secret from Key Vault.
+   **Root fix (`AppHost/Program.cs`):** the connection string is now built explicitly from the
+   admin username/password parameters and the server host output
+   (`Host={postgres.outputs.hostName};Username=…;Password=…;Database=budgetoid`) and injected as
+   `ConnectionStrings__budgetoid`, so azd emits a complete, self-contained Container App secret. The
+   repair step and the pipeline identity's Key Vault data-plane grant are no longer needed.
 2. **The connection string carries no `SslMode`.** Azure Postgres requires encryption; without an
    explicit mode Npgsql attempts plaintext and is rejected (`28000 … no encryption`). Fixed in code
    (`Api/Program.cs`): `SslMode=Require` is applied to the connection string in non-Development

@@ -61,20 +61,6 @@ jobs:
       - name: Deploy API
         run: azd deploy --no-prompt
 
-      # WORKAROUND (see docs/decisions/0001): azd writes a BARE connection-string secret that omits
-      # the DB credentials, so the app can't reach Postgres after a deploy. Re-apply the full
-      # connection string from Key Vault and restart the revision. Requires this pipeline identity
-      # to have "Key Vault Secrets User" on postgreskv-* and Container App write access.
-      - name: Repair Container App connection-string secret
-        run: |
-          FULL=$(az keyvault secret show --vault-name postgreskv-bq7exijxgtbdu \
-            --name connectionstrings--budgetoid --query value -o tsv)
-          az containerapp secret set -n api -g budgetoid-prod-rg \
-            --secrets "connectionstrings--budgetoid=${FULL};Ssl Mode=Require"
-          REV=$(az containerapp revision list -n api -g budgetoid-prod-rg \
-            --query "[?properties.active].name | [0]" -o tsv)
-          az containerapp revision restart -n api -g budgetoid-prod-rg --revision "$REV"
-
   # ---- Frontend → Azure Static Web Apps -----------------------------------------------------
   deploy-frontend:
     name: Deploy frontend (Azure Static Web Apps)

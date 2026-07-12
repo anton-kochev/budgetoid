@@ -1,7 +1,9 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
 # azd configuration for Budgetoid. The Aspire AppHost is the single service; azd derives the
 # Azure Container App (the `api` resource) and its supporting infrastructure from the AppHost
-# model. Run `azd infra synth` to materialize the Bicep under ./infra and commit it (IaC).
+# model. The AppHost is the single source of truth; azd regenerates the Bicep from it at
+# provision/deploy time (the synthesized ./infra output is gitignored, not committed, to avoid
+# drift). Run `azd infra gen` locally only if you want to inspect the generated Bicep.
 name: budgetoid
 services:
   app:
