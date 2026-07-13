@@ -47,10 +47,6 @@ two-user-same-process + endpoint-level two-factory) and the `UserId` immutabilit
 `tests/UnitTests/TransactionTests.cs`. Removing the `HasQueryFilter` line must make the
 DbContext-level test fail.
 
-**Prerequisite, not yet done — real authentication.** `FakeUserContext` returns a constant
-user id for every request, so isolation is only meaningful once Google OIDC populates a
-verified `IUserContext.UserId`. Wire real auth before any multi-user deployment.
-
 ---
 
 ## Backlog
