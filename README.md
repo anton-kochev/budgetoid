@@ -18,4 +18,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to build, run, and test locally. [CLAUDE.
 
 ## License
 
-No license file present — add a [LICENSE](LICENSE) to declare usage terms.
+[GNU AGPL-3.0](LICENSE) © 2026 Anton Kochev. You may use, modify, and self-host this code; any modified version you run as a network service must publish its source under the same license.
