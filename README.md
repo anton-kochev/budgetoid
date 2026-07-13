@@ -1,8 +1,16 @@
-# Budgetoid
+<p align="center">
+  <img src="branding/halo/app-icon.svg" alt="Budgetoid" width="104" height="104">
+</p>
 
-[![CI](https://github.com/anton-kochev/budgetoid/actions/workflows/ci.yml/badge.svg)](https://github.com/anton-kochev/budgetoid/actions/workflows/ci.yml)
+<h1 align="center">Budgetoid</h1>
 
-Personal budget app: .NET 10 backend (Clean Architecture + CQRS, .NET Aspire) and Angular 21 frontend.
+<p align="center">
+  Personal budget app — .NET 10 backend (Clean Architecture + CQRS, .NET Aspire) &amp; Angular 21 frontend.
+</p>
+
+<p align="center">
+  <a href="https://github.com/anton-kochev/budgetoid/actions/workflows/ci.yml"><img src="https://github.com/anton-kochev/budgetoid/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
 ## Prerequisites
 
