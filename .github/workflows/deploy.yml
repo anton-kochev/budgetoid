@@ -66,6 +66,14 @@ jobs:
       - name: Deploy API
         run: azd deploy --no-prompt
 
+      # azd's generated Container App bakes in a warm minReplicas of 1. Enforce scale-to-zero
+      # (min 0, max 2 per CLAUDE.md) so the consumption-tier API costs ~nothing at rest, trading a
+      # cold start on the first request after idle. This can't be set from the AppHost without
+      # Aspire taking ownership of the Container Apps environment (limited mode) — which would
+      # regenerate the environment and change the public API URL. So enforce it here instead.
+      - name: Enforce scale-to-zero on the Container App
+        run: az containerapp update -n api -g "$AZURE_RESOURCE_GROUP" --min-replicas 0 --max-replicas 2
+
   # ---- Frontend → Azure Static Web Apps -----------------------------------------------------
   deploy-frontend:
     name: Deploy frontend (Azure Static Web Apps)
