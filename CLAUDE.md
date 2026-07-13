@@ -49,7 +49,7 @@ globals are configured for ESLint. Use `// Arrange // Act // Assert` comments.
 
 Clean Architecture with CQRS. Commands/queries live under `Application/Transactions/*` and are handled by directly injected plain handlers (`ICommandHandler`/`IQueryHandler` shape); no MediatR dispatcher until decorators are needed. Infrastructure uses EF Core 10 with PostgreSQL via Npgsql. The API layer is ASP.NET Core minimal API, intended for Azure Container Apps.
 
-Auth is deferred behind `IUserContext`; slice 1 uses `FakeUserContext`.
+Auth is live Google OAuth. The current user is exposed through `IUserContext`: `UserProvisioningMiddleware` resolves the authenticated principal (via `EnsureUserHandler`, keyed on the Google `sub`) into an internal user id held by `HttpContextUserContext` in prod (`TestUserContext` in tests). See `docs/business-logic/users-and-ownership.md`.
 
 ## Frontend Architecture
 
