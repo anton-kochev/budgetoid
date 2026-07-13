@@ -63,6 +63,14 @@ Auth is deferred behind `IUserContext`; slice 1 uses `FakeUserContext`.
 - UI: Angular Material + Angular CDK
 - Styling: SCSS
 
+## Business Logic Documentation
+
+Before modifying business logic, read the relevant file in `docs/business-logic/`.
+When your changes affect business rules, update the corresponding doc in the same commit.
+If no file exists for the domain area, create one following the structure of existing files.
+Start with `docs/business-logic/_overview.md` for domain orientation.
+Rules marked `[SOURCE: code-audit — unconfirmed]` need human confirmation before relying on them.
+
 ## Deploy Notes
 
 - Use `azd init` / `azd up` from AppHost later; do not mix with `aspire deploy`.
