@@ -95,6 +95,7 @@ Rules marked `[SOURCE: code-audit — unconfirmed]` need human confirmation befo
 
 - `inject()` function over constructor DI
 - OnPush change detection
+- Mobile-first: start every layout at phone width, enhance upward with `min-width` breakpoints; CSS Grid as the default layout tool
 - ESLint 9 flat config (`eslint.config.js`) with `angular-eslint` + `typescript-eslint`
 - Prettier: single quotes, trailing commas, 80 char width, 2-space indent
 - camelCase JSON serialization
