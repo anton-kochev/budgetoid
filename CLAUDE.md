@@ -65,6 +65,8 @@ Auth is live Google OAuth. The current user is exposed through `IUserContext`: `
 
 ## Business Logic Documentation
 
+The product problem definition lives in `docs/product/problem.md` — read it before making
+product or UX decisions; features are measured against it.
 Before modifying business logic, read the relevant file in `docs/business-logic/`.
 When your changes affect business rules, update the corresponding doc in the same commit.
 If no file exists for the domain area, create one following the structure of existing files.
