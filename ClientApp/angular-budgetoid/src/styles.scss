@@ -1,54 +1,53 @@
-// Custom Theming for Angular Material
-// For more information: https://material.angular.io/guide/theming
+// Global Material 3 theme for Budgetoid.
+// See docs / branding/BRAND.md for the palette rationale. The active accent palette
+// is chosen in `assets/theming/_palettes.scss` ($active-brand).
 @use '@angular/material' as mat;
-@use 'assets/theming/default-theme';
+@use 'assets/theming/theme-config' as theme;
 @use 'assets/theming/brand-tokens';
-// Plus imports for other components in your app.
 
-// Include the common styles for Angular Material. We include this here so that you only
-// have to load a single css file for Angular Material in your app.
-// Be sure that you only ever include this mixin once!
+// Elevation utility classes (.mat-elevation-z*).
 @include mat.elevation-classes();
-@include mat.app-background();
-
-// Include theme styles for core and each component used in your app.
-// Alternatively, you can import and @include the theme mixins for each component
-// that you are using.
-:root {
-  // Theme every Material component, not just buttons — otherwise form-field, input,
-  // autocomplete, datepicker, list, etc. render unstyled.
-  @include mat.all-component-themes(default-theme.$light);
-}
 
 html {
-  // Comment out the line below if you want to use the pre-defined typography utility classes.
-  // For more information: https://material.angular.io/guide/typography#using-typography-styles-in-your-application.
-  @include mat.typography-hierarchy(default-theme.$light);
+  // Default follows the OS. ThemeService overrides `color-scheme` on this element to
+  // force light/dark; `mat.theme()` emits `light-dark()` tokens that follow it.
+  color-scheme: light dark;
 
-  // When using system variables, remember to provide values for them..
-  @include mat.system-level-colors(default-theme.$light);
-  @include mat.system-level-typography(default-theme.$light);
+  @include mat.theme(
+    (
+      color: theme.$color,
+      typography: theme.$typography,
+      density: theme.$density,
+    )
+  );
 
-  // Apply the dark theme only when the user prefers dark themes.
-  @media (prefers-color-scheme: dark) {
-    // Use the `-color` mixins to only apply color styles without reapplying the same
-    // typography and density styles.
-    @include mat.all-component-colors(default-theme.$dark);
+  // Typography utility classes (.mat-headline-*, .mat-body-*, h1..h6 under
+  // .mat-typography). Needs a define-theme object, not the mat.theme() config map.
+  @include mat.typography-hierarchy(theme.$theme);
 
-    // When using system variables, remember to provide values for them..
-    @include mat.system-level-colors(default-theme.$dark);
-  }
+  // Pin the brand-exact warm neutrals so the Material system variables and the
+  // `--bud-*` tokens that alias them resolve to the same values in both modes.
+  @include mat.theme-overrides(
+    (
+      background: light-dark(#faf8f3, #111815),
+      surface: light-dark(#ffffff, #19211c),
+      outline-variant: light-dark(#e4dfd3, #2a342e),
+      on-surface: light-dark(#1e231e, #ebeae3),
+      on-surface-variant: light-dark(#68706a, #909a92),
+    )
+  );
 }
 
 html,
 body {
   height: 100%;
 }
+
 body {
   margin: 0;
   font-optical-sizing: auto;
-  font-style: normal;
-  background: linear-gradient(60deg, #7dd0ff88, #ff418e88);
+  background: var(--mat-sys-background);
+  color: var(--mat-sys-on-surface);
 }
 
 .budgetoid-app {

@@ -1,27 +1,40 @@
+// Themed with Material system + brand tokens so it tracks light/dark automatically.
+// Mobile-first, CSS Grid.
 :host {
   display: grid;
   grid-template-rows: 1fr auto;
+  gap: 2rem;
   padding: 2rem;
+  min-height: 100%;
+  box-sizing: border-box;
+  background: var(--bud-surface);
+  color: var(--bud-text);
+  border: 1px solid var(--bud-hairline);
+  border-radius: var(--mat-sys-corner-extra-large, 16px);
 }
 
 .welcome {
-  &__about {
-    flex-grow: 1;
-    margin-bottom: 2rem;
-    text-align: center;
+  &__main {
+    align-content: center;
+    display: grid;
+    gap: 1rem;
   }
   &__title {
-    font-size: 4rem;
-    font-weight: 400;
-    text-align: center;
+    margin: 0;
     width: 100%;
+    text-align: center;
+    color: var(--mat-sys-primary);
+    font: var(--mat-sys-display-large);
+    letter-spacing: 0.02em;
+  }
+  &__about {
+    margin: 0 auto;
+    max-width: 42ch;
+    text-align: center;
+    color: var(--bud-text-muted);
   }
   &__login {
     display: grid;
     place-content: center;
-  }
-  &__main {
-    align-content: center;
-    display: grid;
   }
 }

@@ -1,0 +1,13 @@
+<header class="app-header">
+  <button
+    mat-icon-button
+    type="button"
+    class="app-header__theme-toggle"
+    [attr.aria-label]="'Switch theme, currently ' + theme.mode()"
+    (click)="theme.toggle()"
+  >
+    <mat-icon>{{ themeIcon() }}</mat-icon>
+  </button>
+</header>
+
+<router-outlet />
