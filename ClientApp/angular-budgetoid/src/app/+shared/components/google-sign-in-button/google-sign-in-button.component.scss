@@ -1,0 +1,20 @@
+.g-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 12px 24px;
+  border-radius: 12px;
+  background: var(--bud-surface);
+  border: 1px solid var(--bud-hairline);
+  color: var(--bud-text);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.g-btn:focus-visible {
+  outline: 2px solid var(--bud-focus-ring);
+  outline-offset: 2px;
+}

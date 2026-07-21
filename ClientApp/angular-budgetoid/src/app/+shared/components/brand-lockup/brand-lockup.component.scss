@@ -1,0 +1,10 @@
+// Fills whatever size the consumer gives the host; color comes from currentColor.
+:host {
+  display: inline-block;
+}
+
+svg {
+  display: block;
+  height: 100%;
+  width: auto;
+}

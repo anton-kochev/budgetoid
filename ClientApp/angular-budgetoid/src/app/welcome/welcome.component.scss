@@ -1,40 +1,124 @@
-// Themed with Material system + brand tokens so it tracks light/dark automatically.
-// Mobile-first, CSS Grid.
+// "Quiet Ink" signed-out Welcome. Ported from the approved concept onto the
+// app's --bud-* / --mat-sys-* tokens so it tracks light/dark automatically.
+// Mobile-first (phone-scale base), CSS Grid full-bleed shell.
 :host {
   display: grid;
   grid-template-rows: 1fr auto;
-  gap: 2rem;
-  padding: 2rem;
-  min-height: 100%;
+  min-height: 100dvh;
   box-sizing: border-box;
-  background: var(--bud-surface);
+  background: var(--mat-sys-background);
   color: var(--bud-text);
-  border: 1px solid var(--bud-hairline);
-  border-radius: var(--mat-sys-corner-extra-large, 16px);
+  font-family: 'Inter', sans-serif;
 }
 
-.welcome {
-  &__main {
-    align-content: center;
-    display: grid;
-    gap: 1rem;
+// Hero + argument + CTA, centered as one narrow column in the 1fr row.
+.w-stack {
+  display: grid;
+  align-content: center;
+  width: 100%;
+  max-width: 480px;
+  margin-inline: auto;
+}
+
+.w-hero {
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+  padding: 56px 22px 36px;
+  text-align: center;
+}
+
+.lockup-c {
+  height: 30px;
+  width: auto;
+  color: var(--mat-sys-primary);
+}
+
+.w-h1 {
+  margin: 6px 0 0;
+  max-width: 16ch;
+  font-family: 'Mohave', sans-serif;
+  font-weight: 700;
+  font-size: 32px;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+.kin-wrap {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  padding: 10px 22px 34px;
+}
+
+.w-mission {
+  max-width: 46ch;
+  margin: 0 auto;
+  display: grid;
+  gap: 9px;
+  padding: 0 6px;
+  text-align: center;
+}
+
+.w-mission p {
+  margin: 0;
+}
+
+.wm-lead {
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: var(--bud-text);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.wm-body {
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--bud-text-muted);
+}
+
+.w-cta {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 0 22px 40px;
+  text-align: center;
+}
+
+.w-fine {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--bud-text-muted);
+}
+
+// Footer pinned to the bottom edge in the auto row.
+.w-foot {
+  border-top: 1px solid var(--bud-hairline);
+  padding: 16px 22px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  justify-content: center;
+  font-size: 12.5px;
+  color: var(--bud-text-muted);
+}
+
+.w-foot a {
+  color: var(--mat-sys-primary);
+  text-decoration: none;
+  border-bottom: 1px solid var(--bud-hairline);
+}
+
+// Tablet and up: enhance the wordmark and headline; still one column.
+@media (min-width: 600px) {
+  .w-hero {
+    padding: 72px 28px 44px;
   }
-  &__title {
-    margin: 0;
-    width: 100%;
-    text-align: center;
-    color: var(--mat-sys-primary);
-    font: var(--mat-sys-display-large);
-    letter-spacing: 0.02em;
+  .lockup-c {
+    height: 38px;
   }
-  &__about {
-    margin: 0 auto;
-    max-width: 42ch;
-    text-align: center;
-    color: var(--bud-text-muted);
-  }
-  &__login {
-    display: grid;
-    place-content: center;
+  .w-h1 {
+    font-size: clamp(30px, 4.5vw, 44px);
   }
 }
