@@ -7,6 +7,12 @@ import { Store } from '@ngrx/store';
   imports: [CommonModule],
   selector: 'app-home',
   templateUrl: './home.component.html',
+  styles: `
+    :host {
+      display: block;
+      padding: 1.5rem 2rem;
+    }
+  `,
 })
 export class HomeComponent {
   private readonly store = inject(Store);

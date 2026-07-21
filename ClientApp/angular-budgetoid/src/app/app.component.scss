@@ -1,11 +1,3 @@
-// The global `.budgetoid-app` grid (styles.scss) stacks the header and
-// router-outlet as rows; the header only needs to right-align the toggle.
-.app-header {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-
-  &__theme-toggle {
-    color: var(--mat-sys-on-surface-variant);
-  }
-}
+// The shell renders no header and adds no padding — it's just a neutral
+// full-height grid (see `.budgetoid-app` in styles.scss). Each route owns its
+// own layout and spacing.
