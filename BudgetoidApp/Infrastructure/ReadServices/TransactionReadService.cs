@@ -6,23 +6,24 @@ namespace Infrastructure.ReadServices;
 
 public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITransactionReadService
 {
-    public async Task<IReadOnlyList<TransactionDto>> GetAllWithPayeeAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<TransactionDto>> GetAllWithPayeeAsync(
+        CancellationToken cancellationToken = default)
     {
-        // Transactions, Accounts and Payees are scoped by BudgetoidDbContext global query filters.
         return await (
                 from transaction in dbContext.Transactions.AsNoTracking()
                 join account in dbContext.Accounts.AsNoTracking()
                     on transaction.AccountId equals account.Id
-                // Inner join is safe: the accounts.currency_code FK (Restrict) guarantees a
-                // matching currency row always exists, so no transaction is silently dropped.
                 join currency in dbContext.Currencies.AsNoTracking()
                     on account.CurrencyCode equals currency.Code
                 join payee in dbContext.Payees.AsNoTracking()
                     on transaction.PayeeId equals (Guid?)payee.Id into payees
                 from payee in payees.DefaultIfEmpty()
-                join grp in dbContext.Groups.AsNoTracking()
-                    on transaction.GroupId equals (Guid?)grp.Id into groups
-                from grp in groups.DefaultIfEmpty()
+                join category in dbContext.Categories.AsNoTracking()
+                    on transaction.CategoryId equals (Guid?)category.Id into categories
+                from category in categories.DefaultIfEmpty()
+                join categoryGroup in dbContext.CategoryGroups.AsNoTracking()
+                    on category.CategoryGroupId equals categoryGroup.Id into categoryGroups
+                from categoryGroup in categoryGroups.DefaultIfEmpty()
                 orderby transaction.Date descending, transaction.CreatedAtUtc descending
                 select new TransactionDto(
                     transaction.Id,
@@ -36,8 +37,10 @@ public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITran
                     currency.Symbol,
                     transaction.PayeeId,
                     payee == null ? null : payee.Name,
-                    transaction.GroupId,
-                    grp == null ? null : grp.Name))
+                    transaction.CategoryId,
+                    category == null ? null : category.Name,
+                    categoryGroup == null ? null : categoryGroup.Id,
+                    categoryGroup == null ? null : categoryGroup.Name))
             .ToListAsync(cancellationToken);
     }
 }

@@ -7,16 +7,26 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
 {
     private readonly List<Transaction> _transactions = [];
     private readonly Dictionary<Guid, string> _payeeNames = [];
-    private readonly Dictionary<Guid, string> _groupNames = [];
+    private readonly Dictionary<Guid, CategoryProjection> _categoryProjections = [];
     private readonly Dictionary<Guid, string> _accountNames = [];
 
     public int AddCallCount { get; private set; }
 
-    public void SetPayeeProjection(Guid payeeId, string payeeName) => _payeeNames[payeeId] = payeeName;
+    public void SetPayeeProjection(Guid payeeId, string payeeName) =>
+        _payeeNames[payeeId] = payeeName;
 
-    public void SetGroupProjection(Guid groupId, string groupName) => _groupNames[groupId] = groupName;
+    public void SetCategoryProjection(
+        Guid categoryId,
+        string categoryName,
+        Guid categoryGroupId,
+        string categoryGroupName) =>
+        _categoryProjections[categoryId] = new CategoryProjection(
+            categoryName,
+            categoryGroupId,
+            categoryGroupName);
 
-    public void SetAccountProjection(Guid accountId, string accountName) => _accountNames[accountId] = accountName;
+    public void SetAccountProjection(Guid accountId, string accountName) =>
+        _accountNames[accountId] = accountName;
 
     public Task AddAsync(Transaction transaction, CancellationToken cancellationToken = default)
     {
@@ -25,30 +35,38 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
         return Task.CompletedTask;
     }
 
-    // The real repository relies on the EF global query filter for per-user scoping; this fake
-    // has no such filter and returns everything it holds. Cross-user isolation is verified in
-    // IntegrationTests/TransactionIsolationTests, not here.
     public Task<IReadOnlyList<Transaction>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         IReadOnlyList<Transaction> results = OrderedTransactions().ToList();
-
         return Task.FromResult(results);
     }
 
-    public Task<IReadOnlyList<TransactionDto>> GetAllWithPayeeAsync(CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<TransactionDto>> GetAllWithPayeeAsync(
+        CancellationToken cancellationToken = default)
     {
         IReadOnlyList<TransactionDto> results = OrderedTransactions()
-            .Select(transaction => TransactionDto.FromTransaction(
-                transaction,
-                _accountNames.TryGetValue(transaction.AccountId, out string? accountName) ? accountName : "Account",
-                "USD",
-                "$",
-                transaction.PayeeId is { } payeeId && _payeeNames.TryGetValue(payeeId, out string? name)
-                    ? name
-                    : null,
-                transaction.GroupId is { } groupId && _groupNames.TryGetValue(groupId, out string? groupName)
-                    ? groupName
-                    : null))
+            .Select(transaction =>
+            {
+                CategoryProjection? category = transaction.CategoryId is { } categoryId
+                                               && _categoryProjections.TryGetValue(categoryId, out CategoryProjection? value)
+                    ? value
+                    : null;
+
+                return TransactionDto.FromTransaction(
+                    transaction,
+                    _accountNames.TryGetValue(transaction.AccountId, out string? accountName)
+                        ? accountName
+                        : "Account",
+                    "USD",
+                    "$",
+                    transaction.PayeeId is { } payeeId
+                    && _payeeNames.TryGetValue(payeeId, out string? payeeName)
+                        ? payeeName
+                        : null,
+                    category?.CategoryName,
+                    category?.CategoryGroupId,
+                    category?.CategoryGroupName);
+            })
             .ToList();
 
         return Task.FromResult(results);
@@ -57,6 +75,11 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
     private IOrderedEnumerable<Transaction> OrderedTransactions() => _transactions
         .OrderByDescending(transaction => transaction.Date)
         .ThenByDescending(transaction => transaction.CreatedAtUtc);
+
+    private sealed record CategoryProjection(
+        string CategoryName,
+        Guid CategoryGroupId,
+        string CategoryGroupName);
 }
 
 public sealed class StubUserContext(Guid userId) : Application.Abstractions.IUserContext

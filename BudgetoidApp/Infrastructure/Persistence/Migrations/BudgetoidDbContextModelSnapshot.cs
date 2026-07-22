@@ -71,6 +71,100 @@ namespace Infrastructure.Persistence.Migrations
                     b.ToTable("accounts", (string)null);
                 });
 
+            modelBuilder.Entity("Domain.Categories.Category", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CategoryGroupId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("category_group_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name")
+                        .UseCollation("case_insensitive");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("integer")
+                        .HasColumnName("position");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CategoryGroupId", "Position");
+
+                    b.HasIndex("CategoryGroupId", "UserId");
+
+                    b.HasIndex("UserId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("categories", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_categories_position", "position >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.CategoryGroups.CategoryGroup", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name")
+                        .UseCollation("case_insensitive");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("integer")
+                        .HasColumnName("position");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Name")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "Position");
+
+                    b.ToTable("category_groups", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_category_groups_position", "position >= 0");
+                        });
+                });
+
             modelBuilder.Entity("Domain.Currencies.Currency", b =>
                 {
                     b.Property<string>("Code")
@@ -97,41 +191,99 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasKey("Code");
 
                     b.ToTable("currencies", (string)null);
-                });
 
-            modelBuilder.Entity("Domain.Groups.Group", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("description");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name")
-                        .UseCollation("case_insensitive");
-
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("user_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId", "Name")
-                        .IsUnique();
-
-                    b.ToTable("groups", (string)null);
+                    b.HasData(
+                        new
+                        {
+                            Code = "AUD",
+                            MinorUnit = 2,
+                            Name = "Australian Dollar",
+                            Symbol = "A$"
+                        },
+                        new
+                        {
+                            Code = "BHD",
+                            MinorUnit = 3,
+                            Name = "Bahraini Dinar",
+                            Symbol = "BD"
+                        },
+                        new
+                        {
+                            Code = "CAD",
+                            MinorUnit = 2,
+                            Name = "Canadian Dollar",
+                            Symbol = "C$"
+                        },
+                        new
+                        {
+                            Code = "CHF",
+                            MinorUnit = 2,
+                            Name = "Swiss Franc",
+                            Symbol = "Fr"
+                        },
+                        new
+                        {
+                            Code = "EUR",
+                            MinorUnit = 2,
+                            Name = "Euro",
+                            Symbol = "€"
+                        },
+                        new
+                        {
+                            Code = "GBP",
+                            MinorUnit = 2,
+                            Name = "Pound Sterling",
+                            Symbol = "£"
+                        },
+                        new
+                        {
+                            Code = "JPY",
+                            MinorUnit = 0,
+                            Name = "Japanese Yen",
+                            Symbol = "¥"
+                        },
+                        new
+                        {
+                            Code = "KWD",
+                            MinorUnit = 3,
+                            Name = "Kuwaiti Dinar",
+                            Symbol = "KD"
+                        },
+                        new
+                        {
+                            Code = "NOK",
+                            MinorUnit = 2,
+                            Name = "Norwegian Krone",
+                            Symbol = "kr"
+                        },
+                        new
+                        {
+                            Code = "PLN",
+                            MinorUnit = 2,
+                            Name = "Polish Zloty",
+                            Symbol = "zł"
+                        },
+                        new
+                        {
+                            Code = "SEK",
+                            MinorUnit = 2,
+                            Name = "Swedish Krona",
+                            Symbol = "kr"
+                        },
+                        new
+                        {
+                            Code = "UAH",
+                            MinorUnit = 2,
+                            Name = "Ukrainian Hryvnia",
+                            Symbol = "₴"
+                        },
+                        new
+                        {
+                            Code = "USD",
+                            MinorUnit = 2,
+                            Name = "US Dollar",
+                            Symbol = "$"
+                        });
                 });
 
             modelBuilder.Entity("Domain.Payees.Payee", b =>
@@ -179,6 +331,10 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
+                    b.Property<Guid?>("CategoryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("category_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -192,10 +348,6 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(500)")
                         .HasColumnName("description");
 
-                    b.Property<Guid?>("GroupId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("group_id");
-
                     b.Property<Guid?>("PayeeId")
                         .HasColumnType("uuid")
                         .HasColumnName("payee_id");
@@ -208,7 +360,7 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.HasIndex("AccountId");
 
-                    b.HasIndex("GroupId");
+                    b.HasIndex("CategoryId");
 
                     b.HasIndex("PayeeId");
 
@@ -266,7 +418,23 @@ namespace Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("Domain.Groups.Group", b =>
+            modelBuilder.Entity("Domain.Categories.Category", b =>
+                {
+                    b.HasOne("Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Domain.CategoryGroups.CategoryGroup", null)
+                        .WithMany()
+                        .HasForeignKey("CategoryGroupId", "UserId")
+                        .HasPrincipalKey("Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Domain.CategoryGroups.CategoryGroup", b =>
                 {
                     b.HasOne("Domain.Users.User", null)
                         .WithMany()
@@ -292,9 +460,9 @@ namespace Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("Domain.Groups.Group", null)
+                    b.HasOne("Domain.Categories.Category", null)
                         .WithMany()
-                        .HasForeignKey("GroupId")
+                        .HasForeignKey("CategoryId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("Domain.Payees.Payee", null)

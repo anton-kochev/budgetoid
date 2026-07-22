@@ -14,8 +14,10 @@ public sealed record TransactionDto(
     string CurrencySymbol,
     Guid? PayeeId,
     string? PayeeName,
-    Guid? GroupId,
-    string? GroupName)
+    Guid? CategoryId,
+    string? CategoryName,
+    Guid? CategoryGroupId,
+    string? CategoryGroupName)
 {
     public static TransactionDto FromTransaction(
         Transaction transaction,
@@ -23,7 +25,9 @@ public sealed record TransactionDto(
         string currencyCode,
         string currencySymbol,
         string? payeeName = null,
-        string? groupName = null) => new(
+        string? categoryName = null,
+        Guid? categoryGroupId = null,
+        string? categoryGroupName = null) => new(
         transaction.Id,
         transaction.Amount,
         transaction.Date,
@@ -35,8 +39,10 @@ public sealed record TransactionDto(
         currencySymbol,
         transaction.PayeeId,
         payeeName,
-        transaction.GroupId,
-        groupName);
+        transaction.CategoryId,
+        categoryName,
+        categoryGroupId,
+        categoryGroupName);
 }
 
 public sealed record TransactionListResponse(IReadOnlyList<TransactionDto> Items);

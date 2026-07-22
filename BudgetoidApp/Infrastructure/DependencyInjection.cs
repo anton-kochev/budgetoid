@@ -1,10 +1,12 @@
 using Application.Accounts;
+using Application.Categories;
+using Application.CategoryGroups;
 using Application.Currencies;
-using Application.Groups;
 using Application.Payees;
 using Application.Transactions;
 using Domain.Accounts;
-using Domain.Groups;
+using Domain.Categories;
+using Domain.CategoryGroups;
 using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
@@ -21,13 +23,15 @@ public static class DependencyInjection
         services.AddScoped<IAccountRepository, AccountRepository>();
         services.AddScoped<ITransactionRepository, TransactionRepository>();
         services.AddScoped<IPayeeRepository, PayeeRepository>();
-        services.AddScoped<IGroupRepository, GroupRepository>();
+        services.AddScoped<ICategoryGroupRepository, CategoryGroupRepository>();
+        services.AddScoped<ICategoryRepository, CategoryRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<ITransactionReadService, TransactionReadService>();
         services.AddScoped<IAccountReadService, AccountReadService>();
         services.AddScoped<ICurrencyReadService, CurrencyReadService>();
         services.AddScoped<IPayeeReadService, PayeeReadService>();
-        services.AddScoped<IGroupReadService, GroupReadService>();
+        services.AddScoped<ICategoryGroupReadService, CategoryGroupReadService>();
+        services.AddScoped<ICategoryReadService, CategoryReadService>();
         return services;
     }
 }

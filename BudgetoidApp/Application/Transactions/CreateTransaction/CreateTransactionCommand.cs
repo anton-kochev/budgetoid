@@ -6,4 +6,4 @@ public sealed record CreateTransactionCommand(
     Guid AccountId,
     string? Description,
     string? PayeeName = null,
-    Guid? GroupId = null);
+    Guid? CategoryId = null);

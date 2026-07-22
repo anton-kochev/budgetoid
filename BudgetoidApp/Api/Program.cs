@@ -116,7 +116,8 @@ app.MapAccountEndpoints();
 app.MapCurrencyEndpoints();
 app.MapTransactionEndpoints();
 app.MapPayeeEndpoints();
-app.MapGroupEndpoints();
+app.MapCategoryGroupEndpoints();
+app.MapCategoryEndpoints();
 
 await app.RunAsync();
 

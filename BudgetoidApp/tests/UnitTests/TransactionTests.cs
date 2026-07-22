@@ -89,7 +89,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    public async Task AssignGroup_SetsGroupId()
+    public async Task AssignCategory_SetsCategoryId()
     {
         // Arrange
         var transaction = Transaction.Create(
@@ -99,17 +99,17 @@ public sealed class TransactionTests
             new DateOnly(2026, 6, 12),
             "Groceries",
             UtcNow());
-        var groupId = Guid.CreateVersion7();
+        var categoryId = Guid.CreateVersion7();
 
         // Act
-        transaction.AssignGroup(groupId);
+        transaction.AssignCategory(categoryId);
 
         // Assert
-        await Assert.That(transaction.GroupId).IsEqualTo(groupId);
+        await Assert.That(transaction.CategoryId).IsEqualTo(categoryId);
     }
 
     [Test]
-    public async Task AssignGroup_WithEmptyGroupId_ThrowsArgumentException()
+    public async Task AssignCategory_WithEmptyCategoryId_ThrowsArgumentException()
     {
         // Arrange
         var transaction = Transaction.Create(
@@ -124,7 +124,7 @@ public sealed class TransactionTests
         ArgumentException? caught = null;
         try
         {
-            transaction.AssignGroup(Guid.Empty);
+            transaction.AssignCategory(Guid.Empty);
         }
         catch (ArgumentException exception)
         {
@@ -133,7 +133,7 @@ public sealed class TransactionTests
 
         // Assert
         await Assert.That(caught).IsNotNull();
-        await Assert.That(caught!.ParamName).IsEqualTo("groupId");
+        await Assert.That(caught!.ParamName).IsEqualTo("categoryId");
     }
 
     [Test]

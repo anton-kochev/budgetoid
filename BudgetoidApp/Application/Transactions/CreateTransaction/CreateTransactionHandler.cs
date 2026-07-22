@@ -1,7 +1,8 @@
 using Application.Abstractions;
 using Application.Currencies;
 using Domain.Accounts;
-using Domain.Groups;
+using Domain.Categories;
+using Domain.CategoryGroups;
 using Domain.Payees;
 using Domain.Transactions;
 using DomainValidationException = Domain.Common.ValidationException;
@@ -13,7 +14,8 @@ public sealed class CreateTransactionHandler(
     IAccountRepository accounts,
     ICurrencyReadService currencies,
     IPayeeRepository payees,
-    IGroupRepository groups,
+    ICategoryRepository categories,
+    ICategoryGroupRepository categoryGroups,
     IUserContext userContext,
     TimeProvider timeProvider)
     : ICommandHandler<CreateTransactionCommand, TransactionDto>
@@ -27,14 +29,10 @@ public sealed class CreateTransactionHandler(
         {
             throw new DomainValidationException(new Dictionary<string, string[]>
             {
-                [nameof(command.AccountId)] = ["Account was not found."]
+                [nameof(command.AccountId)] = ["Account was not found."],
             });
         }
 
-        // Derive the symbol from the same seeded currencies table the read services join against,
-        // so the create-response and the list-view never disagree. The accounts -> currencies FK
-        // (Restrict) guarantees this row exists; a null here means the schema invariant is broken,
-        // so fail loudly rather than silently falling back to a guessed symbol.
         CurrencyDto currency = await currencies.GetByCodeAsync(account.CurrencyCode, cancellationToken)
                                ?? throw new InvalidOperationException(
                                    $"Currency '{account.CurrencyCode}' for account '{account.Id}' was not found.");
@@ -47,6 +45,25 @@ public sealed class CreateTransactionHandler(
             command.Description,
             timeProvider.GetUtcNow().UtcDateTime);
 
+        Category? category = null;
+        CategoryGroup? categoryGroup = null;
+        if (command.CategoryId is { } categoryId)
+        {
+            category = await categories.GetByIdAsync(categoryId, cancellationToken);
+            if (category is null)
+            {
+                throw new DomainValidationException(new Dictionary<string, string[]>
+                {
+                    [nameof(command.CategoryId)] = ["Category was not found."],
+                });
+            }
+
+            categoryGroup = await categoryGroups.GetByIdAsync(category.CategoryGroupId, cancellationToken)
+                            ?? throw new InvalidOperationException(
+                                $"Category group '{category.CategoryGroupId}' for category '{category.Id}' was not found.");
+            transaction.AssignCategory(category.Id);
+        }
+
         Payee? payee = null;
         if (!string.IsNullOrWhiteSpace(command.PayeeName))
         {
@@ -54,24 +71,16 @@ public sealed class CreateTransactionHandler(
             transaction.AssignPayee(payee.Id);
         }
 
-        Group? group = null;
-        if (command.GroupId is { } groupId)
-        {
-            group = await groups.GetByIdAsync(groupId, cancellationToken);
-            if (group is null)
-            {
-                throw new DomainValidationException(new Dictionary<string, string[]>
-                {
-                    [nameof(command.GroupId)] = ["Group was not found."]
-                });
-            }
-
-            transaction.AssignGroup(group.Id);
-        }
-
         await repository.AddAsync(transaction, cancellationToken);
 
-        return TransactionDto.FromTransaction(transaction, account.Name, account.CurrencyCode, currency.Symbol,
-            payee?.Name, group?.Name);
+        return TransactionDto.FromTransaction(
+            transaction,
+            account.Name,
+            account.CurrencyCode,
+            currency.Symbol,
+            payee?.Name,
+            category?.Name,
+            categoryGroup?.Id,
+            categoryGroup?.Name);
     }
 }

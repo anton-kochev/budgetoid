@@ -8,6 +8,33 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-07-14 — Replace flat Groups with required Category Group → Category hierarchy
+
+**Context:** The original `Group` entity was actually a flat transaction category. It could not
+represent a user-facing organizational heading such as “Essential Obligations” containing
+“Groceries” and “Utility Bills,” and its name made the domain ambiguous.
+
+**Decision:** Replace Group with two user-owned resources: every **Category** belongs to exactly one
+**Category Group**, while a Transaction may still be uncategorized. Membership is required and
+same-owner at the database level. Names are case-insensitively unique per user (Category names across
+all groups), both levels use persisted custom order, and typed PATCH operations move/reorder items.
+Block deleting a non-empty Category Group and a Category referenced by Transactions. Read historical
+Transactions through current Category/Category Group names rather than snapshots. Make a clean API
+and schema break with no `/api/groups` aliases or data migration.
+
+**Alternatives considered:** Keep Group as the Category name and add a loosely associated heading —
+rejected because it preserves ambiguous terminology and permits invalid membership. Optional
+Category Group membership — rejected because orphan Categories violate the intended hierarchy.
+Nested or many-to-many groups — rejected as unnecessary complexity. Alphabetical order — rejected
+because users need deliberate personal organization. Snapshotting names on Transactions — rejected
+because renames and moves should update historical display.
+
+**Affected areas:** [categories.md](categories.md), [transactions.md](transactions.md),
+[users-and-ownership.md](users-and-ownership.md). This reverses the Category portion of the
+2026-07-13 account/group deletion entry below; the Account decision remains unchanged.
+
+---
+
 ## 2026-07-13 — Payees are free-text find-or-create, not a managed list
 
 **Context:** A transaction can name a counterparty (payee). We had to decide whether payees are a

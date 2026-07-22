@@ -3,7 +3,7 @@ import { inject } from '@angular/core';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { Observable } from 'rxjs';
 
-type ContentType = 'json' | 'json-patch';
+type ContentType = 'json';
 
 export abstract class BaseApiService {
   private readonly http: HttpClient;
@@ -20,10 +20,10 @@ export abstract class BaseApiService {
     return this.http.get<T>(`${this.baseUrl}/${path}`, opts);
   }
 
-  protected patch(path: string, patch: unknown): Observable<unknown> {
-    const opts = { headers: BaseApiService.headers('json-patch') };
+  protected patch<T = unknown>(path: string, patch: unknown): Observable<T> {
+    const opts = { headers: BaseApiService.headers() };
 
-    return this.http.patch(`${this.baseUrl}/${path}`, patch, opts);
+    return this.http.patch<T>(`${this.baseUrl}/${path}`, patch, opts);
   }
 
   protected post<T = unknown>(path: string, body: unknown): Observable<T> {
@@ -50,8 +50,6 @@ export abstract class BaseApiService {
     switch (contentType) {
       case 'json':
         return { 'Content-Type': 'application/json' };
-      case 'json-patch':
-        return { 'Content-Type': 'application/json-patch+json' };
       default:
         return { 'Content-Type': 'application/json' };
     }

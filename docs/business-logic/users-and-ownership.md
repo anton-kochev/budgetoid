@@ -16,8 +16,8 @@ This area covers **who a user is** and the single most important rule in the who
 **a user can only ever see or change their own data.** Users are not registered through a form —
 they are provisioned transparently from their Google sign-in on their first authenticated request.
 The ownership invariant defined here is cross-cutting: every rule in
-[accounts.md](accounts.md), [transactions.md](transactions.md), and [groups.md](groups.md) assumes
-it, and none of those areas re-document it.
+[accounts.md](accounts.md), [transactions.md](transactions.md), and
+[categories.md](categories.md) assumes it, and none of those areas re-document it.
 
 ## Key Entities
 
@@ -30,7 +30,8 @@ it, and none of those areas re-document it.
 ```mermaid
 erDiagram
     USER ||--o{ ACCOUNT : owns
-    USER ||--o{ GROUP : owns
+    USER ||--o{ CATEGORY_GROUP : owns
+    USER ||--o{ CATEGORY : owns
     USER ||--o{ PAYEE : owns
     USER ||--o{ TRANSACTION : owns
     USER {
@@ -52,9 +53,8 @@ erDiagram
     app.
   - **Enforced in**: EF Core global query filters named `UserIsolation` in
     `BudgetoidApp/Infrastructure/Persistence/BudgetoidDbContext.cs` (applied to `Transaction`,
-    `Account`, `Payee`, `Group`), plus `UserId` stamping at creation from `IUserContext.UserId` in
-    each create handler / `Account.Create`, `Group.Create`, `Transaction.Create`,
-    `PayeeRepository.GetOrCreateAsync`.
+    `Account`, `Payee`, `CategoryGroup`, and `Category`), plus `UserId` stamping at creation from
+    `IUserContext.UserId`. Category membership has an additional same-owner composite foreign key.
 
 - **A request must resolve to a real internal user before it can touch data.**
   - **Why**: Handlers stamp and filter by `IUserContext.UserId`; without a resolved user there is
@@ -72,7 +72,7 @@ erDiagram
 ### MUST NOT
 
 - **A user MUST NOT be able to load, update, or delete another user's account, transaction, payee,
-  or group.**
+  Category Group, or Category.**
   - **Why**: Same as the isolation constraint above — cross-tenant access is a security breach.
   - **Enforced in**: the `UserIsolation` query filter makes another user's row resolve to `null`,
     so `GetByIdAsync` returns nothing and update/delete handlers throw `NotFoundException` (404) —
@@ -148,8 +148,10 @@ stateDiagram-v2
 - **Google OAuth / OIDC**: identity comes from the Google ID token. The API trusts the `sub`,
   `email`, and optional `name` claims. The frontend attaches the **ID token** (not the access
   token) as the `Authorization: Bearer` header on API calls (see the client `AuthInterceptor`).
-- **All other domain areas**: Accounts, Transactions, Payees, and Groups depend on the ownership
-  invariant defined here — they stamp `UserId` on create and are filtered by it on read.
+- **All other domain areas**: Accounts, Transactions, Payees, Category Groups, and Categories depend
+  on the ownership invariant defined here — they stamp `UserId` on create and are filtered by it on
+  read. Category-to-Category Group membership also carries `UserId` through a composite FK so a
+  Category cannot be attached to another user's group even through direct database writes.
 
 ## Edge Cases & Known Gotchas
 

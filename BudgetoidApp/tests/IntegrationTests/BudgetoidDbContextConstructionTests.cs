@@ -1,7 +1,11 @@
+using Domain.Categories;
+using Domain.CategoryGroups;
+using Domain.Currencies;
 using Domain.Transactions;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace IntegrationTests;
@@ -29,6 +33,44 @@ public sealed class BudgetoidDbContextConstructionTests
 
         await Assert.That(userForeignKey).IsNotNull();
         await Assert.That(userForeignKey!.Properties.Single().Name).IsEqualTo(nameof(Transaction.UserId));
+    }
+
+    [Test]
+    public async Task Model_RequiresCategoryToReferenceCategoryGroupOwnedBySameUser()
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act
+        IEntityType categoryEntity = db.Model.FindEntityType(typeof(Category))!;
+        IForeignKey categoryGroupForeignKey = categoryEntity
+            .GetForeignKeys()
+            .Single(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(CategoryGroup));
+
+        // Assert
+        await Assert.That(categoryGroupForeignKey.Properties.Select(property => property.Name).ToArray())
+            .IsEquivalentTo(new[] { nameof(Category.CategoryGroupId), nameof(Category.UserId) });
+        await Assert.That(categoryGroupForeignKey.IsRequired).IsTrue();
+        await Assert.That(categoryGroupForeignKey.DeleteBehavior).IsEqualTo(DeleteBehavior.Restrict);
+    }
+
+    [Test]
+    public async Task Model_ContainsIsoCurrencySeedDataForFreshBaseline()
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act
+        IReadOnlyList<IDictionary<string, object?>> seeds = db
+            .GetService<IDesignTimeModel>()
+            .Model
+            .FindEntityType(typeof(Currency))!
+            .GetSeedData()
+            .ToList();
+
+        // Assert
+        await Assert.That(seeds.Count).IsEqualTo(13);
+        await Assert.That(seeds.Any(seed => (string)seed[nameof(Currency.Code)]! == "USD")).IsTrue();
     }
 
     private static BudgetoidDbContext CreateDbContext()

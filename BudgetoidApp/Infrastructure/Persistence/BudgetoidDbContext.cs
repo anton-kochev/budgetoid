@@ -1,7 +1,8 @@
 using Application.Abstractions;
 using Domain.Accounts;
+using Domain.Categories;
+using Domain.CategoryGroups;
 using Domain.Currencies;
-using Domain.Groups;
 using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
@@ -17,38 +18,28 @@ public sealed class BudgetoidDbContext(
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<Currency> Currencies => Set<Currency>();
     public DbSet<Payee> Payees => Set<Payee>();
-    public DbSet<Group> Groups => Set<Group>();
+    public DbSet<CategoryGroup> CategoryGroups => Set<CategoryGroup>();
+    public DbSet<Category> Categories => Set<Category>();
     public DbSet<User> Users => Set<User>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(BudgetoidDbContext).Assembly);
+        modelBuilder.HasCollation(
+            "case_insensitive",
+            locale: "und-u-ks-level2",
+            provider: "icu",
+            deterministic: false);
 
-        // Nondeterministic ICU collation: case-insensitive, accent-sensitive. The payee name
-        // column uses it so equality comparisons and the unique index fold case in PostgreSQL
-        // itself (see PayeeConfiguration) — no lower() and no C#-side case folding to drift apart.
-        modelBuilder.HasCollation("case_insensitive", locale: "und-u-ks-level2", provider: "icu", deterministic: false);
-
-        // Read-side isolation: every query against Transactions is scoped to the current user,
-        // read live from the scoped IUserContext at query time (after the auth middleware runs),
-        // so no repository has to remember to stamp the user. See TECH_DEBT.md "Data isolation
-        // invariant" for the escape hatches this does NOT cover.
-        //
-        // The provider is optional so the context still constructs without a resolved user
-        // (migrations, design-time factory, seeding) — those paths never query Transactions, so
-        // the userContext! dereference is never reached for a null provider. Every real query path
-        // has a DI-injected (production) or test-supplied provider.
         modelBuilder.Entity<Transaction>()
             .HasQueryFilter("UserIsolation", transaction => transaction.UserId == userContext!.UserId);
         modelBuilder.Entity<Account>()
             .HasQueryFilter("UserIsolation", account => account.UserId == userContext!.UserId);
         modelBuilder.Entity<Payee>()
             .HasQueryFilter("UserIsolation", payee => payee.UserId == userContext!.UserId);
-        modelBuilder.Entity<Group>()
-            .HasQueryFilter("UserIsolation", group => group.UserId == userContext!.UserId);
-
-        // Currencies are global ISO-4217 reference data seeded by migrations. They deliberately
-        // have no UserId and no query filter, unlike user-owned accounts, transactions and payees.
-
+        modelBuilder.Entity<CategoryGroup>()
+            .HasQueryFilter("UserIsolation", categoryGroup => categoryGroup.UserId == userContext!.UserId);
+        modelBuilder.Entity<Category>()
+            .HasQueryFilter("UserIsolation", category => category.UserId == userContext!.UserId);
     }
 }
