@@ -16,10 +16,12 @@ $color: (
   theme-type: color-scheme,
 );
 
+// Two voices (docs/design/typography.md): Mohave speaks in headlines (brand),
+// Inter is everything read, entered, or counted (plain — all component text).
 $typography: (
   brand-family: 'Mohave',
-  plain-family: 'Mohave',
-  bold-weight: 800,
+  plain-family: 'Inter',
+  bold-weight: 700,
   medium-weight: 500,
   regular-weight: 400,
 );
