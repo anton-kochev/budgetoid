@@ -1,6 +1,5 @@
 .kin {
   width: min(430px, 100%);
-  min-height: 118px;
   font-family: 'Mohave', sans-serif;
   font-weight: 500;
   font-size: 28px;
@@ -8,8 +7,31 @@
   text-align: center;
 }
 
+.kin-fear {
+  // Reserve two line-boxes for the fear line at every viewport width so the
+  // block never changes height while the sentence types out or wraps from one
+  // line to two. 2lh == two line-heights (2 x 1.3 x 28px) and tracks the
+  // font/line-height above automatically — no magic pixel value to drift.
+  // A short one-line fear is anchored to the bottom of this box so it hugs the
+  // verdict below (no visible gap); when it wraps, the second line grows
+  // upward and the fear/verdict spacing stays put. Combined with the verdict's
+  // own reserved line below, the outer `.kin` keeps a constant height.
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 2lh;
+}
+
 .kin-verdict {
   display: block;
+  // Reserve one line-box for the verdict at all times. The `verdict` signal is
+  // an empty string between cycles, which would collapse this block to 0 height
+  // and shift everything below by ~1 line; the opacity reveal alone does not
+  // hold height when the text content is empty. 1lh keeps the line reserved
+  // whether empty or full, matching the fear's line-relative approach so that
+  // `.kin` height stays 2lh (fear) + 1lh (verdict) = constant across all states.
+  min-height: 1lh;
   color: var(--mat-sys-primary);
   font-weight: 700;
   opacity: 0;
