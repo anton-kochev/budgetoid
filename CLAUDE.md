@@ -63,6 +63,15 @@ Auth is live Google OAuth. The current user is exposed through `IUserContext`: `
 - UI: Angular Material + Angular CDK
 - Styling: SCSS
 
+## Design System Documentation
+
+The design system lives in `docs/design/` — start with `docs/design/_overview.md`.
+Read the relevant chapter before building or changing UI. Every visible value comes
+from design tokens (`--bud-*` / `--mat-sys-*`); a hard-coded hex, px gap, or duration
+in component styles is a defect unless the book names it. When a change affects a
+design rule, update the chapter in the same commit. Brand mark rules stay in
+`branding/BRAND.md`.
+
 ## Business Logic Documentation
 
 The product problem definition lives in `docs/product/problem.md` — read it before making

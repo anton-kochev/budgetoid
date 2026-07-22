@@ -1,0 +1,78 @@
+# Voice
+
+The interface speaks the way the product thinks: plain answers, never judgment. Every
+string is a fact or a next step, in words a person uses at a kitchen table.
+
+## Tone
+
+- **Plain.** "12.40 € left" — not "Remaining allocation balance". If a sentence needs
+  a financial glossary, rewrite it.
+- **Never judging.** The system never says money was spent badly. Not "You overspent",
+  but "Over by 8.20 €". Not "Warning", but what is true and what to do.
+- **Calm.** No exclamation marks. No urgency theater ("Act now!"), no praise theater
+  ("Great job!"). The reward for recording a transaction is the record.
+- **Brief.** Buttons are verbs ("Add account", "Record", "Export"). Titles are nouns.
+  Confirmations are short facts ("Recorded.").
+- **Honest.** Converted amounts say `≈`. Estimates say so. Errors say what happened
+  and what to do, not "Something went wrong" when we know what went wrong.
+
+## Mechanics
+
+- Sentence case everywhere — titles, buttons, labels. Never Title Case, never ALL CAPS
+  (the uppercase eyebrow is a type style, not a writing style).
+- Money is always numerals, never words, formatted per [patterns](patterns.md).
+- Dates in the user's locale; relative words ("Today", "Yesterday") only in lists,
+  absolute dates everywhere else.
+- Contractions are welcome ("It's ready."); apostrophes are typographic (').
+- The product name is lowercase **budgetoid** only in the lockup; in prose it is
+  Budgetoid.
+
+## Terminology
+
+| Canonical | Meaning | Never say |
+| --- | --- | --- |
+| **record** (verb) / **transaction** (noun) | Writing a money movement down | log, post, book |
+| **available** / **left** | What a purpose can still spend | balance remaining, unspent allocation |
+| **assigned** | Money given to a purpose | allocated, budgeted (as a verb) |
+| **purpose** | What a sum of money is for — the envelope concept, when it ships | job (in UI), envelope, bucket, pot |
+| **category** / **category group** | Classification of a transaction (today's domain) | folder, tag |
+| **account** | A place money lives | wallet, source |
+| **payee** | Who money went to or came from | merchant, vendor, counterparty |
+| **over by X** | The over-budget fact | overspent, in the red, negative balance |
+| **getting close** | The near-limit fact | warning, danger, low funds |
+
+**Why "purpose" and not "job":** the credo — *money gets its jobs first* — keeps
+"jobs"; it is the brand's metaphor and stays in marketing voice (the Welcome screen's
+"All of it gets a job."). Inside the product, "job" collides with employment in the
+one app that is entirely about money, so screens use **purpose**, which is also the
+mission's own word ("decide what your money is for"). Today's screens keep the domain
+nouns Category and Category group; "purpose" is reserved for the allocation layer when
+it becomes first-class.
+
+## Banned words
+
+**ledger**, **buffer** — banned as product terms outright. Also avoid: sin/guilt
+framing ("splurge", "guilty pleasure"), finance jargon ("debit", "credit" as UI
+verbs), and hedge words that dodge a plain answer ("approximately" belongs to `≈`
+figures, not to copy that could just say the number).
+
+## Microcopy patterns
+
+- **Empty state**: fact → orientation (optional) → action.
+  "No accounts yet." / "Every account in one place — one picture of your money." /
+  "Add account".
+- **Confirmation**: past-tense fact, one word if possible: "Recorded." "Exported."
+  "Erased."
+- **Destructive confirm**: consequence in plain words, then the action as the verb:
+  "This erases every account, transaction, and category. There is no undo." →
+  "Erase everything".
+- **Blocked action**: the fact, then the way forward: "This account has transactions.
+  Export or erase everything from Settings."
+- **Errors**: what happened + what to do: "Couldn't save — you're offline. It will
+  retry." Never blame the person; the subject of an error sentence is the system.
+
+## Marketing voice (Welcome and public surfaces)
+
+Currency-free, no feature lists, no trust-claim lists, no gimmick lines. The shipped
+Welcome copy is the reference: "Always watching. Never judging." — statements, then
+one action. Anything that reads as a sales trick gets cut.
