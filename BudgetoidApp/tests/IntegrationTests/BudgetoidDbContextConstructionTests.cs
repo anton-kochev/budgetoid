@@ -79,6 +79,110 @@ public sealed class BudgetoidDbContextConstructionTests
     }
 
     [Test]
+    [Arguments(typeof(Account), "AccountId")]
+    [Arguments(typeof(Category), "CategoryId")]
+    [Arguments(typeof(Payee), "PayeeId")]
+    public async Task Model_RequiresTransactionReferencesToStayInTheSameBudget(
+        Type principalClrType,
+        string referencePropertyName)
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act
+        IEntityType transactionEntity = db.Model.FindEntityType(typeof(Transaction))!;
+        IForeignKey referenceForeignKey = transactionEntity
+            .GetForeignKeys()
+            .Single(foreignKey => foreignKey.PrincipalEntityType.ClrType == principalClrType);
+
+        // Assert — a single-column reference lets the database hold a transaction that points at a
+        // row in another budget; only the composite key ties the reference to the ambient tenant.
+        await Assert.That(referenceForeignKey.Properties.Select(property => property.Name).ToArray())
+            .IsEquivalentTo(new[] { referencePropertyName, "BudgetId" });
+        await Assert.That(referenceForeignKey.PrincipalKey.Properties
+                .Select(property => property.Name).ToArray())
+            .IsEquivalentTo(new[] { "Id", "BudgetId" });
+        // SET NULL is unreachable for a composite key whose BudgetId column is NOT NULL, so every
+        // one of these references deletes under Restrict.
+        await Assert.That(referenceForeignKey.DeleteBehavior).IsEqualTo(DeleteBehavior.Restrict);
+    }
+
+    [Test]
+    public async Task Model_KeepsOptionalTransactionReferencesOptional()
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act
+        IEntityType transactionEntity = db.Model.FindEntityType(typeof(Transaction))!;
+        IProperty budgetIdProperty = transactionEntity.FindProperty("BudgetId")!;
+        IProperty accountIdProperty = transactionEntity.FindProperty(nameof(Transaction.AccountId))!;
+        IProperty payeeIdProperty = transactionEntity.FindProperty(nameof(Transaction.PayeeId))!;
+        IProperty categoryIdProperty = transactionEntity.FindProperty(nameof(Transaction.CategoryId))!;
+        IForeignKey budgetForeignKey = transactionEntity
+            .GetForeignKeys()
+            .Single(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(Budget));
+        IForeignKey accountForeignKey = transactionEntity
+            .GetForeignKeys()
+            .Single(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(Account));
+        IForeignKey payeeForeignKey = transactionEntity
+            .GetForeignKeys()
+            .Single(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(Payee));
+        IForeignKey categoryForeignKey = transactionEntity
+            .GetForeignKeys()
+            .Single(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(Category));
+
+        // Assert — this pins an absence of change, and the trap it guards is silent: calling
+        // .IsRequired(false) on a composite foreign key makes *all* of its properties nullable,
+        // including the BudgetId tenancy column, with no compiler error and no migration warning.
+        // Optionality belongs to payee_id and category_id alone.
+        await Assert.That(payeeIdProperty.IsNullable).IsTrue();
+        await Assert.That(categoryIdProperty.IsNullable).IsTrue();
+        await Assert.That(budgetIdProperty.IsNullable).IsFalse();
+        await Assert.That(accountIdProperty.IsNullable).IsFalse();
+        await Assert.That(payeeForeignKey.IsRequired).IsFalse();
+        await Assert.That(categoryForeignKey.IsRequired).IsFalse();
+        await Assert.That(budgetForeignKey.IsRequired).IsTrue();
+        await Assert.That(accountForeignKey.IsRequired).IsTrue();
+    }
+
+    [Test]
+    public async Task Model_IndexesTransactionReferencesWithTheBudget()
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+        string[] referencePropertyNames =
+        [
+            nameof(Transaction.AccountId),
+            nameof(Transaction.CategoryId),
+            nameof(Transaction.PayeeId),
+        ];
+
+        // Act
+        IEntityType transactionEntity = db.Model.FindEntityType(typeof(Transaction))!;
+        string[][] indexes = transactionEntity
+            .GetIndexes()
+            .Select(index => index.Properties.Select(property => property.Name).ToArray())
+            .ToArray();
+
+        // Assert — EF's foreign-key index convention covers the composite pairs, so the three
+        // single-column indexes are dead weight the composite ones already serve as a prefix.
+        foreach (string referencePropertyName in referencePropertyNames)
+        {
+            await Assert.That(indexes.Any(index =>
+                    index.SequenceEqual([referencePropertyName, "BudgetId"])))
+                .IsTrue();
+            await Assert.That(indexes.Any(index => index.SequenceEqual([referencePropertyName])))
+                .IsFalse();
+        }
+
+        // The list query's covering index is untouched by the re-keying.
+        await Assert.That(indexes.Any(index => index.SequenceEqual(
+                ["BudgetId", nameof(Transaction.Date), nameof(Transaction.CreatedAtUtc)])))
+            .IsTrue();
+    }
+
+    [Test]
     [Arguments(typeof(Account))]
     [Arguments(typeof(CategoryGroup))]
     [Arguments(typeof(Category))]

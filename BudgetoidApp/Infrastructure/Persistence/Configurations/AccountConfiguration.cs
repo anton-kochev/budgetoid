@@ -12,6 +12,7 @@ public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
     {
         builder.ToTable("accounts");
         builder.HasKey(account => account.Id);
+        builder.HasAlternateKey(account => new { account.Id, account.BudgetId });
 
         builder.Property(account => account.Id).HasColumnName("id");
         builder.Property(account => account.BudgetId).HasColumnName("budget_id").IsRequired();

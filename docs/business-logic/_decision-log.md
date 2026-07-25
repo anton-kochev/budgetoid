@@ -8,6 +8,41 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-07-25 — Transaction references are same-budget in the schema, not just in application code
+
+**Context:** `transactions` reached `accounts`, `categories` and `payees` through plain single-column
+foreign keys, so the database would accept a transaction pointing at another budget's row. Nothing
+produced one, because `CreateTransactionHandler` resolves every reference through a
+`BudgetIsolation`-filtered repository — but the guarantee lived entirely in application code, and a
+query filter enforces nothing on a write.
+
+**Decision:** Give `Account`, `Category` and `Payee` an alternate key `(Id, BudgetId)` and reference
+them through composite foreign keys `(account_id, budget_id)`, `(category_id, budget_id)` and
+`(payee_id, budget_id)` → `(id, budget_id)`, so **PostgreSQL refuses a cross-budget reference**
+whatever code path wrote the row. Optionality survives free: a multi-column check is skipped entirely
+when any of its columns is NULL (MATCH SIMPLE). The payee reference takes `Restrict`, making **a
+referenced payee undeletable** — the guard accounts and categories already have, forcing an explicit
+decision about historical rows instead of silently erasing the counterparty from past transactions.
+
+**Alternatives considered:** *Leave the boundary to application code* — rejected: every future write
+path that bypasses the filtered repositories loses it silently, with no failure signal. *Keep SET
+NULL on the payee reference via PostgreSQL 15+ column-list `ON DELETE SET NULL (payee_id)`* —
+rejected: unreachable from EF Core 10, whose `ReferentialAction` has no column-list variant, and raw
+SQL would need re-applying on every baseline regeneration while the model snapshot still recorded
+`SetNull`, leaving the tooling diffing against a lie. *Exclude payees to preserve SET NULL* —
+rejected: it leaves one of the three references unprotected for a delete path no application code
+exercises.
+
+**Accepted tradeoff:** the three alternate keys create `UNIQUE (id, budget_id)` indexes redundant with
+each primary key. Unavoidable: PostgreSQL requires a unique constraint on a foreign key's referenced
+columns, and promoting the primary key to `(id, budget_id)` would break every single-column foreign
+key and every by-id lookup. Already accepted for `category_groups`.
+
+**Affected areas:** [transactions.md](transactions.md), [budgets.md](budgets.md),
+[categories.md](categories.md).
+
+---
+
 ## 2026-07-25 — Budget replaces the user as the unit of tenancy
 
 **Context:** A person can preside over more than one pool of money — funds for an event, a club, or a

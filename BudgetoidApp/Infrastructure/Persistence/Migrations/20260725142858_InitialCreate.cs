@@ -87,6 +87,7 @@ namespace Infrastructure.Persistence.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_accounts", x => x.id);
+                    table.UniqueConstraint("AK_accounts_id_budget_id", x => new { x.id, x.budget_id });
                     table.ForeignKey(
                         name: "FK_accounts_budgets_budget_id",
                         column: x => x.budget_id,
@@ -137,6 +138,7 @@ namespace Infrastructure.Persistence.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_payees", x => x.id);
+                    table.UniqueConstraint("AK_payees_id_budget_id", x => new { x.id, x.budget_id });
                     table.ForeignKey(
                         name: "FK_payees_budgets_budget_id",
                         column: x => x.budget_id,
@@ -160,6 +162,7 @@ namespace Infrastructure.Persistence.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_categories", x => x.id);
+                    table.UniqueConstraint("AK_categories_id_budget_id", x => new { x.id, x.budget_id });
                     table.CheckConstraint("CK_categories_position", "position >= 0");
                     table.ForeignKey(
                         name: "FK_categories_budgets_budget_id",
@@ -193,10 +196,10 @@ namespace Infrastructure.Persistence.Migrations
                 {
                     table.PrimaryKey("PK_transactions", x => x.id);
                     table.ForeignKey(
-                        name: "FK_transactions_accounts_account_id",
-                        column: x => x.account_id,
+                        name: "FK_transactions_accounts_account_id_budget_id",
+                        columns: x => new { x.account_id, x.budget_id },
                         principalTable: "accounts",
-                        principalColumn: "id",
+                        principalColumns: new[] { "id", "budget_id" },
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
                         name: "FK_transactions_budgets_budget_id",
@@ -205,17 +208,17 @@ namespace Infrastructure.Persistence.Migrations
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
-                        name: "FK_transactions_categories_category_id",
-                        column: x => x.category_id,
+                        name: "FK_transactions_categories_category_id_budget_id",
+                        columns: x => new { x.category_id, x.budget_id },
                         principalTable: "categories",
-                        principalColumn: "id",
+                        principalColumns: new[] { "id", "budget_id" },
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_transactions_payees_payee_id",
-                        column: x => x.payee_id,
+                        name: "FK_transactions_payees_payee_id_budget_id",
+                        columns: x => new { x.payee_id, x.budget_id },
                         principalTable: "payees",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.SetNull);
+                        principalColumns: new[] { "id", "budget_id" },
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.InsertData(
@@ -294,9 +297,9 @@ namespace Infrastructure.Persistence.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_transactions_account_id",
+                name: "IX_transactions_account_id_budget_id",
                 table: "transactions",
-                column: "account_id");
+                columns: new[] { "account_id", "budget_id" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_transactions_budget_id_date_created_at_utc",
@@ -305,14 +308,14 @@ namespace Infrastructure.Persistence.Migrations
                 descending: new[] { false, true, true });
 
             migrationBuilder.CreateIndex(
-                name: "IX_transactions_category_id",
+                name: "IX_transactions_category_id_budget_id",
                 table: "transactions",
-                column: "category_id");
+                columns: new[] { "category_id", "budget_id" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_transactions_payee_id",
+                name: "IX_transactions_payee_id_budget_id",
                 table: "transactions",
-                column: "payee_id");
+                columns: new[] { "payee_id", "budget_id" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_users_google_subject",

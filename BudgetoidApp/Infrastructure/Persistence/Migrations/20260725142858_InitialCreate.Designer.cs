@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BudgetoidDbContext))]
-    [Migration("20260725125444_InitialCreate")]
+    [Migration("20260725142858_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -398,11 +398,11 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("AccountId");
+                    b.HasIndex("AccountId", "BudgetId");
 
-                    b.HasIndex("CategoryId");
+                    b.HasIndex("CategoryId", "BudgetId");
 
-                    b.HasIndex("PayeeId");
+                    b.HasIndex("PayeeId", "BudgetId");
 
                     b.HasIndex("BudgetId", "Date", "CreatedAtUtc")
                         .IsDescending(false, true, true);
@@ -508,27 +508,30 @@ namespace Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Domain.Transactions.Transaction", b =>
                 {
-                    b.HasOne("Domain.Accounts.Account", null)
-                        .WithMany()
-                        .HasForeignKey("AccountId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.HasOne("Domain.Budgets.Budget", null)
                         .WithMany()
                         .HasForeignKey("BudgetId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("Domain.Accounts.Account", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId", "BudgetId")
+                        .HasPrincipalKey("Id", "BudgetId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("Domain.Categories.Category", null)
                         .WithMany()
-                        .HasForeignKey("CategoryId")
+                        .HasForeignKey("CategoryId", "BudgetId")
+                        .HasPrincipalKey("Id", "BudgetId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("Domain.Payees.Payee", null)
                         .WithMany()
-                        .HasForeignKey("PayeeId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .HasForeignKey("PayeeId", "BudgetId")
+                        .HasPrincipalKey("Id", "BudgetId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 #pragma warning restore 612, 618
         }

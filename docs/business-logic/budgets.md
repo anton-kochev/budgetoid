@@ -98,13 +98,20 @@ erDiagram
     `CreateTransactionHandler` and `PayeeRepository.GetOrCreateAsync`. There is no `UserId` on any of
     the five entities — `Budget.UserId` is the only owner link in the schema.
 
-- **A category belongs to a category group in the same budget.**
+- **Every reference between two budget-owned rows points inside the same budget.** This covers a
+  category's category group and a transaction's account, category and payee.
   - **Why**: A category attached to another budget's group would make the hierarchy read across
-    pools, and a query filter cannot enforce anything on a write.
-  - **Enforced in**: `CategoryGroupConfiguration` declares an alternate key `(Id, BudgetId)` and
-    `CategoryConfiguration` a composite foreign key `(category_group_id, budget_id) →
-    category_groups(id, budget_id)` on `Restrict`. PostgreSQL rejects the row regardless of how it
-    was written.
+    pools, and a transaction pointing at another budget's account, category or payee would put one
+    pool's money into another's picture. A query filter cannot enforce anything on a write, so
+    leaving this to the resolving handlers means any future write path that bypasses them — an
+    importer, a bulk endpoint, a background job — loses it silently, with no failure signal.
+  - **Enforced in**: `CategoryGroupConfiguration`, `AccountConfiguration`, `CategoryConfiguration`
+    and `PayeeConfiguration` each declare an alternate key `(Id, BudgetId)`; `CategoryConfiguration`
+    maps `(category_group_id, budget_id)` and `TransactionConfiguration` maps `(account_id,
+    budget_id)`, `(category_id, budget_id)` and `(payee_id, budget_id)` onto the matching principal
+    keys, all on `Restrict`. PostgreSQL rejects the row regardless of how it was written.
+    `payee_id` and `category_id` stay nullable: a multi-column check is skipped entirely when any of
+    its columns is NULL (MATCH SIMPLE).
 
 - **Account, category group, category and payee names are unique per budget, case-insensitively.**
   - **Why**: The names are how the user tells things apart inside one pool of money. Two accounts
@@ -330,14 +337,13 @@ stateDiagram-v2
   maintenance path that wants to write those entities directly: it must supply an `IBudgetContext`, not
   rely on the parameter being optional.
 
-- **The same-budget composite foreign key protects category membership only.** `transactions →
-  accounts`, `transactions → categories` and `transactions → payees` are plain single-column foreign
-  keys, so at the database level a transaction could reference an account in another budget. What
-  prevents it is the query filter: the create handler resolves each reference through a
-  `BudgetIsolation`-filtered repository, so an id from another budget resolves to null and the handler
-  reports "not found". Do not read the schema as enforcing same-budget everywhere — it does not, and
-  extending the composite keys to transactions was deliberately left out of scope. Any code path that
-  writes a transaction *without* going through the filtered repositories loses that protection.
+- **The composite foreign keys prove internal consistency, not that the ambient budget was the right
+  one.** `(account_id, budget_id)`, `(category_id, budget_id)` and `(payee_id, budget_id)` guarantee
+  that a transaction and every row it references agree on one budget id; they say nothing about
+  *which* budget id that is. Nothing stops a future importer or bulk endpoint from stamping the wrong
+  `budget_id` across a consistently cross-referenced set — every constraint would accept it. That
+  residual risk is addressed by ambient-budget resolution (see Business Rules & Invariants above),
+  not by these constraints, which remains the whole protection for *whose* budget a write lands in.
 
 - **Resolving the ambient budget costs one extra indexed read per authenticated request.** The
   provisioning lookup hits the leading column of an index that already exists, and it runs on every

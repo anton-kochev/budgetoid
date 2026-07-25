@@ -130,28 +130,42 @@ public sealed class PayeeIntegrationTests
     }
 
     [Test]
-    public async Task DeletingPayee_NullsTransactionPayeeId()
+    public async Task DeletingAReferencedPayee_IsRefusedByTheDatabase()
     {
-        // Arrange
+        // Arrange — no application code path deletes a payee, so raw SQL is the only way to
+        // exercise the constraint.
         await using PostgresTestHost host = await StartApiHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient();
         JsonNode created = await PostTransactionAsync(client, "Starbucks");
         Guid payeeId = created["payeeId"]!.GetValue<Guid>();
 
-        // Act
+        // Act — the transactions -> payees foreign key is the composite same-budget pair
+        // (payee_id, budget_id); it cannot use ON DELETE SET NULL because budget_id is NOT NULL.
+        // Refusing the delete forces an explicit decision about historical rows instead of
+        // silently erasing the counterparty from transactions that already happened.
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
         await using NpgsqlCommand delete = new("delete from payees where id = @id", connection);
         delete.Parameters.AddWithValue("id", payeeId);
-        await delete.ExecuteNonQueryAsync();
+        PostgresException? caught = null;
+        try
+        {
+            await delete.ExecuteNonQueryAsync();
+        }
+        catch (PostgresException exception)
+        {
+            caught = exception;
+        }
 
         JsonNode? list = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
         JsonNode item = list!["items"]!.AsArray()[0]!;
 
         // Assert
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.SqlState).IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
         await Assert.That(list["items"]!.AsArray().Count).IsEqualTo(1);
-        await Assert.That(item["payeeId"]).IsNull();
-        await Assert.That(item["payeeName"]).IsNull();
+        await Assert.That(item["payeeId"]!.GetValue<Guid>()).IsEqualTo(payeeId);
+        await Assert.That(item["payeeName"]!.GetValue<string>()).IsEqualTo("Starbucks");
     }
 
     [Test]

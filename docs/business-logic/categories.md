@@ -107,8 +107,10 @@ erDiagram
   current Category and Category Group names, so renaming or moving a Category changes historical
   transaction display immediately.
 - **[Budgets](budgets.md)**: both entities are stamped with and filtered by `BudgetId`; the composite
-  FK additionally protects same-budget membership in PostgreSQL, which is the one place the schema —
-  rather than the query filter — enforces the budget boundary between two entities.
+  FK additionally protects same-budget membership in PostgreSQL, so the schema — not just the query
+  filter — enforces the boundary between a Category and its Category Group, as it does for a
+  Transaction's account, category and payee. Documented once, in
+  [budgets.md](budgets.md#constraints).
 - **Angular client**: `/categories` manages both levels with drag-and-drop. Transaction entry groups
   Category options under Category Group headings.
 

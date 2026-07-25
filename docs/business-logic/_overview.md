@@ -85,8 +85,8 @@ erDiagram
 ```
 
 Currency is global reference data. A Budget is scoped to exactly one user; every other entity is
-scoped to exactly one Budget. Category membership is additionally constrained by a composite foreign
-key to a Category Group in the same Budget.
+scoped to exactly one Budget. Category membership and a Transaction's Account, Category and Payee
+references are additionally constrained by composite foreign keys to a row in the same Budget.
 
 ## Table of contents
 

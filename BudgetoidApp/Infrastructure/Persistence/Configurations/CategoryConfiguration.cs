@@ -13,6 +13,7 @@ public sealed class CategoryConfiguration : IEntityTypeConfiguration<Category>
         builder.ToTable("categories", table =>
             table.HasCheckConstraint("CK_categories_position", "position >= 0"));
         builder.HasKey(category => category.Id);
+        builder.HasAlternateKey(category => new { category.Id, category.BudgetId });
 
         builder.Property(category => category.Id).HasColumnName("id");
         builder.Property(category => category.BudgetId).HasColumnName("budget_id").IsRequired();

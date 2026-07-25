@@ -73,6 +73,14 @@ erDiagram
   concurrent request wins the insert. Name uniqueness is per budget and case-insensitive (see
   [budgets.md](budgets.md#constraints)), so "Tesco" typed as "tesco" reuses the existing payee, while
   the same payee name in another budget is a separate row — payees never cross budgets.
+- **A Payee that Transactions reference cannot be deleted.** The `transactions → payees` composite
+  foreign key is `Restrict`: `ON DELETE SET NULL` cannot coexist with a composite key containing the
+  non-nullable `budget_id` column, since PostgreSQL would try to write `budget_id = NULL`. Refusing
+  is also the right product answer — it forces an explicit decision about historical rows instead of
+  silently erasing the counterparty from past transactions, matching the guard
+  [Accounts](accounts.md) and [Categories](categories.md) already have. No code path deletes a payee
+  (`IPayeeRepository` exposes only `GetOrCreateAsync`), so this is enforced purely in the database
+  and pinned by `PayeeIntegrationTests.DeletingAReferencedPayee_IsRefusedByTheDatabase`.
 - **Categorization is selected by Category ID only.** Category Group is derived from the selected
   Category and is not copied onto the Transaction.
 - **Transaction responses are self-contained for display.** They include `CategoryId`,
@@ -85,9 +93,12 @@ erDiagram
 - **[Categories and Category Groups](categories.md)**: optional Category context. A referenced
   Category cannot be deleted; its Category Group cannot be deleted while the Category exists.
 - **[Budgets](budgets.md)**: Transactions, Payees, Accounts, Categories, and Category Groups are
-  budget-filtered. Note that `transactions → accounts / categories / payees` are plain single-column
-  foreign keys, so the same-budget guarantee for those three references comes from the query filter on
-  the resolving repositories, not from the schema.
+  budget-filtered. `transactions → accounts / categories / payees` are composite foreign keys —
+  `(account_id, budget_id)`, `(category_id, budget_id)`, `(payee_id, budget_id)` against each
+  principal's `(id, budget_id)` alternate key — so PostgreSQL, not only the query filter, refuses a
+  cross-budget reference. Declared in `TransactionConfiguration` plus the `AccountConfiguration`,
+  `CategoryConfiguration` and `PayeeConfiguration` alternate keys. `PayeeId` and `CategoryId` stay
+  optional: a multi-column check is skipped entirely when any of its columns is NULL (MATCH SIMPLE).
 
 ## Edge Cases & Known Gotchas
 

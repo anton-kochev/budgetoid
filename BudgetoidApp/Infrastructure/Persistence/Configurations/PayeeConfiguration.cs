@@ -11,6 +11,7 @@ public sealed class PayeeConfiguration : IEntityTypeConfiguration<Payee>
     {
         builder.ToTable("payees");
         builder.HasKey(payee => payee.Id);
+        builder.HasAlternateKey(payee => new { payee.Id, payee.BudgetId });
 
         builder.Property(payee => payee.Id).HasColumnName("id");
         builder.Property(payee => payee.BudgetId).HasColumnName("budget_id").IsRequired();
