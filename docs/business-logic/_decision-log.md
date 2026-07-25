@@ -8,6 +8,45 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-07-25 — A budget holding transactions cannot be deleted; its empty structure still cascades
+
+**Context:** Every entity a budget owns cascaded from `budgets.id`, so a single budget delete would
+take accounts, category groups, categories, payees **and every transaction** with it. That treats
+recorded money movement and the scaffolding around it as equally disposable. They are not: structure
+can be retyped from memory, financial history cannot, and a mistakenly created budget is a real
+scenario a user must be able to undo without an archive feature existing first.
+
+**Decision:** Make `transactions.budget_id → budgets.id` **`Restrict`** while its four siblings —
+`accounts`, `category_groups`, `categories`, `payees` — stay **`Cascade`**, so **a budget that holds
+any transaction cannot be deleted at all**, and a budget with no recorded movement is deletable and
+takes its structure out with it. Recorded money movement is what deserves the guard; empty
+scaffolding does not, and protecting it too would only trade a lost history for a budget the user can
+never get rid of. Add `IBudgetRepository.HasTransactionsAsync` — implemented in `BudgetRepository` as
+a `BudgetIsolation`-filtered `Transactions.AnyAsync` — as the application-side seam for asking the
+question. It takes **no budget id**: tenancy comes from the query filter via `IBudgetContext`, the
+system's only authorization mechanism, so a caller-supplied budget id would be a tenancy parameter
+with no ownership check to pair with it.
+
+**Alternatives considered:** *Make all five references `Restrict`* — rejected: an empty, mistakenly
+created budget would then be undeletable, so undoing a typo would require building an archive feature
+first. *Keep all five `Cascade` and guard the delete in application code only* — rejected: a single
+unguarded write path silently destroys financial history, and the database is the only control that
+still holds when application code is wrong. *Give `HasTransactionsAsync` a `budgetId` parameter and
+`IgnoreQueryFilters()`* — rejected: that token is forbidden on this DbContext and a CI guard for it
+is planned, and the parameter would reintroduce tenancy as an argument no ownership check validates.
+
+**Accepted tradeoff:** the delete policy is no longer uniform across the five owned tables, so the
+asymmetry now has to be explained rather than inferred, and a future reader may read it as an
+oversight. And because PostgreSQL fires referential actions in foreign-key creation order, the
+refusal is guaranteed but *which* constraint reports it is not — so any future delete feature needs
+an application precheck to explain itself, not a SQLSTATE translation.
+
+**Affected areas:** [budgets.md](budgets.md), [transactions.md](transactions.md). This partially
+reverses "Budget replaces the user as the unit of tenancy" below, which established uniform `Cascade`
+from a budget to all five entities it owns; the rest of that decision stands.
+
+---
+
 ## 2026-07-25 — Transaction references are same-budget in the schema, not just in application code
 
 **Context:** `transactions` reached `accounts`, `categories` and `payees` through plain single-column

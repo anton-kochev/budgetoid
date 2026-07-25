@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BudgetoidDbContext))]
-    [Migration("20260725142858_InitialCreate")]
+    [Migration("20260725220701_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -511,7 +511,7 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasOne("Domain.Budgets.Budget", null)
                         .WithMany()
                         .HasForeignKey("BudgetId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.HasOne("Domain.Accounts.Account", null)

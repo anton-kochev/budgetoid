@@ -99,6 +99,8 @@ erDiagram
   cross-budget reference. Declared in `TransactionConfiguration` plus the `AccountConfiguration`,
   `CategoryConfiguration` and `PayeeConfiguration` alternate keys. `PayeeId` and `CategoryId` stay
   optional: a multi-column check is skipped entirely when any of its columns is NULL (MATCH SIMPLE).
+  A Transaction's existence is also what makes its Budget undeletable, unlike the Budget's other
+  owned entities; that rule and its reasoning live in [budgets.md](budgets.md#constraints).
 
 ## Edge Cases & Known Gotchas
 

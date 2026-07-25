@@ -16,4 +16,18 @@ public interface IBudgetRepository
     Task<Budget?> FindFirstForUserAsync(Guid userId, CancellationToken cancellationToken = default);
 
     Task<bool> TryAddAsync(Budget budget, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the ambient budget holds at least one transaction, which
+    /// is what makes it undeletable — recorded money movement is never discarded with the budget
+    /// that holds it.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately takes no budget id. Tenancy comes from the <c>BudgetIsolation</c> query filter
+    /// via <c>IBudgetContext</c>, which is the only authorization mechanism this system has, so a
+    /// caller-supplied budget id would be a tenancy parameter with no ownership check to pair with
+    /// it: the answer would be about whichever budget the caller named rather than the one it is
+    /// entitled to.
+    /// </remarks>
+    Task<bool> HasTransactionsAsync(CancellationToken cancellationToken = default);
 }

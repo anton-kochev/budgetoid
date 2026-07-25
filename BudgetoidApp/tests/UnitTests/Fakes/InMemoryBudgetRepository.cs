@@ -77,4 +77,13 @@ public sealed class InMemoryBudgetRepository : IBudgetRepository
         _budgets.Add(budget);
         return Task.FromResult(true);
     }
+
+    /// <summary>
+    /// Always reports no transactions. This fake stores budgets only — it has no ambient budget and
+    /// no transactions to scope to one — so the same answer is the honest one for every budget it
+    /// knows about. The real behaviour depends on the <c>BudgetIsolation</c> query filter and is
+    /// covered against PostgreSQL in <c>BudgetRepositoryTests</c>.
+    /// </summary>
+    public Task<bool> HasTransactionsAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
 }

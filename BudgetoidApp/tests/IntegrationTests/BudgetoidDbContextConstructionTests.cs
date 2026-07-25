@@ -46,7 +46,6 @@ public sealed class BudgetoidDbContextConstructionTests
         // Assert
         await Assert.That(budgetForeignKey.Properties.Single().Name).IsEqualTo("BudgetId");
         await Assert.That(budgetForeignKey.IsRequired).IsTrue();
-        await Assert.That(budgetForeignKey.DeleteBehavior).IsEqualTo(DeleteBehavior.Cascade);
 
         // The owner link is dropped, not duplicated: a surviving UserId would be a second source of
         // truth for tenancy that no query reads, and the one state where a cross-tenant bug can hide.
@@ -54,6 +53,35 @@ public sealed class BudgetoidDbContextConstructionTests
         await Assert.That(entity.GetForeignKeys()
                 .Any(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(User)))
             .IsFalse();
+    }
+
+    [Test]
+    [Arguments(typeof(Account), DeleteBehavior.Cascade)]
+    [Arguments(typeof(CategoryGroup), DeleteBehavior.Cascade)]
+    [Arguments(typeof(Category), DeleteBehavior.Cascade)]
+    [Arguments(typeof(Payee), DeleteBehavior.Cascade)]
+    // Transaction is the one asymmetric row, and it is deliberate: a budget that holds recorded
+    // money movement must refuse deletion outright, while a budget with only structure and no
+    // movement was created by mistake and takes its structure with it. Do not "normalize" this row
+    // to Cascade — doing so silently turns a refused delete into an erased ledger.
+    [Arguments(typeof(Transaction), DeleteBehavior.Restrict)]
+    public async Task Model_RemovesOwnedRowsWithTheirBudgetExceptTransactions(
+        Type entityClrType,
+        DeleteBehavior expectedDeleteBehavior)
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act
+        IEntityType entity = db.Model.FindEntityType(entityClrType)!;
+        IForeignKey budgetForeignKey = entity
+            .GetForeignKeys()
+            .Single(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(Budget)
+                                  && foreignKey.Properties.Count == 1);
+
+        // Assert — the table above IS the policy; each row states what deleting a budget does to
+        // that kind of owned row.
+        await Assert.That(budgetForeignKey.DeleteBehavior).IsEqualTo(expectedDeleteBehavior);
     }
 
     [Test]

@@ -206,7 +206,7 @@ namespace Infrastructure.Persistence.Migrations
                         column: x => x.budget_id,
                         principalTable: "budgets",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
                         name: "FK_transactions_categories_category_id_budget_id",
                         columns: x => new { x.category_id, x.budget_id },

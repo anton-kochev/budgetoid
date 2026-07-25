@@ -69,7 +69,9 @@ erDiagram
     product does not have.
   - **Enforced in**: `Budget.UserId` is required (`Budget.Create` rejects `Guid.Empty`), and
     `BudgetConfiguration` maps it to a required `user_id` column with a foreign key to `users.id` on
-    `Cascade` — deleting the user removes their budgets rather than leaving unreachable rows.
+    `Cascade`, so a budget can never outlive its owner as an unreachable row. That cascade reaches a
+    budget only as far as the budget itself is deletable — a budget holding transactions refuses the
+    delete (see MUST NOT below), and the refusal propagates back up.
 
 - **Budget names are unique per owner, case-insensitively.**
   - **Why**: The name is the only thing that will distinguish one budget from another when a user
@@ -92,8 +94,10 @@ erDiagram
     `BudgetoidApp/Infrastructure/Persistence/BudgetoidDbContext.cs`, applied to `Transaction`,
     `Account`, `Payee`, `CategoryGroup` and `Category`, each comparing `BudgetId` against
     `IBudgetContext.BudgetId`; plus a required `budget_id` column on all five tables with a foreign
-    key to `budgets.id` on `Cascade`, so deleting a budget removes its data rather than leaving
-    unreachable rows. `BudgetId` is stamped at creation from `IBudgetContext` by
+    key to `budgets.id`. That foreign key is `Cascade` on `accounts`, `category_groups`, `categories`
+    and `payees`, so structure never survives its budget as unreachable rows, and `Restrict` on
+    `transactions`, so recorded money movement pins the budget in place instead (see MUST NOT below).
+    `BudgetId` is stamped at creation from `IBudgetContext` by
     `CreateAccountHandler`, `CreateCategoryGroupHandler`, `CreateCategoryHandler`,
     `CreateTransactionHandler` and `PayeeRepository.GetOrCreateAsync`. There is no `UserId` on any of
     the five entities — `Budget.UserId` is the only owner link in the schema.
@@ -169,6 +173,19 @@ erDiagram
   - **Enforced in**: `Payee` carries a required `BudgetId`, is covered by the `BudgetIsolation`
     filter, and `PayeeRepository.GetOrCreateAsync` find-or-creates within the ambient budget only. The
     unique index is `(budget_id, name)`, so the same payee name in two budgets is two rows.
+
+- **A budget that holds any transaction MUST NOT be deletable.**
+  - **Why**: Recorded money movement is the thing worth protecting — it is the only data in the
+    system a user cannot reconstruct from memory, and losing it in bulk is the worst outcome a money
+    app has. Empty scaffolding is not worth protecting: a budget with no movement was created by
+    mistake, and taking its accounts, category groups, categories and payees out with it is what lets
+    a user undo that mistake instead of carrying the wrong budget forever.
+  - **Enforced in**: `TransactionConfiguration` maps `transactions.budget_id → budgets.id` on
+    `Restrict`, so PostgreSQL refuses the delete whatever code path attempted it.
+    `IBudgetRepository.HasTransactionsAsync`, implemented in `BudgetRepository` as a filtered
+    `Transactions.AnyAsync`, is the application-side seam for asking the question before attempting a
+    delete; it takes no budget id because the `BudgetIsolation` filter already scopes it to the
+    ambient budget.
 
 - **A route MUST NOT carry a budget identifier.**
   - **Why**: The budget is a singular ambient resource, resolved server-side from the authenticated
@@ -344,6 +361,29 @@ stateDiagram-v2
   `budget_id` across a consistently cross-referenced set — every constraint would accept it. That
   residual risk is addressed by ambient-budget resolution (see Business Rules & Invariants above),
   not by these constraints, which remains the whole protection for *whose* budget a write lands in.
+
+- **The delete policy across the five owned tables is deliberately not uniform.** `accounts`,
+  `category_groups`, `categories` and `payees` cascade from `budgets.id`; `transactions` restricts.
+  This looks like an oversight and is not one: the four cascading tables are structure, and structure
+  is worth less than the ability to undo a mistakenly created budget, while `transactions` is the
+  recorded money movement the whole app exists to keep. Making all five `Restrict` would leave an
+  empty budget permanently undeletable; making all five `Cascade` would put months of financial
+  history one unguarded delete away. Do not "normalize" the five into one policy.
+
+- **The refusal is guaranteed, but which constraint reports it is not.** Only a foreign key whose
+  dependent side is `transactions` can raise — the four `Cascade` keys delete rows, they never
+  refuse. So a budget holding transactions fails to delete in one of two ways, and PostgreSQL fires
+  referential actions in foreign-key creation order, which decides which: either
+  `FK_transactions_budgets_budget_id` refuses directly, or the `accounts`, `categories` or `payees`
+  cascade runs first and one of the composite `transactions → accounts | categories | payees`
+  foreign keys — all `Restrict` — refuses instead. The delete always fails; the SQLSTATE and
+  constraint name in the error are not a stable contract. That is why `IBudgetRepository.HasTransactionsAsync` exists as an application-side precheck seam:
+  any delete path that needs to explain the refusal to a user must ask first, the way
+  `DeleteAccountHandler` already does with `IAccountRepository.HasTransactionsAsync`, rather than
+  catching the database error and translating it. `HasTransactionsAsync` takes no budget id on
+  purpose — tenancy comes from the `BudgetIsolation` filter via `IBudgetContext`, which is the only
+  authorization mechanism in the system, so a caller-supplied budget id would be a tenancy parameter
+  with no ownership check to pair with it.
 
 - **Resolving the ambient budget costs one extra indexed read per authenticated request.** The
   provisioning lookup hits the leading column of an index that already exists, and it runs on every

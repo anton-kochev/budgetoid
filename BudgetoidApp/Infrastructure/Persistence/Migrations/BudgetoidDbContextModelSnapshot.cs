@@ -508,7 +508,7 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasOne("Domain.Budgets.Budget", null)
                         .WithMany()
                         .HasForeignKey("BudgetId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.HasOne("Domain.Accounts.Account", null)
