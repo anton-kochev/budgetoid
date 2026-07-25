@@ -60,9 +60,12 @@ erDiagram
 
 - **Names must be unique case-insensitively in their defined scope.**
   - Category Group names are unique per budget.
-  - Category names are unique per budget across all Category Groups, not merely inside one group.
-  - **Enforced in**: case-insensitive PostgreSQL collation and unique indexes; repositories translate
-    unique violations into validation errors.
+  - Category names are unique per budget across all Category Groups, not merely inside one group. Two
+    groups therefore cannot each hold a "Groceries".
+  - **Why**: A Category is chosen from one flat picker grouped by heading, so two Categories with the
+    same name in different groups would be indistinguishable at the point of use.
+  - Per-budget, case-insensitive name uniqueness and the mechanism that enforces it are documented
+    once, in [budgets.md](budgets.md#constraints).
 
 ### MUST NOT
 

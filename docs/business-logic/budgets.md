@@ -112,9 +112,9 @@ erDiagram
     different budgets is normal — the event's "Cash" and the personal "Cash" are unrelated things.
     Scoping uniqueness any wider would make one pool's naming constrain another's.
   - **Enforced in**: each of the four configurations puts `name` on the `case_insensitive` collation
-    and adds a unique index over `(budget_id, name)`. Category names are unique across all of a
-    budget's groups, not merely inside one group. Repositories translate the unique violation into a
-    validation error.
+    and adds a unique index over `(budget_id, name)`. Repositories translate the unique violation
+    into a validation error. This is the canonical statement of the scope and mechanism; the
+    category-specific scope is spelled out in [categories.md](categories.md#constraints).
 
 - **Ordering is per budget.**
   - **Why**: Position is a deliberate personal arrangement of one pool's categories. Order that
@@ -220,6 +220,11 @@ erDiagram
 - **Example**: A handler creating an account never receives an owner id from the client — it reads
   `IBudgetContext.BudgetId` and stamps it. Removing the client's ability to name an owner is what
   makes tenancy untamperable.
+- **Counterexample**: A handler that took the owner or budget id from the request — a body field, a
+  query parameter, or a route segment — would work perfectly in every single-tenant test and still be
+  a tenant breach: tenancy would become a request parameter, so any authenticated user could name
+  another budget's id and read or write money that is not theirs. Ambient-only resolution is the whole
+  protection; there is no second check behind it.
 - **Source**: `[SOURCE: user-story]`
 
 ## Workflows & State Transitions

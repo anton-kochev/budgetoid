@@ -68,9 +68,11 @@ erDiagram
   `Transaction.Create`.
 - **Description is optional, blank becomes null, and a value is at most 500 characters.**
 - **Payees are case-insensitive find-or-create free text, within the current budget.**
-  `CreateTransactionHandler` calls `IPayeeRepository.GetOrCreateAsync`; PostgreSQL collation, the
-  unique `(budget_id, name)` index, and retry logic prevent case-only duplicates and handle insert
-  races. The same payee name in another budget is a separate row — payees never cross budgets.
+  `CreateTransactionHandler` calls `IPayeeRepository.GetOrCreateAsync`, which matches an existing
+  payee case-insensitively and inserts one only when there is no match, retrying the lookup when a
+  concurrent request wins the insert. Name uniqueness is per budget and case-insensitive (see
+  [budgets.md](budgets.md#constraints)), so "Tesco" typed as "tesco" reuses the existing payee, while
+  the same payee name in another budget is a separate row — payees never cross budgets.
 - **Categorization is selected by Category ID only.** Category Group is derived from the selected
   Category and is not copied onto the Transaction.
 - **Transaction responses are self-contained for display.** They include `CategoryId`,
