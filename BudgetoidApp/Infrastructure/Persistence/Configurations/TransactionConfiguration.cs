@@ -1,8 +1,8 @@
 using Domain.Accounts;
+using Domain.Budgets;
 using Domain.Categories;
 using Domain.Payees;
 using Domain.Transactions;
-using Domain.Users;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -16,7 +16,7 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         builder.HasKey(transaction => transaction.Id);
 
         builder.Property(transaction => transaction.Id).HasColumnName("id");
-        builder.Property(transaction => transaction.UserId).HasColumnName("user_id").IsRequired();
+        builder.Property(transaction => transaction.BudgetId).HasColumnName("budget_id").IsRequired();
         builder.Property(transaction => transaction.AccountId).HasColumnName("account_id").IsRequired();
         builder.Property(transaction => transaction.Amount)
             .HasColumnName("amount")
@@ -38,7 +38,7 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
 
         builder.HasIndex(transaction => new
         {
-            transaction.UserId,
+            transaction.BudgetId,
             transaction.Date,
             transaction.CreatedAtUtc,
         })
@@ -47,9 +47,9 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         builder.HasIndex(transaction => transaction.CategoryId);
         builder.HasIndex(transaction => transaction.AccountId);
 
-        builder.HasOne<User>()
+        builder.HasOne<Budget>()
             .WithMany()
-            .HasForeignKey(transaction => transaction.UserId)
+            .HasForeignKey(transaction => transaction.BudgetId)
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasOne<Account>()

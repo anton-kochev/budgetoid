@@ -9,28 +9,28 @@ public sealed class PayeeTests
     public async Task Create_WithValidInput_TrimsNameAndPreservesCase()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         DateTime createdAtUtc = new(2026, 6, 24, 13, 14, 15, DateTimeKind.Utc);
 
         // Act
-        Payee payee = Payee.Create(userId, "  Starbucks  ", createdAtUtc);
+        Payee payee = Payee.Create(budgetId, "  Starbucks  ", createdAtUtc);
 
         // Assert
         await Assert.That(payee.Id).IsNotEqualTo(Guid.Empty);
-        await Assert.That(payee.UserId).IsEqualTo(userId);
+        await Assert.That(payee.BudgetId).IsEqualTo(budgetId);
         await Assert.That(payee.Name).IsEqualTo("Starbucks");
         await Assert.That(payee.CreatedAtUtc).IsEqualTo(createdAtUtc);
     }
 
     [Test]
-    public async Task Create_WithEmptyUserId_ThrowsValidationException()
+    public async Task Create_WithEmptyBudgetId_ThrowsValidationException()
     {
         // Act
         ValidationException exception = ThrowsValidationException(() =>
             Payee.Create(Guid.Empty, "Starbucks", UtcNow()));
 
         // Assert
-        await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
+        await Assert.That(exception.Errors.ContainsKey("BudgetId")).IsTrue();
     }
 
     [Test]

@@ -12,14 +12,15 @@
 ## Purpose
 
 A **Currency** is shared ISO-4217 reference data — code, display name, symbol, and how many decimal
-places it uses. Currencies are **global**: they are not owned by any user, are seeded into the
-database, and are read-only from the app's perspective. An account picks a currency at creation
-time; that choice drives how the account's and its transactions' amounts are displayed.
+places it uses. Currencies are **global**: they are not owned by any user or budget, are seeded into
+the database, and are read-only from the app's perspective. They are the one shared table in the
+schema. An account picks a currency at creation time; that choice drives how the account's and its
+transactions' amounts are displayed, and a budget may name one as its base currency.
 
 ## Key Entities
 
 - **Currency** — `Code` (the primary key, e.g. `USD`), `Name` (e.g. "US Dollar"), `Symbol`
-  (e.g. "$"), `MinorUnit` (decimal places, e.g. 2). **No `Id`, no `UserId`** — it is keyed by code
+  (e.g. "$"), `MinorUnit` (decimal places, e.g. 2). **No `Id`, no `BudgetId`** — it is keyed by code
   and shared across everyone.
 
 ```mermaid
@@ -77,11 +78,16 @@ erDiagram
   validates the code and denormalizes name/symbol/minor-unit into the account response.
 - **[Transactions](transactions.md)**: transaction responses carry the account's currency code and
   symbol so lists render amounts consistently with the account view.
+- **[Budgets](budgets.md)**: a budget optionally names a currency as its base currency by code, with a
+  `Restrict` foreign key, so a currency in use as a base cannot be removed.
 
 ## Edge Cases & Known Gotchas
 
-- **Referenced by code, not by GUID**: unlike every user-owned entity, a currency is joined by its
+- **Referenced by code, not by GUID**: unlike every budget-owned entity, a currency is joined by its
   3-letter `Code`. Don't expect a currency `Id`.
+- **No query filter applies to currencies, and none should**: they are shared reference data, so a
+  budget-scoped filter would hide the list from every request. Do not treat the absence of a filter
+  here as precedent for the budget-owned entities.
 - **A missing seeded currency is a schema failure, not user error**: if an account's currency code
   has no matching row, transaction creation throws `InvalidOperationException` rather than guessing a
   symbol. The design chooses to fail loudly so the create-response and the list-view never disagree

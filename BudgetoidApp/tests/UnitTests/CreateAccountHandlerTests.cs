@@ -11,18 +11,18 @@ public sealed class CreateAccountHandlerTests
     [Test]
     public async Task HandleAsync_StampsContextUserPersistsAndReturnsDto()
     {
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         var createdAtUtc = new DateTimeOffset(2026, 6, 25, 13, 14, 15, TimeSpan.Zero);
-        var repository = new InMemoryAccountRepository(userId, new FakeTimeProvider(createdAtUtc));
+        var repository = new InMemoryAccountRepository(budgetId, new FakeTimeProvider(createdAtUtc));
         var currencies = new InMemoryCurrencyReadService();
-        var handler = new CreateAccountHandler(repository, currencies, new StubUserContext(userId), new FakeTimeProvider(createdAtUtc));
+        var handler = new CreateAccountHandler(repository, currencies, new StubBudgetContext(budgetId), new FakeTimeProvider(createdAtUtc));
 
         var dto = await handler.HandleAsync(new CreateAccountCommand("  Checking  ", AccountType.Checking, 100m, "usd"));
         var stored = await repository.GetByIdAsync(dto.Id);
 
         await Assert.That(repository.AddCallCount).IsEqualTo(1);
         await Assert.That(stored).IsNotNull();
-        await Assert.That(stored!.UserId).IsEqualTo(userId);
+        await Assert.That(stored!.BudgetId).IsEqualTo(budgetId);
         await Assert.That(dto.Name).IsEqualTo("Checking");
         await Assert.That(dto.Type).IsEqualTo(AccountType.Checking);
         await Assert.That(dto.OpeningBalance).IsEqualTo(100m);
@@ -36,13 +36,13 @@ public sealed class CreateAccountHandlerTests
     [Test]
     public async Task HandleAsync_WithUnknownCurrency_ThrowsValidationExceptionAndDoesNotPersist()
     {
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         var createdAtUtc = new DateTimeOffset(2026, 6, 25, 13, 14, 15, TimeSpan.Zero);
-        var repository = new InMemoryAccountRepository(userId, new FakeTimeProvider(createdAtUtc));
+        var repository = new InMemoryAccountRepository(budgetId, new FakeTimeProvider(createdAtUtc));
         var handler = new CreateAccountHandler(
             repository,
             new InMemoryCurrencyReadService(),
-            new StubUserContext(userId),
+            new StubBudgetContext(budgetId),
             new FakeTimeProvider(createdAtUtc));
 
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>

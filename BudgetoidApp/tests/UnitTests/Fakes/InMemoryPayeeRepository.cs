@@ -3,7 +3,7 @@ using Domain.Payees;
 
 namespace UnitTests.Fakes;
 
-public sealed class InMemoryPayeeRepository(Guid userId, TimeProvider timeProvider) : IPayeeRepository, IPayeeReadService
+public sealed class InMemoryPayeeRepository(Guid budgetId, TimeProvider timeProvider) : IPayeeRepository, IPayeeReadService
 {
     private readonly List<Payee> _payees = [];
 
@@ -31,7 +31,7 @@ public sealed class InMemoryPayeeRepository(Guid userId, TimeProvider timeProvid
             return Task.FromResult(existing);
         }
 
-        Payee payee = Payee.Create(userId, normalizedName, timeProvider.GetUtcNow().UtcDateTime);
+        Payee payee = Payee.Create(budgetId, normalizedName, timeProvider.GetUtcNow().UtcDateTime);
         _payees.Add(payee);
         return Task.FromResult(payee);
     }

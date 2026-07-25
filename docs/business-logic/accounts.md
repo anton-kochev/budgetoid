@@ -11,26 +11,25 @@
 
 ## Purpose
 
-An **Account** is a place a user's money lives — a checking account, a savings pot, cash in a
-wallet, or a credit card. It is the anchor every transaction is recorded against. Each account is
-owned by one user (see [users-and-ownership.md](users-and-ownership.md)) and is denominated in a
-single currency.
+An **Account** is a place money lives — a checking account, a savings pot, cash in a wallet, or a
+credit card. It is the anchor every transaction is recorded against. Each account belongs to one
+budget (see [budgets.md](budgets.md)) and is denominated in a single currency.
 
 ## Key Entities
 
-- **Account** — `Id`, `UserId` (owner), `Name`, `Type` (an `AccountType`), `OpeningBalance`,
-  `CurrencyCode`, `CreatedAtUtc`.
+- **Account** — `Id`, `BudgetId` (the owning budget), `Name`, `Type` (an `AccountType`),
+  `OpeningBalance`, `CurrencyCode`, `CreatedAtUtc`.
 - **AccountType** — enum: `Checking`, `Savings`, `Cash`, `CreditCard`. A classification label; it
   has no lifecycle or transitions.
 
 ```mermaid
 erDiagram
-    USER ||--o{ ACCOUNT : owns
+    BUDGET ||--o{ ACCOUNT : owns
     CURRENCY ||--o{ ACCOUNT : "denominates (by code)"
     ACCOUNT ||--o{ TRANSACTION : "recorded against"
     ACCOUNT {
         guid Id
-        guid UserId
+        guid BudgetId
         string Name
         enum Type
         decimal OpeningBalance
@@ -112,8 +111,9 @@ erDiagram
 - **[Transactions](transactions.md)**: transactions are recorded against an account; the account's
   currency determines how each transaction's amount is presented. The delete guard above depends on
   the transaction data.
-- **[Users & Ownership](users-and-ownership.md)**: every account is stamped with and filtered by its
-  owner's `UserId`.
+- **[Budgets](budgets.md)**: every account is stamped with and filtered by its owning `BudgetId`, and
+  its name is unique within that budget case-insensitively. The same account name in two budgets is
+  two unrelated accounts.
 
 ## Edge Cases & Known Gotchas
 

@@ -9,12 +9,12 @@ public sealed class CategoryGroupTests
     public async Task Create_WithValidInput_NormalizesValuesAndStoresPosition()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         DateTime createdAtUtc = new(2026, 7, 14, 10, 0, 0, DateTimeKind.Utc);
 
         // Act
         CategoryGroup group = CategoryGroup.Create(
-            userId,
+            budgetId,
             "  Essential Obligations  ",
             "  Required spending  ",
             2,
@@ -22,7 +22,7 @@ public sealed class CategoryGroupTests
 
         // Assert
         await Assert.That(group.Id).IsNotEqualTo(Guid.Empty);
-        await Assert.That(group.UserId).IsEqualTo(userId);
+        await Assert.That(group.BudgetId).IsEqualTo(budgetId);
         await Assert.That(group.Name).IsEqualTo("Essential Obligations");
         await Assert.That(group.Description).IsEqualTo("Required spending");
         await Assert.That(group.Position).IsEqualTo(2);
@@ -68,7 +68,7 @@ public sealed class CategoryGroupTests
             CategoryGroup.Create(Guid.Empty, "Valid", new string('x', 501), 0, UtcNow()));
 
         // Assert
-        await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
+        await Assert.That(exception.Errors.ContainsKey("BudgetId")).IsTrue();
         await Assert.That(exception.Errors.ContainsKey("Description")).IsTrue();
     }
 

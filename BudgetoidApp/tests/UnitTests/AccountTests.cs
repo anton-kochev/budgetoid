@@ -8,13 +8,13 @@ public sealed class AccountTests
     [Test]
     public async Task Create_WithValidInput_TrimsNameStoresTypeOpeningBalanceAndCreatedAtUtc()
     {
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         DateTime createdAtUtc = new(2026, 6, 25, 13, 14, 15, DateTimeKind.Utc);
 
-        Account account = Account.Create(userId, "  Checking  ", AccountType.Checking, 100.25m, " usd ", createdAtUtc);
+        Account account = Account.Create(budgetId, "  Checking  ", AccountType.Checking, 100.25m, " usd ", createdAtUtc);
 
         await Assert.That(account.Id).IsNotEqualTo(Guid.Empty);
-        await Assert.That(account.UserId).IsEqualTo(userId);
+        await Assert.That(account.BudgetId).IsEqualTo(budgetId);
         await Assert.That(account.Name).IsEqualTo("Checking");
         await Assert.That(account.Type).IsEqualTo(AccountType.Checking);
         await Assert.That(account.OpeningBalance).IsEqualTo(100.25m);
@@ -22,12 +22,12 @@ public sealed class AccountTests
     }
 
     [Test]
-    public async Task Create_WithEmptyUserId_ThrowsValidationException()
+    public async Task Create_WithEmptyBudgetId_ThrowsValidationException()
     {
         ValidationException exception = ThrowsValidationException(() =>
             Account.Create(Guid.Empty, "Checking", AccountType.Checking, 0m, "USD", UtcNow()));
 
-        await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
+        await Assert.That(exception.Errors.ContainsKey("BudgetId")).IsTrue();
     }
 
     [Test]

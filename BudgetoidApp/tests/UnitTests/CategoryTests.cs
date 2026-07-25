@@ -9,13 +9,13 @@ public sealed class CategoryTests
     public async Task Create_WithValidInput_NormalizesValuesAndRequiresGroup()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         var categoryGroupId = Guid.CreateVersion7();
         DateTime createdAtUtc = UtcNow();
 
         // Act
         Category category = Category.Create(
-            userId,
+            budgetId,
             categoryGroupId,
             "  Groceries  ",
             "  Food and household supplies  ",
@@ -24,7 +24,7 @@ public sealed class CategoryTests
 
         // Assert
         await Assert.That(category.Id).IsNotEqualTo(Guid.Empty);
-        await Assert.That(category.UserId).IsEqualTo(userId);
+        await Assert.That(category.BudgetId).IsEqualTo(budgetId);
         await Assert.That(category.CategoryGroupId).IsEqualTo(categoryGroupId);
         await Assert.That(category.Name).IsEqualTo("Groceries");
         await Assert.That(category.Description).IsEqualTo("Food and household supplies");
@@ -33,14 +33,14 @@ public sealed class CategoryTests
     }
 
     [Test]
-    public async Task Create_WithMissingOwnerOrGroup_ThrowsValidationException()
+    public async Task Create_WithMissingBudgetOrGroup_ThrowsValidationException()
     {
         // Act
         ValidationException exception = ThrowsValidationException(() =>
             Category.Create(Guid.Empty, Guid.Empty, "Groceries", null, 0, UtcNow()));
 
         // Assert
-        await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
+        await Assert.That(exception.Errors.ContainsKey("BudgetId")).IsTrue();
         await Assert.That(exception.Errors.ContainsKey("CategoryGroupId")).IsTrue();
     }
 

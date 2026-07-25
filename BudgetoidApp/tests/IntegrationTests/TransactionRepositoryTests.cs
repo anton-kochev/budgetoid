@@ -14,17 +14,17 @@ public sealed class TransactionRepositoryTests
     {
         await using RepositoryTestHost host = await StartHostAsync();
         DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
-        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
 
         await using (BudgetoidDbContext db = new(options))
         {
-            Account account = Account.Create(userId, "Checking", AccountType.Checking, 0m, "USD", DateTime.UtcNow);
+            Account account = Account.Create(budgetId, "Checking", AccountType.Checking, 0m, "USD", DateTime.UtcNow);
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
 
             await new TransactionRepository(db).AddAsync(
                 Transaction.Create(
-                    userId,
+                    budgetId,
                     account.Id,
                     1m,
                     new DateOnly(2026, 6, 12),

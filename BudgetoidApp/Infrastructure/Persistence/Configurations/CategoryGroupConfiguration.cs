@@ -1,5 +1,5 @@
+using Domain.Budgets;
 using Domain.CategoryGroups;
-using Domain.Users;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -12,10 +12,10 @@ public sealed class CategoryGroupConfiguration : IEntityTypeConfiguration<Catego
         builder.ToTable("category_groups", table =>
             table.HasCheckConstraint("CK_category_groups_position", "position >= 0"));
         builder.HasKey(categoryGroup => categoryGroup.Id);
-        builder.HasAlternateKey(categoryGroup => new { categoryGroup.Id, categoryGroup.UserId });
+        builder.HasAlternateKey(categoryGroup => new { categoryGroup.Id, categoryGroup.BudgetId });
 
         builder.Property(categoryGroup => categoryGroup.Id).HasColumnName("id");
-        builder.Property(categoryGroup => categoryGroup.UserId).HasColumnName("user_id").IsRequired();
+        builder.Property(categoryGroup => categoryGroup.BudgetId).HasColumnName("budget_id").IsRequired();
         builder.Property(categoryGroup => categoryGroup.Name)
             .HasColumnName("name")
             .HasMaxLength(200)
@@ -32,13 +32,13 @@ public sealed class CategoryGroupConfiguration : IEntityTypeConfiguration<Catego
             .HasColumnType("timestamp with time zone")
             .IsRequired();
 
-        builder.HasIndex(categoryGroup => new { categoryGroup.UserId, categoryGroup.Name })
+        builder.HasIndex(categoryGroup => new { categoryGroup.BudgetId, categoryGroup.Name })
             .IsUnique();
-        builder.HasIndex(categoryGroup => new { categoryGroup.UserId, categoryGroup.Position });
+        builder.HasIndex(categoryGroup => new { categoryGroup.BudgetId, categoryGroup.Position });
 
-        builder.HasOne<User>()
+        builder.HasOne<Budget>()
             .WithMany()
-            .HasForeignKey(categoryGroup => categoryGroup.UserId)
+            .HasForeignKey(categoryGroup => categoryGroup.BudgetId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }

@@ -9,7 +9,7 @@ public sealed class Category
     }
 
     public Guid Id { get; private set; }
-    public Guid UserId { get; private set; }
+    public Guid BudgetId { get; private set; }
     public Guid CategoryGroupId { get; private set; }
     public string Name { get; private set; } = string.Empty;
     public string? Description { get; private set; }
@@ -17,19 +17,19 @@ public sealed class Category
     public DateTime CreatedAtUtc { get; private set; }
 
     public static Category Create(
-        Guid userId,
+        Guid budgetId,
         Guid categoryGroupId,
         string name,
         string? description,
         int position,
         DateTime createdAtUtc)
     {
-        ValidateOrThrow(userId, categoryGroupId, name, description, position);
+        ValidateOrThrow(budgetId, categoryGroupId, name, description, position);
 
         return new Category
         {
             Id = Guid.CreateVersion7(),
-            UserId = userId,
+            BudgetId = budgetId,
             CategoryGroupId = categoryGroupId,
             Name = name.Trim(),
             Description = NormalizeDescription(description),
@@ -40,7 +40,7 @@ public sealed class Category
 
     public void Update(string name, string? description)
     {
-        ValidateOrThrow(UserId, CategoryGroupId, name, description, Position);
+        ValidateOrThrow(BudgetId, CategoryGroupId, name, description, Position);
 
         Name = name.Trim();
         Description = NormalizeDescription(description);
@@ -70,7 +70,7 @@ public sealed class Category
     }
 
     private static void ValidateOrThrow(
-        Guid userId,
+        Guid budgetId,
         Guid categoryGroupId,
         string? name,
         string? description,
@@ -79,9 +79,9 @@ public sealed class Category
         var errors = new Dictionary<string, string[]>();
         string trimmedName = name?.Trim() ?? string.Empty;
 
-        if (userId == Guid.Empty)
+        if (budgetId == Guid.Empty)
         {
-            errors[nameof(UserId)] = ["User id is required."];
+            errors[nameof(BudgetId)] = ["Budget id is required."];
         }
 
         if (categoryGroupId == Guid.Empty)

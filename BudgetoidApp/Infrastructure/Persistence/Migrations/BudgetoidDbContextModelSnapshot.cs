@@ -30,6 +30,10 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<Guid>("BudgetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("budget_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -57,15 +61,11 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("type");
 
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("user_id");
-
                     b.HasKey("Id");
 
                     b.HasIndex("CurrencyCode");
 
-                    b.HasIndex("UserId", "Name")
+                    b.HasIndex("BudgetId", "Name")
                         .IsUnique();
 
                     b.ToTable("accounts", (string)null);
@@ -115,6 +115,10 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<Guid>("BudgetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("budget_id");
+
                     b.Property<Guid>("CategoryGroupId")
                         .HasColumnType("uuid")
                         .HasColumnName("category_group_id");
@@ -139,18 +143,14 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("position");
 
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("user_id");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("CategoryGroupId", "Position");
-
-                    b.HasIndex("CategoryGroupId", "UserId");
-
-                    b.HasIndex("UserId", "Name")
+                    b.HasIndex("BudgetId", "Name")
                         .IsUnique();
+
+                    b.HasIndex("CategoryGroupId", "BudgetId");
+
+                    b.HasIndex("CategoryGroupId", "Position");
 
                     b.ToTable("categories", null, t =>
                         {
@@ -164,6 +164,10 @@ namespace Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<Guid>("BudgetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("budget_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -185,16 +189,12 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("position");
 
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("user_id");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("UserId", "Name")
+                    b.HasIndex("BudgetId", "Name")
                         .IsUnique();
 
-                    b.HasIndex("UserId", "Position");
+                    b.HasIndex("BudgetId", "Position");
 
                     b.ToTable("category_groups", null, t =>
                         {
@@ -330,6 +330,10 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<Guid>("BudgetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("budget_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -341,13 +345,9 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnName("name")
                         .UseCollation("case_insensitive");
 
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("user_id");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("UserId", "Name")
+                    b.HasIndex("BudgetId", "Name")
                         .IsUnique();
 
                     b.ToTable("payees", (string)null);
@@ -367,6 +367,10 @@ namespace Infrastructure.Persistence.Migrations
                     b.Property<decimal>("Amount")
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
+
+                    b.Property<Guid>("BudgetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("budget_id");
 
                     b.Property<Guid?>("CategoryId")
                         .HasColumnType("uuid")
@@ -389,10 +393,6 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("payee_id");
 
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("user_id");
-
                     b.HasKey("Id");
 
                     b.HasIndex("AccountId");
@@ -401,7 +401,7 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.HasIndex("PayeeId");
 
-                    b.HasIndex("UserId", "Date", "CreatedAtUtc")
+                    b.HasIndex("BudgetId", "Date", "CreatedAtUtc")
                         .IsDescending(false, true, true);
 
                     b.ToTable("transactions", (string)null);
@@ -442,16 +442,16 @@ namespace Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Domain.Accounts.Account", b =>
                 {
+                    b.HasOne("Domain.Budgets.Budget", null)
+                        .WithMany()
+                        .HasForeignKey("BudgetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("Domain.Currencies.Currency", null)
                         .WithMany()
                         .HasForeignKey("CurrencyCode")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Domain.Users.User", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 
@@ -471,34 +471,34 @@ namespace Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Domain.Categories.Category", b =>
                 {
-                    b.HasOne("Domain.Users.User", null)
+                    b.HasOne("Domain.Budgets.Budget", null)
                         .WithMany()
-                        .HasForeignKey("UserId")
+                        .HasForeignKey("BudgetId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.HasOne("Domain.CategoryGroups.CategoryGroup", null)
                         .WithMany()
-                        .HasForeignKey("CategoryGroupId", "UserId")
-                        .HasPrincipalKey("Id", "UserId")
+                        .HasForeignKey("CategoryGroupId", "BudgetId")
+                        .HasPrincipalKey("Id", "BudgetId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 
             modelBuilder.Entity("Domain.CategoryGroups.CategoryGroup", b =>
                 {
-                    b.HasOne("Domain.Users.User", null)
+                    b.HasOne("Domain.Budgets.Budget", null)
                         .WithMany()
-                        .HasForeignKey("UserId")
+                        .HasForeignKey("BudgetId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 
             modelBuilder.Entity("Domain.Payees.Payee", b =>
                 {
-                    b.HasOne("Domain.Users.User", null)
+                    b.HasOne("Domain.Budgets.Budget", null)
                         .WithMany()
-                        .HasForeignKey("UserId")
+                        .HasForeignKey("BudgetId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
@@ -511,6 +511,12 @@ namespace Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("Domain.Budgets.Budget", null)
+                        .WithMany()
+                        .HasForeignKey("BudgetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("Domain.Categories.Category", null)
                         .WithMany()
                         .HasForeignKey("CategoryId")
@@ -520,12 +526,6 @@ namespace Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("PayeeId")
                         .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("Domain.Users.User", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }

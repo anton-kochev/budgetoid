@@ -5,7 +5,7 @@ namespace Application.CategoryGroups.CreateCategoryGroup;
 
 public sealed class CreateCategoryGroupHandler(
     ICategoryGroupRepository repository,
-    IUserContext userContext,
+    IBudgetContext budgetContext,
     TimeProvider timeProvider)
     : ICommandHandler<CreateCategoryGroupCommand, CategoryGroupDto>
 {
@@ -15,7 +15,7 @@ public sealed class CreateCategoryGroupHandler(
     {
         int position = await repository.GetNextPositionAsync(cancellationToken);
         CategoryGroup categoryGroup = CategoryGroup.Create(
-            userContext.UserId,
+            budgetContext.BudgetId,
             command.Name,
             command.Description,
             position,

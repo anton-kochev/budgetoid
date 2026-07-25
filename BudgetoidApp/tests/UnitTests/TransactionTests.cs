@@ -7,13 +7,13 @@ namespace UnitTests;
 public sealed class TransactionTests
 {
     [Test]
-    public async Task UserId_IsImmutableAfterCreation()
+    public async Task BudgetId_IsImmutableAfterCreation()
     {
         // Write-side half of the data-isolation invariant: the read-side query filter cannot
-        // stop SaveChanges from moving a row between users, so UserId must never be reassignable.
-        PropertyInfo userId = typeof(Transaction).GetProperty(nameof(Transaction.UserId))!;
+        // stop SaveChanges from moving a row between budgets, so BudgetId must never be reassignable.
+        PropertyInfo budgetId = typeof(Transaction).GetProperty(nameof(Transaction.BudgetId))!;
 
-        bool hasPublicSetter = userId.SetMethod is { IsPublic: true };
+        bool hasPublicSetter = budgetId.SetMethod is { IsPublic: true };
 
         await Assert.That(hasPublicSetter).IsFalse();
     }
@@ -21,17 +21,17 @@ public sealed class TransactionTests
     [Test]
     public async Task Create_WithValidInput_ReturnsInitializedTransaction()
     {
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         var date = new DateOnly(2026, 6, 12);
 
         DateTime createdAtUtc = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
         var accountId = Guid.CreateVersion7();
 
-        var transaction = Transaction.Create(userId, accountId, -42.50m, date, " Groceries ", createdAtUtc);
+        var transaction = Transaction.Create(budgetId, accountId, -42.50m, date, " Groceries ", createdAtUtc);
 
         await Assert.That(transaction.Id).IsNotEqualTo(Guid.Empty);
-        await Assert.That(transaction.UserId).IsEqualTo(userId);
+        await Assert.That(transaction.BudgetId).IsEqualTo(budgetId);
         await Assert.That(transaction.AccountId).IsEqualTo(accountId);
         await Assert.That(transaction.Amount).IsEqualTo(-42.50m);
         await Assert.That(transaction.Date).IsEqualTo(date);
@@ -137,10 +137,10 @@ public sealed class TransactionTests
     }
 
     [Test]
-    public async Task Create_WithEmptyUserId_ThrowsValidationException()
+    public async Task Create_WithEmptyBudgetId_ThrowsValidationException()
     {
         var exception = ThrowsValidationException(() => Transaction.Create(Guid.Empty, Guid.CreateVersion7(), 1m, DateOnly.FromDateTime(DateTime.UtcNow), "Test", UtcNow()));
-        await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
+        await Assert.That(exception.Errors.ContainsKey("BudgetId")).IsTrue();
     }
 
     [Test]

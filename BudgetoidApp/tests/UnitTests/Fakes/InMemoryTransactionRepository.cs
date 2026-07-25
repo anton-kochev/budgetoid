@@ -81,8 +81,3 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
         Guid CategoryGroupId,
         string CategoryGroupName);
 }
-
-public sealed class StubUserContext(Guid userId) : Application.Abstractions.IUserContext
-{
-    public Guid UserId { get; } = userId;
-}

@@ -18,7 +18,7 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 
 // Registered non-pooled (AddDbContext, scoped) because BudgetoidDbContext depends on the scoped
-// IUserContext for its transaction query filter, and pooled contexts can't take scoped
+// IBudgetContext for its budget isolation query filters, and pooled contexts can't take scoped
 // dependencies. Aspire's AddNpgsqlDbContext pools contexts; EnrichNpgsqlDbContext re-applies
 // Aspire's retry/health/telemetry defaults here.
 builder.Services.AddDbContext<BudgetoidDbContext>(options =>
@@ -30,7 +30,7 @@ builder.Services.AddApplication();
 builder.Services.AddInfrastructure();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<CurrentUser>();
-builder.Services.AddScoped<IUserContext, HttpContextUserContext>();
+builder.Services.AddScoped<IBudgetContext, HttpContextBudgetContext>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {

@@ -15,15 +15,15 @@ public sealed class GetTransactionsHandlerTests
     {
         // Arrange
         var repository = new InMemoryTransactionRepository();
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         var olderTime = new FakeTimeProvider(
             new DateTimeOffset(2026, 6, 11, 13, 14, 15, TimeSpan.Zero));
         var newerTime = new FakeTimeProvider(
             new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero));
-        var accounts = new InMemoryAccountRepository(userId, olderTime);
+        var accounts = new InMemoryAccountRepository(budgetId, olderTime);
         Account account = await accounts.CreateAsync();
-        var categoryGroups = new InMemoryCategoryGroupRepository(userId, olderTime);
-        var categories = new InMemoryCategoryRepository(userId, olderTime, categoryGroups);
+        var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, olderTime);
+        var categories = new InMemoryCategoryRepository(budgetId, olderTime, categoryGroups);
 
         await CreateAsync(repository, accounts, categoryGroups, categories, olderTime, account, "Older");
         await CreateAsync(repository, accounts, categoryGroups, categories, newerTime, account, "Newest");
@@ -43,13 +43,13 @@ public sealed class GetTransactionsHandlerTests
     {
         // Arrange
         var repository = new InMemoryTransactionRepository();
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         var timeProvider = new FakeTimeProvider(
             new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero));
-        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var accounts = new InMemoryAccountRepository(budgetId, timeProvider);
         Account account = await accounts.CreateAsync();
-        var categoryGroups = new InMemoryCategoryGroupRepository(userId, timeProvider);
-        var categories = new InMemoryCategoryRepository(userId, timeProvider, categoryGroups);
+        var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
+        var categories = new InMemoryCategoryRepository(budgetId, timeProvider, categoryGroups);
         CategoryGroup categoryGroup = await categoryGroups.CreateAsync("Essential Obligations");
         Category category = await categories.CreateAsync(categoryGroup.Id, "Groceries");
         await CreateAsync(
@@ -104,10 +104,10 @@ public sealed class GetTransactionsHandlerTests
             transactions,
             accounts,
             new InMemoryCurrencyReadService(),
-            new InMemoryPayeeRepository(account.UserId, timeProvider),
+            new InMemoryPayeeRepository(account.BudgetId, timeProvider),
             categories,
             categoryGroups,
-            new StubUserContext(account.UserId),
+            new StubBudgetContext(account.BudgetId),
             timeProvider);
         return handler.HandleAsync(new CreateTransactionCommand(
             20m,

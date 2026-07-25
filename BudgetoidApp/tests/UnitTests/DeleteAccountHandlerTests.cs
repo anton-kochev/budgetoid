@@ -11,8 +11,8 @@ public sealed class DeleteAccountHandlerTests
     [Test]
     public async Task HandleAsync_DeletesUnreferencedAccount()
     {
-        var userId = Guid.CreateVersion7();
-        var repository = new InMemoryAccountRepository(userId, new FakeTimeProvider(UtcNowOffset()));
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryAccountRepository(budgetId, new FakeTimeProvider(UtcNowOffset()));
         Account account = await repository.CreateAsync("Checking");
         var handler = new DeleteAccountHandler(repository);
 
@@ -44,8 +44,8 @@ public sealed class DeleteAccountHandlerTests
     [Test]
     public async Task HandleAsync_WithReferencedAccount_ThrowsValidationExceptionAndDoesNotDelete()
     {
-        var userId = Guid.CreateVersion7();
-        var repository = new InMemoryAccountRepository(userId, new FakeTimeProvider(UtcNowOffset()));
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryAccountRepository(budgetId, new FakeTimeProvider(UtcNowOffset()));
         Account account = await repository.CreateAsync("Checking");
         repository.MarkReferenced(account.Id);
         var handler = new DeleteAccountHandler(repository);

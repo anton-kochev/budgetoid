@@ -36,7 +36,7 @@ public sealed class PayeeIntegrationTests
             """
             select indexdef
             from pg_indexes
-            where tablename = 'payees' and indexname = 'IX_payees_user_id_name'
+            where tablename = 'payees' and indexname = 'IX_payees_budget_id_name'
             """, connection);
         string? indexDef = (string?)await indexCommand.ExecuteScalarAsync();
 

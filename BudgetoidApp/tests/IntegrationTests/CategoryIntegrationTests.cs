@@ -244,7 +244,7 @@ public sealed class CategoryIntegrationTests
     }
 
     [Test]
-    public async Task CategoryResources_AreIsolatedByUserAndLegacyGroupsRouteIsGone()
+    public async Task CategoryResources_AreIsolatedByBudgetAndLegacyGroupsRouteIsGone()
     {
         // Arrange
         await using PostgresTestHost host = new();
@@ -259,39 +259,44 @@ public sealed class CategoryIntegrationTests
         // Act
         JsonNode groupsB = await GetJsonAsync(clientB, "/api/category-groups");
         JsonNode categoriesB = await GetJsonAsync(clientB, "/api/categories");
-        HttpResponseMessage crossUserCreate = await clientB.PostAsJsonAsync("/api/categories", new
+        HttpResponseMessage crossBudgetCreate = await clientB.PostAsJsonAsync("/api/categories", new
         {
             name = "Attempt",
             description = (string?)null,
             categoryGroupId = categoryGroupA,
         });
-        HttpResponseMessage crossUserRead = await clientB.GetAsync(
+        HttpResponseMessage crossBudgetRead = await clientB.GetAsync(
             $"/api/category-groups/{categoryGroupA}");
+        HttpResponseMessage crossBudgetUpdate = await clientB.PutAsJsonAsync(
+            $"/api/category-groups/{categoryGroupA}",
+            new { name = "Renamed", description = (string?)null });
         HttpResponseMessage legacy = await clientA.GetAsync("/api/groups");
 
-        // Assert
+        // Assert — a resource in another budget must be indistinguishable from one that does not
+        // exist, so every cross-budget read is 404 and there is deliberately no 403 path to add.
         await Assert.That(groupsB["items"]!.AsArray().Count).IsEqualTo(0);
         await Assert.That(categoriesB["items"]!.AsArray().Count).IsEqualTo(0);
-        await Assert.That(crossUserCreate.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await Assert.That(crossUserRead.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+        await Assert.That(crossBudgetCreate.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(crossBudgetRead.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+        await Assert.That(crossBudgetUpdate.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
         await Assert.That(legacy.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
     }
 
     [Test]
-    public async Task Database_EnforcesRequiredSameOwnerCategoryMembership()
+    public async Task Database_EnforcesRequiredSameBudgetCategoryMembership()
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        Guid userA = await host.SeedUserAsync("google-a", "a@example.com");
-        Guid userB = await host.SeedUserAsync("google-b", "b@example.com");
+        Guid budgetA = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid budgetB = await host.SeedBudgetAsync("google-b", "b@example.com");
         var options = new DbContextOptionsBuilder<BudgetoidDbContext>()
             .UseNpgsql(host.ConnectionString)
             .Options;
         Guid categoryGroupId;
-        await using (BudgetoidDbContext db = new(options, new TestUserContext(userA)))
+        await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetA)))
         {
             CategoryGroup categoryGroup = CategoryGroup.Create(
-                userA,
+                budgetA,
                 "Essentials",
                 null,
                 0,
@@ -301,10 +306,11 @@ public sealed class CategoryIntegrationTests
             categoryGroupId = categoryGroup.Id;
         }
 
-        // Act
-        await using BudgetoidDbContext crossOwnerDb = new(options, new TestUserContext(userB));
-        crossOwnerDb.Categories.Add(Category.Create(
-            userB,
+        // Act — the composite (CategoryGroupId, BudgetId) foreign key is what stops budget B from
+        // adopting budget A's group; the query filter alone could not, since this is a write.
+        await using BudgetoidDbContext crossBudgetDb = new(options, new TestBudgetContext(budgetB));
+        crossBudgetDb.Categories.Add(Category.Create(
+            budgetB,
             categoryGroupId,
             "Should Fail",
             null,
@@ -313,7 +319,7 @@ public sealed class CategoryIntegrationTests
         DbUpdateException? caught = null;
         try
         {
-            await crossOwnerDb.SaveChangesAsync();
+            await crossBudgetDb.SaveChangesAsync();
         }
         catch (DbUpdateException exception)
         {

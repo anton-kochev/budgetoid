@@ -17,20 +17,22 @@ created as a side effect of transaction entry rather than managed independently.
 
 ## Key Entities
 
-- **Transaction** — `Id`, `UserId`, required `AccountId`, signed non-zero `Amount`, `Date`, optional
+- **Transaction** — `Id`, `BudgetId`, required `AccountId`, signed non-zero `Amount`, `Date`, optional
   `Description`, optional `PayeeId`, optional `CategoryId`, `CreatedAtUtc`.
-- **Payee** — `Id`, `UserId`, `Name`, `CreatedAtUtc`; entered as free text with autocomplete and
+- **Payee** — `Id`, `BudgetId`, `Name`, `CreatedAtUtc`; entered as free text with autocomplete and
   created automatically on first use.
 
 ```mermaid
 erDiagram
+    BUDGET ||--o{ TRANSACTION : owns
+    BUDGET ||--o{ PAYEE : owns
     ACCOUNT ||--o{ TRANSACTION : "recorded against"
     PAYEE ||--o{ TRANSACTION : "optionally names"
     CATEGORY ||--o{ TRANSACTION : "optionally categorizes"
     CATEGORY_GROUP ||--o{ CATEGORY : contains
     TRANSACTION {
         guid Id
-        guid UserId
+        guid BudgetId
         guid AccountId
         guid PayeeId
         guid CategoryId
@@ -45,10 +47,10 @@ erDiagram
 ### MUST
 
 - **Amount must be non-zero.** Zero records no movement and has no income/expense direction.
-- **The Account must exist and belong to the current user.** `CreateTransactionHandler` resolves it
-  through the ownership-filtered repository and reports “Account was not found.” otherwise.
-- **A supplied Category must exist and belong to the current user.** The handler resolves
-  `CategoryId` through the ownership-filtered repository and reports “Category was not found.”
+- **The Account must exist and belong to the current budget.** `CreateTransactionHandler` resolves it
+  through the budget-filtered repository and reports “Account was not found.” otherwise.
+- **A supplied Category must exist and belong to the current budget.** The handler resolves
+  `CategoryId` through the budget-filtered repository and reports “Category was not found.”
   otherwise.
 
 ### MAY
@@ -65,9 +67,10 @@ erDiagram
 - **Amount has at most two decimal places and absolute value ≤ 1,000,000,000.** Enforced by
   `Transaction.Create`.
 - **Description is optional, blank becomes null, and a value is at most 500 characters.**
-- **Payees are case-insensitive find-or-create free text.** `CreateTransactionHandler` calls
-  `IPayeeRepository.GetOrCreateAsync`; PostgreSQL collation/uniqueness and retry logic prevent
-  case-only duplicates and handle insert races.
+- **Payees are case-insensitive find-or-create free text, within the current budget.**
+  `CreateTransactionHandler` calls `IPayeeRepository.GetOrCreateAsync`; PostgreSQL collation, the
+  unique `(budget_id, name)` index, and retry logic prevent case-only duplicates and handle insert
+  races. The same payee name in another budget is a separate row — payees never cross budgets.
 - **Categorization is selected by Category ID only.** Category Group is derived from the selected
   Category and is not copied onto the Transaction.
 - **Transaction responses are self-contained for display.** They include `CategoryId`,
@@ -79,8 +82,10 @@ erDiagram
   while Transactions reference it.
 - **[Categories and Category Groups](categories.md)**: optional Category context. A referenced
   Category cannot be deleted; its Category Group cannot be deleted while the Category exists.
-- **[Users & Ownership](users-and-ownership.md)**: Transactions, Payees, Accounts, Categories, and
-  Category Groups are ownership-filtered.
+- **[Budgets](budgets.md)**: Transactions, Payees, Accounts, Categories, and Category Groups are
+  budget-filtered. Note that `transactions → accounts / categories / payees` are plain single-column
+  foreign keys, so the same-budget guarantee for those three references comes from the query filter on
+  the resolving repositories, not from the schema.
 
 ## Edge Cases & Known Gotchas
 

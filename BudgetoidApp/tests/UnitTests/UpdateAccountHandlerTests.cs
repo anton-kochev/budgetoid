@@ -11,8 +11,8 @@ public sealed class UpdateAccountHandlerTests
     [Test]
     public async Task HandleAsync_UpdatesExistingAccount()
     {
-        var userId = Guid.CreateVersion7();
-        var repository = new InMemoryAccountRepository(userId, new FakeTimeProvider(UtcNowOffset()));
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryAccountRepository(budgetId, new FakeTimeProvider(UtcNowOffset()));
         Account account = await repository.CreateAsync("Checking");
         var handler = new UpdateAccountHandler(repository);
 

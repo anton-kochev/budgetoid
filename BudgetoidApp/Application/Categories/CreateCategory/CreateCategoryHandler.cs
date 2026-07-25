@@ -8,7 +8,7 @@ namespace Application.Categories.CreateCategory;
 public sealed class CreateCategoryHandler(
     ICategoryRepository repository,
     ICategoryGroupRepository categoryGroups,
-    IUserContext userContext,
+    IBudgetContext budgetContext,
     TimeProvider timeProvider)
     : ICommandHandler<CreateCategoryCommand, CategoryDto>
 {
@@ -29,7 +29,7 @@ public sealed class CreateCategoryHandler(
 
         int position = await repository.GetNextPositionAsync(categoryGroup.Id, cancellationToken);
         Category category = Category.Create(
-            userContext.UserId,
+            budgetContext.BudgetId,
             categoryGroup.Id,
             command.Name,
             command.Description,

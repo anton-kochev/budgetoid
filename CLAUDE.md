@@ -49,7 +49,7 @@ globals are configured for ESLint. Use `// Arrange // Act // Assert` comments.
 
 Clean Architecture with CQRS. Commands/queries live under `Application/Transactions/*` and are handled by directly injected plain handlers (`ICommandHandler`/`IQueryHandler` shape); no MediatR dispatcher until decorators are needed. Infrastructure uses EF Core 10 with PostgreSQL via Npgsql. The API layer is ASP.NET Core minimal API, intended for Azure Container Apps.
 
-Auth is live Google OAuth. The current user is exposed through `IUserContext`: `UserProvisioningMiddleware` resolves the authenticated principal (via `EnsureUserHandler`, keyed on the Google `sub`) into an internal user id held by `HttpContextUserContext` in prod (`TestUserContext` in tests). See `docs/business-logic/users-and-ownership.md`.
+Auth is live Google OAuth. The budget is the unit of tenancy: `UserProvisioningMiddleware` resolves the authenticated principal (via `EnsureUserHandler`, keyed on the Google `sub`) into an internal user id and that user's default budget id, both held on the scoped `CurrentUser`. The ambient budget is exposed through `IBudgetContext`, implemented by `HttpContextBudgetContext` in prod (`TestBudgetContext` in tests); `Account`, `CategoryGroup`, `Category`, `Payee`, and `Transaction` are isolated per budget by the `BudgetIsolation` query filters. See `docs/business-logic/budgets.md` and `docs/business-logic/users-and-ownership.md`.
 
 ## Frontend Architecture
 

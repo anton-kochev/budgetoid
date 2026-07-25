@@ -8,38 +8,39 @@ using Microsoft.EntityFrameworkCore;
 
 namespace IntegrationTests;
 
-public sealed class TransactionIsolationTests
+public sealed class BudgetIsolationTests
 {
     [Test]
-    public async Task QueryFilter_HidesOtherUsersTransactions_EvenWithoutAnExplicitWhere()
+    public async Task QueryFilter_HidesOtherBudgetsTransactions_EvenWithoutAnExplicitWhere()
     {
         await using RepositoryTestHost host = await StartHostAsync();
-        Guid userA = await host.SeedUserAsync("google-a", "a@example.com");
-        Guid userB = await host.SeedUserAsync("google-b", "b@example.com");
+        Guid budgetA = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid budgetB = await host.SeedBudgetAsync("google-b", "b@example.com");
 
         Guid transactionId;
-        await using (BudgetoidDbContext dbA = CreateDb(host, userA))
+        await using (BudgetoidDbContext dbA = CreateDb(host, budgetA))
         {
-            Account account = Account.Create(userA, "Checking", AccountType.Checking, 0m, "USD", DateTime.UtcNow);
+            Account account = Account.Create(budgetA, "Checking", AccountType.Checking, 0m, "USD", DateTime.UtcNow);
             dbA.Accounts.Add(account);
             await dbA.SaveChangesAsync();
 
             Transaction transaction = Transaction.Create(
-                userA,
+                budgetA,
                 account.Id,
                 -10m,
                 new DateOnly(2026, 6, 12),
-                "User A groceries",
+                "Budget A groceries",
                 new DateTime(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc));
             transactionId = transaction.Id;
             dbA.Transactions.Add(transaction);
             await dbA.SaveChangesAsync();
         }
 
-        // User B, in the SAME process: even an unfiltered query must see nothing of user A's.
-        // Running A-then-B in one process also guards against the user being baked into EF's
-        // cached model (a captured-service-reference filter would leak A's row to B here).
-        await using (BudgetoidDbContext dbB = CreateDb(host, userB))
+        // Budget B, in the SAME process: even an unfiltered query must see nothing of budget A's.
+        // Running A-then-B in one process also guards against the budget being baked into EF's
+        // cached model (a captured-service-reference filter would leak A's row to B here). Never
+        // split this across two processes — that is exactly the regression it exists to catch.
+        await using (BudgetoidDbContext dbB = CreateDb(host, budgetB))
         {
             List<Transaction> all = await dbB.Transactions.ToListAsync();
             await Assert.That(all.Count).IsEqualTo(0);
@@ -48,8 +49,8 @@ public sealed class TransactionIsolationTests
             await Assert.That(byId).IsNull();
         }
 
-        // User A still sees their own row (after user B queried in the same process).
-        await using (BudgetoidDbContext dbA = CreateDb(host, userA))
+        // Budget A still sees its own row (after budget B queried in the same process).
+        await using (BudgetoidDbContext dbA = CreateDb(host, budgetA))
         {
             List<Transaction> mine = await dbA.Transactions.ToListAsync();
             await Assert.That(mine.Count).IsEqualTo(1);
@@ -58,14 +59,42 @@ public sealed class TransactionIsolationTests
     }
 
     [Test]
-    public async Task GetTransactions_DoesNotReturnAnotherUsersTransactions()
+    public async Task QueryFilter_HidesAnotherBudgetOfTheSameOwner()
+    {
+        // Two budgets under ONE user: proves the filter closes over the budget and not the owner.
+        // A surviving user-scoped predicate would still pass the two-user test above and fail here.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-a", "a@example.com");
+        Guid budgetA = await host.SeedAdditionalBudgetAsync(userId, "Household");
+        Guid budgetB = await host.SeedAdditionalBudgetAsync(userId, "Side Project");
+
+        await using (BudgetoidDbContext dbA = CreateDb(host, budgetA))
+        {
+            dbA.Accounts.Add(Account.Create(
+                budgetA,
+                "Checking",
+                AccountType.Checking,
+                0m,
+                "USD",
+                DateTime.UtcNow));
+            await dbA.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext dbB = CreateDb(host, budgetB);
+        List<Account> visibleToB = await dbB.Accounts.ToListAsync();
+
+        await Assert.That(visibleToB.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task GetTransactions_DoesNotReturnAnotherBudgetsTransactions()
     {
         await using PostgresTestHost host = new();
         await host.StartAsync();
         const string userA = "google-a";
         const string userB = "google-b";
 
-        // Two factories over the SAME database container — one per user.
+        // Two factories over the SAME database container — one per user, so one per default budget.
         await using ApiFactory factoryA = host.CreateFactory(userA);
         await using ApiFactory factoryB = host.CreateFactory(userB);
 
@@ -76,18 +105,18 @@ public sealed class TransactionIsolationTests
             amount = -42.50m,
             date = "2026-06-12",
             accountId,
-            description = "User A lunch",
+            description = "Budget A lunch",
         });
         await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
 
-        // User B must not see user A's transaction.
+        // Budget B must not see budget A's transaction.
         HttpClient clientB = factoryB.CreateAuthenticatedClient();
         HttpResponseMessage listB = await clientB.GetAsync("/api/transactions");
         await Assert.That(listB.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode? jsonB = await JsonNode.ParseAsync(await listB.Content.ReadAsStreamAsync());
         await Assert.That(jsonB!["items"]!.AsArray().Count).IsEqualTo(0);
 
-        // User A still sees their own transaction.
+        // Budget A still sees its own transaction.
         HttpResponseMessage listA = await clientA.GetAsync("/api/transactions");
         JsonNode? jsonA = await JsonNode.ParseAsync(await listA.Content.ReadAsStreamAsync());
         await Assert.That(jsonA!["items"]!.AsArray().Count).IsEqualTo(1);
@@ -107,13 +136,13 @@ public sealed class TransactionIsolationTests
         return json["id"]!.GetValue<Guid>();
     }
 
-    private static BudgetoidDbContext CreateDb(RepositoryTestHost host, Guid userId)
+    private static BudgetoidDbContext CreateDb(RepositoryTestHost host, Guid budgetId)
     {
         DbContextOptions<BudgetoidDbContext> options = new DbContextOptionsBuilder<BudgetoidDbContext>()
             .UseNpgsql(host.ConnectionString)
             .Options;
 
-        return new BudgetoidDbContext(options, new TestUserContext(userId));
+        return new BudgetoidDbContext(options, new TestBudgetContext(budgetId));
     }
 
     private static async Task<RepositoryTestHost> StartHostAsync()

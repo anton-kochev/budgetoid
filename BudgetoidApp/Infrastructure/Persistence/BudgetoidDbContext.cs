@@ -13,7 +13,7 @@ namespace Infrastructure.Persistence;
 
 public sealed class BudgetoidDbContext(
     DbContextOptions<BudgetoidDbContext> options,
-    IUserContext? userContext = null) : DbContext(options)
+    IBudgetContext? budgetContext = null) : DbContext(options)
 {
     // Budget deliberately has no global query filter: the provisioning lookup runs before a budget
     // id exists, so every query over this set must scope by owner explicitly.
@@ -35,15 +35,19 @@ public sealed class BudgetoidDbContext(
             provider: "icu",
             deterministic: false);
 
+        // Every filter reads the primary-constructor parameter on purpose: Roslyn lowers it to an
+        // instance field, so the lambda closes over `this` and EF re-roots the closure to the context
+        // instance running the query. A captured local, a static, or a service-locator call would bake
+        // the first request's budget into the cached model and leak rows across tenants.
         modelBuilder.Entity<Transaction>()
-            .HasQueryFilter("UserIsolation", transaction => transaction.UserId == userContext!.UserId);
+            .HasQueryFilter("BudgetIsolation", transaction => transaction.BudgetId == budgetContext!.BudgetId);
         modelBuilder.Entity<Account>()
-            .HasQueryFilter("UserIsolation", account => account.UserId == userContext!.UserId);
+            .HasQueryFilter("BudgetIsolation", account => account.BudgetId == budgetContext!.BudgetId);
         modelBuilder.Entity<Payee>()
-            .HasQueryFilter("UserIsolation", payee => payee.UserId == userContext!.UserId);
+            .HasQueryFilter("BudgetIsolation", payee => payee.BudgetId == budgetContext!.BudgetId);
         modelBuilder.Entity<CategoryGroup>()
-            .HasQueryFilter("UserIsolation", categoryGroup => categoryGroup.UserId == userContext!.UserId);
+            .HasQueryFilter("BudgetIsolation", categoryGroup => categoryGroup.BudgetId == budgetContext!.BudgetId);
         modelBuilder.Entity<Category>()
-            .HasQueryFilter("UserIsolation", category => category.UserId == userContext!.UserId);
+            .HasQueryFilter("BudgetIsolation", category => category.BudgetId == budgetContext!.BudgetId);
     }
 }

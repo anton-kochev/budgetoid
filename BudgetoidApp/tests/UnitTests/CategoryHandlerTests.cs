@@ -19,7 +19,7 @@ public sealed class CategoryHandlerTests
         var handler = new CreateCategoryHandler(
             fixture.Categories,
             fixture.CategoryGroups,
-            new StubUserContext(fixture.UserId),
+            new StubBudgetContext(fixture.BudgetId),
             fixture.TimeProvider);
 
         // Act
@@ -46,7 +46,7 @@ public sealed class CategoryHandlerTests
         var handler = new CreateCategoryHandler(
             fixture.Categories,
             fixture.CategoryGroups,
-            new StubUserContext(fixture.UserId),
+            new StubBudgetContext(fixture.BudgetId),
             fixture.TimeProvider);
 
         // Act
@@ -194,7 +194,7 @@ public sealed class CategoryHandlerTests
     }
 
     private sealed record Fixture(
-        Guid UserId,
+        Guid BudgetId,
         FakeTimeProvider TimeProvider,
         InMemoryCategoryGroupRepository CategoryGroups,
         InMemoryCategoryRepository Categories,
@@ -203,15 +203,15 @@ public sealed class CategoryHandlerTests
     {
         public static async Task<Fixture> CreateAsync()
         {
-            var userId = Guid.CreateVersion7();
+            var budgetId = Guid.CreateVersion7();
             var timeProvider = new FakeTimeProvider(
                 new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));
-            var categoryGroups = new InMemoryCategoryGroupRepository(userId, timeProvider);
+            var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
             var source = await categoryGroups.CreateAsync("Essentials");
             var destination = await categoryGroups.CreateAsync("Lifestyle");
-            var categories = new InMemoryCategoryRepository(userId, timeProvider, categoryGroups);
+            var categories = new InMemoryCategoryRepository(budgetId, timeProvider, categoryGroups);
             return new Fixture(
-                userId,
+                budgetId,
                 timeProvider,
                 categoryGroups,
                 categories,

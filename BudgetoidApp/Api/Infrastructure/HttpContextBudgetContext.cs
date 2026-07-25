@@ -2,8 +2,8 @@ using Application.Abstractions;
 
 namespace Api.Infrastructure;
 
-public sealed class HttpContextUserContext(CurrentUser currentUser) : IUserContext
+public sealed class HttpContextBudgetContext(CurrentUser currentUser) : IBudgetContext
 {
-    public Guid UserId => currentUser.UserId
+    public Guid BudgetId => currentUser.BudgetId
         ?? throw new InvalidOperationException("The current application user has not been resolved.");
 }

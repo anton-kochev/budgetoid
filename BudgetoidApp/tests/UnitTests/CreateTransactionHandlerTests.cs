@@ -24,7 +24,7 @@ public sealed class CreateTransactionHandlerTests
 
         // Assert
         await Assert.That(fixture.Transactions.AddCallCount).IsEqualTo(1);
-        await Assert.That(stored.UserId).IsEqualTo(fixture.UserId);
+        await Assert.That(stored.BudgetId).IsEqualTo(fixture.BudgetId);
         await Assert.That(dto.Id).IsEqualTo(stored.Id);
         await Assert.That(dto.AccountId).IsEqualTo(fixture.Account.Id);
         await Assert.That(dto.AccountName).IsEqualTo("Checking");
@@ -166,7 +166,7 @@ public sealed class CreateTransactionHandlerTests
         {
         }
 
-        public required Guid UserId { get; init; }
+        public required Guid BudgetId { get; init; }
         public required Account Account { get; init; }
         public required InMemoryTransactionRepository Transactions { get; init; }
         public required InMemoryPayeeRepository Payees { get; init; }
@@ -176,15 +176,15 @@ public sealed class CreateTransactionHandlerTests
 
         public static async Task<Fixture> CreateAsync()
         {
-            var userId = Guid.CreateVersion7();
+            var budgetId = Guid.CreateVersion7();
             var timeProvider = new FakeTimeProvider(
                 new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero));
-            var accounts = new InMemoryAccountRepository(userId, timeProvider);
+            var accounts = new InMemoryAccountRepository(budgetId, timeProvider);
             Account account = await accounts.CreateAsync("Checking");
             var transactions = new InMemoryTransactionRepository();
-            var payees = new InMemoryPayeeRepository(userId, timeProvider);
-            var categoryGroups = new InMemoryCategoryGroupRepository(userId, timeProvider);
-            var categories = new InMemoryCategoryRepository(userId, timeProvider, categoryGroups);
+            var payees = new InMemoryPayeeRepository(budgetId, timeProvider);
+            var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
+            var categories = new InMemoryCategoryRepository(budgetId, timeProvider, categoryGroups);
             var handler = new CreateTransactionHandler(
                 transactions,
                 accounts,
@@ -192,12 +192,12 @@ public sealed class CreateTransactionHandlerTests
                 payees,
                 categories,
                 categoryGroups,
-                new StubUserContext(userId),
+                new StubBudgetContext(budgetId),
                 timeProvider);
 
             return new Fixture
             {
-                UserId = userId,
+                BudgetId = budgetId,
                 Account = account,
                 Transactions = transactions,
                 Payees = payees,

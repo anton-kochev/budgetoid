@@ -15,12 +15,12 @@ public sealed class CategoryGroupHandlerTests
     public async Task Create_AppendsGroupsInUserOrder()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         var timeProvider = TimeProvider();
-        var repository = new InMemoryCategoryGroupRepository(userId, timeProvider);
+        var repository = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
         var handler = new CreateCategoryGroupHandler(
             repository,
-            new StubUserContext(userId),
+            new StubBudgetContext(budgetId),
             timeProvider);
 
         // Act
@@ -36,8 +36,8 @@ public sealed class CategoryGroupHandlerTests
     public async Task Move_ReindexesGroupsContiguously()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
-        var repository = new InMemoryCategoryGroupRepository(userId, TimeProvider());
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryCategoryGroupRepository(budgetId, TimeProvider());
         var first = await repository.CreateAsync("First");
         var second = await repository.CreateAsync("Second");
         var third = await repository.CreateAsync("Third");
@@ -60,8 +60,8 @@ public sealed class CategoryGroupHandlerTests
     public async Task Move_OutsideList_ThrowsValidationExceptionWithoutChangingOrder()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
-        var repository = new InMemoryCategoryGroupRepository(userId, TimeProvider());
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryCategoryGroupRepository(budgetId, TimeProvider());
         var categoryGroup = await repository.CreateAsync("Only");
         var handler = new MoveCategoryGroupHandler(repository);
 
@@ -78,8 +78,8 @@ public sealed class CategoryGroupHandlerTests
     public async Task Delete_WhenGroupHasCategories_ThrowsValidationException()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
-        var repository = new InMemoryCategoryGroupRepository(userId, TimeProvider());
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryCategoryGroupRepository(budgetId, TimeProvider());
         var categoryGroup = await repository.CreateAsync();
         repository.MarkHasCategories(categoryGroup.Id);
         var handler = new DeleteCategoryGroupHandler(repository);
@@ -98,8 +98,8 @@ public sealed class CategoryGroupHandlerTests
     public async Task Get_ReturnsCategoryGroup()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
-        var repository = new InMemoryCategoryGroupRepository(userId, TimeProvider());
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryCategoryGroupRepository(budgetId, TimeProvider());
         var categoryGroup = await repository.CreateAsync("Essentials");
         var handler = new GetCategoryGroupHandler(repository);
 
@@ -117,8 +117,8 @@ public sealed class CategoryGroupHandlerTests
     public async Task Get_WithUnknownId_ReturnsNull()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
-        var repository = new InMemoryCategoryGroupRepository(userId, TimeProvider());
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryCategoryGroupRepository(budgetId, TimeProvider());
         var handler = new GetCategoryGroupHandler(repository);
 
         // Act

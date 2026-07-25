@@ -8,7 +8,7 @@ namespace Infrastructure.Repositories;
 
 public sealed class PayeeRepository(
     BudgetoidDbContext dbContext,
-    IUserContext userContext,
+    IBudgetContext budgetContext,
     TimeProvider timeProvider) : IPayeeRepository
 {
     public async Task<Payee> GetOrCreateAsync(string name, CancellationToken cancellationToken = default)
@@ -22,7 +22,7 @@ public sealed class PayeeRepository(
         }
 
         Payee payee = Payee.Create(
-            userContext.UserId,
+            budgetContext.BudgetId,
             normalizedName,
             timeProvider.GetUtcNow().UtcDateTime);
         dbContext.Payees.Add(payee);

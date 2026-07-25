@@ -5,7 +5,7 @@ using Domain.Categories;
 namespace UnitTests.Fakes;
 
 public sealed class InMemoryCategoryRepository(
-    Guid userId,
+    Guid budgetId,
     TimeProvider timeProvider,
     InMemoryCategoryGroupRepository categoryGroups)
     : ICategoryRepository, ICategoryReadService
@@ -29,7 +29,7 @@ public sealed class InMemoryCategoryRepository(
     public Task<Category?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         return Task.FromResult(_categories.SingleOrDefault(category =>
-            category.Id == id && category.UserId == userId));
+            category.Id == id && category.BudgetId == budgetId));
     }
 
     public Task<int> GetNextPositionAsync(
@@ -117,7 +117,7 @@ public sealed class InMemoryCategoryRepository(
         string? description = null)
     {
         Category category = Category.Create(
-            userId,
+            budgetId,
             categoryGroupId,
             name,
             description,

@@ -46,35 +46,6 @@ namespace Infrastructure.Persistence.Migrations
                 });
 
             migrationBuilder.CreateTable(
-                name: "accounts",
-                columns: table => new
-                {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
-                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
-                    type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
-                    opening_balance = table.Column<decimal>(type: "numeric(14,2)", nullable: false),
-                    currency_code = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: false),
-                    created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_accounts", x => x.id);
-                    table.ForeignKey(
-                        name: "FK_accounts_currencies_currency_code",
-                        column: x => x.currency_code,
-                        principalTable: "currencies",
-                        principalColumn: "code",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_accounts_users_user_id",
-                        column: x => x.user_id,
-                        principalTable: "users",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateTable(
                 name: "budgets",
                 columns: table => new
                 {
@@ -102,11 +73,40 @@ namespace Infrastructure.Persistence.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "accounts",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    budget_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
+                    type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                    opening_balance = table.Column<decimal>(type: "numeric(14,2)", nullable: false),
+                    currency_code = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: false),
+                    created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_accounts", x => x.id);
+                    table.ForeignKey(
+                        name: "FK_accounts_budgets_budget_id",
+                        column: x => x.budget_id,
+                        principalTable: "budgets",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_accounts_currencies_currency_code",
+                        column: x => x.currency_code,
+                        principalTable: "currencies",
+                        principalColumn: "code",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "category_groups",
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
-                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    budget_id = table.Column<Guid>(type: "uuid", nullable: false),
                     name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
                     description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
                     position = table.Column<int>(type: "integer", nullable: false),
@@ -115,12 +115,12 @@ namespace Infrastructure.Persistence.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_category_groups", x => x.id);
-                    table.UniqueConstraint("AK_category_groups_id_user_id", x => new { x.id, x.user_id });
+                    table.UniqueConstraint("AK_category_groups_id_budget_id", x => new { x.id, x.budget_id });
                     table.CheckConstraint("CK_category_groups_position", "position >= 0");
                     table.ForeignKey(
-                        name: "FK_category_groups_users_user_id",
-                        column: x => x.user_id,
-                        principalTable: "users",
+                        name: "FK_category_groups_budgets_budget_id",
+                        column: x => x.budget_id,
+                        principalTable: "budgets",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                 });
@@ -130,7 +130,7 @@ namespace Infrastructure.Persistence.Migrations
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
-                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    budget_id = table.Column<Guid>(type: "uuid", nullable: false),
                     name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
                     created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
                 },
@@ -138,9 +138,9 @@ namespace Infrastructure.Persistence.Migrations
                 {
                     table.PrimaryKey("PK_payees", x => x.id);
                     table.ForeignKey(
-                        name: "FK_payees_users_user_id",
-                        column: x => x.user_id,
-                        principalTable: "users",
+                        name: "FK_payees_budgets_budget_id",
+                        column: x => x.budget_id,
+                        principalTable: "budgets",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                 });
@@ -150,7 +150,7 @@ namespace Infrastructure.Persistence.Migrations
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
-                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    budget_id = table.Column<Guid>(type: "uuid", nullable: false),
                     category_group_id = table.Column<Guid>(type: "uuid", nullable: false),
                     name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
                     description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
@@ -162,17 +162,17 @@ namespace Infrastructure.Persistence.Migrations
                     table.PrimaryKey("PK_categories", x => x.id);
                     table.CheckConstraint("CK_categories_position", "position >= 0");
                     table.ForeignKey(
-                        name: "FK_categories_category_groups_category_group_id_user_id",
-                        columns: x => new { x.category_group_id, x.user_id },
-                        principalTable: "category_groups",
-                        principalColumns: new[] { "id", "user_id" },
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_categories_users_user_id",
-                        column: x => x.user_id,
-                        principalTable: "users",
+                        name: "FK_categories_budgets_budget_id",
+                        column: x => x.budget_id,
+                        principalTable: "budgets",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_categories_category_groups_category_group_id_budget_id",
+                        columns: x => new { x.category_group_id, x.budget_id },
+                        principalTable: "category_groups",
+                        principalColumns: new[] { "id", "budget_id" },
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(
@@ -180,7 +180,7 @@ namespace Infrastructure.Persistence.Migrations
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
-                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    budget_id = table.Column<Guid>(type: "uuid", nullable: false),
                     account_id = table.Column<Guid>(type: "uuid", nullable: false),
                     amount = table.Column<decimal>(type: "numeric(14,2)", nullable: false),
                     date = table.Column<DateOnly>(type: "date", nullable: false),
@@ -199,6 +199,12 @@ namespace Infrastructure.Persistence.Migrations
                         principalColumn: "id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
+                        name: "FK_transactions_budgets_budget_id",
+                        column: x => x.budget_id,
+                        principalTable: "budgets",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
                         name: "FK_transactions_categories_category_id",
                         column: x => x.category_id,
                         principalTable: "categories",
@@ -210,12 +216,6 @@ namespace Infrastructure.Persistence.Migrations
                         principalTable: "payees",
                         principalColumn: "id",
                         onDelete: ReferentialAction.SetNull);
-                    table.ForeignKey(
-                        name: "FK_transactions_users_user_id",
-                        column: x => x.user_id,
-                        principalTable: "users",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.InsertData(
@@ -239,15 +239,15 @@ namespace Infrastructure.Persistence.Migrations
                 });
 
             migrationBuilder.CreateIndex(
+                name: "IX_accounts_budget_id_name",
+                table: "accounts",
+                columns: new[] { "budget_id", "name" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_accounts_currency_code",
                 table: "accounts",
                 column: "currency_code");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_accounts_user_id_name",
-                table: "accounts",
-                columns: new[] { "user_id", "name" },
-                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_budgets_base_currency_code",
@@ -261,42 +261,48 @@ namespace Infrastructure.Persistence.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "IX_categories_budget_id_name",
+                table: "categories",
+                columns: new[] { "budget_id", "name" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_categories_category_group_id_budget_id",
+                table: "categories",
+                columns: new[] { "category_group_id", "budget_id" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_categories_category_group_id_position",
                 table: "categories",
                 columns: new[] { "category_group_id", "position" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_categories_category_group_id_user_id",
-                table: "categories",
-                columns: new[] { "category_group_id", "user_id" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_categories_user_id_name",
-                table: "categories",
-                columns: new[] { "user_id", "name" },
+                name: "IX_category_groups_budget_id_name",
+                table: "category_groups",
+                columns: new[] { "budget_id", "name" },
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_category_groups_user_id_name",
+                name: "IX_category_groups_budget_id_position",
                 table: "category_groups",
-                columns: new[] { "user_id", "name" },
-                unique: true);
+                columns: new[] { "budget_id", "position" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_category_groups_user_id_position",
-                table: "category_groups",
-                columns: new[] { "user_id", "position" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_payees_user_id_name",
+                name: "IX_payees_budget_id_name",
                 table: "payees",
-                columns: new[] { "user_id", "name" },
+                columns: new[] { "budget_id", "name" },
                 unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_transactions_account_id",
                 table: "transactions",
                 column: "account_id");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_transactions_budget_id_date_created_at_utc",
+                table: "transactions",
+                columns: new[] { "budget_id", "date", "created_at_utc" },
+                descending: new[] { false, true, true });
 
             migrationBuilder.CreateIndex(
                 name: "IX_transactions_category_id",
@@ -309,12 +315,6 @@ namespace Infrastructure.Persistence.Migrations
                 column: "payee_id");
 
             migrationBuilder.CreateIndex(
-                name: "IX_transactions_user_id_date_created_at_utc",
-                table: "transactions",
-                columns: new[] { "user_id", "date", "created_at_utc" },
-                descending: new[] { false, true, true });
-
-            migrationBuilder.CreateIndex(
                 name: "IX_users_google_subject",
                 table: "users",
                 column: "google_subject",
@@ -324,9 +324,6 @@ namespace Infrastructure.Persistence.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "budgets");
-
             migrationBuilder.DropTable(
                 name: "transactions");
 
@@ -340,10 +337,13 @@ namespace Infrastructure.Persistence.Migrations
                 name: "payees");
 
             migrationBuilder.DropTable(
-                name: "currencies");
+                name: "category_groups");
 
             migrationBuilder.DropTable(
-                name: "category_groups");
+                name: "budgets");
+
+            migrationBuilder.DropTable(
+                name: "currencies");
 
             migrationBuilder.DropTable(
                 name: "users");

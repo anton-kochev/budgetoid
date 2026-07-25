@@ -4,7 +4,7 @@ using Domain.Accounts;
 
 namespace UnitTests.Fakes;
 
-public sealed class InMemoryAccountRepository(Guid userId, TimeProvider timeProvider) : IAccountRepository, IAccountReadService
+public sealed class InMemoryAccountRepository(Guid budgetId, TimeProvider timeProvider) : IAccountRepository, IAccountReadService
 {
     private readonly List<Account> _accounts = [];
     private readonly HashSet<Guid> _referencedAccountIds = [];
@@ -22,7 +22,7 @@ public sealed class InMemoryAccountRepository(Guid userId, TimeProvider timeProv
 
     public Task<Account?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        Account? account = _accounts.SingleOrDefault(account => account.Id == id && account.UserId == userId);
+        Account? account = _accounts.SingleOrDefault(account => account.Id == id && account.BudgetId == budgetId);
         return Task.FromResult(account);
     }
 
@@ -58,7 +58,7 @@ public sealed class InMemoryAccountRepository(Guid userId, TimeProvider timeProv
 
     public async Task<Account> CreateAsync(string name = "Checking", AccountType type = AccountType.Checking, decimal openingBalance = 0m, string currencyCode = "USD")
     {
-        Account account = Account.Create(userId, name, type, openingBalance, currencyCode, timeProvider.GetUtcNow().UtcDateTime);
+        Account account = Account.Create(budgetId, name, type, openingBalance, currencyCode, timeProvider.GetUtcNow().UtcDateTime);
         await AddAsync(account);
         return account;
     }

@@ -10,9 +10,9 @@ public sealed class GetPayeesHandlerTests
     public async Task HandleAsync_ReturnsRepositoryPayeesOrderedByName()
     {
         // Arrange
-        var userId = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
         var repository = new InMemoryPayeeRepository(
-            userId,
+            budgetId,
             new FakeTimeProvider(new DateTimeOffset(2026, 6, 24, 13, 14, 15, TimeSpan.Zero)));
         await repository.GetOrCreateAsync("Zoo");
         await repository.GetOrCreateAsync("Apple");

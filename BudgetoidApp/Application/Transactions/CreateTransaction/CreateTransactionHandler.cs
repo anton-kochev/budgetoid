@@ -16,7 +16,7 @@ public sealed class CreateTransactionHandler(
     IPayeeRepository payees,
     ICategoryRepository categories,
     ICategoryGroupRepository categoryGroups,
-    IUserContext userContext,
+    IBudgetContext budgetContext,
     TimeProvider timeProvider)
     : ICommandHandler<CreateTransactionCommand, TransactionDto>
 {
@@ -38,7 +38,7 @@ public sealed class CreateTransactionHandler(
                                    $"Currency '{account.CurrencyCode}' for account '{account.Id}' was not found.");
 
         Transaction transaction = Transaction.Create(
-            userContext.UserId,
+            budgetContext.BudgetId,
             command.AccountId,
             command.Amount,
             command.Date,

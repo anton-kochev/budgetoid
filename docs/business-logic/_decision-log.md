@@ -8,6 +8,47 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-07-25 — Budget replaces the user as the unit of tenancy
+
+**Context:** A person can preside over more than one pool of money — funds for an event, a club, or a
+relative are under their control without being part of their own life — and forcing those pools into
+one total falsifies the single picture rather than simplifying it. Ownership was per user, which made
+that impossible to express. The envelope-budgeting layer about to be built (allocations, carryover,
+month view, base currency) hangs off whatever the unit of tenancy is, so it had to be settled before
+that layer exists; retrofitting tenancy underneath a finished envelope layer would be a far larger
+change.
+
+**Decision:** Put a **Budget between the user and everything else** — a user owns budgets, a budget
+owns accounts, category groups, categories, payees and transactions — because the single picture
+belongs to a coherent pool of money, not to a person. `UserId` is **dropped** from those five
+entities in favour of `BudgetId`, leaving `Budget.UserId` as the only owner link; name uniqueness and
+ordering re-scope to the budget; payees do not cross budgets. Isolation moves from `UserIsolation` to
+`BudgetIsolation` query filters reading an ambient `IBudgetContext` resolved once per request. The
+schema is **multi-budget-ready from day one** — no one-budget-per-user constraint at all; the unique
+index is `(user_id, name)`, which still makes provisioning race-safe and idempotent because the
+default budget's name is a constant, so two racers collide and the loser adopts the winner's row. The
+default budget is created **inside `EnsureUser`**, unconditionally on every authenticated request, so
+"an account exists ⇒ it has its budget" stays one idea and a partially provisioned user heals on the
+next sign-in. Shipped as a **single fresh initial migration** with no data migration, accepting the
+loss of existing development data.
+
+**Alternatives considered:** *Keep both `UserId` and `BudgetId`* — rejected: it creates an
+`entity.UserId == entity.Budget.UserId` invariant enforceable only by composite foreign keys on all
+five tables, protecting a column no query reads. *A unique index on `user_id` alone as a temporary
+one-budget-per-user guard* — rejected: a constraint that a later release must remember to drop is a
+trap, and the one-per-user property is better pinned by tests over the only code path that inserts a
+budget. *A separate provisioning handler for the budget* — rejected: it opens a window where a user
+exists with no budget, after which every filtered query throws. *A lazy budget lookup inside the query
+filter* — rejected: a synchronous property getter issuing a query on the very context being queried.
+*A budget identifier in routes* — rejected: it turns tenancy into a client-supplied, tamperable
+parameter and makes the concept visible to a user who has only one budget.
+
+**Affected areas:** [budgets.md](budgets.md) (now the canonical home of the tenancy invariant),
+[users-and-ownership.md](users-and-ownership.md), [accounts.md](accounts.md),
+[categories.md](categories.md), [transactions.md](transactions.md), [currencies.md](currencies.md).
+
+---
+
 ## 2026-07-14 — Replace flat Groups with required Category Group → Category hierarchy
 
 **Context:** The original `Group` entity was actually a flat transaction category. It could not

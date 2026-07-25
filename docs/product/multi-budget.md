@@ -1,10 +1,13 @@
 # Multiple Budgets — Design Research
 
-Design exploration for letting one user own several budgets, each a complete envelope world of
-its own. Nothing here is implemented; this is the agreed design direction, written before the
-budget (envelope) layer exists. When that layer is built, these rules migrate into
-`docs/business-logic/` as current-state documentation; until then this file is the canonical
-record of the design and its rationale. It amends one statement in
+Design rationale for letting one user own several budgets, each a complete envelope world of its own.
+
+The structural half of this design is in place: a Budget sits between the user and everything else,
+and its current-state rules live in
+[docs/business-logic/budgets.md](../business-logic/budgets.md) — that file, not this one, is where
+the tenancy invariant is defined. What remains deferred is the multi-budget **surface**: creating a
+second budget, the switcher, an explicit budget identifier, renaming, closing. This file is the
+reasoning behind that surface and the principles it must honour. It amends one statement in
 [multi-currency.md](multi-currency.md): the base currency belongs to a budget, not to a user.
 
 ## The problem
@@ -89,11 +92,10 @@ not minutes.
 
 ## Sequencing
 
-The structural change — the Budget entity, budget-scoped ownership, default-budget
-provisioning — lands together with the envelope layer, not before it as a standalone refactor
-and not after it as a retrofit. The envelope layer is where the base currency gets wired in;
-building it user-scoped and re-scoping later would be the expensive mistake this document
-exists to prevent. The multi-budget surface (creating, switching) ships after the core
+The structural change — the Budget entity, budget-scoped ownership, default-budget provisioning —
+comes before the envelope layer, never after it as a retrofit. The envelope layer is where the base
+currency gets wired in; building it user-scoped and re-scoping later would be the expensive mistake
+this document exists to prevent. The multi-budget surface (creating, switching) ships after the core
 envelope loop is solid: structure first, feature when it has something to offer.
 
 ## Deliberately deferred

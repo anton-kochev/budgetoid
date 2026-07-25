@@ -1,6 +1,6 @@
+using Domain.Budgets;
 using Domain.Categories;
 using Domain.CategoryGroups;
-using Domain.Users;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -15,7 +15,7 @@ public sealed class CategoryConfiguration : IEntityTypeConfiguration<Category>
         builder.HasKey(category => category.Id);
 
         builder.Property(category => category.Id).HasColumnName("id");
-        builder.Property(category => category.UserId).HasColumnName("user_id").IsRequired();
+        builder.Property(category => category.BudgetId).HasColumnName("budget_id").IsRequired();
         builder.Property(category => category.CategoryGroupId)
             .HasColumnName("category_group_id")
             .IsRequired();
@@ -33,18 +33,22 @@ public sealed class CategoryConfiguration : IEntityTypeConfiguration<Category>
             .HasColumnType("timestamp with time zone")
             .IsRequired();
 
-        builder.HasIndex(category => new { category.UserId, category.Name }).IsUnique();
+        builder.HasIndex(category => new { category.BudgetId, category.Name }).IsUnique();
+        // Deliberately group-scoped, not budget-scoped: groups are themselves budget-scoped, so
+        // per-budget ordering holds transitively.
         builder.HasIndex(category => new { category.CategoryGroupId, category.Position });
 
-        builder.HasOne<User>()
+        builder.HasOne<Budget>()
             .WithMany()
-            .HasForeignKey(category => category.UserId)
+            .HasForeignKey(category => category.BudgetId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        // Composite on purpose: a category can only join a group in its own budget, and no query
+        // filter can enforce that on a write.
         builder.HasOne<CategoryGroup>()
             .WithMany()
-            .HasForeignKey(category => new { category.CategoryGroupId, category.UserId })
-            .HasPrincipalKey(categoryGroup => new { categoryGroup.Id, categoryGroup.UserId })
+            .HasForeignKey(category => new { category.CategoryGroupId, category.BudgetId })
+            .HasPrincipalKey(categoryGroup => new { categoryGroup.Id, categoryGroup.BudgetId })
             .OnDelete(DeleteBehavior.Restrict);
     }
 }

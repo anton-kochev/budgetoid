@@ -1,7 +1,9 @@
+using Domain.Accounts;
 using Domain.Budgets;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Currencies;
+using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
 using Infrastructure.Persistence;
@@ -14,7 +16,7 @@ namespace IntegrationTests;
 public sealed class BudgetoidDbContextConstructionTests
 {
     [Test]
-    public async Task Model_CanBeBuiltWithoutAResolvedCurrentUser()
+    public async Task Model_CanBeBuiltWithoutAResolvedBudget()
     {
         await using BudgetoidDbContext db = CreateDbContext();
 
@@ -23,21 +25,39 @@ public sealed class BudgetoidDbContextConstructionTests
     }
 
     [Test]
-    public async Task Model_ConfiguresTransactionUserForeignKey()
+    [Arguments(typeof(Account))]
+    [Arguments(typeof(CategoryGroup))]
+    [Arguments(typeof(Category))]
+    [Arguments(typeof(Payee))]
+    [Arguments(typeof(Transaction))]
+    public async Task Model_ScopesOwnedEntitiesToTheirBudget(Type entityClrType)
     {
+        // Arrange
         await using BudgetoidDbContext db = CreateDbContext();
 
-        IEntityType transactionEntity = db.Model.FindEntityType(typeof(Transaction))!;
-        IForeignKey? userForeignKey = transactionEntity
+        // Act
+        IEntityType entity = db.Model.FindEntityType(entityClrType)!;
+        IForeignKey budgetForeignKey = entity
             .GetForeignKeys()
-            .SingleOrDefault(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(User));
+            .Single(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(Budget)
+                                  && foreignKey.Properties.Count == 1);
+        IProperty? survivingUserId = entity.FindProperty(RemovedOwnerPropertyName);
 
-        await Assert.That(userForeignKey).IsNotNull();
-        await Assert.That(userForeignKey!.Properties.Single().Name).IsEqualTo(nameof(Transaction.UserId));
+        // Assert
+        await Assert.That(budgetForeignKey.Properties.Single().Name).IsEqualTo("BudgetId");
+        await Assert.That(budgetForeignKey.IsRequired).IsTrue();
+        await Assert.That(budgetForeignKey.DeleteBehavior).IsEqualTo(DeleteBehavior.Cascade);
+
+        // The owner link is dropped, not duplicated: a surviving UserId would be a second source of
+        // truth for tenancy that no query reads, and the one state where a cross-tenant bug can hide.
+        await Assert.That(survivingUserId).IsNull();
+        await Assert.That(entity.GetForeignKeys()
+                .Any(foreignKey => foreignKey.PrincipalEntityType.ClrType == typeof(User)))
+            .IsFalse();
     }
 
     [Test]
-    public async Task Model_RequiresCategoryToReferenceCategoryGroupOwnedBySameUser()
+    public async Task Model_RequiresCategoryToReferenceACategoryGroupInTheSameBudget()
     {
         // Arrange
         await using BudgetoidDbContext db = CreateDbContext();
@@ -50,9 +70,78 @@ public sealed class BudgetoidDbContextConstructionTests
 
         // Assert
         await Assert.That(categoryGroupForeignKey.Properties.Select(property => property.Name).ToArray())
-            .IsEquivalentTo(new[] { nameof(Category.CategoryGroupId), nameof(Category.UserId) });
+            .IsEquivalentTo(new[] { nameof(Category.CategoryGroupId), "BudgetId" });
+        await Assert.That(categoryGroupForeignKey.PrincipalKey.Properties
+                .Select(property => property.Name).ToArray())
+            .IsEquivalentTo(new[] { nameof(CategoryGroup.Id), "BudgetId" });
         await Assert.That(categoryGroupForeignKey.IsRequired).IsTrue();
         await Assert.That(categoryGroupForeignKey.DeleteBehavior).IsEqualTo(DeleteBehavior.Restrict);
+    }
+
+    [Test]
+    [Arguments(typeof(Account))]
+    [Arguments(typeof(CategoryGroup))]
+    [Arguments(typeof(Category))]
+    [Arguments(typeof(Payee))]
+    public async Task Model_ScopesNameUniquenessToTheBudget(Type entityClrType)
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act
+        IEntityType entity = db.Model.FindEntityType(entityClrType)!;
+        IIndex budgetNameIndex = entity
+            .GetIndexes()
+            .Single(index => index.Properties.Select(property => property.Name)
+                .SequenceEqual(new[] { "BudgetId", "Name" }));
+        // Collation is not carried by the runtime read-optimized model, only by the design-time one.
+        IProperty designTimeNameProperty = db
+            .GetService<IDesignTimeModel>()
+            .Model
+            .FindEntityType(entityClrType)!
+            .FindProperty("Name")!;
+
+        // Assert
+        await Assert.That(budgetNameIndex.IsUnique).IsTrue();
+        await Assert.That(designTimeNameProperty.GetCollation()).IsEqualTo("case_insensitive");
+    }
+
+    [Test]
+    public async Task Model_OrdersCategoryGroupsPerBudgetAndCategoriesPerGroup()
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act
+        IEntityType categoryGroupEntity = db.Model.FindEntityType(typeof(CategoryGroup))!;
+        IEntityType categoryEntity = db.Model.FindEntityType(typeof(Category))!;
+
+        bool groupsOrderPerBudget = categoryGroupEntity.GetIndexes().Any(index =>
+            index.Properties.Select(property => property.Name)
+                .SequenceEqual(new[] { "BudgetId", nameof(CategoryGroup.Position) }));
+        // Categories stay group-scoped: groups are budget-scoped, so per-budget ordering holds
+        // transitively and this index deliberately does not mention the budget.
+        bool categoriesOrderPerGroup = categoryEntity.GetIndexes().Any(index =>
+            index.Properties.Select(property => property.Name)
+                .SequenceEqual(new[] { nameof(Category.CategoryGroupId), nameof(Category.Position) }));
+
+        // Assert
+        await Assert.That(groupsOrderPerBudget).IsTrue();
+        await Assert.That(categoriesOrderPerGroup).IsTrue();
+    }
+
+    [Test]
+    public async Task Migrations_ContainASingleFreshBaseline()
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act
+        IReadOnlyList<string> migrations = db.Database.GetMigrations().ToList();
+
+        // Assert — CON-002: dev data is dropped, so the schema ships as one regenerated
+        // InitialCreate. A second migration here means the baseline was diffed, not regenerated.
+        await Assert.That(migrations.Count).IsEqualTo(1);
     }
 
     [Test]
@@ -153,12 +242,20 @@ public sealed class BudgetoidDbContextConstructionTests
         await Assert.That(seeds.Any(seed => (string)seed[nameof(Currency.Code)]! == "USD")).IsTrue();
     }
 
+    /// <summary>
+    /// The property name the re-scope removes. Spelled as a string on purpose: <c>nameof</c> would
+    /// stop compiling once the property is gone, and the point of the assertion is that it is gone.
+    /// </summary>
+    private const string RemovedOwnerPropertyName = "UserId";
+
     private static BudgetoidDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<BudgetoidDbContext>()
             .UseNpgsql("Host=localhost;Port=5432;Database=budgetoid;Username=postgres;Password=postgres")
             .Options;
 
+        // The IBudgetContext parameter stays optional so the model can be built without a resolved
+        // tenant — design-time tooling, seeding, and these tests all rely on that.
         return new BudgetoidDbContext(options);
     }
 }

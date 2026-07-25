@@ -16,20 +16,20 @@ public sealed class CategoryRepositoryTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
-        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
         DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
         Guid categoryGroupId;
-        await using (BudgetoidDbContext db = new(options, new TestUserContext(userId)))
+        await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId)))
         {
             CategoryGroup categoryGroup = CategoryGroup.Create(
-                userId,
+                budgetId,
                 "Essentials",
                 null,
                 0,
                 UtcNow());
             db.CategoryGroups.Add(categoryGroup);
             db.Categories.Add(Category.Create(
-                userId,
+                budgetId,
                 categoryGroup.Id,
                 "Groceries",
                 null,
@@ -40,7 +40,7 @@ public sealed class CategoryRepositoryTests
         }
 
         // Act
-        await using BudgetoidDbContext deleteDb = new(options, new TestUserContext(userId));
+        await using BudgetoidDbContext deleteDb = new(options, new TestBudgetContext(budgetId));
         var repository = new CategoryGroupRepository(deleteDb);
         CategoryGroup categoryGroupToDelete = (await repository.GetByIdAsync(categoryGroupId))!;
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
@@ -55,26 +55,26 @@ public sealed class CategoryRepositoryTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
-        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
         DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
         Guid categoryId;
-        await using (BudgetoidDbContext db = new(options, new TestUserContext(userId)))
+        await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId)))
         {
             Account account = Account.Create(
-                userId,
+                budgetId,
                 "Checking",
                 AccountType.Checking,
                 0m,
                 "USD",
                 UtcNow());
             CategoryGroup categoryGroup = CategoryGroup.Create(
-                userId,
+                budgetId,
                 "Essentials",
                 null,
                 0,
                 UtcNow());
             Category category = Category.Create(
-                userId,
+                budgetId,
                 categoryGroup.Id,
                 "Groceries",
                 null,
@@ -83,7 +83,7 @@ public sealed class CategoryRepositoryTests
             db.AddRange(account, categoryGroup, category);
             await db.SaveChangesAsync();
             Transaction transaction = Transaction.Create(
-                userId,
+                budgetId,
                 account.Id,
                 -10m,
                 new DateOnly(2026, 7, 14),
@@ -96,7 +96,7 @@ public sealed class CategoryRepositoryTests
         }
 
         // Act
-        await using BudgetoidDbContext deleteDb = new(options, new TestUserContext(userId));
+        await using BudgetoidDbContext deleteDb = new(options, new TestBudgetContext(budgetId));
         var repository = new CategoryRepository(deleteDb);
         Category categoryToDelete = (await repository.GetByIdAsync(categoryId))!;
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>

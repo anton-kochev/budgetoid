@@ -12,16 +12,15 @@
 
 ## Purpose
 
-This area covers **who a user is** and the single most important rule in the whole system:
-**a user can only ever see or change their own data.** Users are not registered through a form —
-they are provisioned transparently from their Google sign-in on their first authenticated request.
-The ownership invariant defined here is cross-cutting: every rule in
-[accounts.md](accounts.md), [transactions.md](transactions.md), and
-[categories.md](categories.md) assumes it, and none of those areas re-document it.
+This area covers **who a user is** and how that identity comes to exist. Users are not registered
+through a form — they are provisioned transparently from their Google sign-in on their first
+authenticated request.
 
-Provisioning also gives the user their default **Budget** — the pool of money their picture hangs
-off. The budget itself is documented in [budgets.md](budgets.md); this area covers only the identity
-and the provisioning step that creates it.
+A user owns **Budgets** and nothing else. Everything else — accounts, category groups, categories,
+payees, transactions — belongs to a budget, so **the budget, not the user, is the unit of tenancy.**
+That invariant and the isolation rules that implement it live in [budgets.md](budgets.md); this area
+does not duplicate them. What it does own is the identity, its claims, and the provisioning step that
+resolves a Google principal into an internal user together with the ambient budget for the request.
 
 ## Key Entities
 
@@ -33,11 +32,12 @@ and the provisioning step that creates it.
 
 ```mermaid
 erDiagram
-    USER ||--o{ ACCOUNT : owns
-    USER ||--o{ CATEGORY_GROUP : owns
-    USER ||--o{ CATEGORY : owns
-    USER ||--o{ PAYEE : owns
-    USER ||--o{ TRANSACTION : owns
+    USER ||--o{ BUDGET : owns
+    BUDGET ||--o{ ACCOUNT : owns
+    BUDGET ||--o{ CATEGORY_GROUP : owns
+    BUDGET ||--o{ CATEGORY : owns
+    BUDGET ||--o{ PAYEE : owns
+    BUDGET ||--o{ TRANSACTION : owns
     USER {
         guid Id
         string GoogleSubject
@@ -51,21 +51,21 @@ erDiagram
 
 ### MUST
 
-- **Every user-owned entity is scoped to exactly one user, on both read and write.**
-  - **Why**: This is a multi-tenant app with a single shared database. If isolation leaked, one
-    person could read or modify another person's finances — the worst possible failure for a money
-    app.
-  - **Enforced in**: EF Core global query filters named `UserIsolation` in
-    `BudgetoidApp/Infrastructure/Persistence/BudgetoidDbContext.cs` (applied to `Transaction`,
-    `Account`, `Payee`, `CategoryGroup`, and `Category`), plus `UserId` stamping at creation from
-    `IUserContext.UserId`. Category membership has an additional same-owner composite foreign key.
+- **Data isolation is scoped to a budget, not to a user.** The MUST/MUST NOT rules that define it —
+  every account, category group, category, payee and transaction belonging to exactly one budget,
+  per-budget name uniqueness and ordering, no response combining budgets — are documented once, in
+  [budgets.md](budgets.md#constraints). A user reaches their data only through the budget they own, so
+  "a user can only see their own data" is a consequence of budget isolation rather than a separate
+  rule.
 
-- **A request must resolve to a real internal user before it can touch data.**
-  - **Why**: Handlers stamp and filter by `IUserContext.UserId`; without a resolved user there is
-    no tenant to scope to.
-  - **Enforced in**: `BudgetoidApp/Api/Infrastructure/UserProvisioningMiddleware.cs` populates
-    `CurrentUser.UserId`; `HttpContextUserContext` throws
-    `"The current application user has not been resolved."` if it is still null.
+- **A request must resolve to a real internal user and an ambient budget before it can touch data.**
+  - **Why**: Handlers stamp and filter by `IBudgetContext.BudgetId`; without a resolved budget there
+    is no tenant to scope to, and a default value would silently point at nothing.
+  - **Enforced in**: `BudgetoidApp/Api/Infrastructure/UserProvisioningMiddleware.cs` populates both
+    `CurrentUser.UserId` and `CurrentUser.BudgetId`; `HttpContextBudgetContext` throws
+    `"The current application user has not been resolved."` if the budget id is still null.
+    `CurrentUser.UserId` exists because the middleware needs a request-scoped home for the identity it
+    just provisioned — no query filters by it.
 
 - **An authenticated principal must carry `sub` and `email` claims.**
   - **Why**: `sub` is the stable identity key we upsert on; `email` is a required profile field.
@@ -75,12 +75,9 @@ erDiagram
 
 ### MUST NOT
 
-- **A user MUST NOT be able to load, update, or delete another user's account, transaction, payee,
-  Category Group, or Category.**
-  - **Why**: Same as the isolation constraint above — cross-tenant access is a security breach.
-  - **Enforced in**: the `UserIsolation` query filter makes another user's row resolve to `null`,
-    so `GetByIdAsync` returns nothing and update/delete handlers throw `NotFoundException` (404) —
-    the caller cannot even distinguish "not yours" from "does not exist".
+- **A request MUST NOT reach data outside its ambient budget.** Stated and enforced in
+  [budgets.md](budgets.md#must-not) — another budget's row resolves to `null` through the
+  `BudgetIsolation` filter and surfaces as a 404, never a 403.
 
 ## Business Rules & Invariants
 
@@ -156,10 +153,12 @@ stateDiagram-v2
 - **Google OAuth / OIDC**: identity comes from the Google ID token. The API trusts the `sub`,
   `email`, and optional `name` claims. The frontend attaches the **ID token** (not the access
   token) as the `Authorization: Bearer` header on API calls (see the client `AuthInterceptor`).
-- **All other domain areas**: Accounts, Transactions, Payees, Category Groups, and Categories depend
-  on the ownership invariant defined here — they stamp `UserId` on create and are filtered by it on
-  read. Category-to-Category Group membership also carries `UserId` through a composite FK so a
-  Category cannot be attached to another user's group even through direct database writes.
+- **[Budgets](budgets.md)**: provisioning resolves the identity *and* the ambient budget in one step.
+  Everything a user can see hangs off that budget, so all tenancy rules — stamping, filtering, name
+  uniqueness, the 404 behaviour — are documented there.
+- **All other domain areas**: Accounts, Transactions, Payees, Category Groups, and Categories are
+  budget-scoped, not user-scoped. They carry no `UserId` at all; the only owner link in the schema is
+  `Budget.UserId`.
 
 ## Edge Cases & Known Gotchas
 
@@ -167,9 +166,9 @@ stateDiagram-v2
   miss on lookup and race to insert. The loser of the unique-index race catches the failure and
   re-reads by `sub` rather than erroring. Do not "simplify" `EnsureUserHandler` by dropping the
   re-read — it is what makes provisioning safe under concurrency.
-- **`IUserContext` is optional on the DbContext**: design-time/migration/seeding paths construct the
-  context without a resolved user. That's intentional — those paths never query the isolation-filtered
-  entities. Application request paths always have a resolved user.
-- **404, not 403, for another user's row**: because isolation is a query filter, "belongs to someone
-  else" is indistinguishable from "doesn't exist". This is deliberate (it avoids leaking the
-  existence of other users' records), so don't add a separate 403 path.
+- **`IBudgetContext` is optional on the DbContext**: design-time/migration/seeding paths construct the
+  context without a resolved budget. That's intentional — those paths never query the
+  isolation-filtered entities. Application request paths always have a resolved budget.
+- **404, not 403, for a row in another budget**: because isolation is a query filter, "belongs to
+  another budget" is indistinguishable from "doesn't exist". This is deliberate (it avoids leaking the
+  existence of other tenants' records), so don't add a separate 403 path.

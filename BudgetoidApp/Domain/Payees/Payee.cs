@@ -9,18 +9,18 @@ public sealed class Payee
     }
 
     public Guid Id { get; private set; }
-    public Guid UserId { get; private set; }
+    public Guid BudgetId { get; private set; }
     public string Name { get; private set; } = string.Empty;
     public DateTime CreatedAtUtc { get; private set; }
 
-    public static Payee Create(Guid userId, string name, DateTime createdAtUtc)
+    public static Payee Create(Guid budgetId, string name, DateTime createdAtUtc)
     {
         var errors = new Dictionary<string, string[]>();
         string trimmedName = name?.Trim() ?? string.Empty;
 
-        if (userId == Guid.Empty)
+        if (budgetId == Guid.Empty)
         {
-            errors[nameof(UserId)] = ["User id is required."];
+            errors[nameof(BudgetId)] = ["Budget id is required."];
         }
 
         if (string.IsNullOrWhiteSpace(trimmedName))
@@ -40,7 +40,7 @@ public sealed class Payee
         return new Payee
         {
             Id = Guid.CreateVersion7(),
-            UserId = userId,
+            BudgetId = budgetId,
             Name = trimmedName,
             CreatedAtUtc = createdAtUtc,
         };
