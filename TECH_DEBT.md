@@ -24,6 +24,12 @@ Enforced today:
   forbids scoped constructor injection. These global filters are the **sole** read-side guard —
   repositories deliberately do *not* re-filter by budget (`ITransactionRepository.GetAllAsync`),
   so the escape hatches below are especially load-bearing.
+- **Write-side schema guard.** The filter enforces nothing on a write, so every reference between
+  two budget-owned rows is a composite foreign key carrying `budget_id` — `categories →
+  category_groups` and `transactions → accounts | categories | payees`, each against an
+  `(Id, BudgetId)` alternate key. PostgreSQL rejects a cross-budget reference whatever code path
+  wrote it. This proves internal consistency only; *which* budget a write lands in is still the
+  filter's and `IBudgetContext`'s job alone.
 - **`Budget` itself has no filter.** The provisioning lookup runs before a budget id exists, so
   every query over `Budgets` must scope by owner explicitly (`FindFirstForUserAsync`).
 - **Immutable ownership.** `Transaction.BudgetId` has no public setter and is set only via the

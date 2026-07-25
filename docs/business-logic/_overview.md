@@ -97,7 +97,6 @@ references are additionally constrained by composite foreign keys to a row in th
 - [Transactions](transactions.md) — transaction rules, Payees, and optional categorization.
 - [Categories and Category Groups](categories.md) — hierarchy, uniqueness, ordering, movement, and
   delete guards.
-- [Groups (Legacy Terminology)](groups.md) — pointer retained for historical links.
 - [Currencies](currencies.md) — global ISO-4217 reference data.
 
 Non-obvious decisions are recorded in [_decision-log.md](_decision-log.md).

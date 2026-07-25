@@ -69,9 +69,7 @@ erDiagram
     product does not have.
   - **Enforced in**: `Budget.UserId` is required (`Budget.Create` rejects `Guid.Empty`), and
     `BudgetConfiguration` maps it to a required `user_id` column with a foreign key to `users.id` on
-    `Cascade`, so a budget can never outlive its owner as an unreachable row. That cascade reaches a
-    budget only as far as the budget itself is deletable — a budget holding transactions refuses the
-    delete (see MUST NOT below), and the refusal propagates back up.
+    `Cascade`, so a budget can never outlive its owner as an unreachable row.
 
 - **Budget names are unique per owner, case-insensitively.**
   - **Why**: The name is the only thing that will distinguish one budget from another when a user
@@ -181,11 +179,11 @@ erDiagram
     mistake, and taking its accounts, category groups, categories and payees out with it is what lets
     a user undo that mistake instead of carrying the wrong budget forever.
   - **Enforced in**: `TransactionConfiguration` maps `transactions.budget_id → budgets.id` on
-    `Restrict`, so PostgreSQL refuses the delete whatever code path attempted it.
-    `IBudgetRepository.HasTransactionsAsync`, implemented in `BudgetRepository` as a filtered
-    `Transactions.AnyAsync`, is the application-side seam for asking the question before attempting a
-    delete; it takes no budget id because the `BudgetIsolation` filter already scopes it to the
-    ambient budget.
+    `Restrict`, so PostgreSQL refuses the delete whatever code path attempted it. Asking the question
+    in application code is `IBudgetRepository.HasTransactionsAsync`, implemented in `BudgetRepository`
+    as a filtered `Transactions.AnyAsync`; it takes no budget id because the `BudgetIsolation` filter
+    already scopes it to the ambient budget, and tenancy as a caller-supplied argument would have no
+    ownership check to pair with it.
 
 - **A route MUST NOT carry a budget identifier.**
   - **Why**: The budget is a singular ambient resource, resolved server-side from the authenticated
@@ -358,9 +356,9 @@ stateDiagram-v2
   one.** `(account_id, budget_id)`, `(category_id, budget_id)` and `(payee_id, budget_id)` guarantee
   that a transaction and every row it references agree on one budget id; they say nothing about
   *which* budget id that is. Nothing stops a future importer or bulk endpoint from stamping the wrong
-  `budget_id` across a consistently cross-referenced set — every constraint would accept it. That
-  residual risk is addressed by ambient-budget resolution (see Business Rules & Invariants above),
-  not by these constraints, which remains the whole protection for *whose* budget a write lands in.
+  `budget_id` across a consistently cross-referenced set — every constraint would accept it. These
+  constraints do not address that risk; ambient-budget resolution (see Business Rules & Invariants
+  above) does, and it remains the whole protection for *whose* budget a write lands in.
 
 - **The delete policy across the five owned tables is deliberately not uniform.** `accounts`,
   `category_groups`, `categories` and `payees` cascade from `budgets.id`; `transactions` restricts.
@@ -370,20 +368,21 @@ stateDiagram-v2
   empty budget permanently undeletable; making all five `Cascade` would put months of financial
   history one unguarded delete away. Do not "normalize" the five into one policy.
 
-- **The refusal is guaranteed, but which constraint reports it is not.** Only a foreign key whose
-  dependent side is `transactions` can raise — the four `Cascade` keys delete rows, they never
-  refuse. So a budget holding transactions fails to delete in one of two ways, and PostgreSQL fires
-  referential actions in foreign-key creation order, which decides which: either
-  `FK_transactions_budgets_budget_id` refuses directly, or the `accounts`, `categories` or `payees`
-  cascade runs first and one of the composite `transactions → accounts | categories | payees`
-  foreign keys — all `Restrict` — refuses instead. The delete always fails; the SQLSTATE and
-  constraint name in the error are not a stable contract. That is why `IBudgetRepository.HasTransactionsAsync` exists as an application-side precheck seam:
-  any delete path that needs to explain the refusal to a user must ask first, the way
-  `DeleteAccountHandler` already does with `IAccountRepository.HasTransactionsAsync`, rather than
-  catching the database error and translating it. `HasTransactionsAsync` takes no budget id on
-  purpose — tenancy comes from the `BudgetIsolation` filter via `IBudgetContext`, which is the only
-  authorization mechanism in the system, so a caller-supplied budget id would be a tenancy parameter
-  with no ownership check to pair with it.
+- **The refusal is guaranteed, but which constraint reports it is not.** What makes `transactions`
+  able to refuse is not that its foreign keys are `Restrict` — `categories → category_groups` is
+  `Restrict` too — but that its rows *survive* the budget cascade. Every other owned table is emptied
+  by the same statement that deletes the budget, so its `Restrict` references have nothing left to
+  dangle — `BudgetRepositoryTests.Database_AllowsDeletingABudgetWithStructureButNoTransactions` is
+  what pins that. Transaction rows stay, and then any principal they point at disappearing is a
+  violation. So
+  a budget holding transactions fails in one of two ways, and PostgreSQL fires referential actions in
+  foreign-key creation order, which decides which: either `FK_transactions_budgets_budget_id` refuses
+  directly, or the `accounts`, `categories` or `payees` cascade runs first and one of the composite
+  `transactions → accounts | categories | payees` foreign keys refuses instead. The delete always
+  fails; the constraint name in the error is not a stable contract, so a delete path that has to
+  explain the refusal must ask `HasTransactionsAsync` first — the way `DeleteAccountHandler` already
+  prechecks with `IAccountRepository.HasTransactionsAsync` — rather than translating the database
+  error.
 
 - **Resolving the ambient budget costs one extra indexed read per authenticated request.** The
   provisioning lookup hits the leading column of an index that already exists, and it runs on every

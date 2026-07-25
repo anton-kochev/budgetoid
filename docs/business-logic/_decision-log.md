@@ -25,7 +25,11 @@ never get rid of. Add `IBudgetRepository.HasTransactionsAsync` — implemented i
 a `BudgetIsolation`-filtered `Transactions.AnyAsync` — as the application-side seam for asking the
 question. It takes **no budget id**: tenancy comes from the query filter via `IBudgetContext`, the
 system's only authorization mechanism, so a caller-supplied budget id would be a tenancy parameter
-with no ownership check to pair with it.
+with no ownership check to pair with it. Accepting that the delete policy is no longer uniform across
+the five owned tables — the asymmetry has to be explained rather than inferred, and a future reader
+may take it for an oversight — and that, because PostgreSQL fires referential actions in foreign-key
+creation order, the refusal is guaranteed while *which* constraint reports it is not, so any future
+delete feature needs an application precheck to explain itself rather than an error translation.
 
 **Alternatives considered:** *Make all five references `Restrict`* — rejected: an empty, mistakenly
 created budget would then be undeletable, so undoing a typo would require building an archive feature
@@ -34,12 +38,6 @@ unguarded write path silently destroys financial history, and the database is th
 still holds when application code is wrong. *Give `HasTransactionsAsync` a `budgetId` parameter and
 `IgnoreQueryFilters()`* — rejected: that token is forbidden on this DbContext and a CI guard for it
 is planned, and the parameter would reintroduce tenancy as an argument no ownership check validates.
-
-**Accepted tradeoff:** the delete policy is no longer uniform across the five owned tables, so the
-asymmetry now has to be explained rather than inferred, and a future reader may read it as an
-oversight. And because PostgreSQL fires referential actions in foreign-key creation order, the
-refusal is guaranteed but *which* constraint reports it is not — so any future delete feature needs
-an application precheck to explain itself, not a SQLSTATE translation.
 
 **Affected areas:** [budgets.md](budgets.md), [transactions.md](transactions.md). This partially
 reverses "Budget replaces the user as the unit of tenancy" below, which established uniform `Cascade`
@@ -62,6 +60,10 @@ whatever code path wrote the row. Optionality survives free: a multi-column chec
 when any of its columns is NULL (MATCH SIMPLE). The payee reference takes `Restrict`, making **a
 referenced payee undeletable** — the guard accounts and categories already have, forcing an explicit
 decision about historical rows instead of silently erasing the counterparty from past transactions.
+Accepting that the three alternate keys create `UNIQUE (id, budget_id)` indexes redundant with each
+primary key: PostgreSQL requires a unique constraint on a foreign key's referenced columns, and
+promoting the primary key to `(id, budget_id)` would break every single-column foreign key and every
+by-id lookup, so the redundancy is unavoidable — already accepted once for `category_groups`.
 
 **Alternatives considered:** *Leave the boundary to application code* — rejected: every future write
 path that bypasses the filtered repositories loses it silently, with no failure signal. *Keep SET
@@ -71,11 +73,6 @@ SQL would need re-applying on every baseline regeneration while the model snapsh
 `SetNull`, leaving the tooling diffing against a lie. *Exclude payees to preserve SET NULL* —
 rejected: it leaves one of the three references unprotected for a delete path no application code
 exercises.
-
-**Accepted tradeoff:** the three alternate keys create `UNIQUE (id, budget_id)` indexes redundant with
-each primary key. Unavoidable: PostgreSQL requires a unique constraint on a foreign key's referenced
-columns, and promoting the primary key to `(id, budget_id)` would break every single-column foreign
-key and every by-id lookup. Already accepted for `category_groups`.
 
 **Affected areas:** [transactions.md](transactions.md), [budgets.md](budgets.md),
 [categories.md](categories.md).
@@ -184,7 +181,7 @@ mis-click could wipe months of records. Null the reference and keep the transact
 accounts (a transaction with no account has no currency/context); considered less harmful for groups
 but kept symmetric with accounts for consistency and predictability.
 
-**Affected areas:** [accounts.md](accounts.md), [groups.md](groups.md).
+**Affected areas:** [accounts.md](accounts.md), groups (now [categories.md](categories.md)).
 
 ---
 

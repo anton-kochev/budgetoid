@@ -77,10 +77,12 @@ erDiagram
   foreign key is `Restrict`: `ON DELETE SET NULL` cannot coexist with a composite key containing the
   non-nullable `budget_id` column, since PostgreSQL would try to write `budget_id = NULL`. Refusing
   is also the right product answer — it forces an explicit decision about historical rows instead of
-  silently erasing the counterparty from past transactions, matching the guard
-  [Accounts](accounts.md) and [Categories](categories.md) already have. No code path deletes a payee
-  (`IPayeeRepository` exposes only `GetOrCreateAsync`), so this is enforced purely in the database
-  and pinned by `PayeeIntegrationTests.DeletingAReferencedPayee_IsRefusedByTheDatabase`.
+  silently erasing the counterparty from past transactions, the same protection referenced
+  [Accounts](accounts.md) and [Categories](categories.md) have. The mechanism differs, though: those
+  two are prechecked by their delete handlers and report a validation error, while no code path
+  deletes a payee at all (`IPayeeRepository` exposes only `GetOrCreateAsync`), so this rule lives
+  purely in the database and is pinned by
+  `PayeeIntegrationTests.DeletingAReferencedPayee_IsRefusedByTheDatabase`.
 - **Categorization is selected by Category ID only.** Category Group is derived from the selected
   Category and is not copied onto the Transaction.
 - **Transaction responses are self-contained for display.** They include `CategoryId`,

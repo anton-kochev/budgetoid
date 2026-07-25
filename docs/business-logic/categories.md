@@ -106,10 +106,9 @@ erDiagram
 - **[Transactions](transactions.md)**: a transaction accepts an optional `CategoryId`. Reads derive
   current Category and Category Group names, so renaming or moving a Category changes historical
   transaction display immediately.
-- **[Budgets](budgets.md)**: both entities are stamped with and filtered by `BudgetId`; the composite
-  FK additionally protects same-budget membership in PostgreSQL, so the schema — not just the query
-  filter — enforces the boundary between a Category and its Category Group, as it does for a
-  Transaction's account, category and payee. Documented once, in
+- **[Budgets](budgets.md)**: both entities are stamped with and filtered by `BudgetId`, and a
+  composite foreign key keeps a Category and its Category Group in the same budget at the schema
+  level rather than only in the query filter. The rule and its reasoning are in
   [budgets.md](budgets.md#constraints).
 - **Angular client**: `/categories` manages both levels with drag-and-drop. Transaction entry groups
   Category options under Category Group headings.
