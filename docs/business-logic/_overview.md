@@ -20,6 +20,8 @@ constraints remain the race-safe backstop. The central ownership invariant is do
 | Term | Definition |
 |---|---|
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. |
+| **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the thing that owns the money picture. |
+| **Base currency** | The unit a Budget plans in, an optional ISO-4217 code on the Budget. |
 | **Account** | A user-owned place money lives, denominated in one Currency. |
 | **Account Type** | `Checking`, `Savings`, `Cash`, or `CreditCard`; a label, not a state machine. |
 | **Opening Balance** | The starting balance at account creation; no current/running balance is modeled yet. |
@@ -42,6 +44,7 @@ Unauthenticated visitors can only reach public login/welcome behavior.
 
 ```mermaid
 erDiagram
+    USER ||--o{ BUDGET : owns
     USER ||--o{ ACCOUNT : owns
     USER ||--o{ CATEGORY_GROUP : owns
     USER ||--o{ CATEGORY : owns
@@ -83,6 +86,7 @@ membership is additionally constrained to a Category Group with the same owner.
 ## Table of contents
 
 - [Users & Ownership](users-and-ownership.md) — identity, provisioning, and tenant isolation.
+- [Budgets](budgets.md) — the pool of money a user presides over, its default, and its base currency.
 - [Accounts](accounts.md) — account types, currency denomination, and delete guard.
 - [Transactions](transactions.md) — transaction rules, Payees, and optional categorization.
 - [Categories and Category Groups](categories.md) — hierarchy, uniqueness, ordering, movement, and

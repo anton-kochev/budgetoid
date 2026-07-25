@@ -5,6 +5,7 @@ using Application.Currencies;
 using Application.Payees;
 using Application.Transactions;
 using Domain.Accounts;
+using Domain.Budgets;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Payees;
@@ -26,6 +27,7 @@ public static class DependencyInjection
         services.AddScoped<ICategoryGroupRepository, CategoryGroupRepository>();
         services.AddScoped<ICategoryRepository, CategoryRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
+        services.AddScoped<IBudgetRepository, BudgetRepository>();
         services.AddScoped<ITransactionReadService, TransactionReadService>();
         services.AddScoped<IAccountReadService, AccountReadService>();
         services.AddScoped<ICurrencyReadService, CurrencyReadService>();

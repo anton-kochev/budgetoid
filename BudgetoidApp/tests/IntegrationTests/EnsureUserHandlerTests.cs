@@ -12,11 +12,12 @@ public sealed class EnsureUserHandlerTests
     {
         await using RepositoryTestHost host = await StartHostAsync();
         await using BudgetoidDbContext db = CreateDb(host.ConnectionString);
-        var handler = new EnsureUserHandler(new UserRepository(db), TimeProvider.System);
+        EnsureUserHandler handler = CreateHandler(db);
 
-        Guid userId = await handler.HandleAsync(new EnsureUserCommand("google-1", "person@example.com", "Person"));
+        ProvisionedUser provisioned = await handler.HandleAsync(
+            new EnsureUserCommand("google-1", "person@example.com", "Person"));
 
-        await Assert.That(userId).IsNotEqualTo(Guid.Empty);
+        await Assert.That(provisioned.UserId).IsNotEqualTo(Guid.Empty);
         await Assert.That(await db.Users.CountAsync()).IsEqualTo(1);
     }
 
@@ -25,12 +26,15 @@ public sealed class EnsureUserHandlerTests
     {
         await using RepositoryTestHost host = await StartHostAsync();
         await using BudgetoidDbContext db = CreateDb(host.ConnectionString);
-        var handler = new EnsureUserHandler(new UserRepository(db), TimeProvider.System);
-        Guid originalId = await handler.HandleAsync(new EnsureUserCommand("google-1", "old@example.com", "Old"));
+        EnsureUserHandler handler = CreateHandler(db);
+        ProvisionedUser original = await handler.HandleAsync(
+            new EnsureUserCommand("google-1", "old@example.com", "Old"));
 
-        Guid secondId = await handler.HandleAsync(new EnsureUserCommand("google-1", "new@example.com", "New"));
+        ProvisionedUser second = await handler.HandleAsync(
+            new EnsureUserCommand("google-1", "new@example.com", "New"));
 
-        await Assert.That(secondId).IsEqualTo(originalId);
+        await Assert.That(second.UserId).IsEqualTo(original.UserId);
+        await Assert.That(second.BudgetId).IsEqualTo(original.BudgetId);
         await Assert.That(await db.Users.CountAsync()).IsEqualTo(1);
         await Assert.That((await db.Users.SingleAsync()).Email.Value).IsEqualTo("new@example.com");
     }
@@ -40,17 +44,26 @@ public sealed class EnsureUserHandlerTests
     {
         await using RepositoryTestHost host = await StartHostAsync();
 
-        Guid[] ids = await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ =>
+        ProvisionedUser[] provisioned = await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ =>
         {
             await using BudgetoidDbContext db = CreateDb(host.ConnectionString);
-            var handler = new EnsureUserHandler(new UserRepository(db), TimeProvider.System);
+            EnsureUserHandler handler = CreateHandler(db);
             return await handler.HandleAsync(new EnsureUserCommand("google-1", "person@example.com", "Person"));
         }));
 
+        // The budgets assertions are not confirming a schema invariant — there is deliberately no
+        // one-budget-per-user constraint — they ARE the guard for FR-001 under concurrency.
         await using BudgetoidDbContext assertionDb = CreateDb(host.ConnectionString);
-        await Assert.That(ids.Distinct().Count()).IsEqualTo(1);
+        await Assert.That(provisioned.Select(result => result.UserId).Distinct().Count()).IsEqualTo(1);
+        await Assert.That(provisioned.Select(result => result.BudgetId).Distinct().Count()).IsEqualTo(1);
         await Assert.That(await assertionDb.Users.CountAsync()).IsEqualTo(1);
+        await Assert.That(await assertionDb.Budgets.CountAsync()).IsEqualTo(1);
     }
+
+    private static EnsureUserHandler CreateHandler(BudgetoidDbContext db) => new(
+        new UserRepository(db),
+        new BudgetRepository(db),
+        TimeProvider.System);
 
     private static BudgetoidDbContext CreateDb(string connectionString) => new(
         new DbContextOptionsBuilder<BudgetoidDbContext>()

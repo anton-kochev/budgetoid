@@ -1,5 +1,6 @@
 using Application.Abstractions;
 using Domain.Accounts;
+using Domain.Budgets;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Currencies;
@@ -14,6 +15,9 @@ public sealed class BudgetoidDbContext(
     DbContextOptions<BudgetoidDbContext> options,
     IUserContext? userContext = null) : DbContext(options)
 {
+    // Budget deliberately has no global query filter: the provisioning lookup runs before a budget
+    // id exists, so every query over this set must scope by owner explicitly.
+    public DbSet<Budget> Budgets => Set<Budget>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<Currency> Currencies => Set<Currency>();

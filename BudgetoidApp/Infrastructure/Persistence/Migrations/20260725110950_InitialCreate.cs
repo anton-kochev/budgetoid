@@ -75,6 +75,33 @@ namespace Infrastructure.Persistence.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "budgets",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
+                    base_currency_code = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: true),
+                    created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_budgets", x => x.id);
+                    table.ForeignKey(
+                        name: "FK_budgets_currencies_base_currency_code",
+                        column: x => x.base_currency_code,
+                        principalTable: "currencies",
+                        principalColumn: "code",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_budgets_users_user_id",
+                        column: x => x.user_id,
+                        principalTable: "users",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "category_groups",
                 columns: table => new
                 {
@@ -223,6 +250,17 @@ namespace Infrastructure.Persistence.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "IX_budgets_base_currency_code",
+                table: "budgets",
+                column: "base_currency_code");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_budgets_user_id_name",
+                table: "budgets",
+                columns: new[] { "user_id", "name" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_categories_category_group_id_position",
                 table: "categories",
                 columns: new[] { "category_group_id", "position" });
@@ -286,6 +324,9 @@ namespace Infrastructure.Persistence.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropTable(
+                name: "budgets");
+
             migrationBuilder.DropTable(
                 name: "transactions");
 

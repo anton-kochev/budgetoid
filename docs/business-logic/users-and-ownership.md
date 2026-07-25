@@ -19,6 +19,10 @@ The ownership invariant defined here is cross-cutting: every rule in
 [accounts.md](accounts.md), [transactions.md](transactions.md), and
 [categories.md](categories.md) assumes it, and none of those areas re-document it.
 
+Provisioning also gives the user their default **Budget** — the pool of money their picture hangs
+off. The budget itself is documented in [budgets.md](budgets.md); this area covers only the identity
+and the provisioning step that creates it.
+
 ## Key Entities
 
 - **User** — the account owner. Identified externally by `GoogleSubject` (the Google OAuth `sub`
@@ -80,13 +84,15 @@ erDiagram
 
 ## Business Rules & Invariants
 
-- **Rule**: A user is provisioned (or their profile synced) idempotently on sign-in, keyed on the
-  Google `sub`.
+- **Rule**: A user — and its default budget — is provisioned (or their profile synced) idempotently
+  on sign-in, keyed on the Google `sub`.
 - **Why**: There is no registration step. The first authenticated request must create the internal
   user; subsequent requests must find the same one and keep email/display name fresh, without ever
-  creating duplicates.
+  creating duplicates. The budget is part of the same step because "an account exists ⇒ it has its
+  budget" is one idea, and splitting it would open a window where a user exists with no budget.
 - **Enforced in**: `EnsureUserHandler` (`Application/Users/EnsureUser/EnsureUserHandler.cs`),
-  invoked by `UserProvisioningMiddleware`.
+  invoked by `UserProvisioningMiddleware`; it returns `ProvisionedUser(UserId, BudgetId)`. The budget
+  half of the rule is documented in [budgets.md](budgets.md).
 - **Example**: A returning user whose Google display name changed from "Sam" to "Samantha" — on her
   next request the handler finds her by `sub`, sees the display name differs, and updates the
   profile. If nothing changed, no write happens.
@@ -130,7 +136,8 @@ stateDiagram-v2
     Creating --> Resolved : TryAdd succeeded
     Creating --> RaceReread : TryAdd failed (concurrent insert)
     RaceReread --> Resolved : re-read by GoogleSubject
-    Resolved --> [*] : CurrentUser.UserId set, request proceeds
+    Resolved --> BudgetEnsured : find-or-create the user's default budget
+    BudgetEnsured --> [*] : CurrentUser.UserId and CurrentUser.BudgetId set, request proceeds
     Rejected --> [*] : 401 ProblemDetails
 ```
 
@@ -142,6 +149,7 @@ stateDiagram-v2
 | Existing → Resolved | Nothing changed | Dirty check skips the write |
 | Creating → Resolved | New user inserted | `User.Create` validates `sub`/email |
 | Creating → RaceReread → Resolved | Unique-insert race | Re-read by `sub`; throws if still absent |
+| Resolved → BudgetEnsured | Always, on every authenticated request | Find-or-create the default budget; heals a user left without one — see [budgets.md](budgets.md#workflows--state-transitions) |
 
 ## Integration Points
 
