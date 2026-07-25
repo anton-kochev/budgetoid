@@ -63,7 +63,8 @@ erDiagram
     is no tenant to scope to, and a default value would silently point at nothing.
   - **Enforced in**: `BudgetoidApp/Api/Infrastructure/UserProvisioningMiddleware.cs` populates both
     `CurrentUser.UserId` and `CurrentUser.BudgetId`; `HttpContextBudgetContext` throws
-    `"The current application user has not been resolved."` if the budget id is still null.
+    `"The ambient budget for the current request has not been resolved."` if the budget id is still
+    null.
     `CurrentUser.UserId` exists because the middleware needs a request-scoped home for the identity it
     just provisioned — no query filters by it.
 
