@@ -6,6 +6,7 @@
 - [Key Entities](#key-entities)
 - [Constraints](#constraints)
 - [Business Rules & Invariants](#business-rules--invariants)
+- [Workflows & State Transitions](#workflows--state-transitions)
 - [Integration Points](#integration-points)
 - [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
 
@@ -59,7 +60,7 @@ erDiagram
   case-insensitive and reliable.
 - **Enforced in**: `Currency.Create` (`NormalizeCode` + `ValidateOrThrow`) in `Domain/Currencies/Currency.cs`.
 - **Example**: `"usd"` normalizes to `"USD"`; `"US"` or `"US1"` is rejected.
-- **Source**: `[SOURCE: code-audit]`
+- **Source**: `[SOURCE: code-audit — unconfirmed]`
 
 ---
 
@@ -70,7 +71,14 @@ erDiagram
   real-world currency precision.
 - **Enforced in**: `Currency.Create` → `ValidateOrThrow`.
 - **Example**: `Code="JPY", Name="Japanese Yen", Symbol="¥", MinorUnit=0` is valid.
-- **Source**: `[SOURCE: code-audit]`
+- **Source**: `[SOURCE: code-audit — unconfirmed]`
+
+## Workflows & State Transitions
+
+A Currency has no lifecycle and no branching logic: rows arrive by migration seed and are only ever
+read. There is nothing to transition and no decision tree to document — the only conditional
+behaviour that touches currencies belongs to the entities that reference them, in
+[accounts.md](accounts.md#decision-trees) and [transactions.md](transactions.md#decision-trees).
 
 ## Integration Points
 

@@ -96,7 +96,7 @@ erDiagram
   profile. If nothing changed, no write happens.
 - **Counterexample**: Keying on `email` instead of `sub` would break if the user changed their
   Google email — they'd be provisioned as a brand-new user and lose access to all their data.
-- **Source**: `[SOURCE: code-audit]`
+- **Source**: `[SOURCE: code-audit — unconfirmed]`
 
 ---
 
@@ -106,7 +106,7 @@ erDiagram
 - **Enforced in**: `User.UpdateProfile(email, displayName)` sets email/name only;
   `Domain/Users/User.cs` has no setter path for `GoogleSubject` after `Create`.
 - **Example**: `UpdateProfile` re-runs `Email.Create`, so a blanked email would be rejected.
-- **Source**: `[SOURCE: code-audit]`
+- **Source**: `[SOURCE: code-audit — unconfirmed]`
 
 ---
 
@@ -115,7 +115,7 @@ erDiagram
   check would add friction without adding trust. Presence is still required because it's a
   displayed, required profile field.
 - **Enforced in**: `Domain/Users/Email.cs` (`Email.Create`).
-- **Source**: `[SOURCE: code-audit]`
+- **Source**: `[SOURCE: code-audit — unconfirmed]`
 
 ## Workflows & State Transitions
 
@@ -167,9 +167,6 @@ stateDiagram-v2
   miss on lookup and race to insert. The loser of the unique-index race catches the failure and
   re-reads by `sub` rather than erroring. Do not "simplify" `EnsureUserHandler` by dropping the
   re-read — it is what makes provisioning safe under concurrency.
-- **`IBudgetContext` is optional on the DbContext**: design-time/migration/seeding paths construct the
-  context without a resolved budget. That's intentional — those paths never query the
-  isolation-filtered entities. Application request paths always have a resolved budget.
-- **404, not 403, for a row in another budget**: because isolation is a query filter, "belongs to
-  another budget" is indistinguishable from "doesn't exist". This is deliberate (it avoids leaking the
-  existence of other tenants' records), so don't add a separate 403 path.
+- **A user row is written before its budget row, in a separate `SaveChanges`**: a user with no budget
+  is therefore a reachable state, and it is the unconditional find-or-create on the next request that
+  repairs it. The budget half of that story is in [budgets.md](budgets.md#edge-cases--known-gotchas).

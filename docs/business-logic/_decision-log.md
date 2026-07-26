@@ -8,7 +8,7 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
-## 2026-07-25 — A budget holding transactions cannot be deleted; its empty structure still cascades
+## 2026-07-26 — A budget holding transactions cannot be deleted; its empty structure still cascades
 
 **Context:** Every entity a budget owns cascaded from `budgets.id`, so a single budget delete would
 take accounts, category groups, categories, payees **and every transaction** with it. That treats

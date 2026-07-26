@@ -72,14 +72,13 @@ erDiagram
     `Cascade`, so a budget can never outlive its owner as an unreachable row.
 
 - **Budget names are unique per owner, case-insensitively.**
-  - **Why**: The name is the only thing that will distinguish one budget from another when a user
-    presides over several, so two budgets called "Wedding" and "wedding" would be a picker the user
-    cannot read. Case-insensitive uniqueness is also what makes provisioning race-safe (see
-    Workflows).
+  - **Why**: The name is the only thing that distinguishes one budget from another, so two budgets
+    called "Wedding" and "wedding" would be a list the user cannot read. Uniqueness of
+    `(user_id, name)` is separately what makes provisioning race-safe: both racers build the default
+    budget from the same constant name, so one of them gets a genuine unique violation (see
+    Workflows). Case-insensitivity contributes nothing there — the two racing names are identical.
   - **Enforced in**: `BudgetConfiguration` puts `name` on the `case_insensitive` collation and adds a
-    unique index over `(user_id, name)`. PostgreSQL folds case for that index and for plain-equality
-    lookups on the same column alike, so a lookup and the constraint can never disagree about what
-    counts as a duplicate.
+    unique index over `(user_id, name)`.
 
 - **Every account, category group, category, payee and transaction belongs to exactly one budget, on
   both read and write.**
@@ -172,18 +171,19 @@ erDiagram
     filter, and `PayeeRepository.GetOrCreateAsync` find-or-creates within the ambient budget only. The
     unique index is `(budget_id, name)`, so the same payee name in two budgets is two rows.
 
-- **A budget that holds any transaction MUST NOT be deletable.**
-  - **Why**: Recorded money movement is the thing worth protecting — it is the only data in the
-    system a user cannot reconstruct from memory, and losing it in bulk is the worst outcome a money
-    app has. Empty scaffolding is not worth protecting: a budget with no movement was created by
-    mistake, and taking its accounts, category groups, categories and payees out with it is what lets
-    a user undo that mistake instead of carrying the wrong budget forever.
+- **A budget that holds any transaction MUST NOT be deletable.** Nothing in the application deletes
+  a budget — there is no command, handler or endpoint — so this rule lives entirely in the schema.
+  - **Why**: Recorded money movement is the only data in the system a user cannot reconstruct from
+    memory, and losing it in bulk is the worst outcome a money app has. Empty scaffolding does not
+    earn the same protection, so a budget with no movement stays deletable and its accounts, category
+    groups, categories and payees go out with it. Settling that asymmetry in the schema is what stops
+    the first delete path anyone writes from deciding it by accident.
   - **Enforced in**: `TransactionConfiguration` maps `transactions.budget_id → budgets.id` on
-    `Restrict`, so PostgreSQL refuses the delete whatever code path attempted it. Asking the question
-    in application code is `IBudgetRepository.HasTransactionsAsync`, implemented in `BudgetRepository`
-    as a filtered `Transactions.AnyAsync`; it takes no budget id because the `BudgetIsolation` filter
-    already scopes it to the ambient budget, and tenancy as a caller-supplied argument would have no
-    ownership check to pair with it.
+    `Restrict`, so PostgreSQL refuses the delete whatever code path attempted it.
+    `IBudgetRepository.HasTransactionsAsync` — `BudgetRepository`'s `BudgetIsolation`-filtered
+    `Transactions.AnyAsync` — is the application-side seam for asking the question, and has no caller
+    yet. It takes no budget id: the filter already scopes it to the ambient budget, and tenancy as a
+    caller-supplied argument would have no ownership check to pair with it.
 
 - **A route MUST NOT carry a budget identifier.**
   - **Why**: The budget is a singular ambient resource, resolved server-side from the authenticated
@@ -302,25 +302,24 @@ stateDiagram-v2
   `BudgetConfiguration` deliberately carries no unique index or key over `user_id` alone. The
   one-per-user property holds today only because no code path creates a second budget: the
   provisioning handler's insert is the only insert and it is guarded by `FindFirstForUserAsync`, and
-  there is no create-budget command or endpoint. It is pinned by tests
-  (`BudgetProvisioningTests.FirstAuthenticatedRequest_CreatesExactlyOneBudget`,
-  `RepeatedSignIns_DoNotCreateAdditionalBudgets`, and the concurrency test below), not by a
-  constraint. Do not write code that relies on a user having at most one budget, and do not "fix"
-  the missing constraint by adding one.
+  there is no create-budget command or endpoint. It is pinned by
+  `BudgetProvisioningTests.FirstAuthenticatedRequest_CreatesExactlyOneBudget` and
+  `RepeatedSignIns_DoNotCreateAdditionalBudgets`, not by a constraint. Do not write code that relies
+  on a user having at most one budget, and do not "fix" the missing constraint by adding one.
 
 - **Provisioning is two `SaveChanges` calls, not one transaction.** Between the user save and the
   budget save, a concurrent request for the same principal can see a user with no budget and try to
   create one too. That is safe because both racers build the budget from the same constant
   `Budget.DefaultName`, so they collide on the unique `(user_id, name)` index, the loser's
-  `TryAddAsync` returns `false`, and the re-read adopts the winner's row. If a budget insert is lost
-  entirely, the unconditional find-or-create heals it on the next sign-in. Do not wrap the two saves
-  in a transaction port added for this one call site, and do not remove the re-read.
+  `TryAddAsync` returns `false`, and the re-read adopts the winner's row
+  (`EnsureUserHandlerTests.EnsureUser_WhenBudgetInsertLosesTheRace_ReturnsTheConcurrentlyCreatedBudget`).
+  If a budget insert is lost entirely, the unconditional find-or-create heals it on the next sign-in.
+  Do not wrap the two saves in a transaction port added for this one call site, and do not remove the
+  re-read.
 
 - **`FindFirstForUserAsync`'s `CreatedAtUtc`-then-`Id` ordering is a contract, not an implementation
-  detail.** UUID v7 sorts by creation time under PostgreSQL's `uuid` byte order but *not* under
-  .NET's `Guid.CompareTo`, so ordering by `Id` alone would make an in-memory implementation and the
-  database-backed repository pick different budgets for the same user. Ordering by `CreatedAtUtc`
-  first, with `Id` only as a deterministic tiebreaker, is what keeps them in agreement.
+  detail.** Ordering by `Id` alone would make an in-memory implementation and the database-backed one
+  pick different budgets for the same user; the reason is on `IBudgetRepository`.
 
 - **The lookup is by owner, never by name.** Finding the default budget by matching
   `Budget.DefaultName` would break the day a user can rename a budget: the renamed budget would stop
@@ -330,27 +329,22 @@ stateDiagram-v2
   method that changes it, and the rule for setting it is not documented before the operation exists.
   Reading code must treat a null base currency as a normal, expected state.
 
-- **The `BudgetIsolation` filter must close over `BudgetoidDbContext`'s primary-constructor
-  parameter.** Roslyn lowers that parameter to an instance field, so the filter lambda captures the
-  context itself and EF re-roots the closure to whichever context instance runs the query. A captured
-  local, a `static`, or a service-locator call inside the lambda would instead bake the *first*
-  request's budget id into EF's cached model — every later request would read that tenant's rows. This
-  is the single most dangerous edit in the persistence layer and it produces no compiler error.
-  `BudgetIsolationTests` runs **two budgets inside one process** precisely to catch it; never "clean
-  it up" into two processes or two test hosts, because separate processes have separate model caches
-  and the test would pass while the bug shipped.
+- **How the `BudgetIsolation` filter captures the budget is the most dangerous edit in the
+  persistence layer.** Rewriting the lambda to read a captured local, a `static`, or a service
+  locator bakes the *first* request's budget id into EF's cached model, and every later request then
+  reads that tenant's rows — with no compiler error. `BudgetoidDbContext` explains what the lambda
+  must close over and why. `BudgetIsolationTests` runs **two budgets inside one process** precisely
+  to catch a regression here; never "clean it up" into two processes or two test hosts, because
+  separate processes have separate model caches and the test would pass while the bug shipped.
 
 - **`IBudgetContext` is intentionally optional on the DbContext constructor.** Design-time,
   migration, seeding and model-construction paths build the context without a resolved budget, and
-  those paths never query the five filtered entities. Application request paths always have one. Do
-  not make the parameter required to "harden" it — that breaks `dotnet ef` and the model-assertion
-  tests.
-
-- **Dereferencing the budget context on a filtered entity throws when there is none.** The filters
-  read `budgetContext!.BudgetId`, so a context built without one throws the moment a query touches
-  accounts, category groups, categories, payees or transactions. This matters to any future seeding or
-  maintenance path that wants to write those entities directly: it must supply an `IBudgetContext`, not
-  rely on the parameter being optional.
+  those paths never query the five filtered entities. Do not make the parameter required to "harden"
+  it — that breaks `dotnet ef` and the model-assertion tests. The safety net is that the filters
+  dereference it: a context built without a budget throws the moment a query touches accounts,
+  category groups, categories, payees or transactions. So any seeding or maintenance path that wants
+  to write those entities directly must supply an `IBudgetContext` rather than rely on the parameter
+  being optional.
 
 - **The composite foreign keys prove internal consistency, not that the ambient budget was the right
   one.** `(account_id, budget_id)`, `(category_id, budget_id)` and `(payee_id, budget_id)` guarantee
@@ -362,27 +356,23 @@ stateDiagram-v2
 
 - **The delete policy across the five owned tables is deliberately not uniform.** `accounts`,
   `category_groups`, `categories` and `payees` cascade from `budgets.id`; `transactions` restricts.
-  This looks like an oversight and is not one: the four cascading tables are structure, and structure
-  is worth less than the ability to undo a mistakenly created budget, while `transactions` is the
-  recorded money movement the whole app exists to keep. Making all five `Restrict` would leave an
-  empty budget permanently undeletable; making all five `Cascade` would put months of financial
-  history one unguarded delete away. Do not "normalize" the five into one policy.
+  This looks like an oversight and is not one: the four cascading tables are structure, which is
+  worth less than keeping an empty budget deletable, while `transactions` is the recorded money
+  movement the whole app exists to keep. Making all five `Restrict` would leave an empty budget
+  permanently undeletable; making all five `Cascade` would put months of financial history one
+  unguarded delete away. Do not "normalize" the five into one policy.
 
 - **The refusal is guaranteed, but which constraint reports it is not.** What makes `transactions`
   able to refuse is not that its foreign keys are `Restrict` — `categories → category_groups` is
-  `Restrict` too — but that its rows *survive* the budget cascade. Every other owned table is emptied
-  by the same statement that deletes the budget, so its `Restrict` references have nothing left to
-  dangle — `BudgetRepositoryTests.Database_AllowsDeletingABudgetWithStructureButNoTransactions` is
-  what pins that. Transaction rows stay, and then any principal they point at disappearing is a
-  violation. So
-  a budget holding transactions fails in one of two ways, and PostgreSQL fires referential actions in
-  foreign-key creation order, which decides which: either `FK_transactions_budgets_budget_id` refuses
-  directly, or the `accounts`, `categories` or `payees` cascade runs first and one of the composite
-  `transactions → accounts | categories | payees` foreign keys refuses instead. The delete always
-  fails; the constraint name in the error is not a stable contract, so a delete path that has to
-  explain the refusal must ask `HasTransactionsAsync` first — the way `DeleteAccountHandler` already
-  prechecks with `IAccountRepository.HasTransactionsAsync` — rather than translating the database
-  error.
+  `Restrict` too — but that its rows *survive* the budget cascade, while every other owned table is
+  emptied by the same statement and so has nothing left to dangle
+  (`BudgetRepositoryTests.Database_AllowsDeletingABudgetWithStructureButNoTransactions` pins that).
+  Which constraint then fires — `FK_transactions_budgets_budget_id`, or one of the composite
+  `transactions → accounts | categories | payees` keys after their principals cascade — depends on
+  foreign-key creation order. The delete always fails; the constraint name in the error is not a
+  stable contract, so a delete path that has to explain the refusal must ask `HasTransactionsAsync`
+  first — the way `DeleteAccountHandler` already prechecks with
+  `IAccountRepository.HasTransactionsAsync` — rather than translating the database error.
 
 - **Resolving the ambient budget costs one extra indexed read per authenticated request.** The
   provisioning lookup hits the leading column of an index that already exists, and it runs on every

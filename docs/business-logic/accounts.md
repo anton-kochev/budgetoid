@@ -6,6 +6,8 @@
 - [Key Entities](#key-entities)
 - [Constraints](#constraints)
 - [Business Rules & Invariants](#business-rules--invariants)
+- [Workflows & State Transitions](#workflows--state-transitions)
+- [Decision Trees](#decision-trees)
 - [Integration Points](#integration-points)
 - [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
 
@@ -73,14 +75,14 @@ erDiagram
   runaway names would make the UI unusable.
 - **Enforced in**: `Account.Create` / `Account.Update` → `ValidateOrThrow` in `Domain/Accounts/Account.cs`.
 - **Example**: `"  Everyday Checking  "` is accepted and stored trimmed as `"Everyday Checking"`.
-- **Source**: `[SOURCE: code-audit]`
+- **Source**: `[SOURCE: code-audit — unconfirmed]`
 
 ---
 
 - **Rule**: `Type` must be one of the defined `AccountType` values.
 - **Why**: Type is a closed classification; an undefined value has no meaning downstream.
 - **Enforced in**: `ValidateOrThrow` via `Enum.IsDefined`.
-- **Source**: `[SOURCE: code-audit]`
+- **Source**: `[SOURCE: code-audit — unconfirmed]`
 
 ---
 
@@ -92,7 +94,7 @@ erDiagram
 - **Enforced in**: `ValidateOrThrow` in `Domain/Accounts/Account.cs`.
 - **Example**: opening balance `0` is valid; `10.005` is rejected (3 decimals); `2000000000` is
   rejected (over the cap).
-- **Source**: `[SOURCE: code-audit]`
+- **Source**: `[SOURCE: code-audit — unconfirmed]`
 
 ---
 
@@ -101,7 +103,27 @@ erDiagram
   regardless of input casing.
 - **Enforced in**: `Account.Create` (`NormalizeCurrencyCode` + `ValidateOrThrow`).
 - **Example**: `"usd"` is stored as `"USD"`; `"US"` and `"US1"` are rejected.
-- **Source**: `[SOURCE: code-audit]`
+- **Source**: `[SOURCE: code-audit — unconfirmed]`
+
+## Workflows & State Transitions
+
+An Account has no lifecycle states and therefore no state machine. `AccountType` looks like one and
+is not: it is a classification label with no transitions, and nothing in the system reads it to
+decide what an account may do. The lifecycle is create → rename/retype/adjust opening balance →
+guarded delete, with the currency fixed at creation.
+
+## Decision Trees
+
+Deleting an account (`DeleteAccountHandler`):
+
+```
+IF the account id does not resolve in the ambient budget
+  THEN 404 "Account was not found."                       ← also the cross-budget answer
+ELSE IF the account has any transaction
+  THEN validation error "Account cannot be deleted because it has transactions."
+ELSE
+  THEN delete the account
+```
 
 ## Integration Points
 
@@ -120,6 +142,10 @@ erDiagram
 - **Delete guard is by existence of transactions, not a soft-delete**: there is no "archive" state.
   An account either has zero transactions (deletable) or has some (blocked). If archiving is ever
   needed, it's a new concept, not a tweak to this guard.
+- **The guard covers deleting the account, not losing it.** `accounts` cascades from `budgets.id`, so
+  an account disappears with its budget without this check ever running. That path has its own rule
+  and its own protection — a budget holding transactions cannot be deleted at all
+  (see [budgets.md](budgets.md#must-not)).
 - **`OpeningBalance` is the only balance that exists**: there is deliberately no computed current
   balance (opening + sum of transactions) anywhere in the system. Do not assume a running balance is
   available — displaying one would be new domain logic, not a lookup.

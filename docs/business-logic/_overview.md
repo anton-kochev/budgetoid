@@ -2,8 +2,8 @@
 
 ## Business summary
 
-Budgetoid is a **single-user personal budgeting app**. A person signs in with Google, then records
-money movements so they can see where their money goes. There is no sharing, admin role, or
+Budgetoid is a **personal budgeting app with no sharing**. A person signs in with Google, then
+records money movements so they can see where their money goes. There is no admin role and no
 multi-user visibility: everything a signed-in person reaches belongs to a **Budget** they own, and a
 budget belongs to exactly one user.
 
@@ -12,6 +12,11 @@ recorded. A negative amount is money spent; a positive amount is money received.
 optionally name a **Payee** and select a **Category**. Every Category belongs to one **Category
 Group**, while a Transaction may remain uncategorized. **Currencies** are shared ISO-4217 reference
 data — the one table no budget owns.
+
+Today every user has **exactly one budget**, created for them at sign-in: there is no way to create,
+rename, switch or delete one, and the concept never appears in the UI or in a URL. The schema is
+multi-budget-ready anyway, and that gap between what the schema permits and what the release does is
+itself a rule — see [budgets.md](budgets.md).
 
 Entity factories enforce field rules; application handlers enforce cross-entity rules. PostgreSQL
 constraints remain the race-safe backstop. The central tenancy invariant — the budget, not the user,
@@ -24,6 +29,9 @@ are in [users-and-ownership.md](users-and-ownership.md).
 |---|---|
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. |
 | **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
+| **Provisioning** | The step that turns an authenticated Google principal into an internal user and an ambient budget, run on every authenticated request. |
+| **Default budget** | The budget provisioning creates when a user owns none, named by the constant `Budget.DefaultName` (`"My Budget"`). |
+| **Ambient budget** | The one budget a request is scoped to, resolved server-side at provisioning and read through `IBudgetContext`. Never supplied by the client. |
 | **Base currency** | The unit a Budget plans in, an optional ISO-4217 code on the Budget. |
 | **Account** | A budget-owned place money lives, denominated in one Currency. |
 | **Account Type** | `Checking`, `Savings`, `Cash`, or `CreditCard`; a label, not a state machine. |
@@ -34,17 +42,20 @@ are in [users-and-ownership.md](users-and-ownership.md).
 | **Category Group** | Budget-owned, manually ordered container for Categories, e.g. “Essential Obligations.” |
 | **Category** | Budget-owned transaction classification belonging to exactly one Category Group, e.g. “Groceries.” |
 | **Position** | Zero-based persisted user order: budget-wide for Category Groups and group-scoped for Categories. |
-| **Currency** | Shared ISO-4217 reference row used by Accounts. |
+| **Currency** | Shared ISO-4217 reference row used by Accounts and, optionally, by a Budget as its base. |
 | **Minor Unit** | Currency decimal places, e.g. 2 for USD and 0 for JPY. |
 
 ## User roles
 
-There is exactly **one role: the authenticated owner.** Within their own budget a user manages
-Accounts, Category Groups, and Categories; creates/lists Transactions and Payees; and reads global
-Currencies.
-Unauthenticated visitors can only reach public login/welcome behavior.
+There is exactly **one role: the authenticated owner.** Within their ambient budget a user manages
+Accounts, Category Groups, and Categories; records and lists Transactions; lists Payees and creates
+them implicitly by naming one on a transaction; and reads global Currencies. The budget itself is not
+manageable — it is provisioned, never configured. Unauthenticated visitors can only reach public
+login/welcome behavior.
 
 ## Domain area map
+
+Relationships only; each Tier 2 file carries its own entity attributes.
 
 ```mermaid
 erDiagram
@@ -59,29 +70,7 @@ erDiagram
     CATEGORY ||--o{ TRANSACTION : "optionally categorizes"
     PAYEE ||--o{ TRANSACTION : "optionally names"
     CURRENCY ||--o{ ACCOUNT : denominates
-
-    TRANSACTION {
-        guid Id
-        guid BudgetId
-        guid AccountId
-        guid CategoryId
-        guid PayeeId
-        decimal Amount
-        date Date
-    }
-    CATEGORY_GROUP {
-        guid Id
-        guid BudgetId
-        string Name
-        int Position
-    }
-    CATEGORY {
-        guid Id
-        guid BudgetId
-        guid CategoryGroupId
-        string Name
-        int Position
-    }
+    CURRENCY ||--o{ BUDGET : "optional base currency"
 ```
 
 Currency is global reference data. A Budget is scoped to exactly one user; every other entity is
