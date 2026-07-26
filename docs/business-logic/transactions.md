@@ -87,6 +87,9 @@ erDiagram
 - **Enforced in**: nothing enforces the meaning; it is a semantic convention. `Transaction.Create`
   enforces only that the amount is non-zero and within precision and range.
 - **Example**: groceries costing £40 are `-40.00`; a £1,500 paycheck is `1500.00`.
+- **Counterexample**: recording an expense as `40.00` because the form already labels the row an
+  expense makes the account's total climb with every purchase. Nothing rejects it — no validation
+  reads the sign — so the mistake never surfaces as an error, only as a total nobody can explain.
 - **Source**: `[SOURCE: discussion — 2026-07-13]`
 
 ---
@@ -97,7 +100,7 @@ erDiagram
 - **Enforced in**: `Transaction.Create`; the column is `numeric(14,2)`.
 - **Example**: `-40.00` is accepted; `10.005` is rejected as too precise; `2000000000` is rejected as
   over the cap.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
@@ -107,7 +110,7 @@ erDiagram
   and should not be two states a reader has to handle.
 - **Enforced in**: `Transaction.Create`.
 - **Example**: `"   "` is stored as null, not as a blank string.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
@@ -146,6 +149,9 @@ erDiagram
   `CategoryGroupId`.
 - **Example**: moving "Groceries" from "Essential Obligations" to "Household" changes what every past
   grocery transaction displays as its group, with no transaction rows written.
+- **Counterexample**: copying `CategoryGroupId` onto the Transaction makes the two disagree the
+  moment the Category moves — the transaction keeps naming the old heading while the category list
+  shows the new one, and no read can tell which of the two was meant.
 - **Source**: `[SOURCE: discussion — 2026-07-14]`
 
 ---
@@ -160,7 +166,7 @@ erDiagram
   payee, category and category group.
 - **Example**: renaming an account is visible in the transaction list on the next read, because the
   name is joined rather than snapshotted.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ## Workflows & State Transitions
 
@@ -176,7 +182,7 @@ Creating a transaction (`CreateTransactionHandler`):
 IF the account id does not resolve in the ambient budget
   THEN validation error "Account was not found."          ← also the cross-budget answer
 ELSE IF the account's currency code has no seeded Currency row
-  THEN InvalidOperationException                          ← broken schema invariant, not user error
+  THEN InvalidOperationException                          ← unreachable; the currency FK forbids it
 ELSE
   Transaction.Create validates amount, precision, range and description length
   IF a CategoryId was supplied
@@ -213,6 +219,7 @@ The category and payee steps are independent — either, both, or neither may ru
   — there is no create, rename or delete.
 - Renaming a Category or Category Group, or moving a Category, immediately changes historical
   Transaction display; see [categories.md](categories.md#edge-cases--known-gotchas).
-- A missing Currency row for an Account is a broken schema invariant and fails loudly rather than
-  guessing a symbol.
+- A missing Currency row for an Account fails loudly rather than guessing a symbol, but the
+  `accounts.currency_code` foreign key means it cannot happen — see
+  [currencies.md](currencies.md#edge-cases--known-gotchas).
 - `Date` is a calendar date with no timezone. `CreatedAtUtc` is the separate audit timestamp.

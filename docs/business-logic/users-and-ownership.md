@@ -7,6 +7,7 @@
 - [Constraints](#constraints)
 - [Business Rules & Invariants](#business-rules--invariants)
 - [Workflows & State Transitions](#workflows--state-transitions)
+- [Decision Trees](#decision-trees)
 - [Integration Points](#integration-points)
 - [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
 
@@ -78,25 +79,28 @@ erDiagram
 
 - **A request MUST NOT reach data outside its ambient budget.** Stated and enforced in
   [budgets.md](budgets.md#must-not) — another budget's row resolves to `null` through the
-  `BudgetIsolation` filter and surfaces as a 404, never a 403.
+  `BudgetIsolation` filter and surfaces as a 404 when it was the target of the request or a 400 when
+  it was a reference inside one, never a 403.
 
 ## Business Rules & Invariants
 
-- **Rule**: A user — and its default budget — is provisioned (or their profile synced) idempotently
-  on sign-in, keyed on the Google `sub`.
+- **Rule**: A user is provisioned (or their profile synced) idempotently on sign-in, keyed on the
+  Google `sub`.
 - **Why**: There is no registration step. The first authenticated request must create the internal
   user; subsequent requests must find the same one and keep email/display name fresh, without ever
-  creating duplicates. The budget is part of the same step because "an account exists ⇒ it has its
-  budget" is one idea, and splitting it would open a window where a user exists with no budget.
+  creating duplicates.
 - **Enforced in**: `EnsureUserHandler` (`Application/Users/EnsureUser/EnsureUserHandler.cs`),
-  invoked by `UserProvisioningMiddleware`; it returns `ProvisionedUser(UserId, BudgetId)`. The budget
-  half of the rule is documented in [budgets.md](budgets.md).
+  invoked by `UserProvisioningMiddleware`; it returns `ProvisionedUser(UserId, BudgetId)`. The same
+  handler then find-or-creates the user's default budget, because "an account exists ⇒ it has its
+  budget" is one idea and splitting it would open a window where a user exists with no budget; that
+  half of the step is documented in
+  [budgets.md](budgets.md#business-rules--invariants) and not restated here.
 - **Example**: A returning user whose Google display name changed from "Sam" to "Samantha" — on her
   next request the handler finds her by `sub`, sees the display name differs, and updates the
   profile. If nothing changed, no write happens.
 - **Counterexample**: Keying on `email` instead of `sub` would break if the user changed their
   Google email — they'd be provisioned as a brand-new user and lose access to all their data.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
@@ -106,7 +110,7 @@ erDiagram
 - **Enforced in**: `User.UpdateProfile(email, displayName)` sets email/name only;
   `Domain/Users/User.cs` has no setter path for `GoogleSubject` after `Create`.
 - **Example**: `UpdateProfile` re-runs `Email.Create`, so a blanked email would be rejected.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
@@ -115,7 +119,7 @@ erDiagram
   check would add friction without adding trust. Presence is still required because it's a
   displayed, required profile field.
 - **Enforced in**: `Domain/Users/Email.cs` (`Email.Create`).
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ## Workflows & State Transitions
 
@@ -148,6 +152,34 @@ stateDiagram-v2
 | Creating → Resolved | New user inserted | `User.Create` validates `sub`/email |
 | Creating → RaceReread → Resolved | Unique-insert race | Re-read by `sub`; throws if still absent |
 | Resolved → BudgetEnsured | Always, on every authenticated request | Find-or-create the default budget; heals a user left without one — see [budgets.md](budgets.md#workflows--state-transitions) |
+
+## Decision Trees
+
+Resolving the internal user (`UserProvisioningMiddleware` → `EnsureUserHandler.EnsureUserIdAsync`):
+
+```
+IF the request is not authenticated
+  THEN skip provisioning and continue                    ← public endpoints reach no budget-scoped data
+ELSE IF the sub or email claim is missing or blank
+  THEN 401 ProblemDetails "Authenticated principal is missing required claims."
+ELSE IF a user already exists for that sub
+  re-run UpdateProfile with the token's email and name
+  IF either value changed
+    THEN persist the profile
+  ELSE                                                   ← a dirty check, not an unconditional write
+    THEN no write happens
+ELSE                                                     ← no user for that sub yet
+  try to insert one
+  IF the insert succeeded
+    THEN use it
+  ELSE                                                   ← a concurrent request won the unique google_subject index
+    re-read by sub and adopt that row
+    IF it is still absent
+      THEN InvalidOperationException
+```
+
+The budget branch that runs after this, on every path, is in
+[budgets.md](budgets.md#decision-trees).
 
 ## Integration Points
 

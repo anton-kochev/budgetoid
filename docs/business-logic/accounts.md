@@ -48,9 +48,12 @@ erDiagram
   - **Why**: The account's currency drives how amounts are displayed (symbol, decimal places) and
     is denormalized into transaction responses. A dangling currency would break display and signal a
     broken data invariant.
-  - **Enforced in**: `CreateAccountHandler` looks the code up via `ICurrencyReadService.GetByCodeAsync`
-    and throws a validation error ("Currency was not found.") if absent. `Account.Create` also
-    enforces the shape (exactly 3 ASCII uppercase letters).
+  - **Enforced in**: `AccountConfiguration` maps `accounts.currency_code → currencies.code` with a
+    `Restrict` foreign key, so PostgreSQL refuses a dangling code however the row was written and
+    refuses to delete a currency any account uses — that is what makes the guarantee hold for every
+    write path. `CreateAccountHandler` looks the code up via `ICurrencyReadService.GetByCodeAsync`
+    first so the caller gets a validation error ("Currency was not found.") instead of a constraint
+    violation, and `Account.Create` enforces the shape (exactly 3 ASCII uppercase letters).
 
 ### MUST NOT
 
@@ -75,14 +78,14 @@ erDiagram
   runaway names would make the UI unusable.
 - **Enforced in**: `Account.Create` / `Account.Update` → `ValidateOrThrow` in `Domain/Accounts/Account.cs`.
 - **Example**: `"  Everyday Checking  "` is accepted and stored trimmed as `"Everyday Checking"`.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
 - **Rule**: `Type` must be one of the defined `AccountType` values.
 - **Why**: Type is a closed classification; an undefined value has no meaning downstream.
 - **Enforced in**: `ValidateOrThrow` via `Enum.IsDefined`.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
@@ -94,7 +97,11 @@ erDiagram
 - **Enforced in**: `ValidateOrThrow` in `Domain/Accounts/Account.cs`.
 - **Example**: opening balance `0` is valid; `10.005` is rejected (3 decimals); `2000000000` is
   rejected (over the cap).
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Counterexample**: rounding `10.005` to `10.01` instead of rejecting it silently changes the
+  number the user typed. The column is `numeric(14,2)`, so the third decimal has nowhere to go
+  either way — but rounding hides the entry error, and it resurfaces later as a balance that never
+  reconciles against the real account.
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
@@ -103,7 +110,10 @@ erDiagram
   regardless of input casing.
 - **Enforced in**: `Account.Create` (`NormalizeCurrencyCode` + `ValidateOrThrow`).
 - **Example**: `"usd"` is stored as `"USD"`; `"US"` and `"US1"` are rejected.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Counterexample**: storing the code as typed leaves `usd` on the row while `currencies.code`
+  holds `USD`. The `Restrict` foreign key rejects the insert outright — and if it did not, the
+  currency join would drop the account out of its own list rather than fail visibly.
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ## Workflows & State Transitions
 

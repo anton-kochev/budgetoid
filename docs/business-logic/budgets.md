@@ -7,6 +7,7 @@
 - [Constraints](#constraints)
 - [Business Rules & Invariants](#business-rules--invariants)
 - [Workflows & State Transitions](#workflows--state-transitions)
+- [Decision Trees](#decision-trees)
 - [Integration Points](#integration-points)
 - [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
 
@@ -38,13 +39,15 @@ here and none of them re-document it.
   `CreatedAtUtc`. Created through `Budget.Create(userId, name, createdAtUtc)` or
   `Budget.CreateDefault(userId, createdAtUtc)`, which uses the constant name `Budget.DefaultName`
   (`"My Budget"`).
-- **Base currency** — the unit a budget plans its life in, held as a nullable ISO-4217 code
-  referencing the shared [Currency](currencies.md) reference data. A budget may have none.
+- **Base currency** — a nullable ISO-4217 code referencing the shared [Currency](currencies.md)
+  reference data. It is null on every budget that exists: no factory takes one and `Budget` exposes
+  no method that sets one. The column is schema readiness for a planning layer, not a setting a user
+  has.
 
 ```mermaid
 erDiagram
     USER ||--o{ BUDGET : owns
-    CURRENCY ||--o{ BUDGET : "optional base currency (by code)"
+    CURRENCY ||--o{ BUDGET : "base currency by code (schema only, never set)"
     BUDGET ||--o{ ACCOUNT : owns
     BUDGET ||--o{ CATEGORY_GROUP : owns
     BUDGET ||--o{ CATEGORY : owns
@@ -120,9 +123,13 @@ erDiagram
     different budgets is normal — the event's "Cash" and the personal "Cash" are unrelated things.
     Scoping uniqueness any wider would make one pool's naming constrain another's.
   - **Enforced in**: each of the four configurations puts `name` on the `case_insensitive` collation
-    and adds a unique index over `(budget_id, name)`. Repositories translate the unique violation
-    into a validation error. This is the canonical statement of the scope and mechanism; the
-    category-specific scope is spelled out in [categories.md](categories.md#constraints).
+    and adds a unique index over `(budget_id, name)`. What happens on a collision differs by
+    entity: `AccountRepository`, `CategoryRepository` and `CategoryGroupRepository` translate the
+    unique violation into a validation error the user has to resolve, while `PayeeRepository`
+    swallows it and re-reads, because for a find-or-create payee a name collision is the hit rather
+    than a mistake (see [transactions.md](transactions.md#business-rules--invariants)). This is the
+    canonical statement of the scope and mechanism; the category-specific scope is spelled out in
+    [categories.md](categories.md#constraints).
 
 - **Ordering is per budget.**
   - **Why**: Position is a deliberate personal arrangement of one pool's categories. Order that
@@ -133,14 +140,19 @@ erDiagram
     `CategoryGroupOrdering` and `CategoryOrdering` reindex whatever set they are handed; the query
     filter is what makes that set one budget's.
 
-- **A budget may exist with no base currency.**
+- **Code that reads `BaseCurrencyCode` MUST treat null as the normal value.** Every budget has a
+  null base currency.
   - **Why**: The budget is created for the user at sign-in, before they have been asked anything.
-    Requiring a base currency at creation would make the budget something the user must set up, which
-    is exactly what the default budget exists to avoid.
-  - **Enforced in**: `Budget.BaseCurrencyCode` is nullable and is not set by either factory;
+    Requiring a base currency at creation would make the budget something the user must set up,
+    which is exactly what the default budget exists to avoid — so neither factory takes one, and
+    nothing has needed to set one since. Treating null as an exceptional state would therefore make
+    the only reachable state the exceptional one.
+  - **Enforced in**: `Budget.Create` and `Budget.CreateDefault` take no currency argument and
+    `Budget` exposes no mutator for `BaseCurrencyCode`. `BudgetTests`, `EnsureUserHandlerTests` and
+    `BudgetProvisioningTests` each assert the provisioned budget's `BaseCurrencyCode` is null.
     `base_currency_code` is a nullable `varchar(3)` with a `Restrict` foreign key to
-    `currencies.code`, so a currency that some budget uses as its base cannot be deleted out from
-    under it.
+    `currencies.code`, so if a value is ever written the currency behind it cannot be deleted out
+    from under it.
 
 ### MUST NOT
 
@@ -149,10 +161,20 @@ erDiagram
   - **Why**: Cross-budget access is a tenant breach — the worst possible failure for a money app —
     and even between two budgets of the same user it would put one pool's data into another's
     picture.
-  - **Enforced in**: the `BudgetIsolation` filter makes the row resolve to `null`, so
-    `GetByIdAsync` returns nothing and the handler throws `NotFoundException` → **404**. The caller
-    cannot distinguish "not in your budget" from "does not exist", which is deliberate: a 403 would
-    confirm the row exists. Do not add a separate 403 path.
+  - **Enforced in**: the `BudgetIsolation` filter makes the row resolve to `null`, and what the
+    caller sees then depends on how it addressed the row. A row addressed **by id** — the target of
+    the request itself — surfaces as **404**: every update, move and delete throws
+    `NotFoundException` (`UpdateAccountHandler`, `DeleteAccountHandler`, `UpdateCategoryHandler`,
+    `DeleteCategoryHandler`, `PlaceCategoryHandler` for the category being placed,
+    `UpdateCategoryGroupHandler`, `MoveCategoryGroupHandler`, `DeleteCategoryGroupHandler`), and the
+    by-id reads return a typed `NotFound` result instead of throwing, for the same status. A row
+    named as a **reference inside another write** surfaces as a validation error → **400**:
+    `CreateTransactionHandler` for the account and the category, `CreateCategoryHandler` and
+    `PlaceCategoryHandler` for the destination category group. Both codes are correct for their own
+    shape of request — a missing target is a missing resource, a bad reference is a bad field — so do
+    not unify them. Neither is ever **403**: the
+    caller cannot distinguish "not in your budget" from "does not exist", which is deliberate,
+    because a 403 would confirm the row exists. Do not add a separate 403 path.
 
 - **A response MUST NOT combine data from more than one budget.**
   - **Why**: Summing or listing pools with different owners or mandates produces a number that
@@ -275,14 +297,35 @@ stateDiagram-v2
 | BudgetCreating → BudgetResolved | Insert succeeded | Unique `(user_id, name)` accepted the row |
 | BudgetCreating → BudgetRaceReread → BudgetResolved | Unique-insert race lost | Re-read by owner; throws if still absent |
 
+## Decision Trees
+
+Resolving the ambient budget (`EnsureUserHandler.EnsureDefaultBudgetIdAsync`), which runs after the
+user has been resolved, on every authenticated request:
+
+```
+IF the user already owns a budget
+  THEN use the first one by CreatedAtUtc, then Id        ← the heal path found nothing to repair
+ELSE                                                     ← a new user, or one whose budget insert was lost
+  build Budget.CreateDefault(userId) and try to insert it
+  IF the insert succeeded
+    THEN use the new budget
+  ELSE                                                   ← a concurrent request won the unique (user_id, name) index
+    re-read the user's first budget and adopt it
+    IF it is still absent
+      THEN InvalidOperationException                     ← a unique violation with nothing behind it
+```
+
+The user branch that runs before this is in
+[users-and-ownership.md](users-and-ownership.md#decision-trees).
+
 ## Integration Points
 
 - **[Users & Ownership](users-and-ownership.md)**: the owning user comes from provisioning, and the
   budget step is part of the same handler — "an account exists ⇒ it has its budget" is one idea, so
   splitting it would open a window where a user exists without a budget.
 - **[Currencies](currencies.md)**: `BaseCurrencyCode` references the global ISO-4217 reference table
-  by code with `Restrict`, so currencies stay shared reference data and a base currency in use cannot
-  be deleted. `Currency` is the one table no budget owns.
+  by code with `Restrict`, so a base currency in use could not be deleted — no budget holds one
+  today. `Currency` is the only reference table shared across every budget.
 - **[Accounts](accounts.md)**, **[Transactions](transactions.md)** (with Payees), and
   **[Categories and Category Groups](categories.md)**: all five entities are stamped with and
   filtered by `BudgetId`. Those files document their own field rules and lifecycles and rely on the
@@ -312,7 +355,8 @@ stateDiagram-v2
   create one too. That is safe because both racers build the budget from the same constant
   `Budget.DefaultName`, so they collide on the unique `(user_id, name)` index, the loser's
   `TryAddAsync` returns `false`, and the re-read adopts the winner's row
-  (`EnsureUserHandlerTests.EnsureUser_WhenBudgetInsertLosesTheRace_ReturnsTheConcurrentlyCreatedBudget`).
+  (`tests/UnitTests/EnsureUserHandlerTests.EnsureUser_WhenBudgetInsertLosesTheRace_ReturnsTheConcurrentlyCreatedBudget`
+  — a same-named class also exists under `tests/IntegrationTests`).
   If a budget insert is lost entirely, the unconditional find-or-create heals it on the next sign-in.
   Do not wrap the two saves in a transaction port added for this one call site, and do not remove the
   re-read.
@@ -325,9 +369,11 @@ stateDiagram-v2
   `Budget.DefaultName` would break the day a user can rename a budget: the renamed budget would stop
   being found and provisioning would silently create a second one.
 
-- **`BaseCurrencyCode` has no mutator.** It is nullable and set-once by design; `Budget` exposes no
-  method that changes it, and the rule for setting it is not documented before the operation exists.
-  Reading code must treat a null base currency as a normal, expected state.
+- **`BaseCurrencyCode` is never written.** Not "rarely set" or "set once" — no factory takes it and
+  `Budget` exposes no method that sets it, so the column holds null for every budget in existence.
+  Do not build display, defaulting or conversion logic on the assumption that some budget somewhere
+  has one, and do not document a rule for choosing a base currency before the operation that sets it
+  exists.
 
 - **How the `BudgetIsolation` filter captures the budget is the most dangerous edit in the
   persistence layer.** Rewriting the lambda to read a captured local, a `static`, or a service

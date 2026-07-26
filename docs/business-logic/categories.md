@@ -96,7 +96,7 @@ erDiagram
 - **Enforced in**: `CategoryGroup.Create` / `Category.Create` and their `Update` counterparts.
 - **Example**: `"  Groceries  "` is stored as `"Groceries"`; a whitespace-only description is stored
   as null.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
@@ -110,7 +110,11 @@ erDiagram
   backstop. Ordering scope is indexed per [budgets.md](budgets.md#constraints).
 - **Example**: the first group a budget receives is position `0`; the first category in each group is
   also position `0`.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Counterexample**: scoping Category positions per budget rather than per Category Group makes
+  position `0` mean "first in this budget" instead of "first under this heading", so adding one
+  category renumbers every other group's — the user's deliberate arrangement is destroyed by an
+  edit they made somewhere else.
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 

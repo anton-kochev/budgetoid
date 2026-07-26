@@ -11,15 +11,17 @@ A user owns Budgets. A **Budget** owns **Accounts**, against which signed **Tran
 recorded. A negative amount is money spent; a positive amount is money received. A Transaction can
 optionally name a **Payee** and select a **Category**. Every Category belongs to one **Category
 Group**, while a Transaction may remain uncategorized. **Currencies** are shared ISO-4217 reference
-data — the one table no budget owns.
+data — the only reference table shared across every budget.
 
 Today every user has **exactly one budget**, created for them at sign-in: there is no way to create,
 rename, switch or delete one, and the concept never appears in the UI or in a URL. The schema is
 multi-budget-ready anyway, and that gap between what the schema permits and what the release does is
 itself a rule — see [budgets.md](budgets.md).
 
-Entity factories enforce field rules; application handlers enforce cross-entity rules. PostgreSQL
-constraints remain the race-safe backstop. The central tenancy invariant — the budget, not the user,
+Entity factories enforce field rules and application handlers enforce cross-entity rules, but the
+budget boundary between two rows is a schema guarantee first: composite foreign keys refuse a
+cross-budget reference whatever code path wrote it, and unique indexes are what make name uniqueness
+and provisioning race-safe. The central tenancy invariant — the budget, not the user,
 is what everything belongs to — is documented in [budgets.md](budgets.md); identity and provisioning
 are in [users-and-ownership.md](users-and-ownership.md).
 
@@ -32,7 +34,7 @@ are in [users-and-ownership.md](users-and-ownership.md).
 | **Provisioning** | The step that turns an authenticated Google principal into an internal user and an ambient budget, run on every authenticated request. |
 | **Default budget** | The budget provisioning creates when a user owns none, named by the constant `Budget.DefaultName` (`"My Budget"`). |
 | **Ambient budget** | The one budget a request is scoped to, resolved server-side at provisioning and read through `IBudgetContext`. Never supplied by the client. |
-| **Base currency** | The unit a Budget plans in, an optional ISO-4217 code on the Budget. |
+| **Base currency** | A nullable ISO-4217 code on the Budget, reserved for a planning layer. Nothing writes it, so it is null on every Budget. |
 | **Account** | A budget-owned place money lives, denominated in one Currency. |
 | **Account Type** | `Checking`, `Savings`, `Cash`, or `CreditCard`; a label, not a state machine. |
 | **Opening Balance** | The starting balance at account creation; no current/running balance is modeled yet. |
@@ -42,7 +44,7 @@ are in [users-and-ownership.md](users-and-ownership.md).
 | **Category Group** | Budget-owned, manually ordered container for Categories, e.g. “Essential Obligations.” |
 | **Category** | Budget-owned transaction classification belonging to exactly one Category Group, e.g. “Groceries.” |
 | **Position** | Zero-based persisted user order: budget-wide for Category Groups and group-scoped for Categories. |
-| **Currency** | Shared ISO-4217 reference row used by Accounts and, optionally, by a Budget as its base. |
+| **Currency** | Shared ISO-4217 reference row that denominates Accounts. A Budget references the same table for its base currency, never populated. |
 | **Minor Unit** | Currency decimal places, e.g. 2 for USD and 0 for JPY. |
 
 ## User roles
@@ -70,7 +72,7 @@ erDiagram
     CATEGORY ||--o{ TRANSACTION : "optionally categorizes"
     PAYEE ||--o{ TRANSACTION : "optionally names"
     CURRENCY ||--o{ ACCOUNT : denominates
-    CURRENCY ||--o{ BUDGET : "optional base currency"
+    CURRENCY ||--o{ BUDGET : "base currency (schema only, never set)"
 ```
 
 Currency is global reference data. A Budget is scoped to exactly one user; every other entity is

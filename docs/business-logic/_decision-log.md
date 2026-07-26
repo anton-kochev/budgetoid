@@ -40,8 +40,9 @@ still holds when application code is wrong. *Give `HasTransactionsAsync` a `budg
 is planned, and the parameter would reintroduce tenancy as an argument no ownership check validates.
 
 **Affected areas:** [budgets.md](budgets.md), [transactions.md](transactions.md). This partially
-reverses "Budget replaces the user as the unit of tenancy" below, which established uniform `Cascade`
-from a budget to all five entities it owns; the rest of that decision stands.
+reverses "Budget replaces the user as the unit of tenancy" below, which shipped uniform `Cascade`
+from a budget to all five entities it owns without recording that as a decision; the rest of that
+entry stands.
 
 ---
 

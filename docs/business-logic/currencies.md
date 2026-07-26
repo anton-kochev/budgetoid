@@ -14,9 +14,9 @@
 
 A **Currency** is shared ISO-4217 reference data — code, display name, symbol, and how many decimal
 places it uses. Currencies are **global**: they are not owned by any user or budget, are seeded into
-the database, and are read-only from the app's perspective. They are the one shared table in the
-schema. An account picks a currency at creation time; that choice drives how the account's and its
-transactions' amounts are displayed, and a budget may name one as its base currency.
+the database, and are read-only from the app's perspective. They are the only reference table shared
+across every budget. An account picks a currency at creation time; that choice drives how the
+account's and its transactions' amounts are displayed.
 
 ## Key Entities
 
@@ -49,9 +49,11 @@ erDiagram
   - **Why**: The currency supplies the symbol and decimal precision used to display every amount on
     the account and its transactions. A missing currency breaks display and indicates a broken
     invariant.
-  - **Enforced in**: validated at account creation (`CreateAccountHandler`); a missing currency at
-    transaction-display time throws `InvalidOperationException` in `CreateTransactionHandler` (fail
-    loud — see gotcha below).
+  - **Enforced in**: the `accounts.currency_code → currencies.code` foreign key on `Restrict`
+    (`AccountConfiguration`), which refuses both a dangling code on write and the deletion of a
+    currency any account uses. `CreateAccountHandler` looks the code up first via
+    `ICurrencyReadService.GetByCodeAsync` so the caller gets a validation error rather than a
+    constraint violation, but the foreign key is what makes the guarantee hold for every write path.
 
 ## Business Rules & Invariants
 
@@ -60,7 +62,11 @@ erDiagram
   case-insensitive and reliable.
 - **Enforced in**: `Currency.Create` (`NormalizeCode` + `ValidateOrThrow`) in `Domain/Currencies/Currency.cs`.
 - **Example**: `"usd"` normalizes to `"USD"`; `"US"` or `"US1"` is rejected.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Counterexample**: matching the code as given makes `GetByCodeAsync("usd")` miss the seeded
+  `USD` row, so account creation rejects a currency that plainly exists. `Code` is the primary key,
+  so an unnormalized seed would be worse still: two rows for one currency, and accounts joining
+  whichever they happened to reference.
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
@@ -71,7 +77,7 @@ erDiagram
   real-world currency precision.
 - **Enforced in**: `Currency.Create` → `ValidateOrThrow`.
 - **Example**: `Code="JPY", Name="Japanese Yen", Symbol="¥", MinorUnit=0` is valid.
-- **Source**: `[SOURCE: code-audit — unconfirmed]`
+- **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ## Workflows & State Transitions
 
@@ -86,8 +92,9 @@ behaviour that touches currencies belongs to the entities that reference them, i
   validates the code and denormalizes name/symbol/minor-unit into the account response.
 - **[Transactions](transactions.md)**: transaction responses carry the account's currency code and
   symbol so lists render amounts consistently with the account view.
-- **[Budgets](budgets.md)**: a budget optionally names a currency as its base currency by code, with a
-  `Restrict` foreign key, so a currency in use as a base cannot be removed.
+- **[Budgets](budgets.md)**: `budgets.base_currency_code` references this table by code with a
+  `Restrict` foreign key. Nothing writes that column — it is null on every budget — so no currency
+  is currently held in place by a budget.
 
 ## Edge Cases & Known Gotchas
 
@@ -96,7 +103,11 @@ behaviour that touches currencies belongs to the entities that reference them, i
 - **No query filter applies to currencies, and none should**: they are shared reference data, so a
   budget-scoped filter would hide the list from every request. Do not treat the absence of a filter
   here as precedent for the budget-owned entities.
-- **A missing seeded currency is a schema failure, not user error**: if an account's currency code
-  has no matching row, transaction creation throws `InvalidOperationException` rather than guessing a
-  symbol. The design chooses to fail loudly so the create-response and the list-view never disagree
-  on how an amount is shown. If you add currencies, seed them via migration.
+- **The missing-currency failure paths are unreachable, and are assertions rather than error
+  handling**: `CreateTransactionHandler` throws `InvalidOperationException` instead of guessing a
+  symbol when an account's currency has no row, and `AccountReadService` inner-joins currencies
+  rather than left-joining. The foreign key is what makes both safe — no account can carry a code
+  with no row, and no currency in use can be deleted — so neither path can fire against a healthy
+  schema. Read them as statements of that invariant, not as handling for a state the database
+  permits, and do not soften either into a fallback symbol. If you add currencies, seed them via
+  migration.
