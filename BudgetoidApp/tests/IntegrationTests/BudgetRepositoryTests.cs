@@ -45,6 +45,58 @@ public sealed class BudgetRepositoryTests
     }
 
     [Test]
+    public async Task Budgets_WithNamesDifferingOnlyByCaseForOneUser_AreRejectedAfterTheFirst()
+    {
+        // Arrange — two explicitly named budgets, because the NULL-name test above never touches the
+        // collation: NULLs compare through NULLS NOT DISTINCT, not through case_insensitive, so the
+        // collation on budgets.name could be dropped from BudgetConfiguration with every existing
+        // test staying green.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new BudgetRepository(db);
+        bool firstAdded = await repository.TryAddAsync(
+            Budget.Create(userId, "Household", UtcAt(hour: 10)));
+
+        // Act — through BudgetRepository rather than raw SQL, for the same reason as the NULL-name
+        // test: this has to hold both halves at once, the index refusing the row and the repository
+        // turning 23505 into false instead of letting a DbUpdateException escape.
+        bool secondAdded = await repository.TryAddAsync(
+            Budget.Create(userId, "household", UtcAt(hour: 11)));
+
+        // Assert
+        await Assert.That(firstAdded).IsTrue();
+        await Assert.That(secondAdded).IsFalse();
+        await Assert.That(await db.Budgets.CountAsync(budget => budget.UserId == userId)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Budgets_WithDifferentNamesForOneUser_AreBothAccepted()
+    {
+        // Arrange — one budget per user is a release property, not a schema invariant. Today that is
+        // asserted only as the absence of a unique index in a model test, and an absence is the
+        // weakest thing a test can claim: it survives nothing. Rename the index, move the
+        // declaration, reshuffle the keys and the absence-assertion still passes while the capability
+        // it stood for may be gone. Asserting the capability instead outlives all of that, because it
+        // names a behaviour rather than a spelling.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new BudgetRepository(db);
+
+        // Act
+        bool firstAdded = await repository.TryAddAsync(
+            Budget.Create(userId, "Household", UtcAt(hour: 10)));
+        bool secondAdded = await repository.TryAddAsync(
+            Budget.Create(userId, "Side Project", UtcAt(hour: 11)));
+
+        // Assert
+        await Assert.That(firstAdded).IsTrue();
+        await Assert.That(secondAdded).IsTrue();
+        await Assert.That(await db.Budgets.CountAsync(budget => budget.UserId == userId)).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task FindFirstForUserAsync_ReturnsTheEarliestBudget()
     {
         // Arrange — inserted newest-first, so a repository ordering by insertion or by Guid.CompareTo
@@ -158,25 +210,34 @@ public sealed class BudgetRepositoryTests
 
         // Assert
         await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
+
+        // The rows below are not an extra: a statement that fails rolls back whole, and asserting
+        // that is half the rule. A refusal that had already destroyed the budget on its way to
+        // failing would be a catastrophe, and a SQLSTATE-only assertion cannot see it.
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await Assert.That(await CountRowsAsync(connection, "budgets", budgetId)).IsEqualTo(1L);
+        await Assert.That(await CountRowsAsync(connection, "accounts", budgetId)).IsEqualTo(1L);
+        await Assert.That(await CountRowsAsync(connection, "transactions", budgetId)).IsEqualTo(1L);
     }
 
     [Test]
     public async Task Database_AllowsDeletingABudgetWithStructureButNoTransactions()
     {
         // Arrange — structure only: no recorded money movement, so the budget was a mistake and
-        // its accounts, groups, categories and payees go with it.
+        // its accounts, groups, categories and payees go with it. A second budget under the same
+        // owner is seeded alongside it because orphan rows are not what a cascade test can prove —
+        // they cannot exist while the foreign keys do, and the FK snapshot already pins those. What
+        // a cascade test proves is propagation, and propagation has two halves: nothing of mine is
+        // left, and nothing of anyone else's was touched. Counting only the deleted budget's rows
+        // makes the first claim alone, which would stay green the day a foreign key came to point at
+        // the wrong column and over-deleted.
         await using RepositoryTestHost host = await StartHostAsync();
-        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
-        await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
-        {
-            seed.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
-            CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
-            seed.CategoryGroups.Add(group);
-            seed.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
-            seed.Payees.Add(Payee.Create(budgetId, "Corner Shop", SeedInstant));
-            await seed.SaveChangesAsync();
-        }
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid budgetId = await host.SeedAdditionalBudgetAsync(userId, "Household");
+        Guid survivingBudgetId = await host.SeedAdditionalBudgetAsync(userId, "Side Project");
+        await SeedStructureAsync(host, budgetId);
+        await SeedStructureAsync(host, survivingBudgetId);
 
         // Act — raw Npgsql for the same reason as above: the cascade is a schema behaviour, and
         // EF's own delete would never send the statement that exercises it.
@@ -194,6 +255,12 @@ public sealed class BudgetRepositoryTests
         await Assert.That(await CountRowsAsync(connection, "category_groups", budgetId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "categories", budgetId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "payees", budgetId)).IsEqualTo(0L);
+
+        await Assert.That(await CountRowsAsync(connection, "budgets", survivingBudgetId)).IsEqualTo(1L);
+        await Assert.That(await CountRowsAsync(connection, "accounts", survivingBudgetId)).IsEqualTo(1L);
+        await Assert.That(await CountRowsAsync(connection, "category_groups", survivingBudgetId)).IsEqualTo(1L);
+        await Assert.That(await CountRowsAsync(connection, "categories", survivingBudgetId)).IsEqualTo(1L);
+        await Assert.That(await CountRowsAsync(connection, "payees", survivingBudgetId)).IsEqualTo(1L);
     }
 
     /// <summary>
@@ -201,6 +268,24 @@ public sealed class BudgetRepositoryTests
     /// non-UTC <see cref="DateTime"/>, so <see cref="DateTimeKind.Utc"/> is load-bearing.
     /// </summary>
     private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Writes one row of every budget-owned kind into <paramref name="budgetId"/> and no
+    /// transaction, so the budget is fully furnished but still erasable. One row per table is
+    /// enough: the counts that read this back are asking whether the cascade reached the table at
+    /// all, not how far it got.
+    /// </summary>
+    private static async Task SeedStructureAsync(RepositoryTestHost host, Guid budgetId)
+    {
+        await using BudgetoidDbContext db = CreateDb(host, budgetId);
+        db.Accounts.Add(Account.Create(
+            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
+        CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
+        db.CategoryGroups.Add(group);
+        db.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
+        db.Payees.Add(Payee.Create(budgetId, "Corner Shop", SeedInstant));
+        await db.SaveChangesAsync();
+    }
 
     /// <summary>
     /// Writes one transaction into <paramref name="budgetId"/>, together with the account it needs
