@@ -44,10 +44,14 @@ public sealed class SchemaConstraintSnapshotTests
         // from the same budget_id, while recorded money movement is the one thing a budget must not
         // lose. Shortening any composite column list is the other way this set decays — a
         // single-column foreign key lets the database accept a transaction pointing at another
-        // budget's row, and no query filter can enforce tenancy on a write. That collapse is caught
-        // by this test alone: each AK_*_id_budget_id alternate key is declared explicitly in its
-        // configuration (AccountConfiguration.cs:15), so it outlives the foreign key that referenced
-        // it and the unique-index snapshot stays byte-identical.
+        // budget's row, and no query filter can enforce tenancy on a write. Two other tests catch
+        // that collapse from their own side: Model_RequiresTransactionReferencesToStayInTheSameBudget
+        // reads the configured principal key, and TransactionRepositoryTests'
+        // Database_RejectsATransactionReferencingAnAccountInAnotherBudget inserts a cross-budget row
+        // and expects the violation. The one place it does not show up is the unique-index snapshot
+        // below: each AK_*_id_budget_id alternate key is declared explicitly in its configuration
+        // (AccountConfiguration.cs:15), so it outlives the foreign key that referenced it and that
+        // snapshot stays byte-identical.
         // One blunt edge: NO ACTION renders as the absence of an ON DELETE clause, so a
         // Restrict -> NO ACTION change still moves the line, it just reads as a deletion rather
         // than a substitution.
