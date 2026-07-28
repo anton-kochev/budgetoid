@@ -82,6 +82,17 @@ If no file exists for the domain area, create one following the structure of exi
 Start with `docs/business-logic/_overview.md` for domain orientation.
 Rules marked `[SOURCE: code-audit — unconfirmed]` need human confirmation before relying on them.
 
+## Rule Enforcement
+
+Every rule is owned by the lowest layer that can enforce it **declaratively** — database first,
+then application, then client. Upper layers may restate a rule for error quality and UX, never for
+enforcement. Two boundaries: no procedural logic (triggers, PL/pgSQL) pushed into the database just
+to satisfy "lowest layer"; and domain invariants go down while product policy stays up, because the
+bottom is the most expensive layer to change. "The database enforces it" means it *rejects*, not
+that it coerces. When a rule deliberately sits above its lowest capable layer, the doc that
+describes the rule says why. Full reasoning in
+`docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md`.
+
 ## Deploy Notes
 
 - Use `azd init` / `azd up` from AppHost later; do not mix with `aspire deploy`.

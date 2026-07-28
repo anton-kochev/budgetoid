@@ -21,7 +21,10 @@ itself a rule — see [budgets.md](budgets.md).
 Entity factories enforce field rules and application handlers enforce cross-entity rules, but the
 budget boundary between two rows is a schema guarantee first: composite foreign keys refuse a
 cross-budget reference whatever code path wrote it, and unique indexes are what make name uniqueness
-and provisioning race-safe. The central tenancy invariant — the budget, not the user,
+and provisioning race-safe. That split is a general rule rather than a local one: each rule is owned
+by the lowest layer that can enforce it declaratively, and where one deliberately sits higher the doc
+says why — see [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The
+central tenancy invariant — the budget, not the user,
 is what everything belongs to — is documented in [budgets.md](budgets.md); identity and provisioning
 are in [users-and-ownership.md](users-and-ownership.md).
 
