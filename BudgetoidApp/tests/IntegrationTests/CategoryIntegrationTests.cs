@@ -56,6 +56,78 @@ public sealed class CategoryIntegrationTests
         await Assert.That(categoryItems[2]!["position"]!.GetValue<int>()).IsEqualTo(0);
     }
 
+    /// <summary>
+    /// Positions are contiguous and zero-based — budget-wide across category groups, group-scoped
+    /// across categories. The database only checks <c>position &gt;= 0</c>; contiguity and
+    /// uniqueness are pure domain, owned by <see cref="CategoryOrdering" /> and
+    /// <see cref="CategoryGroupOrdering" />, and nothing below them would notice their loss.
+    /// </summary>
+    [Test]
+    public async Task Ordering_StaysContiguousAndZeroBasedAcrossASequenceOfMovesPlacementsAndDeletes()
+    {
+        // Arrange — three groups with several categories each, so every reindex below has siblings
+        // to shift. One group per operation would leave the reindex loops running over lists of one,
+        // where an off-by-one and a correct result are the same answer.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid essentialsId = await CreateCategoryGroupAsync(client, "Essentials");
+        Guid lifestyleId = await CreateCategoryGroupAsync(client, "Lifestyle");
+        Guid sinkingId = await CreateCategoryGroupAsync(client, "Sinking Funds");
+        Guid groceriesId = await CreateCategoryAsync(client, essentialsId, "Groceries");
+        Guid utilitiesId = await CreateCategoryAsync(client, essentialsId, "Utilities");
+        Guid rentId = await CreateCategoryAsync(client, essentialsId, "Rent");
+        Guid diningId = await CreateCategoryAsync(client, lifestyleId, "Dining Out");
+        Guid hobbiesId = await CreateCategoryAsync(client, lifestyleId, "Hobbies");
+        Guid travelId = await CreateCategoryAsync(client, sinkingId, "Travel");
+
+        // Act — a scripted sequence rather than a single operation, because the bug this guards
+        // against lives in the reindex that follows an operation, not in the operation. The order is
+        // chosen so each step is the *last* write to the list it reindexes: a step whose damage a
+        // later step would repair proves nothing about the step. Moving Groceries out is the final
+        // write to Essentials, deleting Dining Out is the final write to Lifestyle, and deleting the
+        // emptied group is the final write to the budget's group list. Sinking Funds is moved to the
+        // front first for the same reason — deleting the last group would leave its siblings already
+        // contiguous, and the group-level gap close would be free.
+        HttpResponseMessage moveGroup = await client.PatchAsJsonAsync(
+            $"/api/category-groups/{sinkingId}/position",
+            new { position = 0 });
+        HttpResponseMessage placeAcrossGroups = await client.PatchAsJsonAsync(
+            $"/api/categories/{groceriesId}/placement",
+            new { categoryGroupId = lifestyleId, position = 1 });
+        HttpResponseMessage emptyAGroup = await client.PatchAsJsonAsync(
+            $"/api/categories/{travelId}/placement",
+            new { categoryGroupId = lifestyleId, position = 0 });
+        HttpResponseMessage deleteCategory = await client.DeleteAsync($"/api/categories/{diningId}");
+        HttpResponseMessage deleteEmptiedGroup = await client.DeleteAsync(
+            $"/api/category-groups/{sinkingId}");
+
+        // Assert
+        await Assert.That(moveGroup.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(placeAcrossGroups.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(emptyAGroup.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(deleteCategory.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(deleteEmptiedGroup.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        // Read the rows, not /api/categories. The invariant is a property of stored state, and both
+        // read services tie-break on Id (`orderby categoryGroup.Position, category.Position,
+        // category.Id`), so a duplicate position is deterministic: it never surfaces as flakiness,
+        // only as an item sitting quietly in the wrong place that the projection re-sorts into a
+        // plausible order. CategoryHierarchy_CrudPlacementAndCustomOrderingWorkThroughApi asserts
+        // positions through that projection and would not see a broken reindex at all.
+        IReadOnlyList<CategoryGroupRow> groupRows = await ReadCategoryGroupRowsAsync(host);
+        IReadOnlyList<CategoryRow> categoryRows = await ReadCategoryRowsAsync(host);
+
+        // Set equality over the whole list, not a position per item: gaps and duplicates are both
+        // failures of the set, and a list of individual position checks catches neither reliably.
+        // Membership is asserted alongside it because a move that reindexed correctly but carried
+        // the wrong row would satisfy the position set on its own.
+        await AssertGroupPositionsAreContiguousAsync(groupRows, essentialsId, lifestyleId);
+        await AssertGroupContentsAreContiguousAsync(categoryRows, essentialsId, utilitiesId, rentId);
+        await AssertGroupContentsAreContiguousAsync(
+            categoryRows, lifestyleId, travelId, groceriesId, hobbiesId);
+        await Assert.That(categoryRows.Count).IsEqualTo(5);
+    }
+
     [Test]
     public async Task CreatedResources_AreRetrievableAtLocationHeader()
     {
@@ -330,6 +402,86 @@ public sealed class CategoryIntegrationTests
         await Assert.That(caught).IsNotNull();
         await Assert.That((caught!.InnerException as PostgresException)?.SqlState)
             .IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
+    }
+
+    /// <summary>A stored <c>category_groups</c> row, read without the API's ordering projection.</summary>
+    private readonly record struct CategoryGroupRow(Guid Id, int Position);
+
+    /// <summary>A stored <c>categories</c> row, read without the API's ordering projection.</summary>
+    private readonly record struct CategoryRow(Guid Id, Guid CategoryGroupId, int Position);
+
+    /// <summary>
+    /// Asserts that the budget's groups are exactly <paramref name="expectedIds" /> and that their
+    /// stored positions are exactly <c>0..m-1</c>. <c>IsEquivalentTo</c> defaults to
+    /// <c>CollectionOrdering.Any</c>, which is what makes this a set comparison rather than a
+    /// sequence one — the point is that no position is missing and none appears twice, not the order
+    /// the rows came back in.
+    /// </summary>
+    private static async Task AssertGroupPositionsAreContiguousAsync(
+        IReadOnlyList<CategoryGroupRow> groupRows,
+        params Guid[] expectedIds)
+    {
+        await Assert.That(groupRows.Select(row => row.Id)).IsEquivalentTo(expectedIds);
+        await Assert.That(groupRows.Select(row => row.Position))
+            .IsEquivalentTo(Enumerable.Range(0, expectedIds.Length));
+    }
+
+    /// <summary>
+    /// Asserts that <paramref name="categoryGroupId" /> holds exactly
+    /// <paramref name="expectedMemberIds" /> and that their stored positions are exactly
+    /// <c>0..n-1</c>. Category positions are group-scoped, so the invariant is per group and this
+    /// runs once per surviving group.
+    /// </summary>
+    private static async Task AssertGroupContentsAreContiguousAsync(
+        IReadOnlyList<CategoryRow> categoryRows,
+        Guid categoryGroupId,
+        params Guid[] expectedMemberIds)
+    {
+        CategoryRow[] members =
+            [.. categoryRows.Where(row => row.CategoryGroupId == categoryGroupId)];
+        await Assert.That(members.Select(row => row.Id)).IsEquivalentTo(expectedMemberIds);
+        await Assert.That(members.Select(row => row.Position))
+            .IsEquivalentTo(Enumerable.Range(0, expectedMemberIds.Length));
+    }
+
+    // No budget predicate on either read below: the API host provisions a single user, so the
+    // container holds exactly one budget and every row in these tables belongs to it. The `order by`
+    // is there only so a failure dump reads well; the assertions are order-insensitive.
+    private static async Task<IReadOnlyList<CategoryGroupRow>> ReadCategoryGroupRowsAsync(
+        PostgresTestHost host)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select id, position from category_groups order by position, id",
+            connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        List<CategoryGroupRow> rows = [];
+
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new CategoryGroupRow(reader.GetGuid(0), reader.GetInt32(1)));
+        }
+
+        return rows;
+    }
+
+    private static async Task<IReadOnlyList<CategoryRow>> ReadCategoryRowsAsync(PostgresTestHost host)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select id, category_group_id, position from categories order by category_group_id, position, id",
+            connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        List<CategoryRow> rows = [];
+
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new CategoryRow(reader.GetGuid(0), reader.GetGuid(1), reader.GetInt32(2)));
+        }
+
+        return rows;
     }
 
     private static async Task<Guid> CreateCategoryGroupAsync(HttpClient client, string name)
