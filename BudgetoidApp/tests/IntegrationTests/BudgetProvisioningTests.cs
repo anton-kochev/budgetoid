@@ -30,7 +30,7 @@ public sealed class BudgetProvisioningTests
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(budget.UserId).IsEqualTo(user.Id);
-        await Assert.That(budget.Name).IsEqualTo(Budget.DefaultName);
+        await Assert.That(budget.Name).IsNull();
         await Assert.That(budget.BaseCurrencyCode).IsNull();
     }
 

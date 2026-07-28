@@ -18,6 +18,12 @@ namespace IntegrationTests;
 /// </remarks>
 public sealed class BudgetScopingTests
 {
+    /// <summary>
+    /// Minor unit of the USD accounts these tests seed. Precision is not what any of them is
+    /// about; the constant keeps a bare <c>2</c> from reading as a rule.
+    /// </summary>
+    private const int UsdMinorUnit = 2;
+
     [Test]
     public async Task Accounts_WithTheSameNameInDifferentBudgets_BothPersist()
     {
@@ -112,6 +118,7 @@ public sealed class BudgetScopingTests
         AccountType.Checking,
         0m,
         "USD",
+        UsdMinorUnit,
         UtcNow());
 
     private static async Task<long> CountAccountsAsync(RepositoryTestHost host)

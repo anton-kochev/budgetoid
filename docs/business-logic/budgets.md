@@ -35,10 +35,12 @@ here and none of them re-document it.
 
 ## Key Entities
 
-- **Budget** — `Id`, `UserId` (the owning user), `Name`, `BaseCurrencyCode` (nullable),
-  `CreatedAtUtc`. Created through `Budget.Create(userId, name, createdAtUtc)` or
-  `Budget.CreateDefault(userId, createdAtUtc)`, which uses the constant name `Budget.DefaultName`
-  (`"My Budget"`).
+- **Budget** — `Id`, `UserId` (the owning user), `Name` (nullable), `BaseCurrencyCode` (nullable),
+  `CreatedAtUtc`. Created through `Budget.Create(userId, name, createdAtUtc)`, which requires a name
+  and trims it to at most 200 characters, or `Budget.CreateDefault(userId, createdAtUtc)`, which
+  leaves `Name` null. The two factories differ in exactly that one respect — both run the same
+  `ValidateOrThrow` and both reject `Guid.Empty` for the owner. A null name is the budget the user
+  never asked for; what a client shows in place of one is presentation and lives in the client.
 - **Base currency** — a nullable ISO-4217 code referencing the shared [Currency](currencies.md)
   reference data. It is null on every budget that exists: no factory takes one and `Budget` exposes
   no method that sets one. The column is schema readiness for a planning layer, not a setting a user
@@ -75,13 +77,13 @@ erDiagram
     `Cascade`, so a budget can never outlive its owner as an unreachable row.
 
 - **Budget names are unique per owner, case-insensitively.**
-  - **Why**: The name is the only thing that distinguishes one budget from another, so two budgets
-    called "Wedding" and "wedding" would be a list the user cannot read. Uniqueness of
-    `(user_id, name)` is separately what makes provisioning race-safe: both racers build the default
-    budget from the same constant name, so one of them gets a genuine unique violation (see
-    Workflows). Case-insensitivity contributes nothing there — the two racing names are identical.
+  - **Why**: The name is the only thing that distinguishes one named budget from another, so two
+    budgets called "Wedding" and "wedding" would be a list the user cannot read. The same index
+    carries a second, separate invariant — at most one *unnamed* budget per owner — and that half is
+    what makes provisioning race-safe; it is stated in Business Rules & Invariants below.
+    Case-insensitivity contributes nothing there: neither racing row has a name to fold.
   - **Enforced in**: `BudgetConfiguration` puts `name` on the `case_insensitive` collation and adds a
-    unique index over `(user_id, name)`.
+    unique index over `(user_id, name)`, declared `NULLS NOT DISTINCT`.
 
 - **Every account, category group, category, payee and transaction belongs to exactly one budget, on
   both read and write.**
@@ -219,21 +221,55 @@ erDiagram
 
 ## Business Rules & Invariants
 
-- **Rule**: A budget named `Budget.DefaultName` is created for a user when they are provisioned, and
-  the step is idempotent — a user who already has a budget gets no new one.
+- **Rule**: A budget with **no name** is created for a user when they are provisioned, and the step is
+  idempotent — a user who already has a budget gets no new one.
 - **Why**: A user must never encounter "budget" as something to set up. Signing in is the whole
   setup, so the pool of money their data hangs off has to already exist by the time their first
-  request reaches a handler.
+  request reaches a handler. It carries no name because nobody named it: naming a budget is an
+  explicit act, and inventing a name on the user's behalf would both put a display decision in
+  storage and make a budget they never touched look deliberately named.
 - **Enforced in**: `EnsureUserHandler.HandleAsync` resolves the user, then find-or-creates the
   budget via `IBudgetRepository.FindFirstForUserAsync` / `TryAddAsync`, returning
-  `ProvisionedUser(UserId, BudgetId)`.
+  `ProvisionedUser(UserId, BudgetId)`. `Budget.CreateDefault` is the only path that produces a budget
+  without a name.
 - **Example**: A brand-new Google subject's first authenticated request ends with exactly one row in
-  `budgets`, owned by the new user, named `"My Budget"`, with `base_currency_code` null. Three more
+  `budgets`, owned by the new user, with `name` and `base_currency_code` both null. Three more
   requests add nothing.
 - **Counterexample**: Creating the budget only on the new-user branch would look correct and pass a
   first-sign-in test, but it would leave any user whose budget insert was lost permanently without
   one — and nothing would ever repair it.
 - **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: A user has **at most one unnamed budget**, plus any number of named ones.
+- **Why**: The unnamed budget is the one provisioning creates, so "no second unnamed budget" is the
+  same sentence as "provisioning is idempotent under concurrency" — two requests that both find no
+  budget must not both succeed in creating one. Keying that on the *absence* of a name is what makes
+  it hold: a shared default string would be a constant two callers have to write identically, it can
+  drift, and the day it drifted both inserts would succeed and the user would silently own two
+  budgets with no error anywhere. Nothing about "no name" can drift. The invariant is also exactly
+  the shape multi-budget needs — named budgets are unconstrained in number, and the budget the user
+  never asked for stays singular.
+- **Enforced in**: the unique index over `(user_id, name)` in `BudgetConfiguration`, declared
+  `NULLS NOT DISTINCT` (`AreNullsDistinct(false)`, PostgreSQL 15+). The rule is **database-owned**
+  under [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) — the schema is
+  the lowest layer that can state it declaratively, so it holds for write paths that do not exist
+  yet. `BudgetRepository.TryAddAsync` restates nothing; it only translates the `23505` into `false`
+  so the caller can re-read.
+  `BudgetoidDbContextConstructionTests.Model_ScopesBudgetNameUniquenessToTheOwner` pins the
+  declaration, and `BudgetRepositoryTests.Budgets_WithNoNameForOneUser_AreRejectedAfterTheFirst`
+  pins the behaviour against PostgreSQL.
+- **Example**: two concurrent first requests for one new Google subject both find no budget and both
+  insert `(user_id, NULL)`. PostgreSQL accepts one and rejects the other with `23505`; the loser
+  re-reads and adopts the winner's row, so the user ends up with one budget and sees no error.
+- **Counterexample**: leaving the index at PostgreSQL's default NULL semantics, where every NULL is
+  distinct from every other. Both racing rows would insert cleanly, the user would silently own two
+  budgets, and nothing — no error, no log line, no other failing test — would say so. A store-level
+  `DEFAULT` on `name` would not restore the guarantee either: EF sends every mapped,
+  non-store-generated property in the INSERT, so the default would never fire, and it would put a
+  UI-visible string in the schema where it cannot be localized.
+- **Source**: `[SOURCE: discussion — 2026-07-28]`
 
 ---
 
@@ -293,8 +329,8 @@ stateDiagram-v2
 |---|---|---|
 | UserResolved → BudgetLookup | Always, on both the new-user and existing-user paths | — |
 | BudgetLookup → BudgetResolved | The user already owns a budget | First budget by `CreatedAtUtc`, then `Id` |
-| BudgetLookup → BudgetCreating | The user owns no budget (new user, or the heal path) | `Budget.CreateDefault` validates owner and name |
-| BudgetCreating → BudgetResolved | Insert succeeded | Unique `(user_id, name)` accepted the row |
+| BudgetLookup → BudgetCreating | The user owns no budget (new user, or the heal path) | `Budget.CreateDefault` validates the owner; there is no name to validate |
+| BudgetCreating → BudgetResolved | Insert succeeded | Unique `(user_id, name)` accepted the row — no other unnamed budget for this owner |
 | BudgetCreating → BudgetRaceReread → BudgetResolved | Unique-insert race lost | Re-read by owner; throws if still absent |
 
 ## Decision Trees
@@ -348,13 +384,18 @@ The user branch that runs before this is in
   there is no create-budget command or endpoint. It is pinned by
   `BudgetProvisioningTests.FirstAuthenticatedRequest_CreatesExactlyOneBudget` and
   `RepeatedSignIns_DoNotCreateAdditionalBudgets`, not by a constraint. Do not write code that relies
-  on a user having at most one budget, and do not "fix" the missing constraint by adding one.
+  on a user having at most one budget, and do not "fix" the missing constraint by adding one. The
+  `NULLS NOT DISTINCT` index is not that constraint and must not be mistaken for it: it bounds the
+  *unnamed* budgets at one and leaves named ones unlimited, which is why it survives multi-budget
+  untouched.
 
 - **Provisioning is two `SaveChanges` calls, not one transaction.** Between the user save and the
   budget save, a concurrent request for the same principal can see a user with no budget and try to
-  create one too. That is safe because both racers build the budget from the same constant
-  `Budget.DefaultName`, so they collide on the unique `(user_id, name)` index, the loser's
-  `TryAddAsync` returns `false`, and the re-read adopts the winner's row
+  create one too. That is safe because the budget provisioning creates has no name, so both racers
+  insert `(user_id, NULL)` and collide on the unique `(user_id, name)` index — which refuses the
+  second row **only because it is declared `NULLS NOT DISTINCT`**; under PostgreSQL's default both
+  NULLs would be distinct and both rows would land. The loser's `TryAddAsync` returns `false`, and
+  the re-read adopts the winner's row
   (`tests/UnitTests/EnsureUserHandlerTests.EnsureUser_WhenBudgetInsertLosesTheRace_ReturnsTheConcurrentlyCreatedBudget`
   — a same-named class also exists under `tests/IntegrationTests`).
   If a budget insert is lost entirely, the unconditional find-or-create heals it on the next sign-in.
@@ -365,9 +406,23 @@ The user branch that runs before this is in
   detail.** Ordering by `Id` alone would make an in-memory implementation and the database-backed one
   pick different budgets for the same user; the reason is on `IBudgetRepository`.
 
-- **The lookup is by owner, never by name.** Finding the default budget by matching
-  `Budget.DefaultName` would break the day a user can rename a budget: the renamed budget would stop
-  being found and provisioning would silently create a second one.
+- **The lookup is by owner, never by name.** `FindFirstForUserAsync` matches `UserId` alone, and it
+  has to: the budget provisioning creates has no name, so there is no value to match on at all. The
+  point survives renaming too — a name-based lookup would stop finding a budget the day the user
+  renamed it, and provisioning would silently create a second one. Do not reintroduce a name — a
+  well-known literal, a marker string, a flag column standing in for one — as the way the
+  provisioned budget is recognized.
+
+- **A budget with no name renders as the client's own localized default label.** That is the whole
+  contract for the missing name, and it is written down before there is anything to write it into:
+  there is no budget endpoint, DTO or UI today — `BudgetRouteConstructionTests` pins the absence of
+  the route — so the first client to display a budget name is the one that would otherwise invent
+  its own answer. The label is presentation, so it belongs to the client and only the client: the
+  domain holds no display string to keep in sync with it and the schema holds none either, which is
+  what makes the label translatable at all. A client MUST NOT write its label back into `name`.
+  Doing so would turn a budget the user never named into one that looks deliberately named, freeze
+  one language's string into storage, and make "default by design" and "named by the user"
+  indistinguishable again — the exact ambiguity a nullable name removes.
 
 - **`BaseCurrencyCode` is never written.** Not "rarely set" or "set once" — no factory takes it and
   `Budget` exposes no method that sets it, so the column holds null for every budget in existence.

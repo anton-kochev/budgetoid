@@ -1,5 +1,6 @@
 using Application.Abstractions;
 using Domain.Budgets;
+using Domain.Common;
 using Domain.Users;
 
 namespace Application.Users.EnsureUser;
@@ -33,7 +34,10 @@ public sealed class EnsureUserHandler(
             existing.UpdateProfile(command.Email, command.DisplayName);
             if (existing.Email != previousEmail || existing.DisplayName != previousDisplayName)
             {
-                await repository.UpdateProfileAsync(existing, cancellationToken);
+                // The result is ignored deliberately. A false means another user holds that email, so
+                // the refresh was rolled back and this user keeps its stored one — identity comes from
+                // the google_subject, and a stale cached attribute must not lock anyone out.
+                _ = await repository.UpdateProfileAsync(existing, cancellationToken);
             }
 
             return existing.Id;
@@ -49,11 +53,15 @@ public sealed class EnsureUserHandler(
             return user.Id;
         }
 
-        // A concurrent request won the unique insert; re-read to adopt its row.
+        // The insert lost to an existing row on the subject or on the email, and only this re-read
+        // separates the two. A reported unique violation means the conflicting transaction committed
+        // — under read committed the insert waits for it, and would have succeeded had it aborted —
+        // so a winner on this subject is visible here. Finding none therefore proves the subject was
+        // never duplicated and the email alone collided, with a different Google account holding it.
         User? concurrentExisting = await repository.FindByGoogleSubjectAsync(command.GoogleSubject, cancellationToken);
 
         return concurrentExisting?.Id
-               ?? throw new InvalidOperationException("Unique user insert failed but user could not be re-read.");
+               ?? throw new ConflictException("This email address is already linked to a different Google account.");
     }
 
     private async Task<Guid> EnsureDefaultBudgetIdAsync(Guid userId, CancellationToken cancellationToken)

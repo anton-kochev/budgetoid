@@ -48,6 +48,15 @@ not the sentence "Account name must be unique." — that sentence comes from
 makes the rule true. This is legitimate layering, not duplication to be collapsed; the failure mode to
 guard against is a future reader deleting either half as redundant.
 
+**A violation report names one rule, not every rule that was violated.** A single row can breach two
+constraints at once, and PostgreSQL returns one constraint name, chosen by index creation order
+rather than by anything the caller did. Filtering a catch by constraint name therefore answers
+*whether this code models the failure*, not *what went wrong*; where two rules can fire together,
+the discrimination has to come from a second question the application asks after the rejection.
+`EnsureUserHandler` asks it by re-reading the `google_subject`
+(`BudgetoidApp/Application/Users/EnsureUser/EnsureUserHandler.cs:61`), because a losing concurrent
+sign-in duplicates a subject and its email in the same row.
+
 **A precheck is racy by design.** `IBudgetRepository.HasTransactionsAsync`
 (`BudgetoidApp/Domain/Budgets/IBudgetRepository.cs:32`, implemented at
 `BudgetoidApp/Infrastructure/Repositories/BudgetRepository.cs:21`) is check-then-act and exists for
@@ -56,15 +65,15 @@ should "fix" the race with a lock, and nobody should drop the constraint on the 
 already covers it.
 
 **"The database enforces it" means rejects, not coerces.** A `numeric` column's scale does not reject
-an over-precise value — PostgreSQL silently rounds it. Inserting `0.005` into a `numeric(14,2)` column
-stores `0.01` and raises nothing. The scale bounds what is *representable*; the *rejection* rule stays
-domain-owned. A coercion that quietly changes the caller's data is not enforcement, and treating it as
-such would leave a rule with no owner at all.
+an over-precise value — PostgreSQL silently rounds it. Inserting `0.00005` into a `numeric(14,4)`
+column stores `0.0001` and raises nothing. The scale bounds what is *representable*; the *rejection*
+rule stays domain-owned. A coercion that quietly changes the caller's data is not enforcement, and
+treating it as such would leave a rule with no owner at all.
 
 **Where database rules physically live.** Schema — constraints, indexes, collations — lives in the
 single regenerated baseline migration, and the repository keeps exactly one, pinned by
 `Migrations_ContainASingleFreshBaseline`
-(`BudgetoidApp/tests/IntegrationTests/BudgetoidDbContextConstructionTests.cs:266`). Roles and grants
+(`BudgetoidApp/tests/IntegrationTests/BudgetoidDbContextConstructionTests.cs:302`). Roles and grants
 cannot live there: `dotnet ef migrations add` discards hand-added `migrationBuilder.Sql(...)` on every
 regeneration. They belong in **provisioning** instead — the Aspire AppHost locally, azd/bicep in
 Azure. This is the first thing whoever introduces a least-privilege application role will hit.

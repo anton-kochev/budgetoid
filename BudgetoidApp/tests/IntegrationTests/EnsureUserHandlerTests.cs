@@ -1,4 +1,5 @@
 using Application.Users.EnsureUser;
+using Domain.Common;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
@@ -58,6 +59,48 @@ public sealed class EnsureUserHandlerTests
         await Assert.That(provisioned.Select(result => result.BudgetId).Distinct().Count()).IsEqualTo(1);
         await Assert.That(await assertionDb.Users.CountAsync()).IsEqualTo(1);
         await Assert.That(await assertionDb.Budgets.CountAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task EnsureUser_NewSubjectWithAnEmailAnotherAccountHolds_ThrowsConflictException()
+    {
+        // Arrange — a real row, provisioned the ordinary way, already holds this email under a
+        // different google subject.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await host.SeedBudgetAsync("google-1", "shared@example.com");
+        await using BudgetoidDbContext db = CreateDb(host.ConnectionString);
+        EnsureUserHandler handler = CreateHandler(db);
+
+        // Act — the insert is refused, and the re-read by "google-2" comes back empty. No row to
+        // adopt means this was not a race, which leaves only one honest reading: someone else has
+        // the address. The handler decides that, because it is the layer holding the re-read.
+        ConflictException exception = await ThrowsConflictExceptionAsync(() =>
+            handler.HandleAsync(new EnsureUserCommand("google-2", "shared@example.com", "Second")));
+
+        // Assert — the rejected sign-in provisioned nothing: no second user, and no budget for one.
+        await Assert.That(exception.Message).IsNotEmpty();
+        await using BudgetoidDbContext verify = CreateDb(host.ConnectionString);
+        await Assert.That(await verify.Users.CountAsync()).IsEqualTo(1);
+        await Assert.That(await verify.Budgets.CountAsync()).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// Relocated here from <c>UserRepositoryTests</c>, which no longer expects a throw from the
+    /// repository. Kept private rather than shared, because one caller does not yet justify a
+    /// test-wide helper type.
+    /// </summary>
+    private static async Task<ConflictException> ThrowsConflictExceptionAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (ConflictException exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Expected ConflictException.");
     }
 
     private static EnsureUserHandler CreateHandler(BudgetoidDbContext db) => new(

@@ -28,6 +28,8 @@ namespace Infrastructure.Persistence.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_currencies", x => x.code);
+                    table.CheckConstraint("CK_currencies_code", "code ~ '^[A-Z]{3}$'");
+                    table.CheckConstraint("CK_currencies_minor_unit", "minor_unit between 0 and 4");
                 });
 
             migrationBuilder.CreateTable(
@@ -35,9 +37,9 @@ namespace Infrastructure.Persistence.Migrations
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
-                    google_subject = table.Column<string>(type: "text", nullable: false),
-                    email = table.Column<string>(type: "text", nullable: false),
-                    display_name = table.Column<string>(type: "text", nullable: true),
+                    google_subject = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    email = table.Column<string>(type: "character varying(254)", maxLength: 254, nullable: false, collation: "case_insensitive"),
+                    display_name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: true),
                     created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
                 },
                 constraints: table =>
@@ -51,7 +53,7 @@ namespace Infrastructure.Persistence.Migrations
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     user_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
+                    name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: true, collation: "case_insensitive"),
                     base_currency_code = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: true),
                     created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
                 },
@@ -80,7 +82,7 @@ namespace Infrastructure.Persistence.Migrations
                     budget_id = table.Column<Guid>(type: "uuid", nullable: false),
                     name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
                     type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
-                    opening_balance = table.Column<decimal>(type: "numeric(14,2)", nullable: false),
+                    opening_balance = table.Column<decimal>(type: "numeric(14,4)", nullable: false),
                     currency_code = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: false),
                     created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
                 },
@@ -88,6 +90,8 @@ namespace Infrastructure.Persistence.Migrations
                 {
                     table.PrimaryKey("PK_accounts", x => x.id);
                     table.UniqueConstraint("AK_accounts_id_budget_id", x => new { x.id, x.budget_id });
+                    table.CheckConstraint("CK_accounts_opening_balance", "abs(opening_balance) <= 1000000000");
+                    table.CheckConstraint("CK_accounts_type", "type in ('Checking', 'Savings', 'Cash', 'CreditCard')");
                     table.ForeignKey(
                         name: "FK_accounts_budgets_budget_id",
                         column: x => x.budget_id,
@@ -185,7 +189,7 @@ namespace Infrastructure.Persistence.Migrations
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     budget_id = table.Column<Guid>(type: "uuid", nullable: false),
                     account_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    amount = table.Column<decimal>(type: "numeric(14,2)", nullable: false),
+                    amount = table.Column<decimal>(type: "numeric(14,4)", nullable: false),
                     date = table.Column<DateOnly>(type: "date", nullable: false),
                     description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
                     payee_id = table.Column<Guid>(type: "uuid", nullable: true),
@@ -195,6 +199,7 @@ namespace Infrastructure.Persistence.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_transactions", x => x.id);
+                    table.CheckConstraint("CK_transactions_amount", "abs(amount) <= 1000000000");
                     table.ForeignKey(
                         name: "FK_transactions_accounts_account_id_budget_id",
                         columns: x => new { x.account_id, x.budget_id },
@@ -261,7 +266,8 @@ namespace Infrastructure.Persistence.Migrations
                 name: "IX_budgets_user_id_name",
                 table: "budgets",
                 columns: new[] { "user_id", "name" },
-                unique: true);
+                unique: true)
+                .Annotation("Npgsql:NullsDistinct", false);
 
             migrationBuilder.CreateIndex(
                 name: "IX_categories_budget_id_name",
@@ -316,6 +322,12 @@ namespace Infrastructure.Persistence.Migrations
                 name: "IX_transactions_payee_id_budget_id",
                 table: "transactions",
                 columns: new[] { "payee_id", "budget_id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_users_email",
+                table: "users",
+                column: "email",
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_users_google_subject",

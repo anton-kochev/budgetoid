@@ -1,3 +1,4 @@
+using Application.Currencies;
 using Application.Transactions.CreateTransaction;
 using Domain.Accounts;
 using Domain.Categories;
@@ -129,13 +130,14 @@ public sealed class CreateTransactionHandlerTests
     [Test]
     public async Task HandleAsync_WithInvalidTransaction_DoesNotCreatePayeeOrPersist()
     {
-        // Arrange
+        // Arrange — the invalid amount is one with too many decimal places for the account's USD.
+        // A zero amount used to serve here and no longer can: zero is a legitimate ledger entry.
         Fixture fixture = await Fixture.CreateAsync();
 
         // Act
         _ = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
-                0m,
+                1.234m,
                 new DateOnly(2026, 6, 12),
                 fixture.Account.Id,
                 "Invalid",
@@ -144,6 +146,50 @@ public sealed class CreateTransactionHandlerTests
         // Assert
         await Assert.That(fixture.Transactions.AddCallCount).IsEqualTo(0);
         await Assert.That(fixture.Payees.GetOrCreateCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task HandleAsync_WithZeroAmount_PersistsTheTransaction()
+    {
+        // Arrange — a fully discounted purchase is worth recording for its payee and date even
+        // though it nets to nothing, and the handler must not stand in the way of that.
+        Fixture fixture = await Fixture.CreateAsync();
+
+        // Act
+        var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            0m,
+            new DateOnly(2026, 6, 12),
+            fixture.Account.Id,
+            "Fully discounted"));
+        var stored = (await fixture.Transactions.GetAllAsync()).Single();
+
+        // Assert
+        await Assert.That(fixture.Transactions.AddCallCount).IsEqualTo(1);
+        await Assert.That(dto.Amount).IsEqualTo(0m);
+        await Assert.That(stored.Amount).IsEqualTo(0m);
+    }
+
+    [Test]
+    public async Task HandleAsync_ValidatesTheAmountAgainstTheAccountCurrencyMinorUnit()
+    {
+        // Arrange — the handler already resolves the account's currency; this proves it passes that
+        // currency's minor unit to the domain rather than a hard-coded 2. JPY has a minor unit of 0,
+        // so -42.50 is not a representable amount of yen, and a handler still passing 2 accepts it.
+        Fixture fixture = await Fixture.CreateAsync();
+        fixture.Currencies.Add(new CurrencyDto("JPY", "Yen", "¥", 0));
+        Account yenAccount = await fixture.Accounts.CreateAsync("Cash", AccountType.Checking, 0m, "JPY");
+
+        // Act
+        ValidationException exception = await ThrowsValidationExceptionAsync(() =>
+            fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                -42.50m,
+                new DateOnly(2026, 6, 12),
+                yenAccount.Id,
+                "Ramen")));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
+        await Assert.That(fixture.Transactions.AddCallCount).IsEqualTo(0);
     }
 
     private static async Task<ValidationException> ThrowsValidationExceptionAsync(Func<Task> action)
@@ -168,6 +214,8 @@ public sealed class CreateTransactionHandlerTests
 
         public required Guid BudgetId { get; init; }
         public required Account Account { get; init; }
+        public required InMemoryAccountRepository Accounts { get; init; }
+        public required InMemoryCurrencyReadService Currencies { get; init; }
         public required InMemoryTransactionRepository Transactions { get; init; }
         public required InMemoryPayeeRepository Payees { get; init; }
         public required InMemoryCategoryGroupRepository CategoryGroups { get; init; }
@@ -185,10 +233,11 @@ public sealed class CreateTransactionHandlerTests
             var payees = new InMemoryPayeeRepository(budgetId, timeProvider);
             var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
             var categories = new InMemoryCategoryRepository(budgetId, timeProvider, categoryGroups);
+            var currencies = new InMemoryCurrencyReadService();
             var handler = new CreateTransactionHandler(
                 transactions,
                 accounts,
-                new InMemoryCurrencyReadService(),
+                currencies,
                 payees,
                 categories,
                 categoryGroups,
@@ -199,6 +248,8 @@ public sealed class CreateTransactionHandlerTests
             {
                 BudgetId = budgetId,
                 Account = account,
+                Accounts = accounts,
+                Currencies = currencies,
                 Transactions = transactions,
                 Payees = payees,
                 CategoryGroups = categoryGroups,

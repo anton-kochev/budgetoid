@@ -6,7 +6,9 @@ namespace UnitTests.Fakes;
 /// In-memory <see cref="IBudgetRepository"/> that reproduces the two database behaviours the
 /// provisioning flow depends on: the documented ordering of <see cref="FindFirstForUserAsync"/>,
 /// and a unique index on <c>(UserId, Name)</c> on a case-insensitive collation that makes
-/// <see cref="TryAddAsync"/> report failure instead of throwing.
+/// <see cref="TryAddAsync"/> report failure instead of throwing. The modelled index treats two
+/// nameless budgets as colliding, matching <c>NULLS NOT DISTINCT</c> on the real index — which is
+/// the only thing keeping provisioning race-safe now that the default budget has no name.
 /// </summary>
 public sealed class InMemoryBudgetRepository : IBudgetRepository
 {
@@ -49,6 +51,13 @@ public sealed class InMemoryBudgetRepository : IBudgetRepository
         return Task.FromResult(budget);
     }
 
+    /// <summary>
+    /// Reports <see langword="false"/> for a budget the modelled unique index would reject, the way
+    /// the real repository translates PostgreSQL's <c>23505</c>. Two null names count as a
+    /// collision: <see cref="string.Equals(string?, string?, StringComparison)"/> answers
+    /// <see langword="true"/> for a pair of nulls, which is exactly the <c>NULLS NOT DISTINCT</c>
+    /// semantics the real index is declared with.
+    /// </summary>
     public Task<bool> TryAddAsync(Budget budget, CancellationToken cancellationToken = default)
     {
         AddCallCount++;

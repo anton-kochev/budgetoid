@@ -4,6 +4,8 @@ namespace Domain.Accounts;
 
 public sealed class Account
 {
+    private const int MaxMinorUnit = 4;
+
     private Account()
     {
     }
@@ -22,9 +24,10 @@ public sealed class Account
         AccountType type,
         decimal openingBalance,
         string currencyCode,
+        int minorUnit,
         DateTime createdAtUtc)
     {
-        ValidateOrThrow(budgetId, name, type, openingBalance, currencyCode);
+        ValidateOrThrow(budgetId, name, type, openingBalance, currencyCode, minorUnit);
 
         return new Account
         {
@@ -38,17 +41,29 @@ public sealed class Account
         };
     }
 
-    public void Update(string name, AccountType type, decimal openingBalance)
+    public void Update(string name, AccountType type, decimal openingBalance, int minorUnit)
     {
-        ValidateOrThrow(BudgetId, name, type, openingBalance, CurrencyCode);
+        ValidateOrThrow(BudgetId, name, type, openingBalance, CurrencyCode, minorUnit);
 
         Name = name.Trim();
         Type = type;
         OpeningBalance = openingBalance;
     }
 
-    private static void ValidateOrThrow(Guid budgetId, string? name, AccountType type, decimal openingBalance, string? currencyCode)
+    private static void ValidateOrThrow(
+        Guid budgetId,
+        string? name,
+        AccountType type,
+        decimal openingBalance,
+        string? currencyCode,
+        int minorUnit)
     {
+        // The minor unit comes from the account's currency, which the database already bounds to
+        // 0..4, so an out-of-range value is a broken caller rather than user input - and a bad one
+        // makes the precision check below meaningless, so it fails fast instead of joining errors.
+        ArgumentOutOfRangeException.ThrowIfNegative(minorUnit);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(minorUnit, MaxMinorUnit);
+
         var errors = new Dictionary<string, string[]>();
         string trimmedName = name?.Trim() ?? string.Empty;
         string normalizedCurrencyCode = NormalizeCurrencyCode(currencyCode);
@@ -81,9 +96,11 @@ public sealed class Account
             errors[nameof(CurrencyCode)] = ["Currency code must be exactly 3 ASCII letters."];
         }
 
-        if (decimal.Round(openingBalance, 2) != openingBalance)
+        if (decimal.Round(openingBalance, minorUnit) != openingBalance)
         {
-            errors[nameof(OpeningBalance)] = ["Opening balance must have no more than 2 decimal places."];
+            errors[nameof(OpeningBalance)] = [minorUnit == 0
+                ? "Opening balance must be a whole number."
+                : $"Opening balance must have no more than {minorUnit} decimal places."];
         }
         else if (Math.Abs(openingBalance) > 1_000_000_000m)
         {

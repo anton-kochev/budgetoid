@@ -109,10 +109,21 @@ public sealed class SchemaConstraintSnapshotTests
             """CREATE UNIQUE INDEX "AK_category_groups_id_budget_id" ON public.category_groups USING btree (id, budget_id)""",
             """CREATE UNIQUE INDEX "AK_payees_id_budget_id" ON public.payees USING btree (id, budget_id)""",
             """CREATE UNIQUE INDEX "IX_accounts_budget_id_name" ON public.accounts USING btree (budget_id, name)""",
-            """CREATE UNIQUE INDEX "IX_budgets_user_id_name" ON public.budgets USING btree (user_id, name)""",
+            // The trailing clause is the rule, not rendering noise. Without it PostgreSQL counts
+            // every NULL as distinct, so both provisioning racers insert an unnamed (user_id, NULL)
+            // budget — the default budget is exactly the one with no name — and a user silently ends
+            // up owning two; with it, one racer has to lose on 23505. And unlike case_insensitive,
+            // which belongs to the column and needs the collation snapshot below to catch it,
+            // pg_get_indexdef does render this clause: drop it and this line moves, so this snapshot
+            // catches it alone.
+            """CREATE UNIQUE INDEX "IX_budgets_user_id_name" ON public.budgets USING btree (user_id, name) NULLS NOT DISTINCT""",
             """CREATE UNIQUE INDEX "IX_categories_budget_id_name" ON public.categories USING btree (budget_id, name)""",
             """CREATE UNIQUE INDEX "IX_category_groups_budget_id_name" ON public.category_groups USING btree (budget_id, name)""",
             """CREATE UNIQUE INDEX "IX_payees_budget_id_name" ON public.payees USING btree (budget_id, name)""",
+            // One email, one account. The index is only half the rule: users.email carries
+            // case_insensitive, which the collation snapshot below pins, and pg_get_indexdef does
+            // not render it here.
+            """CREATE UNIQUE INDEX "IX_users_email" ON public.users USING btree (email)""",
             """CREATE UNIQUE INDEX "IX_users_google_subject" ON public.users USING btree (google_subject)""",
             """CREATE UNIQUE INDEX "PK___EFMigrationsHistory" ON public."__EFMigrationsHistory" USING btree ("MigrationId")""",
             """CREATE UNIQUE INDEX "PK_accounts" ON public.accounts USING btree (id)""",
@@ -151,10 +162,19 @@ public sealed class SchemaConstraintSnapshotTests
         // 17 does not represent NOT NULL in pg_constraint at all, PostgreSQL 18 catalogs it as
         // contype = 'n', and this filter excludes it either way. "position" comes back quoted
         // because it is a COL_NAME_KEYWORD, which quote_identifier always quotes.
+        // These are rendered expressions, not the ones the configuration writes: pg_get_constraintdef
+        // normalizes, so an IN list comes back as = ANY (ARRAY[...]), BETWEEN as two ANDed
+        // comparisons, and a numeric literal compared against numeric carries its cast. Editing a
+        // line here to look like the configuration is how this test starts failing for no reason.
         string[] expected =
         [
+            """CK_accounts_opening_balance: accounts CHECK ((abs(opening_balance) <= (1000000000)::numeric))""",
+            """CK_accounts_type: accounts CHECK (((type)::text = ANY ((ARRAY['Checking'::character varying, 'Savings'::character varying, 'Cash'::character varying, 'CreditCard'::character varying])::text[])))""",
             """CK_categories_position: categories CHECK (("position" >= 0))""",
             """CK_category_groups_position: category_groups CHECK (("position" >= 0))""",
+            """CK_currencies_code: currencies CHECK (((code)::text ~ '^[A-Z]{3}$'::text))""",
+            """CK_currencies_minor_unit: currencies CHECK (((minor_unit >= 0) AND (minor_unit <= 4)))""",
+            """CK_transactions_amount: transactions CHECK ((abs(amount) <= (1000000000)::numeric))""",
         ];
         await Assert.That(checkConstraints).IsEquivalentTo(expected);
     }
@@ -234,6 +254,9 @@ public sealed class SchemaConstraintSnapshotTests
         // flips to case-sensitive. PayeeIntegrationTests covers one of these five columns
         // behaviourally. Asserting the whole set rather than five columns individually also catches
         // a collation added where it was not intended.
+        // users.email is the one non-name column in the set, and the one whose collation carries a
+        // uniqueness rule rather than a lookup convenience: drop it and Sam@x.com and sam@x.com
+        // become two accounts for one mailbox.
         string[] expected =
         [
             "accounts.name COLLATE case_insensitive",
@@ -241,6 +264,7 @@ public sealed class SchemaConstraintSnapshotTests
             "categories.name COLLATE case_insensitive",
             "category_groups.name COLLATE case_insensitive",
             "payees.name COLLATE case_insensitive",
+            "users.email COLLATE case_insensitive",
         ];
         await Assert.That(collatedColumns).IsEquivalentTo(expected);
     }

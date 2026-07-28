@@ -8,6 +8,193 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-07-28 — A zero amount is a legal transaction: the record is the point, not the number
+
+**Context:** "Amount must be non-zero (zero has no direction and records no movement)" was recorded
+below as a closing clause of the direction decision (2026-07-13) and never argued in its own right.
+It is wrong on the ledger's own terms: a ledger records what happened, not only where money moved. A
+fully discounted purchase, a refund that exactly cancels the purchase it reverses, a zero-value
+invoice worth keeping for its payee, date and category — each is a real event, and what makes such a
+row worth having is the record itself, not the number on it. Refusing zero does not remove the event;
+it forces the user to invent an amount or drop the entry, and both are worse than storing the truth.
+The rule also produced an asymmetry against `Account.OpeningBalance`, which has always accepted zero,
+and the reason given for that asymmetry — a new account may legitimately start empty, unlike a
+transaction, which must move something — was an assertion rather than an argument. The likeliest real
+reason the rule existed is neither of these: an empty amount field binds to `0`, so a blank form
+submit would otherwise record a meaningless entry.
+
+**Decision:** **Allow `Amount == 0`.** `Transaction.Create` validates precision and magnitude only,
+and the sign keeps exactly the meaning it had, with zero reading as neither direction rather than as
+an invalid one. The blank-form guard the rule was probably standing in for **becomes the client's,
+explicitly and by name**: nothing below the client can tell a deliberate zero from an untouched
+field, so the amount input must require a value rather than default to one. Under
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) that is where a rule of
+this shape belongs — it is about the interaction, not about what a ledger may hold — but a guard that
+changes layers without anyone building it is a guard that was deleted, which is why it is named here
+and in [transactions.md](transactions.md) instead of being left to follow from the principle.
+Accepting that lists and totals can now contain rows that add nothing to any sum; that is the
+intended outcome, because they add a fact.
+
+**Alternatives considered:** *Keep the rule as the blank-form guard* — rejected: it is product policy
+wearing an invariant's clothes, and it pays for catching one careless submit by refusing every honest
+zero, permanently and for every caller — including importers and any future consumer that has no form
+at all. *Refuse zero only when description, payee and category are all absent* — rejected: it makes
+an amount's legality depend on unrelated fields, so the same number is valid or invalid according to
+what else was typed, and it still cannot see the difference it is trying to detect. *Leave it and let
+users record `0.01` or nothing* — rejected: this is the status quo restated. It either puts a cent
+that never moved into the account's total or drops a record the user wanted, and the second is what
+people actually do.
+
+**Affected areas:** [transactions.md](transactions.md), [accounts.md](accounts.md),
+[_overview.md](_overview.md). This reverses the final sentence of "Transaction direction is the sign
+of a single Amount" (2026-07-13) below; the rest of that entry — direction as the sign of one signed
+amount, and the rejection of a separate type flag — stands.
+
+---
+
+## 2026-07-28 — Recorded precision is a property of the currency, not a constant
+
+**Context:** `Account` and `Transaction` both rounded against a hard-coded two decimal places, while
+every seeded `Currency` carried a `MinorUnit` of 0 to 4 that **nothing read**. The model therefore
+advertised a precision it could not honour, and failed in both directions: a JPY account accepted
+`1000.5`, half a yen being a denomination that does not exist, while a BHD or KWD account — three
+minor units — could not record its smallest unit at all, since `0.125` was refused as over-precise
+and, had it got past the domain, `numeric(14,2)` would have silently stored it as `0.13`. Reference
+data nothing reads is decoration; worse, this piece of it was already documented as coupled to the
+scale of the money columns while that scale was 2 and its own ceiling was 4.
+
+**Decision:** **Make the currency's minor unit the precision rule.** `Transaction.Create`,
+`Account.Create` and `Account.Update` take an `int minorUnit` and reject any amount `decimal.Round`
+would change, with the message computed from it — "Amount must be a whole number." for JPY, "…no more
+than 3 decimal places." for BHD. An out-of-range `minorUnit` is an `ArgumentOutOfRangeException`
+rather than a validation error, because it can only arrive from a `currencies` row that
+`CK_currencies_minor_unit` would have refused: a broken caller, not user input.
+`accounts.opening_balance` and `transactions.amount` widen from `numeric(14,2)` to `numeric(14,4)`,
+so the most precise currency the constraint permits is representable at all.
+`UpdateAccountHandler` gains `ICurrencyReadService`, which it had never needed — `Account.Update`
+re-validates against the account's own unchangeable `CurrencyCode` and now needs the currency behind
+it, resolved after the load, where a miss is corruption rather than user error. The rule is
+**domain-owned by necessity, not by preference**: checking a row's precision against its currency
+means joining `currencies` per row, which PostgreSQL can only do in a trigger, and
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules procedural logic out
+of the database even where it would be the lower layer. What the schema owns is the envelope — the
+column scale bounds what is representable, the check bounds what a currency may claim — and the
+domain picks the right value inside it. The scale still coerces rather than rejects, so widening it
+changes what fits, not who enforces.
+
+**Alternatives considered:** *Round everything to four places, the widest a currency may declare* —
+rejected: it swaps one lie for another. A USD account would accept `10.0001`, which is not money in
+the currency that account is denominated in, and the yen case would be no better than before.
+*Express the rule in the schema* — rejected on ADR 0002's declarative boundary: a per-row check would
+have to read `currencies`, so it exists only as a trigger — business logic invisible to the type
+system, untested by the unit suite, and versioned only by migrations. *Widen the precision as well,
+to `numeric(15,4)`* — rejected: `CK_accounts_opening_balance` and `CK_transactions_amount` already
+refuse anything above 1e9, and `numeric(14,4)` still leaves ten integer digits, tenfold headroom
+above a magnitude no accepted write can reach. The extra digit would buy room for values the schema
+rejects, at the cost of changing more of the column than the decision requires.
+
+**Affected areas:** [currencies.md](currencies.md) — now the canonical home of the precision rule and
+of why it sits above its nominally lowest layer — [accounts.md](accounts.md),
+[transactions.md](transactions.md). The `numeric(14,2)` illustration in
+[users-and-ownership.md](users-and-ownership.md) and in
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) names these same two
+columns and now reads `numeric(14,4)`; the point it makes — a scale coerces and therefore enforces
+nothing — is untouched by the widening.
+
+---
+
+## 2026-07-28 — The provisioned budget has no name, and race safety keys on that absence
+
+**Context:** The budget created at provisioning was named from a constant, and the unique index over
+`(user_id, name)` was what made two concurrent first requests collide: both racers wrote the same
+literal, so one of them got a `23505` and re-read the other's row. The guarantee therefore rested on
+a string two callers had to agree on. Such a constant can drift — a second creation path, a caller
+that supplies a name of its own, a rename that looks harmless — and the day it drifts nothing fails
+loudly: both inserts succeed and the user silently owns two budgets, the second one invisible behind
+a lookup that returns the first. The literal was also product copy living in storage, and a
+non-nullable `Name` went on asserting that every budget has a name when the only budget that exists
+was never named by anyone.
+
+**Decision:** Make `budgets.name` **nullable** and give the provisioned budget **no name at all** —
+`Budget.CreateDefault` produces `Name == null`, the default-name constant is deleted, and
+`Budget.Create` still requires a trimmed name of at most 200 characters, so the two factories differ
+in exactly that one respect and share a single owner check. Declare the unique index over
+`(user_id, name)` **`NULLS NOT DISTINCT`** (`AreNullsDistinct(false)`, PostgreSQL 15+), which is what
+makes two nameless rows collide: PostgreSQL's default treats every NULL as distinct, so without the
+opt-out both racers' inserts land. The index now states a real invariant instead of a coincidence of
+a shared literal — **at most one unnamed budget per user, plus any number of named ones** — which is
+exactly the shape multi-budget needs. What a client shows in place of a missing name is
+**presentation and stays in the client**, localized there; neither the domain nor the schema holds a
+display string, so there is nothing to keep in sync and nothing a migration would have to translate.
+Accepting that `Name` is nullable everywhere it is read, so every future budget list, header and
+export has to answer "no name" explicitly rather than inherit an answer from storage — which is the
+point, but it makes the render contract something each client must be given rather than something it
+can assume.
+
+**Alternatives considered:** *A store-level `DEFAULT` on `name` carrying the display string* —
+rejected twice over: EF Core sends every mapped, non-store-generated property in the INSERT, so the
+default would never fire unless the property were made store-generated, and it would put UI-visible
+product copy in the schema, unlocalizable and changeable only by migration. That is the "invariants
+down, policy up" boundary of
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md): the uniqueness invariant
+belongs at the bottom, the label a person reads does not. *An empty string instead of NULL* —
+rejected: `""` is a sentinel meaning both "default by design" and "blank by accident", and a
+non-nullable `Name` would keep claiming a name always exists, so the compiler could not tell the two
+states apart and every reader would have to remember the convention. *A unique index on `user_id`
+alone* — already rejected in "Budget replaces the user as the unit of tenancy" (2026-07-25) as a
+constraint a later release must remember to drop; nothing here changes that reasoning.
+
+**Affected areas:** [budgets.md](budgets.md). This supersedes the half of "Budget replaces the user
+as the unit of tenancy" below that made provisioning race-safe "because the default budget's name is
+a constant"; the rest of that entry, including the deliberate absence of a one-budget-per-user
+constraint, stands.
+
+---
+
+## 2026-07-28 — One email, one user: a legible 409 beats silently provisioning a second person
+
+**Context:** `users.email` was unbounded and unconstrained, so two rows could hold the same address.
+That sits uncomfortably against the identity model this log already records: identity is keyed on the
+Google `sub` **precisely because email is mutable**, and a duplicate address is exactly what a user
+whose `sub` changed looks like. Making email unique therefore introduces a failure mode that did not
+exist before — a legitimate Google account refused because a stale row holds its address. What tips
+the balance is the alternative, which is worse and silent: without the constraint, that same person is
+provisioned as a brand-new user with an empty default budget and no signal whatsoever that their
+accounts, categories and transactions still exist under the old row. They see a working, empty app and
+conclude their data is gone. The address is also the only human-readable identifier a user has, so two
+rows holding one address make every support question, export and future notification ambiguous.
+
+**Decision:** Make `users.email` **unique, case-insensitively** — `varchar(254)` on the
+`case_insensitive` collation under `IX_users_email` — and bound the other two text columns at
+`varchar(255)` for `google_subject` (Google's documented `sub` cap) and `varchar(200)` for
+`display_name` (matching every other name column). The two collision paths behave **asymmetrically on
+purpose**: a brand-new `sub` presenting a taken address gets a **409** with a sentence naming the
+cause, because there is no row to adopt and failing closed is the honest answer; an already-identified
+user whose refreshed email is taken has the change **discarded** and the sign-in proceeds on the
+stored one, because email is a cached copy of an identity-provider attribute and a cached attribute
+failing to refresh must never lock a person out of their own budget. The 409-versus-continue split is
+application policy sitting deliberately above the database, which rejects both writes identically and
+cannot know that one of them is a sign-in. Accepting three consequences: an over-long email now fails
+an existing user's sign-in with a 400 (truncating or swallowing is ruled out by ADR 0002); the
+collation folds case but not accents, so `josé@` and `jose@` remain two users; and, being
+nondeterministic, it makes `LIKE` on the column fail with `0A000`, so the first search-by-email needs
+an explicit `COLLATE`.
+
+**Alternatives considered:** *Leave email unconstrained* — rejected: it converts a changed `sub` into
+silent, unsignalled data loss, and the database is the only layer that still holds when the
+provisioning handler is wrong. *Rebind the stale row's `google_subject` to the new subject on
+collision* — rejected: it makes `sub` mutable in direct contradiction of the identity rule this log
+already records, and it would only be safe if the `email_verified` claim were checked, which the API
+does not read — an unverified address in a token would then be enough to take over an existing
+account. *Throw on both paths, or swallow on both* — rejected: throwing on refresh locks out existing
+users over an attribute they do not control, and swallowing on insert drops the caller back into the
+race re-read, which finds nothing under the new `sub` and produces the unexplained 500 this change
+exists to remove.
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md).
+
+---
+
 ## 2026-07-26 — A budget holding transactions cannot be deleted; its empty structure still cascades
 
 **Context:** Every entity a budget owns cascaded from `budgets.id`, so a single budget delete would

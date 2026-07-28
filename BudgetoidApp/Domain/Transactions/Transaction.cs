@@ -4,6 +4,8 @@ namespace Domain.Transactions;
 
 public sealed class Transaction
 {
+    private const int MaxMinorUnit = 4;
+
     private Transaction()
     {
     }
@@ -18,8 +20,14 @@ public sealed class Transaction
     public Guid? CategoryId { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
 
-    public static Transaction Create(Guid budgetId, Guid accountId, decimal amount, DateOnly date, string? description, DateTime createdAtUtc)
+    public static Transaction Create(Guid budgetId, Guid accountId, decimal amount, int minorUnit, DateOnly date, string? description, DateTime createdAtUtc)
     {
+        // The minor unit comes from the account's currency, which the database already bounds to
+        // 0..4, so an out-of-range value is a broken caller rather than user input - and a bad one
+        // makes the precision check below meaningless, so it fails fast instead of joining errors.
+        ArgumentOutOfRangeException.ThrowIfNegative(minorUnit);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(minorUnit, MaxMinorUnit);
+
         var errors = new Dictionary<string, string[]>();
 
         if (budgetId == Guid.Empty)
@@ -32,13 +40,11 @@ public sealed class Transaction
             errors[nameof(AccountId)] = ["Account id is required."];
         }
 
-        if (amount == 0)
+        if (decimal.Round(amount, minorUnit) != amount)
         {
-            errors[nameof(Amount)] = ["Amount must be non-zero."];
-        }
-        else if (decimal.Round(amount, 2) != amount)
-        {
-            errors[nameof(Amount)] = ["Amount must have no more than 2 decimal places."];
+            errors[nameof(Amount)] = [minorUnit == 0
+                ? "Amount must be a whole number."
+                : $"Amount must have no more than {minorUnit} decimal places."];
         }
         else if (Math.Abs(amount) > 1_000_000_000m)
         {

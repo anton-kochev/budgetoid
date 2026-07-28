@@ -13,18 +13,29 @@ namespace IntegrationTests;
 
 public sealed class BudgetRepositoryTests
 {
+    /// <summary>
+    /// Minor unit of the USD accounts these tests seed. Precision is not what any of them is
+    /// about; the constant keeps a bare <c>2</c> from reading as a rule.
+    /// </summary>
+    private const int UsdMinorUnit = 2;
+
     [Test]
-    public async Task Budgets_WithTheSameNameForOneUser_AreRejected()
+    public async Task Budgets_WithNoNameForOneUser_AreRejectedAfterTheFirst()
     {
-        // Arrange
+        // Arrange — two default budgets, so both rows are (user_id, NULL). This is the provisioning
+        // race written down: two concurrent first requests from one user each insert exactly this.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         await using BudgetoidDbContext db = CreateDb(host);
         var repository = new BudgetRepository(db);
         bool firstAdded = await repository.TryAddAsync(Budget.CreateDefault(userId, UtcAt(hour: 10)));
 
-        // Act — the real PostgreSQL unique violation must surface as false, not as an escaping
-        // DbUpdateException, because the provisioning handler's re-read path depends on it.
+        // Act — the second insert may only be refused because the unique index is declared NULLS NOT
+        // DISTINCT; under PostgreSQL's default both NULL names would be distinct and both rows would
+        // land, leaving the user with two budgets and no error anywhere. The refusal must also reach
+        // the caller as false rather than an escaping DbUpdateException, because the provisioning
+        // handler's re-read path is what turns the lost race into a normal sign-in. This goes
+        // through BudgetRepository rather than raw SQL to hold both halves at once.
         bool secondAdded = await repository.TryAddAsync(Budget.CreateDefault(userId, UtcAt(hour: 11)));
 
         // Assert
@@ -159,7 +170,7 @@ public sealed class BudgetRepositoryTests
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
             seed.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", SeedInstant));
+                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
             CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
             seed.CategoryGroups.Add(group);
             seed.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
@@ -199,7 +210,7 @@ public sealed class BudgetRepositoryTests
     {
         await using BudgetoidDbContext db = CreateDb(host, budgetId);
         Account account = Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", SeedInstant);
+            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
         db.Accounts.Add(account);
         await db.SaveChangesAsync();
 
@@ -207,6 +218,7 @@ public sealed class BudgetRepositoryTests
             budgetId,
             account.Id,
             -10m,
+            UsdMinorUnit,
             new DateOnly(2026, 6, 12),
             "Groceries",
             SeedInstant));

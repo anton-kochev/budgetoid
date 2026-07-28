@@ -52,7 +52,7 @@ namespace Infrastructure.Persistence.Migrations
                         .UseCollation("case_insensitive");
 
                     b.Property<decimal>("OpeningBalance")
-                        .HasColumnType("numeric(14,2)")
+                        .HasColumnType("numeric(14,4)")
                         .HasColumnName("opening_balance");
 
                     b.Property<string>("Type")
@@ -68,7 +68,12 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasIndex("BudgetId", "Name")
                         .IsUnique();
 
-                    b.ToTable("accounts", (string)null);
+                    b.ToTable("accounts", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounts_opening_balance", "abs(opening_balance) <= 1000000000");
+
+                            t.HasCheckConstraint("CK_accounts_type", "type in ('Checking', 'Savings', 'Cash', 'CreditCard')");
+                        });
                 });
 
             modelBuilder.Entity("Domain.Budgets.Budget", b =>
@@ -88,7 +93,6 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Name")
-                        .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)")
                         .HasColumnName("name")
@@ -104,6 +108,8 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.HasIndex("UserId", "Name")
                         .IsUnique();
+
+                    NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("UserId", "Name"), false);
 
                     b.ToTable("budgets", (string)null);
                 });
@@ -227,7 +233,12 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.HasKey("Code");
 
-                    b.ToTable("currencies", (string)null);
+                    b.ToTable("currencies", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_currencies_code", "code ~ '^[A-Z]{3}$'");
+
+                            t.HasCheckConstraint("CK_currencies_minor_unit", "minor_unit between 0 and 4");
+                        });
 
                     b.HasData(
                         new
@@ -365,7 +376,7 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnName("account_id");
 
                     b.Property<decimal>("Amount")
-                        .HasColumnType("numeric(14,2)")
+                        .HasColumnType("numeric(14,4)")
                         .HasColumnName("amount");
 
                     b.Property<Guid>("BudgetId")
@@ -404,7 +415,10 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasIndex("BudgetId", "Date", "CreatedAtUtc")
                         .IsDescending(false, true, true);
 
-                    b.ToTable("transactions", (string)null);
+                    b.ToTable("transactions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_transactions_amount", "abs(amount) <= 1000000000");
+                        });
                 });
 
             modelBuilder.Entity("Domain.Users.User", b =>
@@ -419,23 +433,32 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DisplayName")
-                        .HasColumnType("text")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
                         .HasColumnName("display_name");
 
                     b.Property<string>("Email")
                         .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("email");
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)")
+                        .HasColumnName("email")
+                        .UseCollation("case_insensitive");
 
                     b.Property<string>("GoogleSubject")
                         .IsRequired()
-                        .HasColumnType("text")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("google_subject");
 
                     b.HasKey("Id");
 
+                    b.HasIndex("Email")
+                        .IsUnique()
+                        .HasDatabaseName("IX_users_email");
+
                     b.HasIndex("GoogleSubject")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasDatabaseName("IX_users_google_subject");
 
                     b.ToTable("users", (string)null);
                 });

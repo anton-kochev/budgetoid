@@ -10,6 +10,12 @@ namespace IntegrationTests;
 
 public sealed class BudgetIsolationTests
 {
+    /// <summary>
+    /// Minor unit of the USD accounts these tests seed. Precision is not what any of them is
+    /// about; the constant keeps a bare <c>2</c> from reading as a rule.
+    /// </summary>
+    private const int UsdMinorUnit = 2;
+
     [Test]
     public async Task QueryFilter_HidesOtherBudgetsTransactions_EvenWithoutAnExplicitWhere()
     {
@@ -20,7 +26,7 @@ public sealed class BudgetIsolationTests
         Guid transactionId;
         await using (BudgetoidDbContext dbA = CreateDb(host, budgetA))
         {
-            Account account = Account.Create(budgetA, "Checking", AccountType.Checking, 0m, "USD", DateTime.UtcNow);
+            Account account = Account.Create(budgetA, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, DateTime.UtcNow);
             dbA.Accounts.Add(account);
             await dbA.SaveChangesAsync();
 
@@ -28,6 +34,7 @@ public sealed class BudgetIsolationTests
                 budgetA,
                 account.Id,
                 -10m,
+                UsdMinorUnit,
                 new DateOnly(2026, 6, 12),
                 "Budget A groceries",
                 new DateTime(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc));
@@ -76,6 +83,7 @@ public sealed class BudgetIsolationTests
                 AccountType.Checking,
                 0m,
                 "USD",
+                UsdMinorUnit,
                 DateTime.UtcNow));
             await dbA.SaveChangesAsync();
         }

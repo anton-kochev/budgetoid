@@ -4,6 +4,9 @@ namespace Domain.Users;
 
 public sealed record Email
 {
+    /// <summary>The RFC 5321 path limit of 256 octets less the enclosing angle brackets.</summary>
+    public const int MaxLength = 254;
+
     private Email(string value)
     {
         Value = value;
@@ -19,6 +22,14 @@ public sealed record Email
             throw new ValidationException(new Dictionary<string, string[]>
             {
                 [nameof(Email)] = ["Email is required."],
+            });
+        }
+
+        if (trimmedValue.Length > MaxLength)
+        {
+            throw new ValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(Email)] = [$"Email must be {MaxLength} characters or fewer."],
             });
         }
 

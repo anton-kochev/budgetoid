@@ -31,6 +31,7 @@ public sealed class CreateAccountHandler(
             command.Type,
             command.OpeningBalance,
             currency.Code,
+            currency.MinorUnit,
             timeProvider.GetUtcNow().UtcDateTime);
 
         await repository.AddAsync(account, cancellationToken);

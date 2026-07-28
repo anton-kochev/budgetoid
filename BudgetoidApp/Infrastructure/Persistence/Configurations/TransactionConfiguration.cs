@@ -12,7 +12,10 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
 {
     public void Configure(EntityTypeBuilder<Transaction> builder)
     {
-        builder.ToTable("transactions");
+        builder.ToTable("transactions", table =>
+            // Magnitude only: a numeric scale rounds an over-precise amount rather than rejecting
+            // it, so the decimal-places half of the domain rule stays domain-owned.
+            table.HasCheckConstraint("CK_transactions_amount", "abs(amount) <= 1000000000"));
         builder.HasKey(transaction => transaction.Id);
 
         builder.Property(transaction => transaction.Id).HasColumnName("id");
@@ -20,7 +23,7 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         builder.Property(transaction => transaction.AccountId).HasColumnName("account_id").IsRequired();
         builder.Property(transaction => transaction.Amount)
             .HasColumnName("amount")
-            .HasColumnType("numeric(14,2)")
+            .HasColumnType("numeric(14,4)")
             .IsRequired();
         builder.Property(transaction => transaction.Date)
             .HasColumnName("date")

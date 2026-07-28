@@ -45,9 +45,10 @@ erDiagram
 ### MUST
 
 - **An account's currency (`CurrencyCode`) must reference a currency that exists.**
-  - **Why**: The account's currency drives how amounts are displayed (symbol, decimal places) and
-    is denormalized into transaction responses. A dangling currency would break display and signal a
-    broken data invariant.
+  - **Why**: The account's currency drives the precision every amount on it may be recorded at and
+    how amounts are displayed (symbol, decimal places), and is denormalized into transaction
+    responses. A dangling currency would leave nothing to validate against, break display, and
+    signal a broken data invariant.
   - **Enforced in**: `AccountConfiguration` maps `accounts.currency_code → currencies.code` with a
     `Restrict` foreign key, so PostgreSQL refuses a dangling code however the row was written and
     refuses to delete a currency any account uses — that is what makes the guarantee hold for every
@@ -60,7 +61,9 @@ erDiagram
 - **An account's currency MUST NOT change after creation.**
   - **Why**: Existing transactions on the account are recorded and displayed in that currency.
     Switching the currency would silently reinterpret every historical amount (e.g. 100 USD becoming
-    100 JPY), corrupting the meaning of past data.
+    100 JPY), corrupting the meaning of past data. Every one of those amounts was also accepted at
+    the old currency's precision, so a switch to a coarser one would leave rows the domain would now
+    refuse to write.
   - **Enforced in**: `UpdateAccountCommand` / `UpdateAccountHandler` accept only name, type, and
     opening balance — there is no path to change `CurrencyCode`. The Angular UI reinforces this by
     hiding the currency field in edit mode (`accounts.service.ts`, `accounts.component.ts`).
@@ -84,24 +87,44 @@ erDiagram
 
 - **Rule**: `Type` must be one of the defined `AccountType` values.
 - **Why**: Type is a closed classification; an undefined value has no meaning downstream.
-- **Enforced in**: `ValidateOrThrow` via `Enum.IsDefined`.
+- **Enforced in**: `CK_accounts_type` in `AccountConfiguration` limits the `type` column to the four
+  member names the enum converts to, so the classification stays closed whatever wrote the row;
+  `ValidateOrThrow` restates it via `Enum.IsDefined` so an undefined value is a validation error
+  rather than a constraint violation. A check rather than a native PostgreSQL enum type is
+  deliberate — `HasConversion<string>()` already stores the member name — and the price is that
+  adding an `AccountType` member now costs a migration as well as a code change.
 - **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
 
-- **Rule**: `OpeningBalance` may be zero, must have at most 2 decimal places, and its absolute value
-  must be ≤ 1,000,000,000.
-- **Why**: Money is stored to cent precision; more than 2 places implies a rounding/entry error. The
-  cap is a sanity bound against fat-finger entries. Zero is allowed because a brand-new account can
-  legitimately start empty (unlike a transaction, which must move a non-zero amount).
-- **Enforced in**: `ValidateOrThrow` in `Domain/Accounts/Account.cs`.
-- **Example**: opening balance `0` is valid; `10.005` is rejected (3 decimals); `2000000000` is
-  rejected (over the cap).
-- **Counterexample**: rounding `10.005` to `10.01` instead of rejecting it silently changes the
-  number the user typed. The column is `numeric(14,2)`, so the third decimal has nowhere to go
-  either way — but rounding hides the entry error, and it resurfaces later as a balance that never
-  reconciles against the real account.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Rule**: `OpeningBalance` may be zero, must have at most as many decimal places as the account's
+  currency has minor units, and its absolute value must be ≤ 1,000,000,000.
+- **Why**: Precision belongs to the currency rather than to the column — a yen has no sub-unit, a
+  dinar has three — so a place beyond what the currency has implies a rounding or entry error rather
+  than a smaller amount. The cap is a sanity bound against fat-finger entries. Zero is allowed
+  because a brand-new account can legitimately start empty.
+- **Enforced in**: the two halves sit at different layers, and the split is forced rather than
+  chosen. `CK_accounts_opening_balance` (`abs(opening_balance) <= 1000000000`) owns the magnitude
+  bound, so it holds for write paths that do not exist yet. The decimal-places half stays with
+  `ValidateOrThrow` in `Domain/Accounts/Account.cs`, against the minor unit `CreateAccountHandler`
+  and `UpdateAccountHandler` read from `ICurrencyReadService`, because no lower layer can hold it:
+  a column definition cannot reject an over-precise value — `numeric(14,4)` rounds it instead, and a
+  coercion is not enforcement under
+  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) — and a check
+  constraint cannot compare the balance against the row's currency without joining `currencies`. The
+  reasoning is in [currencies.md](currencies.md#business-rules--invariants). `ValidateOrThrow`
+  restates the magnitude bound too, so an over-cap entry is a sentence the caller can act on rather
+  than a constraint violation.
+- **Example**: opening balance `0` is valid; on a USD account `10.005` is rejected (3 decimals); on a
+  JPY account `1000.5` is rejected (the yen has no sub-unit); `2000000000` is rejected (over the
+  cap).
+- **Counterexample**: rounding a USD `10.005` to `10.01` instead of rejecting it silently changes the
+  number the user typed — and the column will not refuse first. `numeric(14,4)` stores `10.005`
+  exactly, because the scale bounds only what is *representable* and three places fit; push past four
+  and it still does not refuse, it stores `10.00005` as `10.0001` and raises nothing. That is why the
+  decimal-places half cannot be pushed down to join the magnitude bound. Rounding hides the entry
+  error, and it resurfaces later as a balance that never reconciles against the real account.
+- **Source**: `[SOURCE: discussion — 2026-07-28]`
 
 ---
 
@@ -139,7 +162,9 @@ ELSE
 
 - **[Currencies](currencies.md)**: an account references a currency by its 3-letter code (not a
   GUID). `CreateAccountHandler` validates existence and denormalizes the currency's name, symbol,
-  and minor unit into the `AccountDto` for display.
+  and minor unit into the `AccountDto` for display. The minor unit is also what the opening balance's
+  precision is validated against, on create and on update alike — which is why
+  `UpdateAccountHandler` resolves the currency even though it cannot change it.
 - **[Transactions](transactions.md)**: transactions are recorded against an account; the account's
   currency determines how each transaction's amount is presented. The delete guard above depends on
   the transaction data.

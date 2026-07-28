@@ -1,3 +1,4 @@
+using System.Globalization;
 using Domain.Accounts;
 using Domain.Categories;
 using Domain.CategoryGroups;
@@ -12,6 +13,12 @@ namespace IntegrationTests;
 
 public sealed class TransactionRepositoryTests
 {
+    /// <summary>
+    /// Minor unit of the USD accounts these tests seed. Precision is not what any of them is about;
+    /// the constant keeps a bare <c>2</c> from reading as a rule.
+    /// </summary>
+    private const int UsdMinorUnit = 2;
+
     [Test]
     public async Task AddAsync_StoresCreatedAtUtcAsTimestampWithTimeZone()
     {
@@ -21,7 +28,7 @@ public sealed class TransactionRepositoryTests
 
         await using (BudgetoidDbContext db = new(options))
         {
-            Account account = Account.Create(budgetId, "Checking", AccountType.Checking, 0m, "USD", DateTime.UtcNow);
+            Account account = Account.Create(budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, DateTime.UtcNow);
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
 
@@ -30,6 +37,7 @@ public sealed class TransactionRepositoryTests
                     budgetId,
                     account.Id,
                     1m,
+                    UsdMinorUnit,
                     new DateOnly(2026, 6, 12),
                     "Test",
                     new DateTime(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc)));
@@ -45,8 +53,12 @@ public sealed class TransactionRepositoryTests
     }
 
     [Test]
-    public async Task AmountColumn_UsesNumeric14Scale2()
+    public async Task AmountColumn_UsesNumeric14Scale4()
     {
+        // Scale 4 rather than 2 because the minor unit is a property of the currency, not of the
+        // column: BHD and KWD have three decimal places and would otherwise be silently rounded on
+        // write. Ten integer digits are left, which still clears the domain's 1e9 magnitude cap
+        // tenfold. This column and accounts.opening_balance must not drift apart.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
@@ -60,7 +72,7 @@ public sealed class TransactionRepositoryTests
         await reader.ReadAsync();
 
         await Assert.That(reader.GetInt32(0)).IsEqualTo(14);
-        await Assert.That(reader.GetInt32(1)).IsEqualTo(2);
+        await Assert.That(reader.GetInt32(1)).IsEqualTo(4);
     }
 
     [Test]
@@ -74,7 +86,7 @@ public sealed class TransactionRepositoryTests
         Guid accountA;
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetA)))
         {
-            Account account = Account.Create(budgetA, "Checking", AccountType.Checking, 0m, "USD", UtcNow());
+            Account account = Account.Create(budgetA, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
             accountA = account.Id;
@@ -90,6 +102,7 @@ public sealed class TransactionRepositoryTests
             budgetB,
             accountA,
             1m,
+            UsdMinorUnit,
             new DateOnly(2026, 6, 12),
             "Should Fail",
             UtcNow()));
@@ -133,7 +146,7 @@ public sealed class TransactionRepositoryTests
         Guid accountB;
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetB)))
         {
-            Account account = Account.Create(budgetB, "Checking", AccountType.Checking, 0m, "USD", UtcNow());
+            Account account = Account.Create(budgetB, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
             accountB = account.Id;
@@ -149,6 +162,7 @@ public sealed class TransactionRepositoryTests
             budgetB,
             accountB,
             1m,
+            UsdMinorUnit,
             new DateOnly(2026, 6, 12),
             "Should Fail",
             UtcNow());
@@ -192,7 +206,7 @@ public sealed class TransactionRepositoryTests
         Guid accountB;
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetB)))
         {
-            Account account = Account.Create(budgetB, "Checking", AccountType.Checking, 0m, "USD", UtcNow());
+            Account account = Account.Create(budgetB, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
             accountB = account.Id;
@@ -208,6 +222,7 @@ public sealed class TransactionRepositoryTests
             budgetB,
             accountB,
             1m,
+            UsdMinorUnit,
             new DateOnly(2026, 6, 12),
             "Should Fail",
             UtcNow());
@@ -244,7 +259,7 @@ public sealed class TransactionRepositoryTests
         // Act
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId)))
         {
-            Account account = Account.Create(budgetId, "Checking", AccountType.Checking, 0m, "USD", UtcNow());
+            Account account = Account.Create(budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
 
@@ -252,6 +267,7 @@ public sealed class TransactionRepositoryTests
                 budgetId,
                 account.Id,
                 1m,
+                UsdMinorUnit,
                 new DateOnly(2026, 6, 12),
                 "No payee, no category",
                 UtcNow());
@@ -271,12 +287,144 @@ public sealed class TransactionRepositoryTests
         await Assert.That(stored.BudgetId).IsEqualTo(budgetId);
     }
 
+    [Test]
+    [Arguments("1000000000.01")]
+    [Arguments("-1000000000.01")]
+    public async Task Database_RejectsAnAmountBeyondTheMagnitudeLimit(string amount)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Act — raw Npgsql on purpose: Transaction.Create refuses this amount client-side, so an
+        // EF-based write proves nothing about the schema. Both signs, because the rule is on the
+        // magnitude and a constraint written without abs() would refuse only one of them.
+        PostgresException exception = await ThrowsPostgresExceptionAsync(
+            connection, budgetId, accountId, Money(amount));
+
+        // Assert — the constraint name is asserted next to the SQLSTATE because any other check on
+        // this table would raise 23514 too, and the test would then pass on the wrong rejection.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(exception.ConstraintName).IsEqualTo("CK_transactions_amount");
+    }
+
+    [Test]
+    [Arguments("1000000000")]
+    [Arguments("-1000000000")]
+    public async Task Database_AcceptsAnAmountAtTheMagnitudeLimit(string amount)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Act — the domain refuses only above this value, so the limit itself is legitimate data.
+        // Without this case a constraint written with < instead of <= would look correct.
+        await InsertTransactionAsync(connection, budgetId, accountId, Money(amount));
+
+        // Assert
+        await Assert.That(await CountTransactionsAsync(connection, budgetId)).IsEqualTo(1L);
+    }
+
     /// <summary>
     /// Fixed UTC instant for every row these tests write. PostgreSQL <c>timestamptz</c> rejects a
     /// non-UTC <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
     /// </summary>
     private static DateTime UtcNow() =>
         new(2026, 7, 14, 10, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Parses a money literal the culture-invariant way. The values arrive as strings because
+    /// <c>decimal</c> is not a legal attribute argument type.
+    /// </summary>
+    private static decimal Money(string value) => decimal.Parse(value, CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Writes the account a transaction needs to satisfy the composite account reference, and
+    /// returns its id.
+    /// </summary>
+    private static async Task<Guid> SeedAccountAsync(RepositoryTestHost host, Guid budgetId)
+    {
+        await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
+        Account account = Account.Create(budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        db.Accounts.Add(account);
+        await db.SaveChangesAsync();
+        return account.Id;
+    }
+
+    private static async Task InsertTransactionAsync(
+        NpgsqlConnection connection,
+        Guid budgetId,
+        Guid accountId,
+        decimal amount)
+    {
+        await using NpgsqlCommand command = BuildInsert(connection, budgetId, accountId, amount);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<PostgresException> ThrowsPostgresExceptionAsync(
+        NpgsqlConnection connection,
+        Guid budgetId,
+        Guid accountId,
+        decimal amount)
+    {
+        await using NpgsqlCommand command = BuildInsert(connection, budgetId, accountId, amount);
+
+        try
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+        catch (PostgresException exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Expected PostgresException.");
+    }
+
+    private static NpgsqlCommand BuildInsert(
+        NpgsqlConnection connection,
+        Guid budgetId,
+        Guid accountId,
+        decimal amount)
+    {
+        NpgsqlCommand command = new(
+            """
+            insert into transactions (id, budget_id, account_id, amount, date, description, created_at_utc)
+            values (@id, @budget_id, @account_id, @amount, @date, @description, @created_at_utc)
+            """,
+            connection);
+        command.Parameters.AddWithValue("id", Guid.CreateVersion7());
+        command.Parameters.AddWithValue("budget_id", budgetId);
+        command.Parameters.AddWithValue("account_id", accountId);
+        command.Parameters.AddWithValue("amount", amount);
+        command.Parameters.AddWithValue("date", new DateOnly(2026, 6, 12));
+        command.Parameters.AddWithValue("description", "At the limit");
+        command.Parameters.AddWithValue("created_at_utc", UtcNow());
+        return command;
+    }
+
+    private static async Task<long> CountTransactionsAsync(NpgsqlConnection connection, Guid budgetId)
+    {
+        await using NpgsqlCommand command = new(
+            "select count(*) from transactions where budget_id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", budgetId);
+
+        // Pattern-matched rather than cast-and-null-forgive: a null or unexpected scalar means the
+        // query changed shape, and that should fail loudly here instead of at the assertion.
+        return await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected a count from 'transactions', got '{unexpected ?? "null"}'."),
+        };
+    }
 
     private static DbContextOptions<BudgetoidDbContext> CreateOptions(RepositoryTestHost host)
     {

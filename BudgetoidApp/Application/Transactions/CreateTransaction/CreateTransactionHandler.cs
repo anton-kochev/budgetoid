@@ -41,6 +41,7 @@ public sealed class CreateTransactionHandler(
             budgetContext.BudgetId,
             command.AccountId,
             command.Amount,
+            currency.MinorUnit,
             command.Date,
             command.Description,
             timeProvider.GetUtcNow().UtcDateTime);

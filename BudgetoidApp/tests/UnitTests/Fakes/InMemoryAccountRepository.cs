@@ -58,7 +58,16 @@ public sealed class InMemoryAccountRepository(Guid budgetId, TimeProvider timePr
 
     public async Task<Account> CreateAsync(string name = "Checking", AccountType type = AccountType.Checking, decimal openingBalance = 0m, string currencyCode = "USD")
     {
-        Account account = Account.Create(budgetId, name, type, openingBalance, currencyCode, timeProvider.GetUtcNow().UtcDateTime);
+        // The minor unit comes from the same lookup the read projection uses, so a JPY account
+        // seeded here is validated as a zero-decimal currency rather than silently as USD.
+        Account account = Account.Create(
+            budgetId,
+            name,
+            type,
+            openingBalance,
+            currencyCode,
+            CurrencyFor(currencyCode).MinorUnit,
+            timeProvider.GetUtcNow().UtcDateTime);
         await AddAsync(account);
         return account;
     }

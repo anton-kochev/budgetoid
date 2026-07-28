@@ -37,6 +37,10 @@ It opens from the Add button as a sheet (compact) or dialog (expanded).
   record on classification.
 - Field order: amount → payee → category → account → date → note. Submit enables once
   amount and account are valid.
+- **An empty amount is not a zero.** An untouched amount field blocks submit; it never
+  submits as zero. Zero is a legal amount — a purchase a voucher covered in full is a
+  record worth keeping — so nothing beneath this form can tell a deliberate zero from a
+  field nobody typed in. The form is the only place that knows the difference.
 - **Save confirms and resets**: snackbar "Recorded." with Undo, form clears back to a
   focused amount field — repeat entry (several receipts in a row) never touches
   navigation.

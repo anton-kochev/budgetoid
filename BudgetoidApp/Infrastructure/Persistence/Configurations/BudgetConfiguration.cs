@@ -15,19 +15,23 @@ public sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
 
         builder.Property(budget => budget.Id).HasColumnName("id");
         builder.Property(budget => budget.UserId).HasColumnName("user_id").IsRequired();
-        builder.Property(budget => budget.Name).HasColumnName("name").HasMaxLength(200).IsRequired()
+        builder.Property(budget => budget.Name).HasColumnName("name").HasMaxLength(200)
             .UseCollation("case_insensitive");
         builder.Property(budget => budget.BaseCurrencyCode).HasColumnName("base_currency_code").HasMaxLength(3);
         builder.Property(budget => budget.CreatedAtUtc).HasColumnName("created_at_utc").HasColumnType("timestamp with time zone").IsRequired();
 
         // Deliberately no unique index or key over user_id alone: the schema is multi-budget-ready
         // from day one, and "exactly one budget per user" is a release-scope property (no code path
-        // creates a second one), not a schema invariant. This composite index is still what makes
-        // provisioning race-safe, because the default budget's name is the constant
-        // Budget.DefaultName, so both racers insert (userId, "My Budget") and one gets a genuine
-        // unique violation. Its leading column also serves WHERE user_id = ?, so no separate index
-        // on user_id is needed.
-        builder.HasIndex(budget => new { budget.UserId, budget.Name }).IsUnique();
+        // creates a second one), not a schema invariant. The leading column of the composite index
+        // below also serves WHERE user_id = ?, so no separate index on user_id is needed.
+        //
+        // NULLS NOT DISTINCT (PG15+) is what states the invariant: at most one unnamed budget per
+        // user, plus any number of named ones. Without it PostgreSQL treats each NULL as distinct,
+        // both racers in provisioning insert (userId, NULL), and a user silently ends up owning two
+        // budgets. Keying race safety on the absence of a name is stronger than the literal it
+        // replaces: collision used to require both racers to write the same string, and a constant
+        // two callers must agree on can drift; nothing about "no name" can.
+        builder.HasIndex(budget => new { budget.UserId, budget.Name }).IsUnique().AreNullsDistinct(false);
 
         builder.HasOne<User>()
             .WithMany()

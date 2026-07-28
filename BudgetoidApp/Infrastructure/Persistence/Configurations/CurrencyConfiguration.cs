@@ -8,7 +8,24 @@ public sealed class CurrencyConfiguration : IEntityTypeConfiguration<Currency>
 {
     public void Configure(EntityTypeBuilder<Currency> builder)
     {
-        builder.ToTable("currencies");
+        builder.ToTable("currencies", table =>
+        {
+            // minor_unit is an input to the rounding rule, so a bad value produces wrongly rounded
+            // money rather than nothing at all. The bound is not an arbitrary sanity range: it equals
+            // the scale of the money columns, accounts.opening_balance and transactions.amount, so
+            // whoever changes that scale trips over this constraint and learns the two move together.
+            table.HasCheckConstraint("CK_currencies_minor_unit", "minor_unit between 0 and 4");
+
+            // varchar(3) already bounds the length; this adds the ISO 4217 shape. The realistic
+            // failure it prevents is a row that never went through Currency.Create - inserted by hand
+            // or by migrationBuilder.InsertData - as 'usd'. ICurrencyReadService.GetByCodeAsync
+            // upper-cases its input before matching, so such a row would sit in the table permanently
+            // unfindable: a silently broken currency instead of a loud error. The regex also makes
+            // this column permanently incompatible with a nondeterministic collation, which fails
+            // regex matching with 0A000; code carries the default collation today, unlike the
+            // case_insensitive name columns, so there is no interaction yet.
+            table.HasCheckConstraint("CK_currencies_code", "code ~ '^[A-Z]{3}$'");
+        });
         builder.HasKey(currency => currency.Code);
 
         builder.Property(currency => currency.Code).HasColumnName("code").HasMaxLength(3).IsRequired();

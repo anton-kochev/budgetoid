@@ -40,9 +40,11 @@ public sealed class TransactionEndpointsTests
         HttpClient client = host.Factory.CreateAuthenticatedClient();
         Guid accountId = await CreateAccountAsync(client);
 
+        // The invalid amount has more decimal places than the account's USD allows. A zero amount
+        // used to serve here and no longer can: zero is a legitimate ledger entry.
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
-            amount = 0,
+            amount = 1.234m,
             date = "2026-06-12",
             accountId,
             description = "Groceries"

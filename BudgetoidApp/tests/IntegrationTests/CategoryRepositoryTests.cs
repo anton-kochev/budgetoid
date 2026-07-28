@@ -11,6 +11,12 @@ namespace IntegrationTests;
 
 public sealed class CategoryRepositoryTests
 {
+    /// <summary>
+    /// Minor unit of the USD accounts these tests seed. Precision is not what any of them is
+    /// about; the constant keeps a bare <c>2</c> from reading as a rule.
+    /// </summary>
+    private const int UsdMinorUnit = 2;
+
     [Test]
     public async Task DeleteCategoryGroup_WithCategory_TranslatesForeignKeyBackstop()
     {
@@ -66,6 +72,7 @@ public sealed class CategoryRepositoryTests
                 AccountType.Checking,
                 0m,
                 "USD",
+                UsdMinorUnit,
                 UtcNow());
             CategoryGroup categoryGroup = CategoryGroup.Create(
                 budgetId,
@@ -86,6 +93,7 @@ public sealed class CategoryRepositoryTests
                 budgetId,
                 account.Id,
                 -10m,
+                UsdMinorUnit,
                 new DateOnly(2026, 7, 14),
                 "Food",
                 UtcNow());

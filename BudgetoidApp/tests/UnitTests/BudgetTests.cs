@@ -67,7 +67,7 @@ public sealed class BudgetTests
     }
 
     [Test]
-    public async Task CreateDefault_UsesTheDefaultBudgetName()
+    public async Task CreateDefault_LeavesTheBudgetWithoutAName()
     {
         // Arrange
         var userId = Guid.CreateVersion7();
@@ -76,10 +76,25 @@ public sealed class BudgetTests
         // Act
         Budget budget = Budget.CreateDefault(userId, createdAtUtc);
 
-        // Assert
-        await Assert.That(budget.Name).IsEqualTo(Budget.DefaultName);
+        // Assert — the budget a user never asked for carries no name at all. The string a client
+        // shows for it is presentation, so it lives in the client; storing a literal here would put
+        // a display decision in the database and give provisioning a constant that can drift.
+        await Assert.That(budget.Name).IsNull();
         await Assert.That(budget.UserId).IsEqualTo(userId);
         await Assert.That(budget.CreatedAtUtc).IsEqualTo(createdAtUtc);
+    }
+
+    [Test]
+    public async Task CreateDefault_WithEmptyUserId_ThrowsValidationExceptionForUserId()
+    {
+        // Act — pins the check that has to survive CreateDefault no longer delegating to Create.
+        // Only the name check is skipped on that path; an ownerless budget is still nonsense, and
+        // dropping this guard would push a null user_id down to a foreign key violation.
+        ValidationException exception = ThrowsValidationException(() =>
+            Budget.CreateDefault(Guid.Empty, UtcNow()));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
     }
 
     private static DateTime UtcNow() =>

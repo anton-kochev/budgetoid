@@ -263,6 +263,42 @@ public sealed class BudgetoidDbContextConstructionTests
     }
 
     [Test]
+    public async Task Model_BoundsEveryValueRangeTheDatabaseCanCheck()
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act — the design-time model for the same reason the collation assertions use it: the
+        // runtime read-optimized model drops everything only migrations consume, and a check
+        // constraint is exactly that.
+        string[] checkConstraints = db
+            .GetService<IDesignTimeModel>()
+            .Model
+            .GetEntityTypes()
+            .SelectMany(entity => entity.GetCheckConstraints())
+            .Select(constraint =>
+                $"{constraint.Name}: {constraint.EntityType.GetTableName()} {constraint.Sql}")
+            .ToArray();
+
+        // Assert — one set equality rather than seven existence checks, because the set also fails
+        // on a constraint nobody meant to add. Each row is a range the domain already refuses and
+        // that a raw INSERT walks straight past today. The magnitude bound repeats the domain
+        // literal (Account.cs, Transaction.cs: Math.Abs(x) > 1_000_000_000m), so 1000000000 itself
+        // stays legal on both sides and only 1000000000.01 is out.
+        string[] expected =
+        [
+            "CK_accounts_opening_balance: accounts abs(opening_balance) <= 1000000000",
+            "CK_accounts_type: accounts type in ('Checking', 'Savings', 'Cash', 'CreditCard')",
+            "CK_categories_position: categories position >= 0",
+            "CK_category_groups_position: category_groups position >= 0",
+            "CK_currencies_code: currencies code ~ '^[A-Z]{3}$'",
+            "CK_currencies_minor_unit: currencies minor_unit between 0 and 4",
+            "CK_transactions_amount: transactions abs(amount) <= 1000000000",
+        ];
+        await Assert.That(checkConstraints).IsEquivalentTo(expected);
+    }
+
+    [Test]
     public async Task Migrations_ContainASingleFreshBaseline()
     {
         // Arrange
@@ -329,12 +365,19 @@ public sealed class BudgetoidDbContextConstructionTests
             .Single(index => index.Properties.Select(property => property.Name)
                 .SequenceEqual(new[] { nameof(Budget.UserId), nameof(Budget.Name) }));
         IProperty nameProperty = budgetEntity.FindProperty(nameof(Budget.Name))!;
-        // Collation is not carried by the runtime read-optimized model, only by the design-time one.
-        IProperty designTimeNameProperty = db
+        // The rule, stated once: the runtime read-optimized model drops everything only migrations
+        // consume, so an annotation-backed getter read off db.Model answers null instead of the
+        // configured value — and null quietly satisfies neither IsTrue nor IsFalse. Collation and
+        // NULLS NOT DISTINCT are both in that group, so both come from the design-time model.
+        IEntityType designTimeBudgetEntity = db
             .GetService<IDesignTimeModel>()
             .Model
-            .FindEntityType(typeof(Budget))!
-            .FindProperty(nameof(Budget.Name))!;
+            .FindEntityType(typeof(Budget))!;
+        IProperty designTimeNameProperty = designTimeBudgetEntity.FindProperty(nameof(Budget.Name))!;
+        IIndex designTimeOwnerNameIndex = designTimeBudgetEntity
+            .GetIndexes()
+            .Single(index => index.Properties.Select(property => property.Name)
+                .SequenceEqual(new[] { nameof(Budget.UserId), nameof(Budget.Name) }));
 
         // The schema is multi-budget-ready from day one: "exactly one budget per user" is a
         // release-scope property (no code path creates a second one), never a schema invariant, so a
@@ -348,9 +391,20 @@ public sealed class BudgetoidDbContextConstructionTests
                 key.Properties.Count == 1
                 && key.Properties[0].Name == nameof(Budget.UserId));
 
-        // Assert
+        // Assert — the name is nullable because the budget created at provisioning has no name, and
+        // the index must be NULLS NOT DISTINCT because of it. PostgreSQL's default treats every NULL
+        // as distinct, so without the opt-out two concurrent provisioning requests would each insert
+        // a (user_id, NULL) row and the user would end up owning two budgets. Making two unnamed
+        // budgets collide is what replaces the shared literal name the racers used to collide on —
+        // and it states the real invariant: at most one unnamed budget per user, any number of named
+        // ones.
+        // GetAreNullsDistinct is worded the way PostgreSQL words the option, not the way the rule
+        // reads: it answers false exactly when the index is NULLS NOT DISTINCT. IsFalse below is
+        // therefore the assertion that pins the opt-out, and flipping it to IsTrue would assert the
+        // default this test exists to refuse.
         await Assert.That(ownerNameIndex.IsUnique).IsTrue();
-        await Assert.That(nameProperty.IsNullable).IsFalse();
+        await Assert.That(designTimeOwnerNameIndex.GetAreNullsDistinct()).IsFalse();
+        await Assert.That(nameProperty.IsNullable).IsTrue();
         await Assert.That(nameProperty.GetMaxLength()).IsEqualTo(200);
         await Assert.That(designTimeNameProperty.GetCollation()).IsEqualTo("case_insensitive");
         await Assert.That(constrainsOwnerAlone).IsFalse();

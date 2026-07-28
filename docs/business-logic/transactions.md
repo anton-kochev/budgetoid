@@ -13,13 +13,13 @@
 
 ## Purpose
 
-A **Transaction** is a signed money movement on a date, recorded against one Account. It can
+A **Transaction** is a signed amount recorded against one Account on a date. It can
 optionally name a **Payee** and select a **Category**. Payees are documented here because they are
 created as a side effect of transaction entry rather than managed independently.
 
 ## Key Entities
 
-- **Transaction** — `Id`, `BudgetId`, required `AccountId`, signed non-zero `Amount`, `Date`, optional
+- **Transaction** — `Id`, `BudgetId`, required `AccountId`, signed `Amount`, `Date`, optional
   `Description`, optional `PayeeId`, optional `CategoryId`, `CreatedAtUtc`.
 - **Payee** — `Id`, `BudgetId`, `Name`, `CreatedAtUtc`; entered as free text with autocomplete and
   created automatically on first use.
@@ -49,11 +49,6 @@ erDiagram
 
 ### MUST
 
-- **Amount must be non-zero.**
-  - **Why**: Zero records no movement and has no income/expense direction, so it is not a
-    transaction — it is an empty row that would still appear in every list and total.
-  - **Enforced in**: `Transaction.Create`.
-
 - **The Account must exist and belong to the current budget.**
   - **Why**: The account is what the movement happened to, and it supplies the currency every amount
     on the transaction is displayed in. A transaction against another budget's account would put one
@@ -81,26 +76,44 @@ erDiagram
 
 ## Business Rules & Invariants
 
-- **Rule**: The sign of Amount encodes direction — negative is an expense, positive is income.
+- **Rule**: The sign of Amount encodes direction — negative is an expense, positive is income. Zero
+  is neither, and is a valid transaction.
 - **Why**: The net effect on an account is then simply the sum of its amounts, and a "positive
-  expense" contradiction is structurally impossible.
+  expense" contradiction is structurally impossible. Zero is legal because a ledger records what
+  happened, not only where money moved: a fully discounted purchase, a refund that exactly cancels
+  the purchase it reverses, or a zero-value invoice is a real event whose worth is its date, payee
+  and category rather than its magnitude. Refusing it would not remove the event — it would force the
+  user to invent an amount or drop the entry, and both store something less true than zero.
 - **Enforced in**: nothing enforces the meaning; it is a semantic convention. `Transaction.Create`
-  enforces only that the amount is non-zero and within precision and range.
-- **Example**: groceries costing £40 are `-40.00`; a £1,500 paycheck is `1500.00`.
+  enforces only precision and magnitude, so no validation reads the sign at all.
+- **Example**: groceries costing £40 are `-40.00`; a £1,500 paycheck is `1500.00`; an order that a
+  voucher covered in full is `0`.
 - **Counterexample**: recording an expense as `40.00` because the form already labels the row an
   expense makes the account's total climb with every purchase. Nothing rejects it — no validation
   reads the sign — so the mistake never surfaces as an error, only as a total nobody can explain.
-- **Source**: `[SOURCE: discussion — 2026-07-13]`
+- **Source**: `[SOURCE: discussion — 2026-07-28]`
 
 ---
 
-- **Rule**: Amount has at most two decimal places and an absolute value of at most 1,000,000,000.
-- **Why**: Money is recorded to cent precision, so a third decimal implies a rounding or entry error
-  rather than a smaller amount. The cap is a sanity bound against fat-finger entries.
-- **Enforced in**: `Transaction.Create`; the column is `numeric(14,2)`.
-- **Example**: `-40.00` is accepted; `10.005` is rejected as too precise; `2000000000` is rejected as
-  over the cap.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Rule**: Amount has at most as many decimal places as its Account's currency has minor units, and
+  an absolute value of at most 1,000,000,000.
+- **Why**: Precision belongs to the currency rather than to the column — a yen has no sub-unit, a
+  dinar has three — so a place beyond what the currency has implies a rounding or entry error rather
+  than a smaller amount. The cap is a sanity bound against fat-finger entries.
+- **Enforced in**: split by layer for the same reason as the identical rule on
+  [accounts](accounts.md#business-rules--invariants). `CK_transactions_amount`
+  (`abs(amount) <= 1000000000`) owns the magnitude bound, so it holds whatever wrote the row.
+  `Transaction.Create` owns the decimal-places half alone, against the minor unit
+  `CreateTransactionHandler` resolved from the Account's currency, and restates the magnitude bound
+  for the message. That half has nowhere lower to go twice over: `numeric(14,4)` rounds an
+  over-precise amount rather than refusing it, and a coercion is not enforcement under
+  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md), while a check
+  constraint cannot read the currency's precision without joining another table. The reasoning is in
+  [currencies.md](currencies.md#business-rules--invariants).
+- **Example**: on a USD account `-40.00` is accepted and `10.005` is rejected as too precise; on a
+  JPY account `-4000` is accepted and `-40.5` is rejected as not a whole number; `2000000000` is
+  rejected as over the cap in any currency.
+- **Source**: `[SOURCE: discussion — 2026-07-28]`
 
 ---
 
@@ -184,7 +197,8 @@ IF the account id does not resolve in the ambient budget
 ELSE IF the account's currency code has no seeded Currency row
   THEN InvalidOperationException                          ← unreachable; the currency FK forbids it
 ELSE
-  Transaction.Create validates amount, precision, range and description length
+  Transaction.Create validates the amount's precision against that currency's minor unit,
+    its magnitude, and the description length
   IF a CategoryId was supplied
     IF it does not resolve in the ambient budget
       THEN validation error "Category was not found."
@@ -198,8 +212,8 @@ The category and payee steps are independent — either, both, or neither may ru
 
 ## Integration Points
 
-- **[Accounts](accounts.md)**: required target; its Currency determines display. It cannot be deleted
-  while Transactions reference it.
+- **[Accounts](accounts.md)**: required target; its Currency determines both the precision an amount
+  may carry and how it is displayed. It cannot be deleted while Transactions reference it.
 - **[Categories and Category Groups](categories.md)**: optional Category context. A referenced
   Category cannot be deleted; its Category Group cannot be deleted while the Category exists.
 - **[Budgets](budgets.md)**: Transactions, Payees, Accounts, Categories and Category Groups are
@@ -213,6 +227,14 @@ The category and payee steps are independent — either, both, or neither may ru
 - Transactions are append-only in the current implementation because update and delete are not built,
   not because immutability is a deliberate business rule. Do not cite the append-only behaviour as a
   constraint.
+- **An untouched amount field is a zero, and only the client can tell the two apart.** An empty
+  numeric input binds to `0`, so a form submitted with nothing typed records a perfectly valid zero
+  transaction. The domain cannot refuse it without refusing the deliberate zeros the sign rule above
+  allows, and the database knows even less, so the guard is the form's: **the amount input MUST
+  require a value rather than default to one.** Under
+  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) that is the right layer
+  — the rule is about the interaction, not about what a ledger may hold — but it is also the only
+  layer holding it, with nothing underneath to catch a client that forgets.
 - Payee input is a name (find-or-create), while Category input is an existing ID. This asymmetry is
   intentional: a payee is typed in mid-entry, a category is picked from a list the user arranged.
 - `GET /api/payees` lists the ambient budget's payees for autocomplete. It is the only payee endpoint

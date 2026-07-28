@@ -18,10 +18,11 @@ rename, switch or delete one, and the concept never appears in the UI or in a UR
 multi-budget-ready anyway, and that gap between what the schema permits and what the release does is
 itself a rule — see [budgets.md](budgets.md).
 
-Entity factories enforce field rules and application handlers enforce cross-entity rules, but the
-budget boundary between two rows is a schema guarantee first: composite foreign keys refuse a
-cross-budget reference whatever code path wrote it, and unique indexes are what make name uniqueness
-and provisioning race-safe. That split is a general rule rather than a local one: each rule is owned
+Entity factories enforce the field rules the schema cannot state declaratively and application
+handlers enforce cross-entity rules, but whatever the schema can state, it owns: check constraints
+bound account type and money magnitude, composite foreign keys refuse a cross-budget reference
+whatever code path wrote it, and unique indexes are what make name uniqueness and provisioning
+race-safe. That split is a general rule rather than a local one: each rule is owned
 by the lowest layer that can enforce it declaratively, and where one deliberately sits higher the doc
 says why — see [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The
 central tenancy invariant — the budget, not the user,
@@ -35,20 +36,20 @@ are in [users-and-ownership.md](users-and-ownership.md).
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. |
 | **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
 | **Provisioning** | The step that turns an authenticated Google principal into an internal user and an ambient budget, run on every authenticated request. |
-| **Default budget** | The budget provisioning creates when a user owns none, named by the constant `Budget.DefaultName` (`"My Budget"`). |
+| **Default budget** | The budget provisioning creates when a user owns none. It has no name — `name` is null — and a client shows its own localized label in place of one. A user has at most one of these; named budgets are unconstrained in number. |
 | **Ambient budget** | The one budget a request is scoped to, resolved server-side at provisioning and read through `IBudgetContext`. Never supplied by the client. |
 | **Base currency** | A nullable ISO-4217 code on the Budget, reserved for a planning layer. Nothing writes it, so it is null on every Budget. |
 | **Account** | A budget-owned place money lives, denominated in one Currency. |
 | **Account Type** | `Checking`, `Savings`, `Cash`, or `CreditCard`; a label, not a state machine. |
 | **Opening Balance** | The starting balance at account creation; no current/running balance is modeled yet. |
 | **Transaction** | A money movement against an Account on a calendar date. |
-| **Amount** | Signed Transaction value: negative expense, positive income; never zero. |
+| **Amount** | Signed Transaction value: negative expense, positive income, zero a recorded event that nets to nothing. |
 | **Payee** | Budget-owned counterparty, entered as find-or-create free text; never shared across budgets. |
 | **Category Group** | Budget-owned, manually ordered container for Categories, e.g. “Essential Obligations.” |
 | **Category** | Budget-owned transaction classification belonging to exactly one Category Group, e.g. “Groceries.” |
 | **Position** | Zero-based persisted user order: budget-wide for Category Groups and group-scoped for Categories. |
 | **Currency** | Shared ISO-4217 reference row that denominates Accounts. A Budget references the same table for its base currency, never populated. |
-| **Minor Unit** | Currency decimal places, e.g. 2 for USD and 0 for JPY. |
+| **Minor Unit** | Currency decimal places — 0 for JPY, 2 for USD, 3 for BHD. Bounds the decimal places any amount recorded in that currency may carry. |
 
 ## User roles
 
