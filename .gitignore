@@ -47,3 +47,9 @@ __queuestorage__/
 # truth). azd regenerates it at provision/deploy time; committing it would drift.
 /infra/
 /BudgetoidApp/AppHost/infra/
+
+CLAUDE.local.md
+/.claude/agent-memory
+/.claude/skills/grimoire.*
+/.claude/agents/grimoire.*
+/.claude/grimoire.json
