@@ -277,6 +277,28 @@ public sealed class BudgetoidDbContextConstructionTests
     }
 
     [Test]
+    public async Task Migrations_MatchTheModel()
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act — synchronous by necessity: EF Core 10 ships no async overload of this. No live
+        // server is contacted either, because the check diffs the migrations assembly snapshot
+        // against the design-time model and never opens the connection it builds.
+        bool pending = db.Database.HasPendingModelChanges();
+
+        // Assert — every other test in this class reads db.Model, which is the configuration code,
+        // and those stay green when the migration disagrees with it. Drift is not silent elsewhere,
+        // though: MigrateAsync refuses to migrate a drifted model, so every container-backed test in
+        // the suite fails on PendingModelChangesWarning. This test earns its place by being the
+        // cheap, legible version of that — no Docker, no container wait, and a message naming
+        // regeneration as the fix rather than dozens of identical warnings on unrelated tests.
+        await Assert.That(pending)
+            .IsFalse()
+            .Because("the model drifted from the migration; regenerate InitialCreate");
+    }
+
+    [Test]
     public async Task Model_ScopesBudgetToItsOwningUser()
     {
         // Arrange
