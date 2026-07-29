@@ -17,6 +17,7 @@ using Application.CategoryGroups.MoveCategoryGroup;
 using Application.CategoryGroups.UpdateCategoryGroup;
 using Application.Currencies.GetCurrencies;
 using Application.Payees.GetPayees;
+using Application.Payees.RenamePayee;
 using Application.Transactions.CreateTransaction;
 using Application.Transactions.DeleteTransaction;
 using Application.Transactions.GetTransaction;
@@ -56,6 +57,7 @@ public static class DependencyInjection
         services.AddScoped<UpdateTransactionHandler>();
         services.AddScoped<DeleteTransactionHandler>();
         services.AddScoped<GetPayeesHandler>();
+        services.AddScoped<RenamePayeeHandler>();
         services.AddScoped<EnsureUserHandler>();
 
         return services;

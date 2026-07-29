@@ -15,6 +15,30 @@ public sealed class Payee
 
     public static Payee Create(Guid budgetId, string name, DateTime createdAtUtc)
     {
+        ValidateOrThrow(budgetId, name);
+
+        return new Payee
+        {
+            Id = Guid.CreateVersion7(),
+            BudgetId = budgetId,
+            Name = name.Trim(),
+            CreatedAtUtc = createdAtUtc,
+        };
+    }
+
+    // A case-only rename ("starbucks" -> "Starbucks") on the same row is allowed and is the most
+    // common use of this method. It does not collide with the case-insensitive unique index on
+    // (budget_id, name): the row's own index entry is replaced in the same update, so the row is
+    // never compared against its former self. No pre-check is needed here.
+    public void Rename(string name)
+    {
+        ValidateOrThrow(BudgetId, name);
+
+        Name = name.Trim();
+    }
+
+    private static void ValidateOrThrow(Guid budgetId, string? name)
+    {
         var errors = new Dictionary<string, string[]>();
         string trimmedName = name?.Trim() ?? string.Empty;
 
@@ -36,13 +60,5 @@ public sealed class Payee
         {
             throw new ValidationException(errors);
         }
-
-        return new Payee
-        {
-            Id = Guid.CreateVersion7(),
-            BudgetId = budgetId,
-            Name = trimmedName,
-            CreatedAtUtc = createdAtUtc,
-        };
     }
 }

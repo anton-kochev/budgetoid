@@ -8,6 +8,84 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-07-29 — A payee's name is correctable, and the payee list gains no other write
+
+**Context:** "Payees are free-text find-or-create, not a managed list" (2026-07-13) below chose the
+lighter of two designs — a payee comes into existence as a side effect of naming a counterparty on a
+transaction, with no create/edit/delete payee UI or endpoints — and accepted in as many words that
+payees "can't be renamed or pruned directly". That acceptance carried two consequences, and the entry
+priced only one of them. It named the near-duplicate problem, which case-insensitive matching
+partially answers. It did not name what happens to a name typed wrong: a misspelling entered once was
+permanent, and self-propagating besides, because correcting it on the transaction does not undo it —
+the corrected spelling runs the same find-or-create and mints a *second* payee, so the fix leaves the
+budget holding both spellings with the wrong one still offered by autocomplete. The name is also the
+entirety of a payee: there is no other field a person could tell two apart by, and therefore no other
+field they can be wrong about. A list a user can only ever add to, in which the single field that
+identifies a row is uncorrectable and a mistake reproduces itself when fixed, is not the lightness
+the original decision was buying.
+
+**Decision:** Ship `PATCH /api/payees/{id:guid}` — 204 on success; 404 for an unknown id and for one
+belonging to another budget alike, on the standing tenancy rule; 400 for a name another payee in the
+budget already holds — so that **the payee list gains exactly one write operation, rename, and no
+others.** The name is **required** rather than a three-state optional field like the six on
+`PATCH /api/transactions/{id:guid}` ("A recorded transaction is corrected in place, and silence is not
+an empty value", 2026-07-29 above): a payee has exactly one mutable field, so a body that omits it
+asks for nothing, and there is no second field whose silence would need a meaning. `BudgetId` stays
+immutable — moving a payee between pools is the tenancy rule, not an edit. Three operations are
+deliberately still absent, and each for its own reason. **No create**: a counterparty nobody has
+transacted with is not a fact about the budget worth storing, and making the user register one first
+puts a second task in front of the entry the original decision exists to keep fast — find-or-create
+stays the only way a payee comes into being. **No delete**: the composite `transactions → payees`
+foreign key is `Restrict` and the schema refuses while any transaction references the row, which is
+the same protection of recorded history the account and category guards give; a delete that could only
+ever succeed for rows nobody has used is not an operation worth an endpoint. **And no merge** —
+repointing every transaction from one payee onto another and removing the emptied row — even though
+merge, not rename, is what would actually clean up a duplicated list. Rename fixes a misspelling; it
+fixes nothing about two spellings that both already carry transactions, since the second cannot take
+the first's name (the unique index refuses it) and nothing moves the transactions. Merge is a real
+feature rather than an increment on this one: it rewrites references across a table, it needs an
+answer for which name survives, and it is the only payee operation that could not be undone. The
+accepted consequence of the rename is that **it rewrites the counterparty shown on every past
+transaction** — `TransactionDto` resolves the payee name at read time, so the correction is
+retroactive by construction and costs no fan-out write. That is intended, and it is what separates a
+meaningful rename from a cosmetic one: the row stands for one real-world party over its whole life,
+so its history is not a set of independently spelled events. It does not contradict the payee delete
+refusal stated above, or "Money movement is discarded only by explicit intent, never as a side
+effect" (2026-07-29 below), both of which take the opposite stance on letting history change: the
+schema will not let a payee be erased from transactions that already happened, while a rename changes
+what every one of them displays. The two positions reconcile on one distinction: **a name is a
+mutable label on a stable identity, while a transaction is the record of an event.** Relabelling the
+party alters nothing about what happened.
+
+**Alternatives considered:** *Leave payees unwritable and let correction happen on the transaction* —
+rejected: that is the status quo the context argues against, and it is worse than doing nothing at
+all, because the act that looks like a correction adds a row instead of repairing one. *A full payee
+CRUD with its own managed list* — rejected for exactly the reasons 2026-07-13 rejected it, which this
+decision leaves standing: creating a payee ahead of the transaction slows the entry, and a managed
+list is heavier than a personal budgeting app needs. Rename is the one operation whose absence was a
+defect rather than a simplification. *Refuse a duplicate name with 409 instead of 400* — rejected: a
+taken name is a statement about a field of the request, which is what a validation problem document
+carries and what a bare conflict status has nowhere to put, and `AccountRepository` already answers
+400 for a duplicate account name, so a second status for the same class of mistake would only make
+clients branch on which entity they were editing. *Precheck the new name with a lookup and report the
+duplicate from the application* — rejected twice over: it is check-then-act, so the unique index has
+to catch the loser of a race regardless and the catch it was meant to replace cannot be removed; and
+"does a payee with this name exist?" answers yes for the row being renamed, which would refuse
+`"starbucks"` → `"Starbucks"` — the commonest real use of the feature, since a payee is minted with
+whatever casing was typed mid-entry. *Make the rename non-retroactive by snapshotting the name onto
+each transaction as it is recorded* — rejected: it turns a rename into a fan-out write across
+history, and until that write finishes, or if it is never run at all, the same counterparty reads two
+different ways on two different screens.
+
+**Affected areas:** [payees.md](payees.md), [_overview.md](_overview.md). This amends "Payees are
+free-text find-or-create, not a managed list" (2026-07-13) below rather than reversing it: the
+find-or-create creation path, the absence of a create endpoint, the absence of a delete and the
+case-insensitive near-duplicate answer all stand — only the "can't be renamed" half is reversed, and
+"can't be pruned" is untouched. [transactions.md](transactions.md) needs nothing: the payee is still
+supplied by name on both transaction write paths, and no rule about a transaction changes.
+
+---
+
 ## 2026-07-29 — A recorded transaction is corrected in place, and silence is not an empty value
 
 **Context:** Transactions were create-read-delete, so the only remedy for a mis-entered row was to

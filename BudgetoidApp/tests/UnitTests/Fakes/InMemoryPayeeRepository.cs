@@ -8,6 +8,7 @@ public sealed class InMemoryPayeeRepository(Guid budgetId, TimeProvider timeProv
     private readonly List<Payee> _payees = [];
 
     public int GetOrCreateCallCount { get; private set; }
+    public int UpdateCallCount { get; private set; }
 
     public Task<IReadOnlyList<PayeeDto>> GetAllAsync(CancellationToken cancellationToken = default)
     {
@@ -34,5 +35,24 @@ public sealed class InMemoryPayeeRepository(Guid budgetId, TimeProvider timeProv
         Payee payee = Payee.Create(budgetId, normalizedName, timeProvider.GetUtcNow().UtcDateTime);
         _payees.Add(payee);
         return Task.FromResult(payee);
+    }
+
+    // No budget filter: every payee this fake holds was stamped with the one budget id it was
+    // constructed with, so it can only match on the payee id. Budget isolation is exercised against
+    // the real EF query filters instead.
+    public Task<Payee?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        Payee? payee = _payees.SingleOrDefault(payee => payee.Id == id);
+        return Task.FromResult(payee);
+    }
+
+    // Nothing to store: callers rename the instance handed back by GetByIdAsync, which is the very
+    // instance held in the list, so the new name is already visible here. The real repository has the
+    // same shape — it saves changes to an entity the context is already tracking. The counter is
+    // what a test can assert on to prove the save was asked for at all.
+    public Task UpdateAsync(Payee payee, CancellationToken cancellationToken = default)
+    {
+        UpdateCallCount++;
+        return Task.CompletedTask;
     }
 }

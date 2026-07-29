@@ -224,6 +224,256 @@ public sealed class PayeeIntegrationTests
         await Assert.That(transactionsB!["items"]!.AsArray().Count).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task PatchPayee_WithANewName_ReturnsNoContentAndRenamesTheRowInPlace()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        JsonNode created = await PostTransactionAsync(client, "Starbux");
+        Guid payeeId = created["payeeId"]!.GetValue<Guid>();
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { name = "Starbucks" });
+        JsonNode payees = await GetJsonAsync(client, "/api/payees");
+
+        // Assert — the count is as load-bearing as the name. A handler that inserted a second row
+        // called "Starbucks" instead of renaming the first would satisfy a name-only assertion.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(payees["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(payees["items"]!.AsArray()[0]!["id"]!.GetValue<Guid>()).IsEqualTo(payeeId);
+        await Assert.That(payees["items"]!.AsArray()[0]!["name"]!.GetValue<string>()).IsEqualTo("Starbucks");
+    }
+
+    [Test]
+    public async Task PatchPayee_WithACaseOnlyChangeOfItsOwnName_ReturnsNoContent()
+    {
+        // Arrange — the payee is created lower-case by the transaction that first named it, which is
+        // exactly how a payee acquires the casing its owner later wants to fix.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        JsonNode created = await PostTransactionAsync(client, "starbucks");
+        Guid payeeId = created["payeeId"]!.GetValue<Guid>();
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { name = "Starbucks" });
+        JsonNode payees = await GetJsonAsync(client, "/api/payees");
+
+        // Assert — a row cannot collide with itself. The unique index on (budget_id, name) is
+        // case-insensitive, so "starbucks" and "Starbucks" are the same key, but the row's own index
+        // entry is replaced in the same update and is never compared against its former self. A naive
+        // "does any payee already use this name?" pre-check would reject this and break the most
+        // common real use of the feature, so this case gets its own test.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(payees["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(payees["items"]!.AsArray()[0]!["name"]!.GetValue<string>()).IsEqualTo("Starbucks");
+    }
+
+    [Test]
+    public async Task PatchPayee_WithANameHeldByAnotherPayeeInTheSameBudget_ReturnsBadRequest()
+    {
+        // Arrange — two payees in one budget. The second one is the subject; the first one owns the
+        // name it will try to take.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        await PostTransactionAsync(client, "Starbucks");
+        JsonNode created = await PostTransactionAsync(client, "Costco");
+        Guid costcoId = created["payeeId"]!.GetValue<Guid>();
+
+        // Act — the exact name, then a case-differing one. The index is case-insensitive, so both are
+        // the same collision and a handler that only compared ordinally would pass the first and fail
+        // the second.
+        HttpResponseMessage exact = await client.PatchAsJsonAsync(
+            $"/api/payees/{costcoId}",
+            new { name = "Starbucks" });
+        HttpResponseMessage differentCase = await client.PatchAsJsonAsync(
+            $"/api/payees/{costcoId}",
+            new { name = "STARBUCKS" });
+        JsonNode payees = await GetJsonAsync(client, "/api/payees");
+        string[] names = payees["items"]!.AsArray()
+            .Select(node => node!["name"]!.GetValue<string>())
+            .ToArray();
+
+        // Assert — a refused rename must leave both rows exactly as they were, not half-apply.
+        await Assert.That(exact.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(differentCase.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(payees["items"]!.AsArray().Count).IsEqualTo(2);
+        await Assert.That(names).Contains("Costco");
+        await Assert.That(names).Contains("Starbucks");
+    }
+
+    [Test]
+    public async Task PatchPayee_WithBlankOverlongOrMissingName_ReturnsBadRequest()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        JsonNode created = await PostTransactionAsync(client, "Starbucks");
+        Guid payeeId = created["payeeId"]!.GetValue<Guid>();
+
+        // Act
+        HttpResponseMessage blank = await client.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { name = "   " });
+        HttpResponseMessage tooLong = await client.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { name = new string('a', 201) });
+        HttpResponseMessage absent = await client.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { });
+        HttpResponseMessage explicitNull = await client.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { name = (string?)null });
+        JsonNode payees = await GetJsonAsync(client, "/api/payees");
+
+        // Assert — the name is required. Unlike PATCH /api/transactions, this is a targeted state
+        // change with one field, so an absent or null name is a malformed request rather than a
+        // no-op: there is nothing else the caller could have meant.
+        await Assert.That(blank.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(tooLong.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(absent.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(explicitNull.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(payees["items"]!.AsArray()[0]!["name"]!.GetValue<string>()).IsEqualTo("Starbucks");
+    }
+
+    [Test]
+    public async Task PatchPayee_WithAnUnknownId_ReturnsNotFoundButSucceedsForARealPayee()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        JsonNode created = await PostTransactionAsync(client, "Starbux");
+        Guid payeeId = created["payeeId"]!.GetValue<Guid>();
+
+        // Act
+        HttpResponseMessage unknown = await client.PatchAsJsonAsync(
+            $"/api/payees/{Guid.CreateVersion7()}",
+            new { name = "Starbucks" });
+        HttpResponseMessage real = await client.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { name = "Starbucks" });
+
+        // Assert
+        await Assert.That(unknown.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+
+        // The 204 is load-bearing for the 404 above, not a stray extra assertion. An unmapped route
+        // answers 404 as well, so the assertion above on its own would hold today, before
+        // PATCH /api/payees/{id} exists at all, and would keep holding if the route were later
+        // deleted. Pairing it with a success on a real payee is what makes the 404 mean "the handler
+        // looked and found nothing" rather than "there is no such route".
+        await Assert.That(real.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+    }
+
+    [Test]
+    public async Task PatchPayee_FromAnotherBudget_ReturnsNotFoundButSucceedsForItsOwner()
+    {
+        // Arrange — two budgets over one database. The budget query filter is what makes A's payee
+        // invisible to B; there is deliberately no 403 path in this API.
+        await using PostgresTestHost host = new();
+        await host.StartAsync();
+        await using ApiFactory factoryA = host.CreateFactory("google-a");
+        await using ApiFactory factoryB = host.CreateFactory("google-b");
+        HttpClient clientA = factoryA.CreateAuthenticatedClient();
+        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        JsonNode created = await PostTransactionAsync(clientA, "Starbucks");
+        Guid payeeId = created["payeeId"]!.GetValue<Guid>();
+
+        // Act
+        HttpResponseMessage stranger = await clientB.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { name = "Hijacked" });
+        JsonNode payeesAfterStranger = await GetJsonAsync(clientA, "/api/payees");
+        HttpResponseMessage owner = await clientA.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { name = "Starbucks Reserve" });
+        JsonNode payeesAfterOwner = await GetJsonAsync(clientA, "/api/payees");
+
+        // Assert
+        await Assert.That(stranger.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+
+        // The survival check is not redundant with the 404. A handler that wrote the row and only
+        // then reported it missing would satisfy the status code alone.
+        await Assert.That(payeesAfterStranger["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(payeesAfterStranger["items"]!.AsArray()[0]!["name"]!.GetValue<string>())
+            .IsEqualTo("Starbucks");
+
+        // The 204 for the owner on that very same id is what makes the 404 above mean "the budget
+        // query filter hid it". An unmapped route answers 404 for every caller alike, so without a
+        // success on the same id the cross-budget assertion would hold for a route that does not
+        // exist at all — which is exactly the state of the code this test was written against.
+        await Assert.That(owner.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(payeesAfterOwner["items"]!.AsArray()[0]!["name"]!.GetValue<string>())
+            .IsEqualTo("Starbucks Reserve");
+    }
+
+    [Test]
+    public async Task PatchPayee_WithANameAnotherBudgetUses_ReturnsNoContentAndLeavesThatBudgetAlone()
+    {
+        // Arrange — the unique index is on (budget_id, name), so two budgets may each hold a payee
+        // called "Starbucks". Budget A's rename must not be judged against budget B's rows.
+        await using PostgresTestHost host = new();
+        await host.StartAsync();
+        await using ApiFactory factoryA = host.CreateFactory("google-a");
+        await using ApiFactory factoryB = host.CreateFactory("google-b");
+        HttpClient clientA = factoryA.CreateAuthenticatedClient();
+        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        JsonNode createdA = await PostTransactionAsync(clientA, "Starbux");
+        await PostTransactionAsync(clientB, "Starbucks");
+        Guid payeeA = createdA["payeeId"]!.GetValue<Guid>();
+
+        // Act
+        HttpResponseMessage patch = await clientA.PatchAsJsonAsync(
+            $"/api/payees/{payeeA}",
+            new { name = "Starbucks" });
+        JsonNode payeesA = await GetJsonAsync(clientA, "/api/payees");
+        JsonNode payeesB = await GetJsonAsync(clientB, "/api/payees");
+
+        // Assert — each budget ends up with its own "Starbucks", two distinct rows.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(payeesA["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(payeesA["items"]!.AsArray()[0]!["name"]!.GetValue<string>()).IsEqualTo("Starbucks");
+        await Assert.That(payeesB["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(payeesB["items"]!.AsArray()[0]!["name"]!.GetValue<string>()).IsEqualTo("Starbucks");
+        await Assert.That(payeesB["items"]!.AsArray()[0]!["id"]!.GetValue<Guid>()).IsNotEqualTo(payeeA);
+    }
+
+    [Test]
+    public async Task PatchPayee_RenamesThePayeeOnEveryTransactionThatAlreadyNamedIt()
+    {
+        // Arrange — two past transactions pointing at the same payee.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        JsonNode first = await PostTransactionAsync(client, "Starbux");
+        JsonNode second = await PostTransactionAsync(client, "Starbux");
+        Guid payeeId = first["payeeId"]!.GetValue<Guid>();
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/payees/{payeeId}",
+            new { name = "Starbucks" });
+        JsonNode transactions = await GetJsonAsync(client, "/api/transactions");
+
+        // Assert — retroactivity is the intended behaviour of a rename, not an accident of how
+        // TransactionDto is projected. A payee is one counterparty over time, so correcting its name
+        // corrects every transaction that ever named it; a rename that only applied going forward
+        // would leave the ledger showing two counterparties where there is one, which is what makes
+        // this rule the difference between a meaningful rename and a cosmetic one.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(transactions["items"]!.AsArray().Count).IsEqualTo(2);
+        await Assert.That(transactions["items"]!.AsArray()
+            .All(node => node!["payeeName"]!.GetValue<string>() == "Starbucks")).IsTrue();
+        await Assert.That(transactions["items"]!.AsArray()
+            .All(node => node!["payeeId"]!.GetValue<Guid>() == payeeId)).IsTrue();
+        await Assert.That(second["payeeId"]!.GetValue<Guid>()).IsEqualTo(payeeId);
+    }
+
+    private static async Task<JsonNode> GetJsonAsync(HttpClient client, string path) =>
+        (await JsonNode.ParseAsync(await client.GetStreamAsync(path)))!;
+
     private static async Task<JsonNode> PostTransactionAsync(HttpClient client, string payeeName)
     {
         Guid accountId = await CreateAccountAsync(client);

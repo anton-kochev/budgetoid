@@ -55,9 +55,9 @@ are in [users-and-ownership.md](users-and-ownership.md).
 
 There is exactly **one role: the authenticated owner.** Within their ambient budget a user manages
 Accounts, Category Groups, and Categories; records, lists, edits and deletes Transactions; lists
-Payees and creates them implicitly by naming one on a transaction; and reads global Currencies. The budget
-itself is not manageable — it is provisioned, never configured. Unauthenticated visitors can only
-reach public login/welcome behavior.
+Payees, creates them implicitly by naming one on a transaction, and renames them; and reads global
+Currencies. The budget itself is not manageable — it is provisioned, never configured.
+Unauthenticated visitors can only reach public login/welcome behavior.
 
 ## Domain area map
 
@@ -91,7 +91,8 @@ references are additionally constrained by composite foreign keys to a row in th
 - [Accounts](accounts.md) — account types, currency denomination, and delete guard.
 - [Transactions](transactions.md) — transaction rules, optional payee and category context, partial
   edit, and delete.
-- [Payees](payees.md) — counterparties, created only by naming one on a transaction.
+- [Payees](payees.md) — counterparties, created only by naming one on a transaction, and renamed in
+  place.
 - [Categories and Category Groups](categories.md) — hierarchy, uniqueness, ordering, movement, and
   delete guards.
 - [Currencies](currencies.md) — global ISO-4217 reference data.

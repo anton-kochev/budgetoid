@@ -5,6 +5,11 @@ using Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
+// Aliased because Application.Abstractions, imported above for IBudgetContext, declares a
+// ValidationException of its own. Only Domain.Common's is the one ValidationExceptionHandler
+// renders as a 400, which is what every other repository here throws.
+using ValidationException = Domain.Common.ValidationException;
+
 namespace Infrastructure.Repositories;
 
 public sealed class PayeeRepository(
@@ -48,6 +53,36 @@ public sealed class PayeeRepository(
         }
     }
 
+    public Task<Payee?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        // Use the filtered DbSet, not Find/FindAsync: Find can return a tracked entity while
+        // bypassing global query filters, which would let one budget reach another budget's payee.
+        return dbContext.Payees.FirstOrDefaultAsync(payee => payee.Id == id, cancellationToken);
+    }
+
+    public async Task UpdateAsync(Payee payee, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        // The same index GetOrCreateAsync catches, and deliberately the opposite recovery: there the
+        // caller only wanted a payee by that name, so the winner of the race is an acceptable answer
+        // and gets re-read. A rename was asked for one specific name, so there is nothing to fall
+        // back to and the collision is reported to the caller.
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: PayeeConfiguration.NameIndexName,
+        })
+        {
+            // Detach the rejected entity so the failed (Modified) state can't leak into a later
+            // SaveChanges if the context were reused, mirroring GetOrCreateAsync's detach-on-conflict.
+            dbContext.Entry(payee).State = EntityState.Detached;
+            throw DuplicateNameValidationException();
+        }
+    }
+
     // Plain equality: the name column's case_insensitive collation makes PostgreSQL fold case for
     // both this comparison and the unique index, so the lookup and the index can never disagree.
     private Task<Payee?> FindByNameAsync(string normalizedName, CancellationToken cancellationToken)
@@ -55,4 +90,9 @@ public sealed class PayeeRepository(
         return dbContext.Payees
             .SingleOrDefaultAsync(payee => payee.Name == normalizedName, cancellationToken);
     }
+
+    private static ValidationException DuplicateNameValidationException() => new(new Dictionary<string, string[]>
+    {
+        [nameof(Payee.Name)] = ["Payee name must be unique."],
+    });
 }
