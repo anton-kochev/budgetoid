@@ -56,6 +56,19 @@ public sealed class InMemoryAccountRepository(Guid budgetId, TimeProvider timePr
         return Task.FromResult(accounts);
     }
 
+    // Explicit implementation because the repository already exposes a public GetByIdAsync that
+    // returns the entity; the read-service member shares that name but returns a DTO, so the two
+    // cannot both be ordinary public methods on this class.
+    Task<AccountDto?> IAccountReadService.GetByIdAsync(Guid id, CancellationToken cancellationToken)
+    {
+        Account? account = _accounts.SingleOrDefault(account => account.Id == id && account.BudgetId == budgetId);
+        AccountDto? dto = account is null
+            ? null
+            : AccountDto.FromAccount(account, CurrencyFor(account.CurrencyCode));
+
+        return Task.FromResult(dto);
+    }
+
     public async Task<Account> CreateAsync(string name = "Checking", AccountType type = AccountType.Checking, decimal openingBalance = 0m, string currencyCode = "USD")
     {
         // The minor unit comes from the same lookup the read projection uses, so a JPY account

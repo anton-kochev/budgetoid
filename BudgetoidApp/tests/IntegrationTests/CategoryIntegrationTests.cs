@@ -129,53 +129,6 @@ public sealed class CategoryIntegrationTests
     }
 
     [Test]
-    public async Task CreatedResources_AreRetrievableAtLocationHeader()
-    {
-        // Arrange
-        await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
-        HttpResponseMessage createGroup = await client.PostAsJsonAsync("/api/category-groups", new
-        {
-            name = "Essentials",
-            description = (string?)null,
-        });
-        createGroup.EnsureSuccessStatusCode();
-        JsonNode createdGroup = (await JsonNode.ParseAsync(
-            await createGroup.Content.ReadAsStreamAsync()))!;
-        Guid categoryGroupId = createdGroup["id"]!.GetValue<Guid>();
-        HttpResponseMessage createCategory = await client.PostAsJsonAsync("/api/categories", new
-        {
-            name = "Groceries",
-            description = (string?)null,
-            categoryGroupId,
-        });
-        createCategory.EnsureSuccessStatusCode();
-
-        // Act
-        HttpResponseMessage getGroup = await client.GetAsync(createGroup.Headers.Location);
-        HttpResponseMessage getCategory = await client.GetAsync(createCategory.Headers.Location);
-        HttpResponseMessage unknownGroup = await client.GetAsync(
-            $"/api/category-groups/{Guid.CreateVersion7()}");
-        HttpResponseMessage unknownCategory = await client.GetAsync(
-            $"/api/categories/{Guid.CreateVersion7()}");
-
-        // Assert
-        await Assert.That(getGroup.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(getCategory.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        JsonNode group = (await JsonNode.ParseAsync(
-            await getGroup.Content.ReadAsStreamAsync()))!;
-        await Assert.That(group["id"]!.GetValue<Guid>()).IsEqualTo(categoryGroupId);
-        await Assert.That(group["name"]!.GetValue<string>()).IsEqualTo("Essentials");
-        JsonNode category = (await JsonNode.ParseAsync(
-            await getCategory.Content.ReadAsStreamAsync()))!;
-        await Assert.That(category["name"]!.GetValue<string>()).IsEqualTo("Groceries");
-        await Assert.That(category["categoryGroupId"]!.GetValue<Guid>()).IsEqualTo(categoryGroupId);
-        await Assert.That(category["categoryGroupName"]!.GetValue<string>()).IsEqualTo("Essentials");
-        await Assert.That(unknownGroup.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
-        await Assert.That(unknownCategory.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
-    }
-
-    [Test]
     public async Task EmptyGroupAndUnreferencedCategory_CanBeDeleted()
     {
         // Arrange

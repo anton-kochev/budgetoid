@@ -1,5 +1,6 @@
 using Application.Accounts.CreateAccount;
 using Application.Accounts.DeleteAccount;
+using Application.Accounts.GetAccount;
 using Application.Accounts.GetAccounts;
 using Application.Accounts.UpdateAccount;
 using Application.Categories.CreateCategory;
@@ -17,6 +18,7 @@ using Application.CategoryGroups.UpdateCategoryGroup;
 using Application.Currencies.GetCurrencies;
 using Application.Payees.GetPayees;
 using Application.Transactions.CreateTransaction;
+using Application.Transactions.GetTransaction;
 using Application.Transactions.GetTransactions;
 using Application.Users.EnsureUser;
 using Microsoft.Extensions.DependencyInjection;
@@ -30,6 +32,7 @@ public static class DependencyInjection
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<CreateAccountHandler>();
         services.AddScoped<GetAccountsHandler>();
+        services.AddScoped<GetAccountHandler>();
         services.AddScoped<UpdateAccountHandler>();
         services.AddScoped<DeleteAccountHandler>();
         services.AddScoped<CreateCategoryGroupHandler>();
@@ -47,6 +50,7 @@ public static class DependencyInjection
         services.AddScoped<GetCurrenciesHandler>();
         services.AddScoped<CreateTransactionHandler>();
         services.AddScoped<GetTransactionsHandler>();
+        services.AddScoped<GetTransactionHandler>();
         services.AddScoped<GetPayeesHandler>();
         services.AddScoped<EnsureUserHandler>();
 

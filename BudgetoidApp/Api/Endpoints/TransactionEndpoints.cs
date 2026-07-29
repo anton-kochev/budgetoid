@@ -1,6 +1,8 @@
 using Application.Transactions;
 using Application.Transactions.CreateTransaction;
+using Application.Transactions.GetTransaction;
 using Application.Transactions.GetTransactions;
+using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Api.Endpoints;
 
@@ -23,6 +25,17 @@ public static class TransactionEndpoints
         {
             TransactionListResponse response = await handler.HandleAsync(new GetTransactionsQuery(), cancellationToken);
             return TypedResults.Ok(response);
+        });
+
+        group.MapGet("/{id:guid}", async Task<Results<Ok<TransactionDto>, NotFound>> (
+            Guid id,
+            GetTransactionHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            TransactionDto? dto = await handler.HandleAsync(
+                new GetTransactionQuery(id),
+                cancellationToken);
+            return dto is null ? TypedResults.NotFound() : TypedResults.Ok(dto);
         });
 
         return endpoints;

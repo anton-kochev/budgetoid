@@ -72,6 +72,17 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
         return Task.FromResult(results);
     }
 
+    // Projects through the list query and picks the id out of it, so a single transaction can never
+    // read differently here than it does in the list — the same property the real read service gets
+    // from sharing its join shape between the two queries.
+    public async Task<TransactionDto?> GetByIdWithPayeeAsync(
+        Guid id,
+        CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<TransactionDto> transactions = await GetAllWithPayeeAsync(cancellationToken);
+        return transactions.SingleOrDefault(transaction => transaction.Id == id);
+    }
+
     private IOrderedEnumerable<Transaction> OrderedTransactions() => _transactions
         .OrderByDescending(transaction => transaction.Date)
         .ThenByDescending(transaction => transaction.CreatedAtUtc);
