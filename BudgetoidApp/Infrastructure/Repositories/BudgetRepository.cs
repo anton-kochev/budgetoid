@@ -1,5 +1,6 @@
 using Domain.Budgets;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -24,6 +25,7 @@ public sealed class BudgetRepository(BudgetoidDbContext dbContext) : IBudgetRepo
         // disagree with the filter.
         dbContext.Transactions.AnyAsync(cancellationToken);
 
+    /// <inheritdoc />
     public async Task<bool> TryAddAsync(Budget budget, CancellationToken cancellationToken = default)
     {
         dbContext.Budgets.Add(budget);
@@ -33,8 +35,14 @@ public sealed class BudgetRepository(BudgetoidDbContext dbContext) : IBudgetRepo
             await dbContext.SaveChangesAsync(cancellationToken);
             return true;
         }
+        // Named, because false is not a generic failure signal: the caller answers it by re-reading the
+        // owner's budget, and only this index guarantees a winner's row is there to be read. A 23505
+        // from any other rule would send provisioning after a budget nobody inserted.
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
-        { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: BudgetConfiguration.UserNameIndexName,
+        })
         {
             dbContext.Entry(budget).State = EntityState.Detached;
             return false;

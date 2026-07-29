@@ -1,6 +1,7 @@
 using Domain.CategoryGroups;
 using Domain.Common;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -18,7 +19,10 @@ public sealed class CategoryGroupRepository(BudgetoidDbContext dbContext)
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
-        catch (DbUpdateException exception) when (IsUniqueViolation(exception))
+        // Named, because SaveChanges flushes every tracked row and not just this group: only the group
+        // name index says the name the caller just typed is the one already taken.
+        catch (DbUpdateException exception)
+            when (IsUniqueViolationOf(exception, CategoryGroupConfiguration.NameIndexName))
         {
             dbContext.Entry(categoryGroup).State = EntityState.Detached;
             throw DuplicateNameValidationException();
@@ -50,7 +54,9 @@ public sealed class CategoryGroupRepository(BudgetoidDbContext dbContext)
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
-        catch (DbUpdateException exception) when (IsUniqueViolation(exception))
+        // Same index as AddAsync: a rename collides with exactly the rule an insert would.
+        catch (DbUpdateException exception)
+            when (IsUniqueViolationOf(exception, CategoryGroupConfiguration.NameIndexName))
         {
             dbContext.Entry(categoryGroup).State = EntityState.Detached;
             throw DuplicateNameValidationException();
@@ -87,7 +93,11 @@ public sealed class CategoryGroupRepository(BudgetoidDbContext dbContext)
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
-        catch (DbUpdateException exception) when (IsForeignKeyViolation(exception))
+        // The categories reference is the only foreign key pointing at category_groups, so this name is
+        // the whole of "it has categories" — a guarantee that stays true by being stated rather than by
+        // nothing else happening to reference the table.
+        catch (DbUpdateException exception)
+            when (IsForeignKeyViolationOf(exception, CategoryConfiguration.CategoryGroupForeignKeyName))
         {
             dbContext.Entry(categoryGroup).State = EntityState.Detached;
             throw ReferencedCategoryGroupValidationException();
@@ -103,17 +113,17 @@ public sealed class CategoryGroupRepository(BudgetoidDbContext dbContext)
             cancellationToken);
     }
 
-    private static bool IsUniqueViolation(DbUpdateException exception) =>
+    private static bool IsUniqueViolationOf(DbUpdateException exception, string indexName) =>
         exception.InnerException is PostgresException
         {
             SqlState: PostgresErrorCodes.UniqueViolation,
-        };
+        } postgresException && postgresException.ConstraintName == indexName;
 
-    private static bool IsForeignKeyViolation(DbUpdateException exception) =>
+    private static bool IsForeignKeyViolationOf(DbUpdateException exception, string constraintName) =>
         exception.InnerException is PostgresException
         {
             SqlState: PostgresErrorCodes.ForeignKeyViolation,
-        };
+        } postgresException && postgresException.ConstraintName == constraintName;
 
     private static ValidationException DuplicateNameValidationException() => new(
         new Dictionary<string, string[]>

@@ -1,6 +1,7 @@
 using Domain.Accounts;
 using Domain.Common;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -15,8 +16,13 @@ public sealed class AccountRepository(BudgetoidDbContext dbContext) : IAccountRe
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
+        // Named, because SaveChanges flushes every tracked row and not just this account: only the
+        // account name index says the name the caller just typed is the one already taken.
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
-        { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: AccountConfiguration.NameIndexName,
+        })
         {
             dbContext.Entry(account).State = EntityState.Detached;
             throw DuplicateNameValidationException();
@@ -36,8 +42,12 @@ public sealed class AccountRepository(BudgetoidDbContext dbContext) : IAccountRe
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
+        // Same index as AddAsync: a rename collides with exactly the rule an insert would.
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
-        { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: AccountConfiguration.NameIndexName,
+        })
         {
             // Detach the rejected entity so the failed (Modified) state can't leak into a later
             // SaveChanges if the context were reused, mirroring AddAsync's detach-on-conflict.
@@ -53,8 +63,15 @@ public sealed class AccountRepository(BudgetoidDbContext dbContext) : IAccountRe
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
+        // The transactions reference is the only foreign key pointing at accounts, so this name is the
+        // whole of "it has transactions". Naming it also means a second referencing table, or a
+        // stranger's 23503 riding along on the same SaveChanges, cannot block a legitimate delete
+        // behind a message about transactions the account does not have.
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
-        { SqlState: PostgresErrorCodes.ForeignKeyViolation })
+        {
+            SqlState: PostgresErrorCodes.ForeignKeyViolation,
+            ConstraintName: TransactionConfiguration.AccountForeignKeyName,
+        })
         {
             // Detach the rejected entity so the failed (Deleted) state can't leak into a later
             // SaveChanges if the context were reused, mirroring AddAsync/UpdateAsync's detach-on-conflict.

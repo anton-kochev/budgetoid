@@ -10,6 +10,14 @@ namespace Infrastructure.Persistence.Configurations;
 
 public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transaction>
 {
+    // Pinned to the names EF's convention already produces, so the schema does not move. These are the
+    // only inbound foreign keys on accounts and categories, so naming them is what turns "it has
+    // transactions" from something AccountRepository and CategoryRepository assume of any 23503 into
+    // something they can prove — and keeps that guarantee stated once a second referencing table
+    // appears.
+    public const string AccountForeignKeyName = "FK_transactions_accounts_account_id_budget_id";
+    public const string CategoryForeignKeyName = "FK_transactions_categories_category_id_budget_id";
+
     public void Configure(EntityTypeBuilder<Transaction> builder)
     {
         builder.ToTable("transactions", table =>
@@ -68,7 +76,8 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
             .WithMany()
             .HasForeignKey(transaction => new { transaction.AccountId, transaction.BudgetId })
             .HasPrincipalKey(account => new { account.Id, account.BudgetId })
-            .OnDelete(DeleteBehavior.Restrict);
+            .OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName(AccountForeignKeyName);
 
         // Restrict, not SetNull: ON DELETE SET NULL cannot coexist with a composite key containing
         // the NOT NULL budget_id column - PostgreSQL would attempt budget_id = NULL, and EF's
@@ -87,6 +96,7 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
             .WithMany()
             .HasForeignKey(transaction => new { transaction.CategoryId, transaction.BudgetId })
             .HasPrincipalKey(category => new { category.Id, category.BudgetId })
-            .OnDelete(DeleteBehavior.Restrict);
+            .OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName(CategoryForeignKeyName);
     }
 }

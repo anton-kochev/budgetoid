@@ -44,7 +44,7 @@ possibly a lock and a backfill.
 **Upper layers may restate a rule for error quality and UX, never for enforcement.** A raw `23505` is
 not the sentence "Account name must be unique." — that sentence comes from
 `AccountRepository.DuplicateNameValidationException`
-(`BudgetoidApp/Infrastructure/Repositories/AccountRepository.cs:71`), while the unique index is what
+(`BudgetoidApp/Infrastructure/Repositories/AccountRepository.cs:88`), while the unique index is what
 makes the rule true. This is legitimate layering, not duplication to be collapsed; the failure mode to
 guard against is a future reader deleting either half as redundant.
 
@@ -58,8 +58,8 @@ the discrimination has to come from a second question the application asks after
 sign-in duplicates a subject and its email in the same row.
 
 **A precheck is racy by design.** `IBudgetRepository.HasTransactionsAsync`
-(`BudgetoidApp/Domain/Budgets/IBudgetRepository.cs:32`, implemented at
-`BudgetoidApp/Infrastructure/Repositories/BudgetRepository.cs:21`) is check-then-act and exists for
+(`BudgetoidApp/Domain/Budgets/IBudgetRepository.cs:44`, implemented at
+`BudgetoidApp/Infrastructure/Repositories/BudgetRepository.cs:22`) is check-then-act and exists for
 the *message*; the foreign-key constraint is what is *correct*. Neither half is a defect: nobody
 should "fix" the race with a lock, and nobody should drop the constraint on the grounds that the check
 already covers it.

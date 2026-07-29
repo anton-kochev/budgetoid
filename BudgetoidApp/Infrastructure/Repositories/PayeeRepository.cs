@@ -1,6 +1,7 @@
 using Application.Abstractions;
 using Domain.Payees;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -32,8 +33,14 @@ public sealed class PayeeRepository(
             await dbContext.SaveChangesAsync(cancellationToken);
             return payee;
         }
+        // Named, because the recovery below assumes the losing side of a race for this very name: a
+        // 23505 from any other rule leaves nothing to re-read, and swallowing it would turn a stranger's
+        // collision into "no matching payee was found" with the real constraint already discarded.
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
-        { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: PayeeConfiguration.NameIndexName,
+        })
         {
             dbContext.Entry(payee).State = EntityState.Detached;
             return await FindByNameAsync(normalizedName, cancellationToken)

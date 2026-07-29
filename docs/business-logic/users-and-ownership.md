@@ -264,11 +264,15 @@ ELSE                                                     ← no user for that su
     THEN let the 23505 propagate unhandled → 500 naming the constraint
 ```
 
-Both `UserRepository` catch clauses filter on `PostgresException.ConstraintName`, which is why the
-two pinned index names `IX_users_google_subject` and `IX_users_email` are declared as constants in
-`UserConfiguration` instead of left to EF's naming convention. What that filter decides is whether
-a `23505` is a failure this path models at all: a property rename that shifted a generated index
-name would leave the catch unmatched and turn an actionable 409 into an opaque 500, and the
+Every repository catch that handles a PostgreSQL error filters on `PostgresException.ConstraintName`
+as well as on the SQLSTATE, against a name pinned as a constant on the owning configuration — the
+practice lives in [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md), under
+"A violation report names one rule, not every rule that was violated". Here that is why both
+`UserRepository` catch clauses filter on the two pinned index names `IX_users_google_subject` and
+`IX_users_email`, declared as constants in `UserConfiguration` instead of left to EF's naming
+convention. What that filter decides is whether a `23505` is a failure this path models at all: a
+property rename that shifted a generated index name would leave the catch unmatched and turn an
+actionable 409 into an opaque 500, and the
 unmatched `23505` nobody modelled falls through on purpose, because a 500 naming an unknown
 constraint is more useful than a false "someone else won the race". What a constraint name cannot
 decide is *what went wrong*. It identifies the rule the database reported, not the set of rules the

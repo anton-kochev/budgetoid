@@ -8,6 +8,11 @@ namespace Infrastructure.Persistence.Configurations;
 
 public sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
 {
+    // Pinned to the name EF's convention already produces, so the schema does not move: this index is
+    // the only 23505 BudgetRepository.TryAddAsync is allowed to report as a lost race, because that is
+    // the only one whose winner left a budget behind for provisioning to re-read.
+    public const string UserNameIndexName = "IX_budgets_user_id_name";
+
     public void Configure(EntityTypeBuilder<Budget> builder)
     {
         builder.ToTable("budgets");
@@ -31,7 +36,8 @@ public sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
         // budgets. Keying race safety on the absence of a name is stronger than the literal it
         // replaces: collision used to require both racers to write the same string, and a constant
         // two callers must agree on can drift; nothing about "no name" can.
-        builder.HasIndex(budget => new { budget.UserId, budget.Name }).IsUnique().AreNullsDistinct(false);
+        builder.HasIndex(budget => new { budget.UserId, budget.Name }).IsUnique().AreNullsDistinct(false)
+            .HasDatabaseName(UserNameIndexName);
 
         builder.HasOne<User>()
             .WithMany()

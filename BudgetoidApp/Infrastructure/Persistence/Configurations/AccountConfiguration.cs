@@ -8,6 +8,12 @@ namespace Infrastructure.Persistence.Configurations;
 
 public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
 {
+    // Pinned to the name EF's convention already produces, so the schema does not move: AccountRepository
+    // matches it against PostgresException.ConstraintName to decide whether a 23505 is the collision it
+    // models. Declaring it here rather than as a literal in the repository keeps the two from drifting —
+    // a name only the schema knows about stops the match and costs that 400 outright.
+    public const string NameIndexName = "IX_accounts_budget_id_name";
+
     public void Configure(EntityTypeBuilder<Account> builder)
     {
         builder.ToTable("accounts", table =>
@@ -39,7 +45,7 @@ public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
         builder.Property(account => account.CurrencyCode).HasColumnName("currency_code").HasMaxLength(3).IsRequired();
         builder.Property(account => account.CreatedAtUtc).HasColumnName("created_at_utc").HasColumnType("timestamp with time zone").IsRequired();
 
-        builder.HasIndex(account => new { account.BudgetId, account.Name }).IsUnique();
+        builder.HasIndex(account => new { account.BudgetId, account.Name }).IsUnique().HasDatabaseName(NameIndexName);
         builder.HasIndex(account => account.CurrencyCode);
 
         builder.HasOne<Budget>()

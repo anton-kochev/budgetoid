@@ -15,6 +15,18 @@ public interface IBudgetRepository
     /// </remarks>
     Task<Budget?> FindFirstForUserAsync(Guid userId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Inserts <paramref name="budget"/>, returning <see langword="true"/> when the row was written and
+    /// <see langword="false"/> when the uniqueness rule over
+    /// (<see cref="Budget.UserId"/>, <see cref="Budget.Name"/>) refused it.
+    /// </summary>
+    /// <remarks>
+    /// <see langword="false"/> means that one rule and nothing else, because the caller answers it by
+    /// re-reading the owner's budget and only a collision on that rule guarantees a winning row is
+    /// there to be read. Every other rejection propagates — including one raised by an unrelated row
+    /// the same unit of work was tracking, which a broader <see langword="false"/> would turn into a
+    /// silent hunt for a budget that was never inserted.
+    /// </remarks>
     Task<bool> TryAddAsync(Budget budget, CancellationToken cancellationToken = default);
 
     /// <summary>

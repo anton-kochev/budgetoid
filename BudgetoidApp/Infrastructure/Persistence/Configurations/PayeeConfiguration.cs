@@ -7,6 +7,12 @@ namespace Infrastructure.Persistence.Configurations;
 
 public sealed class PayeeConfiguration : IEntityTypeConfiguration<Payee>
 {
+    // Pinned to the name EF's convention already produces, so the schema does not move:
+    // PayeeRepository.GetOrCreateAsync swallows a 23505 and re-reads, so without the name a stranger's
+    // collision takes that recovery path and surfaces as a 500 blaming payees with the real constraint
+    // already discarded.
+    public const string NameIndexName = "IX_payees_budget_id_name";
+
     public void Configure(EntityTypeBuilder<Payee> builder)
     {
         builder.ToTable("payees");
@@ -21,7 +27,7 @@ public sealed class PayeeConfiguration : IEntityTypeConfiguration<Payee>
 
         // Unique per budget, case-insensitively: the name column's case_insensitive collation makes
         // this plain index fold case in PostgreSQL, so "Starbucks" and "starbucks" collide.
-        builder.HasIndex(payee => new { payee.BudgetId, payee.Name }).IsUnique();
+        builder.HasIndex(payee => new { payee.BudgetId, payee.Name }).IsUnique().HasDatabaseName(NameIndexName);
 
         builder.HasOne<Budget>()
             .WithMany()

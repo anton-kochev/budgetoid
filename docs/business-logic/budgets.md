@@ -255,8 +255,11 @@ erDiagram
   `NULLS NOT DISTINCT` (`AreNullsDistinct(false)`, PostgreSQL 15+). The rule is **database-owned**
   under [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) — the schema is
   the lowest layer that can state it declaratively, so it holds for write paths that do not exist
-  yet. `BudgetRepository.TryAddAsync` restates nothing; it only translates the `23505` into `false`
-  so the caller can re-read.
+  yet. `BudgetRepository.TryAddAsync` restates nothing; it only translates a `23505` on
+  `IX_budgets_user_id_name` into `false` so the caller can re-read, and lets every other rejection
+  propagate. The caller answers `false` by re-reading the owner's budget, so only a collision on
+  this rule guarantees a winning row is there to be read; a broader `false` would send provisioning
+  hunting for a budget nobody inserted.
   `BudgetoidDbContextConstructionTests.Model_ScopesBudgetNameUniquenessToTheOwner` pins the
   declaration, and `BudgetRepositoryTests.Budgets_WithNoNameForOneUser_AreRejectedAfterTheFirst`
   pins the behaviour against PostgreSQL.

@@ -1,6 +1,7 @@
 using Domain.Categories;
 using Domain.Common;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -15,12 +16,19 @@ public sealed class CategoryRepository(BudgetoidDbContext dbContext) : ICategory
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
-        catch (DbUpdateException exception) when (IsUniqueViolation(exception))
+        // Named, because SaveChanges flushes every tracked row and not just this category: only the
+        // category name index says the name the caller just typed is the one already taken.
+        catch (DbUpdateException exception)
+            when (IsUniqueViolationOf(exception, CategoryConfiguration.NameIndexName))
         {
             dbContext.Entry(category).State = EntityState.Detached;
             throw DuplicateNameValidationException();
         }
-        catch (DbUpdateException exception) when (IsForeignKeyViolation(exception))
+        // The sharpest case in this file: a category points at both a group and a budget, and both
+        // refusals arrive as 23503. Only the group's name makes "Category group was not found." true
+        // rather than a confident, specific lie about a group the caller can still read.
+        catch (DbUpdateException exception)
+            when (IsForeignKeyViolationOf(exception, CategoryConfiguration.CategoryGroupForeignKeyName))
         {
             dbContext.Entry(category).State = EntityState.Detached;
             throw CategoryGroupValidationException();
@@ -53,7 +61,9 @@ public sealed class CategoryRepository(BudgetoidDbContext dbContext) : ICategory
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
-        catch (DbUpdateException exception) when (IsUniqueViolation(exception))
+        // Same index as AddAsync: a rename collides with exactly the rule an insert would.
+        catch (DbUpdateException exception)
+            when (IsUniqueViolationOf(exception, CategoryConfiguration.NameIndexName))
         {
             dbContext.Entry(category).State = EntityState.Detached;
             throw DuplicateNameValidationException();
@@ -79,7 +89,11 @@ public sealed class CategoryRepository(BudgetoidDbContext dbContext) : ICategory
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
-        catch (DbUpdateException exception) when (IsForeignKeyViolation(exception))
+        // The destination group is what this call can get wrong, and it is the group's own foreign key
+        // that says so — the budget reference is untouched by a move and has no business answering for
+        // it.
+        catch (DbUpdateException exception)
+            when (IsForeignKeyViolationOf(exception, CategoryConfiguration.CategoryGroupForeignKeyName))
         {
             dbContext.Entry(category).State = EntityState.Detached;
             throw CategoryGroupValidationException();
@@ -101,7 +115,12 @@ public sealed class CategoryRepository(BudgetoidDbContext dbContext) : ICategory
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
-        catch (DbUpdateException exception) when (IsForeignKeyViolation(exception))
+        // The transactions reference is the only foreign key pointing at categories, so this name is the
+        // entirety of "this category still has transactions". Any other 23503 reaching here is a
+        // different failure and must propagate rather than come back as a message about transactions
+        // this category does not have.
+        catch (DbUpdateException exception)
+            when (IsForeignKeyViolationOf(exception, TransactionConfiguration.CategoryForeignKeyName))
         {
             dbContext.Entry(category).State = EntityState.Detached;
             throw ReferencedCategoryValidationException();
@@ -131,17 +150,17 @@ public sealed class CategoryRepository(BudgetoidDbContext dbContext) : ICategory
             .ToListAsync(cancellationToken);
     }
 
-    private static bool IsUniqueViolation(DbUpdateException exception) =>
+    private static bool IsUniqueViolationOf(DbUpdateException exception, string indexName) =>
         exception.InnerException is PostgresException
         {
             SqlState: PostgresErrorCodes.UniqueViolation,
-        };
+        } postgresException && postgresException.ConstraintName == indexName;
 
-    private static bool IsForeignKeyViolation(DbUpdateException exception) =>
+    private static bool IsForeignKeyViolationOf(DbUpdateException exception, string constraintName) =>
         exception.InnerException is PostgresException
         {
             SqlState: PostgresErrorCodes.ForeignKeyViolation,
-        };
+        } postgresException && postgresException.ConstraintName == constraintName;
 
     private static ValidationException DuplicateNameValidationException() => new(
         new Dictionary<string, string[]>
