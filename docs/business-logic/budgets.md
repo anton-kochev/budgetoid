@@ -98,7 +98,8 @@ erDiagram
     `IBudgetContext.BudgetId`; plus a required `budget_id` column on all five tables with a foreign
     key to `budgets.id`. That foreign key is `Cascade` on `accounts`, `category_groups`, `categories`
     and `payees`, so structure never survives its budget as unreachable rows, and `Restrict` on
-    `transactions`, so recorded money movement pins the budget in place instead (see MUST NOT below).
+    `transactions`, so recorded money movement pins the budget in place instead. That asymmetry is a
+    rule in its own right and is stated in Business Rules & Invariants below.
     `BudgetId` is stamped at creation from `IBudgetContext` by
     `CreateAccountHandler`, `CreateCategoryGroupHandler`, `CreateCategoryHandler`,
     `CreateTransactionHandler` and `PayeeRepository.GetOrCreateAsync`. There is no `UserId` on any of
@@ -129,7 +130,7 @@ erDiagram
     entity: `AccountRepository`, `CategoryRepository` and `CategoryGroupRepository` translate the
     unique violation into a validation error the user has to resolve, while `PayeeRepository`
     swallows it and re-reads, because for a find-or-create payee a name collision is the hit rather
-    than a mistake (see [transactions.md](transactions.md#business-rules--invariants)). This is the
+    than a mistake (see [payees.md](payees.md#business-rules--invariants)). This is the
     canonical statement of the scope and mechanism; the category-specific scope is spelled out in
     [categories.md](categories.md#constraints).
 
@@ -194,20 +195,6 @@ erDiagram
   - **Enforced in**: `Payee` carries a required `BudgetId`, is covered by the `BudgetIsolation`
     filter, and `PayeeRepository.GetOrCreateAsync` find-or-creates within the ambient budget only. The
     unique index is `(budget_id, name)`, so the same payee name in two budgets is two rows.
-
-- **A budget that holds any transaction MUST NOT be deletable.** Nothing in the application deletes
-  a budget — there is no command, handler or endpoint — so this rule lives entirely in the schema.
-  - **Why**: Recorded money movement is the only data in the system a user cannot reconstruct from
-    memory, and losing it in bulk is the worst outcome a money app has. Empty scaffolding does not
-    earn the same protection, so a budget with no movement stays deletable and its accounts, category
-    groups, categories and payees go out with it. Settling that asymmetry in the schema is what stops
-    the first delete path anyone writes from deciding it by accident.
-  - **Enforced in**: `TransactionConfiguration` maps `transactions.budget_id → budgets.id` on
-    `Restrict`, so PostgreSQL refuses the delete whatever code path attempted it.
-    `IBudgetRepository.HasTransactionsAsync` — `BudgetRepository`'s `BudgetIsolation`-filtered
-    `Transactions.AnyAsync` — is the application-side seam for asking the question, and has no caller
-    yet. It takes no budget id: the filter already scopes it to the ambient budget, and tenancy as a
-    caller-supplied argument would have no ownership check to pair with it.
 
 - **A route MUST NOT carry a budget identifier.**
   - **Why**: The budget is a singular ambient resource, resolved server-side from the authenticated
@@ -310,6 +297,54 @@ erDiagram
   protection; there is no second check behind it.
 - **Source**: `[SOURCE: user-story]`
 
+---
+
+- **Rule**: A budget that holds at least one transaction cannot be deleted. A budget that holds
+  structure but no transaction can, and its accounts, category groups, categories and payees go out
+  with it.
+- **Why**: Recorded money movement is the only data in the system a user cannot reconstruct from
+  memory, and losing it in bulk is the worst outcome a money app has. Empty scaffolding does not earn
+  the same protection: a budget nobody recorded anything in was a mistake, and making it permanently
+  undeletable would be a worse answer than letting the structure follow it out. Settling that
+  asymmetry in the schema is what stops the first delete path anyone writes from deciding it by
+  accident.
+- **Enforced in**: deliberately split across two layers, and only the lower one exists today.
+  - **The database owns the refusal.** `TransactionConfiguration` maps `transactions.budget_id →
+    budgets.id` on `Restrict` while `AccountConfiguration`, `CategoryGroupConfiguration`,
+    `CategoryConfiguration` and `PayeeConfiguration` map theirs on `Cascade`, so PostgreSQL decides
+    the asymmetry for every write path — including the ones that do not exist yet. This is the lowest
+    layer that can state the rule declaratively, so under
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) it is where the rule
+    belongs, and it sits exactly there.
+    `BudgetRepositoryTests.Database_RefusesToDeleteABudgetThatHoldsTransactions` and
+    `Database_AllowsDeletingABudgetWithStructureButNoTransactions` pin both halves against a real
+    PostgreSQL, each asserting the surviving rows as well as the outcome; `UserSchemaTests` re-proves
+    the same pair one cascade hop up, where deleting the *user* cascades into the budget and meets
+    these constraints from above.
+  - **A future delete feature owns the explanation.** Nothing in the application deletes a budget —
+    there is no command, handler or endpoint — so no layer above the schema states the rule today.
+    Whoever writes that path needs an application precheck rather than a translated database error,
+    because the refusal is guaranteed but the constraint that reports it is not (see Edge Cases
+    below), so there is no error text that can be relied on to mean this. The seam already exists:
+    `IBudgetRepository.HasTransactionsAsync` — `BudgetRepository`'s `BudgetIsolation`-filtered
+    `Transactions.AnyAsync` — has no production caller. It takes no budget id, because the filter
+    already scopes it to the ambient budget and tenancy as a caller-supplied argument would have no
+    ownership check to pair with it.
+  - **The precheck is check-then-act and racy by design, and neither half is a defect.** A
+    transaction can land between the check and the delete, and the delete then fails on the
+    constraint instead of on the check. That is the correct outcome: the precheck exists for the
+    *message*, the constraint is what is *correct*. Do not "fix" the race with a lock, and do not
+    drop the constraint on the grounds that the check already covers it.
+- **Example**: a user who recorded a single transaction two years ago keeps that budget under the
+  current schema, whatever a delete feature offers them. A budget holding two accounts, a category
+  group, three categories and a payee, and no transaction, is deleted whole in one statement and
+  those rows go with it.
+- **Counterexample**: a delete handler that catches the foreign-key violation and renders it as
+  "This budget still has transactions." It would be right most of the time and wrong at random,
+  because which constraint PostgreSQL names is decided by foreign-key creation order rather than by
+  anything the caller did (see Edge Cases below). Asking first is what makes the sentence true.
+- **Source**: `[SOURCE: discussion — 2026-07-29]`
+
 ## Workflows & State Transitions
 
 **Provisioning on an authenticated request** (`UserProvisioningMiddleware` → `EnsureUserHandler`).
@@ -365,7 +400,7 @@ The user branch that runs before this is in
 - **[Currencies](currencies.md)**: `BaseCurrencyCode` references the global ISO-4217 reference table
   by code with `Restrict`, so a base currency in use could not be deleted — no budget holds one
   today. `Currency` is the only reference table shared across every budget.
-- **[Accounts](accounts.md)**, **[Transactions](transactions.md)** (with Payees), and
+- **[Accounts](accounts.md)**, **[Transactions](transactions.md)**, **[Payees](payees.md)** and
   **[Categories and Category Groups](categories.md)**: all five entities are stamped with and
   filtered by `BudgetId`. Those files document their own field rules and lifecycles and rely on the
   isolation rules above.
@@ -474,9 +509,9 @@ The user branch that runs before this is in
   Which constraint then fires — `FK_transactions_budgets_budget_id`, or one of the composite
   `transactions → accounts | categories | payees` keys after their principals cascade — depends on
   foreign-key creation order. The delete always fails; the constraint name in the error is not a
-  stable contract, so a delete path that has to explain the refusal must ask `HasTransactionsAsync`
-  first — the way `DeleteAccountHandler` already prechecks with
-  `IAccountRepository.HasTransactionsAsync` — rather than translating the database error.
+  stable contract. That is why the delete rule above puts the explanation behind a precheck rather
+  than behind a translated error, the way `DeleteAccountHandler` already prechecks with
+  `IAccountRepository.HasTransactionsAsync`.
 
 - **Resolving the ambient budget costs one extra indexed read per authenticated request.** The
   provisioning lookup hits the leading column of an index that already exists, and it runs on every

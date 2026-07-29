@@ -180,7 +180,7 @@ ELSE
 - **The guard covers deleting the account, not losing it.** `accounts` cascades from `budgets.id`, so
   an account disappears with its budget without this check ever running. That path has its own rule
   and its own protection — a budget holding transactions cannot be deleted at all
-  (see [budgets.md](budgets.md#must-not)).
+  (see [budgets.md](budgets.md#business-rules--invariants)).
 - **`OpeningBalance` is the only balance that exists**: there is deliberately no computed current
   balance (opening + sum of transactions) anywhere in the system. Do not assume a running balance is
   available — displaying one would be new domain logic, not a lookup.

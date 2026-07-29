@@ -63,12 +63,28 @@ erDiagram
 
 - **Names must be unique case-insensitively in their defined scope.**
   - Category Group names are unique per budget.
-  - Category names are unique per budget across all Category Groups, not merely inside one group. Two
-    groups therefore cannot each hold a "Groceries".
-  - **Why**: A Category is chosen from one flat picker grouped by heading, so two Categories with the
-    same name in different groups would be indistinguishable at the point of use.
-  - Per-budget, case-insensitive name uniqueness and the mechanism that enforces it are documented
-    once, in [budgets.md](budgets.md#constraints).
+  - Category names are unique per budget **across all Category Groups**, not merely inside one group.
+    Two groups therefore cannot each hold a "Groceries", and "Fees" cannot sit under both "Banking"
+    and "Investments".
+  - **Why**: the group a Category sits in is an arrangement its owner is free to change, not part of
+    the Category's identity. `PATCH /api/categories/{id}/placement` moves a Category between groups
+    at will, writes nothing to the Transactions that reference it, and never consults the name —
+    `PlaceCategoryHandler` resolves the destination group and `CategoryRepository.PlaceAsync`
+    reindexes positions, and neither touches the name index. Scoping uniqueness to the group would
+    tie the legality of a name to that arrangement: two "Fees" would be legal while they sat apart
+    and become a collision the moment their owner tidied one into the other's group, so a
+    rearrangement meant to cost nothing could be refused for a reason that has nothing to do with
+    rearranging. Budget-wide uniqueness makes a Category name mean exactly one thing inside the
+    budget however the hierarchy is rearranged, which is the only scope under which the name stays a
+    stable answer to what a past Transaction was filed as.
+  - **Enforced in**: **database-owned.** Per-budget, case-insensitive name uniqueness and the index
+    behind it are documented once, in [budgets.md](budgets.md#constraints); the scope stated here is
+    that same rule's, not a second one. `CategoryRepository` and `CategoryGroupRepository` restate it
+    only to turn the unique violation into "Category name must be unique." and "Category group name
+    must be unique.", which is error quality rather than enforcement.
+    `CategoryIntegrationTests.CategoryNames_AreCaseInsensitivelyUniqueAcrossGroups` pins the
+    cross-group half specifically — a second group's "groceries" comes back 400 with an error on
+    `Name` — and `CategoryGroupNames_AreCaseInsensitivelyUniquePerUser` pins the group half.
 
 ### MUST NOT
 
@@ -100,21 +116,64 @@ erDiagram
 
 ---
 
-- **Rule**: `Position` is a zero-based, non-negative integer. Positions are budget-wide for Category
-  Groups and scoped to one Category Group for Categories.
-- **Why**: Order is a deliberate personal arrangement, so it is persisted rather than derived. The
+- **Rule**: `Position` is a zero-based, non-negative integer, and positions are **contiguous** within
+  their scope. The two scopes differ:
+  - a budget's Category Groups occupy exactly `0..n-1`, **budget-wide**;
+  - the Categories inside one Category Group occupy exactly `0..m-1`, **within that group**.
+- **Why**: Order is a deliberate personal arrangement, so it is persisted rather than derived.
+  Contiguity is what makes a position mean anything: it is the only thing that turns "position 3"
+  into "the fourth item", which is what a client sends when someone drops a row into the fourth slot.
+  With gaps or duplicates in the stored list, that number stops naming the slot they aimed at. The
   two scopes differ because groups are arranged against each other while categories are arranged
   inside their heading.
-- **Enforced in**: the domain ordering services `CategoryGroupOrdering` and `CategoryOrdering`, with
-  `CK_category_groups_position` and `CK_categories_position` (`position >= 0`) as the database
-  backstop. Ordering scope is indexed per [budgets.md](budgets.md#constraints).
-- **Example**: the first group a budget receives is position `0`; the first category in each group is
-  also position `0`.
+- **Enforced in**: **domain-owned**, in `CategoryOrdering` (`Place`, `CloseGap`) and
+  `CategoryGroupOrdering` (`MoveToPosition`, `CloseGap`), which reindex the whole affected list on
+  every insertion, move and removal; `CategoryRepository.PlaceAsync` / `DeleteAsync` and
+  `CategoryGroupRepository.MoveToPositionAsync` / `DeleteAsync` load the siblings and delegate rather
+  than reimplementing the algorithm. The database holds only the non-negative half —
+  `CK_categories_position` and `CK_category_groups_position` (`position >= 0`) — plus the ordering
+  indexes described in [budgets.md](budgets.md#constraints), which are **not** unique.
+  `CategoryIntegrationTests.Ordering_StaysContiguousAndZeroBasedAcrossASequenceOfMovesPlacementsAndDeletes`
+  asserts the whole invariant as a set over the **stored rows**, read with raw SQL rather than
+  through `/api/categories`, because both read services tie-break on `Id` —
+  `CategoryReadService.GetAllAsync` orders by `categoryGroup.Position, category.Position,
+  category.Id` and `CategoryGroupReadService.GetAllAsync` by `Position` then `Id`. A duplicate
+  position is therefore deterministic: it never surfaces as flakiness, only as an item sitting
+  quietly in the wrong place.
+
+  **Why contiguity is not at the bottom.** It sits above the layer that could hold *some* of it, and
+  under [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) a rule left above
+  its lowest capable layer has to say why. Checking contiguity on a write means comparing the row
+  against every one of its siblings, and the only PostgreSQL construct that can do that is a deferred
+  constraint trigger — procedural logic in the database, which is exactly the boundary ADR 0002 draws
+  around "lowest capable layer". So the rule stays in the domain, where it is a loop over an ordered
+  list the unit suite can read and test. Do not read the principle as licence to push this down: a
+  trigger here would be the thing the ADR names as its one worked example of what not to do.
+
+  A **`DEFERRABLE INITIALLY DEFERRED` unique constraint on `(category_group_id, position)`** is the
+  near-miss worth naming, because it catches duplicates declaratively and *is* a constraint rather
+  than a trigger — the declarative boundary is satisfied, so the boundary is not what rules it out.
+  Three other things do. First, the consequence it would prevent is cosmetic: both read services
+  tie-break on `Id`, so a duplicate produces a deterministic-but-wrong order that the next reindex of
+  that list repairs on its own — nothing like the tenancy breach or the bulk loss of recorded money
+  the rules that do live at the bottom prevent — and the bottom layer's price is paid on every later
+  change. Second, EF has no `DEFERRABLE` support, so it would be hand-written SQL inside the single
+  baseline migration this repository regenerates by convention; grants can live outside migrations
+  because provisioning owns them, but schema has nowhere else to go. Third, it buys half the
+  invariant at best: `0, 1, 5` holds no duplicate, is equally broken to the person reading the list,
+  and would stay legal.
+- **Example**: the first group a budget receives is position `0`, and so is the first category in
+  each group. Deleting the group at position `1` of four leaves the survivors at `0, 1, 2`, not
+  `0, 2, 3`; moving a Category to another group closes the gap it left behind and renumbers the
+  destination around where it landed, in one save.
 - **Counterexample**: scoping Category positions per budget rather than per Category Group makes
   position `0` mean "first in this budget" instead of "first under this heading", so adding one
   category renumbers every other group's — the user's deliberate arrangement is destroyed by an
-  edit they made somewhere else.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+  edit they made somewhere else. Equally wrong, and far quieter: removing an item and leaving the
+  survivors alone. Nothing rejects `0, 2, 3` — the check constraint reads each number in isolation
+  and the ordering index is not unique — so the list still renders in the right order, and the defect
+  surfaces only later, when the next drag lands a row one slot away from where it was dropped.
+- **Source**: `[SOURCE: discussion — 2026-07-29]`
 
 ---
 
@@ -146,8 +205,9 @@ set on every move:
 - `PATCH /api/category-groups/{id}/position` moves one group and reindexes all groups contiguously.
 - `PATCH /api/categories/{id}/placement` reorders a Category within its current group or moves it to
   another group, reindexing both source and destination contiguously in one database save.
-- Contiguous reindexing and position-bounds validation are implemented once, in `CategoryOrdering`
-  and `CategoryGroupOrdering`; persistence delegates to them.
+- Position-bounds validation runs in the same two ordering services that own contiguity; a position
+  below zero or past the end of the destination siblings is a validation error, not a clamp. Where
+  the invariant lives and why is in Business Rules & Invariants above.
 - Reads use persisted position, with ID only as a deterministic tie-breaker for unexpected duplicate
   positions. They are not alphabetically resorted.
 

@@ -14,15 +14,14 @@
 ## Purpose
 
 A **Transaction** is a signed amount recorded against one Account on a date. It can
-optionally name a **Payee** and select a **Category**. Payees are documented here because they are
-created as a side effect of transaction entry rather than managed independently.
+optionally name a **Payee** and select a **Category**. What a transaction does with a payee — supply
+a name and get back a row — is documented here; everything about the payee itself is in
+[payees.md](payees.md).
 
 ## Key Entities
 
 - **Transaction** — `Id`, `BudgetId`, required `AccountId`, signed `Amount`, `Date`, optional
   `Description`, optional `PayeeId`, optional `CategoryId`, `CreatedAtUtc`.
-- **Payee** — `Id`, `BudgetId`, `Name`, `CreatedAtUtc`; entered as free text with autocomplete and
-  created automatically on first use.
 
 ```mermaid
 erDiagram
@@ -64,15 +63,9 @@ erDiagram
 
 ### MUST NOT
 
-- **A Payee referenced by any Transaction MUST NOT be deleted.**
-  - **Why**: Refusing forces an explicit decision about historical rows instead of silently erasing
-    the counterparty from past transactions — the same protection [Accounts](accounts.md) and
-    [Categories](categories.md) have.
-  - **Enforced in**: the composite `transactions → payees` foreign key is `Restrict`. The mechanism
-    differs from accounts and categories, which are prechecked by their delete handlers and report a
-    validation error: no code path deletes a payee at all (`IPayeeRepository` exposes only
-    `GetOrCreateAsync`), so this rule lives purely in the database, pinned by
-    `PayeeIntegrationTests.DeletingAReferencedPayee_IsRefusedByTheDatabase`.
+- **A Payee referenced by any Transaction MUST NOT be deleted.** The Transaction's existence is what
+  makes the rule bite; the rule itself, its reasoning and its enforcement are stated once, in
+  [payees.md](payees.md#must-not).
 
 ## Business Rules & Invariants
 
@@ -140,16 +133,21 @@ erDiagram
 
 ---
 
-- **Rule**: Payees are case-insensitive find-or-create free text within the current budget.
-- **Why**: A shared payee entity is what powers autocomplete and consistent naming across
-  transactions, but making the user create one first would slow down the entry this rule exists to
-  keep fast. Case-insensitive matching is what stops "Tesco" and "tesco" becoming two counterparties.
-- **Enforced in**: `CreateTransactionHandler` calls `IPayeeRepository.GetOrCreateAsync`, which
-  matches an existing payee case-insensitively and inserts one only when there is no match, retrying
-  the lookup when a concurrent request wins the insert. Per-budget, case-insensitive name uniqueness
-  and the mechanism behind it are documented in [budgets.md](budgets.md#constraints).
-- **Example**: "Tesco" typed as "tesco" reuses the existing payee; the same name in another budget is
-  a separate row, because payees never cross budgets.
+- **Rule**: A Transaction may name a Payee or none, and the Payee is supplied as a free-text **name**
+  while the Category is supplied as an existing **id**.
+- **Why**: The asymmetry follows from when each is chosen. The counterparty is typed mid-entry, and
+  making the user create one first would slow down the entry the model most needs to keep fast; the
+  category is picked from a list they arranged deliberately, where a name would be a second way to
+  say something they can already point at. Both are optional for the same reason a Transaction may be
+  uncategorized: recording that money moved must never be blocked on describing it.
+- **Enforced in**: `CreateTransactionCommand` carries a nullable `PayeeName` and a nullable
+  `CategoryId`; `Transaction.PayeeId` is nullable and set only through `AssignPayee`.
+  `CreateTransactionHandler` turns the name into a row by calling `IPayeeRepository.GetOrCreateAsync`
+  in the ambient budget. What that call does with the name — trimming, case-insensitive matching,
+  what a blank name means, and what happens when two requests race — is documented in
+  [payees.md](payees.md#business-rules--invariants).
+- **Example**: a transaction submitted with `payeeName: "tesco"` comes back carrying the `payeeId`
+  and the stored spelling `Tesco` of the payee that already existed.
 - **Source**: `[SOURCE: discussion — 2026-07-13]`
 
 ---
@@ -216,6 +214,9 @@ The category and payee steps are independent — either, both, or neither may ru
   may carry and how it is displayed. It cannot be deleted while Transactions reference it.
 - **[Categories and Category Groups](categories.md)**: optional Category context. A referenced
   Category cannot be deleted; its Category Group cannot be deleted while the Category exists.
+- **[Payees](payees.md)**: optional counterparty, and the only thing a Transaction can bring into
+  existence. Transaction creation is the sole writer of the `payees` table, and a Transaction that
+  references a payee is what makes that payee undeletable.
 - **[Budgets](budgets.md)**: Transactions, Payees, Accounts, Categories and Category Groups are
   budget-filtered, and the `transactions → accounts | categories | payees` references are composite
   foreign keys so PostgreSQL, not only the query filter, refuses a cross-budget reference. Both rules
@@ -235,10 +236,9 @@ The category and payee steps are independent — either, both, or neither may ru
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) that is the right layer
   — the rule is about the interaction, not about what a ledger may hold — but it is also the only
   layer holding it, with nothing underneath to catch a client that forgets.
-- Payee input is a name (find-or-create), while Category input is an existing ID. This asymmetry is
-  intentional: a payee is typed in mid-entry, a category is picked from a list the user arranged.
-- `GET /api/payees` lists the ambient budget's payees for autocomplete. It is the only payee endpoint
-  — there is no create, rename or delete.
+- **Creating a transaction that names a new payee writes two rows in two separate database
+  transactions**, the payee first. A failure between them leaves a payee no transaction references,
+  and payees cannot be deleted — see [payees.md](payees.md#edge-cases--known-gotchas).
 - Renaming a Category or Category Group, or moving a Category, immediately changes historical
   Transaction display; see [categories.md](categories.md#edge-cases--known-gotchas).
 - A missing Currency row for an Account fails loudly rather than guessing a symbol, but the

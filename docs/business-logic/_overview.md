@@ -89,7 +89,8 @@ references are additionally constrained by composite foreign keys to a row in th
 - [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
   and its base currency.
 - [Accounts](accounts.md) — account types, currency denomination, and delete guard.
-- [Transactions](transactions.md) — transaction rules, Payees, and optional categorization.
+- [Transactions](transactions.md) — transaction rules and optional payee and category context.
+- [Payees](payees.md) — counterparties, created only by naming one on a transaction.
 - [Categories and Category Groups](categories.md) — hierarchy, uniqueness, ordering, movement, and
   delete guards.
 - [Currencies](currencies.md) — global ISO-4217 reference data.
