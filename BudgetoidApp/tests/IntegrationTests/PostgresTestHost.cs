@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
 
 namespace IntegrationTests;
@@ -21,7 +22,12 @@ public sealed class PostgresTestHost : IAsyncDisposable
     }
 
     // Builds a factory over the same database container. Caller owns disposal (use `await using`).
-    public ApiFactory CreateFactory(string? defaultSubject = "test-subject") => new(ConnectionString, defaultSubject);
+    // `configureServices` is applied inside the test host's service configuration, so callers can
+    // substitute application services without touching the production composition root.
+    public ApiFactory CreateFactory(
+        string? defaultSubject = "test-subject",
+        Action<IServiceCollection>? configureServices = null) =>
+        new(ConnectionString, defaultSubject, configureServices: configureServices);
 
     public async ValueTask DisposeAsync()
     {

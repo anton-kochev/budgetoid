@@ -314,9 +314,9 @@ ELSE
 - **Deleting a Transaction can strand its Payee, permanently.** The payee row stays behind and
   nothing removes it — there is no delete path for payees at all — so a counterparty named only on
   a transaction that was then deleted sits in the autocomplete list forever. This is accepted rather
-  than overlooked, and it is a second route to a state
-  [payees.md](payees.md#edge-cases--known-gotchas) already describes: the existence of a payee is
-  not evidence that any transaction ever named it.
+  than overlooked, and it is the only route to the state
+  [payees.md](payees.md#edge-cases--known-gotchas) describes: the existence of a payee is not
+  evidence that any transaction ever named it.
 - **The account and category delete guards are racy in both directions, and their foreign-key
   catches are what actually holds.** `DeleteAccountHandler` and `DeleteCategoryHandler` ask
   `HasTransactionsAsync` before removing the row, and either answer can be stale by the time the
@@ -336,9 +336,17 @@ ELSE
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) that is the right layer
   — the rule is about the interaction, not about what a ledger may hold — but it is also the only
   layer holding it, with nothing underneath to catch a client that forgets.
-- **Creating a transaction that names a new payee writes two rows in two separate database
-  transactions**, the payee first. A failure between them leaves a payee no transaction references,
-  and payees cannot be deleted — see [payees.md](payees.md#edge-cases--known-gotchas).
+- **Creating a transaction that names a new payee writes two rows, and both go in one database
+  transaction.** `CreateTransactionHandler` runs the payee find-or-create and the transaction insert
+  inside `ITransactionalExecutor`, so a failure between them commits neither. The boundary is
+  load-bearing rather than tidy: payees have no delete path, so a payee committed without its
+  transaction would be permanent litter (see [payees.md](payees.md#edge-cases--known-gotchas)), and
+  a client disconnect is enough to reach that point — the handler's `CancellationToken` is the
+  request's `RequestAborted`. It starts *after* the account, currency and category lookups, which
+  commit nothing and would only hold the connection and its locks longer. Do not narrow it, and do
+  not widen it to the whole handler; the reasoning, including why the begin/commit pair has to run
+  through the provider's execution strategy, is in
+  [ADR 0003](../decisions/0003-wrap-multi-repository-writes-in-one-transaction.md).
 - Renaming a Category or Category Group, or moving a Category, immediately changes historical
   Transaction display; see [categories.md](categories.md#edge-cases--known-gotchas).
 - A missing Currency row for an Account fails loudly rather than guessing a symbol, but the

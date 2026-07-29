@@ -17,7 +17,8 @@ public sealed class CreateTransactionHandler(
     ICategoryRepository categories,
     ICategoryGroupRepository categoryGroups,
     IBudgetContext budgetContext,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    ITransactionalExecutor transactionalExecutor)
     : ICommandHandler<CreateTransactionCommand, TransactionDto>
 {
     public async Task<TransactionDto> HandleAsync(
@@ -65,23 +66,33 @@ public sealed class CreateTransactionHandler(
             transaction.AssignCategory(category.Id);
         }
 
-        Payee? payee = null;
-        if (!string.IsNullOrWhiteSpace(command.PayeeName))
+        // The transaction boundary starts here rather than at the top of the method. Everything
+        // above is reads and domain validation, which commit nothing and would only widen the window
+        // the transaction holds its connection and locks for. Everything below is the two writes —
+        // the payee and the transaction that needed it — and they are one logical operation: a
+        // payee committed without its transaction is permanent litter, since nothing deletes payees.
+        return await transactionalExecutor.ExecuteAsync(WriteAsync, cancellationToken);
+
+        async Task<TransactionDto> WriteAsync(CancellationToken token)
         {
-            payee = await payees.GetOrCreateAsync(command.PayeeName, cancellationToken);
-            transaction.AssignPayee(payee.Id);
+            Payee? payee = null;
+            if (!string.IsNullOrWhiteSpace(command.PayeeName))
+            {
+                payee = await payees.GetOrCreateAsync(command.PayeeName, token);
+                transaction.AssignPayee(payee.Id);
+            }
+
+            await repository.AddAsync(transaction, token);
+
+            return TransactionDto.FromTransaction(
+                transaction,
+                account.Name,
+                account.CurrencyCode,
+                currency.Symbol,
+                payee?.Name,
+                category?.Name,
+                categoryGroup?.Id,
+                categoryGroup?.Name);
         }
-
-        await repository.AddAsync(transaction, cancellationToken);
-
-        return TransactionDto.FromTransaction(
-            transaction,
-            account.Name,
-            account.CurrencyCode,
-            currency.Symbol,
-            payee?.Name,
-            category?.Name,
-            categoryGroup?.Id,
-            categoryGroup?.Name);
     }
 }

@@ -242,7 +242,8 @@ public sealed class CreateTransactionHandlerTests
                 categories,
                 categoryGroups,
                 new StubBudgetContext(budgetId),
-                timeProvider);
+                timeProvider,
+                new InMemoryTransactionalExecutor());
 
             return new Fixture
             {

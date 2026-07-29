@@ -11,7 +11,8 @@ public sealed class ApiFactory(
     string connectionString,
     string? defaultSubject = "test-subject",
     string environment = "Development",
-    IReadOnlyDictionary<string, string?>? settings = null) : WebApplicationFactory<Program>
+    IReadOnlyDictionary<string, string?>? settings = null,
+    Action<IServiceCollection>? configureServices = null) : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -43,6 +44,11 @@ public sealed class ApiFactory(
                     options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
                 })
                 .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
+
+            // Runs last so a caller can replace anything the application registered, including the
+            // test authentication above. Tests that need to fail a specific collaborator swap it here
+            // rather than constructing a handler by hand, which would couple them to its constructor.
+            configureServices?.Invoke(services);
         });
     }
 

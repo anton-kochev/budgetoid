@@ -1,3 +1,4 @@
+using Application.Abstractions;
 using Application.Accounts;
 using Application.Categories;
 using Application.CategoryGroups;
@@ -11,6 +12,7 @@ using Domain.CategoryGroups;
 using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
+using Infrastructure.Persistence;
 using Infrastructure.ReadServices;
 using Infrastructure.Repositories;
 using Microsoft.Extensions.DependencyInjection;
@@ -34,6 +36,7 @@ public static class DependencyInjection
         services.AddScoped<IPayeeReadService, PayeeReadService>();
         services.AddScoped<ICategoryGroupReadService, CategoryGroupReadService>();
         services.AddScoped<ICategoryReadService, CategoryReadService>();
+        services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();
         return services;
     }
 }
