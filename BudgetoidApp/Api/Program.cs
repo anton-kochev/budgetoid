@@ -116,12 +116,13 @@ app.UseMiddleware<UserProvisioningMiddleware>();
 app.UseAuthorization();
 
 // Development is the only environment where the application shapes its own database. Production
-// applies the migration and the grant matrix as deliberate admin steps at deploy time, so nothing
-// here runs there — do not "helpfully" lift this block out of the Development check. The deployed
-// container is handed exactly one connection string, the least-privilege one (see AppHost's publish
-// branch), so lifting this code out would not quietly give a request-serving process DDL rights:
-// it would fail at boot on the missing admin connection string a few lines below. The absence of
-// the credential is what prevents the escalation; this check is what prevents the boot failure.
+// applies the migration and the grant matrix at deploy time, from the deploy pipeline's
+// Tools/DbProvision tool on an admin connection, so nothing here runs there — do not "helpfully"
+// lift this block out of the Development check. The deployed container is handed exactly one
+// connection string, the least-privilege one (see AppHost's publish branch), so lifting this code
+// out would not quietly give a request-serving process DDL rights: it would fail at boot on the
+// missing admin connection string a few lines below. The absence of the credential is what prevents
+// the escalation; this check is what prevents the boot failure.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi().AllowAnonymous();

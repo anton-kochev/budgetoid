@@ -84,6 +84,20 @@ DbContext-level test fail; removing a policy must make the RLS ones fail.
 
 ---
 
+## Migration invariant (read this before touching `Infrastructure/Migrations/`)
+
+**The baseline migration is frozen.** The repo used to keep a single baseline it regenerated freely.
+Production's `__EFMigrationsHistory` now references the current migration id, and the deploy pipeline
+applies migrations unattended on every push to `main` — so regenerating the baseline gives it a new
+id, and the next push would find nothing applied and try to re-create every table against a
+populated database. The human checkpoint that used to catch this is gone by design.
+
+Schema changes are **additive migrations** from here on. A guard is worth adding when convenient: a
+CI check that the set of files in `Infrastructure/Migrations/` only ever grows, and that no existing
+migration's id or contents change.
+
+---
+
 ## Backlog
 
 ### Enforce the escape-hatch rules in CI (not just prose)

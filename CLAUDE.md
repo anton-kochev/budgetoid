@@ -11,6 +11,7 @@ Personal budget management app. .NET 10 backend + Angular 21 frontend.
   - `Application/` — CQRS commands/queries with plain handler interfaces (no MediatR)
   - `Infrastructure/` — EF Core 10 + Npgsql PostgreSQL persistence
   - `Api/` — ASP.NET Core minimal API
+  - `Tools/DbProvision/` — deploy-time console tool: migrate, provision the app role, verify RLS coverage
   - `tests/UnitTests/`, `tests/IntegrationTests/` — TUnit tests
 - `ClientApp/angular-budgetoid/` — current frontend (Angular 21)
 
@@ -103,10 +104,13 @@ describes the rule says why. Full reasoning in
 - Scale-to-zero needs explicit Azure Container App publish settings with `MinReplicas = 0` and max 2.
 - `Api.csproj` uses `<ContainerFamily>noble-chiseled</ContainerFamily>`; no handwritten Dockerfile.
 - Append `Maximum Pool Size=5` to production PostgreSQL connection strings.
-- Production migrations should run from CI/CD migration bundles, not API startup.
-- Deploying is migrate **then** provision: after the migration bundle, apply
-  `Infrastructure/Persistence/Provisioning/app-role-grants.sql` on the admin connection. The grants
-  name individual tables, so the schema has to exist first. See `DEPLOYMENT.md`.
+- Production migrations run from the deploy pipeline, never at API startup. `.github/workflows/deploy.yml` runs `Tools/DbProvision` between `azd provision` and `azd deploy`, so new code never starts against an old schema.
+- Deploying is migrate **then** provision **then** verify, and that ordering now lives in
+  `DeploymentDatabaseProvisioning` rather than in a runbook: the grants and policies name individual
+  tables, so the schema has to exist first, and the password alphabet is checked before the first
+  statement so a typo cannot leave a half-migrated database. Verification is not optional — grants
+  are fail-closed, RLS is fail-open. See `DEPLOYMENT.md` and `docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md`.
+- **The baseline migration is frozen.** Production's `__EFMigrationsHistory` references the current migration id, and the pipeline applies migrations unattended, so regenerating the single baseline would make the next push try to re-create every table. Schema changes are additive migrations from here on.
 - The deployed container is handed one connection string, the least-privilege one. The publish
   branch of `AppHost/Program.cs` deliberately does **not** `WithReference` the database for the API:
   that reference injects the admin identity as `BUDGETOID_URI`/`_USERNAME`/`_PASSWORD` as well as a

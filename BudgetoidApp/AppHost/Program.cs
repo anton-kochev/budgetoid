@@ -86,10 +86,11 @@ if (builder.ExecutionContext.IsPublishMode)
     // Two identities exist; one of them reaches the container. "budgetoid_app" is the least-privilege
     // role, and the connection string below is the only one injected — the API serves every request
     // on it. The server admin can run DDL, and a request-serving process has no use for DDL rights,
-    // so it is never given them: the deploy-time migration and role-provisioning steps are run by an
-    // operator who reads the admin credentials out of Key Vault themselves (DEPLOYMENT.md). The API
-    // asks for ConnectionStrings:budgetoid-admin only inside its Development startup check, and in
-    // the deployed app that key has no value to find.
+    // so it is never given them: the deploy-time migration and role-provisioning steps run in the
+    // deploy pipeline, as the Tools/DbProvision tool, which reads the admin credentials out of Key
+    // Vault with the pipeline identity (DEPLOYMENT.md). The API asks for
+    // ConnectionStrings:budgetoid-admin only inside its Development startup check, and in the
+    // deployed app that key has no value to find.
     api.WithEnvironment("ConnectionStrings__budgetoid", ReferenceExpression.Create(
         $"Host={postgres.GetOutput("hostName")};Username=budgetoid_app;Password={postgresAppPassword.Resource};Database=budgetoid"));
 

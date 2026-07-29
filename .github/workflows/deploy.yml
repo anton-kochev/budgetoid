@@ -11,6 +11,13 @@ permissions:
   id-token: write # OIDC federated login to Azure
   contents: read
 
+# Serialized, and not cancel-in-progress. This job migrates a database and opens a firewall window
+# it closes in an always() step, so two overlapping runs would have run A's cleanup sever run B
+# mid-migration. Cancelling instead of queueing would do the same to whichever run was interrupted.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
 jobs:
   # ---- API → Azure Container Apps (via azd) -------------------------------------------------
   deploy-backend:
@@ -30,6 +37,11 @@ jobs:
       # provision inputs. Values come from the repo var/secret set by `azd pipeline config`.
       AZURE_POSTGRES_USERNAME: ${{ vars.AZURE_POSTGRES_USERNAME }}
       AZURE_POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
+      # The least-privilege application role's password (infra.parameters.postgres_app_password).
+      # One secret feeds two consumers that must agree: azd bakes it into the container's connection
+      # string, and the provisioning step below assigns it to the role. Splitting them is how the
+      # deployed app ends up unable to log in.
+      AZURE_POSTGRES_APP_PASSWORD: ${{ secrets.AZURE_POSTGRES_APP_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -39,9 +51,17 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      # NOTE: schema migrations are applied out-of-band for now (see DEPLOYMENT.md Step 3): the EF
-      # bundle is run against Postgres using the admin password from Key Vault. Automating it in
-      # this pipeline is a hardening follow-up.
+      # An unset secret resolves to the empty string rather than failing, and both consumers would
+      # take it: azd would provision a container whose connection string has no password, and the
+      # provisioning tool would try to assign an empty one. Named failure here beats either.
+      - name: Require the application role password
+        run: |
+          if [ -z "$AZURE_POSTGRES_APP_PASSWORD" ]; then
+            echo "AZURE_POSTGRES_APP_PASSWORD is empty. Set the repository secret; it is the" >&2
+            echo "password azd bakes into the container connection string AND the one the" >&2
+            echo "provisioning step assigns to the budgetoid_app role. See DEPLOYMENT.md." >&2
+            exit 1
+          fi
 
       - name: Install azd
         uses: Azure/setup-azd@v2
@@ -62,6 +82,57 @@ jobs:
 
       - name: Provision infrastructure
         run: azd provision --no-prompt
+
+      # The database work sits between provision and deploy on purpose: new application code must
+      # never start against an old schema. Azure Postgres accepts no external connection without a
+      # firewall rule, so the runner opens a window for its own IP only and closes it below. A
+      # permanent "allow Azure services" rule would be the easy alternative and is worse — it admits
+      # every Azure tenant's egress forever, where this admits one address for a couple of minutes.
+      - name: Open a database firewall window for this runner
+        id: dbfw
+        run: |
+          RUNNER_IP=$(curl -sf https://api.ipify.org || curl -sf https://ifconfig.me/ip)
+          if [ -z "$RUNNER_IP" ]; then echo "Could not determine the runner's public IP." >&2; exit 1; fi
+          SERVER=$(az postgres flexible-server list -g "$AZURE_RESOURCE_GROUP" \
+            --query "[0].name" -o tsv)
+          echo "server=$SERVER" >> "$GITHUB_OUTPUT"
+          # A fixed rule name makes create an upsert, so a rule stranded by a killed runner is
+          # overwritten here and removed by this run's cleanup — the hole self-heals on next deploy.
+          az postgres flexible-server firewall-rule create \
+            -g "$AZURE_RESOURCE_GROUP" -n "$SERVER" --rule-name gh-deploy-migration \
+            --start-ip-address "$RUNNER_IP" --end-ip-address "$RUNNER_IP"
+
+      # Migrate, provision the role, and verify row-level security coverage in one process, so the
+      # ordering is enforced in code rather than by whoever reads the runbook. The grants are
+      # fail-closed, but RLS is fail-open: a migrated table with no policy is readable across every
+      # tenant and reports nothing, which is why the tool verifies rather than assumes.
+      - name: Migrate schema and provision the application role
+        timeout-minutes: 15
+        env:
+          DBPROVISION_APP_ROLE_PASSWORD: ${{ secrets.AZURE_POSTGRES_APP_PASSWORD }}
+        run: |
+          VAULT=$(az keyvault list -g "$AZURE_RESOURCE_GROUP" \
+            --query "[?starts_with(name,'postgreskv')].name | [0]" -o tsv)
+          CONN=$(az keyvault secret show --vault-name "$VAULT" \
+            --name connectionstrings--budgetoid --query value -o tsv)
+          # Not a secrets.* value, so Actions does not mask it automatically. Mask it before it can
+          # reach a log, and keep it in this step's environment only — writing it to GITHUB_ENV would
+          # persist an admin credential to a file on the runner for every later step to inherit.
+          echo "::add-mask::$CONN"
+          # The Key Vault string carries host/user/password/database and no SslMode; Azure Postgres
+          # refuses unencrypted connections. Api/Program.cs appends the same option for the same
+          # reason.
+          DBPROVISION_ADMIN_CONNECTION_STRING="${CONN};Ssl Mode=Require" \
+            dotnet run --project BudgetoidApp/Tools/DbProvision -c Release
+
+      # always(), so a failed migration closes the window it opened instead of leaving the database
+      # reachable from a retired runner's address.
+      - name: Close the database firewall window
+        if: always() && steps.dbfw.outputs.server != ''
+        run: |
+          az postgres flexible-server firewall-rule delete \
+            -g "$AZURE_RESOURCE_GROUP" -n "${{ steps.dbfw.outputs.server }}" \
+            --rule-name gh-deploy-migration --yes || true
 
       - name: Deploy API
         run: azd deploy --no-prompt

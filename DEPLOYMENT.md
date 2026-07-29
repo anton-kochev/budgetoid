@@ -56,8 +56,8 @@ az staticwebapp create -n budgetoid-web -g <resource-group> -l westeurope --sku 
 ```
 
 - Note the default hostname (e.g. `https://<name>.azurestaticapps.net`) — this is the
-  **frontend origin** used in Steps 2, 5 and 6.
-- Copy the **deployment token** (`az staticwebapp secrets list -n budgetoid-web --query "properties.apiKey" -o tsv`) for Step 6.
+  **frontend origin** used in Steps 2, 4 and 5.
+- Copy the **deployment token** (`az staticwebapp secrets list -n budgetoid-web --query "properties.apiKey" -o tsv`) for Step 5.
 
 ## Step 2 — Provision infra + deploy the API (azd)
 
@@ -77,7 +77,7 @@ they land in the committed Bicep — no manual container-app edits):
 |---|---|
 | `google-client-id` | your Google OAuth client id |
 | `frontend-origin` | the Static Web App URL from Step 1 |
-| `postgres-app-password` | a password you choose for the `budgetoid_app` database role. **Step 4 assigns this exact value to the role**, and the API's connection string is built from it. Restrict it to ASCII letters, digits and `-_.~!@#%^*+=` — it is spliced into SQL as a literal (see [ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). |
+| `postgres-app-password` | a password you choose for the `budgetoid_app` database role. **Step 3 assigns this exact value to the role**, and the API's connection string is built from it — so the same value goes into the `AZURE_POSTGRES_APP_PASSWORD` secret in Step 5. Restrict it to ASCII letters, digits and `-_.~!@#%^*+=` — it is spliced into SQL as a literal (see [ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). |
 
 The database needs **no** connection-string prompt. Aspire's `.WithPasswordAuthentication()`
 generates a strong **admin** password and stores it in the provisioned **Key Vault**, where Steps 3
@@ -91,13 +91,32 @@ administrator's. Note the API's public URL from the output. To change a paramete
 > directly, so every `azd deploy` produces a complete, self-contained secret. See gotcha #1 in
 > [ADR 0001](docs/decisions/0001-postgres-password-authentication.md).
 
-## Step 3 — Apply database migrations
+## Step 3 — Migrate the schema and provision the database role
 
-Migrations run from the EF bundle, never at API startup. Authenticate with the **admin password
-Aspire stored in Key Vault**: the deployed API connects as the least-privilege `budgetoid_app` role,
-which is denied `CREATE` on the schema and cannot apply a migration even as a no-op
-([ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). Leave the firewall rule this
-step creates in place — Step 4 runs on the same connection and removes the rule at the end.
+**Every deploy does this automatically.** The pipeline runs it between `azd provision` and
+`azd deploy`, so new application code never starts against an old schema. One command does the whole
+job — `BudgetoidApp/Tools/DbProvision`, which migrates, provisions the `budgetoid_app` role with its
+grants and row-level security policies, and then verifies that the policies actually cover every
+budget-owned table.
+
+The ordering used to live in this runbook and now lives in code, because getting it wrong is silent.
+The grant matrix is fail-closed: a missing privilege announces itself as `42501` at the first
+statement that needs it. Row-level security is fail-**open** — a migrated table with no enforced
+policy is readable and writable by the application role across every tenant, and nothing reports it.
+A deploy that migrated but skipped provisioning was therefore a tenancy breach you would not hear
+about, which is why the tool verifies rather than assumes
+([ADR 0006](docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md)).
+
+Migrations never run at API startup and never on the application role: `budgetoid_app` is denied
+`CREATE` on the schema and cannot apply a migration even as a no-op
+([ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). The tool authenticates with
+the **admin password Aspire stored in Key Vault**.
+
+### First bootstrap, and break-glass
+
+On a brand-new environment the pipeline is not wired yet (that is Step 5), so run this once by hand
+after Step 2 — otherwise the API is deployed against a database with no schema. The same recipe is
+the break-glass path when the pipeline is unavailable.
 
 ```sh
 # 1) let your current machine reach the DB (Azure Postgres blocks all IPs by default)
@@ -106,75 +125,37 @@ az postgres flexible-server firewall-rule create \
   -g rg-budgetoid-prod -n <postgres-server-name> \
   --rule-name AllowMigrationClient --start-ip-address "$MYIP" --end-ip-address "$MYIP"
 
-# 2) build the bundle
-dotnet ef migrations bundle --project BudgetoidApp/Infrastructure \
-  --startup-project BudgetoidApp/Api --configuration Release -o ./efbundle
-
-# 3) apply it with the Key Vault connection string (append Ssl Mode=Require — Azure requires TLS)
+# 2) migrate + provision + verify. Ssl Mode=Require is appended because the Key Vault string
+#    carries host/user/password/database and no SslMode, and Azure refuses unencrypted connections.
+#    Both inputs are environment variables, never arguments — argv is visible to other processes.
 CONN=$(az keyvault secret show --vault-name postgreskv-bq7exijxgtbdu \
   --name connectionstrings--budgetoid --query value -o tsv)
-./efbundle --connection "${CONN};Ssl Mode=Require"
+DBPROVISION_ADMIN_CONNECTION_STRING="${CONN};Ssl Mode=Require" \
+DBPROVISION_APP_ROLE_PASSWORD='<the postgres-app-password value from Step 2>' \
+  dotnet run --project BudgetoidApp/Tools/DbProvision -c Release
+
+# 3) SECURITY: remove your IP again
+az postgres flexible-server firewall-rule delete \
+  -g rg-budgetoid-prod -n <postgres-server-name> --rule-name AllowMigrationClient --yes
 ```
 
-> Reading the Key Vault secret needs the **Key Vault Secrets User** role on `postgreskv-…` (the
-> vault is RBAC-mode). Grant it to yourself once:
-> `az role assignment create --assignee "$(az ad signed-in-user show --query id -o tsv)" --role "Key Vault Secrets User" --scope "$(az keyvault show -n postgreskv-bq7exijxgtbdu --query id -o tsv)"`
->
-> Automating migrations in CI (granting the pipeline identity DB access) is a hardening follow-up —
-> see the note in `deploy.yml`. Manual application is fine for now.
+Exit codes: **0** provisioned and verified, **1** provisioning failed, **2** a required environment
+variable is missing or empty. On success the tool prints what it did — how many migrations were
+pending, and which tables it verified. A first run against a database migrated by hand should report
+no pending migrations; that line is the evidence the histories agree.
 
-## Step 4 — Provision the application database role
+### Verifying by hand
 
-The API serves every request as `budgetoid_app`, a least-privilege role whose grants express the
-domain's immutability rules at the database (see
-[ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)) and whose row-level security
-policies keep it inside one budget's rows (see
-[ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)). The role, its
-grants and its policies all come from
-`BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, applied on the same admin
-connection Step 3 used, with the `__APP_PASSWORD__` token replaced by the role password as a
-single-quoted SQL literal — the same substitution `DatabaseProvisioning.ApplyGrantsAsync` performs.
-Skipping this step does not merely block writes: without the policies every budget-owned table is
-readable across every tenant.
-
-**Two things to get right, because either one yields a deployment that cannot reach its database:**
-
-- **The password here must be the exact value of the `postgres-app-password` azd parameter** from
-  Step 2. That parameter is what the container's connection string is built from; this step is what
-  the role is actually created with, and nothing reconciles the two.
-- **This step must run after Step 3.** The grants and the policies name individual tables, so the
-  schema has to exist before they can be applied.
-
-The admin identity needs to own the tables (`ALTER TABLE … ENABLE ROW LEVEL SECURITY` and
-`CREATE POLICY` are owner operations) and to have created the role (`ALTER ROLE … SET` needs
-`CREATEROLE` over it). Step 3 runs the migrations on this same identity, so it owns them; if this
-step fails with `42501` on an `ALTER TABLE` or `ALTER ROLE`, that ownership is what to check.
+The tool's own verification covers row-level security. To inspect the grant matrix as well:
 
 ```sh
-# 1) the same admin connection string as Step 3, split into what psql wants (libpq's keyword names
-#    differ from Npgsql's, so reuse the values rather than the string)
-CONN=$(az keyvault secret show --vault-name postgreskv-bq7exijxgtbdu \
-  --name connectionstrings--budgetoid --query value -o tsv)
 export PGHOST=$(echo "$CONN" | sed -n 's/.*Host=\([^;]*\).*/\1/p')
 export PGUSER=$(echo "$CONN" | sed -n 's/.*Username=\([^;]*\).*/\1/p')
 export PGPASSWORD=$(echo "$CONN" | sed -n 's/.*Password=\([^;]*\).*/\1/p')
 export PGDATABASE=budgetoid PGSSLMODE=require
-
-# 2) apply the grants, substituting the token with a single-quoted literal
-APP_PASSWORD='<the postgres-app-password value from Step 2>'
-sed "s/__APP_PASSWORD__/'$APP_PASSWORD'/g" \
-  BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql \
-  | psql -v ON_ERROR_STOP=1 -f -
-
-# 3) verify: the role exists, payees is writable by name only, and every budget-owned table is
-#    policied — the grants are fail-closed but a missing policy is silent
 psql -c "\du budgetoid_app"
 psql -c "\dp payees"
 psql -c "select tablename, policyname from pg_policies where schemaname = 'public' order by tablename"
-
-# 4) SECURITY: remove your IP again (the rule Step 3 created)
-az postgres flexible-server firewall-rule delete \
-  -g rg-budgetoid-prod -n <postgres-server-name> --rule-name AllowMigrationClient --yes
 ```
 
 `\dp payees` should show `budgetoid_app=ar/…` under **Access privileges** (SELECT + INSERT) and
@@ -183,26 +164,31 @@ must not appear anywhere in that row — its absence from the column list is wha
 since PostgreSQL column privileges are additive and a `REVOKE` could not express it. The
 `pg_policies` query should return five rows, one `budget_isolation` policy each on `accounts`,
 `categories`, `category_groups`, `payees` and `transactions`. Fewer means the role can read every
-tenant's rows in whichever table is missing one.
+tenant's rows in whichever table is missing one — and it means the tool's verification would have
+failed, so seeing this by hand should be impossible after a green deploy.
 
-Keep the role password inside the alphabet the script's substitution assumes: ASCII letters, digits
-and `-_.~!@#%^*+=`. `DatabaseProvisioning` refuses anything else before splicing it into SQL; the
-`sed` above performs no such check, and characters outside that set can break the SQL literal, the
-`sed` replacement, or both. The `sed` extraction of the admin values assumes the Key Vault string
-carries no quoted values — if the admin password ever contains a `;`, pass `PGHOST`/`PGUSER`/
-`PGPASSWORD` by hand instead.
+### Troubleshooting
 
-Re-run this step on **every** deploy. The script is idempotent — each table is revoked and
-re-granted and each policy dropped and recreated, so a re-run converges the role onto exactly what
-the file says and refreshes its password — and a changed grant matrix or policy takes effect only
-when the script is applied. A feature failing in production with SQLSTATE `42501` means the role is
-missing a privilege: add the narrowest grant to the script and re-run it, never `GRANT ALL`. Two
-other codes point here rather than at the application: `42501` naming a row-level security policy
-means a write tried to land in a budget other than the request's, and `22P02` on an empty-string
-`uuid` cast means a connection reached a budget-owned table without an ambient budget on the
-session.
+- Keep the role password inside the alphabet the grants script's substitution assumes: ASCII
+  letters, digits and `-_.~!@#%^*+=`. The tool refuses anything else **before** touching the
+  database, so a bad password cannot leave a half-migrated schema behind.
+- The admin identity must own the tables (`ALTER TABLE … ENABLE ROW LEVEL SECURITY` and
+  `CREATE POLICY` are owner operations) and must have created the role (`ALTER ROLE … SET` needs
+  `CREATEROLE` over it). Migrations run on that same identity, so it owns them; a `42501` on an
+  `ALTER TABLE` or `ALTER ROLE` points at ownership.
+- A feature failing in production with `42501` means the role is missing a privilege: add the
+  narrowest grant to `app-role-grants.sql` and let the next deploy apply it, never `GRANT ALL`. Two
+  other codes point at the database rather than the application: `42501` naming a row-level security
+  policy means a write tried to land in a budget other than the request's, and `22P02` on an
+  empty-string `uuid` cast means a connection reached a budget-owned table without an ambient budget
+  on the session.
+- Reading the Key Vault secret by hand needs the **Key Vault Secrets User** role on `postgreskv-…`
+  (the vault is RBAC-mode). Grant it to yourself once:
+  `az role assignment create --assignee "$(az ad signed-in-user show --query id -o tsv)" --role "Key Vault Secrets User" --scope "$(az keyvault show -n postgreskv-bq7exijxgtbdu --query id -o tsv)"`
+- The `sed` extraction above assumes the Key Vault string carries no quoted values — if the admin
+  password ever contains a `;`, set `PGHOST`/`PGUSER`/`PGPASSWORD` by hand.
 
-## Step 5 — Point the frontend at prod + set OAuth redirect
+## Step 4 — Point the frontend at prod + set OAuth redirect
 
 1. Edit `ClientApp/angular-budgetoid/public/assets/app-config.json`, replacing the placeholders:
    - `apiBaseUrl` → the API URL from Step 2.
@@ -211,7 +197,7 @@ session.
 2. In the **Google Cloud console** → the OAuth 2.0 client → add the Static Web App URL from Step 1
    to **Authorized JavaScript origins** and **Authorized redirect URIs**.
 
-## Step 6 — GitOps: wire the pipeline (one-time)
+## Step 5 — GitOps: wire the pipeline (one-time)
 
 `.github/workflows/deploy.yml` deploys on every push to `main` (and via manual `workflow_dispatch`).
 It needs these GitHub secrets/vars:
@@ -219,6 +205,7 @@ It needs these GitHub secrets/vars:
 | Kind | Name | Value |
 |---|---|---|
 | secret | `AZURE_STATIC_WEB_APPS_API_TOKEN` | SWA deployment token (Step 1) |
+| secret | `AZURE_POSTGRES_APP_PASSWORD` | the `postgres-app-password` value from Step 2 |
 | var | `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` | from `azd pipeline config` |
 | var | `AZURE_ENV_NAME` / `AZURE_LOCATION` | your azd env name + region |
 
@@ -231,13 +218,28 @@ azd pipeline config --provider github
 # 2) the SWA token is out-of-band (not an azd concept) — set it manually
 gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN \
   --body "$(az staticwebapp secrets list -n budgetoid-web --query 'properties.apiKey' -o tsv)"
+
+# 3) the application role password. One secret, two consumers that must agree: azd bakes it into the
+#    container's connection string, and the provisioning step assigns it to the role. Use the value
+#    the role already has — a different one would re-password the role a minute after the container
+#    picked up the new string, and a cold start in that window fails with 28P01.
+gh secret set AZURE_POSTGRES_APP_PASSWORD --body '<the postgres-app-password value from Step 2>'
+
+# 4) the pipeline reads the admin connection string from Key Vault, so it needs the data plane
+az role assignment create \
+  --assignee-object-id "$(az ad sp show --id <AZURE_CLIENT_ID> --query id -o tsv)" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Key Vault Secrets User" \
+  --scope "$(az keyvault show -n postgreskv-bq7exijxgtbdu --query id -o tsv)"
 ```
 
-The pipeline identity needs only management-plane access (`Contributor`) — it does not read Key
-Vault, since the connection-string secret is built by the AppHost at deploy time.
+The pipeline identity needs management-plane access (`Contributor`) **and**, since it migrates the
+database, **Key Vault Secrets User** on the vault holding the admin connection string. That is the
+one privilege automation costs: the alternative is an operator holding the same credential and
+running the same commands, which is what Step 3 replaced.
 
-After that, pushing to `main` provisions + deploys automatically. You can still trigger a manual
-run from the **Actions** tab.
+After that, pushing to `main` provisions, migrates, provisions the database role, and deploys —
+in that order. You can still trigger a manual run from the **Actions** tab.
 
 ---
 
@@ -247,14 +249,15 @@ run from the **Actions** tab.
 2. Need an uptime SLA on the frontend → SWA **Standard**.
 3. DB CPU/IO saturating → move Postgres to **General Purpose**; then add **zone-redundant HA**.
 4. Add a **staging** environment + **App Insights** + alerts + a **custom domain**.
-5. Automate migrations and role provisioning in the pipeline; revisit **passwordless** DB auth
-   (ADR 0001 hardening path).
+5. Revisit **passwordless** DB auth (ADR 0001 hardening path) — it would also remove the pipeline's
+   Key Vault grant, since there would be no admin password to read.
 
 ## Verify (end-to-end)
 
 1. `aspire run` locally still works (dev CORS to `localhost:4200`, local Postgres container).
-2. DB: the migration bundle (Step 3) applies cleanly → schema created; the grants script (Step 4)
-   applies cleanly → `budgetoid_app` exists with the column grants `\dp` shows.
+2. DB: the deploy run's provisioning step exits 0 — it reports the migrations it applied, then
+   confirms row-level security covers every budget-owned table. `\dp payees` shows `budgetoid_app`
+   with the column grants, and `az postgres flexible-server firewall-rule list` comes back empty.
 3. API: `curl https://<api-url>/health` → `200`.
 4. Frontend: open the SWA URL, sign in with Google (redirect accepted), create/list/edit/delete a
    transaction — no CORS errors in the browser console.
