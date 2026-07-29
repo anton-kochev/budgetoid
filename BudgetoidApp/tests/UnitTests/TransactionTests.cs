@@ -338,6 +338,331 @@ public sealed class TransactionTests
         await Assert.That(exception.Errors.ContainsKey("Description")).IsTrue();
     }
 
+    [Test]
+    public async Task Update_WithValidInput_ReplacesAccountAmountDateAndDescription()
+    {
+        // Arrange
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+        var newAccountId = Guid.CreateVersion7();
+        var newDate = new DateOnly(2026, 7, 1);
+
+        // Act
+        transaction.Update(newAccountId, -19.99m, UsdMinorUnit, newDate, "  Rent  ");
+
+        // Assert
+        await Assert.That(transaction.AccountId).IsEqualTo(newAccountId);
+        await Assert.That(transaction.Amount).IsEqualTo(-19.99m);
+        await Assert.That(transaction.Date).IsEqualTo(newDate);
+        await Assert.That(transaction.Description).IsEqualTo("Rent");
+    }
+
+    [Test]
+    public async Task Update_DoesNotChangeBudgetIdOrIdentity()
+    {
+        // Arrange — a transaction that changed budget would carry its history into someone else's
+        // ledger, so the edit path must leave BudgetId alone; Id and CreatedAtUtc are identity and
+        // are equally not the caller's to rewrite.
+        var budgetId = Guid.CreateVersion7();
+        DateTime createdAtUtc = UtcNow();
+        var transaction = Transaction.Create(
+            budgetId,
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            createdAtUtc);
+        Guid id = transaction.Id;
+
+        // Act
+        transaction.Update(Guid.CreateVersion7(), -19.99m, UsdMinorUnit, new DateOnly(2026, 7, 1), "Rent");
+
+        // Assert
+        await Assert.That(transaction.BudgetId).IsEqualTo(budgetId);
+        await Assert.That(transaction.Id).IsEqualTo(id);
+        await Assert.That(transaction.CreatedAtUtc).IsEqualTo(createdAtUtc);
+    }
+
+    [Test]
+    public async Task Update_DoesNotChangeAssignedPayeeAndCategory()
+    {
+        // Arrange — payee and category have their own four methods (AssignPayee, ClearPayee,
+        // AssignCategory, ClearCategory); Update is not one of them.
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+        var payeeId = Guid.CreateVersion7();
+        var categoryId = Guid.CreateVersion7();
+        transaction.AssignPayee(payeeId);
+        transaction.AssignCategory(categoryId);
+
+        // Act
+        transaction.Update(Guid.CreateVersion7(), -19.99m, UsdMinorUnit, new DateOnly(2026, 7, 1), "Rent");
+
+        // Assert
+        await Assert.That(transaction.PayeeId).IsEqualTo(payeeId);
+        await Assert.That(transaction.CategoryId).IsEqualTo(categoryId);
+    }
+
+    [Test]
+    [Arguments(2, "10.005", "Amount must have no more than 2 decimal places.")]
+    [Arguments(0, "10.5", "Amount must be a whole number.")]
+    public async Task Update_WithMoreDecimalPlacesThanTheMinorUnitAllows_ThrowsValidationExceptionStatingTheLimit(
+        int minorUnit,
+        string amount,
+        string expectedMessage)
+    {
+        // Arrange — both sides of the message fork are pinned, because a zero-minor-unit currency
+        // such as JPY takes the other branch and "no more than 0 decimal places" would be visible
+        // nonsense in a ledger. Amounts arrive as strings because decimal is not a legal attribute
+        // argument type.
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => transaction.Update(
+            Guid.CreateVersion7(),
+            Money(amount),
+            minorUnit,
+            new DateOnly(2026, 7, 1),
+            "Rent"));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
+        await Assert.That(exception.Errors["Amount"].Single()).IsEqualTo(expectedMessage);
+    }
+
+    [Test]
+    [Arguments("1000000000.01")]
+    [Arguments("-1000000000.01")]
+    [Arguments("2000000000")]
+    public async Task Update_WithAmountBeyondTheMagnitudeLimit_ThrowsValidationException(string amount)
+    {
+        // Arrange — the whole-number row passes the decimal-places check, so it is the one that
+        // proves the magnitude branch is reachable at all on the edit path.
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => transaction.Update(
+            Guid.CreateVersion7(),
+            Money(amount),
+            UsdMinorUnit,
+            new DateOnly(2026, 7, 1),
+            "Rent"));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
+    }
+
+    [Test]
+    public async Task Update_WithEmptyAccountId_ThrowsValidationException()
+    {
+        // Arrange
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => transaction.Update(
+            Guid.Empty,
+            -19.99m,
+            UsdMinorUnit,
+            new DateOnly(2026, 7, 1),
+            "Rent"));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("AccountId")).IsTrue();
+    }
+
+    [Test]
+    public async Task Update_WithBlankDescription_SetsDescriptionToNull()
+    {
+        // Arrange — description is optional, so blanking it is how a user removes one.
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        transaction.Update(Guid.CreateVersion7(), -19.99m, UsdMinorUnit, new DateOnly(2026, 7, 1), "   ");
+
+        // Assert
+        await Assert.That(transaction.Description).IsNull();
+    }
+
+    [Test]
+    public async Task Update_WithDescriptionLongerThan500Characters_ThrowsValidationException()
+    {
+        // Arrange
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => transaction.Update(
+            Guid.CreateVersion7(),
+            -19.99m,
+            UsdMinorUnit,
+            new DateOnly(2026, 7, 1),
+            new string('x', 501)));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("Description")).IsTrue();
+    }
+
+    [Test]
+    [Arguments(-1)]
+    [Arguments(5)]
+    public async Task Update_WithMinorUnitOutsideTheSupportedRange_ThrowsArgumentOutOfRangeException(int minorUnit)
+    {
+        // Arrange — same reasoning as Create: the minor unit comes from the account's currency,
+        // which the database bounds, so an out-of-range value is a programmer error and a
+        // ValidationException here would leak it to the user as a form error. A ValidationException
+        // escapes this helper uncaught, which is the failure we want.
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        ArgumentOutOfRangeException exception = ThrowsArgumentOutOfRangeException(() => transaction.Update(
+            Guid.CreateVersion7(),
+            1m,
+            minorUnit,
+            new DateOnly(2026, 7, 1),
+            "Rent"));
+
+        // Assert
+        await Assert.That(exception.ParamName).IsEqualTo("minorUnit");
+    }
+
+    [Test]
+    public async Task ClearPayee_RemovesAssignedPayee()
+    {
+        // Arrange — clearing is a legitimate user action and gets its own method, because
+        // AssignPayee treats an empty id as a programmer error rather than as "no payee".
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+        transaction.AssignPayee(Guid.CreateVersion7());
+
+        // Act
+        transaction.ClearPayee();
+
+        // Assert
+        await Assert.That(transaction.PayeeId).IsNull();
+    }
+
+    [Test]
+    public async Task ClearCategory_RemovesAssignedCategory()
+    {
+        // Arrange
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+        transaction.AssignCategory(Guid.CreateVersion7());
+
+        // Act
+        transaction.ClearCategory();
+
+        // Assert
+        await Assert.That(transaction.CategoryId).IsNull();
+    }
+
+    [Test]
+    public async Task ClearPayee_WithNoPayeeAssigned_LeavesPayeeNull()
+    {
+        // Arrange — an uncategorised, unpayeed transaction is the normal state of a freshly
+        // imported row, so clearing what is already clear must be a no-op rather than a throw.
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        transaction.ClearPayee();
+
+        // Assert
+        await Assert.That(transaction.PayeeId).IsNull();
+    }
+
+    [Test]
+    public async Task ClearCategory_WithNoCategoryAssigned_LeavesCategoryNull()
+    {
+        // Arrange
+        var transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            -42.50m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Groceries",
+            UtcNow());
+
+        // Act
+        transaction.ClearCategory();
+
+        // Assert
+        await Assert.That(transaction.CategoryId).IsNull();
+    }
+
     private static DateTime UtcNow() => new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
     /// <summary>

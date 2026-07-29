@@ -90,6 +90,12 @@ public sealed class TransactionAtomicityTests
         public Task<Transaction?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Transaction?>(null);
 
+        // Nothing to store — the real repository saves an already-tracked entity the caller mutated
+        // in place, so a stub has nothing left to do. Deliberately does not throw: no test here
+        // edits a transaction, and failing this would claim a rollback path these tests never cover.
+        public Task UpdateAsync(Transaction transaction, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
         public Task DeleteAsync(Transaction transaction, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }

@@ -19,9 +19,9 @@ than twenty strings, which is what makes autocomplete work and what stops "Tesco
 becoming two counterparties.
 
 A payee is never created deliberately. It comes into existence as a side effect of someone typing a
-name into the payee field while recording a transaction, and that is the only way one is ever
-written. Every payee belongs to exactly one budget (see [budgets.md](budgets.md)) and is never shared
-with another.
+name into the payee field while recording or correcting a transaction, and that is the only way one
+is ever written. Every payee belongs to exactly one budget (see [budgets.md](budgets.md)) and is
+never shared with another.
 
 This file is canonical for payee rules. [transactions.md](transactions.md) covers only the
 transaction side of the interaction — that the payee input is a name rather than an id, and that a
@@ -112,17 +112,19 @@ erDiagram
 
 ## Business Rules & Invariants
 
-- **Rule**: A payee is created only as a side effect of naming one on a transaction. There is no
-  create operation.
+- **Rule**: A payee is created only as a side effect of naming one when creating or editing a
+  transaction. There is no create operation.
 - **Why**: The payee field is filled in mid-entry, at the moment recording the movement has to stay
   fast enough to do at the till. Making the user create the counterparty first would put a second
   task in front of the one they came to do, and a counterparty nobody has transacted with is not a
-  fact about the budget worth storing.
+  fact about the budget worth storing. Correcting a mistyped counterparty is the same act on the same
+  field, so an edit reaches the same find-or-create rather than a managed list the user would have to
+  visit first.
 - **Enforced in**: **application-owned**, and it is a shape rather than a check — there is nothing
   for a lower layer to reject. `IPayeeRepository` exposes exactly one method,
   `GetOrCreateAsync(name)`; `PayeeEndpoints` maps exactly one route, `GET /api/payees`, for the
-  autocomplete list; and `CreateTransactionHandler` calls the repository only when the command
-  carried a payee name.
+  autocomplete list; and `CreateTransactionHandler` and `UpdateTransactionHandler` call the
+  repository only when the command carried a payee name.
 - **Example**: a budget that has recorded no transactions returns an empty `items` array from
   `GET /api/payees`, and there is no request a client can send that would change that
   (`PayeeIntegrationTests.GetPayees_WhenEmpty_ReturnsEmptyItemsArray`).
@@ -165,13 +167,16 @@ erDiagram
   not matter or is not known — a cash withdrawal, a bank adjustment, a transaction typed in a hurry.
   Treating that as an error would block recording the movement over a field that was never required,
   and treating it as a payee named `""` would put an unchoosable row in the autocomplete list.
-- **Enforced in**: **application-owned**, in `CreateTransactionHandler`, which calls
-  `IPayeeRepository.GetOrCreateAsync` only when `command.PayeeName` is neither null nor whitespace,
-  and otherwise leaves `Transaction.PayeeId` null. Nothing lower can hold this: the two outcomes —
+- **Enforced in**: **application-owned**, in `CreateTransactionHandler` and
+  `UpdateTransactionHandler` alike, which call `IPayeeRepository.GetOrCreateAsync` only when the
+  supplied name is neither null nor whitespace. Creation otherwise leaves `Transaction.PayeeId`
+  null; an edit that mentions the field otherwise calls `Transaction.ClearPayee`, and one that does
+  not mention it leaves the existing payee attached. Nothing lower can hold this: the two outcomes —
   no payee, and a rejected blank name — are indistinguishable to a column, and `Payee.Create`, which
   is the layer that *does* reject a blank name, is never reached.
 - **Example**: a transaction submitted with `payeeName` of `"   "` is created with a null `payeeId`
-  and returns `payeeName: null`; no `payees` row is written.
+  and returns `payeeName: null`; no `payees` row is written. The same `"   "` sent as an edit detaches
+  whatever payee the transaction named, and writes no `payees` row either.
 - **Counterexample**: passing the blank string through to `GetOrCreateAsync`. `Payee.Create` throws a
   `ValidationException` on the empty name, so the transaction comes back a 400 naming a field the
   person deliberately left empty.
@@ -206,8 +211,10 @@ erDiagram
 ## Workflows & State Transitions
 
 A Payee has no lifecycle states: it is created, read, and never changed. There is no rename, no
-merge, no archive and no delete, so there is nothing to transition between. The only branching is in
-find-or-create, which runs inside transaction creation
+merge, no archive and no delete, so there is nothing to transition between. A transaction that is
+edited to name a different counterparty does not touch either payee row — it repoints its own
+`PayeeId`, which is a change to the transaction and not to the payee. The only branching is in
+find-or-create, which runs inside transaction creation and transaction editing alike
 (`PayeeRepository.GetOrCreateAsync`):
 
 ```mermaid
@@ -224,7 +231,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| — → Trimmed | `CreateTransactionHandler` saw a payee name that is not null or whitespace | A blank name skips this workflow entirely and leaves the transaction with no payee |
+| — → Trimmed | `CreateTransactionHandler` or `UpdateTransactionHandler` saw a payee name that is not null or whitespace | A blank name skips this workflow entirely: creation leaves the transaction with no payee, and an edit that mentioned the field clears the one it had |
 | Trimmed → Lookup | Always | Plain `==` against the `case_insensitive` column, scoped by the `BudgetIsolation` filter |
 | Lookup → Resolved | A payee with that name already exists in the budget | — |
 | Lookup → Inserting | No payee with that name in the budget | `Payee.Create` validates the budget id, the trimmed name's presence and its 200-character bound |
@@ -233,12 +240,14 @@ stateDiagram-v2
 
 ## Decision Trees
 
-Resolving the payee while creating a transaction (`CreateTransactionHandler` →
-`PayeeRepository.GetOrCreateAsync`):
+Resolving the payee while creating or editing a transaction (`CreateTransactionHandler` or
+`UpdateTransactionHandler` → `PayeeRepository.GetOrCreateAsync`):
 
 ```
 IF no payeeName was supplied, or it is blank or whitespace-only
   THEN leave the transaction with no payee               ← not an error; the field is optional
+                                                           an edit that mentioned it blank clears
+                                                           the payee the transaction had
 ELSE
   trim the name
   IF a payee with that name exists in the ambient budget ← case-insensitive, by the column's collation
@@ -257,14 +266,16 @@ ELSE
 ```
 
 The payee step is independent of the category step; see
-[transactions.md](transactions.md#decision-trees) for the whole creation path.
+[transactions.md](transactions.md#decision-trees) for the whole creation and edit paths.
 
 ## Integration Points
 
-- **[Transactions](transactions.md)**: the only writer. `CreateTransactionHandler` resolves the payee
-  and calls `Transaction.AssignPayee`; `TransactionDto` carries `payeeId` and `payeeName` so a
-  transaction list renders the counterparty without a second request, and the name is joined at read
-  time (`TransactionReadService`) rather than snapshotted.
+- **[Transactions](transactions.md)**: the only writer, through two handlers.
+  `CreateTransactionHandler` and `UpdateTransactionHandler` both resolve the payee through
+  `GetOrCreateAsync` and call `Transaction.AssignPayee`, and the edit path additionally reaches
+  `Transaction.ClearPayee` when the field is mentioned blank. `TransactionDto` carries `payeeId` and
+  `payeeName` so a transaction list renders the counterparty without a second request, and the name
+  is joined at read time (`TransactionReadService`) rather than snapshotted.
 - **[Budgets](budgets.md)**: every payee is stamped with and filtered by `BudgetId`, its name is
   unique within that budget, and its reference from a transaction is a composite `(payee_id,
   budget_id)` foreign key so PostgreSQL — not only the query filter — refuses a cross-budget
@@ -277,22 +288,27 @@ The payee step is independent of the category step; see
 
 ## Edge Cases & Known Gotchas
 
-- **The payee list only ever grows.** There is no rename, no merge and no delete, so a typo typed
-  once is a permanent row in the autocomplete list, and "Tesco Metro" and "Tesco Express" stay two
-  counterparties forever. This is the current shape of the domain, not a deliberate immutability
-  rule: do not cite it as a guarantee, and do not build behaviour that depends on a payee never
-  disappearing.
+- **The payee list only ever grows, and corrections grow it too.** There is no rename, no merge and
+  no delete, so a typo typed once is a permanent row in the autocomplete list, and "Tesco Metro" and
+  "Tesco Express" stay two counterparties forever. Fixing the typo does not undo it: an edit that
+  replaces "Tescoo" with "Tesco" runs the same find-or-create, so it mints the correct payee and
+  leaves the misspelt one exactly where it was — the list gains a row from the mistake and a row from
+  the fix. The list therefore grows faster than the number of counterparties a person has ever dealt
+  with, and faster than the count of transactions would suggest. This is the current shape of the
+  domain, not a deliberate immutability rule: do not cite it as a guarantee, and do not build
+  behaviour that depends on a payee never disappearing.
 
-- **A payee can outlive every transaction that named it, permanently.** One path leads there, and it
-  is a deletion: removing the only transaction that named a payee strands it, and the payee row
-  stays exactly where it was (see
-  [transactions.md](transactions.md#edge-cases--known-gotchas)). Creation is not a second path —
-  `CreateTransactionHandler` writes the payee and the transaction that needed it inside a single
-  database transaction, so a request that fails between the two writes commits neither. Because no
-  code path deletes a payee, a stranded row cannot be cleaned up through the application. It is
-  harmless — an extra autocomplete entry — but it means **the existence of a payee is not evidence
-  that any transaction ever named it**, and any future count, report or merge over payees has to
-  allow for orphans.
+- **A payee can outlive every transaction that named it, permanently.** Two paths lead there, and
+  both are changes to the transaction side: removing the only transaction that named a payee strands
+  it, and so does editing that transaction to name a different counterparty or none. The payee row
+  stays exactly where it was either way (see
+  [transactions.md](transactions.md#edge-cases--known-gotchas)). Writing a payee is not a third path
+  — `CreateTransactionHandler` and `UpdateTransactionHandler` each write the payee and the
+  transaction that needed it inside a single database transaction, so a request that fails between
+  the two writes commits neither. Because no code path deletes a payee, a stranded row cannot be
+  cleaned up through the application. It is harmless — an extra autocomplete entry — but it means
+  **the existence of a payee is not evidence that any transaction ever named it**, and any future
+  count, report or merge over payees has to allow for orphans.
 
 - **`GET /api/payees` orders by name with no tiebreak, and that is deterministic *because* of the
   unique index.** `PayeeReadService.GetAllAsync` sorts on `Name` alone. That is stable only because

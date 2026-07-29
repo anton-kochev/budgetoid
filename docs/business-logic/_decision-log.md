@@ -8,6 +8,84 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-07-29 — A recorded transaction is corrected in place, and silence is not an empty value
+
+**Context:** Transactions were create-read-delete, so the only remedy for a mis-entered row was to
+delete it and record it again. That is a poor remedy for the mistake it has to serve. Correcting one
+digit costs the user every other field on the row — account, date, payee, category, memo — retyped
+from memory, and the row they are copying from disappears the moment they delete it, so whatever they
+misremember is silently lost in the act of fixing something else. It also changes the row's identity:
+a new `Id` and a new `CreatedAtUtc` for what the person experienced as fixing a typo, which points
+anything holding a transaction id — a client cache, an in-flight list, and any future attachment,
+reconciliation mark or import key — at a row that no longer exists. The gap was already named as a
+defect in the alternatives of "Money movement is discarded only by explicit intent, never as a side
+effect" (2026-07-29) below: *"No edit path exists either, so the only remedy the product offers for a
+mis-entered row would remain none at all."* The second question fell out of the first. A partial edit
+has to say what an unmentioned field means, and the wire format has only two states to say it with,
+so the answer could not be left to fall out of a serializer's defaults.
+
+**Decision:** Ship `PATCH /api/transactions/{id:guid}` — 204 on success; 404 for an unknown id and
+for one belonging to another budget alike, on the standing tenancy rule — so that **a recorded
+transaction is corrected in place, keeping its identity.** `amount`, `date`, `description`,
+`accountId`, `payeeName` and `categoryId` are mutable; the budget, the `id` and `CreatedAtUtc` are
+not accepted at all, because none of them is the caller's to rewrite and the first would move money
+between pools. **And make the edit partial in the three-state sense**: each mutable field is either
+absent (leave the stored value alone), present with a value (replace it), or present and null (clear
+it), carried by `Optional<T>` and an `OptionalJsonConverterFactory` registered on the HTTP JSON
+options. That is not a preference between two workable designs — both ways of collapsing three states
+into two are defects. If an absent property reads as null, an edit that fixes an amount silently
+erases the memo, the payee and the category the caller never mentioned, and nothing rejects it,
+because all three may legitimately be empty. If an absent property reads as "leave it", clearing an
+optional field becomes impossible and a category assigned once can never be removed. Three of the six
+fields are declared over non-nullable types — amount, date and account — so an explicit null for them
+is a `JsonException` and a 400 rather than a clear: a transaction without them is not a transaction,
+and there is no empty `decimal` to clear to, so a permissive design would fall back on `0`, which is
+a legal amount, and zero an entry instead of refusing a request that meant nothing. That falls out of
+the type rather than from a branch anyone has to maintain. The contract is **application- and
+transport-owned by necessity**: the database has no opinion about which properties a request
+mentioned, and by the time a row is written the distinction has already been resolved into a value
+([ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md)). Two consequences are
+accepted. **An edit can mint a payee**, because the counterparty is supplied by name with the same
+find-or-create as on creation, which makes `UpdateTransactionHandler` a second writer of the `payees`
+table and is why its write runs inside `ITransactionalExecutor` for exactly the reason creation's
+does — a payee committed without the edit that named it is permanent litter, since nothing deletes
+payees. And **editing a transaction to name a different counterparty strands the old payee** just as
+deleting the transaction does, so the payee list grows with corrections as well as with new entries,
+and fixing a misspelt name leaves both spellings in it (see [payees.md](payees.md)). This does not
+disturb "Money movement is discarded only by explicit intent, never as a side effect" (2026-07-29)
+below, which stands in full: **correcting an entry is not discarding it.** No row leaves the ledger
+on this path — an edit changes what a recorded movement says about itself, and the record survives
+the change. The two decisions are complementary rather than competing: the delete is for a row that
+should never have existed, the edit is for a row that should exist differently, and it is the delete
+that stays the only act which removes recorded movement.
+
+**Alternatives considered:** *Leave transactions create-read-delete and let correction be
+delete-and-re-record* — rejected: this is the status quo restated, and it is the case the context
+above argues against — identity churn, retyping from memory, and the source row gone before the
+replacement is typed. *A full-body `PUT` replace* — rejected: it makes the client the authority on
+every field of every edit, so it must hold the whole row and echo it back, and an edit to one field
+overwrites a concurrent change to another with no signal that anything was lost. It also does not
+remove the question, it hides it: a client that omits a property from a replace body is still
+asking for something, and the answer is now "clear it" whether they meant it or not. *A two-state
+PATCH, either reading absent as null or reading null as absent* — rejected, and it is one rejection
+rather than two: both directions are the collapse argued against above, one destroying unmentioned
+fields and the other making an optional field unclearable once filled. *JSON Patch (RFC 6902)
+operation documents* — rejected: it buys array indexing and nested paths that a flat record of six
+scalar fields has no use for, and it moves validation out of a typed command into a document
+interpreter, where a malformed path is a runtime error instead of a binding failure. *Supply the
+payee by id on edit even though creation takes a name* — rejected: the same field would resolve by a
+different rule according to which verb carried it, so a corrected transaction could end up on a
+different payee row from an identical one typed right the first time, which is the duplication a
+shared payee row exists to prevent.
+
+**Affected areas:** [transactions.md](transactions.md), [payees.md](payees.md) — which gains a
+second writer and a second cause of stranded rows — and [_overview.md](_overview.md). The delete
+guards in [accounts.md](accounts.md) and [categories.md](categories.md) are untouched: an edit that
+moves the last transaction off an account or a category clears their refusals by the same mechanism
+a delete does, without any of their rules changing.
+
+---
+
 ## 2026-07-29 — Money movement is discarded only by explicit intent, never as a side effect
 
 **Context:** Transactions were append-only at every layer — no update, no delete, no repository

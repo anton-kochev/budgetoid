@@ -1,8 +1,10 @@
+using Application.Abstractions;
 using Application.Transactions;
 using Application.Transactions.CreateTransaction;
 using Application.Transactions.DeleteTransaction;
 using Application.Transactions.GetTransaction;
 using Application.Transactions.GetTransactions;
+using Application.Transactions.UpdateTransaction;
 using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Api.Endpoints;
@@ -39,6 +41,25 @@ public static class TransactionEndpoints
             return dto is null ? TypedResults.NotFound() : TypedResults.Ok(dto);
         });
 
+        group.MapPatch("/{id:guid}", async (
+            Guid id,
+            UpdateTransactionRequest request,
+            UpdateTransactionHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            await handler.HandleAsync(
+                new UpdateTransactionCommand(
+                    id,
+                    request.Amount,
+                    request.Date,
+                    request.AccountId,
+                    request.Description,
+                    request.PayeeName,
+                    request.CategoryId),
+                cancellationToken);
+            return TypedResults.NoContent();
+        });
+
         group.MapDelete("/{id:guid}", async (
             Guid id,
             DeleteTransactionHandler handler,
@@ -50,4 +71,15 @@ public static class TransactionEndpoints
 
         return endpoints;
     }
+
+    // Every field is optional in the three-state sense: a property the caller omitted arrives as
+    // default(Optional<T>), which is the absent state. The budget, the id and the creation time are
+    // not listed because they are not the caller's to rewrite.
+    private sealed record UpdateTransactionRequest(
+        Optional<decimal> Amount,
+        Optional<DateOnly> Date,
+        Optional<Guid> AccountId,
+        Optional<string?> Description,
+        Optional<string?> PayeeName,
+        Optional<Guid?> CategoryId);
 }

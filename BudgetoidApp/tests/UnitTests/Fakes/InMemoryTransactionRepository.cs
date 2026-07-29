@@ -11,6 +11,7 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
     private readonly Dictionary<Guid, string> _accountNames = [];
 
     public int AddCallCount { get; private set; }
+    public int UpdateCallCount { get; private set; }
     public int DeleteCallCount { get; private set; }
 
     public void SetPayeeProjection(Guid payeeId, string payeeName) =>
@@ -42,6 +43,16 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
     {
         Transaction? transaction = _transactions.SingleOrDefault(transaction => transaction.Id == id);
         return Task.FromResult(transaction);
+    }
+
+    // Nothing to store: callers mutate the instance handed back by GetByIdAsync, which is the very
+    // instance held in the list, so the edit is already visible here. The real repository has the
+    // same shape — it saves changes to an entity the context is already tracking. The counter is
+    // what a test can assert on to prove the save was asked for at all.
+    public Task UpdateAsync(Transaction transaction, CancellationToken cancellationToken = default)
+    {
+        UpdateCallCount++;
+        return Task.CompletedTask;
     }
 
     public Task DeleteAsync(Transaction transaction, CancellationToken cancellationToken = default)

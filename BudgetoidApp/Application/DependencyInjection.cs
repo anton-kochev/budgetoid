@@ -21,6 +21,7 @@ using Application.Transactions.CreateTransaction;
 using Application.Transactions.DeleteTransaction;
 using Application.Transactions.GetTransaction;
 using Application.Transactions.GetTransactions;
+using Application.Transactions.UpdateTransaction;
 using Application.Users.EnsureUser;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -52,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<CreateTransactionHandler>();
         services.AddScoped<GetTransactionsHandler>();
         services.AddScoped<GetTransactionHandler>();
+        services.AddScoped<UpdateTransactionHandler>();
         services.AddScoped<DeleteTransactionHandler>();
         services.AddScoped<GetPayeesHandler>();
         services.AddScoped<EnsureUserHandler>();

@@ -22,6 +22,40 @@ public sealed class Transaction
 
     public static Transaction Create(Guid budgetId, Guid accountId, decimal amount, int minorUnit, DateOnly date, string? description, DateTime createdAtUtc)
     {
+        string? normalizedDescription = ValidateOrThrow(budgetId, accountId, amount, minorUnit, description);
+
+        return new Transaction
+        {
+            Id = Guid.CreateVersion7(),
+            BudgetId = budgetId,
+            AccountId = accountId,
+            Amount = amount,
+            Date = date,
+            Description = normalizedDescription,
+            CreatedAtUtc = createdAtUtc,
+        };
+    }
+
+    /// <summary>
+    /// Replaces the editable fields of the transaction. The budget, identity and creation time are
+    /// not the caller's to rewrite, and payee and category have their own assign/clear methods.
+    /// </summary>
+    public void Update(Guid accountId, decimal amount, int minorUnit, DateOnly date, string? description)
+    {
+        string? normalizedDescription = ValidateOrThrow(BudgetId, accountId, amount, minorUnit, description);
+
+        AccountId = accountId;
+        Amount = amount;
+        Date = date;
+        Description = normalizedDescription;
+    }
+
+    /// <summary>
+    /// Validates the fields shared by <see cref="Create"/> and <see cref="Update"/> and returns the
+    /// normalized description, so the two paths cannot drift apart.
+    /// </summary>
+    private static string? ValidateOrThrow(Guid budgetId, Guid accountId, decimal amount, int minorUnit, string? description)
+    {
         // The minor unit comes from the account's currency, which the database already bounds to
         // 0..4, so an out-of-range value is a broken caller rather than user input - and a bad one
         // makes the precision check below meaningless, so it fails fast instead of joining errors.
@@ -67,16 +101,7 @@ public sealed class Transaction
             throw new ValidationException(errors);
         }
 
-        return new Transaction
-        {
-            Id = Guid.CreateVersion7(),
-            BudgetId = budgetId,
-            AccountId = accountId,
-            Amount = amount,
-            Date = date,
-            Description = trimmedDescription,
-            CreatedAtUtc = createdAtUtc,
-        };
+        return trimmedDescription;
     }
 
     public void AssignPayee(Guid payeeId)
@@ -91,6 +116,11 @@ public sealed class Transaction
         PayeeId = payeeId;
     }
 
+    // Clearing is a legitimate user action once a transaction can be edited, so it gets its own
+    // method rather than being spelled AssignPayee(Guid.Empty) - which would force AssignPayee to
+    // stop treating an empty id as a programmer error. Already-null is a no-op, not a throw.
+    public void ClearPayee() => PayeeId = null;
+
     public void AssignCategory(Guid categoryId)
     {
         // An empty id here is a programmer/invariant error (the caller always passes a real
@@ -102,4 +132,8 @@ public sealed class Transaction
 
         CategoryId = categoryId;
     }
+
+    // Same reasoning as ClearPayee: uncategorised is a state a user can ask for, and
+    // AssignCategory(Guid.Empty) is not how they should have to ask for it.
+    public void ClearCategory() => CategoryId = null;
 }

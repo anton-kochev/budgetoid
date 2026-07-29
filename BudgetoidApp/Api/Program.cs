@@ -53,7 +53,11 @@ builder.Services.AddAuthorizationBuilder()
         .RequireAuthenticatedUser()
         .Build());
 builder.Services.ConfigureHttpJsonOptions(options =>
-    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+{
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    // Lets a PATCH body tell "property absent" apart from "property explicitly null".
+    options.SerializerOptions.Converters.Add(new OptionalJsonConverterFactory());
+});
 builder.Services.AddProblemDetails();
 // Allowed origins come from configuration so the deployed frontend origin can be supplied per
 // environment (appsettings.Development.json locally, Cors__AllowedOrigins__0 env/secret in prod)

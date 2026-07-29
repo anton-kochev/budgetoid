@@ -248,6 +248,335 @@ public sealed class TransactionEndpointsTests
         await Assert.That(accounts["items"]!.AsArray().Count).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task PatchTransaction_WithEveryMutableField_ReplacesAllOfThemAndLeavesCreatedAtUtcAlone()
+    {
+        // Arrange — a fully populated transaction pointing at a different account, payee and category
+        // than the patch will name, so no assertion below can pass because the value happened to
+        // match already.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid checkingId = await CreateAccountAsync(client);
+        Guid savingsId = await CreateAccountAsync(client, "Savings");
+        Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
+        Guid groceriesId = await CreateCategoryAsync(client, groupId, "Groceries");
+        Guid housingId = await CreateCategoryAsync(client, groupId, "Housing");
+        Guid transactionId = await CreateTransactionAsync(client, checkingId, "Starbucks", groceriesId);
+        JsonNode before = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync($"/api/transactions/{transactionId}", new
+        {
+            amount = 99.99m,
+            date = "2027-01-31",
+            description = "Rent",
+            accountId = savingsId,
+            payeeName = "Landlord",
+            categoryId = housingId,
+        });
+        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+
+        // Assert
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(after["amount"]!.GetValue<decimal>()).IsEqualTo(99.99m);
+        await Assert.That(after["date"]!.GetValue<string>()).IsEqualTo("2027-01-31");
+        await Assert.That(after["description"]!.GetValue<string>()).IsEqualTo("Rent");
+        await Assert.That(after["accountId"]!.GetValue<Guid>()).IsEqualTo(savingsId);
+        await Assert.That(after["accountName"]!.GetValue<string>()).IsEqualTo("Savings");
+        await Assert.That(after["payeeName"]!.GetValue<string>()).IsEqualTo("Landlord");
+        await Assert.That(after["categoryId"]!.GetValue<Guid>()).IsEqualTo(housingId);
+        await Assert.That(after["categoryName"]!.GetValue<string>()).IsEqualTo("Housing");
+
+        // The id and createdAtUtc are not mutable and are not accepted in the body. createdAtUtc
+        // records when the row was written, not when it was last touched, so an edit that moves it
+        // would quietly rewrite history — this is the only assertion that would notice.
+        await Assert.That(after["id"]!.GetValue<Guid>()).IsEqualTo(transactionId);
+        await Assert.That(after["createdAtUtc"]!.GetValue<string>())
+            .IsEqualTo(before["createdAtUtc"]!.GetValue<string>());
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithEmptyBody_ReturnsNoContentAndChangesNothing()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
+        Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
+        Guid categoryId = await CreateCategoryAsync(client, groupId, "Groceries");
+        Guid transactionId = await CreateTransactionAsync(client, accountId, "Starbucks", categoryId);
+        JsonNode before = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync($"/api/transactions/{transactionId}", new { });
+        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+
+        // Assert — a patch that names no field is a valid no-op, not a request to blank the row.
+        // Comparing the whole serialized DTO catches a field this test did not think to name.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(after.ToJsonString()).IsEqualTo(before.ToJsonString());
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithOnlyAmount_LeavesEveryOtherFieldUntouched()
+    {
+        // Arrange — this test and PatchTransaction_WithExplicitNulls_ClearsDescriptionPayeeAndCategory
+        // are a pair and neither means anything alone. An implementation that reads an absent property
+        // as null passes the clearing test and fails this one; an implementation that reads an
+        // explicit null as "absent" passes this one and fails that. Only the two together pin down
+        // the three-state contract: absent means leave alone, null means clear.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
+        Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
+        Guid categoryId = await CreateCategoryAsync(client, groupId, "Groceries");
+        Guid transactionId = await CreateTransactionAsync(client, accountId, "Starbucks", categoryId);
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { amount = -12.75m });
+        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+
+        // Assert
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(after["amount"]!.GetValue<decimal>()).IsEqualTo(-12.75m);
+        await Assert.That(after["description"]!.GetValue<string>()).IsEqualTo("Coffee");
+        await Assert.That(after["payeeName"]!.GetValue<string>()).IsEqualTo("Starbucks");
+        await Assert.That(after["categoryId"]!.GetValue<Guid>()).IsEqualTo(categoryId);
+        await Assert.That(after["date"]!.GetValue<string>()).IsEqualTo("2026-06-26");
+        await Assert.That(after["accountId"]!.GetValue<Guid>()).IsEqualTo(accountId);
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithExplicitNulls_ClearsDescriptionPayeeAndCategory()
+    {
+        // Arrange — the other half of the pair described on
+        // PatchTransaction_WithOnlyAmount_LeavesEveryOtherFieldUntouched. Read them together.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
+        Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
+        Guid categoryId = await CreateCategoryAsync(client, groupId, "Groceries");
+        Guid transactionId = await CreateTransactionAsync(client, accountId, "Starbucks", categoryId);
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync($"/api/transactions/{transactionId}", new
+        {
+            description = (string?)null,
+            payeeName = (string?)null,
+            categoryId = (Guid?)null,
+        });
+        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+
+        // Assert — the DTO declares Description as non-nullable, so a cleared description reads back
+        // as the empty string. Payee and category are nullable all the way out and read back as null.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(after["description"]!.GetValue<string>()).IsEqualTo("");
+        await Assert.That(after["payeeId"] is null).IsTrue();
+        await Assert.That(after["payeeName"] is null).IsTrue();
+        await Assert.That(after["categoryId"] is null).IsTrue();
+        await Assert.That(after["categoryName"] is null).IsTrue();
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithNewPayeeName_CreatesThePayee()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
+        Guid transactionId = await CreateTransactionAsync(client, accountId);
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { payeeName = "Landlord" });
+        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+        JsonNode payees = await GetJsonAsync(client, "/api/payees");
+
+        // Assert — the payee must land in the budget's payee list, not just on the transaction row.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(after["payeeName"]!.GetValue<string>()).IsEqualTo("Landlord");
+        await Assert.That(payees["items"]!.AsArray()
+            .Any(node => node!["name"]!.GetValue<string>() == "Landlord")).IsTrue();
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithExistingPayeeNameInAnotherCase_ReusesThatPayee()
+    {
+        // Arrange — one transaction already owns the payee "Starbucks"; a second one has none.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
+        await CreateTransactionAsync(client, accountId, "Starbucks");
+        Guid transactionId = await CreateTransactionAsync(client, accountId);
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { payeeName = "STARBUCKS" });
+        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+        JsonNode payees = await GetJsonAsync(client, "/api/payees");
+
+        // Assert — the count is the assertion that matters. Matching on the name alone would stay
+        // green against a handler that minted a second "STARBUCKS" row beside the first.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(payees["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(after["payeeName"]!.GetValue<string>()).IsEqualTo("Starbucks");
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithUnknownId_ReturnsNotFound()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/transactions/{Guid.CreateVersion7()}",
+            new { amount = 1m });
+
+        // Assert
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+    }
+
+    [Test]
+    public async Task PatchTransaction_FromAnotherBudget_ReturnsNotFoundButSucceedsForItsOwner()
+    {
+        // Arrange — two budgets over one database. The budget query filter is what makes A's
+        // transaction invisible to B; there is deliberately no 403 path in this API.
+        await using PostgresTestHost host = new();
+        await host.StartAsync();
+        await using ApiFactory factoryA = host.CreateFactory("google-a");
+        await using ApiFactory factoryB = host.CreateFactory("google-b");
+        HttpClient clientA = factoryA.CreateAuthenticatedClient();
+        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        Guid accountA = await CreateAccountAsync(clientA);
+        Guid transactionA = await CreateTransactionAsync(clientA, accountA);
+
+        // Act
+        HttpResponseMessage stranger = await clientB.PatchAsJsonAsync(
+            $"/api/transactions/{transactionA}",
+            new { amount = 999m, description = "Hijacked" });
+        JsonNode afterStranger = await GetJsonAsync(clientA, $"/api/transactions/{transactionA}");
+        HttpResponseMessage owner = await clientA.PatchAsJsonAsync(
+            $"/api/transactions/{transactionA}",
+            new { amount = 999m });
+
+        // Assert
+        await Assert.That(stranger.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+
+        // The survival check is not redundant with the 404. A handler that wrote the row and only
+        // then reported it missing would satisfy the status code alone.
+        await Assert.That(afterStranger["amount"]!.GetValue<decimal>()).IsEqualTo(-10m);
+        await Assert.That(afterStranger["description"]!.GetValue<string>()).IsEqualTo("Coffee");
+
+        // The 204 for the owner is load-bearing for the 404 above, not a duplicate of the other patch
+        // tests. An unmapped route answers for every caller alike, so without a success on the very
+        // same id the cross-budget assertion would hold for a route that does not exist at all.
+        await Assert.That(owner.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithAccountFromAnotherBudget_ReturnsBadRequestAndKeepsItsOwnAccount()
+    {
+        // Arrange — B's account is a real, existing row; it is only out of reach because it belongs to
+        // another budget. Moving a transaction into it would put one budget's money in another's ledger.
+        await using PostgresTestHost host = new();
+        await host.StartAsync();
+        await using ApiFactory factoryA = host.CreateFactory("google-a");
+        await using ApiFactory factoryB = host.CreateFactory("google-b");
+        HttpClient clientA = factoryA.CreateAuthenticatedClient();
+        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        Guid accountA = await CreateAccountAsync(clientA);
+        Guid accountB = await CreateAccountAsync(clientB, "Checking B");
+        Guid transactionA = await CreateTransactionAsync(clientA, accountA);
+
+        // Act
+        HttpResponseMessage patch = await clientA.PatchAsJsonAsync(
+            $"/api/transactions/{transactionA}",
+            new { accountId = accountB });
+        JsonNode after = await GetJsonAsync(clientA, $"/api/transactions/{transactionA}");
+
+        // Assert — the stranger's account reads as absent, so this is a 400 about an unknown account,
+        // not a 403 or a 404 about the transaction.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(after["accountId"]!.GetValue<Guid>()).IsEqualTo(accountA);
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithUnknownAccountOrCategory_ReturnsBadRequest()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
+        Guid transactionId = await CreateTransactionAsync(client, accountId);
+
+        // Act
+        HttpResponseMessage unknownAccount = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { accountId = Guid.CreateVersion7() });
+        HttpResponseMessage unknownCategory = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { categoryId = Guid.CreateVersion7() });
+
+        // Assert — a body that names a row that does not exist is a bad request, not a missing
+        // transaction; the transaction in the route is right there.
+        await Assert.That(unknownAccount.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(unknownCategory.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithTooManyDecimalPlacesForTheCurrency_ReturnsBadRequest()
+    {
+        // Arrange — the account is in USD, which admits two decimal places.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
+        Guid transactionId = await CreateTransactionAsync(client, accountId);
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { amount = 1.234m });
+        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+
+        // Assert — an edit is held to the same currency rule as a creation.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(after["amount"]!.GetValue<decimal>()).IsEqualTo(-10m);
+    }
+
+    [Test]
+    public async Task PatchTransaction_WithNullAmountDateOrAccountId_ReturnsBadRequest()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        Guid accountId = await CreateAccountAsync(client);
+        Guid transactionId = await CreateTransactionAsync(client, accountId);
+
+        // Act
+        HttpResponseMessage nullAmount = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { amount = (decimal?)null });
+        HttpResponseMessage nullDate = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { date = (string?)null });
+        HttpResponseMessage nullAccountId = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { accountId = (Guid?)null });
+
+        // Assert — null means "clear this field", and these three have nothing to clear to: a
+        // transaction without an amount, a date or an account is not a transaction. Silently treating
+        // the null as "leave it alone" would hide a client bug rather than report it.
+        await Assert.That(nullAmount.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(nullDate.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(nullAccountId.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+    }
+
     private static async Task<Guid> CreateTransactionAsync(
         HttpClient client,
         Guid accountId,
@@ -299,11 +628,11 @@ public sealed class TransactionEndpointsTests
     private static async Task<JsonNode> GetJsonAsync(HttpClient client, string path) =>
         (await JsonNode.ParseAsync(await client.GetStreamAsync(path)))!;
 
-    private static async Task<Guid> CreateAccountAsync(HttpClient client)
+    private static async Task<Guid> CreateAccountAsync(HttpClient client, string name = "Checking")
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
         {
-            name = "Checking",
+            name,
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "USD",
