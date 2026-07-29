@@ -66,8 +66,9 @@ figures, not to copy that could just say the number).
 - **Destructive confirm**: consequence in plain words, then the action as the verb:
   "This erases every account, transaction, and category. There is no undo." →
   "Erase everything".
-- **Blocked action**: the fact, then the way forward: "This account has transactions.
-  Export or erase everything from Settings."
+- **Blocked action**: the fact, then the way forward, and the way forward is the
+  smallest act that clears the block: "This account has transactions. Delete them
+  first."
 - **Errors**: what happened + what to do: "Couldn't save — you're offline. It will
   retry." Never blame the person; the subject of an error sentence is the system.
 

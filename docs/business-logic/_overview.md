@@ -54,10 +54,10 @@ are in [users-and-ownership.md](users-and-ownership.md).
 ## User roles
 
 There is exactly **one role: the authenticated owner.** Within their ambient budget a user manages
-Accounts, Category Groups, and Categories; records and lists Transactions; lists Payees and creates
-them implicitly by naming one on a transaction; and reads global Currencies. The budget itself is not
-manageable — it is provisioned, never configured. Unauthenticated visitors can only reach public
-login/welcome behavior.
+Accounts, Category Groups, and Categories; records, lists and deletes Transactions; lists Payees
+and creates them implicitly by naming one on a transaction; and reads global Currencies. The budget
+itself is not manageable — it is provisioned, never configured. Unauthenticated visitors can only
+reach public login/welcome behavior.
 
 ## Domain area map
 

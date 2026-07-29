@@ -56,9 +56,10 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
             .IsDescending(false, true, true);
 
         // Restrict here while accounts, category groups, categories and payees cascade from the same
-        // budget_id: the asymmetry is the rule, not an oversight. Recorded money movement is the one
-        // thing a budget must not lose, so a budget holding any transaction cannot be deleted at all;
-        // a budget with no movement was created by mistake and its structure follows it out.
+        // budget_id: the asymmetry is the rule, not an oversight. Money movement is discarded only by
+        // explicit intent, never as a side effect, so a delete aimed at the budget may not carry the
+        // history out with it; a delete aimed at one transaction is a different act this key does not
+        // speak to. A budget holding no movement was created by mistake and its structure follows it out.
         builder.HasOne<Budget>()
             .WithMany()
             .HasForeignKey(transaction => transaction.BudgetId)

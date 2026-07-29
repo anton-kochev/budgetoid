@@ -8,6 +8,73 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-07-29 — Money movement is discarded only by explicit intent, never as a side effect
+
+**Context:** Transactions were append-only at every layer — no update, no delete, no repository
+method that could remove one — and that was never a decision, only what had been built. Against that
+sits a sentence recorded in "A budget holding transactions cannot be deleted; its empty structure
+still cascades" (2026-07-26) and repeated in `TransactionConfiguration` beside the `Restrict`
+foreign key: **recorded money movement is the one thing a budget must not lose.** Read literally,
+that forbids a person removing an entry they fat-fingered, which is not what it decided. What it
+decided is that money movement is never thrown away as *collateral* — as a side effect of a delete
+aimed at something else, where the user asked to remove a budget and their history went out with it
+unasked. Deleting one's own mistaken entry is a different act entirely: the movement is the thing
+the user is aiming at. The record is entered by hand, so it carries hand-made mistakes — a purchase
+typed twice because the first attempt looked like it failed, an amount recorded against the wrong
+account — and a ledger that cannot drop such a row is not more truthful than one that can. It holds
+a movement that never happened, and every sum a person builds on it is wrong by exactly that amount.
+The wording forbade the correction by accident, and one consequence was already visible:
+`DeleteAccountHandler` refuses with "Account cannot be deleted because it has transactions.", a
+sentence naming an obstacle the system gave the user no way to clear.
+
+**Decision:** Ship `DELETE /api/transactions/{id:guid}` — 204 on success, and 404 for an unknown id
+and for one belonging to another budget alike, because the `BudgetIsolation` filter makes that row
+invisible and this API deliberately has no 403 path — and **sharpen the rule to: money movement is
+never discarded as a side effect, only ever by explicit intent.** That clarifies "A budget holding
+transactions cannot be deleted; its empty structure still cascades" (2026-07-26) rather than
+reversing it. **The schema does not move.** `transactions.budget_id → budgets.id` stays `Restrict`
+and its four siblings stay `Cascade`, so a budget holding any transaction is still undeletable; the
+two rules are about different acts, not different strengths of the same act — one refuses a delete
+aimed at a budget, the other permits a delete aimed at exactly one transaction. The removal is a
+**hard delete**: the row goes, nothing is flagged. The real user-facing win is a knock-on.
+`DeleteAccountHandler`'s refusal above, and `CategoryRepository.DeleteAsync`'s "Category cannot be
+deleted because it has transactions.", were dead ends while nothing could remove a transaction —
+the user was told what to do and given no way to do it. Deleting the last transaction that
+referenced an account or a category now makes that row deletable again, which is what turns a
+refusal into an instruction. Two consequences are accepted. A delete can **strand a payee** no
+transaction names, and payees have no delete path at all, so the list only grows and the orphan is
+permanent (see [payees.md](payees.md)). And the `23503` catches in `AccountRepository.DeleteAsync`
+and `CategoryRepository.DeleteAsync` **stop being belt-and-braces and become the real guard**: a
+precheck reading "no transactions" can now be invalidated by a concurrent insert, and one reading
+"has transactions" by a concurrent delete, so both directions are live where only one was before.
+Per [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) the precheck exists
+for the *message* and the constraint is what is *correct*: those catch blocks must not be simplified
+away as redundant later. `DeleteTransactionHandler` needs no catch of its own — nothing in the schema
+references `transactions`, so a delete has no foreign key to violate.
+
+**Alternatives considered:** *A soft delete behind a deleted flag* — rejected: there is no sharing,
+no compliance retention, nothing that restores a deleted row, and no soft-delete infrastructure
+anywhere in this schema, so the flag would put a predicate on every transaction query — and a second
+filter interacting with `BudgetIsolation` — to serve a need this product has not expressed, while
+leaving a row the user asked to be gone still sitting there. It reopens the moment any of four
+things is wanted: an undo that restores a deletion, a trash the user can pull a row back out of,
+more than one person per budget, or an export whose integrity depends on deletions staying
+recoverable. *Keep transactions append-only and answer the account and category refusals some other
+way* — rejected: this is the status quo restated, and there is no other way. No edit path exists
+either, so the only remedy the product offers for a mis-entered row would remain none at all, while
+two error messages go on instructing the user to do something the system does not let them do.
+*Answer 403 for a transaction in another budget* — rejected on the standing rule in
+[budgets.md](budgets.md#must-not): a 403 confirms the row exists, and a by-id target in this API
+surfaces as 404 whether it is missing or someone else's.
+
+**Affected areas:** [transactions.md](transactions.md). The delete guards in
+[accounts.md](accounts.md) and [categories.md](categories.md) gain a remedy without any of their
+rules changing, and the permanent-orphan gap in [payees.md](payees.md) widens to a second cause.
+This clarifies "A budget holding transactions cannot be deleted; its empty structure still cascades"
+(2026-07-26) below, which stands in full.
+
+---
+
 ## 2026-07-28 — A zero amount is a legal transaction: the record is the point, not the number
 
 **Context:** "Amount must be non-zero (zero has no direction and records no movement)" was recorded

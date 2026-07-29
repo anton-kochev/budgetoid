@@ -1,5 +1,6 @@
 using Application.Transactions;
 using Application.Transactions.CreateTransaction;
+using Application.Transactions.DeleteTransaction;
 using Application.Transactions.GetTransaction;
 using Application.Transactions.GetTransactions;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -36,6 +37,15 @@ public static class TransactionEndpoints
                 new GetTransactionQuery(id),
                 cancellationToken);
             return dto is null ? TypedResults.NotFound() : TypedResults.Ok(dto);
+        });
+
+        group.MapDelete("/{id:guid}", async (
+            Guid id,
+            DeleteTransactionHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            await handler.HandleAsync(new DeleteTransactionCommand(id), cancellationToken);
+            return TypedResults.NoContent();
         });
 
         return endpoints;

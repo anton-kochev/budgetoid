@@ -283,15 +283,18 @@ The payee step is independent of the category step; see
   rule: do not cite it as a guarantee, and do not build behaviour that depends on a payee never
   disappearing.
 
-- **A failed transaction can leave a payee behind, permanently.** `CreateTransactionHandler` writes
-  the two rows in two separate database transactions — `GetOrCreateAsync` commits its own
-  `SaveChangesAsync`, then `TransactionRepository.AddAsync` commits another — so anything that stops
-  the request between them leaves a payee no transaction references. A client disconnect is enough:
-  the endpoint's `CancellationToken` is the request's `RequestAborted`, and it is passed to both
-  saves. Because no code path deletes a payee, that row cannot be cleaned up through the application.
-  It is harmless — an extra autocomplete entry — but it means **the existence of a payee is not
-  evidence that any transaction ever named it**, and any future count, report or merge over payees
-  has to allow for orphans.
+- **A payee can outlive every transaction that named it, permanently.** Two paths lead there. The
+  common one is a deletion: removing the only transaction that named a payee strands it, and the
+  payee row stays exactly where it was (see
+  [transactions.md](transactions.md#edge-cases--known-gotchas)). The other is a failed creation —
+  `CreateTransactionHandler` writes the two rows in two separate database transactions,
+  `GetOrCreateAsync` committing its own `SaveChangesAsync` before `TransactionRepository.AddAsync`
+  commits another, so anything that stops the request between them leaves a payee no transaction
+  references. A client disconnect is enough: the endpoint's `CancellationToken` is the request's
+  `RequestAborted`, and it is passed to both saves. Because no code path deletes a payee, neither
+  row can be cleaned up through the application. It is harmless — an extra autocomplete entry — but
+  it means **the existence of a payee is not evidence that any transaction ever named it**, and any
+  future count, report or merge over payees has to allow for orphans.
 
 - **`GET /api/payees` orders by name with no tiebreak, and that is deterministic *because* of the
   unique index.** `PayeeReadService.GetAllAsync` sorts on `Name` alone. That is stable only because

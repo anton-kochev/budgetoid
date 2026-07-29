@@ -71,8 +71,18 @@ erDiagram
 - **An account MUST NOT be deleted while it still has transactions.**
   - **Why**: Deleting it would orphan or destroy financial history. The user must deal with the
     transactions first (a deliberate integrity guard rather than a silent cascade).
-  - **Enforced in**: `DeleteAccountHandler` calls `IAccountRepository.HasTransactionsAsync` and
-    throws "Account cannot be deleted because it has transactions." if any exist.
+  - **Enforced in**: **database-owned, with the application supplying the sentence.**
+    `TransactionConfiguration` maps `(account_id, budget_id) → accounts` on `Restrict`, so PostgreSQL
+    refuses to remove an account any transaction names, whatever wrote the delete — that is the half
+    that is *correct*. `AccountRepository.DeleteAsync` catches that `23503` **by constraint name** and
+    turns it into "Account cannot be deleted because it has transactions.", and
+    `DeleteAccountHandler` asks `IAccountRepository.HasTransactionsAsync` first to raise the same
+    sentence before the write; both are *error quality*. The precheck is check-then-act, so its answer
+    can be stale in either direction by the time the delete runs — the split and both directions are
+    described in [transactions.md](transactions.md#edge-cases--known-gotchas). Per
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) neither half is
+    redundant cover for the other: do not drop the constraint because the check passes first, and do
+    not drop the catch because the precheck usually gets there first.
 
 ## Business Rules & Invariants
 
@@ -175,8 +185,13 @@ ELSE
 ## Edge Cases & Known Gotchas
 
 - **Delete guard is by existence of transactions, not a soft-delete**: there is no "archive" state.
-  An account either has zero transactions (deletable) or has some (blocked). If archiving is ever
-  needed, it's a new concept, not a tweak to this guard.
+  An account either has zero transactions (deletable) or has some (blocked), and which of the two
+  holds is read live on every attempt rather than marked on the row — deleting the last transaction
+  that names an account makes it deletable, which is what makes "Account cannot be deleted because it
+  has transactions." an instruction the user can follow rather than a dead end. The refusal itself is
+  the foreign key's, not the precheck's; [Constraints](#must-not) above states the split, and
+  [transactions.md](transactions.md#edge-cases--known-gotchas) covers how a precheck answer goes stale
+  in either direction. If archiving is ever needed, it's a new concept, not a tweak to this guard.
 - **The guard covers deleting the account, not losing it.** `accounts` cascades from `budgets.id`, so
   an account disappears with its budget without this check ever running. That path has its own rule
   and its own protection — a budget holding transactions cannot be deleted at all

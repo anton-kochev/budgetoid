@@ -99,8 +99,18 @@ erDiagram
 - **A Category must not be deleted while a Transaction references it.**
   - **Why**: The classification is part of what a recorded movement means; dropping it would rewrite
     history the user cannot reconstruct. Recategorizing first is a decision only the user can make.
-  - **Enforced in**: `DeleteCategoryHandler` prechecks with `HasTransactionsAsync`, and the
-    transaction-to-category FK is `Restrict` behind it.
+  - **Enforced in**: **database-owned, with the application supplying the sentence.**
+    `TransactionConfiguration` maps `(category_id, budget_id) → categories` on `Restrict`, so
+    PostgreSQL refuses to remove a Category any transaction names, whatever wrote the delete — that
+    is the half that is *correct*. `CategoryRepository.DeleteAsync` catches that `23503` **by
+    constraint name** and turns it into the sentence below, and `DeleteCategoryHandler` asks
+    `HasTransactionsAsync` first to raise the same sentence before the write; both are *error
+    quality*. The precheck is check-then-act, so its answer can be stale in either direction by the
+    time the delete runs — the split and both directions are described in
+    [transactions.md](transactions.md#edge-cases--known-gotchas). Per
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) neither half is
+    redundant cover for the other: do not drop the constraint because the precheck passes first, and
+    do not drop the catch because the precheck usually gets there first.
   - **Error**: “Category cannot be deleted because it has transactions.”
 
 ## Business Rules & Invariants
@@ -248,6 +258,11 @@ ELSE                                                      ← mutually exclusive
   their own labels, and past rows should follow. Nothing is written to the transactions themselves.
 - Deleting an empty Category Group is allowed; deleting a non-empty one is not. Categories must be
   moved or deleted first.
+- **A Category's deletability is read live, not marked on the row.** Deleting the last Transaction
+  filed under a Category makes that Category deletable again, which is what turns “Category cannot be
+  deleted because it has transactions.” into an instruction the user can follow rather than a dead
+  end. The refusal is the foreign key's rather than the precheck's; [Constraints](#must-not) above
+  states the split.
 - Moving a Category does not touch Transactions, because a Transaction references the Category, not
   the Category Group.
 - There are no spending limits or allocations, colors, icons, income/expense restrictions, reports, or

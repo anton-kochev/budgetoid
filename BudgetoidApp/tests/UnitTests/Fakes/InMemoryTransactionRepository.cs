@@ -11,6 +11,7 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
     private readonly Dictionary<Guid, string> _accountNames = [];
 
     public int AddCallCount { get; private set; }
+    public int DeleteCallCount { get; private set; }
 
     public void SetPayeeProjection(Guid payeeId, string payeeName) =>
         _payeeNames[payeeId] = payeeName;
@@ -32,6 +33,21 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
     {
         AddCallCount++;
         _transactions.Add(transaction);
+        return Task.CompletedTask;
+    }
+
+    // No budget filter: this fake is not constructed with a budget id, so it can only match on the
+    // transaction id. Budget isolation is exercised against the real EF query filters instead.
+    public Task<Transaction?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        Transaction? transaction = _transactions.SingleOrDefault(transaction => transaction.Id == id);
+        return Task.FromResult(transaction);
+    }
+
+    public Task DeleteAsync(Transaction transaction, CancellationToken cancellationToken = default)
+    {
+        DeleteCallCount++;
+        _transactions.Remove(transaction);
         return Task.CompletedTask;
     }
 

@@ -166,12 +166,15 @@ erDiagram
     picture.
   - **Enforced in**: the `BudgetIsolation` filter makes the row resolve to `null`, and what the
     caller sees then depends on how it addressed the row. A row addressed **by id** — the target of
-    the request itself — surfaces as **404**: every update, move and delete throws
-    `NotFoundException` (`UpdateAccountHandler`, `DeleteAccountHandler`, `UpdateCategoryHandler`,
-    `DeleteCategoryHandler`, `PlaceCategoryHandler` for the category being placed,
-    `UpdateCategoryGroupHandler`, `MoveCategoryGroupHandler`, `DeleteCategoryGroupHandler`), and the
-    by-id reads return a typed `NotFound` result instead of throwing, for the same status. A row
-    named as a **reference inside another write** surfaces as a validation error → **400**:
+    the request itself — surfaces as **404**, and that is a property of the handler *shape* rather
+    than of any particular handler: an update, move or delete resolves its target through a
+    budget-filtered repository and throws `NotFoundException` on the null, which
+    `NotFoundExceptionHandler` renders as a 404 `ProblemDetails`. `DeleteAccountHandler`,
+    `DeleteCategoryGroupHandler` and `DeleteTransactionHandler` are the shape, not the extent of it;
+    a handler added with a by-id target inherits the answer rather than deciding it, so read this as
+    the rule for all of them instead of matching a name against a list. The by-id reads return a
+    typed `NotFound` result instead of throwing, for the same status. A row named as a **reference
+    inside another write** surfaces as a validation error → **400**:
     `CreateTransactionHandler` for the account and the category, `CreateCategoryHandler` and
     `PlaceCategoryHandler` for the destination category group. Both codes are correct for their own
     shape of request — a missing target is a missing resource, a bad reference is a bad field — so do

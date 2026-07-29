@@ -100,5 +100,6 @@ The product publicly promises: the user only and always owns their data.
   Destructive variant. Export sits adjacent as the offered alternative.
 - Deleting lesser things (an account with transactions, a category in use) follows the
   same shape at smaller scale: state the consequence in plain words, then confirm.
-  Blocked deletes (domain guards) explain what to do instead: "This account has
-  transactions. Export or erase everything from Settings."
+  Blocked deletes (domain guards) explain what to do instead, and "instead" is the
+  smallest act that clears the block — remove the transactions holding the account, not
+  everything the user owns: "This account has transactions. Delete them first."

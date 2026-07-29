@@ -63,6 +63,27 @@ erDiagram
 
 ### MUST NOT
 
+- **Recorded money movement MUST NOT be discarded as a side effect of deleting something else. It is
+  discarded only by explicit intent.**
+  - **Why**: A transaction is the only data in the system its owner cannot reconstruct from memory.
+    Removing one deliberately is a correction — the movement is what the user is aiming at, and a
+    ledger that cannot drop a row typed twice holds a movement that never happened. Losing one as
+    collateral of a delete aimed at a budget, an account or a category is data loss nobody chose,
+    and the user finds out by reading a total that no longer adds up. The distinction between the
+    two acts is the whole rule; a difference in the strength of the protection is not what
+    separates them.
+  - **Enforced in**: **database-owned, with the application supplying the sentences.**
+    `TransactionConfiguration` maps `transactions.budget_id → budgets.id` on `Restrict` while the
+    four structural tables cascade, so a budget holding any transaction cannot be deleted at all —
+    stated once, in [budgets.md](budgets.md#business-rules--invariants). The composite `(account_id,
+    budget_id)` and `(category_id, budget_id)` references are `Restrict` too, so an account or a
+    category cannot be removed out from under the transactions that name it, whatever wrote the
+    delete; `DeleteAccountHandler` and `DeleteCategoryHandler` precheck with `HasTransactionsAsync`
+    for the message rather than for the guarantee, per
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The one path that
+    removes recorded movement is a delete aimed at the transaction itself, which is a rule of its
+    own under [Business Rules & Invariants](#business-rules--invariants).
+
 - **A Payee referenced by any Transaction MUST NOT be deleted.** The Transaction's existence is what
   makes the rule bite; the rule itself, its reasoning and its enforcement are stated once, in
   [payees.md](payees.md#must-not).
@@ -179,11 +200,52 @@ erDiagram
   name is joined rather than snapshotted.
 - **Source**: `[SOURCE: discussion — 2026-07-26]`
 
+---
+
+- **Rule**: A Transaction can be deleted by id by the owner of the budget that holds it. The row is
+  removed outright — there is no voided, archived or flagged state — and the response is 204 No
+  Content. An id that belongs to another budget answers 404, exactly as an id that never existed
+  does.
+- **Why**: Every entry is typed by hand, so the ledger carries hand-made mistakes: a purchase
+  recorded twice because the first attempt looked like it failed, an amount entered against the
+  wrong account, a figure fat-fingered by a decimal place. Removing such a row is the correction,
+  not the loss — what money movement is protected from is being discarded as collateral, and this is
+  the one act where the movement is what the user is aiming at. The removal is **hard, not flagged,**
+  because a flag would buy nothing this product has asked for: nothing restores a deleted row, there
+  is no trash to restore it from, no second person whose view of the row has to be reconciled, no
+  retention requirement, and no soft-delete anywhere else in the schema to be consistent with. What
+  it would cost is a predicate on every transaction query, a second filter interacting with
+  `BudgetIsolation`, and a row still sitting in storage after the user asked for it to be gone —
+  against a product that promises complete erasure.
+- **Enforced in**: **application-owned, and necessarily so** — no constraint can express that a row
+  *may* go, and there is no lower layer for a permission to live in. `TransactionEndpoints` maps
+  `DELETE /api/transactions/{id:guid}` and returns `TypedResults.NoContent()`.
+  `DeleteTransactionHandler` resolves the id through `ITransactionRepository.GetByIdAsync` and
+  throws `NotFoundException` on a miss, which `NotFoundExceptionHandler` renders as a 404
+  `ProblemDetails`; the 404-rather-than-403 answer for another budget's row is the standing tenancy
+  rule, stated once in [budgets.md](budgets.md#must-not). `TransactionRepository.GetByIdAsync`
+  queries the `BudgetIsolation`-filtered `DbSet` rather than `Find`, because `Find` can answer from
+  the change tracker without ever reaching the filter. `TransactionRepository.DeleteAsync` removes
+  the row and saves, with no exception translation and no precheck behind it: nothing in the schema
+  references `transactions`, so a delete has no foreign key to violate and there is no `23503` to
+  turn into a sentence — unlike `AccountRepository.DeleteAsync` and
+  `CategoryRepository.DeleteAsync`.
+- **Example**: a `-40.00` grocery entry recorded twice is deleted once; the response carries no
+  body, the surviving entry is untouched, and repeating the same delete answers 404.
+- **Counterexample**: flagging the row deleted and filtering it out on read. Every query over
+  transactions then carries a second predicate beside the budget filter, and the first one that
+  forgets it puts the row back into the list the user thought they had corrected — silently, because
+  it still exists and still satisfies every constraint. The delete guards on accounts and categories
+  would have to be taught about the flag too, or an account would stay undeletable on the strength
+  of transactions the user has already removed.
+- **Source**: `[SOURCE: discussion — 2026-07-29]`
+
 ## Workflows & State Transitions
 
-A Transaction has no lifecycle states and therefore no state machine: it is created and then read.
-Nothing transitions it, because no update or delete path exists (see Edge Cases). The branching that
-does exist is in creation, below.
+A Transaction has no lifecycle states and therefore no state machine: it is created, read, and
+eventually deleted whole. Nothing transitions it — there is no update path (see Edge Cases), and the
+delete leaves no state behind to move to. The branching that exists is in creation and in resolving
+the id to delete, both below.
 
 ## Decision Trees
 
@@ -208,26 +270,64 @@ ELSE
 
 The category and payee steps are independent — either, both, or neither may run.
 
+Deleting a transaction (`DeleteTransactionHandler`):
+
+```
+IF the transaction id does not resolve in the ambient budget
+  THEN 404 "Transaction was not found."                   ← also the cross-budget answer
+ELSE
+  THEN remove the row                                     ← nothing references a transaction,
+                                                            so there is no guard to run first
+```
+
 ## Integration Points
 
 - **[Accounts](accounts.md)**: required target; its Currency determines both the precision an amount
-  may carry and how it is displayed. It cannot be deleted while Transactions reference it.
+  may carry and how it is displayed. It cannot be deleted while Transactions reference it, and
+  deleting the last Transaction that named it is what clears that refusal — which is what makes
+  "Account cannot be deleted because it has transactions." an instruction the user can follow rather
+  than a dead end.
 - **[Categories and Category Groups](categories.md)**: optional Category context. A referenced
   Category cannot be deleted; its Category Group cannot be deleted while the Category exists.
+  Deleting the last Transaction filed under a Category clears the first refusal the same way, and
+  emptying the Category out of its group clears the second.
 - **[Payees](payees.md)**: optional counterparty, and the only thing a Transaction can bring into
   existence. Transaction creation is the sole writer of the `payees` table, and a Transaction that
-  references a payee is what makes that payee undeletable.
+  references a payee is what makes that payee undeletable. The relationship is one-way: deleting the
+  Transaction does not remove the payee it created, and nothing else will either.
 - **[Budgets](budgets.md)**: Transactions, Payees, Accounts, Categories and Category Groups are
   budget-filtered, and the `transactions → accounts | categories | payees` references are composite
   foreign keys so PostgreSQL, not only the query filter, refuses a cross-budget reference. Both rules
   and their reasoning live in [budgets.md](budgets.md#constraints). A Transaction's existence is also
-  what makes its Budget undeletable, unlike the Budget's other owned entities.
+  what makes its Budget undeletable, unlike the Budget's other owned entities — the budget-level
+  half of the never-as-a-side-effect rule stated under [Constraints](#must-not) above.
 
 ## Edge Cases & Known Gotchas
 
-- Transactions are append-only in the current implementation because update and delete are not built,
-  not because immutability is a deliberate business rule. Do not cite the append-only behaviour as a
-  constraint.
+- **A Transaction cannot be edited, and that is the shape of the implementation rather than a
+  business rule.** No update command, handler or endpoint exists, and `Transaction` exposes no
+  mutator beyond `AssignPayee` and `AssignCategory`, which only creation calls. Do not cite the
+  absence of an edit path as a constraint, and do not build behaviour that relies on a stored
+  transaction never changing. Deletion is a different matter — it is built, and it *is* a rule; see
+  [Business Rules & Invariants](#business-rules--invariants) above. Correcting an entry therefore
+  means deleting it and recording it again.
+- **Deleting a Transaction can strand its Payee, permanently.** The payee row stays behind and
+  nothing removes it — there is no delete path for payees at all — so a counterparty named only on
+  a transaction that was then deleted sits in the autocomplete list forever. This is accepted rather
+  than overlooked, and it is a second route to a state
+  [payees.md](payees.md#edge-cases--known-gotchas) already describes: the existence of a payee is
+  not evidence that any transaction ever named it.
+- **The account and category delete guards are racy in both directions, and their foreign-key
+  catches are what actually holds.** `DeleteAccountHandler` and `DeleteCategoryHandler` ask
+  `HasTransactionsAsync` before removing the row, and either answer can be stale by the time the
+  delete runs: "no transactions" can be invalidated by a concurrent insert, and "has transactions"
+  by a concurrent delete. The first direction lands on the constraint, which is why
+  `AccountRepository.DeleteAsync` and `CategoryRepository.DeleteAsync` catch `23503` **by constraint
+  name** and translate it; the second fails safe, as a refusal the user clears by asking again.
+  Under [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) that split is the
+  intended one — the precheck exists for the *message*, the foreign key is what is *correct* — so
+  neither catch is redundant cover over a check that already passed. Do not simplify either away,
+  and do not close the race with a lock.
 - **An untouched amount field is a zero, and only the client can tell the two apart.** An empty
   numeric input binds to `0`, so a form submitted with nothing typed records a perfectly valid zero
   transaction. The domain cannot refuse it without refusing the deliberate zeros the sign rule above
