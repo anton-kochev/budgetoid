@@ -23,8 +23,8 @@ public static class DatabaseProvisioning
 
     /// <summary>
     /// Token in the grants script that the password is substituted for. CREATE ROLE cannot take
-    /// a parameter placeholder, so the substitution happens in C#; <see cref="EnsurePasswordAlphabet"/>
-    /// is what makes splicing the value into SQL safe.
+    /// a parameter placeholder, so the substitution happens in C#;
+    /// <see cref="EnsureValidAppRolePassword"/> is what makes splicing the value into SQL safe.
     /// </summary>
     private const string PasswordToken = "__APP_PASSWORD__";
 
@@ -52,7 +52,7 @@ public static class DatabaseProvisioning
     /// </param>
     /// <param name="appRolePassword">
     /// Password to assign to the application role. Restricted to a conservative ASCII alphabet;
-    /// see <see cref="EnsurePasswordAlphabet"/>.
+    /// see <see cref="EnsureValidAppRolePassword"/>.
     /// </param>
     /// <param name="cancellationToken">Cancels the provisioning round-trip.</param>
     /// <exception cref="ArgumentException">
@@ -64,8 +64,7 @@ public static class DatabaseProvisioning
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(adminConnectionString);
-        ArgumentException.ThrowIfNullOrEmpty(appRolePassword);
-        EnsurePasswordAlphabet(appRolePassword);
+        EnsureValidAppRolePassword(appRolePassword);
 
         string script = await ReadGrantsScriptAsync(cancellationToken);
         string sql = script.Replace(
@@ -77,8 +76,25 @@ public static class DatabaseProvisioning
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private static void EnsurePasswordAlphabet(string appRolePassword)
+    /// <summary>
+    /// Throws unless <paramref name="appRolePassword"/> is a password this class can splice into the
+    /// grants script: non-empty, and made only of ASCII letters, digits and <c>-_.~!@#%^*+=</c>.
+    /// </summary>
+    /// <remarks>
+    /// Public because a caller may have to reject a bad password <i>earlier</i> than
+    /// <see cref="ApplyGrantsAsync"/> would — a deploy migrates the schema first, and a typo'd
+    /// deploy secret must not be able to leave the database half-migrated with no role to run it
+    /// under. <see cref="ApplyGrantsAsync"/> still calls this itself, so the two entry points cannot
+    /// drift over what a legal password is.
+    /// </remarks>
+    /// <param name="appRolePassword">Candidate password for the application role.</param>
+    /// <exception cref="ArgumentException">
+    /// The password is empty or contains a character outside the allowed alphabet.
+    /// </exception>
+    public static void EnsureValidAppRolePassword(string appRolePassword)
     {
+        ArgumentException.ThrowIfNullOrEmpty(appRolePassword);
+
         if (appRolePassword.AsSpan().ContainsAnyExcept(AllowedPasswordCharacters))
         {
             throw new ArgumentException(

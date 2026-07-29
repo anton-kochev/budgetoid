@@ -299,17 +299,42 @@ public sealed class BudgetoidDbContextConstructionTests
     }
 
     [Test]
-    public async Task Migrations_ContainASingleFreshBaseline()
+    public async Task Migrations_KeepTheBaselineFrozen()
     {
-        // Arrange
+        // Arrange — the id is spelled out here on purpose, and reading it off the migrations
+        // directory instead would defeat the test: an id derived from the files agrees with whatever
+        // file is present, including the replacement, so the assertion could never fail. Production's
+        // __EFMigrationsHistory names this exact string, and the deploy pipeline applies migrations
+        // unattended on every push to main, so a regenerated baseline arrives under a new id, the
+        // next push finds nothing applied, and it re-creates every table against a populated
+        // database. Having to edit this line is the checkpoint the retired manual deploy step was.
+        const string frozenBaselineId = "20260728195844_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act
         IReadOnlyList<string> migrations = db.Database.GetMigrations().ToList();
+        bool inApplyOrder = migrations.SequenceEqual(
+            migrations.OrderBy(migration => migration, StringComparer.Ordinal));
 
-        // Assert — CON-002: dev data is dropped, so the schema ships as one regenerated
-        // InitialCreate. A second migration here means the baseline was diffed, not regenerated.
-        await Assert.That(migrations.Count).IsEqualTo(1);
+        // Assert — the count is deliberately not pinned. Schema changes are additive migrations from
+        // here on (TECH_DEBT.md, "Migration invariant"; ADR 0006), so a second and a tenth id are
+        // both legal and only the first is frozen. That inversion is what makes this a stronger guard
+        // than the count it replaces: counting one migration failed on a diffed baseline, which is
+        // now the wanted thing, and stayed green through a regenerated one, which is the dangerous
+        // thing — regeneration keeps the count at one and changes nothing but the id.
+        // The ordering assertion is what turns "first" into "earliest", so no separate check that
+        // nothing sorts ahead of the baseline is needed: GetMigrations returns ids in the order they
+        // apply, which for timestamp-prefixed ids is ordinal sort order, so a back-dated migration
+        // lands at index 0 and fails the id assertion rather than hiding behind it. The claim is
+        // asserted rather than assumed because everything below rests on it.
+        await Assert.That(migrations).IsNotEmpty();
+        await Assert.That(inApplyOrder)
+            .IsTrue()
+            .Because("GetMigrations stopped returning ids in apply order, so the first element is "
+                     + "no longer necessarily the baseline");
+        await Assert.That(migrations[0])
+            .IsEqualTo(frozenBaselineId)
+            .Because("the baseline is frozen; add a migration instead of regenerating InitialCreate");
     }
 
     [Test]
