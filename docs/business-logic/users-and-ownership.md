@@ -67,9 +67,11 @@ erDiagram
   - **Why**: Handlers stamp and filter by `IBudgetContext.BudgetId`; without a resolved budget there
     is no tenant to scope to, and a default value would silently point at nothing.
   - **Enforced in**: `BudgetoidApp/Api/Infrastructure/UserProvisioningMiddleware.cs` populates both
-    `CurrentUser.UserId` and `CurrentUser.BudgetId`; `HttpContextBudgetContext` throws
+    `CurrentUser.UserId` and `CurrentUser.BudgetId`; `HttpContextBudgetContext` surfaces the second as
+    `IBudgetContext.ResolvedBudgetId`, and the strict `IBudgetContext.BudgetId` derived from it throws
     `"The ambient budget for the current request has not been resolved."` if the budget id is still
-    null.
+    null. The nullable accessor is for the paths that legitimately have none — provisioning itself,
+    and infrastructure scopes such as health checks — and neither of them touches budget-owned data.
     `CurrentUser.UserId` exists because the middleware needs a request-scoped home for the identity it
     just provisioned — no query filters by it.
 
@@ -93,9 +95,10 @@ erDiagram
 ### MUST NOT
 
 - **A request MUST NOT reach data outside its ambient budget.** Stated and enforced in
-  [budgets.md](budgets.md#must-not) — another budget's row resolves to `null` through the
-  `BudgetIsolation` filter and surfaces as a 404 when it was the target of the request or a 400 when
-  it was a reference inside one, never a 403.
+  [budgets.md](budgets.md#must-not) — another budget's row is unreachable under the `budget_isolation`
+  row-level security policies, resolves to `null` through the `BudgetIsolation` filter above them,
+  and surfaces as a 404 when it was the target of the request or a 400 when it was a reference inside
+  one, never a 403.
 
 ## Business Rules & Invariants
 

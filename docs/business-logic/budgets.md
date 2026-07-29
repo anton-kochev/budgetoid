@@ -92,14 +92,23 @@ erDiagram
     picture — a total that includes money from another pool answers nobody's affordability question.
     This is also the tenant boundary: with a single shared database, a leak here means one person
     reading or changing money that is not theirs.
-  - **Enforced in**: EF Core global query filters named `BudgetIsolation` in
+  - **Enforced in**: the lowest layer is PostgreSQL **row-level security**. A `budget_isolation`
+    policy on each of the five tables compares `budget_id` against the session's ambient budget in
+    both `USING` and `WITH CHECK`, so no statement on the connection every request is served by
+    reaches another budget's rows and an insert can only land in the ambient budget, whatever
+    produced the statement. `BudgetSessionInterceptor` puts that budget on every connection the
+    context opens; the mechanism, its scope and what it deliberately does not cover are in
+    [ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md). Above it sit
+    the EF Core global query filters named `BudgetIsolation` in
     `BudgetoidApp/Infrastructure/Persistence/BudgetoidDbContext.cs`, applied to `Transaction`,
     `Account`, `Payee`, `CategoryGroup` and `Category`, each comparing `BudgetId` against
-    `IBudgetContext.BudgetId`; plus a required `budget_id` column on all five tables with a foreign
-    key to `budgets.id`. That foreign key is `Cascade` on `accounts`, `category_groups`, `categories`
-    and `payees`, so structure never survives its budget as unreachable rows, and `Restrict` on
-    `transactions`, so recorded money movement pins the budget in place instead. That asymmetry is a
-    rule in its own right and is stated in Business Rules & Invariants below.
+    `IBudgetContext.BudgetId`: they turn another budget's row into a correct empty result and the 404
+    or 400 stated under MUST NOT below, which is error quality rather than enforcement — and neither
+    layer is cover for the other. Both rest on a required `budget_id` column on all five tables with
+    a foreign key to `budgets.id`. That foreign key is `Cascade` on `accounts`, `category_groups`,
+    `categories` and `payees`, so structure never survives its budget as unreachable rows, and
+    `Restrict` on `transactions`, so recorded money movement pins the budget in place instead. That
+    asymmetry is a rule in its own right and is stated in Business Rules & Invariants below.
     Once a row exists its `budget_id` never changes, and the lowest layer that can say so is the
     **application role's grants**: `UPDATE` is granted on each of the five tables by explicit column
     list, and `budget_id` is on none of them, so the write is refused with `42501` on the connection
@@ -180,9 +189,11 @@ erDiagram
   - **Why**: Cross-budget access is a tenant breach — the worst possible failure for a money app —
     and even between two budgets of the same user it would put one pool's data into another's
     picture.
-  - **Enforced in**: the `BudgetIsolation` filter makes the row resolve to `null`, and what the
-    caller sees then depends on how it addressed the row. A row addressed **by id** — the target of
-    the request itself — surfaces as **404**, and that is a property of the handler *shape* rather
+  - **Enforced in**: the `budget_isolation` policies are what make the row unreachable — the rule
+    above states that half, and it holds under raw SQL as much as under EF. What is decided above
+    them is only the *answer*: the `BudgetIsolation` filter makes the row resolve to `null`, and what
+    the caller sees then depends on how it addressed the row. A row addressed **by id** — the target
+    of the request itself — surfaces as **404**, and that is a property of the handler *shape* rather
     than of any particular handler: an update, move or delete resolves its target through a
     budget-filtered repository and throws `NotFoundException` on the null, which
     `NotFoundExceptionHandler` renders as a 404 `ProblemDetails`. `DeleteAccountHandler`,
@@ -302,10 +313,16 @@ erDiagram
   lookup per request and a single place where "which budget is ambient" is decided.
 - **Enforced in**: `UserProvisioningMiddleware` assigns both `ProvisionedUser` ids onto the scoped
   `CurrentUser` (`UserId`, `BudgetId`). `HttpContextBudgetContext` exposes `CurrentUser.BudgetId` as
-  `IBudgetContext.BudgetId` and throws `InvalidOperationException` if it was never resolved, so a
-  request that somehow skipped provisioning fails loudly instead of querying with a default budget id.
-  `CurrentUser.UserId` still exists because the middleware needs a request-scoped home for the
-  identity it provisioned; nothing downstream filters by it.
+  `IBudgetContext.ResolvedBudgetId`, and `IBudgetContext.BudgetId` — the strict accessor the query
+  filters read — is that value with null rejected, so a request that somehow skipped provisioning
+  fails loudly with `InvalidOperationException` instead of querying with a default budget id. The
+  strict form is a default interface member rather than something each implementation writes, because
+  the row-level security session variable reads one accessor and the query filters read the other:
+  two separately written members could name different budgets and nothing would fail. The nullable
+  one exists for the two callers that legitimately have no budget — provisioning itself, which runs
+  before there is one, and infrastructure scopes such as health checks. `CurrentUser.UserId` still
+  exists because the middleware needs a request-scoped home for the identity it provisioned; nothing
+  downstream filters by it.
 - **Example**: A handler creating an account never receives an owner id from the client — it reads
   `IBudgetContext.BudgetId` and stamps it. Removing the client's ability to name an owner is what
   makes tenancy untamperable.
@@ -493,11 +510,15 @@ The user branch that runs before this is in
 
 - **How the `BudgetIsolation` filter captures the budget is the most dangerous edit in the
   persistence layer.** Rewriting the lambda to read a captured local, a `static`, or a service
-  locator bakes the *first* request's budget id into EF's cached model, and every later request then
-  reads that tenant's rows — with no compiler error. `BudgetoidDbContext` explains what the lambda
-  must close over and why. `BudgetIsolationTests` runs **two budgets inside one process** precisely
-  to catch a regression here; never "clean it up" into two processes or two test hosts, because
-  separate processes have separate model caches and the test would pass while the bug shipped.
+  locator bakes the *first* request's budget id into EF's cached model, with no compiler error. What
+  the row-level security policies change is the *shape* of the resulting defect, not its seriousness:
+  the stale filter budget and the session's real one must both hold, so every later request reads an
+  empty budget rather than the first tenant's rows. That is a breakage instead of a breach, and it is
+  quieter — it survives every test that reads only one budget's data. `BudgetoidDbContext` explains
+  what the lambda must close over and why. `BudgetIsolationTests` runs **two budgets inside one
+  process** precisely to catch a regression here; never "clean it up" into two processes or two test
+  hosts, because separate processes have separate model caches and the test would pass while the bug
+  shipped.
 
 - **`IBudgetContext` is intentionally optional on the DbContext constructor.** Design-time,
   migration, seeding and model-construction paths build the context without a resolved budget, and
@@ -511,15 +532,16 @@ The user branch that runs before this is in
 - **The composite foreign keys prove internal consistency, not that the ambient budget was the right
   one.** `(account_id, budget_id)`, `(category_id, budget_id)` and `(payee_id, budget_id)` guarantee
   that a transaction and every row it references agree on one budget id; they say nothing about
-  *which* budget id that is. Nothing stops a future importer or bulk endpoint from stamping the wrong
-  `budget_id` across a consistently cross-referenced set — every constraint would accept it. These
-  constraints do not address that risk; ambient-budget resolution (see Business Rules & Invariants
-  above) does, and it remains the whole protection for *whose* budget a write lands in. The
-  application role's grants do not change that either, and it is worth being exact about what they
-  add: `budget_id` is absent from every `UPDATE` column list, so a row that exists cannot be **moved**
-  to another budget — but an `INSERT` names whatever `budget_id` it is given, and no grant has an
-  opinion about which one. Immutability after the fact is a different guarantee from correctness at
-  the moment of writing, and only the first of the two has a bottom layer.
+  *which* budget id that is. An importer or bulk endpoint could stamp a consistently cross-referenced
+  set with the wrong `budget_id` and every constraint in the schema would accept it. Two other bottom
+  layers close that on the connection requests are served by, and it is worth being exact about which
+  half each one holds. `budget_id` is absent from every `UPDATE` column list, so a row that exists
+  cannot be **moved** to another budget. And the `budget_isolation` policies' `WITH CHECK` refuses an
+  insert naming any budget but the session's, so a row cannot be **created** in one either. What
+  neither layer can check is whether the session named the right budget: ambient-budget resolution
+  (see Business Rules & Invariants above) decides that from the authenticated principal, and it
+  remains the whole protection for *whose* budget a write lands in — the database enforces
+  consistency with that decision, never its correctness.
 
 - **The delete policy across the five owned tables is deliberately not uniform.** `accounts`,
   `category_groups`, `categories` and `payees` cascade from `budgets.id`; `transactions` restricts.

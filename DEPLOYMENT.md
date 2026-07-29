@@ -127,18 +127,28 @@ CONN=$(az keyvault secret show --vault-name postgreskv-bq7exijxgtbdu \
 
 The API serves every request as `budgetoid_app`, a least-privilege role whose grants express the
 domain's immutability rules at the database (see
-[ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). The role and its grants come
-from `BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, applied on the same
-admin connection Step 3 used, with the `__APP_PASSWORD__` token replaced by the role password as a
+[ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)) and whose row-level security
+policies keep it inside one budget's rows (see
+[ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)). The role, its
+grants and its policies all come from
+`BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, applied on the same admin
+connection Step 3 used, with the `__APP_PASSWORD__` token replaced by the role password as a
 single-quoted SQL literal — the same substitution `DatabaseProvisioning.ApplyGrantsAsync` performs.
+Skipping this step does not merely block writes: without the policies every budget-owned table is
+readable across every tenant.
 
 **Two things to get right, because either one yields a deployment that cannot reach its database:**
 
 - **The password here must be the exact value of the `postgres-app-password` azd parameter** from
   Step 2. That parameter is what the container's connection string is built from; this step is what
   the role is actually created with, and nothing reconciles the two.
-- **This step must run after Step 3.** The grants name individual tables, so the schema has to exist
-  before they can be applied.
+- **This step must run after Step 3.** The grants and the policies name individual tables, so the
+  schema has to exist before they can be applied.
+
+The admin identity needs to own the tables (`ALTER TABLE … ENABLE ROW LEVEL SECURITY` and
+`CREATE POLICY` are owner operations) and to have created the role (`ALTER ROLE … SET` needs
+`CREATEROLE` over it). Step 3 runs the migrations on this same identity, so it owns them; if this
+step fails with `42501` on an `ALTER TABLE` or `ALTER ROLE`, that ownership is what to check.
 
 ```sh
 # 1) the same admin connection string as Step 3, split into what psql wants (libpq's keyword names
@@ -156,9 +166,11 @@ sed "s/__APP_PASSWORD__/'$APP_PASSWORD'/g" \
   BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql \
   | psql -v ON_ERROR_STOP=1 -f -
 
-# 3) verify: the role exists, and payees is writable by name only
+# 3) verify: the role exists, payees is writable by name only, and every budget-owned table is
+#    policied — the grants are fail-closed but a missing policy is silent
 psql -c "\du budgetoid_app"
 psql -c "\dp payees"
+psql -c "select tablename, policyname from pg_policies where schemaname = 'public' order by tablename"
 
 # 4) SECURITY: remove your IP again (the rule Step 3 created)
 az postgres flexible-server firewall-rule delete \
@@ -168,7 +180,10 @@ az postgres flexible-server firewall-rule delete \
 `\dp payees` should show `budgetoid_app=ar/…` under **Access privileges** (SELECT + INSERT) and
 `name: budgetoid_app=w/…` under **Column privileges** (UPDATE on that column alone). `budget_id`
 must not appear anywhere in that row — its absence from the column list is what makes it immutable,
-since PostgreSQL column privileges are additive and a `REVOKE` could not express it.
+since PostgreSQL column privileges are additive and a `REVOKE` could not express it. The
+`pg_policies` query should return five rows, one `budget_isolation` policy each on `accounts`,
+`categories`, `category_groups`, `payees` and `transactions`. Fewer means the role can read every
+tenant's rows in whichever table is missing one.
 
 Keep the role password inside the alphabet the script's substitution assumes: ASCII letters, digits
 and `-_.~!@#%^*+=`. `DatabaseProvisioning` refuses anything else before splicing it into SQL; the
@@ -177,11 +192,15 @@ and `-_.~!@#%^*+=`. `DatabaseProvisioning` refuses anything else before splicing
 carries no quoted values — if the admin password ever contains a `;`, pass `PGHOST`/`PGUSER`/
 `PGPASSWORD` by hand instead.
 
-Re-run this step on **every** deploy. The script is idempotent — each table is revoked and re-granted,
-so a re-run converges the role onto exactly what the file says and refreshes its password — and a
-changed grant matrix takes effect only when the script is applied. A feature failing in production
-with SQLSTATE `42501` means the role is missing a privilege: add the narrowest grant to the script
-and re-run it, never `GRANT ALL`.
+Re-run this step on **every** deploy. The script is idempotent — each table is revoked and
+re-granted and each policy dropped and recreated, so a re-run converges the role onto exactly what
+the file says and refreshes its password — and a changed grant matrix or policy takes effect only
+when the script is applied. A feature failing in production with SQLSTATE `42501` means the role is
+missing a privilege: add the narrowest grant to the script and re-run it, never `GRANT ALL`. Two
+other codes point here rather than at the application: `42501` naming a row-level security policy
+means a write tried to land in a budget other than the request's, and `22P02` on an empty-string
+`uuid` cast means a connection reached a budget-owned table without an ambient budget on the
+session.
 
 ## Step 5 — Point the frontend at prod + set OAuth redirect
 

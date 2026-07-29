@@ -26,13 +26,17 @@ race-safe. Immutability is owned down there too: the application connects as a l
 whose `UPDATE` privileges are granted per column, so a column left off the list — `budget_id` on
 every owned table, `accounts.currency_code`, `users.google_subject`, every column of `budgets` — is
 one PostgreSQL refuses to write at all (see
-[ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). That split is a general rule
-rather than a local one: each rule is owned
-by the lowest layer that can enforce it declaratively, and where one deliberately sits higher the doc
-says why — see [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The
-central tenancy invariant — the budget, not the user,
-is what everything belongs to — is documented in [budgets.md](budgets.md); identity and provisioning
-are in [users-and-ownership.md](users-and-ownership.md).
+[ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). Tenancy is owned down there as
+well: row-level security policies on the five budget-owned tables mean that role reaches no other
+budget's rows on any statement at all and can insert into no budget but the ambient one, so the query
+filters above them shape the answer rather than hold the boundary (see
+[ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)). That split is a
+general rule rather than a local one: each rule is owned by the lowest layer that can enforce it
+declaratively, and where one deliberately sits higher the doc says why — see
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The central tenancy
+invariant — the budget, not the user, is what everything belongs to — is documented in
+[budgets.md](budgets.md); identity and provisioning are in
+[users-and-ownership.md](users-and-ownership.md).
 
 ## Glossary
 

@@ -1,0 +1,603 @@
+using Domain.Accounts;
+using Domain.Categories;
+using Domain.CategoryGroups;
+using Domain.Payees;
+using Domain.Transactions;
+using Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
+
+namespace IntegrationTests;
+
+/// <summary>
+/// Covers budget isolation as the <b>database</b> enforces it, on the five budget-owned tables:
+/// <c>accounts</c>, <c>category_groups</c>, <c>categories</c>, <c>payees</c>, <c>transactions</c>.
+/// Today that isolation exists only in EF's <c>BudgetIsolation</c> global query filters, which are
+/// application code and therefore hold exactly as long as the application remembers them: raw SQL,
+/// <c>IgnoreQueryFilters</c>, a repository written in a hurry, and a hand-run script all walk
+/// straight past. Row-level security is the layer that holds when they do, which is why every
+/// statement in this file is raw Npgsql on <see cref="RepositoryTestHost.AppConnectionString" /> —
+/// going through EF would only re-measure the filters these tests exist to be independent of.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Two connections, and the split is load-bearing. The probes run on the application role, which is
+/// neither superuser nor table owner, so policies bind to it. The read-backs run on the container
+/// superuser, for which PostgreSQL skips row-level security entirely — that bypass is what lets a
+/// test assert "budget B's row is still exactly as it was" after a refusal, which no connection
+/// subject to the policy could observe.
+/// </para>
+/// <para>
+/// Every negative is paired, in the same test, with the identical statement aimed at the ambient
+/// budget's own row, which must succeed. Without the pair each refusal is vacuous: a policy of
+/// <c>USING (false)</c> hides everything from everyone and passes every negative here on its own.
+/// The positive half is what pins "another budget's rows are unreachable" rather than "no rows are
+/// reachable". Same reasoning as the class remarks on <see cref="TenancySchemaTests" />.
+/// </para>
+/// <para>
+/// The write probes deliberately never touch <c>budget_id</c>. The role's <c>UPDATE</c> grants are
+/// column lists and <c>budget_id</c> is on none of them, so <c>set budget_id = …</c> is refused
+/// with <c>42501</c> by the column grant before row-level security is consulted — a probe shaped
+/// that way passes today, against no policy at all, and measures the grant matrix instead. The
+/// updates below therefore write a granted text column, and the inserts satisfy every foreign key
+/// they touch by building each row out of the parents of the very budget it names, so that the only
+/// thing wrong with a rejected statement is the budget.
+/// </para>
+/// <para>
+/// Each test collects its per-table outcomes and asserts the collection at the end rather than
+/// asserting inside the loop. A per-table assertion stops the run at the first table that leaks;
+/// collecting means one run names every table that does.
+/// </para>
+/// </remarks>
+public sealed class RlsIsolationTests
+{
+    /// <summary>
+    /// Minor unit of the USD rows these tests seed. Precision is not what any of them is about; the
+    /// constant keeps a bare <c>2</c> from reading as a rule.
+    /// </summary>
+    private const int UsdMinorUnit = 2;
+
+    /// <summary>
+    /// The five tables a budget owns, in no particular order — the read probe has no dependencies
+    /// between tables to respect.
+    /// </summary>
+    private static readonly string[] BudgetOwnedTables =
+    [
+        "accounts", "category_groups", "categories", "payees", "transactions",
+    ];
+
+    /// <summary>
+    /// One writable text column per budget-owned table, with the value the seeding gives it. The
+    /// column is chosen off the role's <c>UPDATE</c> grant lists, so a refusal can only come from
+    /// row-level security: <c>transactions</c> has no <c>name</c>, hence <c>description</c>.
+    /// </summary>
+    private static readonly (string Table, string Column, string SeededValue)[] WritableTextColumns =
+    [
+        ("accounts", "name", "Checking"),
+        ("category_groups", "name", "Everyday"),
+        ("categories", "name", "Groceries"),
+        ("payees", "name", "Corner Shop"),
+        ("transactions", "description", "Weekly shop"),
+    ];
+
+    /// <summary>
+    /// The deletable budget-owned tables, ordered so a budget's rows can be removed without tripping
+    /// a foreign key: transactions reference accounts, categories reference category groups, and
+    /// both references are <c>ON DELETE RESTRICT</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>payees</c> is absent on purpose. The role has no <c>DELETE</c> grant on it at all, so a
+    /// delete probe there would be refused with <c>42501</c> by the grant matrix whether a policy
+    /// exists or not — it would go green today and measure nothing about isolation.
+    /// </remarks>
+    private static readonly string[] DeletableTablesInDependencyOrder =
+    [
+        "transactions", "categories", "category_groups", "accounts",
+    ];
+
+    [Test]
+    public async Task Database_ShowsOnlyTheAmbientBudgetsRowsToASelect()
+    {
+        // Arrange — both budgets carry the same shape of rows, so "budget B has none of this table"
+        // is never the reason a count comes back zero.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+
+        // Act — both halves per table. The ambient half is not decoration: a policy that hides every
+        // row from everyone satisfies the foreign half on its own, and only this count notices.
+        List<string> ownRowsMissing = [];
+        List<string> foreignRowsVisible = [];
+        foreach (string table in BudgetOwnedTables)
+        {
+            long own = await CountRowsAsync(app, table, ambient.BudgetId);
+            if (own != 1L)
+            {
+                ownRowsMissing.Add($"{table}: saw {own} of its own rows, wanted 1");
+            }
+
+            long foreign = await CountRowsAsync(app, table, other.BudgetId);
+            if (foreign != 0L)
+            {
+                foreignRowsVisible.Add($"{table}: saw {foreign} of another budget's rows");
+            }
+        }
+
+        // Assert
+        await Assert.That(ownRowsMissing).IsEmpty();
+        await Assert.That(foreignRowsVisible).IsEmpty();
+    }
+
+    [Test]
+    public async Task Database_RefusesToUpdateAnotherBudgetsRow_WhileStillAllowingItsOwn()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+
+        // Act — a cross-budget update is not refused with an error under row-level security; the row
+        // simply is not there to match, so the statement succeeds having affected nothing. That is
+        // why the affected count is the observation, and why the read-back below is not optional.
+        const string overwritten = "Overwritten from another budget";
+        const string renamed = "Renamed in place";
+        List<string> foreignRowsReached = [];
+        List<string> ownRowsUnreachable = [];
+        foreach ((string table, string column, _) in WritableTextColumns)
+        {
+            int foreign = await UpdateTextAsync(app, table, column, other.RowIn(table), overwritten);
+            if (foreign != 0)
+            {
+                foreignRowsReached.Add($"{table}.{column}: affected {foreign} of another budget's rows");
+            }
+
+            int own = await UpdateTextAsync(app, table, column, ambient.RowIn(table), renamed);
+            if (own != 1)
+            {
+                ownRowsUnreachable.Add($"{table}.{column}: affected {own} of its own rows, wanted 1");
+            }
+        }
+
+        // Assert — the counts first, then what actually survived. An affected count of zero and a
+        // statement that was silently filtered are indistinguishable from the count alone, so the
+        // foreign rows are read back on the superuser connection, which row-level security does not
+        // apply to and which can therefore still see them.
+        await Assert.That(ownRowsUnreachable).IsEmpty();
+        await Assert.That(foreignRowsReached).IsEmpty();
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        List<string> foreignRowsChanged = [];
+        foreach ((string table, string column, string seeded) in WritableTextColumns)
+        {
+            object? actual = await ReadColumnAsync(admin, table, column, other.RowIn(table));
+            if (actual is not string text || text != seeded)
+            {
+                foreignRowsChanged.Add($"{table}.{column}: '{actual ?? "null"}', wanted '{seeded}'");
+            }
+        }
+
+        await Assert.That(foreignRowsChanged).IsEmpty();
+    }
+
+    [Test]
+    public async Task Database_RefusesToDeleteAnotherBudgetsRow_WhileStillAllowingItsOwn()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+
+        // Act — the foreign deletes run first and in dependency order. Order matters even though
+        // every one of them is expected to affect nothing: if the policy is missing they will all
+        // land, and a delete that lands out of order trips a RESTRICT foreign key and reports 23503
+        // instead of the affected count this test is reading. The failure would still be a failure,
+        // but it would be a failure about foreign keys rather than about isolation.
+        List<string> foreignRowsReached = [];
+        foreach (string table in DeletableTablesInDependencyOrder)
+        {
+            int foreign = await DeleteAsync(app, table, other.RowIn(table));
+            if (foreign != 0)
+            {
+                foreignRowsReached.Add($"{table}: deleted {foreign} of another budget's rows");
+            }
+        }
+
+        List<string> ownRowsUnreachable = [];
+        foreach (string table in DeletableTablesInDependencyOrder)
+        {
+            int own = await DeleteAsync(app, table, ambient.RowIn(table));
+            if (own != 1)
+            {
+                ownRowsUnreachable.Add($"{table}: deleted {own} of its own rows, wanted 1");
+            }
+        }
+
+        // Assert
+        await Assert.That(ownRowsUnreachable).IsEmpty();
+        await Assert.That(foreignRowsReached).IsEmpty();
+
+        // What survived, on the connection that can see it. A count rather than a column read: the
+        // question here is whether the row still exists at all.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        List<string> foreignRowsGone = [];
+        foreach (string table in DeletableTablesInDependencyOrder)
+        {
+            long surviving = await CountRowsAsync(admin, table, other.BudgetId);
+            if (surviving != 1L)
+            {
+                foreignRowsGone.Add($"{table}: {surviving} rows left in the other budget, wanted 1");
+            }
+        }
+
+        await Assert.That(foreignRowsGone).IsEmpty();
+    }
+
+    [Test]
+    public async Task Database_RefusesToInsertARowIntoAnotherBudget_WhileStillAllowingItsOwn()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+
+        // Act — unlike UPDATE and DELETE, a refused INSERT is loud: the WITH CHECK half of the
+        // policy raises 42501, "new row violates row-level security policy". Each probe row is built
+        // from the parents of the budget it names — the group for a category, the account for a
+        // transaction — because those references are composite on (id, budget_id) and a mismatched
+        // parent raises 23503 before the policy is reached, which would let this test pass on a
+        // foreign key while the policy is missing entirely.
+        List<string> foreignInsertsAccepted = [];
+        List<string> ownInsertsRejected = [];
+        foreach (string table in BudgetOwnedTables)
+        {
+            await using NpgsqlCommand intoOther = BuildInsertProbe(app, table, other);
+            PostgresException? refusal = await CaptureRefusalAsync(intoOther);
+            if (refusal?.SqlState != PostgresErrorCodes.InsufficientPrivilege)
+            {
+                foreignInsertsAccepted.Add(
+                    $"{table}: got {refusal?.SqlState ?? "no error"}, wanted {PostgresErrorCodes.InsufficientPrivilege}");
+            }
+
+            await using NpgsqlCommand intoOwn = BuildInsertProbe(app, table, ambient);
+            int inserted = await intoOwn.ExecuteNonQueryAsync();
+            if (inserted != 1)
+            {
+                ownInsertsRejected.Add($"{table}: inserted {inserted} rows into its own budget, wanted 1");
+            }
+        }
+
+        // Assert
+        await Assert.That(ownInsertsRejected).IsEmpty();
+        await Assert.That(foreignInsertsAccepted).IsEmpty();
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // budget still holds exactly the one row it was seeded with.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        List<string> foreignRowsAdded = [];
+        foreach (string table in BudgetOwnedTables)
+        {
+            long rows = await CountRowsAsync(admin, table, other.BudgetId);
+            if (rows != 1L)
+            {
+                foreignRowsAdded.Add($"{table}: {rows} rows in the other budget, wanted 1");
+            }
+        }
+
+        await Assert.That(foreignRowsAdded).IsEmpty();
+    }
+
+    [Test]
+    public async Task Database_RefusesToReadAnythingWhenTheSessionNamesNoBudget()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares no ambient
+        // budget. This is the shape of every bug where application code forgets to set one, and it
+        // must fail loudly rather than quietly returning an empty result that reads as "no data".
+        await using RepositoryTestHost host = await StartHostAsync();
+        (BudgetRows ambient, _) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — accounts is seeded, and that is a precondition rather than a convenience. A policy
+        // qual is only evaluated when there are candidate rows, so the same query over an empty
+        // table returns zero rows without ever touching the setting and this guarantee does not
+        // reach it. That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new("select count(*) from accounts", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, not "unrecognized configuration parameter". Provisioning runs
+        // ALTER ROLE budgetoid_app SET app.current_budget_id = '', so every session of the role
+        // starts with the setting defined and empty, and the failure is the ''::uuid cast inside the
+        // policy. That ALTER ROLE exists precisely to make this deterministic: without it the code
+        // would be 42704 on a fresh backend and 22P02 on one Npgsql had already recycled, which is
+        // not a thing a test can assert.
+        //
+        // The null coalesce is for the failure message, not the logic: a bare refusal?.SqlState
+        // renders a statement that succeeded as the empty string, which reads as an exception
+        // carrying a blank SQLSTATE rather than as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The ambient budget's rows are still there — the refusal above is the session's doing, not
+        // a seeding failure that would make every SQLSTATE assertion here meaningless.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountRowsAsync(admin, "accounts", ambient.BudgetId)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// The one row of each budget-owned table that a budget was seeded with, so a probe can name
+    /// "this budget's account" without every test re-deriving it.
+    /// </summary>
+    private sealed record BudgetRows(
+        Guid BudgetId,
+        Guid AccountId,
+        Guid CategoryGroupId,
+        Guid CategoryId,
+        Guid PayeeId,
+        Guid TransactionId)
+    {
+        /// <summary>
+        /// Maps a table name to this budget's row in it. The tests iterate tables by name because
+        /// that is what the SQL takes; this keeps the mapping in one place and throws rather than
+        /// returning a default for a name nobody seeded.
+        /// </summary>
+        public Guid RowIn(string table) => table switch
+        {
+            "accounts" => AccountId,
+            "category_groups" => CategoryGroupId,
+            "categories" => CategoryId,
+            "payees" => PayeeId,
+            "transactions" => TransactionId,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(table), table, "Not a budget-owned table these tests seed."),
+        };
+    }
+
+    /// <summary>
+    /// Fixed UTC instant for rows these tests write. PostgreSQL <c>timestamptz</c> rejects a non-UTC
+    /// <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
+    /// </summary>
+    private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Seeds one owner with two budgets, <b>both populated with the same shape of rows</b>, and
+    /// returns them: the budget every probe session declares, and the budget every probe tries to
+    /// reach across into.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Populating both is what separates this helper from
+    /// <c>TenancySchemaTests.SeedTwoBudgetsAsync</c>, which deliberately leaves its second budget
+    /// empty. Isolation cannot be measured against an empty tenant: every "sees nothing" and every
+    /// "affected zero rows" would be true because there was nothing there, with or without a policy.
+    /// </para>
+    /// <para>
+    /// Names repeat across the two budgets on purpose — the unique indexes are on
+    /// <c>(budget_id, name)</c>, so identical names are legal and make the two tenants genuinely
+    /// indistinguishable except by <c>budget_id</c>. The budget names themselves differ, against
+    /// <c>IX_budgets_user_id_name</c>.
+    /// </para>
+    /// <para>
+    /// One seeding context writes both budgets. That is safe because the <c>BudgetIsolation</c>
+    /// query filters are read-side only and the domain factories take <c>budgetId</c> explicitly, so
+    /// the context's own ambient budget never reaches an INSERT.
+    /// </para>
+    /// </remarks>
+    private static async Task<(BudgetRows Ambient, BudgetRows Other)> SeedTwoPopulatedBudgetsAsync(
+        RepositoryTestHost host)
+    {
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid ambientBudgetId = await host.SeedAdditionalBudgetAsync(userId, "Household");
+        Guid otherBudgetId = await host.SeedAdditionalBudgetAsync(userId, "Holiday Fund");
+
+        await using BudgetoidDbContext seed = CreateDb(host, ambientBudgetId);
+        BudgetRows ambient = AddRows(seed, ambientBudgetId);
+        BudgetRows other = AddRows(seed, otherBudgetId);
+        await seed.SaveChangesAsync();
+        return (ambient, other);
+    }
+
+    /// <summary>
+    /// Adds one account, one category group, one category in that group, one payee and one
+    /// transaction on that account to <paramref name="budgetId" />, and returns their ids.
+    /// </summary>
+    private static BudgetRows AddRows(BudgetoidDbContext seed, Guid budgetId)
+    {
+        Account account = Account.Create(
+            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+        CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
+        Category category = Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant);
+        Payee payee = Payee.Create(budgetId, "Corner Shop", SeedInstant);
+        Transaction transaction = Transaction.Create(
+            budgetId,
+            account.Id,
+            -10m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Weekly shop",
+            SeedInstant);
+
+        seed.Accounts.Add(account);
+        seed.CategoryGroups.Add(group);
+        seed.Categories.Add(category);
+        seed.Payees.Add(payee);
+        seed.Transactions.Add(transaction);
+
+        return new BudgetRows(
+            budgetId, account.Id, group.Id, category.Id, payee.Id, transaction.Id);
+    }
+
+    /// <summary>
+    /// Builds the INSERT probe for one table, aimed at <paramref name="target" />'s budget and using
+    /// <paramref name="target" />'s own rows as parents. Taking the whole
+    /// <see cref="BudgetRows" /> rather than a bare budget id is the point: the composite references
+    /// — <c>transactions → accounts (id, budget_id)</c> and
+    /// <c>categories → category_groups (id, budget_id)</c> — are then satisfied by construction, so
+    /// the budget named is the only thing a policy could object to.
+    /// </summary>
+    private static NpgsqlCommand BuildInsertProbe(
+        NpgsqlConnection connection,
+        string table,
+        BudgetRows target)
+    {
+        // Distinct from every seeded name, so the case-insensitive unique index on
+        // (budget_id, name) never turns a probe into a 23505 about something else.
+        const string probeName = "Inserted by an isolation probe";
+
+        // 'USD' is a real currencies row seeded by the migration and 'Checking' satisfies
+        // CK_accounts_type; the transaction's date and amount are literals because neither is what
+        // any of this is about.
+        (string sql, Guid? parentId) = table switch
+        {
+            "accounts" => (
+                "insert into accounts (id, budget_id, name, type, opening_balance, currency_code, created_at_utc) " +
+                "values (@id, @budget_id, @name, 'Checking', 0, 'USD', @created_at_utc)",
+                (Guid?)null),
+            "category_groups" => (
+                "insert into category_groups (id, budget_id, name, description, position, created_at_utc) " +
+                "values (@id, @budget_id, @name, null, 1, @created_at_utc)",
+                null),
+            "categories" => (
+                "insert into categories (id, budget_id, category_group_id, name, description, position, created_at_utc) " +
+                "values (@id, @budget_id, @parent_id, @name, null, 1, @created_at_utc)",
+                target.CategoryGroupId),
+            "payees" => (
+                "insert into payees (id, budget_id, name, created_at_utc) " +
+                "values (@id, @budget_id, @name, @created_at_utc)",
+                null),
+            "transactions" => (
+                "insert into transactions (id, budget_id, account_id, amount, date, description, created_at_utc) " +
+                "values (@id, @budget_id, @parent_id, -5, date '2026-06-12', @name, @created_at_utc)",
+                target.AccountId),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(table), table, "Not a budget-owned table these tests seed."),
+        };
+
+        NpgsqlCommand command = new(sql, connection);
+        command.Parameters.AddWithValue("id", Guid.CreateVersion7());
+        command.Parameters.AddWithValue("budget_id", target.BudgetId);
+        command.Parameters.AddWithValue("name", probeName);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+
+        if (parentId is { } parent)
+        {
+            command.Parameters.AddWithValue("parent_id", parent);
+        }
+
+        return command;
+    }
+
+    /// <summary>
+    /// Runs a statement that is expected to be refused and returns the refusal, or
+    /// <see langword="null" /> when it went through instead.
+    /// </summary>
+    /// <remarks>
+    /// Null rather than a thrown "expected an exception": the caller asserts on
+    /// <c>refusal?.SqlState</c>, so a statement that succeeded is reported as the SQLSTATE that
+    /// failed to arrive — the thing the test is actually about — instead of as an unrelated
+    /// exception type escaping the act phase.
+    /// </remarks>
+    private static async Task<PostgresException?> CaptureRefusalAsync(NpgsqlCommand command)
+    {
+        try
+        {
+            await command.ExecuteNonQueryAsync();
+            return null;
+        }
+        catch (PostgresException exception)
+        {
+            return exception;
+        }
+    }
+
+    /// <summary>
+    /// Writes one granted text column of one row and returns the affected-row count. Never
+    /// <c>budget_id</c> — see the class remarks for why that column would make the probe vacuous.
+    /// </summary>
+    private static async Task<int> UpdateTextAsync(
+        NpgsqlConnection connection,
+        string table,
+        string column,
+        Guid rowId,
+        string value)
+    {
+        // Table and column are interpolated because every call site passes them from the literal
+        // arrays above; the values are parameters, as they must be.
+        await using NpgsqlCommand command = new(
+            $"update {table} set {column} = @value where id = @id",
+            connection);
+        command.Parameters.AddWithValue("value", value);
+        command.Parameters.AddWithValue("id", rowId);
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<int> DeleteAsync(NpgsqlConnection connection, string table, Guid rowId)
+    {
+        await using NpgsqlCommand command = new($"delete from {table} where id = @id", connection);
+        command.Parameters.AddWithValue("id", rowId);
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Reads one column of one row back, so a refusal can be asserted as "nothing changed". Called
+    /// on the superuser connection, which row-level security does not apply to — the app role
+    /// cannot answer this question about another budget's row by definition. A SQL NULL comes back
+    /// as <see cref="DBNull.Value" />; a missing row comes back as <see langword="null" />.
+    /// </summary>
+    private static async Task<object?> ReadColumnAsync(
+        NpgsqlConnection connection,
+        string table,
+        string column,
+        Guid rowId)
+    {
+        await using NpgsqlCommand command = new(
+            $"select {column} from {table} where id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", rowId);
+        return await command.ExecuteScalarAsync();
+    }
+
+    /// <summary>
+    /// Counts a budget's rows in one table. On the app connection this measures what the session can
+    /// see; on the superuser connection it measures what is actually there.
+    /// </summary>
+    private static async Task<long> CountRowsAsync(
+        NpgsqlConnection connection,
+        string table,
+        Guid budgetId)
+    {
+        await using NpgsqlCommand command = new(
+            $"select count(*) from {table} where budget_id = @budget_id",
+            connection);
+        command.Parameters.AddWithValue("budget_id", budgetId);
+
+        // Pattern-matched rather than cast-and-null-forgive: a null or unexpected scalar means the
+        // query changed shape, and that should fail loudly here instead of at the assertion.
+        return await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected a count from '{table}', got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// Builds a context bound to an ambient budget, which the budget-isolated sets this file seeds
+    /// through all require.
+    /// </summary>
+    private static BudgetoidDbContext CreateDb(RepositoryTestHost host, Guid budgetId) => new(
+        new DbContextOptionsBuilder<BudgetoidDbContext>()
+            .UseNpgsql(host.ConnectionString)
+            .Options,
+        new TestBudgetContext(budgetId));
+
+    private static async Task<RepositoryTestHost> StartHostAsync()
+    {
+        RepositoryTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+}

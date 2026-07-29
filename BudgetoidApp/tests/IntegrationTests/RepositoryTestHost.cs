@@ -38,6 +38,53 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         Password = AppRolePassword,
     }.ConnectionString;
 
+    /// <summary>
+    /// Opens a connection as the least-privilege application role <b>with the ambient budget
+    /// already on the session</b>, so that "an app-role connection" and "an app-role connection
+    /// carrying its ambient budget" are the same thing rather than two states a caller can get
+    /// wrong. Callers own the returned connection and dispose it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Row-level security on the budget-owned tables keys its policies to
+    /// <c>app.current_budget_id</c>. A raw connection that sets nothing sees none of those rows, and
+    /// the damage is silent rather than loud: an UPDATE that should affect one row affects zero and
+    /// reports success, so an assertion on the affected count fails while an assertion on a refusal
+    /// passes for entirely the wrong reason. <paramref name="budgetId" /> must therefore be the
+    /// budget the statements on this connection target rows in, not just any real budget.
+    /// </para>
+    /// <para>
+    /// <c>set_config(..., false)</c> — not <c>SET LOCAL</c>. These tests send statements in
+    /// autocommit, and <c>SET LOCAL</c> outside a transaction sets nothing and warns. The value is
+    /// passed as text because <c>set_config</c> takes text: bind the <see cref="Guid" /> itself and
+    /// Npgsql infers <c>uuid</c>, which no <c>set_config</c> overload accepts. Setting a custom GUC
+    /// — one with a dotted namespace — needs no privilege and no policy, so this is inert until the
+    /// policies exist.
+    /// </para>
+    /// </remarks>
+    public async Task<NpgsqlConnection> OpenAppConnectionAsync(Guid budgetId)
+    {
+        NpgsqlConnection connection = new(AppConnectionString);
+
+        try
+        {
+            await connection.OpenAsync();
+            await using NpgsqlCommand command = new(
+                "select set_config('app.current_budget_id', @budget, false)",
+                connection);
+            command.Parameters.AddWithValue("budget", budgetId.ToString());
+            await command.ExecuteNonQueryAsync();
+        }
+        catch
+        {
+            // The caller never receives the connection on this path, so nothing else can close it.
+            await connection.DisposeAsync();
+            throw;
+        }
+
+        return connection;
+    }
+
     public async Task StartAsync()
     {
         await _container.StartAsync();

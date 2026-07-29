@@ -8,10 +8,21 @@ discovered; remove them as they're done.
 ## Data isolation invariant (read this before touching budget-scoped queries)
 
 **A row must never be visible to a budget it doesn't belong to.** This is enforced in layers; the
-EF global query filter is the primary control, but it has known gaps. Keep all of the following
-true.
+bottom one is PostgreSQL row-level security, and the layers above it exist for error quality. Keep
+all of the following true.
 
 Enforced today:
+- **Row-level security.** A `budget_isolation` policy on `accounts`, `category_groups`,
+  `categories`, `payees` and `transactions` compares `budget_id` against the session's ambient
+  budget in both `USING` and `WITH CHECK`, so the connection every request is served by reaches no
+  other budget's rows and can insert into no budget but the ambient one — whatever produced the
+  statement. `BudgetSessionInterceptor` puts the budget on each connection the context opens. The
+  policies live in `Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a
+  migration ([ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)).
+  **A new budget-owned table needs a grant *and* a policy**: the grants are fail-closed, so a
+  missing one fails loudly with `42501`, but RLS is fail-**open** — a granted table with no policy
+  is readable across every tenant, silently. `tests/IntegrationTests/RlsCoverageTests.cs` derives
+  its subject from the live schema so that drift fails a test instead of shipping.
 - **Read-side filter.** `BudgetoidDbContext` defines a global query filter named
   `BudgetIsolation` on `Transaction`, `Account`, `Payee`, `CategoryGroup`, and `Category`, scoped
   to the current `IBudgetContext.BudgetId`. Every LINQ query against those sets is auto-scoped —
@@ -19,11 +30,12 @@ Enforced today:
   parameter (`budgetContext!.BudgetId`) directly: Roslyn lowers that parameter to an instance
   field, so the lambda closes over `this` and EF re-roots the closure to the context instance
   running the query. A captured local, a static, or a service-locator call would bake the first
-  request's budget into EF's cached model and leak rows across tenants. The context is registered
-  **non-pooled** (`AddDbContext` + `EnrichNpgsqlDbContext` in `Api/Program.cs`) because pooling
-  forbids scoped constructor injection. These global filters are the **sole** read-side guard —
-  repositories deliberately do *not* re-filter by budget (`ITransactionRepository.GetAllAsync`),
-  so the escape hatches below are especially load-bearing.
+  request's budget into EF's cached model. The context is registered **non-pooled**
+  (`AddDbContext` + `EnrichNpgsqlDbContext` in `Api/Program.cs`) because pooling forbids scoped
+  constructor injection. Repositories deliberately do *not* re-filter by budget
+  (`ITransactionRepository.GetAllAsync`), so these filters are the only thing above the policies —
+  they turn another budget's row into a correct empty result and the 404 or 400 the API answers
+  with. That is error quality, not enforcement; do not delete either layer as duplication.
 - **Write-side schema guard.** The filter enforces nothing on a write, so every reference between
   two budget-owned rows is a composite foreign key carrying `budget_id` — `categories →
   category_groups` and `transactions → accounts | categories | payees`, each against an
@@ -39,9 +51,15 @@ Enforced today:
   role, so a raw `UPDATE` fails with `42501` whatever issued it
   ([ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)).
 - **Server-assigned ownership.** `BudgetId` comes only from `IBudgetContext`, never from a request
-  DTO or route. `CreateTransactionCommand` has no `BudgetId` field; keep it that way.
+  DTO or route. `CreateTransactionCommand` has no `BudgetId` field; keep it that way. The policies'
+  `WITH CHECK` half holds the same rule underneath: an insert can only land in the ambient budget,
+  so a future importer or bulk endpoint cannot stamp a foreign `budget_id` even consistently.
 
-Escape hatches the filter does **not** cover — do not introduce these on budget-scoped data:
+Escape hatches the filter does **not** cover. These no longer leak — each one now meets the
+policies instead, and a cross-budget read comes back empty rather than populated. Still do not
+introduce them on budget-scoped data: an empty result where the code expects a row is a bug, the
+policies do not cover `budgets`, and a connection that names no ambient budget fails with `22P02`
+rather than answering.
 - `IgnoreQueryFilters()` — never on `BudgetoidDbContext`.
 - Raw SQL (`FromSqlRaw` / `FromSqlInterpolated` / `ExecuteSql...`) — bypasses the filter; if
   unavoidable, scope by budget explicitly in the SQL.
@@ -56,39 +74,23 @@ Escape hatches the filter does **not** cover — do not introduce these on budge
   (Required navigations can otherwise silently *under*-return via INNER JOIN — a correctness
   bug, not a leak, but worth knowing.)
 
-Tests that lock this: `tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level
+Tests that lock this: `tests/IntegrationTests/RlsIsolationTests.cs` (raw SQL on the application
+role, every negative paired with the same statement against the session's own budget),
+`tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so a new budget-owned table without a
+policy fails), `tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level
 two-budgets-same-process + endpoint-level two-factory) and the `BudgetId` immutability unit test in
 `tests/UnitTests/TransactionTests.cs`. Removing a `HasQueryFilter` line must make the
-DbContext-level test fail.
+DbContext-level test fail; removing a policy must make the RLS ones fail.
 
 ---
 
 ## Backlog
 
-### Layer 4 — Postgres Row-Level Security (database-level backstop)
-**Why:** the query filter and conventions above all live in application code. RLS is the only
-control that holds even when app code is buggy, uses raw SQL, or forgets a filter — the
-database itself refuses to return other budgets' rows. Add before hosting real users' financial
-data.
-
-**Sketch:**
-- In a migration: `ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;` plus a policy keyed to
-  a per-connection GUC, e.g. `USING (budget_id = current_setting('app.current_budget_id')::uuid)`.
-  Repeat for every budget-scoped table, not just `transactions`.
-- Per request, set the GUC on the connection inside the request's transaction via a
-  `DbConnection`-opened EF interceptor: `SET LOCAL app.current_budget_id = '<budget>'`.
-- **Tradeoffs / risks:** the interceptor must run on *every* connection open (connection
-  pooling reuses physical connections); the migration owns the policy. Worth prototyping the
-  connection-opened interceptor early so the design isn't found pooling-incompatible later.
-- **One prerequisite is already met.** RLS is silently skipped for a table owner or a
-  `BYPASSRLS` role, and the application connects as `budgetoid_app`, which is neither
-  ([ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). Whoever picks this up
-  gets a role the policies would actually apply to — and, for the same reason, must apply the
-  policies through the admin identity, not the application one.
-
 ### Enforce the escape-hatch rules in CI (not just prose)
 **Why:** the "do not use `IgnoreQueryFilters` / `Find` / `FromSql*`" rules above are only as
-strong as code review. Convert them into a build-failing guard:
+strong as code review. The policies mean breaking one is a wrong empty result rather than a leak,
+which lowers the urgency without removing it — a guard still turns a silent wrong answer into a
+build failure. Convert them into a build-failing guard:
 - Lightweight: a test that scans the `Application` / `Infrastructure` source (or IL) and fails
   if the forbidden APIs appear on the budget-scoped data path.
 - Stronger: a Roslyn analyzer, or `ArchUnitNET` architecture tests.

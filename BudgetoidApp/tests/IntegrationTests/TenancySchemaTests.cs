@@ -77,9 +77,14 @@ public sealed class TenancySchemaTests
             transactionId = transaction.Id;
         }
 
-        // Act
+        // Act — the admin connection, which the class remarks say is enough for a composite-FK
+        // refusal. It carries no ambient budget and needs none: row-level security never applies to
+        // the container superuser, and this connection is also what reads the counts back below,
+        // where seeing every budget's rows is the point.
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            host.ConnectionString, "transactions", transactionId, otherBudgetId);
+            connection, "transactions", transactionId, otherBudgetId);
 
         // Assert — the constraint name is asserted next to the SQLSTATE so the refusal has to come
         // from the composite account reference, which is the tenancy rule, rather than from
@@ -87,9 +92,6 @@ public sealed class TenancySchemaTests
         await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
         await Assert.That(exception.ConstraintName)
             .IsEqualTo("FK_transactions_accounts_account_id_budget_id");
-
-        await using NpgsqlConnection connection = new(host.ConnectionString);
-        await connection.OpenAsync();
 
         // The destination row is asserted rather than assumed, and on this table it is not
         // redundant with the constraint name above: point the move at a nonexistent budget and
@@ -123,9 +125,12 @@ public sealed class TenancySchemaTests
             categoryId = category.Id;
         }
 
-        // Act
+        // Act — the admin connection, on the same terms as the transaction test above: it is enough
+        // for a composite-FK refusal, and it is also what reads the counts back.
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            host.ConnectionString, "categories", categoryId, otherBudgetId);
+            connection, "categories", categoryId, otherBudgetId);
 
         // Assert — the group reference is the tenancy rule, and here, unlike on transactions, naming
         // it does rule out a refusal that came from the destination budget not existing: with a
@@ -136,8 +141,6 @@ public sealed class TenancySchemaTests
         await Assert.That(exception.ConstraintName)
             .IsEqualTo("FK_categories_category_groups_category_group_id_budget_id");
 
-        await using NpgsqlConnection connection = new(host.ConnectionString);
-        await connection.OpenAsync();
         await Assert.That(await CountRowsAsync(connection, "budgets", "id", otherBudgetId))
             .IsEqualTo(1L);
         await Assert.That(await CountRowsAsync(connection, "categories", "budget_id", budgetId))
@@ -166,11 +169,14 @@ public sealed class TenancySchemaTests
         }
 
         // Act — on the app role's connection; the class remarks say why the admin connection
-        // cannot observe this rule. The destination budget is real (see SeedTwoBudgetsAsync), so
-        // if the grant ever leaked budget_id the move would succeed outright instead of tripping
-        // a foreign key and passing for the wrong reason.
+        // cannot observe this rule. It carries budgetId, the budget the account is in, because
+        // accounts is row-level-security scoped: without it the rename below would match zero rows
+        // and the refusal it is paired with would go vacuous. The destination budget is real (see
+        // SeedTwoBudgetsAsync), so if the grant ever leaked budget_id the move would succeed
+        // outright instead of tripping a foreign key and passing for the wrong reason.
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            host.AppConnectionString, "accounts", accountId, otherBudgetId);
+            app, "accounts", accountId, otherBudgetId);
 
         // Assert
         await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
@@ -183,9 +189,9 @@ public sealed class TenancySchemaTests
             .IsEqualTo(0L);
 
         // The success half of the pair (see the class remarks): name is on the accounts grant
-        // list, so the same role renaming the same row must go through.
-        await Assert.That(await UpdateNameAsync(
-                host.AppConnectionString, "accounts", accountId, "Everyday Checking"))
+        // list, so the same role renaming the same row must go through. Same connection as the
+        // refusal, so the session's ambient budget is identical too and only the column differs.
+        await Assert.That(await UpdateNameAsync(app, "accounts", accountId, "Everyday Checking"))
             .IsEqualTo(1);
     }
 
@@ -206,10 +212,11 @@ public sealed class TenancySchemaTests
             groupId = group.Id;
         }
 
-        // Act — app role connection, real destination budget, on the same terms as the account
-        // test above.
+        // Act — app role connection carrying budgetId, real destination budget, on the same terms
+        // as the account test above.
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            host.AppConnectionString, "category_groups", groupId, otherBudgetId);
+            app, "category_groups", groupId, otherBudgetId);
 
         // Assert
         await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
@@ -222,9 +229,9 @@ public sealed class TenancySchemaTests
             .IsEqualTo(0L);
 
         // The success half of the pair (see the class remarks): name is on the category_groups
-        // grant list, so the same role renaming the same row must go through.
-        await Assert.That(await UpdateNameAsync(
-                host.AppConnectionString, "category_groups", groupId, "Essentials"))
+        // grant list, so the same role renaming the same row must go through. Same connection as
+        // the refusal, so the session's ambient budget is identical too.
+        await Assert.That(await UpdateNameAsync(app, "category_groups", groupId, "Essentials"))
             .IsEqualTo(1);
     }
 
@@ -246,10 +253,11 @@ public sealed class TenancySchemaTests
             payeeId = payee.Id;
         }
 
-        // Act — app role connection, real destination budget, on the same terms as the two tests
-        // above.
+        // Act — app role connection carrying budgetId, real destination budget, on the same terms
+        // as the two tests above.
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            host.AppConnectionString, "payees", payeeId, otherBudgetId);
+            app, "payees", payeeId, otherBudgetId);
 
         // Assert
         await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
@@ -262,9 +270,9 @@ public sealed class TenancySchemaTests
             .IsEqualTo(0L);
 
         // The success half of the pair (see the class remarks): name is on the payees grant list,
-        // so the same role renaming the same row must go through.
-        await Assert.That(await UpdateNameAsync(
-                host.AppConnectionString, "payees", payeeId, "Corner Shop Deli"))
+        // so the same role renaming the same row must go through. Same connection as the refusal,
+        // so the session's ambient budget is identical too.
+        await Assert.That(await UpdateNameAsync(app, "payees", payeeId, "Corner Shop Deli"))
             .IsEqualTo(1);
     }
 
@@ -305,19 +313,19 @@ public sealed class TenancySchemaTests
     }
 
     /// <summary>
-    /// Sends the move over <paramref name="connectionString" /> and returns the refusal. The
-    /// caller picks the connection because the two refusals under test live on different ones:
-    /// composite-FK refusals fire for any connection, so the admin string exercises them, while
-    /// grant refusals only exist for the app role's string.
+    /// Sends the move over <paramref name="connection" /> and returns the refusal. The caller opens
+    /// the connection rather than handing over a string, because the two refusals under test live
+    /// on different ones and the app-role one is not interchangeable with its connection string:
+    /// composite-FK refusals fire anywhere, so the admin connection exercises them, while grant
+    /// refusals only exist for the app role — and an app-role connection has to carry its ambient
+    /// budget, which only <see cref="RepositoryTestHost.OpenAppConnectionAsync" /> arranges.
     /// </summary>
     private static async Task<PostgresException> ThrowsPostgresExceptionAsync(
-        string connectionString,
+        NpgsqlConnection connection,
         string table,
         Guid rowId,
         Guid destinationBudgetId)
     {
-        await using NpgsqlConnection connection = new(connectionString);
-        await connection.OpenAsync();
         await using NpgsqlCommand command = BuildMove(connection, table, rowId, destinationBudgetId);
 
         try
@@ -333,19 +341,18 @@ public sealed class TenancySchemaTests
     }
 
     /// <summary>
-    /// Renames a row over <paramref name="connectionString" /> and returns the affected-row
-    /// count. The flipped tests use it as the success half of their refusal/success pair:
-    /// <c>name</c> is a granted column on <c>accounts</c>, <c>category_groups</c> and
-    /// <c>payees</c> alike.
+    /// Renames a row over <paramref name="connection" /> and returns the affected-row count. The
+    /// flipped tests use it as the success half of their refusal/success pair: <c>name</c> is a
+    /// granted column on <c>accounts</c>, <c>category_groups</c> and <c>payees</c> alike. It takes
+    /// the open connection so the pair runs on one session — the affected count is only evidence of
+    /// a grant if the row was visible to that session in the first place.
     /// </summary>
     private static async Task<int> UpdateNameAsync(
-        string connectionString,
+        NpgsqlConnection connection,
         string table,
         Guid rowId,
         string newName)
     {
-        await using NpgsqlConnection connection = new(connectionString);
-        await connection.OpenAsync();
         await using NpgsqlCommand command = new(
             $"update {table} set name = @name where id = @id",
             connection);

@@ -22,10 +22,17 @@ builder.AddServiceDefaults();
 // IBudgetContext for its budget isolation query filters, and pooled contexts can't take scoped
 // dependencies. Aspire's AddNpgsqlDbContext pools contexts; EnrichNpgsqlDbContext re-applies
 // Aspire's retry/health/telemetry defaults here.
-builder.Services.AddDbContext<BudgetoidDbContext>(options =>
-    options.UseNpgsql(BuildConnectionString(
-        builder.Configuration.GetConnectionString("budgetoid"),
-        builder.Environment.IsDevelopment())));
+// The (serviceProvider, options) overload, not the plain one: BudgetSessionInterceptor is scoped
+// because it reads the scoped IBudgetContext, and this overload's optionsLifetime defaults to
+// Scoped, so it resolves from the request scope. The interceptor is what puts the ambient budget on
+// each connection for the row-level security policies — without it the role's every policied query
+// fails with 22P02.
+builder.Services.AddDbContext<BudgetoidDbContext>((serviceProvider, options) =>
+    options
+        .UseNpgsql(BuildConnectionString(
+            builder.Configuration.GetConnectionString("budgetoid"),
+            builder.Environment.IsDevelopment()))
+        .AddInterceptors(serviceProvider.GetRequiredService<BudgetSessionInterceptor>()));
 builder.EnrichNpgsqlDbContext<BudgetoidDbContext>();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure();
@@ -176,6 +183,13 @@ await app.RunAsync();
 // have no TLS configured, and SslMode=Require against them fails with "No SSL enabled connection
 // from this host is configured." A null connection string is returned unchanged so the null case
 // preserves the existing fail-later behavior.
+//
+// Two Npgsql options are now forbidden in any connection string this reaches, because budget
+// isolation is enforced by a session setting (see BudgetSessionInterceptor). `No Reset On Close=true`
+// would keep a returned connection's app.current_budget_id, making the pool reset — now a security
+// control, not a hygiene one — stop clearing one tenant's budget before the next borrower.
+// `Multiplexing=true` interleaves logical sessions over one physical connection, which no
+// session-setting design can survive at all.
 static string? BuildConnectionString(string? connectionString, bool isDevelopment)
 {
     if (connectionString is null || isDevelopment)

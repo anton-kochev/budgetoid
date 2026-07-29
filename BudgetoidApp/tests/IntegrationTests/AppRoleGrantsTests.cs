@@ -44,6 +44,10 @@ public sealed class AppRoleGrantsTests
         Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
         Guid budgetId = await host.SeedAdditionalBudgetAsync(userId, "Household");
 
+        // A bare app-role connection, not RepositoryTestHost.OpenAppConnectionAsync: every
+        // statement below targets budgets, which is not one of the budget-owned tables row-level
+        // security scopes — a budget is the tenant, not a tenant's row — so there is no ambient
+        // budget for this session to carry and setting one would only suggest there was.
         await using NpgsqlConnection app = new(host.AppConnectionString);
         await app.OpenAsync();
 
@@ -107,8 +111,10 @@ public sealed class AppRoleGrantsTests
             accountId = account.Id;
         }
 
-        await using NpgsqlConnection app = new(host.AppConnectionString);
-        await app.OpenAsync();
+        // accounts is row-level-security scoped, so this connection carries the budget the account
+        // is in. Without it the rename would match zero rows and still report no error, which would
+        // leave the refusal it is paired with proving nothing.
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
 
         // Act — currency_code is absent from the accounts grant list; name is on it. Same table,
         // same row, same connection: only the column decides.
@@ -138,6 +144,9 @@ public sealed class AppRoleGrantsTests
         await using RepositoryTestHost host = await StartHostAsync();
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
 
+        // A bare app-role connection, for the same reason as the budgets test: users sits outside
+        // the budget-owned tables row-level security scopes — a user owns budgets rather than
+        // belonging to one — so this session has no ambient budget to carry.
         await using NpgsqlConnection app = new(host.AppConnectionString);
         await app.OpenAsync();
 
