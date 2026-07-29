@@ -33,8 +33,11 @@ Enforced today:
 - **`Budget` itself has no filter.** The provisioning lookup runs before a budget id exists, so
   every query over `Budgets` must scope by owner explicitly (`FindFirstForUserAsync`).
 - **Immutable ownership.** `Transaction.BudgetId` has no public setter and is set only via the
-  factory. The query filter is read-side only — `SaveChanges` ignores it — so immutability is
-  what stops a row from ever moving between budgets. Guarded by a unit test.
+  factory. The query filter is read-side only — `SaveChanges` ignores it — so that immutability is
+  what stops the *application* from moving a row between budgets. The database holds the same rule
+  independently: `budget_id` is absent from every `UPDATE` column list granted to the application
+  role, so a raw `UPDATE` fails with `42501` whatever issued it
+  ([ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)).
 - **Server-assigned ownership.** `BudgetId` comes only from `IBudgetContext`, never from a request
   DTO or route. `CreateTransactionCommand` has no `BudgetId` field; keep it that way.
 
@@ -75,9 +78,13 @@ data.
 - Per request, set the GUC on the connection inside the request's transaction via a
   `DbConnection`-opened EF interceptor: `SET LOCAL app.current_budget_id = '<budget>'`.
 - **Tradeoffs / risks:** the interceptor must run on *every* connection open (connection
-  pooling reuses physical connections); the migration owns the policy; the app's DB role must
-  not be `BYPASSRLS` / table owner. Worth prototyping the connection-opened interceptor early
-  so the design isn't found pooling-incompatible later.
+  pooling reuses physical connections); the migration owns the policy. Worth prototyping the
+  connection-opened interceptor early so the design isn't found pooling-incompatible later.
+- **One prerequisite is already met.** RLS is silently skipped for a table owner or a
+  `BYPASSRLS` role, and the application connects as `budgetoid_app`, which is neither
+  ([ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). Whoever picks this up
+  gets a role the policies would actually apply to — and, for the same reason, must apply the
+  policies through the admin identity, not the application one.
 
 ### Enforce the escape-hatch rules in CI (not just prose)
 **Why:** the "do not use `IgnoreQueryFilters` / `Find` / `FromSql*`" rules above are only as

@@ -100,6 +100,15 @@ erDiagram
     and `payees`, so structure never survives its budget as unreachable rows, and `Restrict` on
     `transactions`, so recorded money movement pins the budget in place instead. That asymmetry is a
     rule in its own right and is stated in Business Rules & Invariants below.
+    Once a row exists its `budget_id` never changes, and the lowest layer that can say so is the
+    **application role's grants**: `UPDATE` is granted on each of the five tables by explicit column
+    list, and `budget_id` is on none of them, so the write is refused with `42501` on the connection
+    every request is served by. The two layers above it are each partial — no entity exposes
+    `BudgetId`, which holds only for writes that go through the domain, and the composite foreign
+    keys refuse a move only while a child row references the one being moved. Enforcement is the
+    column's *omission from the grant's list* rather than a `REVOKE`, because PostgreSQL column
+    privileges are additive; the mechanism and its consequences are in
+    [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
     `BudgetId` is stamped at creation from `IBudgetContext` by
     `CreateAccountHandler`, `CreateCategoryGroupHandler`, `CreateCategoryHandler`,
     `CreateTransactionHandler` and `PayeeRepository.GetOrCreateAsync`. There is no `UserId` on any of
@@ -118,7 +127,11 @@ erDiagram
     budget_id)`, `(category_id, budget_id)` and `(payee_id, budget_id)` onto the matching principal
     keys, all on `Restrict`. PostgreSQL rejects the row regardless of how it was written.
     `payee_id` and `category_id` stay nullable: a multi-column check is skipped entirely when any of
-    its columns is NULL (MATCH SIMPLE).
+    its columns is NULL (MATCH SIMPLE). These reference columns are also the only ones the
+    application role may update besides the plain data columns — `categories.category_group_id` and
+    `transactions.account_id | payee_id | category_id` are all on their tables' grant lists — and it
+    is the composite keys that make granting them safe: repointing a row is a real operation, and
+    the key is what confines it to the same budget.
 
 - **Account, category group, category and payee names are unique per budget, case-insensitively.**
   - **Why**: The names are how the user tells things apart inside one pool of money. Two accounts
@@ -155,7 +168,10 @@ erDiagram
     `BudgetProvisioningTests` each assert the provisioned budget's `BaseCurrencyCode` is null.
     `base_currency_code` is a nullable `varchar(3)` with a `Restrict` foreign key to
     `currencies.code`, so if a value is ever written the currency behind it cannot be deleted out
-    from under it.
+    from under it. The bottom layer agrees and says something wider: the application role holds
+    `SELECT` and `INSERT` on `budgets` and **no `UPDATE` grant of any shape**, so no column of a
+    budget row can be written after the insert on the connection requests are served by
+    ([ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)).
 
 ### MUST NOT
 
@@ -469,7 +485,11 @@ The user branch that runs before this is in
   `Budget` exposes no method that sets it, so the column holds null for every budget in existence.
   Do not build display, defaulting or conversion logic on the assumption that some budget somewhere
   has one, and do not document a rule for choosing a base currency before the operation that sets it
-  exists.
+  exists. The database is arranged the same way and will say so loudly: with no `UPDATE` grant on
+  `budgets`, the first operation that edits a budget — setting a base currency, renaming one — fails
+  with `42501` until a column list for it is added to `app-role-grants.sql`. That is the intended
+  order of events, not an obstacle to route around: the grant is where the decision that a budget
+  column is mutable gets recorded.
 
 - **How the `BudgetIsolation` filter captures the budget is the most dangerous edit in the
   persistence layer.** Rewriting the lambda to read a captured local, a `static`, or a service
@@ -494,7 +514,12 @@ The user branch that runs before this is in
   *which* budget id that is. Nothing stops a future importer or bulk endpoint from stamping the wrong
   `budget_id` across a consistently cross-referenced set — every constraint would accept it. These
   constraints do not address that risk; ambient-budget resolution (see Business Rules & Invariants
-  above) does, and it remains the whole protection for *whose* budget a write lands in.
+  above) does, and it remains the whole protection for *whose* budget a write lands in. The
+  application role's grants do not change that either, and it is worth being exact about what they
+  add: `budget_id` is absent from every `UPDATE` column list, so a row that exists cannot be **moved**
+  to another budget — but an `INSERT` names whatever `budget_id` it is given, and no grant has an
+  opinion about which one. Immutability after the fact is a different guarantee from correctness at
+  the moment of writing, and only the first of the two has a bottom layer.
 
 - **The delete policy across the five owned tables is deliberately not uniform.** `accounts`,
   `category_groups`, `categories` and `payees` cascade from `budgets.id`; `transactions` restricts.

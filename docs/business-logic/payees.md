@@ -90,12 +90,14 @@ erDiagram
 - **A payee belongs to exactly one budget, and never moves.**
   - **Why**: This is the tenancy rule, not tidiness: a payee that changed `budget_id` would carry the
     transactions naming it into another pool's picture.
-  - **Enforced in**: the cross-entity rule and its reasoning are in
+  - **Enforced in**: **database-owned**, and the cross-entity rule and its reasoning are in
     [budgets.md](budgets.md#constraints) — a required `budget_id`, the `BudgetIsolation` query
-    filter, and the composite `(payee_id, budget_id)` reference from `transactions`. The honest
-    limit of the bottom layer is payee-specific and recorded under
-    [Edge Cases](#edge-cases--known-gotchas) below: the composite foreign key only objects while a
-    transaction references the payee.
+    filter, and the composite `(payee_id, budget_id)` reference from `transactions`. What is
+    payee-specific is *which* bottom-layer mechanism answers, and it depends on whether the payee is
+    referenced: the composite foreign key objects only while a transaction names it, and for an
+    unreferenced payee the refusal comes from the application role's `UPDATE` grant on `payees`,
+    which lists `name` and nothing else. That seam is described under
+    [Edge Cases](#edge-cases--known-gotchas) below.
 
 ### MUST NOT
 
@@ -108,7 +110,12 @@ erDiagram
     `NOT NULL` `budget_id` column. No application code path deletes a payee at all —
     `IPayeeRepository` exposes `GetOrCreateAsync`, `GetByIdAsync` and `UpdateAsync`, none of which
     removes a row, and neither route `PayeeEndpoints` maps is a `DELETE` — so unlike accounts and
-    categories there is no handler to precheck and no message to write.
+    categories there is no handler to precheck and no message to write. The absence goes one layer
+    lower than the API: the application role holds no `DELETE` privilege on `payees` at all, so even
+    a raw statement sent on the connection the application serves requests with fails with `42501`
+    without reaching the foreign key. A delete feature would therefore need a grant added to
+    `app-role-grants.sql` before it could work, which is the fail-closed behaviour
+    [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md) intends.
     `PayeeIntegrationTests.DeletingAReferencedPayee_IsRefusedByTheDatabase` sends the delete as raw
     SQL, because raw SQL is the only way to attempt it.
 
@@ -502,18 +509,22 @@ not trip over.
   checked and passing. The composite key protects transactions that *name* a payee; it says nothing
   about the ones that do not.
 
-- **An unreferenced payee can still be moved between budgets by a raw `UPDATE`.** The composite
-  `(payee_id, budget_id)` reference is what refuses the move, and a payee no transaction names has no
-  child row to raise it — which is not an exotic state, since every payee is unreferenced between
-  being created and being used. The domain cannot produce that `UPDATE` (`Payee` has no way to reach
-  `BudgetId`), so this is a gap in the bottom layer rather than a live defect, and
-  `TenancySchemaTests.Database_CurrentlyAllowsMovingAnUnreferencedPayeeToAnotherBudget` pins it as a
-  characterization test that says so at its assertion. The rule's lowest capable layer is
-  `REVOKE UPDATE (budget_id) ON payees` from a least-privilege application role; that role does not
-  exist yet, the app connects as admin, and roles and grants belong in provisioning rather than in
-  the regenerated baseline migration — see
-  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The empty-account and
-  empty-category-group cases in the same test class close on exactly the same change.
+- **What refuses a payee's move between budgets depends on whether a transaction names it, and for
+  most of a payee's life it is not the foreign key.** The composite `(payee_id, budget_id)` reference
+  objects only while a child row exists, and a payee no transaction names has none — which is not an
+  exotic state, since every payee is unreferenced between being created and being used. For that
+  window the refusal comes from the application role's grants: `UPDATE` on `payees` is granted for
+  `name` alone, so a statement writing `budget_id` fails with `42501` before the row is touched. The
+  enforcement is the column's **omission from the grant's list**, not a `REVOKE` — PostgreSQL column
+  privileges are additive, so revoking a column out of a table-wide `UPDATE` grant subtracts nothing
+  and the rule has to be written as a list that never mentions the column
+  ([ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). The domain cannot produce the
+  `UPDATE` either — `Payee` has no way to reach `BudgetId` — so all three layers hold, and
+  `TenancySchemaTests.Database_RefusesToMoveAnUnreferencedPayeeToAnotherBudget` sends the statement
+  as raw SQL on the role's own connection, pairing the refusal with a rename that must succeed. The
+  connection is the part to remember: PostgreSQL skips every privilege check for a superuser, so the
+  same test on an admin connection would pass with no grants in place at all. The empty-account and
+  empty-category-group cases in the same class rest on exactly the same mechanism.
 
 - **The `case_insensitive` collation folds case but not accents.** It is ICU `und-u-ks-level2`, so
   `Café` and `Cafe` are two distinct payees and both can exist in one budget. That is a

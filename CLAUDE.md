@@ -51,6 +51,8 @@ Clean Architecture with CQRS. Commands/queries live under `Application/Transacti
 
 Auth is live Google OAuth. The budget is the unit of tenancy: `UserProvisioningMiddleware` resolves the authenticated principal (via `EnsureUserHandler`, keyed on the Google `sub`) into an internal user id and that user's default budget id, both held on the scoped `CurrentUser`. The ambient budget is exposed through `IBudgetContext`, implemented by `HttpContextBudgetContext` in prod (`TestBudgetContext` in tests); `Account`, `CategoryGroup`, `Category`, `Payee`, and `Transaction` are isolated per budget by the `BudgetIsolation` query filters. See `docs/business-logic/budgets.md` and `docs/business-logic/users-and-ownership.md`.
 
+The app connects to PostgreSQL as `budgetoid_app`, a least-privilege role, on `ConnectionStrings:budgetoid`. `ConnectionStrings:budgetoid-admin` is elevated and is read only by the Development startup block, which migrates and then applies the grants; migrations can never run on the application role. Immutable columns (`budget_id` everywhere, all of `budgets`, `accounts.currency_code`, `users.google_subject`) are expressed by **omission from a `GRANT UPDATE` column list** — PostgreSQL column privileges are additive, so `REVOKE` cannot subtract a column from a table-wide grant, and widening any list to table-wide silently reopens every hole. A blocked write is `42501` and is deliberately untranslated: it means the domain was bypassed. Grants live in `Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration. See `docs/decisions/0004-connect-as-a-least-privilege-role.md`.
+
 ## Frontend Architecture
 
 - Angular 21 standalone components (no NgModules)
@@ -100,6 +102,13 @@ describes the rule says why. Full reasoning in
 - `Api.csproj` uses `<ContainerFamily>noble-chiseled</ContainerFamily>`; no handwritten Dockerfile.
 - Append `Maximum Pool Size=5` to production PostgreSQL connection strings.
 - Production migrations should run from CI/CD migration bundles, not API startup.
+- Deploying is migrate **then** provision: after the migration bundle, apply
+  `Infrastructure/Persistence/Provisioning/app-role-grants.sql` on the admin connection. The grants
+  name individual tables, so the schema has to exist first. See `DEPLOYMENT.md`.
+- The deployed container is handed one connection string, the least-privilege one. The publish
+  branch of `AppHost/Program.cs` deliberately does **not** `WithReference` the database for the API:
+  that reference injects the admin identity as `BUDGETOID_URI`/`_USERNAME`/`_PASSWORD` as well as a
+  connection string. Do not add it back.
 
 ## Code Conventions
 

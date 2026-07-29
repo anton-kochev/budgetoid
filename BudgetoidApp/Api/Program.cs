@@ -4,6 +4,7 @@ using Application;
 using Application.Abstractions;
 using Infrastructure;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Provisioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Authorization;
@@ -107,13 +108,50 @@ app.UseAuthentication();
 app.UseMiddleware<UserProvisioningMiddleware>();
 app.UseAuthorization();
 
+// Development is the only environment where the application shapes its own database. Production
+// applies the migration and the grant matrix as deliberate admin steps at deploy time, so nothing
+// here runs there — do not "helpfully" lift this block out of the Development check. The deployed
+// container is handed exactly one connection string, the least-privilege one (see AppHost's publish
+// branch), so lifting this code out would not quietly give a request-serving process DDL rights:
+// it would fail at boot on the missing admin connection string a few lines below. The absence of
+// the credential is what prevents the escalation; this check is what prevents the boot failure.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi().AllowAnonymous();
 
-    await using AsyncServiceScope scope = app.Services.CreateAsyncScope();
-    BudgetoidDbContext db = scope.ServiceProvider.GetRequiredService<BudgetoidDbContext>();
-    await db.Database.MigrateAsync();
+    // Fail fast on the elevated connection string, for the same reason as the Google client id
+    // above: absent, it would surface much later as an opaque Npgsql error from a null connection.
+    string adminConnectionString = app.Configuration.GetConnectionString("budgetoid-admin")
+        ?? throw new InvalidOperationException(
+            "ConnectionStrings:budgetoid-admin is required in Development: startup migrates the "
+            + "schema and provisions the application role, and neither can run on the "
+            + "least-privilege connection the application serves requests with.");
+
+    // The application role's password is read out of the application connection string rather than
+    // from a configuration key of its own: provisioning sets the role's password to whatever the
+    // application is already configured to connect with, so the two cannot drift apart. Do not add
+    // a third setting for it.
+    string appRolePassword =
+        new NpgsqlConnectionStringBuilder(app.Configuration.GetConnectionString("budgetoid")).Password
+        ?? throw new InvalidOperationException(
+            "ConnectionStrings:budgetoid must carry a password in Development: it is the password "
+            + "startup assigns to the application role.");
+
+    // Migrate on a context built explicitly over the admin connection, not the scoped one from DI.
+    // That one is configured with ConnectionStrings:budgetoid — the least-privilege role, which is
+    // denied CREATE on the schema and so cannot run MigrateAsync even as a no-op. See the
+    // __EFMigrationsHistory note in app-role-grants.sql.
+    await using (BudgetoidDbContext db = new(
+        new DbContextOptionsBuilder<BudgetoidDbContext>()
+            .UseNpgsql(adminConnectionString)
+            .Options))
+    {
+        await db.Database.MigrateAsync();
+    }
+
+    // Strictly after the migration: the grants name individual tables, so the schema has to exist
+    // before they can be applied.
+    await DatabaseProvisioning.ApplyGrantsAsync(adminConnectionString, appRolePassword);
 }
 
 app.MapDefaultEndpoints();

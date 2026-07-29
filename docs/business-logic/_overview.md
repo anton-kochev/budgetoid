@@ -22,7 +22,12 @@ Entity factories enforce the field rules the schema cannot state declaratively a
 handlers enforce cross-entity rules, but whatever the schema can state, it owns: check constraints
 bound account type and money magnitude, composite foreign keys refuse a cross-budget reference
 whatever code path wrote it, and unique indexes are what make name uniqueness and provisioning
-race-safe. That split is a general rule rather than a local one: each rule is owned
+race-safe. Immutability is owned down there too: the application connects as a least-privilege role
+whose `UPDATE` privileges are granted per column, so a column left off the list — `budget_id` on
+every owned table, `accounts.currency_code`, `users.google_subject`, every column of `budgets` — is
+one PostgreSQL refuses to write at all (see
+[ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). That split is a general rule
+rather than a local one: each rule is owned
 by the lowest layer that can enforce it declaratively, and where one deliberately sits higher the doc
 says why — see [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The
 central tenancy invariant — the budget, not the user,

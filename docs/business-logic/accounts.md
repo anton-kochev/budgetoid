@@ -64,9 +64,21 @@ erDiagram
     100 JPY), corrupting the meaning of past data. Every one of those amounts was also accepted at
     the old currency's precision, so a switch to a coarser one would leave rows the domain would now
     refuse to write.
-  - **Enforced in**: `UpdateAccountCommand` / `UpdateAccountHandler` accept only name, type, and
-    opening balance — there is no path to change `CurrencyCode`. The Angular UI reinforces this by
-    hiding the currency field in edit mode (`accounts.service.ts`, `accounts.component.ts`).
+  - **Enforced in**: **database-owned, and restated above it for the interface.** The application
+    role's `UPDATE` grant on `accounts` names `name`, `type` and `opening_balance`; `currency_code`
+    is not on that list, so a statement writing it is refused with `42501` before the row is
+    touched, on the connection every request is served by and whatever produced the statement. The
+    enforcement is the column's *omission from the grant's list* rather than a `REVOKE` — PostgreSQL
+    column privileges are additive, so revoking a column out of a table-wide `UPDATE` grant
+    subtracts nothing; the mechanism is in
+    [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md), and
+    `AppRoleGrantsTests.Database_RefusesToChangeAnAccountsCurrency_WhileStillAllowingRename` pins
+    both halves — the refusal, and a rename on the same row over the same connection that must
+    succeed, without which the refusal would prove only that the role cannot write. Above that,
+    `UpdateAccountCommand` / `UpdateAccountHandler` accept only name, type, and opening balance —
+    there is no path to change `CurrencyCode` — and the Angular UI hides the currency field in edit
+    mode (`accounts.service.ts`, `accounts.component.ts`). Both upper layers are there so the
+    operation is never offered, not so the rule holds.
 
 - **An account MUST NOT be deleted while it still has transactions.**
   - **Why**: Deleting it would orphan or destroy financial history. The user must deal with the

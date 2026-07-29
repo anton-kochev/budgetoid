@@ -122,10 +122,19 @@ erDiagram
 - **Rule**: `GoogleSubject` is immutable after creation; `Email` and `DisplayName` can change.
 - **Why**: `sub` is the identity anchor — changing it would sever the user from their data. Email
   and name are mutable profile attributes that Google may update.
-- **Enforced in**: `User.UpdateProfile(email, displayName)` sets email/name only;
+- **Enforced in**: **database-owned, restated in the domain.** The application role's `UPDATE` grant
+  on `users` names `email` and `display_name` and nothing else, so a statement writing
+  `google_subject` is refused with `42501` on the connection every request is served by — the
+  mutable half of this rule and the grant's column list are the same list. The immutability is the
+  column's *omission* from that list rather than a `REVOKE`, which additive column privileges could
+  not express; see
+  [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
+  `AppRoleGrantsTests.Database_RefusesToChangeAUsersGoogleSubject_WhileStillAllowingProfileEdits`
+  pins the refusal together with a `display_name` edit on the same row and connection that must
+  succeed. Above it, `User.UpdateProfile(email, displayName)` sets email and name only, and
   `Domain/Users/User.cs` has no setter path for `GoogleSubject` after `Create`.
 - **Example**: `UpdateProfile` re-runs `Email.Create`, so a blanked email would be rejected.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Source**: `[SOURCE: discussion — 2026-07-29]`
 
 ---
 
