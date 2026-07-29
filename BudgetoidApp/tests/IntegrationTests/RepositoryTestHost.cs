@@ -1,7 +1,9 @@
 using Domain.Budgets;
 using Domain.Users;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Provisioning;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Testcontainers.PostgreSql;
 
 namespace IntegrationTests;
@@ -14,7 +16,27 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         .WithPassword("postgres")
         .Build();
 
+    /// <summary>
+    /// Password the grants script assigns to the application role inside this test container. A
+    /// constant is fine: the container lives for one test and is unreachable from outside it.
+    /// </summary>
+    private const string AppRolePassword = "app-test-password";
+
     public string ConnectionString => _container.GetConnectionString();
+
+    /// <summary>
+    /// Connects as the least-privilege application role instead of the container account. This
+    /// property exists because <see cref="ConnectionString" /> cannot measure privileges at all:
+    /// the host's own connection is the container superuser, and PostgreSQL skips every privilege
+    /// check for a superuser — a permissions test run on the admin connection passes no matter
+    /// what the grants say, including with no grants script at all. Only a statement sent through
+    /// this connection string observes the role's real write surface.
+    /// </summary>
+    public string AppConnectionString => new NpgsqlConnectionStringBuilder(ConnectionString)
+    {
+        Username = DatabaseProvisioning.AppRoleName,
+        Password = AppRolePassword,
+    }.ConnectionString;
 
     public async Task StartAsync()
     {
@@ -24,6 +46,7 @@ public sealed class RepositoryTestHost : IAsyncDisposable
                 .UseNpgsql(ConnectionString)
                 .Options);
         await db.Database.MigrateAsync();
+        await DatabaseProvisioning.ApplyGrantsAsync(ConnectionString, AppRolePassword);
     }
 
     /// <summary>

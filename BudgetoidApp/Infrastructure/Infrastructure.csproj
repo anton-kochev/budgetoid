@@ -15,4 +15,7 @@
     <ItemGroup>
         <ProjectReference Include="..\Application\Application.csproj"/>
     </ItemGroup>
+    <ItemGroup>
+        <EmbeddedResource Include="Persistence\Provisioning\app-role-grants.sql"/>
+    </ItemGroup>
 </Project>

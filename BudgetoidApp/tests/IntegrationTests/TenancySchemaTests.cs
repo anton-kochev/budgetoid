@@ -19,17 +19,26 @@ namespace IntegrationTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The database enforces the rule only unevenly, and these five tests are split along that seam.
+/// The database enforces the rule in two layers, and these five tests are split along that seam.
 /// Composite foreign keys default to <c>ON UPDATE NO ACTION</c>, so moving a parent out from under
-/// a child is refused with <c>23503</c>. That covers a transaction (its <c>(account_id,
-/// budget_id)</c> reference always exists) and a category (its <c>(category_group_id, budget_id)</c>
-/// reference always exists) completely. It covers an account, a category group and a payee only
-/// while something references them — an <b>empty</b> account, an <b>empty</b> category group and an
-/// <b>unreferenced</b> payee have no child to object, and today a raw UPDATE moves them.
+/// a child is refused with <c>23503</c> on any connection, superuser included. That covers a
+/// transaction (its <c>(account_id, budget_id)</c> reference always exists) and a category (its
+/// <c>(category_group_id, budget_id)</c> reference always exists) completely, and those two tests
+/// run on the admin connection. It covers an account, a category group and a payee only while
+/// something references them — an <b>empty</b> account, an <b>empty</b> category group and an
+/// <b>unreferenced</b> payee have no child to object — so for those three the refusal comes from
+/// the application role's column grants instead: <c>UPDATE</c> is granted per explicit column list
+/// and <c>budget_id</c> is absent from every list, so the same statement fails with <c>42501</c>.
+/// Grants only bind connections opened as the role, which is why those three tests run on
+/// <see cref="RepositoryTestHost.AppConnectionString" /> — on the admin connection they would pass
+/// no matter what the grants say.
 /// </para>
 /// <para>
-/// The three tests named <c>CurrentlyAllows…</c> are characterization tests over that gap, not
-/// endorsements of it. Each says so at its assertion.
+/// Each <c>42501</c> is paired, in the same test, with an UPDATE of a granted column on the same
+/// table that must succeed on the same role. Without the pair the refusal is vacuous: a role with
+/// no UPDATE grant at all — or a grants script that is an empty file — refuses everything with the
+/// same SQLSTATE. The success half is what pins "exactly this column is immutable" rather than
+/// "the role cannot write".
 /// </para>
 /// </remarks>
 public sealed class TenancySchemaTests
@@ -70,7 +79,7 @@ public sealed class TenancySchemaTests
 
         // Act
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            host, "transactions", transactionId, otherBudgetId);
+            host.ConnectionString, "transactions", transactionId, otherBudgetId);
 
         // Assert — the constraint name is asserted next to the SQLSTATE so the refusal has to come
         // from the composite account reference, which is the tenancy rule, rather than from
@@ -116,7 +125,7 @@ public sealed class TenancySchemaTests
 
         // Act
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            host, "categories", categoryId, otherBudgetId);
+            host.ConnectionString, "categories", categoryId, otherBudgetId);
 
         // Assert — the group reference is the tenancy rule, and here, unlike on transactions, naming
         // it does rule out a refusal that came from the destination budget not existing: with a
@@ -138,10 +147,12 @@ public sealed class TenancySchemaTests
     }
 
     [Test]
-    public async Task Database_CurrentlyAllowsMovingAnEmptyAccountToAnotherBudget()
+    public async Task Database_RefusesToMoveAnEmptyAccountToAnotherBudget()
     {
-        // Arrange — an account with no transactions on it, which is the entire gap: the transactions
-        // foreign key is what refuses the move, and there is nothing here for it to refuse on.
+        // Arrange — an account with no transactions on it, which is exactly the shape the
+        // transactions foreign key cannot refuse: nothing references the account, so the only
+        // thing standing between it and another budget's ledger is the app role's grant list, in
+        // which accounts.budget_id does not appear.
         await using RepositoryTestHost host = await StartHostAsync();
         (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid accountId;
@@ -154,29 +165,36 @@ public sealed class TenancySchemaTests
             accountId = account.Id;
         }
 
+        // Act — on the app role's connection; the class remarks say why the admin connection
+        // cannot observe this rule. The destination budget is real (see SeedTwoBudgetsAsync), so
+        // if the grant ever leaked budget_id the move would succeed outright instead of tripping
+        // a foreign key and passing for the wrong reason.
+        PostgresException exception = await ThrowsPostgresExceptionAsync(
+            host.AppConnectionString, "accounts", accountId, otherBudgetId);
+
+        // Assert
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-
-        // Act
-        await MoveToBudgetAsync(connection, "accounts", accountId, otherBudgetId);
-
-        // Assert — this is a gap, not a rule. Nothing in the schema forbids the move, so the row
-        // lands in a budget it was never opened in. The rule's lowest capable layer is
-        // REVOKE UPDATE (budget_id) ON accounts from a least-privilege application role, and that
-        // role does not exist yet — the app connects as admin, so a REVOKE today would have no
-        // effect and testing it would be theatre. When the role lands, this test flips to expect a
-        // rejection.
         await Assert.That(await CountRowsAsync(connection, "accounts", "budget_id", budgetId))
-            .IsEqualTo(0L);
-        await Assert.That(await CountRowsAsync(connection, "accounts", "budget_id", otherBudgetId))
             .IsEqualTo(1L);
+        await Assert.That(await CountRowsAsync(connection, "accounts", "budget_id", otherBudgetId))
+            .IsEqualTo(0L);
+
+        // The success half of the pair (see the class remarks): name is on the accounts grant
+        // list, so the same role renaming the same row must go through.
+        await Assert.That(await UpdateNameAsync(
+                host.AppConnectionString, "accounts", accountId, "Everyday Checking"))
+            .IsEqualTo(1);
     }
 
     [Test]
-    public async Task Database_CurrentlyAllowsMovingAnEmptyCategoryGroupToAnotherBudget()
+    public async Task Database_RefusesToMoveAnEmptyCategoryGroupToAnotherBudget()
     {
-        // Arrange — a group with no categories in it, for the same reason: the categories foreign
-        // key is the only thing that would object, and it has no row to object with.
+        // Arrange — a group with no categories in it, for the same reason as the empty account:
+        // the categories foreign key has no row to object with, so the grant list on
+        // category_groups — which does not carry budget_id — is the rule's only enforcement.
         await using RepositoryTestHost host = await StartHostAsync();
         (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid groupId;
@@ -188,26 +206,35 @@ public sealed class TenancySchemaTests
             groupId = group.Id;
         }
 
+        // Act — app role connection, real destination budget, on the same terms as the account
+        // test above.
+        PostgresException exception = await ThrowsPostgresExceptionAsync(
+            host.AppConnectionString, "category_groups", groupId, otherBudgetId);
+
+        // Assert
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-
-        // Act
-        await MoveToBudgetAsync(connection, "category_groups", groupId, otherBudgetId);
-
-        // Assert — a gap, not a rule, on the same terms as the empty account above: it closes with
-        // REVOKE UPDATE (budget_id) ON category_groups once a least-privilege application role
-        // exists, and this test then flips to expect a rejection.
         await Assert.That(await CountRowsAsync(connection, "category_groups", "budget_id", budgetId))
-            .IsEqualTo(0L);
-        await Assert.That(await CountRowsAsync(connection, "category_groups", "budget_id", otherBudgetId))
             .IsEqualTo(1L);
+        await Assert.That(await CountRowsAsync(connection, "category_groups", "budget_id", otherBudgetId))
+            .IsEqualTo(0L);
+
+        // The success half of the pair (see the class remarks): name is on the category_groups
+        // grant list, so the same role renaming the same row must go through.
+        await Assert.That(await UpdateNameAsync(
+                host.AppConnectionString, "category_groups", groupId, "Essentials"))
+            .IsEqualTo(1);
     }
 
     [Test]
-    public async Task Database_CurrentlyAllowsMovingAnUnreferencedPayeeToAnotherBudget()
+    public async Task Database_RefusesToMoveAnUnreferencedPayeeToAnotherBudget()
     {
         // Arrange — a payee no transaction names. A payee is referenced optionally, so this is not
-        // an exotic state: every payee is unreferenced between being created and being used.
+        // an exotic state: every payee is unreferenced between being created and being used, and
+        // for that whole window the grant list on payees — no budget_id in it — is the only thing
+        // holding the tenancy line.
         await using RepositoryTestHost host = await StartHostAsync();
         (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid payeeId;
@@ -219,19 +246,26 @@ public sealed class TenancySchemaTests
             payeeId = payee.Id;
         }
 
+        // Act — app role connection, real destination budget, on the same terms as the two tests
+        // above.
+        PostgresException exception = await ThrowsPostgresExceptionAsync(
+            host.AppConnectionString, "payees", payeeId, otherBudgetId);
+
+        // Assert
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-
-        // Act
-        await MoveToBudgetAsync(connection, "payees", payeeId, otherBudgetId);
-
-        // Assert — a gap, not a rule, on the same terms as the two above: it closes with
-        // REVOKE UPDATE (budget_id) ON payees once a least-privilege application role exists, and
-        // this test then flips to expect a rejection.
         await Assert.That(await CountRowsAsync(connection, "payees", "budget_id", budgetId))
-            .IsEqualTo(0L);
-        await Assert.That(await CountRowsAsync(connection, "payees", "budget_id", otherBudgetId))
             .IsEqualTo(1L);
+        await Assert.That(await CountRowsAsync(connection, "payees", "budget_id", otherBudgetId))
+            .IsEqualTo(0L);
+
+        // The success half of the pair (see the class remarks): name is on the payees grant list,
+        // so the same role renaming the same row must go through.
+        await Assert.That(await UpdateNameAsync(
+                host.AppConnectionString, "payees", payeeId, "Corner Shop Deli"))
+            .IsEqualTo(1);
     }
 
     /// <summary>
@@ -270,23 +304,19 @@ public sealed class TenancySchemaTests
         return (budgetId, otherBudgetId);
     }
 
-    private static async Task MoveToBudgetAsync(
-        NpgsqlConnection connection,
-        string table,
-        Guid rowId,
-        Guid destinationBudgetId)
-    {
-        await using NpgsqlCommand command = BuildMove(connection, table, rowId, destinationBudgetId);
-        await command.ExecuteNonQueryAsync();
-    }
-
+    /// <summary>
+    /// Sends the move over <paramref name="connectionString" /> and returns the refusal. The
+    /// caller picks the connection because the two refusals under test live on different ones:
+    /// composite-FK refusals fire for any connection, so the admin string exercises them, while
+    /// grant refusals only exist for the app role's string.
+    /// </summary>
     private static async Task<PostgresException> ThrowsPostgresExceptionAsync(
-        RepositoryTestHost host,
+        string connectionString,
         string table,
         Guid rowId,
         Guid destinationBudgetId)
     {
-        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await using NpgsqlConnection connection = new(connectionString);
         await connection.OpenAsync();
         await using NpgsqlCommand command = BuildMove(connection, table, rowId, destinationBudgetId);
 
@@ -300,6 +330,28 @@ public sealed class TenancySchemaTests
         }
 
         throw new InvalidOperationException("Expected PostgresException.");
+    }
+
+    /// <summary>
+    /// Renames a row over <paramref name="connectionString" /> and returns the affected-row
+    /// count. The flipped tests use it as the success half of their refusal/success pair:
+    /// <c>name</c> is a granted column on <c>accounts</c>, <c>category_groups</c> and
+    /// <c>payees</c> alike.
+    /// </summary>
+    private static async Task<int> UpdateNameAsync(
+        string connectionString,
+        string table,
+        Guid rowId,
+        string newName)
+    {
+        await using NpgsqlConnection connection = new(connectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            $"update {table} set name = @name where id = @id",
+            connection);
+        command.Parameters.AddWithValue("name", newName);
+        command.Parameters.AddWithValue("id", rowId);
+        return await command.ExecuteNonQueryAsync();
     }
 
     private static NpgsqlCommand BuildMove(
