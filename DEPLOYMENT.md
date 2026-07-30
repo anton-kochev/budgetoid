@@ -154,8 +154,9 @@ az postgres flexible-server firewall-rule create \
 #    valid for under an hour, so acquire it right before the run.
 HOST=$(az postgres flexible-server show -g "$RG" -n "$SERVER" \
   --query fullyQualifiedDomainName -o tsv)
-APP_IDENTITY_OID=$(az containerapp show -n api -g "$RG" \
-  --query "identity.userAssignedIdentities.*.principalId | [0]" -o tsv)
+APP_IDENTITY_OID=$(az identity show \
+  --ids "$(azd env get-value AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID)" \
+  --query principalId -o tsv)
 TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
 DBPROVISION_ADMIN_CONNECTION_STRING="Host=${HOST};Username=$(az ad signed-in-user show --query userPrincipalName -o tsv);Password=${TOKEN};Database=budgetoid;Ssl Mode=Require" \
 DBPROVISION_APP_IDENTITY_OBJECT_ID="$APP_IDENTITY_OID" \
@@ -223,6 +224,13 @@ failed, so seeing this by hand should be impossible after a green deploy.
   object id. Check `pgaadauth_list_principals(false)` against
   `az containerapp show -n api -g rg-budgetoid-prod --query "identity.userAssignedIdentities.*.principalId"`.
   Azure matches tokens to roles by object id, so a correct role *name* proves nothing.
+- `ResourceNotFound` for `Microsoft.App/containerApps/api` during the pipeline's provisioning step
+  means something is asking the container app about itself before it exists. The app is created by
+  `azd deploy`, which runs *after* the database work on purpose, so it is absent on any deploy that
+  starts without one — a first deploy, or one after the environment was rebuilt. The identity to ask
+  instead is the one the Container Apps environment owns
+  (`azd env get-value AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID`); it exists from provisioning
+  onward and outlives every app in the environment.
 - `28000` mentioning `no pg_hba.conf entry` for a user like `app` means the connection string lost its
   `Username=budgetoid_app` and Npgsql fell back to the container's OS user. That is ADR 0001's
   original failure mode; the username is not optional under Entra auth.
