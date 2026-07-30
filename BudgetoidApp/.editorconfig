@@ -17,6 +17,11 @@ tab_width = 4
 indent_style = space
 indent_size = 2
 
+# Everything below is C# style and analyzer configuration. The section header matters: without
+# it, all of this silently belongs to the csproj/props section above and never applies to a
+# single .cs file.
+[*.{cs,csx}]
+
 # using directives
 dotnet_sort_system_directives_first = true
 dotnet_separate_import_directive_groups = false
@@ -60,6 +65,10 @@ csharp_style_expression_bodied_operators = false:suggestion
 csharp_style_expression_bodied_properties = true:suggestion
 csharp_prefer_braces = true:error
 dotnet_diagnostic.IDE0011.severity = error
+
+# banned APIs (BannedSymbols.txt) fail the build, not just warn
+dotnet_diagnostic.RS0030.severity = error
+dotnet_diagnostic.RS0031.severity = error
 csharp_style_namespace_declarations = file_scoped:warning
 csharp_style_prefer_method_group_conversion = true:suggestion
 csharp_style_prefer_primary_constructors = true:suggestion

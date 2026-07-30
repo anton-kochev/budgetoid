@@ -59,7 +59,9 @@ Escape hatches the filter does **not** cover. These no longer leak — each one 
 policies instead, and a cross-budget read comes back empty rather than populated. Still do not
 introduce them on budget-scoped data: an empty result where the code expects a row is a bug, the
 policies do not cover `budgets`, and a connection that names no ambient budget fails with `22P02`
-rather than answering.
+rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
+`Infrastructure` and `Api`, the only projects with an EF reference) turns each API below into an
+RS0030 compile error.
 - `IgnoreQueryFilters()` — never on `BudgetoidDbContext`.
 - Raw SQL (`FromSqlRaw` / `FromSqlInterpolated` / `ExecuteSql...`) — bypasses the filter; if
   unavoidable, scope by budget explicitly in the SQL.
@@ -100,15 +102,6 @@ rewrites it on every `migrations add`.
 ---
 
 ## Backlog
-
-### Enforce the escape-hatch rules in CI (not just prose)
-**Why:** the "do not use `IgnoreQueryFilters` / `Find` / `FromSql*`" rules above are only as
-strong as code review. The policies mean breaking one is a wrong empty result rather than a leak,
-which lowers the urgency without removing it — a guard still turns a silent wrong answer into a
-build failure. Convert them into a build-failing guard:
-- Lightweight: a test that scans the `Application` / `Infrastructure` source (or IL) and fails
-  if the forbidden APIs appear on the budget-scoped data path.
-- Stronger: a Roslyn analyzer, or `ArchUnitNET` architecture tests.
 
 ### DesignTimeDbContextFactory hardcodes a connection string
 **Why:** `Infrastructure/Persistence/DesignTimeDbContextFactory.cs` uses
