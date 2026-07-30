@@ -19,6 +19,14 @@ namespace Infrastructure.Persistence.Provisioning;
 /// forgets to provision is therefore a tenancy breach nothing reports.
 /// </para>
 /// <para>
+/// It does <b>not</b> attach a credential to the role, and that omission is the same argument read the
+/// other way round. Provisioning leaves the role loginable with no credential; binding it to the API's
+/// managed identity is <see cref="DatabaseProvisioning.AttachAppRoleIdentityAsync"/>, and forgetting
+/// <i>that</i> fails loudly at the first login with <c>28P01</c> rather than silently granting
+/// cross-tenant access. Only the fail-open half needs the ordering guarantee this class provides,
+/// which is why one step is in here and the other is not.
+/// </para>
+/// <para>
 /// This is the deploy-time entry point; <see cref="DatabaseProvisioning"/> remains the piece that
 /// owns the role, its grants and its policies, and is what the test hosts and the Development startup
 /// block call directly.
@@ -64,35 +72,33 @@ public static class DeploymentDatabaseProvisioning
     /// that coverage verified. Idempotent — this runs on every deploy, so the second run is the
     /// common case.
     /// </summary>
+    /// <remarks>
+    /// The role is left <b>credential-free</b>, and a deploy is not finished until it has attached one
+    /// with <see cref="DatabaseProvisioning.AttachAppRoleIdentityAsync"/>. That step is outside this
+    /// method on purpose, not by oversight: omitting it is discovered at the first login attempt as
+    /// <c>28P01</c>, whereas omitting the provisioning inside this method leaves a granted table with
+    /// no enforced policy — readable across every tenant, silently. Fail-loud work needs no ordering
+    /// guarantee; the fail-open work is the only reason a single method sequences anything at all.
+    /// </remarks>
     /// <param name="adminConnectionString">
     /// Connection string for a role that owns the schema and may create roles. The migration cannot
     /// run on the least-privilege application role at all; see the <c>__EFMigrationsHistory</c> note
     /// in <c>app-role-grants.sql</c>.
     /// </param>
-    /// <param name="appRolePassword">Password to assign to the application role.</param>
     /// <param name="log">
     /// Sink for a running account of the work. The deploy pipeline's only window into this call: a
     /// run that reported nothing reads identically to a run that did nothing.
     /// </param>
     /// <param name="cancellationToken">Cancels the provisioning run.</param>
-    /// <exception cref="ArgumentException">
-    /// The password is empty or contains a character outside the allowed alphabet.
-    /// </exception>
     /// <exception cref="RowLevelSecurityCoverageException">
     /// Provisioning ran but left at least one budget-owned table unprotected.
     /// </exception>
     public static async Task ProvisionAsync(
         string adminConnectionString,
-        string appRolePassword,
         Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(adminConnectionString);
-
-        // Before the first statement, not where the password is eventually needed: ApplyGrantsAsync
-        // runs after the migration, so validating there would let a typo'd deploy secret leave
-        // production half-migrated with no role to run it under.
-        DatabaseProvisioning.EnsureValidAppRolePassword(appRolePassword);
 
         // Built directly over the admin connection string rather than resolved from DI, exactly as
         // the test hosts do. The context's IBudgetContext is optional precisely so a migration path
@@ -117,8 +123,7 @@ public static class DeploymentDatabaseProvisioning
         log?.Invoke(
             $"Provisioning role {DatabaseProvisioning.AppRoleName} with its grant matrix and "
             + "row-level security policies.");
-        await DatabaseProvisioning.ApplyGrantsAsync(
-            adminConnectionString, appRolePassword, cancellationToken);
+        await DatabaseProvisioning.ApplyGrantsAsync(adminConnectionString, cancellationToken);
 
         await VerifyRowLevelSecurityCoverageAsync(adminConnectionString, log, cancellationToken);
     }

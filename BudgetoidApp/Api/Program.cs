@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Api.Endpoints;
 using Api.Infrastructure;
 using Application;
@@ -6,13 +7,12 @@ using Infrastructure;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using ServiceDefaults;
-using System.Text.Json.Serialization;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -136,9 +136,10 @@ if (app.Environment.IsDevelopment())
             + "least-privilege connection the application serves requests with.");
 
     // The application role's password is read out of the application connection string rather than
-    // from a configuration key of its own: provisioning sets the role's password to whatever the
+    // from a configuration key of its own: startup sets the role's password to whatever the
     // application is already configured to connect with, so the two cannot drift apart. Do not add
-    // a third setting for it.
+    // a third setting for it. Password auth is the local and test path only — production binds the
+    // role to the API's managed identity instead (AttachAppRoleIdentityAsync).
     string appRolePassword =
         new NpgsqlConnectionStringBuilder(app.Configuration.GetConnectionString("budgetoid")).Password
         ?? throw new InvalidOperationException(
@@ -158,8 +159,12 @@ if (app.Environment.IsDevelopment())
     }
 
     // Strictly after the migration: the grants name individual tables, so the schema has to exist
-    // before they can be applied.
-    await DatabaseProvisioning.ApplyGrantsAsync(adminConnectionString, appRolePassword);
+    // before they can be applied. The grants script carries no credential — it leaves the role
+    // loginable and credential-free — so the second call is what makes the role reachable with the
+    // password the application connection string already holds. Without it, every request would fail
+    // to connect with 28P01.
+    await DatabaseProvisioning.ApplyGrantsAsync(adminConnectionString);
+    await DatabaseProvisioning.AttachAppRolePasswordAsync(adminConnectionString, appRolePassword);
 }
 
 app.MapDefaultEndpoints();

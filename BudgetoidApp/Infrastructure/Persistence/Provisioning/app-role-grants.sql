@@ -15,20 +15,24 @@
 -- grants it here. That is intended (fail-closed): when a new feature fails with 42501, add
 -- the narrowest grant it needs to this file — never GRANT ALL.
 
--- __APP_PASSWORD__ is a token replaced in C# (DatabaseProvisioning.ApplyGrantsAsync) with the
--- password as a single-quoted SQL literal. This mechanism is deliberate: psql-style :'var'
--- interpolation does not exist when the script is executed through Npgsql, and CREATE
--- ROLE/ALTER ROLE cannot take a parameter placeholder. The substitution is safe because the
--- C# side rejects any password outside a conservative ASCII alphabet (no quotes, backslashes,
--- or dollar signs) before substituting — provisioning owns the password, so restricting its
--- alphabet is simpler and stronger than escaping.
+-- The role is created WITHOUT a credential, and this file contains no secret of any kind. How
+-- budgetoid_app proves who it is differs per environment and is attached separately: in
+-- production a Microsoft Entra security label binds it to the API's managed identity
+-- (DatabaseProvisioning.AttachAppRoleIdentityAsync), and locally a password is set
+-- (AttachAppRolePasswordAsync). Keeping that out of here is what lets the same script run
+-- unchanged against a container, a dev machine, and Azure — and it means a re-run can never
+-- reset a credential the environment owns.
+--
+-- LOGIN is granted here because it is a property of the role's purpose rather than of its
+-- credential: a role that cannot log in cannot serve a request under any authentication scheme.
+-- Without a password and without a label, LOGIN alone still authenticates nothing.
 DO $provision$
 BEGIN
-    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'budgetoid_app') THEN
-        -- A re-run refreshes the password rather than silently keeping an old one.
-        ALTER ROLE budgetoid_app WITH LOGIN PASSWORD __APP_PASSWORD__;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'budgetoid_app') THEN
+        CREATE ROLE budgetoid_app WITH LOGIN;
     ELSE
-        CREATE ROLE budgetoid_app WITH LOGIN PASSWORD __APP_PASSWORD__;
+        -- Converges an existing role on LOGIN without touching its credential.
+        ALTER ROLE budgetoid_app WITH LOGIN;
     END IF;
 END
 $provision$;

@@ -93,7 +93,14 @@ public sealed class RepositoryTestHost : IAsyncDisposable
                 .UseNpgsql(ConnectionString)
                 .Options);
         await db.Database.MigrateAsync();
-        await DatabaseProvisioning.ApplyGrantsAsync(ConnectionString, AppRolePassword);
+
+        // Two calls, because provisioning no longer decides how the role authenticates. ApplyGrantsAsync
+        // creates the role credential-free and gives it its write surface and its isolation policies;
+        // attaching a credential is a separate step, and production attaches an Entra identity instead.
+        // Password auth is the local and test path, so the tests take the other branch here — which is
+        // also why the branch has to be a separate call rather than a parameter.
+        await DatabaseProvisioning.ApplyGrantsAsync(ConnectionString);
+        await DatabaseProvisioning.AttachAppRolePasswordAsync(ConnectionString, AppRolePassword);
     }
 
     /// <summary>
