@@ -11,6 +11,65 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Applied migrations are frozen: production's __EFMigrationsHistory references their ids and the
+  # deploy pipeline migrates unattended on every push to main, so an edited migration re-runs
+  # against a populated database and a regenerated baseline (new id) makes the next push try to
+  # re-create every table. Only additions are allowed; the model snapshot is exempt because EF
+  # rewrites it on every `migrations add`.
+  migrations-guard:
+    name: Migrations only grow
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Fail when an existing migration changed
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)"
+          else
+            base="${{ github.event.before }}"
+            if [ "$base" = "0000000000000000000000000000000000000000" ]; then
+              echo "New branch push; no base to diff against — skipping."
+              exit 0
+            fi
+          fi
+
+          # Police migration ids from the frozen baseline (20260728195844) onward — earlier ids
+          # are prehistory removed when the baseline was frozen, and the model snapshot (no
+          # timestamp prefix) is rewritten by every `migrations add`. A rename line carries two
+          # paths, so every path field is checked.
+          violations="$(
+            git diff --name-status --find-renames "$base" HEAD -- \
+              'BudgetoidApp/Infrastructure/Persistence/Migrations/*.cs' \
+            | grep -Ev '^A\b' \
+            | awk -F'\t' -v frozen=20260728195844 '{
+                for (i = 2; i <= NF; i++) {
+                  n = split($i, parts, "/"); f = parts[n];
+                  if (f ~ /^[0-9]{14}_/ && substr(f, 1, 14) >= frozen) { print; next }
+                }
+              }' \
+            || true
+          )"
+
+          if [ -n "$violations" ]; then
+            echo "Existing migration files were modified, deleted, or renamed:"
+            echo "$violations"
+            echo
+            echo "Applied migrations are frozen (TECH_DEBT.md, ADR 0006): the deploy pipeline"
+            echo "applies migrations unattended, so an edited migration re-runs against the"
+            echo "populated production database and a regenerated baseline re-creates every"
+            echo "table. Add a new migration instead of changing an existing one."
+            exit 1
+          fi
+
+          echo "Migrations directory only grew."
+
   backend:
     name: Backend
     runs-on: ubuntu-latest

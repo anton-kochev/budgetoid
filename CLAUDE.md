@@ -110,7 +110,7 @@ describes the rule says why. Full reasoning in
   tables, so the schema has to exist first, and the password alphabet is checked before the first
   statement so a typo cannot leave a half-migrated database. Verification is not optional — grants
   are fail-closed, RLS is fail-open. See `DEPLOYMENT.md` and `docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md`.
-- **The baseline migration is frozen.** Production's `__EFMigrationsHistory` references the current migration id, and the pipeline applies migrations unattended, so regenerating the single baseline would make the next push try to re-create every table. Schema changes are additive migrations from here on.
+- **The baseline migration is frozen.** Production's `__EFMigrationsHistory` references the current migration id, and the pipeline applies migrations unattended, so regenerating the single baseline would make the next push try to re-create every table. Schema changes are additive migrations from here on; the `migrations-guard` CI job fails any change that modifies, deletes, or renames an existing migration file.
 - The deployed container is handed one connection string, the least-privilege one. The publish
   branch of `AppHost/Program.cs` deliberately does **not** `WithReference` the database for the API:
   that reference injects the admin identity as `BUDGETOID_URI`/`_USERNAME`/`_PASSWORD` as well as a
