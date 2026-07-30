@@ -235,7 +235,11 @@ failed, so seeing this by hand should be impossible after a green deploy.
 - `42501` on the `SECURITY LABEL` statement means the connecting principal is not an Entra
   administrator of the server. Membership in `azure_pg_admin` is not enough; only an Entra
   administrator can create or label Entra principals. Register it with
-  `az postgres flexible-server ad-admin create -g rg-budgetoid-prod -s <server> -u <displayName> -i <objectId> -t ServicePrincipal`.
+  `az postgres flexible-server microsoft-entra-admin create -g rg-budgetoid-prod -s <server> -u <displayName> -i <objectId> -t ServicePrincipal`
+  (the subcommand was `ad-admin` before Azure CLI 2.86.0, and the old name is no longer recognised).
+  Verify with `microsoft-entra-admin list` — an empty list on an `activeDirectoryAuth: Enabled`,
+  `passwordAuth: Disabled` server means **nobody** can administer it, which is what a provision
+  interrupted before the administrator resource leaves behind. Re-running `azd provision` converges it.
 - A token expires in under an hour. A long manual session that starts failing to open *new*
   connections has a stale token, not a broken configuration — re-export `PGPASSWORD`.
 
@@ -289,7 +293,7 @@ administrator of the Postgres server, which `azd provision` now arranges from th
 That administrator role is the one privilege automation costs: the alternative is an operator holding
 the same standing and running the same commands, which is what Step 3 replaced. It is still an
 improvement on what it replaced — an Entra administrator holds no password, and revoking it is a
-single `ad-admin delete` rather than a credential rotation.
+single `microsoft-entra-admin delete` rather than a credential rotation.
 
 After that, pushing to `main` provisions, migrates, provisions the database role, binds it to the
 API's managed identity, and deploys — in that order. You can still trigger a manual run from the
