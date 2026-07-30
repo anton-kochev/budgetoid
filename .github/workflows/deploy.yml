@@ -158,8 +158,15 @@ jobs:
           # the registry because pulling images is its other job; the container app runs as this same
           # identity. The environment is named explicitly so the lookup cannot depend on which one azd
           # happens to consider current.
+          #
+          # The CAE_ prefix is azd's naming for the outputs of the resource the AppHost calls "cae".
+          # An unprefixed AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID also exists in environments
+          # that were provisioned while azd owned the Container Apps environment, and it lingers in a
+          # local .env long after it stopped being published — which is exactly why this must not be
+          # verified on a developer machine and called done. A CI environment starts empty and has
+          # only the prefixed key. Renaming the "cae" resource renames this variable.
           capture MI_RESOURCE_ID "reading the managed identity from the azd environment" \
-            azd env get-value AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID -e "$AZURE_ENV_NAME"
+            azd env get-value CAE_AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID -e "$AZURE_ENV_NAME"
 
           capture APP_IDENTITY_OID "resolving the managed identity's principal id" \
             az identity show --ids "$MI_RESOURCE_ID" --query principalId -o tsv
