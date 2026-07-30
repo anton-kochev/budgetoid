@@ -1,9 +1,9 @@
 {
-  "apiBaseUrl": "https://api.purpletree-58c68a6f.northeurope.azurecontainerapps.io",
+  "apiBaseUrl": "https://api.icyisland-d82f1c17.northeurope.azurecontainerapps.io",
   "auth": {
     "google": {
       "clientId": "618255022627-7rh7dn1po7ovnopb1lp3jcnm4ft7oeb5.apps.googleusercontent.com",
-      "redirectUri": "https://ashy-water-0fc187003.7.azurestaticapps.net",
+      "redirectUri": "https://blue-island-06a7efa03.7.azurestaticapps.net",
       "scope": "openid profile email"
     }
   }
