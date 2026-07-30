@@ -101,7 +101,9 @@ describes the rule says why. Full reasoning in
 ## Deploy Notes
 
 - Use `azd init` / `azd up` from AppHost later; do not mix with `aspire deploy`.
-- Scale-to-zero needs explicit Azure Container App publish settings with `MinReplicas = 0` and max 2.
+- Scale-to-zero is set in the app model — `api.PublishAsAzureContainerApp(...)` with `MinReplicas = 0` and max 2 — not by a pipeline step. That only became possible once the AppHost took ownership of the Container Apps environment.
+- **The AppHost owns the Container Apps environment** (`AddAzureContainerAppEnvironment("cae").WithAzdResourceNaming()`), not azd. A virtual network can only be attached to an environment as it is created, so ownership is what makes the network reachable at all; `WithAzdResourceNaming` keeps the registry, workspace and identity on azd's names so the registry keeps its images. Recreating the environment changes the API's hostname, which means `app-config.json` and the Google OAuth client both need updating.
+- **The database has no standing firewall rule.** The API reaches PostgreSQL over a private endpoint in that network; the public endpoint stays enabled only so the deploy pipeline can open its two-minute single-address window. Aspire adds an "allow all Azure IPs" rule with no way to decline it, so the AppHost removes the provisionable — and because ARM deployments are incremental, removing it from the template never removes it from a server that already has it. `az postgres flexible-server firewall-rule list` must come back empty outside a deploy. See `docs/decisions/0009-route-database-traffic-over-a-private-endpoint.md`.
 - `Api.csproj` uses `<ContainerFamily>noble-chiseled</ContainerFamily>`; no handwritten Dockerfile.
 - Append `Maximum Pool Size=5` to production PostgreSQL connection strings.
 - Production migrations run from the deploy pipeline, never at API startup. `.github/workflows/deploy.yml` runs `Tools/DbProvision` between `azd provision` and `azd deploy`, so new code never starts against an old schema.

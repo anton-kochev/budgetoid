@@ -6,11 +6,26 @@
         <IsAspireHost>true</IsAspireHost>
         <OutputType>Exe</OutputType>
         <UserSecretsId>46122af2-a67d-4883-bb2a-db448a986eb1</UserSecretsId>
+        <!-- Both diagnostics mark APIs their authors have not committed to keeping. They are used
+             deliberately and there is no stable alternative: AZPROVISION001 covers the private DNS
+             types, ASPIREAZURE003 covers DelegatedSubnetAnnotation, and Aspire ships no public way to
+             put a Container Apps environment on a virtual network. An upgrade that breaks either one
+             breaks the build, which is the intended warning. See docs/decisions/0009. -->
+        <NoWarn>$(NoWarn);AZPROVISION001;ASPIREAZURE003</NoWarn>
     </PropertyGroup>
     <ItemGroup>
         <PackageReference Include="Aspire.Hosting.AppHost" Version="13.4.6"/>
         <PackageReference Include="Aspire.Hosting.Azure.PostgreSQL" Version="13.4.6"/>
         <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.4.6"/>
+        <!-- Lets the AppHost own the Container Apps Environment instead of letting azd generate it.
+             Ownership is what makes the environment's VNet configuration reachable at all: a VNet can
+             only be attached when the environment is created, and azd's generated one never has it. -->
+        <PackageReference Include="Aspire.Hosting.Azure.AppContainers" Version="13.4.6"/>
+        <!-- Aspire has no public API for virtual networks or private endpoints in 13.4.6 — only
+             internal annotations — so the network topology is written directly against
+             Azure.Provisioning. See docs/decisions/0009. -->
+        <PackageReference Include="Azure.Provisioning.Network" Version="1.1.0"/>
+        <PackageReference Include="Azure.Provisioning.PrivateDns" Version="1.0.0"/>
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="..\Api\Api.csproj"/>

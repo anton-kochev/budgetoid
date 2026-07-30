@@ -1,6 +1,12 @@
 using Aspire.Hosting.Azure;
+using Aspire.Hosting.Azure.AppContainers;
+using Azure.Core;
 using Azure.Provisioning;
+using Azure.Provisioning.AppContainers;
+using Azure.Provisioning.Expressions;
+using Azure.Provisioning.Network;
 using Azure.Provisioning.PostgreSql;
+using Azure.Provisioning.PrivateDns;
 using Projects;
 
 IDistributedApplicationBuilder builder = DistributedApplication.CreateBuilder(args);
@@ -30,6 +36,107 @@ if (builder.ExecutionContext.IsPublishMode)
     // provisioning tool instead.
     IResourceBuilder<ParameterResource> pipelinePrincipalId = builder.AddParameter("pipeline-principal-id");
     IResourceBuilder<ParameterResource> pipelinePrincipalName = builder.AddParameter("pipeline-principal-name");
+
+    // The network the API and the database share privately. It exists so that the PostgreSQL server
+    // can carry no standing firewall rule at all: the API reaches it over a private endpoint, and the
+    // public endpoint is opened only for the couple of minutes the deploy pipeline needs to migrate.
+    // Aspire has no API for any of this in 13.4.6 — only internal annotations — so it is written
+    // directly against Azure.Provisioning. See docs/decisions/0009.
+    //
+    // A standalone module rather than a callback on either consumer: the Container Apps environment
+    // needs the delegated subnet and the database needs the private-endpoint subnet and the DNS zone,
+    // so putting the network inside either one would make the other depend on it for no reason.
+    var network = builder.AddAzureInfrastructure("network", infrastructure =>
+    {
+        VirtualNetwork virtualNetwork = new("virtualNetwork")
+        {
+            AddressSpace = new VirtualNetworkAddressSpace { AddressPrefixes = { "10.0.0.0/16" } },
+            Subnets =
+            {
+                // Delegation is declared here and nowhere else. The annotation further down tells the
+                // environment which subnet to use; it does not delegate the subnet, and an
+                // undelegated one is rejected at creation. /27 is the documented minimum for a
+                // workload-profiles environment.
+                new SubnetResource("containerAppsSubnet")
+                {
+                    Name = "container-apps",
+                    AddressPrefix = "10.0.0.0/27",
+                    Delegations =
+                    {
+                        new ServiceDelegation { Name = "container-apps", ServiceName = "Microsoft.App/environments" },
+                    },
+                },
+                // Private endpoints take no delegation; one address is enough, and /28 is the
+                // smallest subnet Azure accepts.
+                new SubnetResource("privateEndpointSubnet")
+                {
+                    Name = "private-endpoints",
+                    AddressPrefix = "10.0.1.0/28",
+                },
+            },
+        };
+        infrastructure.Add(virtualNetwork);
+
+        // This zone is what makes the private endpoint usable without changing a single connection
+        // string. The server's public FQDN keeps resolving publicly everywhere else, and resolves to
+        // the private address inside this network, because the zone group below publishes the record
+        // here and the link makes this network consult the zone. Private DNS zones are global.
+        PrivateDnsZone postgresPrivateDnsZone = new("postgresPrivateDnsZone")
+        {
+            Name = "privatelink.postgres.database.azure.com",
+            Location = new AzureLocation("global"),
+        };
+        infrastructure.Add(postgresPrivateDnsZone);
+        infrastructure.Add(new VirtualNetworkLink("postgresPrivateDnsZoneLink")
+        {
+            Parent = postgresPrivateDnsZone,
+            Name = "virtual-network",
+            Location = new AzureLocation("global"),
+            VirtualNetworkId = virtualNetwork.Id,
+            RegistrationEnabled = false,
+        });
+
+        // Subnet ids are composed from the network's id rather than read back off the inline subnet
+        // resources: the subnets are declared inside the virtual network, so they have no independent
+        // resource of their own to reference.
+        infrastructure.Add(new ProvisioningOutput("containerAppsSubnetId", typeof(string))
+        {
+            Value = BicepFunction.Interpolate($"{virtualNetwork.Id}/subnets/container-apps"),
+        });
+        infrastructure.Add(new ProvisioningOutput("privateEndpointSubnetId", typeof(string))
+        {
+            Value = BicepFunction.Interpolate($"{virtualNetwork.Id}/subnets/private-endpoints"),
+        });
+        infrastructure.Add(new ProvisioningOutput("postgresPrivateDnsZoneId", typeof(string))
+        {
+            Value = postgresPrivateDnsZone.Id,
+        });
+    });
+
+    // The AppHost owns the Container Apps environment, where azd used to generate it. That is not a
+    // preference: a virtual network can only be attached to an environment as it is created, and an
+    // environment azd generates never has one. Taking ownership is what makes the subnet below
+    // reachable, and it is why this change recreates the environment and moves the API to a new
+    // hostname.
+    //
+    // WithAzdResourceNaming keeps azd's own naming for the registry, workspace and identity, so the
+    // container registry keeps the images it already holds rather than starting empty.
+    IResourceBuilder<AzureContainerAppEnvironmentResource> containerAppEnvironment = builder
+        .AddAzureContainerAppEnvironment("cae")
+        .WithAzdResourceNaming();
+
+    // The three values the network module publishes. They are constructed rather than read through
+    // GetOutput because that extension is declared on IResourceBuilder<AzureBicepResource>, and
+    // IResourceBuilder is invariant, so a builder of a derived resource does not satisfy it.
+    BicepOutputReference containerAppsSubnetId = new("containerAppsSubnetId", network.Resource);
+    BicepOutputReference privateEndpointSubnetId = new("privateEndpointSubnetId", network.Resource);
+    BicepOutputReference postgresPrivateDnsZoneId = new("postgresPrivateDnsZoneId", network.Resource);
+
+    // Aspire reads this annotation when it generates the environment and puts the subnet in
+    // properties.vnetConfiguration.infrastructureSubnetId. The annotation type is public; nothing
+    // public attaches it, so it is attached by hand.
+    containerAppEnvironment.WithAnnotation(new DelegatedSubnetAnnotation(
+        ReferenceExpression.Create($"{containerAppsSubnetId}")));
 
     IResourceBuilder<AzurePostgresFlexibleServerResource> postgres = builder
         .AddAzurePostgresFlexibleServer("postgres")
@@ -79,6 +186,69 @@ if (builder.ExecutionContext.IsPublishMode)
                 Name = pipelinePrincipalId.AsProvisioningParameter(infrastructure),
                 PrincipalType = PostgreSqlFlexibleServerPrincipalType.ServicePrincipal,
                 PrincipalName = pipelinePrincipalName.AsProvisioningParameter(infrastructure),
+            });
+
+            // Aspire adds an "allow all Azure IPs" firewall rule of its own, and offers no way to
+            // decline it. That rule is precisely the one ADR 0006 rejected: it admits every Azure
+            // tenant's egress, permanently, in place of the two-minute single-address window the
+            // deploy pipeline opens. Removing the provisionable is the only lever available, so the
+            // rules are matched by name — a count would silently start deleting the wrong thing if
+            // Aspire ever emits a different set.
+            //
+            // Deleting it from the template does not delete it from a server that already has it:
+            // ARM deployments are incremental and never remove resources. The live rule is deleted
+            // once, by hand, and DEPLOYMENT.md carries the verification that it is gone.
+            foreach (PostgreSqlFlexibleServerFirewallRule firewallRule in infrastructure
+                         .GetProvisionableResources()
+                         .OfType<PostgreSqlFlexibleServerFirewallRule>()
+                         .ToList())
+            {
+                infrastructure.Remove(firewallRule);
+            }
+
+            // Public access stays on, and that is a decision rather than an oversight. The deploy
+            // pipeline runs on a GitHub-hosted runner with no route into the network above, so the
+            // transient firewall window is its only way in — turning public access off would take
+            // migrations with it. What changes is that nothing stands open between deploys.
+            flexibleServer.Network = new PostgreSqlFlexibleServerNetwork
+            {
+                PublicNetworkAccess = PostgreSqlFlexibleServerPublicNetworkAccessState.Enabled,
+            };
+
+            // The private path itself. GroupIds names the sub-resource being linked — "postgresqlServer"
+            // is the only one a flexible server offers — and the zone group is what writes the server's
+            // record into the private zone, which is what lets the connection string keep naming the
+            // public FQDN.
+            PrivateEndpoint privateEndpoint = new("postgresPrivateEndpoint")
+            {
+                Location = flexibleServer.Location,
+                Subnet = new SubnetResource("postgresPrivateEndpointSubnet")
+                {
+                    Id = privateEndpointSubnetId.AsProvisioningParameter(infrastructure),
+                },
+                PrivateLinkServiceConnections =
+                {
+                    new NetworkPrivateLinkServiceConnection
+                    {
+                        Name = "postgres",
+                        PrivateLinkServiceId = flexibleServer.Id,
+                        GroupIds = { "postgresqlServer" },
+                    },
+                },
+            };
+            infrastructure.Add(privateEndpoint);
+            infrastructure.Add(new PrivateDnsZoneGroup("postgresPrivateEndpointDnsZoneGroup")
+            {
+                Parent = privateEndpoint,
+                Name = "default",
+                PrivateDnsZoneConfigs =
+                {
+                    new PrivateDnsZoneConfig
+                    {
+                        Name = "postgres",
+                        PrivateDnsZoneId = postgresPrivateDnsZoneId.AsProvisioningParameter(infrastructure),
+                    },
+                },
             });
         })
         // Without this, Aspire emits a postgres-roles Bicep module whose administrators resource
@@ -131,6 +301,16 @@ if (builder.ExecutionContext.IsPublishMode)
     api
         .WithEnvironment("Authentication__Google__ClientId", googleClientId)
         .WithEnvironment("Cors__AllowedOrigins__0", frontendOrigin);
+
+    // Scale to zero at rest, two replicas at most. This used to be an `az containerapp update` step
+    // in the deploy workflow, because the generated container app defaults to a warm replica and the
+    // AppHost had no say over it while azd owned the environment. It owns the environment now, so the
+    // setting belongs in the model, where it is applied by the same deployment that creates the app
+    // rather than by a step that could be reordered away from it.
+    api.PublishAsAzureContainerApp((_, app) =>
+    {
+        app.Template.Scale = new ContainerAppScale { MinReplicas = 0, MaxReplicas = 2 };
+    });
 }
 else
 {
