@@ -98,8 +98,14 @@ jobs:
           echo "server=$SERVER" >> "$GITHUB_OUTPUT"
           # A fixed rule name makes create an upsert, so a rule stranded by a killed runner is
           # overwritten here and removed by this run's cleanup — the hole self-heals on next deploy.
+          #
+          # Spell both names out. Azure CLI repurposed the short flags for this command group: `-n`
+          # used to mean the server and now means the rule, and the server moved to `--server-name`.
+          # An abbreviation that silently changes meaning between CLI versions is worth avoiding
+          # even where the current one still accepts it.
           az postgres flexible-server firewall-rule create \
-            -g "$AZURE_RESOURCE_GROUP" -n "$SERVER" --rule-name gh-deploy-migration \
+            --resource-group "$AZURE_RESOURCE_GROUP" --server-name "$SERVER" \
+            --rule-name gh-deploy-migration \
             --start-ip-address "$RUNNER_IP" --end-ip-address "$RUNNER_IP"
 
       # Migrate, provision the role, verify row-level security coverage, and bind the application
@@ -151,7 +157,7 @@ jobs:
         if: always() && steps.dbfw.outputs.server != ''
         run: |
           az postgres flexible-server firewall-rule delete \
-            -g "$AZURE_RESOURCE_GROUP" -n "${{ steps.dbfw.outputs.server }}" \
+            --resource-group "$AZURE_RESOURCE_GROUP" --server-name "${{ steps.dbfw.outputs.server }}" \
             --rule-name gh-deploy-migration --yes || true
 
       - name: Deploy API
