@@ -146,7 +146,7 @@ RG=rg-budgetoid-prod
 MYIP=$(curl -s https://api.ipify.org)
 az postgres flexible-server firewall-rule create \
   --resource-group "$RG" --server-name "$SERVER" \
-  --rule-name AllowMigrationClient --start-ip-address "$MYIP" --end-ip-address "$MYIP"
+  --name AllowMigrationClient --start-ip-address "$MYIP" --end-ip-address "$MYIP"
 
 # 2) migrate + provision + verify + bind the role to the API's identity. Both inputs are
 #    environment variables, never arguments — argv is visible to other processes. The token is
@@ -162,8 +162,13 @@ DBPROVISION_APP_IDENTITY_OBJECT_ID="$APP_IDENTITY_OID" \
 
 # 3) SECURITY: remove your IP again
 az postgres flexible-server firewall-rule delete \
-  --resource-group "$RG" --server-name "$SERVER" --rule-name AllowMigrationClient --yes
+  --resource-group "$RG" --server-name "$SERVER" --name AllowMigrationClient --yes
 ```
+
+The firewall commands are spelled for a current Azure CLI, where `--name` is the *rule* and the
+server is `--server-name`. A CLI old enough to reject `--server-name` wants `-n "$SERVER"
+--rule-name AllowMigrationClient` instead — the same call with the two names swapped, which fails
+loudly rather than quietly.
 
 Exit codes: **0** provisioned, verified, and the role bound to the identity; **1** provisioning
 failed; **2** a required environment variable is missing, empty, or malformed. On success the tool
