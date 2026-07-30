@@ -29,7 +29,8 @@ created once with one command.
 
 | Resource | Value |
 |---|---|
-| Resource group | `rg-budgetoid-prod` |
+| Resource group | `rg-budgetoid-prod` — every command below targets it |
+| Pipeline identity | `msi-budgetoid`, a user-assigned managed identity in its **own** resource group `rg-budgetoid-msi`. It is deliberately outside the group above: it is the identity that runs `azd provision`, so tearing the application infrastructure down must not take it with it. Moving it in would cost a recreated identity — user-assigned identities cannot be moved across groups, and its client id, the `AZURE_CLIENT_ID` variable, and all three federated credentials would have to be reissued. |
 | Container App | `api` |
 | API database identity | `budgetoid_app`, the least-privilege role, bound by object id to the API's user-assigned managed identity; the password-free connection string is injected into the Container App as `ConnectionStrings__budgetoid` |
 | API URL | `https://api.purpletree-58c68a6f.northeurope.azurecontainerapps.io` |
