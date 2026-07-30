@@ -1,9 +1,11 @@
 using Application.Accounts;
 using Application.Accounts.CreateAccount;
 using Application.Accounts.DeleteAccount;
+using Application.Accounts.GetAccount;
 using Application.Accounts.GetAccounts;
 using Application.Accounts.UpdateAccount;
 using Domain.Accounts;
+using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Api.Endpoints;
 
@@ -26,6 +28,15 @@ public static class AccountEndpoints
         {
             AccountListResponse response = await handler.HandleAsync(new GetAccountsQuery(), cancellationToken);
             return TypedResults.Ok(response);
+        });
+
+        group.MapGet("/{id:guid}", async Task<Results<Ok<AccountDto>, NotFound>> (
+            Guid id,
+            GetAccountHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            AccountDto? dto = await handler.HandleAsync(new GetAccountQuery(id), cancellationToken);
+            return dto is null ? TypedResults.NotFound() : TypedResults.Ok(dto);
         });
 
         group.MapPut("/{id:guid}", async (

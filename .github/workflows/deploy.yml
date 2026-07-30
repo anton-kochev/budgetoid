@@ -11,6 +11,13 @@ permissions:
   id-token: write # OIDC federated login to Azure
   contents: read
 
+# Serialized, and not cancel-in-progress. This job migrates a database and opens a firewall window
+# it closes in an always() step, so two overlapping runs would have run A's cleanup sever run B
+# mid-migration. Cancelling instead of queueing would do the same to whichever run was interrupted.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
 jobs:
   # ---- API → Azure Container Apps (via azd) -------------------------------------------------
   deploy-backend:
@@ -25,11 +32,14 @@ jobs:
       # they map to infra.parameters.frontend_origin / .google_client_id in the AppHost.
       AZURE_FRONTEND_ORIGIN: ${{ vars.AZURE_FRONTEND_ORIGIN }}
       AZURE_GOOGLE_CLIENT_ID: ${{ vars.AZURE_GOOGLE_CLIENT_ID }}
-      # Postgres admin credentials. The AppHost now builds the connection string from these
-      # (infra.parameters.postgres_username / .postgres_password), so azd requires them as
-      # provision inputs. Values come from the repo var/secret set by `azd pipeline config`.
-      AZURE_POSTGRES_USERNAME: ${{ vars.AZURE_POSTGRES_USERNAME }}
-      AZURE_POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
+      # This workflow's own service principal, which the AppHost registers as a Microsoft Entra
+      # administrator of the Postgres server (infra.parameters.pipeline_principal_id / _name).
+      # Entra-only auth means the *only* identity that can migrate the schema and bind the
+      # application role is an Entra admin, and this is it. Repository variables, not secrets:
+      # a principal's object id and display name are identifiers, not credentials — nothing here
+      # authenticates anything without the federated OIDC login below.
+      AZURE_PIPELINE_PRINCIPAL_ID: ${{ vars.AZURE_PIPELINE_PRINCIPAL_ID }}
+      AZURE_PIPELINE_PRINCIPAL_NAME: ${{ vars.AZURE_PIPELINE_PRINCIPAL_NAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -39,9 +49,19 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      # NOTE: schema migrations are applied out-of-band for now (see DEPLOYMENT.md Step 3): the EF
-      # bundle is run against Postgres using the admin password from Key Vault. Automating it in
-      # this pipeline is a hardening follow-up.
+      # An unset variable resolves to the empty string rather than failing, and azd would carry it
+      # into the administrators resource, whose name IS the object id — ARM rejects an empty resource
+      # name with a message about the resource, not about the missing input. Named failure here beats
+      # decoding that one.
+      - name: Require the pipeline principal identifiers
+        run: |
+          if [ -z "$AZURE_PIPELINE_PRINCIPAL_ID" ] || [ -z "$AZURE_PIPELINE_PRINCIPAL_NAME" ]; then
+            echo "AZURE_PIPELINE_PRINCIPAL_ID and AZURE_PIPELINE_PRINCIPAL_NAME must both be set" >&2
+            echo "as repository variables. They register this workflow's service principal as a" >&2
+            echo "Microsoft Entra administrator of the Postgres server, which is the only identity" >&2
+            echo "that can migrate the schema under Entra-only auth. See DEPLOYMENT.md." >&2
+            exit 1
+          fi
 
       - name: Install azd
         uses: Azure/setup-azd@v2
@@ -62,6 +82,77 @@ jobs:
 
       - name: Provision infrastructure
         run: azd provision --no-prompt
+
+      # The database work sits between provision and deploy on purpose: new application code must
+      # never start against an old schema. Azure Postgres accepts no external connection without a
+      # firewall rule, so the runner opens a window for its own IP only and closes it below. A
+      # permanent "allow Azure services" rule would be the easy alternative and is worse — it admits
+      # every Azure tenant's egress forever, where this admits one address for a couple of minutes.
+      - name: Open a database firewall window for this runner
+        id: dbfw
+        run: |
+          RUNNER_IP=$(curl -sf https://api.ipify.org || curl -sf https://ifconfig.me/ip)
+          if [ -z "$RUNNER_IP" ]; then echo "Could not determine the runner's public IP." >&2; exit 1; fi
+          SERVER=$(az postgres flexible-server list -g "$AZURE_RESOURCE_GROUP" \
+            --query "[0].name" -o tsv)
+          echo "server=$SERVER" >> "$GITHUB_OUTPUT"
+          # A fixed rule name makes create an upsert, so a rule stranded by a killed runner is
+          # overwritten here and removed by this run's cleanup — the hole self-heals on next deploy.
+          az postgres flexible-server firewall-rule create \
+            -g "$AZURE_RESOURCE_GROUP" -n "$SERVER" --rule-name gh-deploy-migration \
+            --start-ip-address "$RUNNER_IP" --end-ip-address "$RUNNER_IP"
+
+      # Migrate, provision the role, verify row-level security coverage, and bind the application
+      # role to the API's managed identity — one process, so the ordering is enforced in code rather
+      # than by whoever reads the runbook. The grants are fail-closed, but RLS is fail-open: a
+      # migrated table with no policy is readable across every tenant and reports nothing, which is
+      # why the tool verifies rather than assumes.
+      #
+      # There is no stored credential to read anywhere in here. The admin connection string is built
+      # in this step from a Microsoft Entra access token this job mints for itself, and it dies with
+      # the step.
+      - name: Migrate schema and provision the application role
+        timeout-minutes: 15
+        run: |
+          HOST=$(az postgres flexible-server show \
+            -g "$AZURE_RESOURCE_GROUP" -n "${{ steps.dbfw.outputs.server }}" \
+            --query fullyQualifiedDomainName -o tsv)
+
+          # The object id of the identity the API actually runs as, read off the container app rather
+          # than guessed from a naming convention — this is the principal whose tokens must map to
+          # budgetoid_app, and a wrong one produces a login failure at runtime that looks nothing
+          # like a provisioning bug.
+          APP_IDENTITY_OID=$(az containerapp show -n api -g "$AZURE_RESOURCE_GROUP" \
+            --query "identity.userAssignedIdentities.*.principalId | [0]" -o tsv)
+          if [ -z "$APP_IDENTITY_OID" ]; then
+            echo "Could not resolve the API container app's user-assigned managed identity." >&2
+            echo "azd provision creates it, so this means provisioning did not complete." >&2
+            exit 1
+          fi
+
+          # A token, not a password: PostgreSQL receives it in the password field, and Azure matches
+          # it to a role by the principal's object id. Valid for under an hour, which is why it is
+          # acquired in the step that uses it and never written to GITHUB_ENV — that would persist a
+          # live admin credential to a file every later step inherits.
+          TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
+          echo "::add-mask::$TOKEN"
+
+          # Ssl Mode=Require because Azure Postgres refuses unencrypted connections; Api/Program.cs
+          # appends the same option for the same reason. Username is the administrator's principal
+          # name as registered on the server — the token proves which principal it is, but Postgres
+          # still needs a role name to log in as.
+          DBPROVISION_ADMIN_CONNECTION_STRING="Host=${HOST};Username=${AZURE_PIPELINE_PRINCIPAL_NAME};Password=${TOKEN};Database=budgetoid;Ssl Mode=Require" \
+          DBPROVISION_APP_IDENTITY_OBJECT_ID="$APP_IDENTITY_OID" \
+            dotnet run --project BudgetoidApp/Tools/DbProvision -c Release
+
+      # always(), so a failed migration closes the window it opened instead of leaving the database
+      # reachable from a retired runner's address.
+      - name: Close the database firewall window
+        if: always() && steps.dbfw.outputs.server != ''
+        run: |
+          az postgres flexible-server firewall-rule delete \
+            -g "$AZURE_RESOURCE_GROUP" -n "${{ steps.dbfw.outputs.server }}" \
+            --rule-name gh-deploy-migration --yes || true
 
       - name: Deploy API
         run: azd deploy --no-prompt

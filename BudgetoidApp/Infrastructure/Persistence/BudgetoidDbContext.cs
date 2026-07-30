@@ -1,7 +1,9 @@
 using Application.Abstractions;
 using Domain.Accounts;
+using Domain.Budgets;
+using Domain.Categories;
+using Domain.CategoryGroups;
 using Domain.Currencies;
-using Domain.Groups;
 using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
@@ -11,44 +13,41 @@ namespace Infrastructure.Persistence;
 
 public sealed class BudgetoidDbContext(
     DbContextOptions<BudgetoidDbContext> options,
-    IUserContext? userContext = null) : DbContext(options)
+    IBudgetContext? budgetContext = null) : DbContext(options)
 {
+    // Budget deliberately has no global query filter: the provisioning lookup runs before a budget
+    // id exists, so every query over this set must scope by owner explicitly.
+    public DbSet<Budget> Budgets => Set<Budget>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<Currency> Currencies => Set<Currency>();
     public DbSet<Payee> Payees => Set<Payee>();
-    public DbSet<Group> Groups => Set<Group>();
+    public DbSet<CategoryGroup> CategoryGroups => Set<CategoryGroup>();
+    public DbSet<Category> Categories => Set<Category>();
     public DbSet<User> Users => Set<User>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(BudgetoidDbContext).Assembly);
+        modelBuilder.HasCollation(
+            "case_insensitive",
+            locale: "und-u-ks-level2",
+            provider: "icu",
+            deterministic: false);
 
-        // Nondeterministic ICU collation: case-insensitive, accent-sensitive. The payee name
-        // column uses it so equality comparisons and the unique index fold case in PostgreSQL
-        // itself (see PayeeConfiguration) — no lower() and no C#-side case folding to drift apart.
-        modelBuilder.HasCollation("case_insensitive", locale: "und-u-ks-level2", provider: "icu", deterministic: false);
-
-        // Read-side isolation: every query against Transactions is scoped to the current user,
-        // read live from the scoped IUserContext at query time (after the auth middleware runs),
-        // so no repository has to remember to stamp the user. See TECH_DEBT.md "Data isolation
-        // invariant" for the escape hatches this does NOT cover.
-        //
-        // The provider is optional so the context still constructs without a resolved user
-        // (migrations, design-time factory, seeding) — those paths never query Transactions, so
-        // the userContext! dereference is never reached for a null provider. Every real query path
-        // has a DI-injected (production) or test-supplied provider.
+        // Every filter reads the primary-constructor parameter on purpose: Roslyn lowers it to an
+        // instance field, so the lambda closes over `this` and EF re-roots the closure to the context
+        // instance running the query. A captured local, a static, or a service-locator call would bake
+        // the first request's budget into the cached model and leak rows across tenants.
         modelBuilder.Entity<Transaction>()
-            .HasQueryFilter("UserIsolation", transaction => transaction.UserId == userContext!.UserId);
+            .HasQueryFilter("BudgetIsolation", transaction => transaction.BudgetId == budgetContext!.BudgetId);
         modelBuilder.Entity<Account>()
-            .HasQueryFilter("UserIsolation", account => account.UserId == userContext!.UserId);
+            .HasQueryFilter("BudgetIsolation", account => account.BudgetId == budgetContext!.BudgetId);
         modelBuilder.Entity<Payee>()
-            .HasQueryFilter("UserIsolation", payee => payee.UserId == userContext!.UserId);
-        modelBuilder.Entity<Group>()
-            .HasQueryFilter("UserIsolation", group => group.UserId == userContext!.UserId);
-
-        // Currencies are global ISO-4217 reference data seeded by migrations. They deliberately
-        // have no UserId and no query filter, unlike user-owned accounts, transactions and payees.
-
+            .HasQueryFilter("BudgetIsolation", payee => payee.BudgetId == budgetContext!.BudgetId);
+        modelBuilder.Entity<CategoryGroup>()
+            .HasQueryFilter("BudgetIsolation", categoryGroup => categoryGroup.BudgetId == budgetContext!.BudgetId);
+        modelBuilder.Entity<Category>()
+            .HasQueryFilter("BudgetIsolation", category => category.BudgetId == budgetContext!.BudgetId);
     }
 }

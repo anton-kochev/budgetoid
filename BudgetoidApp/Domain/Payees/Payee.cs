@@ -9,18 +9,42 @@ public sealed class Payee
     }
 
     public Guid Id { get; private set; }
-    public Guid UserId { get; private set; }
+    public Guid BudgetId { get; private set; }
     public string Name { get; private set; } = string.Empty;
     public DateTime CreatedAtUtc { get; private set; }
 
-    public static Payee Create(Guid userId, string name, DateTime createdAtUtc)
+    public static Payee Create(Guid budgetId, string name, DateTime createdAtUtc)
+    {
+        ValidateOrThrow(budgetId, name);
+
+        return new Payee
+        {
+            Id = Guid.CreateVersion7(),
+            BudgetId = budgetId,
+            Name = name.Trim(),
+            CreatedAtUtc = createdAtUtc,
+        };
+    }
+
+    // A case-only rename ("starbucks" -> "Starbucks") on the same row is allowed and is the most
+    // common use of this method. It does not collide with the case-insensitive unique index on
+    // (budget_id, name): the row's own index entry is replaced in the same update, so the row is
+    // never compared against its former self. No pre-check is needed here.
+    public void Rename(string name)
+    {
+        ValidateOrThrow(BudgetId, name);
+
+        Name = name.Trim();
+    }
+
+    private static void ValidateOrThrow(Guid budgetId, string? name)
     {
         var errors = new Dictionary<string, string[]>();
         string trimmedName = name?.Trim() ?? string.Empty;
 
-        if (userId == Guid.Empty)
+        if (budgetId == Guid.Empty)
         {
-            errors[nameof(UserId)] = ["User id is required."];
+            errors[nameof(BudgetId)] = ["Budget id is required."];
         }
 
         if (string.IsNullOrWhiteSpace(trimmedName))
@@ -36,13 +60,5 @@ public sealed class Payee
         {
             throw new ValidationException(errors);
         }
-
-        return new Payee
-        {
-            Id = Guid.CreateVersion7(),
-            UserId = userId,
-            Name = trimmedName,
-            CreatedAtUtc = createdAtUtc,
-        };
     }
 }

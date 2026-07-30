@@ -1,9 +1,35 @@
-<div class="welcome__main">
-  <h1 class="welcome__title">BUDGETOID</h1>
-  <p class="welcome__about">
-    Welcome to Budgetoid, the budgeting app that helps you manage your finances!
-  </p>
+<div class="w-stack">
+  <div class="w-hero">
+    <app-brand-lockup class="lockup-c" />
+    <h2 class="w-h1">Always watching. Never judging.</h2>
+  </div>
+
+  <div class="kin-wrap">
+    <app-kinetic-sentence [lines]="kineticLines" />
+    <div class="w-mission">
+      <p class="wm-lead">
+        One simple idea: decide what your money is for before you spend it.
+      </p>
+      <p class="wm-body">
+        Every bill, every goal, every ordinary week gets its share ahead of
+        time. Bills stop being surprises, big goals get funded month by month,
+        and &ldquo;can I afford this?&rdquo; always has a plain answer. Money
+        stops being a background worry, and saving stops being an accident.
+      </p>
+    </div>
+  </div>
+
+  <div class="w-cta">
+    <app-google-sign-in-button />
+    <p class="w-fine">Your Google account is used only to sign you in.</p>
+  </div>
 </div>
-<div class="welcome__login">
-  <app-login></app-login>
+
+<div class="w-foot">
+  <span
+    >Budgetoid is an
+    <a href="https://github.com/anton-kochev/budgetoid"
+      >open-source project on GitHub</a
+    >, licensed under AGPL-3.0</span
+  >
 </div>

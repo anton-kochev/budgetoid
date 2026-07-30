@@ -2,114 +2,108 @@
 
 ## Business summary
 
-Budgetoid is a **single-user personal budgeting app**. A person signs in with Google, then
-records money movements so they can see where their money goes. Everything a signed-in person
-sees and touches belongs to **them and only them** — there is no sharing, no admin, and no
-multi-user visibility.
+Budgetoid is a **personal budgeting app with no sharing**. A person signs in with Google, then
+records money movements so they can see where their money goes. There is no admin role and no
+multi-user visibility: everything a signed-in person reaches belongs to a **Budget** they own, and a
+budget belongs to exactly one user.
 
-The core shape is: a user owns one or more **Accounts** (a checking account, a wallet of cash, a
-credit card…). Against an account they record **Transactions** — a signed amount on a date, where
-a **negative amount is money spent (an expense)** and a **positive amount is money received
-(income)**. A transaction can optionally name a **Payee** (who the money went to or came from) and
-be filed under a **Group** (a category like "Groceries" or "Rent"). **Currencies** are shared
-reference data (ISO-4217) that accounts are denominated in.
+A user owns Budgets. A **Budget** owns **Accounts**, against which signed **Transactions** are
+recorded. A negative amount is money spent; a positive amount is money received. A Transaction can
+optionally name a **Payee** and select a **Category**. Every Category belongs to one **Category
+Group**, while a Transaction may remain uncategorized. **Currencies** are shared ISO-4217 reference
+data — the only reference table shared across every budget.
 
-Validation lives close to the data: each entity is created through a factory method that enforces
-its own field rules (required fields, lengths, money precision). Rules that span more than one
-entity (e.g. "you can't delete an account that still has transactions") live in the application
-handlers. The single most important invariant — that a user can only ever see or change their own
-data — is enforced centrally by a database-level ownership filter, described in
+Today every user has **exactly one budget**, created for them at sign-in: there is no way to create,
+rename, switch or delete one, and the concept never appears in the UI or in a URL. The schema is
+multi-budget-ready anyway, and that gap between what the schema permits and what the release does is
+itself a rule — see [budgets.md](budgets.md).
+
+Entity factories enforce the field rules the schema cannot state declaratively and application
+handlers enforce cross-entity rules, but whatever the schema can state, it owns: check constraints
+bound account type and money magnitude, composite foreign keys refuse a cross-budget reference
+whatever code path wrote it, and unique indexes are what make name uniqueness and provisioning
+race-safe. Immutability is owned down there too: the application connects as a least-privilege role
+whose `UPDATE` privileges are granted per column, so a column left off the list — `budget_id` on
+every owned table, `accounts.currency_code`, `users.google_subject`, every column of `budgets` — is
+one PostgreSQL refuses to write at all (see
+[ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). Tenancy is owned down there as
+well: row-level security policies on the five budget-owned tables mean that role reaches no other
+budget's rows on any statement at all and can insert into no budget but the ambient one, so the query
+filters above them shape the answer rather than hold the boundary (see
+[ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)). That split is a
+general rule rather than a local one: each rule is owned by the lowest layer that can enforce it
+declaratively, and where one deliberately sits higher the doc says why — see
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The central tenancy
+invariant — the budget, not the user, is what everything belongs to — is documented in
+[budgets.md](budgets.md); identity and provisioning are in
 [users-and-ownership.md](users-and-ownership.md).
 
 ## Glossary
 
 | Term | Definition |
 |---|---|
-| **User** | The one person who owns the data. Identified externally by their Google account (the OAuth `sub` claim), internally by a GUID. There is exactly one role — the owner. |
-| **Account** | A place money lives (checking, savings, cash, credit card). Owned by a user, denominated in one currency, has an opening balance. |
-| **Account Type** | Classification of an account: `Checking`, `Savings`, `Cash`, or `CreditCard`. A label, not a state machine. |
-| **Opening Balance** | The account's starting balance at the moment it's created. The **only** balance concept modeled today — there is no computed running/current balance. |
-| **Transaction** | A single money movement against an account on a given date. |
-| **Amount** | The signed value of a transaction. **Negative = expense** (money out), **positive = income** (money in). Must be non-zero. |
-| **Payee** | The counterparty of a transaction (a shop, a person, an employer). Entered as free text with autocomplete; created automatically on first use. Owned by the user. |
-| **Group** | A user-defined **category** a transaction can be filed under (e.g. "Groceries"). Name + optional description. "Group" and "category" mean the same thing. |
-| **Currency** | Shared ISO-4217 reference data (code, name, symbol, minor unit). Not owned by any user. |
-| **Minor Unit** | The number of decimal places a currency uses (e.g. 2 for USD, 0 for JPY). |
+| **User** | The owner, identified externally by Google `sub` and internally by GUID. |
+| **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
+| **Provisioning** | The step that turns an authenticated Google principal into an internal user and an ambient budget, run on every authenticated request. |
+| **Default budget** | The budget provisioning creates when a user owns none. It has no name — `name` is null — and a client shows its own localized label in place of one. A user has at most one of these; named budgets are unconstrained in number. |
+| **Ambient budget** | The one budget a request is scoped to, resolved server-side at provisioning and read through `IBudgetContext`. Never supplied by the client. |
+| **Base currency** | A nullable ISO-4217 code on the Budget, reserved for a planning layer. Nothing writes it, so it is null on every Budget. |
+| **Account** | A budget-owned place money lives, denominated in one Currency. |
+| **Account Type** | `Checking`, `Savings`, `Cash`, or `CreditCard`; a label, not a state machine. |
+| **Opening Balance** | The starting balance at account creation; no current/running balance is modeled yet. |
+| **Transaction** | A money movement against an Account on a calendar date. |
+| **Amount** | Signed Transaction value: negative expense, positive income, zero a recorded event that nets to nothing. |
+| **Payee** | Budget-owned counterparty, entered as find-or-create free text; never shared across budgets. |
+| **Category Group** | Budget-owned, manually ordered container for Categories, e.g. “Essential Obligations.” |
+| **Category** | Budget-owned transaction classification belonging to exactly one Category Group, e.g. “Groceries.” |
+| **Position** | Zero-based persisted user order: budget-wide for Category Groups and group-scoped for Categories. |
+| **Currency** | Shared ISO-4217 reference row that denominates Accounts. A Budget references the same table for its base currency, never populated. |
+| **Minor Unit** | Currency decimal places — 0 for JPY, 2 for USD, 3 for BHD. Bounds the decimal places any amount recorded in that currency may carry. |
 
 ## User roles
 
-There is exactly **one role: the authenticated owner.** A signed-in user can create, read, update,
-and delete their own accounts and groups; create and list their own transactions and payees; and
-read the global currency list. There are **no** administrators, no shared budgets, and no ability
-to see another user's data. Unauthenticated visitors can only reach the public welcome/login page.
+There is exactly **one role: the authenticated owner.** Within their ambient budget a user manages
+Accounts, Category Groups, and Categories; records, lists, edits and deletes Transactions; lists
+Payees, creates them implicitly by naming one on a transaction, and renames them; and reads global
+Currencies. The budget itself is not manageable — it is provisioned, never configured.
+Unauthenticated visitors can only reach public login/welcome behavior.
 
 ## Domain area map
 
+Relationships only; each Tier 2 file carries its own entity attributes.
+
 ```mermaid
 erDiagram
-    USER ||--o{ ACCOUNT : owns
-    USER ||--o{ GROUP : owns
-    USER ||--o{ PAYEE : owns
-    USER ||--o{ TRANSACTION : owns
+    USER ||--o{ BUDGET : owns
+    BUDGET ||--o{ ACCOUNT : owns
+    BUDGET ||--o{ CATEGORY_GROUP : owns
+    BUDGET ||--o{ CATEGORY : owns
+    BUDGET ||--o{ PAYEE : owns
+    BUDGET ||--o{ TRANSACTION : owns
     ACCOUNT ||--o{ TRANSACTION : "recorded against"
-    GROUP ||--o{ TRANSACTION : "optionally categorizes"
+    CATEGORY_GROUP ||--o{ CATEGORY : contains
+    CATEGORY ||--o{ TRANSACTION : "optionally categorizes"
     PAYEE ||--o{ TRANSACTION : "optionally names"
-    CURRENCY ||--o{ ACCOUNT : "denominates (by code)"
-
-    USER {
-        guid Id
-        string GoogleSubject
-        string Email
-        string DisplayName
-    }
-    ACCOUNT {
-        guid Id
-        guid UserId
-        string Name
-        enum Type
-        decimal OpeningBalance
-        string CurrencyCode
-    }
-    TRANSACTION {
-        guid Id
-        guid UserId
-        guid AccountId
-        decimal Amount
-        date Date
-        string Description
-        guid PayeeId
-        guid GroupId
-    }
-    GROUP {
-        guid Id
-        guid UserId
-        string Name
-        string Description
-    }
-    PAYEE {
-        guid Id
-        guid UserId
-        string Name
-    }
-    CURRENCY {
-        string Code
-        string Name
-        string Symbol
-        int MinorUnit
-    }
+    CURRENCY ||--o{ ACCOUNT : denominates
+    CURRENCY ||--o{ BUDGET : "base currency (schema only, never set)"
 ```
 
-`CURRENCY` is global reference data — it has no `UserId` and is shared across all users. Every
-other entity is scoped to exactly one user.
+Currency is global reference data. A Budget is scoped to exactly one user; every other entity is
+scoped to exactly one Budget. Category membership and a Transaction's Account, Category and Payee
+references are additionally constrained by composite foreign keys to a row in the same Budget.
 
 ## Table of contents
 
-- [Users & Ownership](users-and-ownership.md) — identity, Google provisioning, and the
-  cross-cutting multi-tenant isolation invariant. **Read this first** — the ownership rule applies
-  to every other area.
-- [Accounts](accounts.md) — accounts, account types, currency denomination, delete guard.
-- [Transactions](transactions.md) — transactions, the amount sign convention, payees, group tagging.
-- [Groups](groups.md) — categories transactions can be filed under.
+- [Users & Ownership](users-and-ownership.md) — identity, claims, and provisioning.
+- [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
+  and its base currency.
+- [Accounts](accounts.md) — account types, currency denomination, and delete guard.
+- [Transactions](transactions.md) — transaction rules, optional payee and category context, partial
+  edit, and delete.
+- [Payees](payees.md) — counterparties, created only by naming one on a transaction, and renamed in
+  place.
+- [Categories and Category Groups](categories.md) — hierarchy, uniqueness, ordering, movement, and
+  delete guards.
 - [Currencies](currencies.md) — global ISO-4217 reference data.
 
-Non-obvious decisions with their rationale are recorded in [_decision-log.md](_decision-log.md).
+Non-obvious decisions are recorded in [_decision-log.md](_decision-log.md).

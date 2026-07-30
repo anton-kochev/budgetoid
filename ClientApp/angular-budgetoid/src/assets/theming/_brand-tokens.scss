@@ -1,56 +1,109 @@
-// Budgetoid brand design tokens — source of truth: branding/tokens.css
-// Generated from branding/BRAND.md. Keep the two files in sync.
+// Budgetoid design tokens (Material-integrated runtime copy).
+//
+// Theme ROLES (primary / secondary / tertiary) are read straight from Material's
+// --mat-sys-* variables so they follow the active palette (see _palettes.scss).
+// This file only defines what those roles don't provide on their own: a friendly
+// accent alias, neutral aliases, budget-state semantics M3 has no slot for, and
+// the structural scales (space, radius, motion, elevation).
+//
+// Values source of truth: branding/tokens.css + docs/design/. Note tokens.css
+// still exposes the fixed brand hexes (--bud-brand-forest/gold/mint); this runtime
+// file intentionally drops those in favour of the swap-aware --mat-sys-* roles.
 
 :root {
-  /* Brand — the mark's colors. Never used for UI status. */
-  --bud-brand-forest: #0e5b43;
-  --bud-brand-gold: #e8a83c; /* accent stamp only on light; never leads on paper */
-  --bud-brand-mint: #35d0a0; /* UI accent; never inside the mark */
+  // The one interactive/brand accent (mint in the green brand). For the other
+  // brand roles use --mat-sys-primary / --mat-sys-tertiary directly.
+  --bud-accent: var(--mat-sys-secondary);
 
-  /* Neutrals — warm, faint forest cast */
-  --bud-bg: #faf8f3;
-  --bud-surface: #ffffff;
-  --bud-hairline: #e4dfd3;
-  --bud-text: #1e231e;
-  --bud-text-muted: #68706a;
+  // Neutrals (pinned to the exact warm brand hexes via theme-overrides)
+  --bud-bg: var(--mat-sys-background);
+  --bud-surface: var(--mat-sys-surface);
+  --bud-hairline: var(--mat-sys-outline-variant);
+  --bud-text: var(--mat-sys-on-surface);
+  --bud-text-muted: var(--mat-sys-on-surface-variant);
 
-  /* Semantic — budget states; deliberately off-hue from brand gold/mint */
-  --bud-positive: #35d0a0; /* graphic uses: bars, sparklines, chips */
-  --bud-positive-text: #0f7a57; /* text-safe on light surfaces */
-  --bud-caution: #c25e0f; /* near-limit; burnt orange, distinct from gold */
-  --bud-over: #b23a2e; /* over-budget, "in the red" */
+  // Overlay level (dialogs, sheets, menus): light shares surface white and is
+  // separated by shadow; dark steps one tone up.
+  --bud-overlay: light-dark(#ffffff, #222c26);
+  --bud-scrim: light-dark(rgb(17 24 21 / 0.4), rgb(0 0 0 / 0.5));
 
-  /* Interactive */
-  --bud-accent: var(--bud-brand-mint);
-  --bud-accent-text: #0f7a57; /* mint is too light for text on paper */
-  --bud-focus-ring: #35d0a0;
+  // Semantic budget states (no M3 slot; fixed statuses via light-dark())
+  // graphic uses: bars, meters, chips
+  --bud-positive: light-dark(#35d0a0, #35d0a0);
+  // text-safe on either surface
+  --bud-positive-text: light-dark(#0f7a57, #4fdcae);
+  --bud-caution: light-dark(#c25e0f, #e88433); // near-limit; burnt orange
+  --bud-caution-text: light-dark(
+    #ad560e,
+    #e88433
+  ); // graphic hue is 4.0:1 on paper
+  --bud-over: light-dark(#b23a2e, #e06a55); // over-budget, "in the red"
+
+  // Interactive
+  --bud-accent-text: light-dark(#0f7a57, #4fdcae); // mint is too light for text
+  // mint is 1.9:1 on paper — fails the 3:1 ring minimum, so light mode rings deep green
+  --bud-focus-ring: light-dark(#0f7a57, #35d0a0);
+
+  // State layers — translucent, work on any surface in either theme
+  --bud-state-hover: color-mix(in srgb, var(--bud-text) 6%, transparent);
+  --bud-state-pressed: color-mix(in srgb, var(--bud-text) 12%, transparent);
+  --bud-state-selected: color-mix(in srgb, var(--bud-accent) 14%, transparent);
+  --bud-state-drop: color-mix(in srgb, var(--bud-accent) 8%, transparent);
+  --bud-disabled-opacity: 0.38;
+
+  // Elevation — page plane has no shadow; these are for lifted/overlay levels
+  --bud-shadow-drag: 0 4px 16px
+    light-dark(rgb(30 35 30 / 0.14), rgb(0 0 0 / 0.45));
+  --bud-shadow-overlay: 0 12px 32px
+    light-dark(rgb(30 35 30 / 0.18), rgb(0 0 0 / 0.55));
+
+  // Type — two voices; scale and roles in docs/design/typography.md
+  --bud-font-display: 'Mohave', sans-serif;
+  --bud-font-ui: 'Inter', sans-serif;
+
+  // Space — 4px base scale
+  --bud-space-1: 4px;
+  --bud-space-2: 8px;
+  --bud-space-3: 12px;
+  --bud-space-4: 16px;
+  --bud-space-5: 20px;
+  --bud-space-6: 24px;
+  --bud-space-7: 32px;
+  --bud-space-8: 40px;
+  --bud-space-9: 48px;
+  --bud-space-10: 64px;
+  --bud-gutter: 16px; // responsive page inset; widens at 600/960 below
+  --bud-touch-target: 48px;
+
+  // Radius
+  --bud-radius-sm: 8px;
+  --bud-radius-md: 12px;
+  --bud-radius-lg: 16px;
+  --bud-radius-full: 999px;
+
+  // Motion — durations and easings; rules in docs/design/motion.md
+  --bud-motion-micro: 130ms;
+  --bud-motion-small: 200ms;
+  --bud-motion-medium: 350ms;
+  --bud-motion-large: 500ms;
+  --bud-motion-breathe: 2400ms;
+  --bud-ease-standard: ease;
+  --bud-ease-deliberate: cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
-@media (prefers-color-scheme: dark) {
+@media (min-width: 600px) {
   :root {
-    /* Brand, dark-surface pairs */
-    --bud-brand-forest: #149a72;
-    --bud-brand-gold: #f0b44e;
-
-    /* Neutrals */
-    --bud-bg: #111815;
-    --bud-surface: #19211c;
-    --bud-hairline: #2a342e;
-    --bud-text: #ebeae3;
-    --bud-text-muted: #909a92;
-
-    /* Semantic */
-    --bud-positive: #35d0a0;
-    --bud-positive-text: #4fdcae;
-    --bud-caution: #e88433;
-    --bud-over: #e06a55;
-
-    /* Interactive */
-    --bud-accent-text: #4fdcae;
+    --bud-gutter: 24px;
   }
 }
 
-/* Monetary figures are typography: always tabular. */
+@media (min-width: 960px) {
+  :root {
+    --bud-gutter: 32px;
+  }
+}
+
+// Monetary figures are typography: always tabular.
 .bud-figures,
 [data-figures] {
   font-variant-numeric: tabular-nums;

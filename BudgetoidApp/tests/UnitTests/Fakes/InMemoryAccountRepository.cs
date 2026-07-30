@@ -4,7 +4,7 @@ using Domain.Accounts;
 
 namespace UnitTests.Fakes;
 
-public sealed class InMemoryAccountRepository(Guid userId, TimeProvider timeProvider) : IAccountRepository, IAccountReadService
+public sealed class InMemoryAccountRepository(Guid budgetId, TimeProvider timeProvider) : IAccountRepository, IAccountReadService
 {
     private readonly List<Account> _accounts = [];
     private readonly HashSet<Guid> _referencedAccountIds = [];
@@ -22,7 +22,7 @@ public sealed class InMemoryAccountRepository(Guid userId, TimeProvider timeProv
 
     public Task<Account?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        Account? account = _accounts.SingleOrDefault(account => account.Id == id && account.UserId == userId);
+        Account? account = _accounts.SingleOrDefault(account => account.Id == id && account.BudgetId == budgetId);
         return Task.FromResult(account);
     }
 
@@ -56,9 +56,31 @@ public sealed class InMemoryAccountRepository(Guid userId, TimeProvider timeProv
         return Task.FromResult(accounts);
     }
 
+    // Explicit implementation because the repository already exposes a public GetByIdAsync that
+    // returns the entity; the read-service member shares that name but returns a DTO, so the two
+    // cannot both be ordinary public methods on this class.
+    Task<AccountDto?> IAccountReadService.GetByIdAsync(Guid id, CancellationToken cancellationToken)
+    {
+        Account? account = _accounts.SingleOrDefault(account => account.Id == id && account.BudgetId == budgetId);
+        AccountDto? dto = account is null
+            ? null
+            : AccountDto.FromAccount(account, CurrencyFor(account.CurrencyCode));
+
+        return Task.FromResult(dto);
+    }
+
     public async Task<Account> CreateAsync(string name = "Checking", AccountType type = AccountType.Checking, decimal openingBalance = 0m, string currencyCode = "USD")
     {
-        Account account = Account.Create(userId, name, type, openingBalance, currencyCode, timeProvider.GetUtcNow().UtcDateTime);
+        // The minor unit comes from the same lookup the read projection uses, so a JPY account
+        // seeded here is validated as a zero-decimal currency rather than silently as USD.
+        Account account = Account.Create(
+            budgetId,
+            name,
+            type,
+            openingBalance,
+            currencyCode,
+            CurrencyFor(currencyCode).MinorUnit,
+            timeProvider.GetUtcNow().UtcDateTime);
         await AddAsync(account);
         return account;
     }

@@ -1,0 +1,216 @@
+using System.Globalization;
+using Domain.Accounts;
+using Npgsql;
+
+namespace IntegrationTests;
+
+/// <summary>
+/// Covers the accounts table's value rules from the schema's own side. Every write here is raw
+/// Npgsql on purpose: <see cref="Account" /> refuses the same values client-side, so an EF-based
+/// insert never reaches PostgreSQL and would prove nothing about the constraint. Rules that live
+/// only in the domain are rules a raw INSERT walks past.
+/// </summary>
+public sealed class AccountSchemaTests
+{
+    [Test]
+    public async Task Database_RejectsAnAccountTypeOutsideTheDefinedSet()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Act — "Investment" fits varchar(20), so the column type accepts it and only the check
+        // refuses it.
+        PostgresException exception = await ThrowsPostgresExceptionAsync(
+            connection, budgetId, "Brokerage", "Investment", 0m);
+
+        // Assert — the constraint name is asserted next to the SQLSTATE because every other check on
+        // this table raises 23514 as well, and the test would otherwise pass on the wrong rejection.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(exception.ConstraintName).IsEqualTo("CK_accounts_type");
+    }
+
+    [Test]
+    public async Task Database_AcceptsEveryAccountTypeTheDomainDefines()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        AccountType[] definedTypes = Enum.GetValues<AccountType>();
+
+        // Act — driven off the enum rather than a hand-written list, so adding a member without
+        // widening the constraint fails here instead of in production.
+        foreach (AccountType accountType in definedTypes)
+        {
+            await InsertAccountAsync(
+                connection, budgetId, accountType.ToString(), accountType.ToString(), 0m);
+        }
+
+        // Assert
+        await Assert.That(await CountAccountsAsync(connection, budgetId))
+            .IsEqualTo((long)definedTypes.Length);
+    }
+
+    [Test]
+    [Arguments("1000000000.01")]
+    [Arguments("-1000000000.01")]
+    public async Task Database_RejectsAnOpeningBalanceBeyondTheMagnitudeLimit(string openingBalance)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Act — both signs, because the rule is on the magnitude and a constraint written without
+        // abs() would refuse only one of them.
+        PostgresException exception = await ThrowsPostgresExceptionAsync(
+            connection, budgetId, "Checking", "Checking", Money(openingBalance));
+
+        // Assert
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(exception.ConstraintName).IsEqualTo("CK_accounts_opening_balance");
+    }
+
+    [Test]
+    [Arguments("1000000000")]
+    [Arguments("-1000000000")]
+    public async Task Database_AcceptsAnOpeningBalanceAtTheMagnitudeLimit(string openingBalance)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Act — the domain refuses only above this value, so the limit itself is legitimate data.
+        // Without this case a constraint written with < instead of <= would look correct.
+        await InsertAccountAsync(
+            connection, budgetId, "Checking", "Checking", Money(openingBalance));
+
+        // Assert
+        await Assert.That(await CountAccountsAsync(connection, budgetId)).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task OpeningBalanceColumn_UsesNumeric14Scale4()
+    {
+        // Arrange — the twin of TransactionRepositoryTests.AmountColumn_UsesNumeric14Scale4. Scale 4
+        // because the minor unit belongs to the currency, not the column: BHD and KWD have three
+        // decimal places and numeric scale rounds silently rather than refusing, so a scale-2 column
+        // would corrupt a balance instead of rejecting it. The two money columns must not drift
+        // apart, which is why this assertion exists separately rather than being assumed.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Act
+        await using NpgsqlCommand command = new(
+            """
+            select numeric_precision, numeric_scale
+            from information_schema.columns
+            where table_name = 'accounts' and column_name = 'opening_balance'
+            """, connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        await reader.ReadAsync();
+
+        // Assert
+        await Assert.That(reader.GetInt32(0)).IsEqualTo(14);
+        await Assert.That(reader.GetInt32(1)).IsEqualTo(4);
+    }
+
+    /// <summary>
+    /// Fixed UTC instant for rows these tests write. PostgreSQL <c>timestamptz</c> rejects a
+    /// non-UTC <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
+    /// </summary>
+    private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Parses a money literal the culture-invariant way. The values arrive as strings because
+    /// <c>decimal</c> is not a legal attribute argument type.
+    /// </summary>
+    private static decimal Money(string value) => decimal.Parse(value, CultureInfo.InvariantCulture);
+
+    private static async Task InsertAccountAsync(
+        NpgsqlConnection connection,
+        Guid budgetId,
+        string name,
+        string type,
+        decimal openingBalance)
+    {
+        await using NpgsqlCommand command = BuildInsert(connection, budgetId, name, type, openingBalance);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<PostgresException> ThrowsPostgresExceptionAsync(
+        NpgsqlConnection connection,
+        Guid budgetId,
+        string name,
+        string type,
+        decimal openingBalance)
+    {
+        await using NpgsqlCommand command = BuildInsert(connection, budgetId, name, type, openingBalance);
+
+        try
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+        catch (PostgresException exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Expected PostgresException.");
+    }
+
+    private static NpgsqlCommand BuildInsert(
+        NpgsqlConnection connection,
+        Guid budgetId,
+        string name,
+        string type,
+        decimal openingBalance)
+    {
+        NpgsqlCommand command = new(
+            """
+            insert into accounts (id, budget_id, name, type, opening_balance, currency_code, created_at_utc)
+            values (@id, @budget_id, @name, @type, @opening_balance, @currency_code, @created_at_utc)
+            """,
+            connection);
+        command.Parameters.AddWithValue("id", Guid.CreateVersion7());
+        command.Parameters.AddWithValue("budget_id", budgetId);
+        command.Parameters.AddWithValue("name", name);
+        command.Parameters.AddWithValue("type", type);
+        command.Parameters.AddWithValue("opening_balance", openingBalance);
+        command.Parameters.AddWithValue("currency_code", "USD");
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        return command;
+    }
+
+    private static async Task<long> CountAccountsAsync(NpgsqlConnection connection, Guid budgetId)
+    {
+        await using NpgsqlCommand command = new(
+            "select count(*) from accounts where budget_id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", budgetId);
+
+        // Pattern-matched rather than cast-and-null-forgive: a null or unexpected scalar means the
+        // query changed shape, and that should fail loudly here instead of at the assertion.
+        return await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected a count from 'accounts', got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    private static async Task<RepositoryTestHost> StartHostAsync()
+    {
+        RepositoryTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+}

@@ -1,0 +1,236 @@
+// Tonal palettes for the Budgetoid Material 3 theme.
+//
+// Generated with `ng generate @angular/material:theme-color`:
+//   green — primary #0E5B43, secondary #35D0A0, tertiary #E8A83C, neutral #FAF8F3
+//   ocean — primary #1668A8, secondary #7DD0FF, tertiary #FF418E, neutral #FAF8F3
+//
+// Secondary + neutral live nested inside each primary map (that is how
+// `mat.theme()` reads them), so swapping `$active-brand` reskins primary,
+// secondary, tertiary and neutral coherently — one line, no other edits.
+
+@use 'sass:map';
+
+// Neutral + error are seeded identically for every brand, so define them once.
+$_neutral: (
+  0: #000000,
+  10: #1b1c19,
+  20: #30312e,
+  25: #3b3c38,
+  30: #474744,
+  35: #52534f,
+  40: #5e5e5b,
+  50: #777773,
+  60: #91918d,
+  70: #acaba7,
+  80: #c8c6c2,
+  90: #e4e2dd,
+  95: #f2f1ec,
+  98: #fbf9f4,
+  99: #fefcf7,
+  100: #ffffff,
+  4: #0e0e0c,
+  6: #131411,
+  12: #1f201d,
+  17: #2a2a27,
+  22: #343532,
+  24: #393936,
+  87: #dbdad5,
+  92: #eae8e3,
+  94: #f0eee9,
+  96: #f5f3ee,
+);
+
+$_error: (
+  0: #000000,
+  10: #410002,
+  20: #690005,
+  25: #7e0007,
+  30: #93000a,
+  35: #a80710,
+  40: #ba1a1a,
+  50: #de3730,
+  60: #ff5449,
+  70: #ff897d,
+  80: #ffb4ab,
+  90: #ffdad6,
+  95: #ffedea,
+  98: #fff8f7,
+  99: #fffbff,
+  100: #ffffff,
+);
+
+// green — canonical Budgetoid brand (Forest / Mint / Gold)
+$_green: (
+  primary: (
+    0: #000000,
+    10: #002115,
+    20: #003827,
+    25: #004531,
+    30: #00513a,
+    35: #125e45,
+    40: #236a51,
+    50: #3f8369,
+    60: #5a9e82,
+    70: #74b99b,
+    80: #8fd5b6,
+    90: #abf1d1,
+    95: #bcffe0,
+    98: #e7fff1,
+    99: #f4fff7,
+    100: #ffffff,
+  ),
+  secondary: (
+    0: #000000,
+    10: #002116,
+    20: #003828,
+    25: #004431,
+    30: #00513b,
+    35: #005e45,
+    40: #006c50,
+    50: #008865,
+    60: #00a47b,
+    70: #1ac293,
+    80: #49dead,
+    90: #6bfbc8,
+    95: #bcffe1,
+    98: #e7fff2,
+    99: #f4fff7,
+    100: #ffffff,
+  ),
+  tertiary: (
+    0: #000000,
+    10: #281800,
+    20: #442c00,
+    25: #523600,
+    30: #614000,
+    35: #704b00,
+    40: #805600,
+    50: #a16d00,
+    60: #c08518,
+    70: #de9f34,
+    80: #fdba4d,
+    90: #ffddb0,
+    95: #ffeedb,
+    98: #fff8f3,
+    99: #fffbff,
+    100: #ffffff,
+  ),
+  neutral: $_neutral,
+  neutral-variant: (
+    0: #000000,
+    10: #151d19,
+    20: #29322e,
+    25: #343e38,
+    30: #3f4944,
+    35: #4b554f,
+    40: #57615b,
+    50: #6f7973,
+    60: #89938d,
+    70: #a4aea7,
+    80: #bfc9c2,
+    90: #dbe5de,
+    95: #e9f3ec,
+    98: #f2fcf4,
+    99: #f5fff7,
+    100: #ffffff,
+  ),
+  error: $_error,
+);
+
+// ocean — alternate accent direction (Blue / Sky / Pink)
+$_ocean: (
+  primary: (
+    0: #000000,
+    10: #001d35,
+    20: #003257,
+    25: #003e69,
+    30: #00497c,
+    35: #00558e,
+    40: #0562a1,
+    50: #337bbc,
+    60: #5295d8,
+    70: #6eb0f4,
+    80: #9dcaff,
+    90: #d1e4ff,
+    95: #e9f1ff,
+    98: #f8f9ff,
+    99: #fdfcff,
+    100: #ffffff,
+  ),
+  secondary: (
+    0: #000000,
+    10: #001e2c,
+    20: #00344a,
+    25: #004059,
+    30: #004c69,
+    35: #00597a,
+    40: #00658b,
+    50: #1b7fab,
+    60: #4199c6,
+    70: #60b4e2,
+    80: #7dd0ff,
+    90: #c4e7ff,
+    95: #e3f3ff,
+    98: #f5faff,
+    99: #fbfcff,
+    100: #ffffff,
+  ),
+  tertiary: (
+    0: #000000,
+    10: #3f001b,
+    20: #650030,
+    25: #79003b,
+    30: #8e0047,
+    35: #a40052,
+    40: #ba005e,
+    50: #e02577,
+    60: #ff4991,
+    70: #ff84ab,
+    80: #ffb1c6,
+    90: #ffd9e1,
+    95: #ffecef,
+    98: #fff8f8,
+    99: #fffbff,
+    100: #ffffff,
+  ),
+  neutral: $_neutral,
+  neutral-variant: (
+    0: #000000,
+    10: #161c24,
+    20: #2b3139,
+    25: #363c45,
+    30: #414750,
+    35: #4c535c,
+    40: #585f68,
+    50: #717781,
+    60: #8b919b,
+    70: #a5acb6,
+    80: #c1c7d2,
+    90: #dde3ee,
+    95: #ebf1fc,
+    98: #f8f9ff,
+    99: #fdfcff,
+    100: #ffffff,
+  ),
+  error: $_error,
+);
+
+$_brands: (
+  green: $_green,
+  ocean: $_ocean,
+);
+
+// Swap point: change this one line to reskin the whole app.
+$active-brand: green !default;
+
+$_active: map.get($_brands, $active-brand);
+$_rest: (
+  secondary: map.get($_active, secondary),
+  neutral: map.get($_active, neutral),
+  neutral-variant: map.get($_active, neutral-variant),
+  error: map.get($_active, error),
+);
+
+// Consumed by `_theme-config.scss`.
+$primary: map.merge(map.get($_active, primary), $_rest);
+$tertiary: map.merge(map.get($_active, tertiary), $_rest);

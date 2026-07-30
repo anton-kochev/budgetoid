@@ -1,0 +1,41 @@
+// Assembles the Material theme configuration from the active brand palettes.
+//
+// Two shapes are exported because v21 needs both:
+//   * `$color` / `$typography` / `$density` — the config map for `mat.theme()`,
+//     which emits the `--mat-sys-*` system variables (with light-dark() colors).
+//   * `$theme` — a `define-theme` object, required by `mat.typography-hierarchy()`
+//     to emit the .mat-headline-*/h1..h6 utility classes.
+@use '@angular/material' as mat;
+@use 'palettes';
+
+$color: (
+  primary: palettes.$primary,
+  tertiary: palettes.$tertiary,
+  // `color-scheme` emits every color token as `light-dark(<light>, <dark>)`, so a
+  // single include covers both modes and the switch is driven by CSS `color-scheme`.
+  theme-type: color-scheme,
+);
+
+// Two voices (docs/design/typography.md): Mohave speaks in headlines (brand),
+// Inter is everything read, entered, or counted (plain — all component text).
+$typography: (
+  brand-family: 'Mohave',
+  plain-family: 'Inter',
+  bold-weight: 700,
+  medium-weight: 500,
+  regular-weight: 400,
+);
+
+$density: 0;
+
+// Theme object for `mat.typography-hierarchy()`. Its colours are unused there — only
+// the typography is read — but a full, valid M3 theme object is the safe input.
+$theme: mat.define-theme(
+  (
+    color: (
+      primary: palettes.$primary,
+      tertiary: palettes.$tertiary,
+    ),
+    typography: $typography,
+  )
+);

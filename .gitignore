@@ -37,10 +37,19 @@ __queuestorage__/
 
 # IDE run configurations
 .run/
-/.claude/grimoire/sessions
-/.claude/logs
+# Leading **/ on purpose: a pattern with a slash in the middle is anchored to this
+# file's directory, and tooling writes these next to whatever directory it was
+# invoked from — a stray .claude/logs turns up under docs/ or any other subtree.
+**/.claude/grimoire/sessions/
+**/.claude/logs/
 
 # azd-synthesized infra (generated from the Aspire AppHost, which is the source of
 # truth). azd regenerates it at provision/deploy time; committing it would drift.
 /infra/
 /BudgetoidApp/AppHost/infra/
+
+CLAUDE.local.md
+/.claude/agent-memory
+/.claude/skills/grimoire.*
+/.claude/agents/grimoire.*
+/.claude/grimoire.json

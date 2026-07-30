@@ -29,6 +29,11 @@ import { AccountsService } from './accounts.service';
     MatSelectModule,
   ],
   styles: `
+    :host {
+      display: block;
+      padding: 1.5rem 2rem;
+    }
+
     form {
       display: grid;
       gap: 1rem;

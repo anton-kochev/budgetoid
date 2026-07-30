@@ -31,6 +31,11 @@ import { TransactionsService } from './transactions.service';
     MatSelectModule,
   ],
   styles: `
+    :host {
+      display: block;
+      padding: 1.5rem 2rem;
+    }
+
     form {
       display: grid;
       gap: 1rem;
@@ -88,11 +93,20 @@ import { TransactionsService } from './transactions.service';
       </mat-form-field>
 
       <mat-form-field>
-        <mat-label>Group</mat-label>
-        <mat-select formControlName="groupId">
+        <mat-label>Category</mat-label>
+        <mat-select formControlName="categoryId">
           <mat-option [value]="''">None</mat-option>
-          @for (group of transactions.groups(); track group.id) {
-            <mat-option [value]="group.id">{{ group.name }}</mat-option>
+          @for (group of transactions.categoryGroups(); track group.id) {
+            <mat-optgroup [label]="group.name">
+              @for (
+                category of transactions.categoriesForGroup(group.id);
+                track category.id
+              ) {
+                <mat-option [value]="category.id">
+                  {{ category.name }}
+                </mat-option>
+              }
+            </mat-optgroup>
           }
         </mat-select>
       </mat-form-field>
@@ -114,7 +128,13 @@ import { TransactionsService } from './transactions.service';
           <span matListItemLine>
             {{ transaction.accountName }} ·
             {{ transaction.payeeName ? transaction.payeeName + ' · ' : ''
-            }}{{ transaction.groupName ? transaction.groupName + ' · ' : ''
+            }}{{
+              transaction.categoryGroupName && transaction.categoryName
+                ? transaction.categoryGroupName +
+                  ' · ' +
+                  transaction.categoryName +
+                  ' · '
+                : ''
             }}{{ transaction.date }} · {{ transaction.currencySymbol
             }}{{ transaction.amount }}
           </span>
@@ -136,14 +156,14 @@ export class TransactionsComponent implements OnInit {
     accountId: ['', [Validators.required]],
     description: ['', [Validators.maxLength(500)]],
     payee: ['', [Validators.maxLength(200)]],
-    groupId: [''],
+    categoryId: [''],
   });
 
   public ngOnInit(): void {
     this.accounts.load();
     this.transactions.load();
     this.transactions.loadPayees();
-    this.transactions.loadGroups();
+    this.transactions.loadCategories();
   }
 
   protected filteredPayees(): PayeeDto[] {
@@ -166,7 +186,7 @@ export class TransactionsComponent implements OnInit {
     const value = this.form.getRawValue();
 
     const payeeName = value.payee.trim();
-    const groupId = value.groupId;
+    const categoryId = value.categoryId;
 
     this.transactions.add({
       amount: value.amount,
@@ -174,7 +194,7 @@ export class TransactionsComponent implements OnInit {
       accountId: value.accountId,
       description: value.description,
       ...(payeeName ? { payeeName } : {}),
-      ...(groupId ? { groupId } : {}),
+      ...(categoryId ? { categoryId } : {}),
     });
     this.form.reset({
       amount: 0,
@@ -182,7 +202,7 @@ export class TransactionsComponent implements OnInit {
       accountId: '',
       description: '',
       payee: '',
-      groupId: '',
+      categoryId: '',
     });
   }
 

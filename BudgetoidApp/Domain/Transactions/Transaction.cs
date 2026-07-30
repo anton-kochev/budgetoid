@@ -4,27 +4,69 @@ namespace Domain.Transactions;
 
 public sealed class Transaction
 {
+    private const int MaxMinorUnit = 4;
+
     private Transaction()
     {
     }
 
     public Guid Id { get; private set; }
-    public Guid UserId { get; private set; }
+    public Guid BudgetId { get; private set; }
     public Guid AccountId { get; private set; }
     public decimal Amount { get; private set; }
     public DateOnly Date { get; private set; }
     public string? Description { get; private set; }
     public Guid? PayeeId { get; private set; }
-    public Guid? GroupId { get; private set; }
+    public Guid? CategoryId { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
 
-    public static Transaction Create(Guid userId, Guid accountId, decimal amount, DateOnly date, string? description, DateTime createdAtUtc)
+    public static Transaction Create(Guid budgetId, Guid accountId, decimal amount, int minorUnit, DateOnly date, string? description, DateTime createdAtUtc)
     {
+        string? normalizedDescription = ValidateOrThrow(budgetId, accountId, amount, minorUnit, description);
+
+        return new Transaction
+        {
+            Id = Guid.CreateVersion7(),
+            BudgetId = budgetId,
+            AccountId = accountId,
+            Amount = amount,
+            Date = date,
+            Description = normalizedDescription,
+            CreatedAtUtc = createdAtUtc,
+        };
+    }
+
+    /// <summary>
+    /// Replaces the editable fields of the transaction. The budget, identity and creation time are
+    /// not the caller's to rewrite, and payee and category have their own assign/clear methods.
+    /// </summary>
+    public void Update(Guid accountId, decimal amount, int minorUnit, DateOnly date, string? description)
+    {
+        string? normalizedDescription = ValidateOrThrow(BudgetId, accountId, amount, minorUnit, description);
+
+        AccountId = accountId;
+        Amount = amount;
+        Date = date;
+        Description = normalizedDescription;
+    }
+
+    /// <summary>
+    /// Validates the fields shared by <see cref="Create"/> and <see cref="Update"/> and returns the
+    /// normalized description, so the two paths cannot drift apart.
+    /// </summary>
+    private static string? ValidateOrThrow(Guid budgetId, Guid accountId, decimal amount, int minorUnit, string? description)
+    {
+        // The minor unit comes from the account's currency, which the database already bounds to
+        // 0..4, so an out-of-range value is a broken caller rather than user input - and a bad one
+        // makes the precision check below meaningless, so it fails fast instead of joining errors.
+        ArgumentOutOfRangeException.ThrowIfNegative(minorUnit);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(minorUnit, MaxMinorUnit);
+
         var errors = new Dictionary<string, string[]>();
 
-        if (userId == Guid.Empty)
+        if (budgetId == Guid.Empty)
         {
-            errors[nameof(UserId)] = ["User id is required."];
+            errors[nameof(BudgetId)] = ["Budget id is required."];
         }
 
         if (accountId == Guid.Empty)
@@ -32,13 +74,11 @@ public sealed class Transaction
             errors[nameof(AccountId)] = ["Account id is required."];
         }
 
-        if (amount == 0)
+        if (decimal.Round(amount, minorUnit) != amount)
         {
-            errors[nameof(Amount)] = ["Amount must be non-zero."];
-        }
-        else if (decimal.Round(amount, 2) != amount)
-        {
-            errors[nameof(Amount)] = ["Amount must have no more than 2 decimal places."];
+            errors[nameof(Amount)] = [minorUnit == 0
+                ? "Amount must be a whole number."
+                : $"Amount must have no more than {minorUnit} decimal places."];
         }
         else if (Math.Abs(amount) > 1_000_000_000m)
         {
@@ -61,16 +101,7 @@ public sealed class Transaction
             throw new ValidationException(errors);
         }
 
-        return new Transaction
-        {
-            Id = Guid.CreateVersion7(),
-            UserId = userId,
-            AccountId = accountId,
-            Amount = amount,
-            Date = date,
-            Description = trimmedDescription,
-            CreatedAtUtc = createdAtUtc,
-        };
+        return trimmedDescription;
     }
 
     public void AssignPayee(Guid payeeId)
@@ -85,15 +116,24 @@ public sealed class Transaction
         PayeeId = payeeId;
     }
 
-    public void AssignGroup(Guid groupId)
+    // Clearing is a legitimate user action once a transaction can be edited, so it gets its own
+    // method rather than being spelled AssignPayee(Guid.Empty) - which would force AssignPayee to
+    // stop treating an empty id as a programmer error. Already-null is a no-op, not a throw.
+    public void ClearPayee() => PayeeId = null;
+
+    public void AssignCategory(Guid categoryId)
     {
         // An empty id here is a programmer/invariant error (the caller always passes a real
-        // group id), not user-facing validation — so ArgumentException, not ValidationException.
-        if (groupId == Guid.Empty)
+        // category id), not user-facing validation — so ArgumentException, not ValidationException.
+        if (categoryId == Guid.Empty)
         {
-            throw new ArgumentException("Group id is required.", nameof(groupId));
+            throw new ArgumentException("Category id is required.", nameof(categoryId));
         }
 
-        GroupId = groupId;
+        CategoryId = categoryId;
     }
+
+    // Same reasoning as ClearPayee: uncategorised is a state a user can ask for, and
+    // AssignCategory(Guid.Empty) is not how they should have to ask for it.
+    public void ClearCategory() => CategoryId = null;
 }

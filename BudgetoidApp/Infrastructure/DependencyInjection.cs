@@ -1,13 +1,18 @@
+using Application.Abstractions;
 using Application.Accounts;
+using Application.Categories;
+using Application.CategoryGroups;
 using Application.Currencies;
-using Application.Groups;
 using Application.Payees;
 using Application.Transactions;
 using Domain.Accounts;
-using Domain.Groups;
+using Domain.Budgets;
+using Domain.Categories;
+using Domain.CategoryGroups;
 using Domain.Payees;
 using Domain.Transactions;
 using Domain.Users;
+using Infrastructure.Persistence;
 using Infrastructure.ReadServices;
 using Infrastructure.Repositories;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,13 +26,22 @@ public static class DependencyInjection
         services.AddScoped<IAccountRepository, AccountRepository>();
         services.AddScoped<ITransactionRepository, TransactionRepository>();
         services.AddScoped<IPayeeRepository, PayeeRepository>();
-        services.AddScoped<IGroupRepository, GroupRepository>();
+        services.AddScoped<ICategoryGroupRepository, CategoryGroupRepository>();
+        services.AddScoped<ICategoryRepository, CategoryRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
+        services.AddScoped<IBudgetRepository, BudgetRepository>();
         services.AddScoped<ITransactionReadService, TransactionReadService>();
         services.AddScoped<IAccountReadService, AccountReadService>();
         services.AddScoped<ICurrencyReadService, CurrencyReadService>();
         services.AddScoped<IPayeeReadService, PayeeReadService>();
-        services.AddScoped<IGroupReadService, GroupReadService>();
+        services.AddScoped<ICategoryGroupReadService, CategoryGroupReadService>();
+        services.AddScoped<ICategoryReadService, CategoryReadService>();
+        services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();
+
+        // Scoped, because it reads the scoped IBudgetContext. Api/Program.cs attaches it through
+        // the (serviceProvider, options) overload of AddDbContext, whose optionsLifetime is Scoped,
+        // so the instance resolves from the request scope rather than the root one.
+        services.AddScoped<BudgetSessionInterceptor>();
         return services;
     }
 }

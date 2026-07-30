@@ -1,7 +1,8 @@
 using Application.Abstractions;
 using Application.Currencies;
 using Domain.Accounts;
-using Domain.Groups;
+using Domain.Categories;
+using Domain.CategoryGroups;
 using Domain.Payees;
 using Domain.Transactions;
 using DomainValidationException = Domain.Common.ValidationException;
@@ -13,9 +14,11 @@ public sealed class CreateTransactionHandler(
     IAccountRepository accounts,
     ICurrencyReadService currencies,
     IPayeeRepository payees,
-    IGroupRepository groups,
-    IUserContext userContext,
-    TimeProvider timeProvider)
+    ICategoryRepository categories,
+    ICategoryGroupRepository categoryGroups,
+    IBudgetContext budgetContext,
+    TimeProvider timeProvider,
+    ITransactionalExecutor transactionalExecutor)
     : ICommandHandler<CreateTransactionCommand, TransactionDto>
 {
     public async Task<TransactionDto> HandleAsync(
@@ -27,51 +30,69 @@ public sealed class CreateTransactionHandler(
         {
             throw new DomainValidationException(new Dictionary<string, string[]>
             {
-                [nameof(command.AccountId)] = ["Account was not found."]
+                [nameof(command.AccountId)] = ["Account was not found."],
             });
         }
 
-        // Derive the symbol from the same seeded currencies table the read services join against,
-        // so the create-response and the list-view never disagree. The accounts -> currencies FK
-        // (Restrict) guarantees this row exists; a null here means the schema invariant is broken,
-        // so fail loudly rather than silently falling back to a guessed symbol.
         CurrencyDto currency = await currencies.GetByCodeAsync(account.CurrencyCode, cancellationToken)
                                ?? throw new InvalidOperationException(
                                    $"Currency '{account.CurrencyCode}' for account '{account.Id}' was not found.");
 
         Transaction transaction = Transaction.Create(
-            userContext.UserId,
+            budgetContext.BudgetId,
             command.AccountId,
             command.Amount,
+            currency.MinorUnit,
             command.Date,
             command.Description,
             timeProvider.GetUtcNow().UtcDateTime);
 
-        Payee? payee = null;
-        if (!string.IsNullOrWhiteSpace(command.PayeeName))
+        Category? category = null;
+        CategoryGroup? categoryGroup = null;
+        if (command.CategoryId is { } categoryId)
         {
-            payee = await payees.GetOrCreateAsync(command.PayeeName, cancellationToken);
-            transaction.AssignPayee(payee.Id);
-        }
-
-        Group? group = null;
-        if (command.GroupId is { } groupId)
-        {
-            group = await groups.GetByIdAsync(groupId, cancellationToken);
-            if (group is null)
+            category = await categories.GetByIdAsync(categoryId, cancellationToken);
+            if (category is null)
             {
                 throw new DomainValidationException(new Dictionary<string, string[]>
                 {
-                    [nameof(command.GroupId)] = ["Group was not found."]
+                    [nameof(command.CategoryId)] = ["Category was not found."],
                 });
             }
 
-            transaction.AssignGroup(group.Id);
+            categoryGroup = await categoryGroups.GetByIdAsync(category.CategoryGroupId, cancellationToken)
+                            ?? throw new InvalidOperationException(
+                                $"Category group '{category.CategoryGroupId}' for category '{category.Id}' was not found.");
+            transaction.AssignCategory(category.Id);
         }
 
-        await repository.AddAsync(transaction, cancellationToken);
+        // The transaction boundary starts here rather than at the top of the method. Everything
+        // above is reads and domain validation, which commit nothing and would only widen the window
+        // the transaction holds its connection and locks for. Everything below is the two writes —
+        // the payee and the transaction that needed it — and they are one logical operation: a
+        // payee committed without its transaction is permanent litter, since nothing deletes payees.
+        return await transactionalExecutor.ExecuteAsync(WriteAsync, cancellationToken);
 
-        return TransactionDto.FromTransaction(transaction, account.Name, account.CurrencyCode, currency.Symbol,
-            payee?.Name, group?.Name);
+        async Task<TransactionDto> WriteAsync(CancellationToken token)
+        {
+            Payee? payee = null;
+            if (!string.IsNullOrWhiteSpace(command.PayeeName))
+            {
+                payee = await payees.GetOrCreateAsync(command.PayeeName, token);
+                transaction.AssignPayee(payee.Id);
+            }
+
+            await repository.AddAsync(transaction, token);
+
+            return TransactionDto.FromTransaction(
+                transaction,
+                account.Name,
+                account.CurrencyCode,
+                currency.Symbol,
+                payee?.Name,
+                category?.Name,
+                categoryGroup?.Id,
+                categoryGroup?.Name);
+        }
     }
 }

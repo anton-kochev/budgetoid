@@ -19,19 +19,6 @@ export class AuthService {
   public readonly userProfile$: Observable<Profile>;
 
   constructor() {
-    const { auth } = this.config.getConfig();
-
-    this.oAuth.configure({
-      clientId: auth.google?.clientId,
-      issuer: 'https://accounts.google.com',
-      redirectUri: auth.google?.redirectUri,
-      strictDiscoveryDocumentValidation: false,
-      scope: auth.google?.scope,
-      // showDebugInformation: true,
-    });
-    void this.oAuth.loadDiscoveryDocumentAndTryLogin();
-    this.oAuth.setupAutomaticSilentRefresh();
-
     // This observable will emit the user profile information
     // when the user is authenticated.
     this.userProfile$ = this.oAuth.events.pipe(
@@ -49,6 +36,23 @@ export class AuthService {
         picture: this.getStringClaim(claims, 'picture'),
       })),
     );
+  }
+
+  // Configure OAuth from the (now-loaded) app config, process any redirect-back
+  // token, and start silent refresh. Driven by an APP_INITIALIZER after the
+  // config has loaded — see core.providers.ts — so config values are present.
+  public async initialize(): Promise<void> {
+    const { auth } = this.config.getConfig();
+
+    this.oAuth.configure({
+      clientId: auth.google?.clientId,
+      issuer: 'https://accounts.google.com',
+      redirectUri: auth.google?.redirectUri,
+      strictDiscoveryDocumentValidation: false,
+      scope: auth.google?.scope,
+    });
+    await this.oAuth.loadDiscoveryDocumentAndTryLogin();
+    this.oAuth.setupAutomaticSilentRefresh();
   }
 
   private getStringClaim(claims: Record<string, unknown>, key: string): string {

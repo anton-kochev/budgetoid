@@ -4,6 +4,7 @@ import {
   EnvironmentProviders,
   makeEnvironmentProviders,
 } from '@angular/core';
+import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { AccountApiService } from './api/account-api.service';
 import { PayeesApiService } from './api/payees-api.service';
@@ -20,8 +21,12 @@ export const provideAppCore = (): EnvironmentProviders =>
     ConfigurationService,
     {
       provide: APP_INITIALIZER,
-      useFactory: (config: ConfigurationService) => () => config.load(),
-      deps: [ConfigurationService],
+      useFactory:
+        (config: ConfigurationService, auth: AuthService) => async () => {
+          await config.load();
+          await auth.initialize();
+        },
+      deps: [ConfigurationService, AuthService],
       multi: true,
     },
     {

@@ -7,11 +7,31 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IntegrationTests;
 
+/// <summary>
+/// Hosts the API over a test database under <b>two</b> identities, mirroring how the deployed
+/// application is configured: <c>ConnectionStrings:budgetoid</c> is the least-privilege
+/// application role that serves every request, and <c>ConnectionStrings:budgetoid-admin</c> is
+/// the elevated account used only by the Development-startup block to migrate and to provision
+/// the role's grants. Splitting them is what lets the API suite prove the grant matrix is
+/// sufficient rather than merely correct.
+/// </summary>
+/// <param name="appConnectionString">
+/// Connection string the application serves requests on — the least-privilege role.
+/// </param>
+/// <param name="adminConnectionString">
+/// Elevated connection string for startup migration and provisioning. Declared last, and
+/// optional, so existing positional call sites keep compiling and so a <c>string?</c> subject
+/// can never slide into it by accident. When omitted it falls back to
+/// <paramref name="appConnectionString" />, which suits the tests that run in Production
+/// (no startup migration, so no database is touched at all).
+/// </param>
 public sealed class ApiFactory(
-    string connectionString,
+    string appConnectionString,
     string? defaultSubject = "test-subject",
     string environment = "Development",
-    IReadOnlyDictionary<string, string?>? settings = null) : WebApplicationFactory<Program>
+    IReadOnlyDictionary<string, string?>? settings = null,
+    Action<IServiceCollection>? configureServices = null,
+    string? adminConnectionString = null) : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -20,10 +40,14 @@ public sealed class ApiFactory(
         {
             Dictionary<string, string?> values = new()
             {
-                ["ConnectionStrings:budgetoid"] = connectionString,
+                ["ConnectionStrings:budgetoid"] = appConnectionString,
+                ["ConnectionStrings:budgetoid-admin"] = adminConnectionString ?? appConnectionString,
                 ["Authentication:Google:ClientId"] = "test-client-id",
             };
 
+            // Applied after the defaults so a caller can still override either connection string
+            // key — including pointing the application back at the admin account to isolate a
+            // failure to privileges rather than to the change under test.
             if (settings is not null)
             {
                 foreach ((string key, string? value) in settings)
@@ -43,6 +67,11 @@ public sealed class ApiFactory(
                     options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
                 })
                 .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
+
+            // Runs last so a caller can replace anything the application registered, including the
+            // test authentication above. Tests that need to fail a specific collaborator swap it here
+            // rather than constructing a handler by hand, which would couple them to its constructor.
+            configureServices?.Invoke(services);
         });
     }
 

@@ -8,7 +8,7 @@ namespace Application.Accounts.CreateAccount;
 public sealed class CreateAccountHandler(
     IAccountRepository repository,
     ICurrencyReadService currencies,
-    IUserContext userContext,
+    IBudgetContext budgetContext,
     TimeProvider timeProvider)
     : ICommandHandler<CreateAccountCommand, AccountDto>
 {
@@ -26,11 +26,12 @@ public sealed class CreateAccountHandler(
         }
 
         Account account = Account.Create(
-            userContext.UserId,
+            budgetContext.BudgetId,
             command.Name,
             command.Type,
             command.OpeningBalance,
             currency.Code,
+            currency.MinorUnit,
             timeProvider.GetUtcNow().UtcDateTime);
 
         await repository.AddAsync(account, cancellationToken);

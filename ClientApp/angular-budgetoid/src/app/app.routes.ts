@@ -1,24 +1,17 @@
 import { Routes } from '@angular/router';
 import { authGuard } from '@app-core/guards/auth.guard';
-import * as authenticationEffects from '@app-state/authentication/authentication.effects';
-import { profileFeatureKey, profileReducer } from '@app-state/profile';
-import { provideEffects } from '@ngrx/effects';
-import { provideState } from '@ngrx/store';
+import { guestGuard } from '@app-core/guards/guest.guard';
 
 export const routes: Routes = [
   {
-    path: '',
-    providers: [
-      provideState({ name: profileFeatureKey, reducer: profileReducer }),
-      provideEffects(authenticationEffects),
-    ],
+    path: 'welcome',
+    // prettier-ignore
+    loadComponent: () => import('./welcome/welcome.component').then(x => x.WelcomeComponent),
+    canActivate: [guestGuard],
+  },
+  {
+    path: 'app',
     children: [
-      // { path: 'home', component: HomeComponent },
-      {
-        path: 'welcome',
-        // prettier-ignore
-        loadComponent: () => import('./welcome/welcome.component').then(x => x.WelcomeComponent),
-      },
       {
         path: 'home',
         // prettier-ignore
@@ -38,12 +31,16 @@ export const routes: Routes = [
         canActivate: [authGuard],
       },
       {
-        path: 'groups',
+        path: 'categories',
         // prettier-ignore
-        loadComponent: () => import('./groups/groups.component').then(x => x.GroupsComponent),
+        loadComponent: () => import('./categories/categories.component').then(x => x.CategoriesComponent),
         canActivate: [authGuard],
       },
-      { path: '', redirectTo: '/home', pathMatch: 'full' },
+      { path: 'groups', redirectTo: 'categories', pathMatch: 'full' },
+      { path: '', redirectTo: 'home', pathMatch: 'full' },
     ],
   },
+  // Root is the OAuth post-login landing spot; authGuard bounces anonymous visitors to /welcome.
+  { path: '', redirectTo: 'app', pathMatch: 'full' },
+  { path: '**', redirectTo: 'welcome' },
 ];

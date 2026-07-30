@@ -11,8 +11,21 @@
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
         <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.2"/>
+        <!-- Turns the forbidden-API list in BannedSymbols.txt (IgnoreQueryFilters, FromSql*,
+             Find, ExecuteUpdate/Delete, ...) into RS0030 compile errors. See TECH_DEBT.md,
+             "Data isolation invariant". -->
+        <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="5.6.0">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+    </ItemGroup>
+    <ItemGroup>
+        <AdditionalFiles Include="..\BannedSymbols.txt"/>
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="..\Application\Application.csproj"/>
+    </ItemGroup>
+    <ItemGroup>
+        <EmbeddedResource Include="Persistence\Provisioning\app-role-grants.sql"/>
     </ItemGroup>
 </Project>

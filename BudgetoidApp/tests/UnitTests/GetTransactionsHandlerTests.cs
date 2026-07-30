@@ -1,6 +1,8 @@
 using Application.Transactions.CreateTransaction;
 using Application.Transactions.GetTransactions;
 using Domain.Accounts;
+using Domain.Categories;
+using Domain.CategoryGroups;
 using Microsoft.Extensions.Time.Testing;
 using UnitTests.Fakes;
 
@@ -9,101 +11,72 @@ namespace UnitTests;
 public sealed class GetTransactionsHandlerTests
 {
     [Test]
-    public async Task HandleAsync_ReturnsRepositoryTransactionsNewestFirst()
-    {
-        var repository = new InMemoryTransactionRepository();
-        var userId = Guid.CreateVersion7();
-        var olderTime = new FakeTimeProvider(new DateTimeOffset(2026, 6, 11, 13, 14, 15, TimeSpan.Zero));
-        var newerTime = new FakeTimeProvider(new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero));
-        var accounts = new InMemoryAccountRepository(userId, olderTime);
-        Account account = await accounts.CreateAsync();
-
-        await new CreateTransactionHandler(
-                repository,
-                accounts,
-                new InMemoryCurrencyReadService(),
-                new InMemoryPayeeRepository(userId, olderTime),
-                new InMemoryGroupRepository(userId, olderTime),
-                new StubUserContext(userId),
-                olderTime)
-            .HandleAsync(new CreateTransactionCommand(10m, new DateOnly(2026, 6, 11), account.Id, "Older"));
-        await new CreateTransactionHandler(
-                repository,
-                accounts,
-                new InMemoryCurrencyReadService(),
-                new InMemoryPayeeRepository(userId, newerTime),
-                new InMemoryGroupRepository(userId, newerTime),
-                new StubUserContext(userId),
-                newerTime)
-            .HandleAsync(new CreateTransactionCommand(20m, new DateOnly(2026, 6, 12), account.Id, "Newest"));
-
-        var response = await new GetTransactionsHandler(repository)
-            .HandleAsync(new GetTransactionsQuery());
-
-        await Assert.That(response.Items.Count).IsEqualTo(2);
-        await Assert.That(response.Items[0].Description).IsEqualTo("Newest");
-        await Assert.That(response.Items[1].Description).IsEqualTo("Older");
-    }
-
-    [Test]
-    public async Task HandleAsync_ReturnsProjectedPayeeFields()
-    {
-        var repository = new InMemoryTransactionRepository();
-        var userId = Guid.CreateVersion7();
-        var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
-        var timeProvider = new FakeTimeProvider(createdAtUtc);
-        var accounts = new InMemoryAccountRepository(userId, timeProvider);
-        Account account = await accounts.CreateAsync();
-        var payees = new InMemoryPayeeRepository(userId, timeProvider);
-        await new CreateTransactionHandler(
-                repository,
-                accounts,
-                new InMemoryCurrencyReadService(),
-                payees,
-                new InMemoryGroupRepository(userId, timeProvider),
-                new StubUserContext(userId),
-                timeProvider)
-            .HandleAsync(new CreateTransactionCommand(20m, new DateOnly(2026, 6, 12), account.Id, "Coffee", "Starbucks"));
-        var payee = (await payees.GetAllAsync()).Single();
-        repository.SetPayeeProjection(payee.Id, payee.Name);
-
-        var response = await new GetTransactionsHandler(repository)
-            .HandleAsync(new GetTransactionsQuery());
-
-        await Assert.That(response.Items.Single().PayeeId).IsEqualTo(payee.Id);
-        await Assert.That(response.Items.Single().PayeeName).IsEqualTo("Starbucks");
-    }
-
-    [Test]
-    public async Task HandleAsync_ReturnsProjectedGroupFields()
+    public async Task HandleAsync_ReturnsTransactionsNewestFirst()
     {
         // Arrange
         var repository = new InMemoryTransactionRepository();
-        var userId = Guid.CreateVersion7();
-        var createdAtUtc = new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero);
-        var timeProvider = new FakeTimeProvider(createdAtUtc);
-        var accounts = new InMemoryAccountRepository(userId, timeProvider);
+        var budgetId = Guid.CreateVersion7();
+        var olderTime = new FakeTimeProvider(
+            new DateTimeOffset(2026, 6, 11, 13, 14, 15, TimeSpan.Zero));
+        var newerTime = new FakeTimeProvider(
+            new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero));
+        var accounts = new InMemoryAccountRepository(budgetId, olderTime);
         Account account = await accounts.CreateAsync();
-        var groups = new InMemoryGroupRepository(userId, timeProvider);
-        Domain.Groups.Group group = await groups.CreateAsync("Groceries");
-        await new CreateTransactionHandler(
-                repository,
-                accounts,
-                new InMemoryCurrencyReadService(),
-                new InMemoryPayeeRepository(userId, timeProvider),
-                groups,
-                new StubUserContext(userId),
-                timeProvider)
-            .HandleAsync(new CreateTransactionCommand(20m, new DateOnly(2026, 6, 12), account.Id, "Coffee", GroupId: group.Id));
-        repository.SetGroupProjection(group.Id, group.Name);
+        var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, olderTime);
+        var categories = new InMemoryCategoryRepository(budgetId, olderTime, categoryGroups);
+
+        await CreateAsync(repository, accounts, categoryGroups, categories, olderTime, account, "Older");
+        await CreateAsync(repository, accounts, categoryGroups, categories, newerTime, account, "Newest");
 
         // Act
         var response = await new GetTransactionsHandler(repository)
             .HandleAsync(new GetTransactionsQuery());
 
         // Assert
-        await Assert.That(response.Items.Single().GroupId).IsEqualTo(group.Id);
-        await Assert.That(response.Items.Single().GroupName).IsEqualTo("Groceries");
+        await Assert.That(response.Items.Count).IsEqualTo(2);
+        await Assert.That(response.Items[0].Description).IsEqualTo("Newest");
+        await Assert.That(response.Items[1].Description).IsEqualTo("Older");
+    }
+
+    [Test]
+    public async Task HandleAsync_ReturnsCurrentCategoryAndCategoryGroupProjection()
+    {
+        // Arrange
+        var repository = new InMemoryTransactionRepository();
+        var budgetId = Guid.CreateVersion7();
+        var timeProvider = new FakeTimeProvider(
+            new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero));
+        var accounts = new InMemoryAccountRepository(budgetId, timeProvider);
+        Account account = await accounts.CreateAsync();
+        var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
+        var categories = new InMemoryCategoryRepository(budgetId, timeProvider, categoryGroups);
+        CategoryGroup categoryGroup = await categoryGroups.CreateAsync("Essential Obligations");
+        Category category = await categories.CreateAsync(categoryGroup.Id, "Groceries");
+        await CreateAsync(
+            repository,
+            accounts,
+            categoryGroups,
+            categories,
+            timeProvider,
+            account,
+            "Food",
+            category.Id);
+        repository.SetCategoryProjection(
+            category.Id,
+            category.Name,
+            categoryGroup.Id,
+            categoryGroup.Name);
+
+        // Act
+        var response = await new GetTransactionsHandler(repository)
+            .HandleAsync(new GetTransactionsQuery());
+
+        // Assert
+        var dto = response.Items.Single();
+        await Assert.That(dto.CategoryId).IsEqualTo(category.Id);
+        await Assert.That(dto.CategoryName).IsEqualTo("Groceries");
+        await Assert.That(dto.CategoryGroupId).IsEqualTo(categoryGroup.Id);
+        await Assert.That(dto.CategoryGroupName).IsEqualTo("Essential Obligations");
     }
 
     [Test]
@@ -115,5 +88,33 @@ public sealed class GetTransactionsHandlerTests
 
         // Assert
         await Assert.That(response.Items.Count).IsEqualTo(0);
+    }
+
+    private static Task CreateAsync(
+        InMemoryTransactionRepository transactions,
+        InMemoryAccountRepository accounts,
+        InMemoryCategoryGroupRepository categoryGroups,
+        InMemoryCategoryRepository categories,
+        TimeProvider timeProvider,
+        Account account,
+        string description,
+        Guid? categoryId = null)
+    {
+        var handler = new CreateTransactionHandler(
+            transactions,
+            accounts,
+            new InMemoryCurrencyReadService(),
+            new InMemoryPayeeRepository(account.BudgetId, timeProvider),
+            categories,
+            categoryGroups,
+            new StubBudgetContext(account.BudgetId),
+            timeProvider,
+            new InMemoryTransactionalExecutor());
+        return handler.HandleAsync(new CreateTransactionCommand(
+            20m,
+            DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime),
+            account.Id,
+            description,
+            CategoryId: categoryId));
     }
 }

@@ -8,7 +8,7 @@ export interface CreateTransactionRequest {
   accountId: string;
   description: string;
   payeeName?: string;
-  groupId?: string;
+  categoryId?: string;
 }
 
 export interface TransactionDto {
@@ -23,8 +23,10 @@ export interface TransactionDto {
   currencySymbol: string;
   payeeId?: string | null;
   payeeName?: string | null;
-  groupId?: string | null;
-  groupName?: string | null;
+  categoryId?: string | null;
+  categoryName?: string | null;
+  categoryGroupId?: string | null;
+  categoryGroupName?: string | null;
 }
 
 export interface TransactionListResponse {

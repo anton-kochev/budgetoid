@@ -22,9 +22,12 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
 
             string? displayName = principal.FindFirstValue("name");
 
-            currentUser.UserId = await handler.HandleAsync(
+            ProvisionedUser provisioned = await handler.HandleAsync(
                 new EnsureUserCommand(googleSubject, email, displayName),
                 httpContext.RequestAborted);
+
+            currentUser.UserId = provisioned.UserId;
+            currentUser.BudgetId = provisioned.BudgetId;
         }
 
         await next(httpContext);
