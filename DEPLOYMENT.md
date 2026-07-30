@@ -31,10 +31,11 @@ created once with one command.
 |---|---|
 | Resource group | `rg-budgetoid-prod` — every command below targets it |
 | Pipeline identity | `msi-budgetoid`, a user-assigned managed identity in its **own** resource group `rg-budgetoid-msi`. It is deliberately outside the group above: it is the identity that runs `azd provision`, so tearing the application infrastructure down must not take it with it. Moving it in would cost a recreated identity — user-assigned identities cannot be moved across groups, and its client id, the `AZURE_CLIENT_ID` variable, and all three federated credentials would have to be reissued. |
-| Container App | `api` |
+| Container App | `api`, in a Container Apps environment the AppHost owns and places on the virtual network below |
+| Database networking | The API reaches PostgreSQL over a **private endpoint**; the server carries **no standing firewall rule**. Public access stays enabled purely so this pipeline can open a two-minute window for one address. A private DNS zone makes the server's ordinary public hostname resolve to its private address inside the network, so no connection string mentions any of this. |
 | API database identity | `budgetoid_app`, the least-privilege role, bound by object id to the API's user-assigned managed identity; the password-free connection string is injected into the Container App as `ConnectionStrings__budgetoid` |
-| API URL | `https://api.purpletree-58c68a6f.northeurope.azurecontainerapps.io` |
-| Frontend URL | `https://ashy-water-0fc187003.7.azurestaticapps.net` |
+| API URL | `https://api.icyisland-d82f1c17.northeurope.azurecontainerapps.io` — a Container Apps environment mints a new hostname every time it is recreated, so treat this as a lookup, not a constant: `az containerapp show -n api -g rg-budgetoid-prod --query properties.configuration.ingress.fqdn -o tsv` |
+| Frontend URL | `https://blue-island-06a7efa03.7.azurestaticapps.net` |
 
 ---
 
@@ -319,6 +320,15 @@ API's managed identity, and deploys — in that order. You can still trigger a m
 2. DB: the deploy run's provisioning step exits 0 — it reports the migrations it applied, then
    confirms row-level security covers every budget-owned table. `\dp payees` shows `budgetoid_app`
    with the column grants, and `az postgres flexible-server firewall-rule list` comes back empty.
-3. API: `curl https://<api-url>/health` → `200`.
+   **Empty is the whole point and it is not self-maintaining.** ARM deployments are incremental, so
+   a rule that already exists on the server survives being deleted from the template — after the
+   deployment that introduced the private endpoint, `AllowAllAzureIps` had to be removed by hand
+   (`az postgres flexible-server firewall-rule delete --resource-group rg-budgetoid-prod
+   --server-name <server> --name AllowAllAzureIps --yes`). Anything listed here between deploys is
+   either that rule returning or a window a killed runner stranded.
+3. API: `curl https://<api-url>/health` → `200`. Note that this proves nothing about the database —
+   the health check does not touch it. A request that reads or writes data is the only thing that
+   exercises the private endpoint, and with no firewall rule standing, a successful one is proof
+   the traffic went private: the public path would have refused it.
 4. Frontend: open the SWA URL, sign in with Google (redirect accepted), create/list/edit/delete a
    transaction — no CORS errors in the browser console.
