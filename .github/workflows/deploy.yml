@@ -125,15 +125,26 @@ jobs:
             -g "$AZURE_RESOURCE_GROUP" -n "${{ steps.dbfw.outputs.server }}" \
             --query fullyQualifiedDomainName -o tsv)
 
-          # The object id of the identity the API actually runs as, read off the container app rather
-          # than guessed from a naming convention — this is the principal whose tokens must map to
-          # budgetoid_app, and a wrong one produces a login failure at runtime that looks nothing
+          # The object id of the identity the API runs as — the principal whose tokens must map to
+          # budgetoid_app, where a wrong value produces a runtime login failure that looks nothing
           # like a provisioning bug.
-          APP_IDENTITY_OID=$(az containerapp show -n api -g "$AZURE_RESOURCE_GROUP" \
-            --query "identity.userAssignedIdentities.*.principalId | [0]" -o tsv)
+          #
+          # Read from the provisioning output rather than off the container app. The app is created
+          # by `azd deploy`, which runs *after* this step by design, so on any deploy that starts
+          # without an existing app — a first deploy, or one following a rebuild of the environment —
+          # asking the app is asking about something that does not exist yet. The identity is created
+          # with the Container Apps environment and outlives every app in it. The output is named for
+          # the registry because pulling images is its other job; the container app runs as this same
+          # identity.
+          MI_RESOURCE_ID=$(azd env get-value AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID)
+          if [ -z "$MI_RESOURCE_ID" ]; then
+            echo "AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID is missing from the azd environment." >&2
+            echo "azd provision publishes it, so this means provisioning did not complete." >&2
+            exit 1
+          fi
+          APP_IDENTITY_OID=$(az identity show --ids "$MI_RESOURCE_ID" --query principalId -o tsv)
           if [ -z "$APP_IDENTITY_OID" ]; then
-            echo "Could not resolve the API container app's user-assigned managed identity." >&2
-            echo "azd provision creates it, so this means provisioning did not complete." >&2
+            echo "Could not resolve a principal id for managed identity $MI_RESOURCE_ID." >&2
             exit 1
           fi
 
