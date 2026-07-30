@@ -121,9 +121,30 @@ jobs:
       - name: Migrate schema and provision the application role
         timeout-minutes: 15
         run: |
-          HOST=$(az postgres flexible-server show \
-            -g "$AZURE_RESOURCE_GROUP" -n "${{ steps.dbfw.outputs.server }}" \
-            --query fullyQualifiedDomainName -o tsv)
+          # Every lookup below reports its own failure. Under `bash -e` a command whose output is
+          # captured into a variable dies with its message inside that variable, so the step ends on
+          # exit 1 having printed nothing at all — which is the least useful thing a deploy step can
+          # do. `capture` keeps the output either way and prints it when the command fails.
+          # Deliberately no `set -x`: the token below would be traced before ::add-mask:: exists.
+          capture() {
+            local __name=$1 __label=$2; shift 2
+            local __output __status
+            # The && / || form matters: a bare `__output=$(...)` is a simple command, so `bash -e`
+            # would abort on it before the status could be read — reproducing the silent exit this
+            # helper exists to prevent.
+            __output=$("$@" 2>&1) && __status=0 || __status=$?
+            if [ $__status -ne 0 ] || [ -z "$__output" ]; then
+              echo "$__label failed (exit $__status): ${__output:-<no output>}" >&2
+              echo "  command: $*" >&2
+              return 1
+            fi
+            printf -v "$__name" '%s' "$__output"
+          }
+
+          capture HOST "resolving the database host" \
+            az postgres flexible-server show \
+              -g "$AZURE_RESOURCE_GROUP" -n "${{ steps.dbfw.outputs.server }}" \
+              --query fullyQualifiedDomainName -o tsv
 
           # The object id of the identity the API runs as — the principal whose tokens must map to
           # budgetoid_app, where a wrong value produces a runtime login failure that looks nothing
@@ -135,18 +156,13 @@ jobs:
           # asking the app is asking about something that does not exist yet. The identity is created
           # with the Container Apps environment and outlives every app in it. The output is named for
           # the registry because pulling images is its other job; the container app runs as this same
-          # identity.
-          MI_RESOURCE_ID=$(azd env get-value AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID)
-          if [ -z "$MI_RESOURCE_ID" ]; then
-            echo "AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID is missing from the azd environment." >&2
-            echo "azd provision publishes it, so this means provisioning did not complete." >&2
-            exit 1
-          fi
-          APP_IDENTITY_OID=$(az identity show --ids "$MI_RESOURCE_ID" --query principalId -o tsv)
-          if [ -z "$APP_IDENTITY_OID" ]; then
-            echo "Could not resolve a principal id for managed identity $MI_RESOURCE_ID." >&2
-            exit 1
-          fi
+          # identity. The environment is named explicitly so the lookup cannot depend on which one azd
+          # happens to consider current.
+          capture MI_RESOURCE_ID "reading the managed identity from the azd environment" \
+            azd env get-value AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID -e "$AZURE_ENV_NAME"
+
+          capture APP_IDENTITY_OID "resolving the managed identity's principal id" \
+            az identity show --ids "$MI_RESOURCE_ID" --query principalId -o tsv
 
           # A token, not a password: PostgreSQL receives it in the password field, and Azure matches
           # it to a role by the principal's object id. Valid for under an hour, which is why it is
