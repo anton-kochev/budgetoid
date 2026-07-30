@@ -307,12 +307,14 @@ public sealed class RlsIsolationTests
         await using NpgsqlCommand read = new("select count(*) from accounts", bare);
         PostgresException? refusal = await CaptureRefusalAsync(read);
 
-        // Assert — 22P02, not "unrecognized configuration parameter". Provisioning runs
-        // ALTER ROLE budgetoid_app SET app.current_budget_id = '', so every session of the role
-        // starts with the setting defined and empty, and the failure is the ''::uuid cast inside the
-        // policy. That ALTER ROLE exists precisely to make this deterministic: without it the code
-        // would be 42704 on a fresh backend and 22P02 on one Npgsql had already recycled, which is
-        // not a thing a test can assert.
+        // Assert — 22P02, not "unrecognized configuration parameter". The determinism comes from the
+        // shape of the policy itself, which reads the setting as
+        // COALESCE(current_setting('app.current_budget_id', true), '')::uuid. Strict current_setting
+        // would be 42704 on a backend that has never seen the setting and 22P02 on one Npgsql had
+        // already recycled, which is not a thing a test can assert; the missing_ok overload turns the
+        // first case into NULL and the COALESCE turns that NULL into the same ''::uuid cast the
+        // recycled connection already produced. Both paths therefore fail identically — one bug, one
+        // SQLSTATE.
         //
         // The null coalesce is for the failure message, not the logic: a bare refusal?.SqlState
         // renders a statement that succeeded as the empty string, which reads as an exception

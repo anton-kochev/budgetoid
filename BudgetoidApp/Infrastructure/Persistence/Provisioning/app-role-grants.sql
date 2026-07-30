@@ -137,40 +137,49 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 -- POLICY has no OR REPLACE, so a changed policy body only takes effect on a re-run because the old
 -- one is dropped first.
 
--- Every session of the role starts with the setting DEFINED and empty. Without this default,
--- strict current_setting has a nondeterministic SQLSTATE for the same bug: 42704 ("unrecognized
+-- The policies below read the setting as COALESCE(current_setting(..., true), ''), and that shape
+-- is load-bearing rather than defensive. A session that names no budget must fail the same way
+-- whatever the connection's history: strict current_setting raises 42704 ("unrecognized
 -- configuration parameter") on a backend that has never seen the setting, but 22P02 once
--- set_config has run and Npgsql's pool reset has left the parameter defined as ''. Making the
--- unset state always the ''::uuid cast is what lets a session that names no budget fail the same
--- way on a fresh connection and a recycled one alike. RlsIsolationTests pins that code.
-ALTER ROLE budgetoid_app SET app.current_budget_id = '';
+-- set_config has run and Npgsql's pool reset has left the parameter defined as ''. The missing_ok
+-- overload turns the first case into NULL, and the COALESCE turns that into the same ''::uuid cast
+-- as the second — one failure for one bug, which is what RlsIsolationTests pins.
+--
+-- Note what this is NOT: NULLIF to a NULL comparison, which would make an unset session read as
+-- zero rows instead of an error. The '' default is chosen precisely because casting it throws.
+--
+-- The role default this used to rely on (ALTER ROLE budgetoid_app SET app.current_budget_id = '')
+-- cannot be applied here. PostgreSQL requires superuser to set a placeholder parameter — one no
+-- loaded extension has registered — as a role default, and no principal on Azure Database for
+-- PostgreSQL has superuser, so the statement fails with 42501 for every identity that could run
+-- this script. See docs/decisions/0008.
 
 ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS budget_isolation ON accounts;
 CREATE POLICY budget_isolation ON accounts FOR ALL TO budgetoid_app
-    USING      (budget_id = current_setting('app.current_budget_id')::uuid)
-    WITH CHECK (budget_id = current_setting('app.current_budget_id')::uuid);
+    USING      (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid)
+    WITH CHECK (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid);
 
 ALTER TABLE category_groups ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS budget_isolation ON category_groups;
 CREATE POLICY budget_isolation ON category_groups FOR ALL TO budgetoid_app
-    USING      (budget_id = current_setting('app.current_budget_id')::uuid)
-    WITH CHECK (budget_id = current_setting('app.current_budget_id')::uuid);
+    USING      (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid)
+    WITH CHECK (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid);
 
 ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS budget_isolation ON categories;
 CREATE POLICY budget_isolation ON categories FOR ALL TO budgetoid_app
-    USING      (budget_id = current_setting('app.current_budget_id')::uuid)
-    WITH CHECK (budget_id = current_setting('app.current_budget_id')::uuid);
+    USING      (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid)
+    WITH CHECK (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid);
 
 ALTER TABLE payees ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS budget_isolation ON payees;
 CREATE POLICY budget_isolation ON payees FOR ALL TO budgetoid_app
-    USING      (budget_id = current_setting('app.current_budget_id')::uuid)
-    WITH CHECK (budget_id = current_setting('app.current_budget_id')::uuid);
+    USING      (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid)
+    WITH CHECK (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid);
 
 ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS budget_isolation ON transactions;
 CREATE POLICY budget_isolation ON transactions FOR ALL TO budgetoid_app
-    USING      (budget_id = current_setting('app.current_budget_id')::uuid)
-    WITH CHECK (budget_id = current_setting('app.current_budget_id')::uuid);
+    USING      (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid)
+    WITH CHECK (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid);
