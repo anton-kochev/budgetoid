@@ -219,9 +219,17 @@ if (builder.ExecutionContext.IsPublishMode)
             // is the only one a flexible server offers — and the zone group is what writes the server's
             // record into the private zone, which is what lets the connection string keep naming the
             // public FQDN.
+            // The module's own location parameter, not flexibleServer.Location. A resource's location
+            // is only known once it exists, and Bicep requires this property to be resolvable before
+            // the deployment starts, so reading it off the server is rejected outright (BCP120).
+            ProvisioningParameter moduleLocation = infrastructure
+                .GetProvisionableResources()
+                .OfType<ProvisioningParameter>()
+                .Single(parameter => parameter.BicepIdentifier == "location");
+
             PrivateEndpoint privateEndpoint = new("postgresPrivateEndpoint")
             {
-                Location = flexibleServer.Location,
+                Location = moduleLocation,
                 Subnet = new SubnetResource("postgresPrivateEndpointSubnet")
                 {
                     Id = privateEndpointSubnetId.AsProvisioningParameter(infrastructure),
