@@ -9,7 +9,12 @@
         <UserSecretsId>11832ff7-30b3-434f-b739-e96a265952c8</UserSecretsId>
     </PropertyGroup>
     <ItemGroup>
-        <PackageReference Include="Aspire.Npgsql.EntityFrameworkCore.PostgreSQL" Version="13.4.6"/>
+        <!-- The Azure variant, not the plain one: it adds a password provider that fetches a
+             Microsoft Entra access token from the container's managed identity, which is how the
+             deployed API authenticates. It self-disables when the connection string already carries
+             a password, so local dev and the integration tests keep password auth with no
+             conditional code. See docs/decisions/0007. -->
+        <PackageReference Include="Aspire.Azure.Npgsql.EntityFrameworkCore.PostgreSQL" Version="13.4.6"/>
         <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.9"/>
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9"/>
         <!-- Pin Microsoft.OpenApi above the 2.0.0 that Microsoft.AspNetCore.OpenApi 10.0.9 pulls
@@ -20,7 +25,7 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <!-- Aspire.Npgsql.EntityFrameworkCore.PostgreSQL pulls EF Core Relational transitively;
+        <!-- Aspire.Azure.Npgsql.EntityFrameworkCore.PostgreSQL pulls EF Core Relational transitively;
              pin to 10.0.9 to match Infrastructure and avoid MSB3277. -->
         <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.9"/>
         <!-- Turns the forbidden-API list in BannedSymbols.txt (IgnoreQueryFilters, FromSql*,

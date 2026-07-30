@@ -20,20 +20,36 @@ builder.AddServiceDefaults();
 
 // Registered non-pooled (AddDbContext, scoped) because BudgetoidDbContext depends on the scoped
 // IBudgetContext for its budget isolation query filters, and pooled contexts can't take scoped
-// dependencies. Aspire's AddNpgsqlDbContext pools contexts; EnrichNpgsqlDbContext re-applies
-// Aspire's retry/health/telemetry defaults here.
+// dependencies. Aspire's AddNpgsqlDbContext pools contexts; the Enrich call re-applies Aspire's
+// retry/health/telemetry defaults here.
 // The (serviceProvider, options) overload, not the plain one: BudgetSessionInterceptor is scoped
 // because it reads the scoped IBudgetContext, and this overload's optionsLifetime defaults to
 // Scoped, so it resolves from the request scope. The interceptor is what puts the ambient budget on
 // each connection for the row-level security policies — without it the role's every policied query
 // fails with 22P02.
+//
+// The Azure enrichment, not the plain EnrichNpgsqlDbContext: the deployed API holds no database
+// password. EnrichAzureNpgsqlDbContext layers a password provider onto the data source that fetches
+// a Microsoft Entra access token from the container's user-assigned managed identity (Aspire reads
+// AZURE_CLIENT_ID / AZURE_TOKEN_CREDENTIALS, which its Container Apps publisher injects); to
+// PostgreSQL that token is the password. It self-disables when the connection string already carries
+// both a username and a password, which is exactly the local-dev and integration-test case — that is
+// why there is no environment check here, one registration serves both and the connection string
+// decides.
+// The enrichment works through ConfigureDataSource, so the AddDbContext above must keep handing
+// UseNpgsql a connection *string*. Passing a pre-built NpgsqlDataSource instead would conflict with
+// it: EF cannot see inside an externally built data source and can hand back a cached one that never
+// received the token provider. Do not "simplify" it that way.
+// The enrichment must also stay after AddDbContext — it requires the context to be registered
+// already, and on .NET 10 it appends an options-configuration action, which is what preserves the
+// interceptor registered above.
 builder.Services.AddDbContext<BudgetoidDbContext>((serviceProvider, options) =>
     options
         .UseNpgsql(BuildConnectionString(
             builder.Configuration.GetConnectionString("budgetoid"),
             builder.Environment.IsDevelopment()))
         .AddInterceptors(serviceProvider.GetRequiredService<BudgetSessionInterceptor>()));
-builder.EnrichNpgsqlDbContext<BudgetoidDbContext>();
+builder.EnrichAzureNpgsqlDbContext<BudgetoidDbContext>();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure();
 builder.Services.AddHttpContextAccessor();
@@ -179,8 +195,10 @@ await app.RunAsync();
 
 // Force TLS on the PostgreSQL connection outside local development. Azure Database for PostgreSQL
 // Flexible Server rejects unencrypted connections (28000: no pg_hba.conf entry ... no encryption)
-// and enforces TLS server-side, but the connection string injected from the Key Vault secret via
-// Aspire carries only host/user/password/database and omits SslMode — so Npgsql would otherwise
+// and enforces TLS server-side, but the connection string the deployed app is handed carries only
+// the endpoint details — host, database, and the user, plus a password only where password auth is
+// used at all (in production the credential is an Entra token supplied by the Azure enrichment
+// above, not a password in the string). SslMode is absent either way, so Npgsql would otherwise
 // attempt an unencrypted connection. Rebuild the string with SslMode=Require, which (Npgsql 8+)
 // encrypts without validating the server certificate, so Azure's cert chain need not be in the
 // chiseled container's trust store.
