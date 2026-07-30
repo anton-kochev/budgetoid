@@ -32,16 +32,14 @@ jobs:
       # they map to infra.parameters.frontend_origin / .google_client_id in the AppHost.
       AZURE_FRONTEND_ORIGIN: ${{ vars.AZURE_FRONTEND_ORIGIN }}
       AZURE_GOOGLE_CLIENT_ID: ${{ vars.AZURE_GOOGLE_CLIENT_ID }}
-      # Postgres admin credentials. The AppHost now builds the connection string from these
-      # (infra.parameters.postgres_username / .postgres_password), so azd requires them as
-      # provision inputs. Values come from the repo var/secret set by `azd pipeline config`.
-      AZURE_POSTGRES_USERNAME: ${{ vars.AZURE_POSTGRES_USERNAME }}
-      AZURE_POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
-      # The least-privilege application role's password (infra.parameters.postgres_app_password).
-      # One secret feeds two consumers that must agree: azd bakes it into the container's connection
-      # string, and the provisioning step below assigns it to the role. Splitting them is how the
-      # deployed app ends up unable to log in.
-      AZURE_POSTGRES_APP_PASSWORD: ${{ secrets.AZURE_POSTGRES_APP_PASSWORD }}
+      # This workflow's own service principal, which the AppHost registers as a Microsoft Entra
+      # administrator of the Postgres server (infra.parameters.pipeline_principal_id / _name).
+      # Entra-only auth means the *only* identity that can migrate the schema and bind the
+      # application role is an Entra admin, and this is it. Repository variables, not secrets:
+      # a principal's object id and display name are identifiers, not credentials — nothing here
+      # authenticates anything without the federated OIDC login below.
+      AZURE_PIPELINE_PRINCIPAL_ID: ${{ vars.AZURE_PIPELINE_PRINCIPAL_ID }}
+      AZURE_PIPELINE_PRINCIPAL_NAME: ${{ vars.AZURE_PIPELINE_PRINCIPAL_NAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -51,15 +49,17 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      # An unset secret resolves to the empty string rather than failing, and both consumers would
-      # take it: azd would provision a container whose connection string has no password, and the
-      # provisioning tool would try to assign an empty one. Named failure here beats either.
-      - name: Require the application role password
+      # An unset variable resolves to the empty string rather than failing, and azd would carry it
+      # into the administrators resource, whose name IS the object id — ARM rejects an empty resource
+      # name with a message about the resource, not about the missing input. Named failure here beats
+      # decoding that one.
+      - name: Require the pipeline principal identifiers
         run: |
-          if [ -z "$AZURE_POSTGRES_APP_PASSWORD" ]; then
-            echo "AZURE_POSTGRES_APP_PASSWORD is empty. Set the repository secret; it is the" >&2
-            echo "password azd bakes into the container connection string AND the one the" >&2
-            echo "provisioning step assigns to the budgetoid_app role. See DEPLOYMENT.md." >&2
+          if [ -z "$AZURE_PIPELINE_PRINCIPAL_ID" ] || [ -z "$AZURE_PIPELINE_PRINCIPAL_NAME" ]; then
+            echo "AZURE_PIPELINE_PRINCIPAL_ID and AZURE_PIPELINE_PRINCIPAL_NAME must both be set" >&2
+            echo "as repository variables. They register this workflow's service principal as a" >&2
+            echo "Microsoft Entra administrator of the Postgres server, which is the only identity" >&2
+            echo "that can migrate the schema under Entra-only auth. See DEPLOYMENT.md." >&2
             exit 1
           fi
 
@@ -102,27 +102,47 @@ jobs:
             -g "$AZURE_RESOURCE_GROUP" -n "$SERVER" --rule-name gh-deploy-migration \
             --start-ip-address "$RUNNER_IP" --end-ip-address "$RUNNER_IP"
 
-      # Migrate, provision the role, and verify row-level security coverage in one process, so the
-      # ordering is enforced in code rather than by whoever reads the runbook. The grants are
-      # fail-closed, but RLS is fail-open: a migrated table with no policy is readable across every
-      # tenant and reports nothing, which is why the tool verifies rather than assumes.
+      # Migrate, provision the role, verify row-level security coverage, and bind the application
+      # role to the API's managed identity — one process, so the ordering is enforced in code rather
+      # than by whoever reads the runbook. The grants are fail-closed, but RLS is fail-open: a
+      # migrated table with no policy is readable across every tenant and reports nothing, which is
+      # why the tool verifies rather than assumes.
+      #
+      # There is no stored credential to read anywhere in here. The admin connection string is built
+      # in this step from a Microsoft Entra access token this job mints for itself, and it dies with
+      # the step.
       - name: Migrate schema and provision the application role
         timeout-minutes: 15
-        env:
-          DBPROVISION_APP_ROLE_PASSWORD: ${{ secrets.AZURE_POSTGRES_APP_PASSWORD }}
         run: |
-          VAULT=$(az keyvault list -g "$AZURE_RESOURCE_GROUP" \
-            --query "[?starts_with(name,'postgreskv')].name | [0]" -o tsv)
-          CONN=$(az keyvault secret show --vault-name "$VAULT" \
-            --name connectionstrings--budgetoid --query value -o tsv)
-          # Not a secrets.* value, so Actions does not mask it automatically. Mask it before it can
-          # reach a log, and keep it in this step's environment only — writing it to GITHUB_ENV would
-          # persist an admin credential to a file on the runner for every later step to inherit.
-          echo "::add-mask::$CONN"
-          # The Key Vault string carries host/user/password/database and no SslMode; Azure Postgres
-          # refuses unencrypted connections. Api/Program.cs appends the same option for the same
-          # reason.
-          DBPROVISION_ADMIN_CONNECTION_STRING="${CONN};Ssl Mode=Require" \
+          HOST=$(az postgres flexible-server show \
+            -g "$AZURE_RESOURCE_GROUP" -n "${{ steps.dbfw.outputs.server }}" \
+            --query fullyQualifiedDomainName -o tsv)
+
+          # The object id of the identity the API actually runs as, read off the container app rather
+          # than guessed from a naming convention — this is the principal whose tokens must map to
+          # budgetoid_app, and a wrong one produces a login failure at runtime that looks nothing
+          # like a provisioning bug.
+          APP_IDENTITY_OID=$(az containerapp show -n api -g "$AZURE_RESOURCE_GROUP" \
+            --query "identity.userAssignedIdentities.*.principalId | [0]" -o tsv)
+          if [ -z "$APP_IDENTITY_OID" ]; then
+            echo "Could not resolve the API container app's user-assigned managed identity." >&2
+            echo "azd provision creates it, so this means provisioning did not complete." >&2
+            exit 1
+          fi
+
+          # A token, not a password: PostgreSQL receives it in the password field, and Azure matches
+          # it to a role by the principal's object id. Valid for under an hour, which is why it is
+          # acquired in the step that uses it and never written to GITHUB_ENV — that would persist a
+          # live admin credential to a file every later step inherits.
+          TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
+          echo "::add-mask::$TOKEN"
+
+          # Ssl Mode=Require because Azure Postgres refuses unencrypted connections; Api/Program.cs
+          # appends the same option for the same reason. Username is the administrator's principal
+          # name as registered on the server — the token proves which principal it is, but Postgres
+          # still needs a role name to log in as.
+          DBPROVISION_ADMIN_CONNECTION_STRING="Host=${HOST};Username=${AZURE_PIPELINE_PRINCIPAL_NAME};Password=${TOKEN};Database=budgetoid;Ssl Mode=Require" \
+          DBPROVISION_APP_IDENTITY_OBJECT_ID="$APP_IDENTITY_OID" \
             dotnet run --project BudgetoidApp/Tools/DbProvision -c Release
 
       # always(), so a failed migration closes the window it opened instead of leaving the database

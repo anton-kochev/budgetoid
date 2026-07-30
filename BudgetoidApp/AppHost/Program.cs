@@ -1,4 +1,5 @@
 using Aspire.Hosting.Azure;
+using Azure.Provisioning;
 using Azure.Provisioning.PostgreSql;
 using Projects;
 
@@ -9,26 +10,26 @@ IResourceBuilder<ProjectResource> api = builder.AddProject<Api>("api");
 if (builder.ExecutionContext.IsPublishMode)
 {
     // In publish mode azd provisions a real Azure Database for PostgreSQL Flexible Server (no
-    // RunAsContainer here). Aspire's default auth model is Microsoft Entra / managed identity, but
-    // that path produced an incomplete connection string end-to-end (the app connected as OS user
-    // "app" without SSL and was rejected). Per docs/decisions/0001 we switch to password
-    // authentication: the parameterless WithPasswordAuthentication() auto-generates the admin
-    // username and a random password stored as a secure parameter, which azd surfaces as a
-    // Container App secret and Aspire wires into a complete connection string.
-    // Admin credentials for password auth. Declaring them as explicit parameters (instead of
-    // letting the parameterless overload auto-generate anonymous ones) keeps them addressable: they
-    // map to the same manifest params azd already provisions (AZURE_POSTGRES_USERNAME / _PASSWORD),
-    // so the stored admin password is unchanged. Their only consumers are the server provisioning
-    // below and the Key Vault secrets the generated Bicep writes for the operator; nothing built
-    // from them is handed to the running application.
-    IResourceBuilder<ParameterResource> postgresUsername = builder.AddParameter("postgres-username");
-    IResourceBuilder<ParameterResource> postgresPassword = builder.AddParameter("postgres-password", secret: true);
-
-    // Password for the least-privilege role the application serves requests as (budgetoid_app,
-    // created by Infrastructure's grants script). It is a parameter of its own rather than a
-    // derivative of the admin password because the two identities are meant to be independently
-    // rotatable — that independence is the whole point of the split.
-    IResourceBuilder<ParameterResource> postgresAppPassword = builder.AddParameter("postgres-app-password", secret: true);
+    // RunAsContainer here). No WithPasswordAuthentication call: that is what leaves Aspire's
+    // default in place, which is Microsoft Entra authentication only
+    // (activeDirectoryAuth Enabled, passwordAuth Disabled in the generated Bicep). Per
+    // docs/decisions/0007 there is no longer a database password anywhere in production — not for
+    // the application role, not for a server administrator, and none in Key Vault for an operator.
+    //
+    // ADR 0001 rejected this path once, because Aspire emitted a connection string of bare
+    // Host;Database and the app connected as the container's OS user without SSL. What changed is
+    // the client side: the API now uses Aspire's *Azure* Npgsql integration, which attaches an
+    // Entra token provider, and the connection string below names the role explicitly instead of
+    // letting Npgsql default the username. The server-side gap was never the problem.
+    //
+    // Also note what is deliberately absent: the API does not WithReference this server (see the
+    // connection string below), and for this resource type a reference is what registers the
+    // referencing compute resource's managed identity as a full Entra *administrator* of the
+    // server — azure_pg_admin, CREATEROLE, CREATEDB. A request-serving process must never hold
+    // that, and the role it does connect as is bound to its identity by the deploy-time
+    // provisioning tool instead.
+    IResourceBuilder<ParameterResource> pipelinePrincipalId = builder.AddParameter("pipeline-principal-id");
+    IResourceBuilder<ParameterResource> pipelinePrincipalName = builder.AddParameter("pipeline-principal-name");
 
     IResourceBuilder<AzurePostgresFlexibleServerResource> postgres = builder
         .AddAzurePostgresFlexibleServer("postgres")
@@ -56,43 +57,70 @@ if (builder.ExecutionContext.IsPublishMode)
                 BackupRetentionDays = 7,
                 GeoRedundantBackup = PostgreSqlFlexibleServerGeoRedundantBackupEnum.Disabled,
             };
+
+            // The deploy pipeline's service principal, registered as a Microsoft Entra
+            // administrator of the server. Somebody has to be able to migrate the schema and bind
+            // the application role to its identity, and with Entra-only auth that somebody must be
+            // an Entra admin: only an Entra administrator can create or label Entra principals in
+            // the database, and membership in azure_pg_admin alone does not confer it.
+            //
+            // Azure matches an access token to a database role by the principal's object id rather
+            // than by name, which is why the resource *name* here is the object id and the display
+            // name is only a property. Both arrive as azd parameters
+            // (infra.parameters.pipeline_principal_id / _name) so nothing about the pipeline's
+            // identity is checked into the repo.
+            // AsProvisioningParameter rather than a bare ProvisioningParameter: it registers the
+            // parameter in the app model as well as in this module, so azd learns it has to supply a
+            // value (from AZURE_PIPELINE_PRINCIPAL_ID / _NAME). A raw Bicep parameter would appear in
+            // the module and in nothing else, leaving azd to deploy it unset.
+            infrastructure.Add(new PostgreSqlFlexibleServerActiveDirectoryAdministrator("postgres_pipeline_admin")
+            {
+                Parent = flexibleServer,
+                Name = pipelinePrincipalId.AsProvisioningParameter(infrastructure),
+                PrincipalType = PostgreSqlFlexibleServerPrincipalType.ServicePrincipal,
+                PrincipalName = pipelinePrincipalName.AsProvisioningParameter(infrastructure),
+            });
         })
-        .WithPasswordAuthentication(postgresUsername, postgresPassword);
+        // Without this, Aspire emits a postgres-roles Bicep module whose administrators resource
+        // takes its name from a principalId parameter that nothing fills — no compute resource
+        // references this server, deliberately (see the connection string below) — and ARM refuses a
+        // resource with an empty name, so azd provision fails outright. WithPasswordAuthentication
+        // used to clear these annotations as a side effect, which is why the module only appeared
+        // once that call went away. The pipeline administrator this deployment does want is the
+        // explicit one above, not a default role assignment.
+        .ClearDefaultRoleAssignments();
 
     // The name is the database name, which the connection string below spells as Database=budgetoid.
     // WaitFor is a run-mode orchestration primitive, so it's omitted for this provisioned resource.
-    // The database resource and the Key Vault secret the operator migrates with are both emitted by
-    // AddDatabase into the server's Bicep module, so nothing here depends on the api referencing it.
     postgres.AddDatabase("budgetoid");
 
-    // The api deliberately does not WithReference that database: for this resource a reference
-    // injects the *admin* identity into the container. It writes ConnectionStrings__budgetoid
-    // (which the explicit override below would win over) but also BUDGETOID_URI, BUDGETOID_USERNAME
-    // and BUDGETOID_PASSWORD, all built from the administrator login — which would put the server
-    // admin password in a request-serving container's environment under a second set of names, with
-    // no consumer. Dropping the reference is what actually keeps admin credentials out; the
-    // connection string below is the only one the application reads, and it needs no reference to
-    // exist.
+    // The api deliberately does not WithReference that database. Two independent reasons, and both
+    // still hold now that there is no password to leak:
     //
-    // ROOT FIX for docs/decisions/0001 gotcha #1: WithReference resolves the connection string to a
-    // Key Vault secret reference ({postgres-kv.secrets.connectionstrings--budgetoid}), which azd
-    // mis-renders into a BARE Container App secret (host only, no credentials) — so the app couldn't
-    // reach Postgres until a post-deploy step rewrote the secret. Instead, build the full connection
-    // string here from the application-role password parameter + the server host output and inject
-    // it directly, so azd emits a complete, self-contained secret and no repair step is needed.
-    // SslMode stays in Api/Program.cs as the single source of TLS config; this host/user/password/db
-    // shape matches what that code expects.
+    // First, for this resource type a reference registers the referencing compute resource's
+    // managed identity as a full Microsoft Entra *administrator* of the server — azure_pg_admin,
+    // CREATEROLE, CREATEDB. The whole grant matrix and every row-level security policy would be
+    // decoration: an administrator is not subject to them. The API must reach the database as
+    // budgetoid_app and as nothing else.
     //
-    // Two identities exist; one of them reaches the container. "budgetoid_app" is the least-privilege
-    // role, and the connection string below is the only one injected — the API serves every request
-    // on it. The server admin can run DDL, and a request-serving process has no use for DDL rights,
-    // so it is never given them: the deploy-time migration and role-provisioning steps run in the
-    // deploy pipeline, as the Tools/DbProvision tool, which reads the admin credentials out of Key
-    // Vault with the pipeline identity (DEPLOYMENT.md). The API asks for
-    // ConnectionStrings:budgetoid-admin only inside its Development startup check, and in the
-    // deployed app that key has no value to find.
+    // Second, Aspire's own connection string for an Entra server is bare Host= with no username,
+    // which is ADR 0001's original failure: Npgsql then defaults the username to the container's OS
+    // user ("app" in the noble-chiseled image) and Azure rejects it. Naming the role explicitly here
+    // is the fix, and it is required rather than cosmetic — Aspire's Azure Npgsql integration can
+    // only infer a username from token claims, which never yields a custom role name like
+    // budgetoid_app.
+    //
+    // There is no Password=, and its absence is load-bearing: that is precisely what makes the
+    // client integration attach its Entra token provider instead of standing aside. The credential
+    // the API presents is a short-lived access token fetched from its own managed identity, which
+    // the deploy-time provisioning tool has bound to this role by object id. Nothing secret is
+    // injected into the container, so nothing about the database can leak from its environment.
+    //
+    // SslMode stays in Api/Program.cs as the single source of TLS config; this host/user/database
+    // shape matches what that code expects. ConnectionStrings:budgetoid-admin is asked for only
+    // inside the Development startup check, and in the deployed app that key has no value to find.
     api.WithEnvironment("ConnectionStrings__budgetoid", ReferenceExpression.Create(
-        $"Host={postgres.GetOutput("hostName")};Username=budgetoid_app;Password={postgresAppPassword.Resource};Database=budgetoid"));
+        $"Host={postgres.GetOutput("hostName")};Username=budgetoid_app;Database=budgetoid"));
 
     // Deploy-time azd parameters (non-secret) baked into the generated Bicep; azd provision prompts
     // for them. ASP.NET binds the double-underscore/index env-var names to configuration keys, so

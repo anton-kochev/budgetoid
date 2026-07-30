@@ -8,18 +8,22 @@ tier (real backups + security, minimal spend) with a clear path to scale up on l
 | API (.NET 10) | Azure Container Apps, consumption, scale-to-zero (`MinReplicas = 0`) | → `MinReplicas = 1` when cold starts bite |
 | Frontend (Angular) | Azure Static Web Apps, **Free** (custom domain + TLS included) | → Standard for the SLA |
 | PostgreSQL | Azure Postgres **Flexible Burstable B1ms**, 32 GB, 7-day backups + PITR | → General Purpose → zone-redundant HA |
-| DB auth | **Password**: an Aspire-generated admin login in **Azure Key Vault** for migrations and provisioning, and the least-privilege `budgetoid_app` role the API serves requests as (see [ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)) | → back to passwordless (see [ADR 0001](docs/decisions/0001-postgres-password-authentication.md)) |
+| DB auth | **Microsoft Entra only** — no database password exists. The API authenticates as its managed identity and connects as the least-privilege `budgetoid_app` role; the deploy pipeline authenticates as an Entra administrator to migrate and provision (see [ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md)) | — |
 
-**Infra is code.** The Aspire `AppHost` is the source of truth; `azd` provisions **the API, the
-PostgreSQL server, and its Key Vault** from it, regenerating the Bicep at deploy time (the
-synthesized `./infra` is gitignored, not committed, to avoid drift). The **Static Web App is the
-only out-of-band resource** — created once with one command.
+**Infra is code.** The Aspire `AppHost` is the source of truth; `azd` provisions **the API and the
+PostgreSQL server** from it, regenerating the Bicep at deploy time (the synthesized `./infra` is
+gitignored, not committed, to avoid drift). The **Static Web App is the only out-of-band resource** —
+created once with one command.
 
-> **Why password auth and not passwordless?** Aspire's passwordless (managed-identity) client
-> wiring produced an incomplete connection string, and every DB request 500'd. The full rationale,
-> the two rollout gotchas, and the hardening path back to passwordless are in
-> **[ADR 0001](docs/decisions/0001-postgres-password-authentication.md)**. Read it before touching
-> the DB connection.
+> **How the database connection works.** Nothing holds a database password. The API's connection
+> string is `Host=…;Username=budgetoid_app;Database=budgetoid`, and the missing `Password=` is what
+> makes Aspire's Azure Npgsql integration fetch an access token from the container's managed
+> identity instead. Think of it as a hotel key card rather than a house key: it is issued on
+> arrival, works for under an hour, and is reissued rather than kept. The role is bound to that
+> identity by object id, so the binding — not the name — is what grants access. Read
+> **[ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md)** before
+> touching the DB connection, and **[ADR 0001](docs/decisions/0001-postgres-password-authentication.md)**
+> for the failure that made the first attempt at this fail.
 
 ### Current deployment (env: `budgetoid-prod`, region: `northeurope`)
 
@@ -27,9 +31,7 @@ only out-of-band resource** — created once with one command.
 |---|---|
 | Resource group | `rg-budgetoid-prod` |
 | Container App | `api` |
-| Key Vault | `postgreskv-bq7exijxgtbdu` (RBAC mode) |
-| Key Vault secret | `connectionstrings--budgetoid` — the **admin** connection string, used by Steps 3 and 4 |
-| API database identity | `budgetoid_app`, the least-privilege role; its connection string is injected into the Container App as `ConnectionStrings__budgetoid` |
+| API database identity | `budgetoid_app`, the least-privilege role, bound by object id to the API's user-assigned managed identity; the password-free connection string is injected into the Container App as `ConnectionStrings__budgetoid` |
 | API URL | `https://api.purpletree-58c68a6f.northeurope.azurecontainerapps.io` |
 | Frontend URL | `https://ashy-water-0fc187003.7.azurestaticapps.net` |
 
@@ -66,7 +68,7 @@ From the repo root:
 ```sh
 azd auth login
 azd init            # detects azure.yaml; name the environment e.g. "budgetoid-prod"
-azd up              # provisions ACA + the Postgres Flexible Server + Key Vault, builds/pushes the image, deploys
+azd up              # provisions ACA + the Postgres Flexible Server, builds/pushes the image, deploys
                     # (azd regenerates the Bicep from the AppHost each run; ./infra is gitignored)
 ```
 
@@ -75,21 +77,29 @@ they land in the committed Bicep — no manual container-app edits):
 
 | Prompt | Value |
 |---|---|
+| Prompt | Value |
+|---|---|
 | `google-client-id` | your Google OAuth client id |
 | `frontend-origin` | the Static Web App URL from Step 1 |
-| `postgres-app-password` | a password you choose for the `budgetoid_app` database role. **Step 3 assigns this exact value to the role**, and the API's connection string is built from it — so the same value goes into the `AZURE_POSTGRES_APP_PASSWORD` secret in Step 5. Restrict it to ASCII letters, digits and `-_.~!@#%^*+=` — it is spliced into SQL as a literal (see [ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). |
+| `pipeline-principal-id` | the **object id** of the service principal that will deploy. `azd pipeline config` in Step 5 creates it; on a first bootstrap use your own principal's object id and re-run `azd up` after Step 5. It is registered as a Microsoft Entra administrator of the Postgres server, which is the only identity that can migrate the schema. |
+| `pipeline-principal-name` | that principal's display name. Postgres needs a role name to log in as even though the token is what proves which principal it is. |
 
-The database needs **no** connection-string prompt. Aspire's `.WithPasswordAuthentication()`
-generates a strong **admin** password and stores it in the provisioned **Key Vault**, where Steps 3
-and 4 read it from; the AppHost separately builds the API's connection string from the server host
-and `postgres-app-password`, so the container is handed the least-privilege identity and never the
-administrator's. Note the API's public URL from the output. To change a parameter later:
-`azd env set <name> <value>` then `azd up`.
+The database needs **no** password prompt and **no** connection-string prompt: the server is
+Microsoft Entra only, and nothing in this deployment holds a database password
+([ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md)). The API is
+handed `Host=…;Username=budgetoid_app;Database=budgetoid` and fetches an access token from its own
+managed identity to authenticate — the **absence** of a password in that string is what turns the
+token provider on, so do not "complete" it. Note the API's public URL from the output. To change a
+parameter later: `azd env set <name> <value>` then `azd up`.
 
 > **Note.** Earlier deploys needed a post-deploy step to repair a bare connection-string secret azd
-> wrote. That is **root-fixed** — `AppHost/Program.cs` now injects the full connection string
-> directly, so every `azd deploy` produces a complete, self-contained secret. See gotcha #1 in
-> [ADR 0001](docs/decisions/0001-postgres-password-authentication.md).
+> wrote. That is **root-fixed** — `AppHost/Program.cs` injects the connection string directly, so
+> every `azd deploy` produces a complete, self-contained value. Do not replace it with a
+> `WithReference`: for this resource type a reference would also register the API's managed identity
+> as a full server administrator, and an administrator is not subject to the row-level security
+> policies the whole tenancy design rests on. See gotcha #1 in
+> [ADR 0001](docs/decisions/0001-postgres-password-authentication.md) and
+> [ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md).
 
 ## Step 3 — Migrate the schema and provision the database role
 
@@ -109,54 +119,87 @@ about, which is why the tool verifies rather than assumes
 
 Migrations never run at API startup and never on the application role: `budgetoid_app` is denied
 `CREATE` on the schema and cannot apply a migration even as a no-op
-([ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). The tool authenticates with
-the **admin password Aspire stored in Key Vault**.
+([ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)). The tool authenticates as a
+**Microsoft Entra administrator of the server** — it mints an access token for its own identity and
+hands it to Postgres in the password field. There is no stored credential to read
+([ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md)).
+
+The tool also does one thing the pipeline cannot: it binds `budgetoid_app` to the API's managed
+identity, by attaching a security label carrying that identity's object id. Azure matches a token to
+a role by object id rather than by name, so this is what lets the API log in at all. Skipping it is
+not silent — the API fails every request with `28P01` — which is why it sits outside the
+migrate-then-provision-then-verify sequence rather than inside it.
 
 ### First bootstrap, and break-glass
 
 On a brand-new environment the pipeline is not wired yet (that is Step 5), so run this once by hand
 after Step 2 — otherwise the API is deployed against a database with no schema. The same recipe is
-the break-glass path when the pipeline is unavailable.
+the break-glass path when the pipeline is unavailable. It requires your own principal to be an Entra
+administrator of the server (Step 2's `pipeline-principal-id`).
 
 ```sh
+SERVER=<postgres-server-name>
+RG=rg-budgetoid-prod
+
 # 1) let your current machine reach the DB (Azure Postgres blocks all IPs by default)
 MYIP=$(curl -s https://api.ipify.org)
 az postgres flexible-server firewall-rule create \
-  -g rg-budgetoid-prod -n <postgres-server-name> \
+  -g "$RG" -n "$SERVER" \
   --rule-name AllowMigrationClient --start-ip-address "$MYIP" --end-ip-address "$MYIP"
 
-# 2) migrate + provision + verify. Ssl Mode=Require is appended because the Key Vault string
-#    carries host/user/password/database and no SslMode, and Azure refuses unencrypted connections.
-#    Both inputs are environment variables, never arguments — argv is visible to other processes.
-CONN=$(az keyvault secret show --vault-name postgreskv-bq7exijxgtbdu \
-  --name connectionstrings--budgetoid --query value -o tsv)
-DBPROVISION_ADMIN_CONNECTION_STRING="${CONN};Ssl Mode=Require" \
-DBPROVISION_APP_ROLE_PASSWORD='<the postgres-app-password value from Step 2>' \
+# 2) migrate + provision + verify + bind the role to the API's identity. Both inputs are
+#    environment variables, never arguments — argv is visible to other processes. The token is
+#    valid for under an hour, so acquire it right before the run.
+HOST=$(az postgres flexible-server show -g "$RG" -n "$SERVER" \
+  --query fullyQualifiedDomainName -o tsv)
+APP_IDENTITY_OID=$(az containerapp show -n api -g "$RG" \
+  --query "identity.userAssignedIdentities.*.principalId | [0]" -o tsv)
+TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
+DBPROVISION_ADMIN_CONNECTION_STRING="Host=${HOST};Username=$(az ad signed-in-user show --query userPrincipalName -o tsv);Password=${TOKEN};Database=budgetoid;Ssl Mode=Require" \
+DBPROVISION_APP_IDENTITY_OBJECT_ID="$APP_IDENTITY_OID" \
   dotnet run --project BudgetoidApp/Tools/DbProvision -c Release
 
 # 3) SECURITY: remove your IP again
 az postgres flexible-server firewall-rule delete \
-  -g rg-budgetoid-prod -n <postgres-server-name> --rule-name AllowMigrationClient --yes
+  -g "$RG" -n "$SERVER" --rule-name AllowMigrationClient --yes
 ```
 
-Exit codes: **0** provisioned and verified, **1** provisioning failed, **2** a required environment
-variable is missing or empty. On success the tool prints what it did — how many migrations were
-pending, and which tables it verified. A first run against a database migrated by hand should report
-no pending migrations; that line is the evidence the histories agree.
+Exit codes: **0** provisioned, verified, and the role bound to the identity; **1** provisioning
+failed; **2** a required environment variable is missing, empty, or malformed. On success the tool
+prints what it did — how many migrations were pending, which tables it verified, and which identity
+the role was bound to. A first run against a database migrated by hand should report no pending
+migrations; that line is the evidence the histories agree.
+
+If the `SECURITY LABEL` statement is rejected, the label's non-admin form is the suspect — the vendor
+documentation only shows the admin-bearing variant. Bind the role by function call instead, as the
+Entra admin, against the `postgres` database (the label provider lives only there):
+
+```sh
+PGPASSWORD="$TOKEN" psql "host=$HOST user=$(az ad signed-in-user show --query userPrincipalName -o tsv) dbname=postgres sslmode=require" \
+  -c "select pgaadauth_create_principal_with_oid('budgetoid_app', '$APP_IDENTITY_OID', 'service', false, false)"
+```
+
+The role is never dropped either way, so its grants and policies survive the attempt.
 
 ### Verifying by hand
 
 The tool's own verification covers row-level security. To inspect the grant matrix as well:
 
 ```sh
-export PGHOST=$(echo "$CONN" | sed -n 's/.*Host=\([^;]*\).*/\1/p')
-export PGUSER=$(echo "$CONN" | sed -n 's/.*Username=\([^;]*\).*/\1/p')
-export PGPASSWORD=$(echo "$CONN" | sed -n 's/.*Password=\([^;]*\).*/\1/p')
+export PGHOST="$HOST"
+export PGUSER=$(az ad signed-in-user show --query userPrincipalName -o tsv)
+export PGPASSWORD=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
 export PGDATABASE=budgetoid PGSSLMODE=require
 psql -c "\du budgetoid_app"
 psql -c "\dp payees"
 psql -c "select tablename, policyname from pg_policies where schemaname = 'public' order by tablename"
+
+# and that the role is bound to the API's identity (this one is on the postgres database)
+PGDATABASE=postgres psql -c "select rolename, principaltype, objectid from pgaadauth_list_principals(false)"
 ```
+
+`PGPASSWORD` here is an access token, which is why it must be exported rather than typed at a prompt:
+it is far longer than `psql` accepts interactively.
 
 `\dp payees` should show `budgetoid_app=ar/…` under **Access privileges** (SELECT + INSERT) and
 `name: budgetoid_app=w/…` under **Column privileges** (UPDATE on that column alone). `budget_id`
@@ -169,9 +212,15 @@ failed, so seeing this by hand should be impossible after a green deploy.
 
 ### Troubleshooting
 
-- Keep the role password inside the alphabet the grants script's substitution assumes: ASCII
-  letters, digits and `-_.~!@#%^*+=`. The tool refuses anything else **before** touching the
-  database, so a bad password cannot leave a half-migrated schema behind.
+- `28P01` from the deployed API means the role is not bound to its identity, or is bound to the wrong
+  object id. Check `pgaadauth_list_principals(false)` against
+  `az containerapp show -n api -g rg-budgetoid-prod --query "identity.userAssignedIdentities.*.principalId"`.
+  Azure matches tokens to roles by object id, so a correct role *name* proves nothing.
+- `28000` mentioning `no pg_hba.conf entry` for a user like `app` means the connection string lost its
+  `Username=budgetoid_app` and Npgsql fell back to the container's OS user. That is ADR 0001's
+  original failure mode; the username is not optional under Entra auth.
+- A `FATAL: … oid mismatch` names exactly this: the token's principal and the label's `oid` disagree.
+  Re-run the provisioning tool, which is idempotent and re-applies the label.
 - The admin identity must own the tables (`ALTER TABLE … ENABLE ROW LEVEL SECURITY` and
   `CREATE POLICY` are owner operations) and must have created the role (`ALTER ROLE … SET` needs
   `CREATEROLE` over it). Migrations run on that same identity, so it owns them; a `42501` on an
@@ -182,11 +231,12 @@ failed, so seeing this by hand should be impossible after a green deploy.
   policy means a write tried to land in a budget other than the request's, and `22P02` on an
   empty-string `uuid` cast means a connection reached a budget-owned table without an ambient budget
   on the session.
-- Reading the Key Vault secret by hand needs the **Key Vault Secrets User** role on `postgreskv-…`
-  (the vault is RBAC-mode). Grant it to yourself once:
-  `az role assignment create --assignee "$(az ad signed-in-user show --query id -o tsv)" --role "Key Vault Secrets User" --scope "$(az keyvault show -n postgreskv-bq7exijxgtbdu --query id -o tsv)"`
-- The `sed` extraction above assumes the Key Vault string carries no quoted values — if the admin
-  password ever contains a `;`, set `PGHOST`/`PGUSER`/`PGPASSWORD` by hand.
+- `42501` on the `SECURITY LABEL` statement means the connecting principal is not an Entra
+  administrator of the server. Membership in `azure_pg_admin` is not enough; only an Entra
+  administrator can create or label Entra principals. Register it with
+  `az postgres flexible-server ad-admin create -g rg-budgetoid-prod -s <server> -u <displayName> -i <objectId> -t ServicePrincipal`.
+- A token expires in under an hour. A long manual session that starts failing to open *new*
+  connections has a stale token, not a broken configuration — re-export `PGPASSWORD`.
 
 ## Step 4 — Point the frontend at prod + set OAuth redirect
 
@@ -205,9 +255,15 @@ It needs these GitHub secrets/vars:
 | Kind | Name | Value |
 |---|---|---|
 | secret | `AZURE_STATIC_WEB_APPS_API_TOKEN` | SWA deployment token (Step 1) |
-| secret | `AZURE_POSTGRES_APP_PASSWORD` | the `postgres-app-password` value from Step 2 |
 | var | `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` | from `azd pipeline config` |
 | var | `AZURE_ENV_NAME` / `AZURE_LOCATION` | your azd env name + region |
+| var | `AZURE_PIPELINE_PRINCIPAL_ID` / `AZURE_PIPELINE_PRINCIPAL_NAME` | the deploy principal's object id and display name — they register it as an Entra administrator of the Postgres server |
+
+There is no database secret in that table, and that is the point: the pipeline authenticates to
+Postgres with a token it mints for its own federated identity
+([ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md)). The two
+`AZURE_PIPELINE_PRINCIPAL_*` values are identifiers rather than credentials, so they are variables,
+not secrets — neither authenticates anything without the OIDC login.
 
 Run these once, in order:
 
@@ -219,27 +275,24 @@ azd pipeline config --provider github
 gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN \
   --body "$(az staticwebapp secrets list -n budgetoid-web --query 'properties.apiKey' -o tsv)"
 
-# 3) the application role password. One secret, two consumers that must agree: azd bakes it into the
-#    container's connection string, and the provisioning step assigns it to the role. Use the value
-#    the role already has — a different one would re-password the role a minute after the container
-#    picked up the new string, and a cold start in that window fails with 28P01.
-gh secret set AZURE_POSTGRES_APP_PASSWORD --body '<the postgres-app-password value from Step 2>'
-
-# 4) the pipeline reads the admin connection string from Key Vault, so it needs the data plane
-az role assignment create \
-  --assignee-object-id "$(az ad sp show --id <AZURE_CLIENT_ID> --query id -o tsv)" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Key Vault Secrets User" \
-  --scope "$(az keyvault show -n postgreskv-bq7exijxgtbdu --query id -o tsv)"
+# 3) the deploy principal's identifiers. azd provision registers it as an Entra administrator of the
+#    Postgres server from these, and the migration step logs in as it.
+SP_OID=$(az ad sp show --id <AZURE_CLIENT_ID> --query id -o tsv)
+gh variable set AZURE_PIPELINE_PRINCIPAL_ID --body "$SP_OID"
+gh variable set AZURE_PIPELINE_PRINCIPAL_NAME \
+  --body "$(az ad sp show --id <AZURE_CLIENT_ID> --query displayName -o tsv)"
 ```
 
-The pipeline identity needs management-plane access (`Contributor`) **and**, since it migrates the
-database, **Key Vault Secrets User** on the vault holding the admin connection string. That is the
-one privilege automation costs: the alternative is an operator holding the same credential and
-running the same commands, which is what Step 3 replaced.
+The pipeline identity needs management-plane access (`Contributor`) **and** must be a Microsoft Entra
+administrator of the Postgres server, which `azd provision` now arranges from the variables above.
+That administrator role is the one privilege automation costs: the alternative is an operator holding
+the same standing and running the same commands, which is what Step 3 replaced. It is still an
+improvement on what it replaced — an Entra administrator holds no password, and revoking it is a
+single `ad-admin delete` rather than a credential rotation.
 
-After that, pushing to `main` provisions, migrates, provisions the database role, and deploys —
-in that order. You can still trigger a manual run from the **Actions** tab.
+After that, pushing to `main` provisions, migrates, provisions the database role, binds it to the
+API's managed identity, and deploys — in that order. You can still trigger a manual run from the
+**Actions** tab.
 
 ---
 
@@ -249,8 +302,6 @@ in that order. You can still trigger a manual run from the **Actions** tab.
 2. Need an uptime SLA on the frontend → SWA **Standard**.
 3. DB CPU/IO saturating → move Postgres to **General Purpose**; then add **zone-redundant HA**.
 4. Add a **staging** environment + **App Insights** + alerts + a **custom domain**.
-5. Revisit **passwordless** DB auth (ADR 0001 hardening path) — it would also remove the pipeline's
-   Key Vault grant, since there would be no admin password to read.
 
 ## Verify (end-to-end)
 

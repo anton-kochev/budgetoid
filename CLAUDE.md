@@ -105,16 +105,22 @@ describes the rule says why. Full reasoning in
 - `Api.csproj` uses `<ContainerFamily>noble-chiseled</ContainerFamily>`; no handwritten Dockerfile.
 - Append `Maximum Pool Size=5` to production PostgreSQL connection strings.
 - Production migrations run from the deploy pipeline, never at API startup. `.github/workflows/deploy.yml` runs `Tools/DbProvision` between `azd provision` and `azd deploy`, so new code never starts against an old schema.
-- Deploying is migrate **then** provision **then** verify, and that ordering now lives in
+- Deploying is migrate **then** provision **then** verify, and that ordering lives in
   `DeploymentDatabaseProvisioning` rather than in a runbook: the grants and policies name individual
-  tables, so the schema has to exist first, and the password alphabet is checked before the first
-  statement so a typo cannot leave a half-migrated database. Verification is not optional — grants
-  are fail-closed, RLS is fail-open. See `DEPLOYMENT.md` and `docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md`.
+  tables, so the schema has to exist first. Verification is not optional — grants are fail-closed,
+  RLS is fail-open. Binding the role to the API's identity sits *outside* that method on purpose:
+  forgetting it fails loudly (`28P01` on every request), and ordering guarantees are spent where
+  silence is possible. See `DEPLOYMENT.md`, `docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md`
+  and `docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md`.
 - **The baseline migration is frozen.** Production's `__EFMigrationsHistory` references the current migration id, and the pipeline applies migrations unattended, so regenerating the single baseline would make the next push try to re-create every table. Schema changes are additive migrations from here on; the `migrations-guard` CI job fails any change that modifies, deletes, or renames an existing migration file.
-- The deployed container is handed one connection string, the least-privilege one. The publish
-  branch of `AppHost/Program.cs` deliberately does **not** `WithReference` the database for the API:
-  that reference injects the admin identity as `BUDGETOID_URI`/`_USERNAME`/`_PASSWORD` as well as a
-  connection string. Do not add it back.
+- The deployed container is handed one connection string, the least-privilege and password-free one.
+  The publish branch of `AppHost/Program.cs` deliberately does **not** `WithReference` the database
+  for the API: for this resource type a reference registers the referencing compute resource's
+  managed identity as a full Entra **administrator** of the server, and an administrator is not
+  subject to the RLS policies the whole tenancy design rests on. Do not add it back.
+- `.ClearDefaultRoleAssignments()` on the Postgres resource is load-bearing, not tidying: without it
+  Aspire emits a `postgres-roles` module whose administrators resource takes its name from a
+  principal id nothing fills, and ARM refuses an empty resource name, so `azd provision` fails.
 
 ## Code Conventions
 
