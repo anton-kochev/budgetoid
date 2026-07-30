@@ -145,7 +145,7 @@ RG=rg-budgetoid-prod
 # 1) let your current machine reach the DB (Azure Postgres blocks all IPs by default)
 MYIP=$(curl -s https://api.ipify.org)
 az postgres flexible-server firewall-rule create \
-  -g "$RG" -n "$SERVER" \
+  --resource-group "$RG" --server-name "$SERVER" \
   --rule-name AllowMigrationClient --start-ip-address "$MYIP" --end-ip-address "$MYIP"
 
 # 2) migrate + provision + verify + bind the role to the API's identity. Both inputs are
@@ -162,7 +162,7 @@ DBPROVISION_APP_IDENTITY_OBJECT_ID="$APP_IDENTITY_OID" \
 
 # 3) SECURITY: remove your IP again
 az postgres flexible-server firewall-rule delete \
-  -g "$RG" -n "$SERVER" --rule-name AllowMigrationClient --yes
+  --resource-group "$RG" --server-name "$SERVER" --rule-name AllowMigrationClient --yes
 ```
 
 Exit codes: **0** provisioned, verified, and the role bound to the identity; **1** provisioning
