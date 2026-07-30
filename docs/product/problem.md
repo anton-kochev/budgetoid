@@ -80,4 +80,5 @@ affordability is a known fact, not a gamble; planning within means; and capital 
 - Budgetoid serves a real audience from day one: empty states, first-run experience, and
   multi-currency are core, not afterthoughts.
 - The user only and always owns their data. Full export and complete erasure are core features the
-  product promises publicly — they must exist and stay one click away, not buried.
+  product promises publicly — they must exist and stay one click away, not buried. The full privacy
+  stance lives in [privacy.md](privacy.md).
