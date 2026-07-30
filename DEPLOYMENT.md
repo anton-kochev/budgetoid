@@ -155,7 +155,7 @@ az postgres flexible-server firewall-rule create \
 HOST=$(az postgres flexible-server show -g "$RG" -n "$SERVER" \
   --query fullyQualifiedDomainName -o tsv)
 APP_IDENTITY_OID=$(az identity show \
-  --ids "$(azd env get-value AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID)" \
+  --ids "$(azd env get-value CAE_AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID)" \
   --query principalId -o tsv)
 TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
 DBPROVISION_ADMIN_CONNECTION_STRING="Host=${HOST};Username=$(az ad signed-in-user show --query userPrincipalName -o tsv);Password=${TOKEN};Database=budgetoid;Ssl Mode=Require" \
@@ -229,7 +229,9 @@ failed, so seeing this by hand should be impossible after a green deploy.
   `azd deploy`, which runs *after* the database work on purpose, so it is absent on any deploy that
   starts without one — a first deploy, or one after the environment was rebuilt. The identity to ask
   instead is the one the Container Apps environment owns
-  (`azd env get-value AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID`); it exists from provisioning
+  (`azd env get-value CAE_AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID` — azd prefixes a module's
+  outputs with the resource name, and the unprefixed spelling survives only in local environments
+  provisioned before the AppHost owned the Container Apps environment); it exists from provisioning
   onward and outlives every app in the environment.
 - `28000` mentioning `no pg_hba.conf entry` for a user like `app` means the connection string lost its
   `Username=budgetoid_app` and Npgsql fell back to the container's OS user. That is ADR 0001's
