@@ -89,6 +89,18 @@ Rules marked `[SOURCE: code-audit — unconfirmed]` need human confirmation befo
 
 **`docs/` documents only what is true today.** Design agreed but not yet built lives in the private `budgetoid-specs` repository — SRS documents at the root, and `product-research/` for the product rationale behind unbuilt capabilities. A design moves back into `docs/business-logic/` the day it ships, and leaves the specs repository. Never restate an unbuilt capability in `docs/` in the present tense: that is what put `privacy.md` there.
 
+## Engineering Invariants
+
+`docs/engineering/` holds the two invariants code must preserve, in full detail this file only
+summarizes: [data isolation](docs/engineering/data-isolation.md) — read before touching
+budget-scoped queries, including the list of EF escape hatches and why each filter lambda must
+read the DbContext's primary-constructor parameter — and
+[migrations](docs/engineering/migrations.md) — read before touching `Infrastructure/Migrations/`.
+Each names the tests that lock it: removing a `HasQueryFilter` line or a policy must fail one.
+
+The pending hardening backlog is **not** in this repository; it lives in the private
+`budgetoid-specs` repository, because a public list of unclosed weaknesses is a map.
+
 ## Rule Enforcement
 
 Every rule is owned by the lowest layer that can enforce it **declaratively** — database first,

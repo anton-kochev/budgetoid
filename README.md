@@ -14,7 +14,7 @@
 
 ## Getting started
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) to build, run, and test locally. [CLAUDE.md](CLAUDE.md) covers architecture and deploy notes; [TECH_DEBT.md](TECH_DEBT.md) tracks known debt.
+See [CONTRIBUTING.md](CONTRIBUTING.md) to build, run, and test locally. [CLAUDE.md](CLAUDE.md) covers architecture and deploy notes; [docs/engineering/](docs/engineering/) holds the invariants that code must preserve — read them before touching budget-scoped queries or migrations.
 
 ## License
 

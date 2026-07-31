@@ -317,7 +317,7 @@ public sealed class BudgetoidDbContextConstructionTests
             migrations.OrderBy(migration => migration, StringComparer.Ordinal));
 
         // Assert — the count is deliberately not pinned. Schema changes are additive migrations from
-        // here on (TECH_DEBT.md, "Migration invariant"; ADR 0006), so a second and a tenth id are
+        // here on (docs/engineering/migrations.md; ADR 0006), so a second and a tenth id are
         // both legal and only the first is frozen. That inversion is what makes this a stronger guard
         // than the count it replaces: counting one migration failed on a diffed baseline, which is
         // now the wanted thing, and stayed green through a regenerated one, which is the dangerous
