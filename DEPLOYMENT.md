@@ -315,6 +315,72 @@ After that, pushing to `main` provisions, migrates, provisions the database role
 API's managed identity, and deploys — in that order. You can still trigger a manual run from the
 **Actions** tab.
 
+## Step 6 — Custom domain (`budgetoid.app`)
+
+**Not done yet.** The deployment still answers on its generated Azure hostnames. The domain is
+registered at Cloudflare Registrar and the target layout is decided
+([ADR 0010](docs/decisions/0010-serve-the-app-from-a-custom-domain.md)); what follows is the cutover.
+
+| Name | Serves | Record |
+|---|---|---|
+| `budgetoid.app` | frontend (SWA) | `CNAME` → SWA hostname, flattened at the apex |
+| `api.budgetoid.app` | API (Container Apps) | `CNAME` → container app FQDN, plus an `asuid` `TXT` |
+| `www.budgetoid.app` | — | redirect rule to the apex |
+
+DNS-only throughout — the Cloudflare proxy stays off (grey cloud). Both Azure services validate a
+custom domain by resolving it and inspecting what answers, and a proxied record answers with
+Cloudflare's address, so validation fails while the orange cloud is on. If the proxy is ever wanted,
+it goes on **after** both certificates are issued, never before.
+
+**`.app` is HSTS-preloaded at the TLD level**, so there is no plaintext fallback and no certificate
+warning to click past. A hostname whose certificate has not been issued is unreachable, not degraded.
+That is why the DNS record moves last in each block below.
+
+```sh
+# --- API: api.budgetoid.app -----------------------------------------------------------------
+# 1) the validation token Azure expects at asuid.<subdomain>
+az containerapp show -n <api-app> -g rg-budgetoid-prod \
+  --query "properties.customDomainVerificationId" -o tsv
+
+# In Cloudflare, DNS-only:
+#   TXT    asuid.api    <the value above>
+#   CNAME  api          <api-app>.<env-suffix>.northeurope.azurecontainerapps.io
+
+# 2) bind it and let Azure issue the managed certificate (a few minutes)
+az containerapp hostname add -n <api-app> -g rg-budgetoid-prod --hostname api.budgetoid.app
+az containerapp hostname bind -n <api-app> -g rg-budgetoid-prod \
+  --hostname api.budgetoid.app --environment cae --validation-method CNAME
+
+# --- Frontend: budgetoid.app ----------------------------------------------------------------
+# The apex is validated by TXT (SWA cannot use CNAME validation at a zone apex). The command
+# prints the record to create; add it in Cloudflare, then re-run to complete validation.
+az staticwebapp hostname set -n budgetoid-web -g rg-budgetoid-prod \
+  --hostname budgetoid.app --validation-method dns-txt-token
+
+# Then, DNS-only:
+#   CNAME  @    <name>.azurestaticapps.net      (Cloudflare flattens this at the apex)
+```
+
+Once both certificates are issued, update the four places that name a hostname. Missing any one of
+them leaves a deployment that looks healthy and is not:
+
+1. `ClientApp/angular-budgetoid/public/assets/app-config.json` — `apiBaseUrl` →
+   `https://api.budgetoid.app`, `auth.google.redirectUri` → `https://budgetoid.app`. Commit it.
+2. **The azd environment**, not just the repo: `azd env set AZURE_FRONTEND_ORIGIN
+   https://budgetoid.app`. This is what the next `azd provision` bakes into the container app as
+   `Cors__AllowedOrigins__0`. Forget it and the browser reports a network failure that is really a
+   CORS rejection.
+3. **Google Cloud console** → the OAuth 2.0 client → add `https://budgetoid.app` to **Authorized
+   JavaScript origins** and **Authorized redirect URIs**. Nothing in this repository can verify this
+   step; it is the one that breaks login while everything else reports success.
+4. `www.budgetoid.app` → a Cloudflare redirect rule to the apex. Without a record it is `NXDOMAIN`.
+
+Keep the old Azure hostnames in the OAuth client and in `Cors__AllowedOrigins` until the new domain
+is confirmed working, then remove them in a follow-up — that is the rollback.
+
+Auto-renew on the domain must stay **on**. An expired `.app` is a total outage with no partial
+failure to notice first.
+
 ---
 
 ## Scale-up ladder (turn these as load / users grow)
@@ -322,7 +388,7 @@ API's managed identity, and deploys — in that order. You can still trigger a m
 1. Cold starts noticeable → set the API `MinReplicas = 1`.
 2. Need an uptime SLA on the frontend → SWA **Standard**.
 3. DB CPU/IO saturating → move Postgres to **General Purpose**; then add **zone-redundant HA**.
-4. Add a **staging** environment + **App Insights** + alerts + a **custom domain**.
+4. Add a **staging** environment + **App Insights** + alerts.
 
 ## Verify (end-to-end)
 
