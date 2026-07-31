@@ -103,6 +103,39 @@ rewrites it on every `migrations add`.
 
 ## Backlog
 
+### SPA ships without security headers
+**Why:** `ClientApp/angular-budgetoid/public/staticwebapp.config.json` sets only a navigation
+fallback — no `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, or
+`Referrer-Policy`. Add a `globalHeaders` block. A strict CSP also requires the fonts item below.
+
+### Fonts and icons load from a third-party CDN
+**Why:** `src/index.html` pulls Google Fonts and Material Symbols from `fonts.googleapis.com` /
+`fonts.gstatic.com`, leaking the user's IP and user agent to a third party on every page load —
+at odds with the no-third-parties stance in `docs/product/privacy.md`. Self-host both.
+
+### API→database TLS does not validate the server certificate
+**Why:** `Api/Program.cs` forces `SslMode=Require` outside Development, which encrypts but skips
+certificate validation (documented inline). Move to `VerifyFull` with the platform CA bundle.
+
+### NgRx StoreDevtools registered in production builds
+**Why:** `app.config.ts` calls `provideStoreDevtools` unconditionally; `logOnly` still exposes
+state (including the user's email) to the Redux DevTools extension. Gate it to dev builds.
+
+### "No PII in logs" is an iOS-only requirement
+**Why:** NFR-SEC-002 covers the iOS client, but no equivalent rule binds the API or the Angular
+app. OTel logging (`ServiceDefaults/Extensions.cs`) has `IncludeScopes = true` with no redaction
+processor. State the NFR for both and add a log-record processor that drops sensitive attributes.
+
+### `users` and `budgets` have no RLS policy
+**Why:** `app-role-grants.sql` deliberately leaves both tables unpoliced; cross-user isolation
+there rests on application code alone, unlike every budget-owned table. Either add policies or
+write an ADR owning the exception explicitly.
+
+### Erasure needs grants the application role doesn't have
+**Why:** `docs/product/privacy.md` commits to one-action account deletion, but `app-role-grants.sql`
+grants only `SELECT, INSERT` (+ column-limited `UPDATE`) on `users` and `budgets` — no `DELETE`.
+The erasure feature must add the grants and the coverage verification alongside the endpoint.
+
 ### DesignTimeDbContextFactory hardcodes a connection string
 **Why:** `Infrastructure/Persistence/DesignTimeDbContextFactory.cs` uses
 `Host=localhost;Port=5432;...;Password=postgres`, which doesn't match the Aspire-managed

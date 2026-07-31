@@ -34,7 +34,7 @@ created once with one command.
 | Container App | `api`, in a Container Apps environment the AppHost owns and places on the virtual network below |
 | Database networking | The API reaches PostgreSQL over a **private endpoint**; the server carries **no standing firewall rule**. Public access stays enabled purely so this pipeline can open a two-minute window for one address. A private DNS zone makes the server's ordinary public hostname resolve to its private address inside the network, so no connection string mentions any of this. |
 | API database identity | `budgetoid_app`, the least-privilege role, bound by object id to the API's user-assigned managed identity; the password-free connection string is injected into the Container App as `ConnectionStrings__budgetoid` |
-| API URL | `https://api.icyisland-d82f1c17.northeurope.azurecontainerapps.io` — a Container Apps environment mints a new hostname every time it is recreated, so treat this as a lookup, not a constant: `az containerapp show -n api -g rg-budgetoid-prod --query properties.configuration.ingress.fqdn -o tsv` |
+| API URL | `https://api.gentlebay-c068f20b.northeurope.azurecontainerapps.io` — a Container Apps environment mints a new hostname every time it is recreated, so treat this as a lookup, not a constant: `az containerapp show -n api -g rg-budgetoid-prod --query properties.configuration.ingress.fqdn -o tsv` |
 | Frontend URL | `https://blue-island-06a7efa03.7.azurestaticapps.net` |
 
 ---
