@@ -22,7 +22,8 @@ The budget, not the person, is therefore the thing that owns the money picture.
 A user is the identity that signs in; see [users-and-ownership.md](users-and-ownership.md). A budget
 is what that identity presides over. The product reasoning behind the split — why the boundary is
 ownership and purpose rather than currency, and why budgets never aggregate — is in
-[docs/product/multi-budget.md](../product/multi-budget.md).
+`product-research/multi-budget.md` in the private `budgetoid-specs` repository, which holds the
+unbuilt half of the design until the multi-budget surface ships.
 
 The budget is deliberately invisible to a user who has one: it is created for them at sign-in, never
 named in a URL, and never something they set up.

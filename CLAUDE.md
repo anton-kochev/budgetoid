@@ -87,6 +87,8 @@ If no file exists for the domain area, create one following the structure of exi
 Start with `docs/business-logic/_overview.md` for domain orientation.
 Rules marked `[SOURCE: code-audit — unconfirmed]` need human confirmation before relying on them.
 
+**`docs/` documents only what is true today.** Design agreed but not yet built lives in the private `budgetoid-specs` repository — SRS documents at the root, and `product-research/` for the product rationale behind unbuilt capabilities. A design moves back into `docs/business-logic/` the day it ships, and leaves the specs repository. Never restate an unbuilt capability in `docs/` in the present tense: that is what put `privacy.md` there.
+
 ## Rule Enforcement
 
 Every rule is owned by the lowest layer that can enforce it **declaratively** — database first,
