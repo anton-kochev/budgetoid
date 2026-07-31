@@ -1,6 +1,6 @@
 ---
 name: budgetoid.story-context
-description: "Retrieve everything an AI coding agent needs to implement a Budgetoid user story from the GitHub Project (github.com/users/anton-kochev/projects/1): the story body, the full text of every requirement it cites from the SRS gist, its dependencies and their board status, and the repo docs that ground it. Use when asked to implement, start, or work on a story (e.g. 'implement Story 4.1', 'take the next backlog item'), or before coding against acceptance criteria that cite FR-/NFR-/IFR-/CON-/ASM- requirement IDs."
+description: "Retrieve everything an AI coding agent needs to implement a Budgetoid user story from the GitHub Project (github.com/users/anton-kochev/projects/1): the story body, the full text of every requirement it cites from the SRS in the private budgetoid-specs repository, its dependencies and their board status, and the repo docs that ground it. Use when asked to implement, start, or work on a story (e.g. 'implement Story 4.1', 'take the next backlog item'), or before coding against acceptance criteria that cite FR-/NFR-/IFR-/CON-/ASM- requirement IDs."
 user-invocable: true
 ---
 
@@ -8,9 +8,10 @@ user-invocable: true
 
 Assembles an **implementation brief** for one user story from the Budgetoid
 GitHub Project. A story body alone is not enough to implement from: its
-acceptance criteria cite requirement IDs whose full text lives in the SRS
-gist, its dependencies may not be done, and the repo has canonical docs the
-SRS builds on. Gather all of it *before* writing code.
+acceptance criteria cite requirement IDs whose full text lives in the SRS in
+the private `budgetoid-specs` repository, its dependencies may not be done,
+and the repo has canonical docs the SRS builds on. Gather all of it *before*
+writing code.
 
 ## Prerequisites
 
@@ -26,9 +27,11 @@ SRS builds on. Gather all of it *before* writing code.
 gh project item-list 1 --owner anton-kochev --format json --limit 200
 ```
 
-Match by story number in the title (`Story 4.1: …`). Capture the item's
-`Status` and `Priority` field values. Stories are draft items; fetch the
-full body via GraphQL (item-list may truncate):
+Match by story number in the title (`Story 4.1: …`). Epics 1–5 are envelope
+budgeting, 6–14 privacy. Capture the item's `Status` and `Priority` field
+values. Privacy stories are draft items; the older envelope stories are
+issues in `anton-kochev/budgetoid` (#9–#23). Fetch a draft item's full body
+via GraphQL (item-list may truncate):
 
 ```bash
 gh api graphql -f query='query { user(login: "anton-kochev") {
@@ -41,22 +44,28 @@ gh api graphql -f query='query { user(login: "anton-kochev") {
 Extract: the **epic** (first line), the **role/goal/benefit** triple, every
 **acceptance criterion** with its cited requirement IDs (`FR-`, `NFR-`,
 `IFR-`, `CON-`, `ASM-`), the **Dependencies** line, and the **Source** line's
-revision-pinned gist permalink
-(`https://gist.github.com/anton-kochev/<gist-id>/<revision-sha>`).
+commit-pinned permalink
+(`https://github.com/anton-kochev/budgetoid-specs/blob/<sha>/<file>.md`).
 
-### 3. Fetch the SRS from the gist
+### 3. Fetch the SRS from the specs repository
 
-Use the pinned revision — it is the exact baseline the story was derived
-from (open stories are re-pinned when the SRS is revised, so the pin is
-current by convention):
+Use the pinned commit — it is the exact baseline the story was derived from
+(open stories are re-pinned when the SRS is revised, so the pin is current by
+convention):
 
 ```bash
-gh api gists/<gist-id>/<revision-sha> --jq '.files[].content'
+gh api "repos/anton-kochev/budgetoid-specs/contents/<file>.md?ref=<sha>" \
+  --jq '.content' | base64 -d
 ```
 
-Also check `gh api gists/<gist-id> --jq '.history[0].version'`; if the
-latest revision differs from the pin, tell the user the story may need
-re-pointing before implementing against it.
+Also check the file on `main`; if it differs from the pin, tell the user the
+story may need re-pointing before implementing against it.
+
+The repository is private and holds everything not yet built: the SRS
+documents, and `product-research/` for the rationale behind unbuilt
+capabilities. Read `product-research/` when a requirement's *intent* is
+unclear — that is where the "why" lives for anything `docs/` does not
+describe.
 
 ### 4. Extract the requirement context
 
@@ -92,8 +101,12 @@ The SRS specifies *what*; the repo specifies *how things are done here*:
 - `docs/business-logic/` — current-state rules the story modifies; start
   from `_overview.md`, read the files for the affected domain area, and
   remember the same-commit doc-update rule.
-- `docs/product/` — the design rationale the SRS traces to (problem.md,
-  multi-budget.md, multi-currency.md) when a decision needs its "why".
+- `docs/product/problem.md` — the product credo the SRS traces to, when a
+  decision needs its "why".
+- `product-research/` in the private `budgetoid-specs` repository — the same
+  rationale for capabilities that do **not** exist yet (multi-budget.md,
+  multi-currency.md, privacy.md). The product repo documents only what is
+  true today; a design moves back into `docs/` the day it ships.
 - The SRS **traceability matrix** row for each requirement names its source
   doc — follow it when the requirement's intent is unclear.
 
@@ -122,4 +135,4 @@ ids come from `gh project field-list 1 --owner anton-kochev --format json`.
   surface the discrepancy to the user.
 - Do not set `Size`/`Estimate` fields — those are the user's grooming calls.
 - Never commit SRS or story files into the repo while gathering context —
-  specs live in the gist and on the board only.
+  specs live in `budgetoid-specs` and on the board only.
