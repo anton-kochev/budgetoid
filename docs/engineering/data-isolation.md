@@ -1,11 +1,6 @@
-# Tech Debt & Hardening Backlog
+# Data Isolation Invariant
 
-Tracked improvements and the invariants future code must preserve. Add entries as they're
-discovered; remove them as they're done.
-
----
-
-## Data isolation invariant (read this before touching budget-scoped queries)
+> Read this before touching budget-scoped queries.
 
 **A row must never be visible to a budget it doesn't belong to.** This is enforced in layers; the
 bottom one is PostgreSQL row-level security, and the layers above it exist for error quality. Keep
@@ -18,7 +13,7 @@ Enforced today:
   other budget's rows and can insert into no budget but the ambient one — whatever produced the
   statement. `BudgetSessionInterceptor` puts the budget on each connection the context opens. The
   policies live in `Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a
-  migration ([ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)).
+  migration ([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)).
   **A new budget-owned table needs a grant *and* a policy**: the grants are fail-closed, so a
   missing one fails loudly with `42501`, but RLS is fail-**open** — a granted table with no policy
   is readable across every tenant, silently. `tests/IntegrationTests/RlsCoverageTests.cs` derives
@@ -49,7 +44,7 @@ Enforced today:
   what stops the *application* from moving a row between budgets. The database holds the same rule
   independently: `budget_id` is absent from every `UPDATE` column list granted to the application
   role, so a raw `UPDATE` fails with `42501` whatever issued it
-  ([ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)).
+  ([ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)).
 - **Server-assigned ownership.** `BudgetId` comes only from `IBudgetContext`, never from a request
   DTO or route. `CreateTransactionCommand` has no `BudgetId` field; keep it that way. The policies'
   `WITH CHECK` half holds the same rule underneath: an insert can only land in the ambient budget,
@@ -83,63 +78,3 @@ policy fails), `tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level
 two-budgets-same-process + endpoint-level two-factory) and the `BudgetId` immutability unit test in
 `tests/UnitTests/TransactionTests.cs`. Removing a `HasQueryFilter` line must make the
 DbContext-level test fail; removing a policy must make the RLS ones fail.
-
----
-
-## Migration invariant (read this before touching `Infrastructure/Migrations/`)
-
-**The baseline migration is frozen.** The repo used to keep a single baseline it regenerated freely.
-Production's `__EFMigrationsHistory` now references the current migration id, and the deploy pipeline
-applies migrations unattended on every push to `main` — so regenerating the baseline gives it a new
-id, and the next push would find nothing applied and try to re-create every table against a
-populated database. The human checkpoint that used to catch this is gone by design.
-
-Schema changes are **additive migrations** from here on. CI enforces this: the `migrations-guard`
-job in `.github/workflows/ci.yml` fails when any migration file from the frozen baseline onward is
-modified, deleted, or renamed — only additions pass. The model snapshot is exempt because EF
-rewrites it on every `migrations add`.
-
----
-
-## Backlog
-
-### SPA ships without security headers
-**Why:** `ClientApp/angular-budgetoid/public/staticwebapp.config.json` sets only a navigation
-fallback — no `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, or
-`Referrer-Policy`. Add a `globalHeaders` block. A strict CSP also requires the fonts item below.
-
-### Fonts and icons load from a third-party CDN
-**Why:** `src/index.html` pulls Google Fonts and Material Symbols from `fonts.googleapis.com` /
-`fonts.gstatic.com`, leaking the user's IP and user agent to a third party on every page load —
-at odds with the no-third-parties stance in `docs/product/privacy.md`. Self-host both.
-
-### API→database TLS does not validate the server certificate
-**Why:** `Api/Program.cs` forces `SslMode=Require` outside Development, which encrypts but skips
-certificate validation (documented inline). Move to `VerifyFull` with the platform CA bundle.
-
-### NgRx StoreDevtools registered in production builds
-**Why:** `app.config.ts` calls `provideStoreDevtools` unconditionally; `logOnly` still exposes
-state (including the user's email) to the Redux DevTools extension. Gate it to dev builds.
-
-### "No PII in logs" is an iOS-only requirement
-**Why:** NFR-SEC-002 covers the iOS client, but no equivalent rule binds the API or the Angular
-app. OTel logging (`ServiceDefaults/Extensions.cs`) has `IncludeScopes = true` with no redaction
-processor. State the NFR for both and add a log-record processor that drops sensitive attributes.
-
-### `users` and `budgets` have no RLS policy
-**Why:** `app-role-grants.sql` deliberately leaves both tables unpoliced; cross-user isolation
-there rests on application code alone, unlike every budget-owned table. Either add policies or
-write an ADR owning the exception explicitly.
-
-### Erasure needs grants the application role doesn't have
-**Why:** `docs/product/privacy.md` commits to one-action account deletion, but `app-role-grants.sql`
-grants only `SELECT, INSERT` (+ column-limited `UPDATE`) on `users` and `budgets` — no `DELETE`.
-The erasure feature must add the grants and the coverage verification alongside the endpoint.
-
-### DesignTimeDbContextFactory hardcodes a connection string
-**Why:** `Infrastructure/Persistence/DesignTimeDbContextFactory.cs` uses
-`Host=localhost;Port=5432;...;Password=postgres`, which doesn't match the Aspire-managed
-Postgres (random host port + generated password in user secrets). It works for
-`dotnet ef migrations add` (offline, model-only) but `dotnet ef database update` from the CLI
-can't connect. Consider reading the connection from configuration/user-secrets, or document
-that migrations are applied at startup / via bundles rather than the CLI.

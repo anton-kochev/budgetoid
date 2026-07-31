@@ -231,6 +231,44 @@ This clarifies "A budget holding transactions cannot be deleted; its empty struc
 
 ---
 
+## 2026-07-29 — Ordering contiguity stays in the domain, and the near-miss constraint is named
+
+**Context:** Category Group and Category positions are persisted, zero-based, and **contiguous**
+within their scope — groups over the whole budget, categories inside their group. Contiguity is what
+makes a position mean anything: it is the only thing that turns "position 3" into "the fourth item",
+which is what a client sends when someone drops a row into the fourth slot. With gaps or duplicates
+in the stored list, that number stops naming the slot the user aimed at. The rule lives in
+`CategoryOrdering` and `CategoryGroupOrdering`, which reindex the whole affected list on every
+insertion, move and removal. That puts it **above** its nominally lowest capable layer, and
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) requires such a rule to
+say why — without which the next reader reads the gap as an oversight and starts writing triggers.
+The database holds only the non-negative half, in `CK_categories_position` and
+`CK_category_groups_position`; the ordering indexes are deliberately **not** unique.
+
+**Decision:** Keep contiguity domain-owned, because checking it on a write means comparing a row
+against every one of its siblings and the only PostgreSQL construct that can do that is a deferred
+constraint trigger — procedural logic in the database, which is precisely the boundary ADR 0002
+draws around "lowest capable layer". Record the reasoning in
+[categories.md](categories.md#business-rules--invariants) beside the rule, and name the rejected
+near-miss there explicitly rather than leaving it to be rediscovered.
+
+**Alternatives considered:** A **`DEFERRABLE INITIALLY DEFERRED` unique constraint on
+`(category_group_id, position)`** is the near-miss worth naming, because it catches duplicates
+declaratively and *is* a constraint rather than a trigger — so the declarative boundary is satisfied
+and is not what rules it out. Three other things do. First, the consequence it would prevent is
+cosmetic: both read services tie-break on `Id`, so a duplicate produces a deterministic-but-wrong
+order that the next reindex of that list repairs on its own — nothing like the tenancy breach or the
+bulk loss of recorded money the rules that do live at the bottom prevent — and the bottom layer's
+price is paid on every later change. Second, EF has no `DEFERRABLE` support, so it would be
+hand-written SQL inside the single baseline migration this repository regenerates by convention;
+grants can live outside migrations because provisioning owns them, but schema has nowhere else to
+go. Third, it buys half the invariant at best: `0, 1, 5` holds no duplicate, is equally broken to
+the person reading the list, and would stay legal.
+
+**Affected areas:** [categories.md](categories.md).
+
+---
+
 ## 2026-07-28 — A zero amount is a legal transaction: the record is the point, not the number
 
 **Context:** "Amount must be non-zero (zero has no direction and records no movement)" was recorded

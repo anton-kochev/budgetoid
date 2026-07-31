@@ -53,3 +53,7 @@ CLAUDE.local.md
 /.claude/skills/grimoire.*
 /.claude/agents/grimoire.*
 /.claude/grimoire.json
+
+# Pending hardening backlog — lives in the private budgetoid-specs repository,
+# because a public list of unclosed weaknesses is a map.
+TECH_DEBT.md

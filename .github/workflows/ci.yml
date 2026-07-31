@@ -61,10 +61,11 @@ jobs:
             echo "Existing migration files were modified, deleted, or renamed:"
             echo "$violations"
             echo
-            echo "Applied migrations are frozen (TECH_DEBT.md, ADR 0006): the deploy pipeline"
-            echo "applies migrations unattended, so an edited migration re-runs against the"
-            echo "populated production database and a regenerated baseline re-creates every"
-            echo "table. Add a new migration instead of changing an existing one."
+            echo "Applied migrations are frozen (docs/engineering/migrations.md, ADR 0006):"
+            echo "the deploy pipeline applies migrations unattended, so an edited migration"
+            echo "re-runs against the populated production database and a regenerated"
+            echo "baseline re-creates every table. Add a new migration instead of changing"
+            echo "an existing one."
             exit 1
           fi
 

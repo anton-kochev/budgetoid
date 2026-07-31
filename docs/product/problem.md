@@ -81,4 +81,6 @@ affordability is a known fact, not a gamble; planning within means; and capital 
   multi-currency are core, not afterthoughts.
 - The user only and always owns their data. Full export and complete erasure are core features the
   product promises publicly — they must exist and stay one click away, not buried. The full privacy
-  stance lives in [privacy.md](privacy.md).
+  stance is held back until the product keeps it: it lives in `product-research/privacy.md` in the
+  private `budgetoid-specs` repository, and returns here the day it describes shipped behaviour
+  rather than intent.

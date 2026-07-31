@@ -45,7 +45,7 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. |
 | **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
 | **Provisioning** | The step that turns an authenticated Google principal into an internal user and an ambient budget, run on every authenticated request. |
-| **Default budget** | The budget provisioning creates when a user owns none. It has no name — `name` is null — and a client shows its own localized label in place of one. A user has at most one of these; named budgets are unconstrained in number. |
+| **Unnamed budget** | The budget provisioning creates when a user owns none. It has no name — `name` is null — and a client shows its own localized label in place of one. A user has at most one of these; named budgets are unconstrained in number. The invariant keys on the *absence of a name* rather than on a "default" flag or a well-known name, which is what makes provisioning race-safe — see [budgets.md](budgets.md#business-rules--invariants). "Default budget" names the same row from the provisioning side (`Budget.CreateDefault`, "find-or-create the user's default budget"); prefer "unnamed budget" when the rule turns on the missing name. |
 | **Ambient budget** | The one budget a request is scoped to, resolved server-side at provisioning and read through `IBudgetContext`. Never supplied by the client. |
 | **Base currency** | A nullable ISO-4217 code on the Budget, reserved for a planning layer. Nothing writes it, so it is null on every Budget. |
 | **Account** | A budget-owned place money lives, denominated in one Currency. |
@@ -53,7 +53,7 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | **Opening Balance** | The starting balance at account creation; no current/running balance is modeled yet. |
 | **Transaction** | A money movement against an Account on a calendar date. |
 | **Amount** | Signed Transaction value: negative expense, positive income, zero a recorded event that nets to nothing. |
-| **Payee** | Budget-owned counterparty, entered as find-or-create free text; never shared across budgets. |
+| **Payee** | Budget-owned counterparty, entered as find-or-create free text; never shared across budgets. Its name is correctable in place, which is the only write a payee accepts in its own right. |
 | **Category Group** | Budget-owned, manually ordered container for Categories, e.g. “Essential Obligations.” |
 | **Category** | Budget-owned transaction classification belonging to exactly one Category Group, e.g. “Groceries.” |
 | **Position** | Zero-based persisted user order: budget-wide for Category Groups and group-scoped for Categories. |

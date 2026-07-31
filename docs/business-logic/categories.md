@@ -56,10 +56,13 @@ erDiagram
 - **Every Category must reference exactly one Category Group in the same budget.**
   - **Why**: An orphan or cross-budget Category would make the hierarchy invalid and could leak
     tenant data.
-  - **Enforced in**: `Category.Create` requires a non-empty `CategoryGroupId`;
-    `CreateCategoryHandler`/`PlaceCategoryHandler` resolve the destination through budget-filtered
-    repositories; PostgreSQL enforces `(category_group_id, budget_id) → (id, budget_id)` with a
-    non-nullable composite FK against the `category_groups` alternate key.
+  - **Enforced in**: **database-owned.** PostgreSQL maps `(category_group_id, budget_id) → (id,
+    budget_id)` as a non-nullable composite foreign key against the `category_groups` alternate key,
+    so both halves — that there is a group, and that it is this budget's — hold whatever code path
+    wrote the row. Above it, `Category.Create` requires a non-empty `CategoryGroupId` and
+    `CreateCategoryHandler` / `PlaceCategoryHandler` resolve the destination through budget-filtered
+    repositories, which is what turns another budget's group id into "Category group was not found."
+    instead of a constraint violation — error quality rather than enforcement.
 
 - **Names must be unique case-insensitively in their defined scope.**
   - Category Group names are unique per budget.
@@ -92,8 +95,19 @@ erDiagram
   - **Why**: Deleting the heading out from under its Categories would either orphan them — which the
     hierarchy forbids — or silently take them and their transaction history with it. Making the user
     empty the group first keeps that decision explicit.
-  - **Enforced in**: `DeleteCategoryGroupHandler` prechecks with `HasCategoriesAsync`, and the
-    category-to-group FK is `Restrict` behind it.
+  - **Enforced in**: **database-owned, with the application supplying the sentence** — the same split
+    as the Category rule below, and for the same reasons. `CategoryConfiguration` maps
+    `(category_group_id, budget_id) → category_groups` on `Restrict`, so PostgreSQL refuses to remove
+    a group any Category names, whatever wrote the delete — that is the half that is *correct*.
+    `CategoryGroupRepository.DeleteAsync` catches that `23503` **by constraint name**
+    (`CategoryConfiguration.CategoryGroupForeignKeyName`), detaches the rejected entity so its failed
+    state cannot leak into a later save, and turns it into the sentence below;
+    `DeleteCategoryGroupHandler` asks `HasCategoriesAsync` first to raise the same sentence before
+    the write. Both are *error quality*. The precheck is check-then-act, so its answer can be stale
+    in either direction by the time the delete runs, exactly as
+    [transactions.md](transactions.md#edge-cases--known-gotchas) describes for the account and
+    category guards. Per [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md)
+    neither half is redundant cover for the other.
   - **Error**: “Category group cannot be deleted because it has categories.”
 
 - **A Category must not be deleted while a Transaction references it.**
@@ -171,7 +185,8 @@ erDiagram
   baseline migration this repository regenerates by convention; grants can live outside migrations
   because provisioning owns them, but schema has nowhere else to go. Third, it buys half the
   invariant at best: `0, 1, 5` holds no duplicate, is equally broken to the person reading the list,
-  and would stay legal.
+  and would stay legal. The decision is recorded in [_decision-log.md](_decision-log.md) as
+  "Ordering contiguity stays in the domain, and the near-miss constraint is named" (2026-07-29).
 - **Example**: the first group a budget receives is position `0`, and so is the first category in
   each group. Deleting the group at position `1` of four leaves the survivors at `0, 1, 2`, not
   `0, 2, 3`; moving a Category to another group closes the gap it left behind and renumbers the

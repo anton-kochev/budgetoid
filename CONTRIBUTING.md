@@ -36,4 +36,7 @@ cd ClientApp/angular-budgetoid
 npm run prepare
 ```
 
-See [CLAUDE.md](CLAUDE.md) for architecture and deploy notes, [TECH_DEBT.md](TECH_DEBT.md) for known debt.
+See [CLAUDE.md](CLAUDE.md) for architecture and deploy notes, and
+[docs/engineering/](docs/engineering/) for the invariants your change must preserve —
+[data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries,
+[migrations](docs/engineering/migrations.md) before touching `Infrastructure/Migrations/`.
