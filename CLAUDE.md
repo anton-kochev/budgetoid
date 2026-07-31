@@ -4,8 +4,8 @@ Personal budget management app. .NET 10 backend + Angular 21 frontend.
 
 ## Project Layout
 
-- `BudgetoidApp/` — current backend solution (.NET 10)
-  - `AppHost/` — Aspire orchestrator for local development and future `azd` deployment
+- `BudgetoidApp/` — backend solution (.NET 10)
+  - `AppHost/` — Aspire orchestrator for local development and `azd` deployment
   - `ServiceDefaults/` — shared Aspire service defaults
   - `Domain/` — entities and domain rules, no infrastructure dependencies
   - `Application/` — CQRS commands/queries with plain handler interfaces (no MediatR)
@@ -13,9 +13,7 @@ Personal budget management app. .NET 10 backend + Angular 21 frontend.
   - `Api/` — ASP.NET Core minimal API
   - `Tools/DbProvision/` — deploy-time console tool: migrate, provision the app role, verify RLS coverage
   - `tests/UnitTests/`, `tests/IntegrationTests/` — TUnit tests
-- `ClientApp/angular-budgetoid/` — current frontend (Angular 21)
-
-Legacy `Budgetoid/`, Vue, and Elm projects have been removed.
+- `ClientApp/angular-budgetoid/` — frontend (Angular 21)
 
 ## Build & Run
 
@@ -27,7 +25,8 @@ dotnet test
 aspire run # or F5 AppHost
 ```
 
-Aspire starts PostgreSQL and the API. The connection name is `budgetoid` and must match AppHost, API registration, and test overrides.
+Aspire starts PostgreSQL and the API. The connection name is `budgetoid` and must match
+AppHost, API registration, and test overrides.
 
 ### Frontend (from `ClientApp/angular-budgetoid/`)
 
@@ -41,103 +40,115 @@ npm run lint     # ESLint with --fix
 npm run format   # Prettier
 ```
 
-Tests run via the `@angular/build:unit-test` builder (Vitest runner, Node/jsdom).
-Specs live next to their subject as `*.spec.ts`. Import test globals explicitly
-from `vitest` (`import { describe, it, expect } from 'vitest'`) — no ambient
-globals are configured for ESLint. Use `// Arrange // Act // Assert` comments.
+Specs live next to their subject as `*.spec.ts` and run on the `@angular/build:unit-test`
+builder (Vitest, jsdom). Import test globals explicitly from `vitest` — no ambient globals
+are configured. Use `// Arrange // Act // Assert` comments.
 
 ## Backend Architecture
 
-Clean Architecture with CQRS. Commands/queries live under `Application/Transactions/*` and are handled by directly injected plain handlers (`ICommandHandler`/`IQueryHandler` shape); no MediatR dispatcher until decorators are needed. Infrastructure uses EF Core 10 with PostgreSQL via Npgsql. The API layer is ASP.NET Core minimal API, intended for Azure Container Apps.
+Clean Architecture with CQRS. Commands/queries live under `Application/Transactions/*` and
+are injected as plain handlers (`ICommandHandler`/`IQueryHandler`); no MediatR dispatcher
+until decorators are needed. The API is ASP.NET Core minimal API on Azure Container Apps.
+Auth is live Google OAuth.
 
-Auth is live Google OAuth. The budget is the unit of tenancy: `UserProvisioningMiddleware` resolves the authenticated principal (via `EnsureUserHandler`, keyed on the Google `sub`) into an internal user id and that user's default budget id, both held on the scoped `CurrentUser`. The ambient budget is exposed through `IBudgetContext`, implemented by `HttpContextBudgetContext` in prod (`TestBudgetContext` in tests); `Account`, `CategoryGroup`, `Category`, `Payee`, and `Transaction` are isolated per budget at two depths: PostgreSQL `budget_isolation` row-level security policies are the enforcement, and the `BudgetIsolation` query filters above them turn another budget's row into the 404 or 400 the API answers with. Do not delete either as duplication. EF APIs that bypass the filters (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`, `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt` (RS0030). See `docs/business-logic/budgets.md` and `docs/business-logic/users-and-ownership.md`.
+**The budget is the unit of tenancy.** `UserProvisioningMiddleware` resolves the Google
+`sub` (via `EnsureUserHandler`) into a user id and default budget id on the scoped
+`CurrentUser`; `IBudgetContext` exposes the ambient budget. Read
+[data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries.
+Load-bearing rules, each explained there or in the linked decision:
 
-The app connects to PostgreSQL as `budgetoid_app`, a least-privilege role, on `ConnectionStrings:budgetoid`. `ConnectionStrings:budgetoid-admin` is elevated and is read only by the Development startup block, which migrates and then applies the grants; migrations can never run on the application role. **In production the role has no password**: it is bound by object id to the API's managed identity, and the connection string's missing `Password=` is what makes Aspire's Azure Npgsql integration fetch an Entra access token instead — so do not "complete" that string. `app-role-grants.sql` therefore creates the role `WITH LOGIN` and no credential; attaching one is a separate per-environment call (`AttachAppRoleIdentityAsync` in production, `AttachAppRolePasswordAsync` locally, where password auth is kept). See `docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md`. Immutable columns (`budget_id` everywhere, all of `budgets`, `accounts.currency_code`, `users.google_subject`) are expressed by **omission from a `GRANT UPDATE` column list** — PostgreSQL column privileges are additive, so `REVOKE` cannot subtract a column from a table-wide grant, and widening any list to table-wide silently reopens every hole. A blocked write is `42501` and is deliberately untranslated: it means the domain was bypassed. Grants live in `Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration. See `docs/decisions/0004-connect-as-a-least-privilege-role.md`.
-
-The same script carries the row-level security policies, for the same reason — they are written `TO budgetoid_app`, so one file cannot be applied without the other. `BudgetSessionInterceptor` puts the ambient budget on every connection the context opens as the session setting `app.current_budget_id`; it must stay a **connection-opened** interceptor, because EF opens and closes the connection per operation, so a value set in middleware evaporates on return to the pool and one set inside a transaction is reverted by a rollback. `No Reset On Close=true` and `Multiplexing=true` are forbidden in any connection string. A new budget-owned table needs a grant **and** a policy: grants are fail-closed (`42501`), RLS is fail-open — a granted table with no policy is readable across every tenant, silently, which is what `RlsCoverageTests` exists to catch. A session naming no budget fails with `22P02`, because each policy reads the setting as `COALESCE(current_setting('app.current_budget_id', true), '')::uuid` — the empty-string cast is that loud failure, and turning it into `NULLIF` would make an unset session read as zero rows instead. See `docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md` and `docs/decisions/0008-read-the-ambient-budget-inside-the-policy.md`.
+- Budget-owned rows are isolated twice: PostgreSQL `budget_isolation` RLS policies enforce,
+  EF `BudgetIsolation` query filters turn a foreign row into the API's 404/400. Neither is
+  duplication — do not delete either. See [ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md).
+- EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
+  `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
+- A new budget-owned table needs a grant **and** a policy. Grants fail closed (`42501`),
+  RLS fails open — `RlsCoverageTests` exists to catch the silent case.
+- `BudgetSessionInterceptor` must stay a **connection-opened** interceptor, and
+  `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string.
+  See [ADR 0008](docs/decisions/0008-read-the-ambient-budget-inside-the-policy.md).
+- The app connects as `budgetoid_app` on `ConnectionStrings:budgetoid`; the elevated
+  `budgetoid-admin` is read only by the Development startup block. Migrations never run on
+  the app role. See [ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md).
+- Immutable columns are enforced by **omission from a `GRANT UPDATE` column list** — never
+  by `REVOKE`, and never widen a list to table-wide. Grants and policies live together in
+  `Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration.
+- **In production the app role has no password** — the missing `Password=` is what makes
+  Aspire fetch an Entra token for the API's managed identity. Do not "complete" it.
+  See [ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md).
 
 ## Frontend Architecture
 
 - Angular 21 standalone components (no NgModules)
-- Slice-1 transaction state uses an Angular signal-based service; NgRx remains for existing auth/profile scaffolding only
+- Slice-1 transaction state uses an Angular signal-based service; NgRx remains for existing
+  auth/profile scaffolding only
 - `+core/` — API services, guards, interceptors, app-wide providers
 - `+shared/` — shared components and utilities
 - `+state/` — NgRx actions, effects, selectors, reducers
-- Path aliases: `@app-core/*`, `@app-shared/*`, `@app-state/*` (configured in tsconfig, baseUrl is `./src`)
+- Path aliases: `@app-core/*`, `@app-shared/*`, `@app-state/*` (baseUrl is `./src`)
 - Auth: Google OAuth via `angular-oauth2-oidc`
-- UI: Angular Material + Angular CDK
-- Styling: SCSS
+- UI: Angular Material + Angular CDK, styled with SCSS
 
-## Design System Documentation
+## Documentation
 
-The design system lives in `docs/design/` — start with `docs/design/_overview.md`.
-Read the relevant chapter before building or changing UI. Every visible value comes
-from design tokens (`--bud-*` / `--mat-sys-*`); a hard-coded hex, px gap, or duration
-in component styles is a defect unless the book names it. When a change affects a
-design rule, update the chapter in the same commit. Brand mark rules stay in
-`branding/BRAND.md`.
-
-## Business Logic Documentation
-
-The product problem definition lives in `docs/product/problem.md` — read it before making
-product or UX decisions; features are measured against it.
-Before modifying business logic, read the relevant file in `docs/business-logic/`.
-When your changes affect business rules, update the corresponding doc in the same commit.
-If no file exists for the domain area, create one following the structure of existing files.
-Start with `docs/business-logic/_overview.md` for domain orientation.
-Rules marked `[SOURCE: code-audit — unconfirmed]` need human confirmation before relying on them.
-
-**`docs/` documents only what is true today.** Design agreed but not yet built lives in the private `budgetoid-specs` repository — SRS documents at the root, and `product-research/` for the product rationale behind unbuilt capabilities. A design moves back into `docs/business-logic/` the day it ships, and leaves the specs repository. Never restate an unbuilt capability in `docs/` in the present tense: that is what put `privacy.md` there.
-
-## Engineering Invariants
-
-`docs/engineering/` holds the two invariants code must preserve, in full detail this file only
-summarizes: [data isolation](docs/engineering/data-isolation.md) — read before touching
-budget-scoped queries, including the list of EF escape hatches and why each filter lambda must
-read the DbContext's primary-constructor parameter — and
-[migrations](docs/engineering/migrations.md) — read before touching `Infrastructure/Migrations/`.
-Each names the tests that lock it: removing a `HasQueryFilter` line or a policy must fail one.
-
-The pending hardening backlog is **not** in this repository; it lives in the private
-`budgetoid-specs` repository, because a public list of unclosed weaknesses is a map.
+- **Design system** — `docs/design/_overview.md`. Read the relevant chapter before building
+  or changing UI. Every visible value comes from design tokens (`--bud-*` / `--mat-sys-*`);
+  a hard-coded hex, px gap, or duration in component styles is a defect unless the book
+  names it. Brand mark rules stay in `branding/BRAND.md`.
+- **Product** — `docs/product/problem.md` defines the problem; features are measured
+  against it. Read it before making product or UX decisions.
+- **Business logic** — start at `docs/business-logic/_overview.md`. Read the relevant file
+  before modifying business rules; if none exists for the domain area, create one following
+  the structure of the others.
+- **Engineering invariants** — [data isolation](docs/engineering/data-isolation.md) and
+  [migrations](docs/engineering/migrations.md). Each names the tests that lock it: removing
+  a `HasQueryFilter` line or a policy must fail one.
+- A change to a design rule, business rule, or invariant updates the owning doc **in the
+  same commit**.
+- **`docs/` documents only what is true today.** Agreed-but-unbuilt design lives in the
+  private `budgetoid-specs` repository (SRS documents at the root, `product-research/` for
+  rationale) and moves into `docs/` the day it ships. Never state an unbuilt capability in
+  the present tense. The hardening backlog lives there too — a public list of unclosed
+  weaknesses is a map.
 
 ## Rule Enforcement
 
-Every rule is owned by the lowest layer that can enforce it **declaratively** — database first,
-then application, then client. Upper layers may restate a rule for error quality and UX, never for
-enforcement. Two boundaries: no procedural logic (triggers, PL/pgSQL) pushed into the database just
-to satisfy "lowest layer"; and domain invariants go down while product policy stays up, because the
-bottom is the most expensive layer to change. "The database enforces it" means it *rejects*, not
-that it coerces. When a rule deliberately sits above its lowest capable layer, the doc that
-describes the rule says why. Full reasoning in
-`docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md`.
+Every rule is owned by the lowest layer that can enforce it **declaratively** — database,
+then application, then client. Upper layers may restate a rule for error quality and UX,
+never for enforcement. "The database enforces it" means it *rejects*, not that it coerces.
+Two boundaries: no procedural logic (triggers, PL/pgSQL) pushed down just to satisfy
+"lowest layer"; and domain invariants go down while product policy stays up, because the
+bottom is the most expensive layer to change. When a rule deliberately sits above its
+lowest capable layer, the doc describing it says why. See
+[ADR 0002](docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md).
 
 ## Deploy Notes
 
-- Use `azd init` / `azd up` from AppHost later; do not mix with `aspire deploy`.
-- Scale-to-zero is set in the app model — `api.PublishAsAzureContainerApp(...)` with `MinReplicas = 0` and max 2 — not by a pipeline step. That only became possible once the AppHost took ownership of the Container Apps environment.
-- **The AppHost owns the Container Apps environment** (`AddAzureContainerAppEnvironment("cae").WithAzdResourceNaming()`), not azd. A virtual network can only be attached to an environment as it is created, so ownership is what makes the network reachable at all; `WithAzdResourceNaming` keeps the registry, workspace and identity on azd's names so the registry keeps its images. Recreating the environment changes the API's hostname, which means `app-config.json` and the Google OAuth client both need updating.
-- **`budgetoid.app` is registered but not yet wired up.** The target is apex → Static Web Apps, `api.` → Container Apps, Cloudflare as registrar and authoritative DNS, proxy off. Until the cutover in `DEPLOYMENT.md` Step 6 happens, the generated Azure hostnames are still the live ones — treat any doc claiming otherwise as wrong. `.app` is HSTS-preloaded at the TLD level, so a hostname without an issued certificate is unreachable rather than degraded, and the DNS record always moves last. See `docs/decisions/0010-serve-the-app-from-a-custom-domain.md`.
-- **The database has no standing firewall rule.** The API reaches PostgreSQL over a private endpoint in that network; the public endpoint stays enabled only so the deploy pipeline can open its two-minute single-address window. Aspire adds an "allow all Azure IPs" rule with no way to decline it, so the AppHost removes the provisionable — and because ARM deployments are incremental, removing it from the template never removes it from a server that already has it. `az postgres flexible-server firewall-rule list` must come back empty outside a deploy. See `docs/decisions/0009-route-database-traffic-over-a-private-endpoint.md`.
-- `Api.csproj` uses `<ContainerFamily>noble-chiseled</ContainerFamily>`; no handwritten Dockerfile.
+`DEPLOYMENT.md` is the runbook; ADRs [0006](docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md),
+[0009](docs/decisions/0009-route-database-traffic-over-a-private-endpoint.md) and
+[0010](docs/decisions/0010-serve-the-app-from-a-custom-domain.md) hold the reasoning.
+
+- Use `azd init` / `azd up` from AppHost; do not mix with `aspire deploy`.
+- **The AppHost owns the Container Apps environment**, not azd — that ownership is what
+  attaches the virtual network and sets scale-to-zero in the app model. Recreating it
+  changes the API hostname, which also means editing `app-config.json` and the Google
+  OAuth client.
+- The publish branch of `AppHost/Program.cs` deliberately does **not** `WithReference` the
+  database for the API: that would register the API's managed identity as a full Entra
+  administrator, and administrators are not subject to RLS. Do not add it back.
+- `.ClearDefaultRoleAssignments()` on the Postgres resource is load-bearing, not tidying —
+  without it `azd provision` fails on an empty ARM resource name.
+- **The database has no standing firewall rule.** `az postgres flexible-server
+  firewall-rule list` must come back empty outside a deploy.
+- **`budgetoid.app` is registered but not yet wired up.** The generated Azure hostnames are
+  still the live ones; treat any doc claiming otherwise as wrong.
+- **The baseline migration is frozen.** Schema changes are additive migrations from here
+  on; the `migrations-guard` CI job fails any edit to an existing migration file.
+- Production migrations run from the pipeline, never at API startup: migrate **then**
+  provision **then** verify, an order that lives in `DeploymentDatabaseProvisioning` rather
+  than in a runbook. Verification is not optional.
 - Append `Maximum Pool Size=5` to production PostgreSQL connection strings.
-- Production migrations run from the deploy pipeline, never at API startup. `.github/workflows/deploy.yml` runs `Tools/DbProvision` between `azd provision` and `azd deploy`, so new code never starts against an old schema.
-- Deploying is migrate **then** provision **then** verify, and that ordering lives in
-  `DeploymentDatabaseProvisioning` rather than in a runbook: the grants and policies name individual
-  tables, so the schema has to exist first. Verification is not optional — grants are fail-closed,
-  RLS is fail-open. Binding the role to the API's identity sits *outside* that method on purpose:
-  forgetting it fails loudly (`28P01` on every request), and ordering guarantees are spent where
-  silence is possible. See `DEPLOYMENT.md`, `docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md`
-  and `docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md`.
-- **The baseline migration is frozen.** Production's `__EFMigrationsHistory` references the current migration id, and the pipeline applies migrations unattended, so regenerating the single baseline would make the next push try to re-create every table. Schema changes are additive migrations from here on; the `migrations-guard` CI job fails any change that modifies, deletes, or renames an existing migration file.
-- The deployed container is handed one connection string, the least-privilege and password-free one.
-  The publish branch of `AppHost/Program.cs` deliberately does **not** `WithReference` the database
-  for the API: for this resource type a reference registers the referencing compute resource's
-  managed identity as a full Entra **administrator** of the server, and an administrator is not
-  subject to the RLS policies the whole tenancy design rests on. Do not add it back.
-- `.ClearDefaultRoleAssignments()` on the Postgres resource is load-bearing, not tidying: without it
-  Aspire emits a `postgres-roles` module whose administrators resource takes its name from a
-  principal id nothing fills, and ARM refuses an empty resource name, so `azd provision` fails.
+- `Api.csproj` uses `<ContainerFamily>noble-chiseled</ContainerFamily>`; no Dockerfile.
 
 ## Code Conventions
 
@@ -153,7 +164,8 @@ describes the rule says why. Full reasoning in
 
 - `inject()` function over constructor DI
 - OnPush change detection
-- Mobile-first: start every layout at phone width, enhance upward with `min-width` breakpoints; CSS Grid as the default layout tool
+- Mobile-first: start every layout at phone width, enhance upward with `min-width`
+  breakpoints; CSS Grid as the default layout tool
 - ESLint 9 flat config (`eslint.config.js`) with `angular-eslint` + `typescript-eslint`
 - Prettier: single quotes, trailing commas, 80 char width, 2-space indent
 - camelCase JSON serialization
