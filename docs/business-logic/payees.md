@@ -148,6 +148,15 @@ erDiagram
   (`PayeeIntegrationTests.GetPayees_WhenEmpty_ReturnsEmptyItemsArray`). The `PATCH` route cannot
   mint the first row either: it needs an id that already resolves in the budget, and an unknown one
   answers 404 without writing anything.
+- **Counterexample**: adding a `POST /api/payees` so the counterparty can be set up before it is
+  used. It reads as a convenience and breaks the one guarantee the shape provides — that a payee row
+  means someone actually transacted with that party. Since nothing deletes a payee, every
+  speculatively created row is permanent: the autocomplete list fills with counterparties the budget
+  has never dealt with, and the list is already known to only grow (see
+  [Edge Cases](#edge-cases--known-gotchas) below). It also splits one field into two ways of
+  answering it — typed free text on the transaction form, picked from a managed list elsewhere — so
+  the same counterparty can be brought into existence twice with different spellings, which is the
+  duplication find-or-create exists to prevent.
 - **Source**: `[SOURCE: discussion — 2026-07-29]`
 
 ---

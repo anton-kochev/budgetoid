@@ -48,7 +48,7 @@ erDiagram
 
 ### MUST
 
-- **The Account must exist and belong to the current budget.**
+- **The Account must exist and belong to the ambient budget.**
   - **Why**: The account is what the movement happened to, and it supplies the currency every amount
     on the transaction is displayed in. A transaction against another budget's account would put one
     pool's money into another's picture.
@@ -56,7 +56,7 @@ erDiagram
     through the budget-filtered repository and report "Account was not found." otherwise; the
     composite `(account_id, budget_id)` foreign key is what holds beneath them.
 
-- **A supplied Category must exist and belong to the current budget.**
+- **A supplied Category must exist and belong to the ambient budget.**
   - **Why**: Categorization is what the money picture is grouped by, so a category from another pool
     would file this budget's spending under a heading that is not its own.
   - **Enforced in**: `CreateTransactionHandler` and `UpdateTransactionHandler` each resolve
@@ -484,6 +484,11 @@ ELSE
   and their reasoning live in [budgets.md](budgets.md#constraints). A Transaction's existence is also
   what makes its Budget undeletable, unlike the Budget's other owned entities — the budget-level
   half of the never-as-a-side-effect rule stated under [Constraints](#must-not) above.
+- **Angular client**: `/app/transactions` records and edits entries
+  (`TransactionsComponent`). It owns one rule outright rather than restating one: the amount input
+  must require a value rather than default to `0`, and an edit form must omit a field it did not
+  collect rather than send a default — there is no layer beneath it that can tell a deliberate zero
+  from an untouched input. See [Edge Cases & Known Gotchas](#edge-cases--known-gotchas) below.
 
 ## Edge Cases & Known Gotchas
 

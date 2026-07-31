@@ -7,6 +7,7 @@
 - [Constraints](#constraints)
 - [Business Rules & Invariants](#business-rules--invariants)
 - [Workflows & State Transitions](#workflows--state-transitions)
+- [Decision Trees](#decision-trees)
 - [Integration Points](#integration-points)
 - [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
 
@@ -101,6 +102,13 @@ erDiagram
   domain-owned is non-blankness: `NOT NULL` refuses a null name or symbol but accepts a
   whitespace-only one, and `ValidateOrThrow` is the only layer that reads `"   "` as absent.
 - **Example**: `Code="JPY", Name="Japanese Yen", Symbol="¥", MinorUnit=0` is valid.
+- **Counterexample**: widening `CK_currencies_minor_unit` to accept 5 so a currency with five decimal
+  places can be seeded, without widening `numeric(14,4)` underneath it. Nothing fails at seed time
+  and nothing fails on the way in: `Account.Create` accepts `0.00001` because the currency now claims
+  five places, and the column then rounds it to `0.0000` and raises nothing. The amount the user
+  typed is silently gone, and the currency they were promised is one the schema cannot store — which
+  is why the ceiling is the column's scale rather than an arbitrary sanity bound, and why the two
+  numbers have to move together.
 - **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
@@ -121,14 +129,18 @@ erDiagram
   either. This is a rule deliberately sitting above its nominally lowest layer, and this paragraph is
   the reason, so that the next reader does not read the gap as an oversight and start writing
   triggers.
-- **Enforced in**: `Account.Create`, `Account.Update` and `Transaction.Create` each take an
-  `int minorUnit` and reject any amount `decimal.Round` would change, wording the error from it
-  ("Amount must be a whole number." at 0, "…no more than N decimal places." above it).
-  `CreateAccountHandler`, `UpdateAccountHandler` and `CreateTransactionHandler` read it from
-  `ICurrencyReadService` — always the account's own currency, which never changes. A value outside
-  0–4 is an `ArgumentOutOfRangeException`, not a validation error: it could only come from a
-  `currencies` row `CK_currencies_minor_unit` would have refused, so it is a broken caller rather
-  than something a user typed.
+- **Enforced in**: `Account.Create`, `Account.Update`, `Transaction.Create` and `Transaction.Update`
+  each take an `int minorUnit` and reject any amount `decimal.Round` would change, wording the error
+  from it ("Amount must be a whole number." at 0, "…no more than N decimal places." above it).
+  `CreateAccountHandler`, `UpdateAccountHandler`, `CreateTransactionHandler` and
+  `UpdateTransactionHandler` read it from `ICurrencyReadService`. It is always **the account's own**
+  currency, and an account's currency never changes — but a transaction's does, because an edit can
+  move it to an account denominated differently, so `UpdateTransactionHandler` resolves the currency
+  from the account the transaction will *end up* on rather than the one it came from (see
+  [transactions.md](transactions.md#edge-cases--known-gotchas)). A value outside 0–4 is an
+  `ArgumentOutOfRangeException`, not a validation error: it could only come from a `currencies` row
+  `CK_currencies_minor_unit` would have refused, so it is a broken caller rather than something a
+  user typed.
 - **Example**: a JPY account refuses `1000.5` with "Opening balance must be a whole number."; a BHD
   account accepts `0.125` and refuses `0.1255`.
 - **Counterexample**: rounding every amount to the widest precision any currency may declare. It
@@ -138,19 +150,27 @@ erDiagram
 
 ## Workflows & State Transitions
 
-A Currency has no lifecycle and no branching logic: rows arrive by migration seed and are only ever
-read. There is nothing to transition and no decision tree to document — the only conditional
-behaviour that touches currencies belongs to the entities that reference them, in
-[accounts.md](accounts.md#decision-trees) and [transactions.md](transactions.md#decision-trees).
+A Currency has no lifecycle: rows arrive by migration seed and are only ever read. There is nothing
+to transition between.
+
+## Decision Trees
+
+None. Nothing branches on a currency's own state, because a currency has none. Every conditional
+that *involves* a currency belongs to the entity referencing it and is documented there — resolving
+the code and its minor unit while creating or updating an account
+([accounts.md](accounts.md#decision-trees)), and while creating or editing a transaction
+([transactions.md](transactions.md#decision-trees)).
 
 ## Integration Points
 
 - **[Accounts](accounts.md)**: an account references a currency by code; the account create handler
   validates the code and denormalizes name/symbol/minor-unit into the account response. Both the
   create and update handlers validate the opening balance's precision against the minor unit.
-- **[Transactions](transactions.md)**: the create handler resolves the account's currency to validate
-  the amount's precision, and transaction responses carry the account's currency code and symbol so
-  lists render amounts consistently with the account view.
+- **[Transactions](transactions.md)**: the create and update handlers each resolve the account's
+  currency to validate the amount's precision — the update handler against the account the
+  transaction will end up on, which is what lets a move between differently denominated accounts
+  refuse an amount that was valid before it. Transaction responses carry the account's currency code
+  and symbol so lists render amounts consistently with the account view.
 - **[Budgets](budgets.md)**: `budgets.base_currency_code` references this table by code with a
   `Restrict` foreign key. Nothing writes that column — it is null on every budget — so no currency
   is currently held in place by a budget.
@@ -163,11 +183,11 @@ behaviour that touches currencies belongs to the entities that reference them, i
   budget-scoped filter would hide the list from every request. Do not treat the absence of a filter
   here as precedent for the budget-owned entities.
 - **The missing-currency failure paths are unreachable, and are assertions rather than error
-  handling**: `CreateTransactionHandler` and `UpdateAccountHandler` throw `InvalidOperationException`
-  when an account's currency has no row — one rather than guessing a symbol, the other rather than
-  validating a balance against a precision it does not know — and `AccountReadService` inner-joins
-  currencies rather than left-joining. The foreign key is what makes both safe — no account can carry a code
-  with no row, and no currency in use can be deleted — so neither path can fire against a healthy
-  schema. Read them as statements of that invariant, not as handling for a state the database
-  permits, and do not soften either into a fallback symbol. If you add currencies, seed them via
-  migration.
+  handling**: `CreateTransactionHandler`, `UpdateTransactionHandler` and `UpdateAccountHandler` each
+  throw `InvalidOperationException` when an account's currency has no row — the first two rather than
+  guessing a symbol, the third rather than validating a balance against a precision it does not know
+  — and `AccountReadService` inner-joins currencies rather than left-joining. The foreign key is what
+  makes them safe — no account can carry a code with no row, and no currency in use can be deleted —
+  so none of these paths can fire against a healthy schema. Read them as statements of that
+  invariant, not as handling for a state the database permits, and do not soften any of them into a
+  fallback symbol. If you add currencies, seed them via migration.

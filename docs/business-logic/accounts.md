@@ -115,6 +115,9 @@ erDiagram
   rather than a constraint violation. A check rather than a native PostgreSQL enum type is
   deliberate — `HasConversion<string>()` already stores the member name — and the price is that
   adding an `AccountType` member now costs a migration as well as a code change.
+- **Example**: `Checking`, `Savings`, `Cash` and `CreditCard` are the whole set; `Brokerage` is
+  rejected as a validation error by `ValidateOrThrow`, and the same value written straight into
+  `accounts.type` by hand is refused by `CK_accounts_type`.
 - **Source**: `[SOURCE: discussion — 2026-07-26]`
 
 ---
@@ -188,8 +191,12 @@ ELSE
   precision is validated against, on create and on update alike — which is why
   `UpdateAccountHandler` resolves the currency even though it cannot change it.
 - **[Transactions](transactions.md)**: transactions are recorded against an account; the account's
-  currency determines how each transaction's amount is presented. The delete guard above depends on
-  the transaction data.
+  currency determines both the precision each transaction's amount may carry and how it is
+  presented, on creation and on an edit that moves a transaction here alike. The delete guard above
+  depends on the transaction data.
+- **Angular client**: `/app/accounts` manages the list. The currency field is offered on create and
+  hidden in edit mode (`accounts.component.ts`, `accounts.service.ts`), which matches — but does not
+  enforce — the immutability rule above.
 - **[Budgets](budgets.md)**: every account is stamped with and filtered by its owning `BudgetId`, and
   its name is unique within that budget case-insensitively. The same account name in two budgets is
   two unrelated accounts.
@@ -198,12 +205,22 @@ ELSE
 
 - **Delete guard is by existence of transactions, not a soft-delete**: there is no "archive" state.
   An account either has zero transactions (deletable) or has some (blocked), and which of the two
-  holds is read live on every attempt rather than marked on the row — deleting the last transaction
-  that names an account makes it deletable, which is what makes "Account cannot be deleted because it
-  has transactions." an instruction the user can follow rather than a dead end. The refusal itself is
+  holds is read live on every attempt rather than marked on the row. Two acts empty an account and so
+  make it deletable — deleting the last transaction that names it, and **editing that transaction
+  onto another account** — which is what makes "Account cannot be deleted because it has
+  transactions." an instruction the user can follow rather than a dead end. The refusal itself is
   the foreign key's, not the precheck's; [Constraints](#must-not) above states the split, and
   [transactions.md](transactions.md#edge-cases--known-gotchas) covers how a precheck answer goes stale
   in either direction. If archiving is ever needed, it's a new concept, not a tweak to this guard.
+
+- **An account's currency is fixed, but the set of transactions denominated by it is not.** Editing a
+  transaction onto this account re-validates that transaction's amount against **this** account's
+  minor unit, so a `-40.50` entry moved here from a USD account is refused when this one is JPY —
+  over a field the request never mentioned. Nothing about the account changes and nothing here
+  enforces it; the rule and the awkward error message belong to the transaction edit path
+  ([transactions.md](transactions.md#edge-cases--known-gotchas)). It is worth knowing from this side
+  because it is the one way an account's currency constrains a write the account is not the subject
+  of.
 - **The guard covers deleting the account, not losing it.** `accounts` cascades from `budgets.id`, so
   an account disappears with its budget without this check ever running. That path has its own rule
   and its own protection — a budget holding transactions cannot be deleted at all
