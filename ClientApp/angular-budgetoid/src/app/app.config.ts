@@ -3,11 +3,7 @@ import {
   withFetch,
   withInterceptorsFromDi,
 } from '@angular/common/http';
-import {
-  ApplicationConfig,
-  isDevMode,
-  provideZoneChangeDetection,
-} from '@angular/core';
+import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideRouter } from '@angular/router';
 import { provideAppCore } from '@app-core/core.providers';
@@ -15,9 +11,9 @@ import * as authenticationEffects from '@app-state/authentication/authentication
 import { profileFeatureKey, profileReducer } from '@app-state/profile';
 import { provideEffects } from '@ngrx/effects';
 import { provideState, provideStore } from '@ngrx/store';
-import { provideStoreDevtools } from '@ngrx/store-devtools';
 import { provideOAuthClient } from 'angular-oauth2-oidc';
 import { routes } from './app.routes';
+import { devtoolsProviders } from './devtools.providers';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -28,7 +24,7 @@ export const appConfig: ApplicationConfig = {
     provideStore(),
     provideState({ name: profileFeatureKey, reducer: profileReducer }),
     provideEffects(authenticationEffects),
-    provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
+    ...devtoolsProviders,
     provideAnimationsAsync('noop'),
     provideAppCore(),
   ],

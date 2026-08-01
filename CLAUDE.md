@@ -92,6 +92,10 @@ Load-bearing rules, each explained there or in the linked decision:
   image, and no identity-provider profile picture. Typefaces live in `public/fonts/`.
   `src/no-external-origins.spec.ts` reads the production bundle, so `npm test` needs a
   `npm run build` first. See [no third-party origins](docs/engineering/no-third-party-origins.md).
+- **The production build registers no state-inspection provider.** `provideStoreDevtools` lives
+  in `src/app/devtools.providers.ts`, which the production `fileReplacements` in `angular.json`
+  swaps for an empty module — a runtime `isDevMode()` branch leaves the code in the bundle.
+  `src/no-devtools.spec.ts` reads the bundle and fails if it comes back.
 
 ## Documentation
 

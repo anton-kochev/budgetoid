@@ -34,6 +34,29 @@ No icon font is loaded. `docs/design/components.md` specifies Material Symbols R
 component uses an icon yet; the first one to ship brings a woff2 subsetted to the glyph names
 actually used — never a CDN link, never the whole 1.38 MB face.
 
+## No state-inspection tooling
+
+**The production build registers no state-inspection or developer-tooling provider, and
+carries none of its code.** The Redux DevTools browser extension is a third party in the
+sense that matters here: an NgRx store instrumented for it hands over every dispatched
+action and the whole state tree, which today includes the signed-in user's profile. NgRx's
+`logOnly` flag narrows what such an extension may *do*, never what it may *see*, so it is
+not a mitigation.
+
+Removal happens at build time, not at runtime. `src/app/devtools.providers.ts` registers
+`provideStoreDevtools` and the `fileReplacements` entry in the production configuration of
+`angular.json` swaps it for the empty `devtools.providers.prod.ts`. That takes the
+`@ngrx/store-devtools` import out of the module graph, and the package is tree-shaken out
+of the bundle — roughly 11 kB of `main-*.js` that no longer ships. A runtime
+`isDevMode()` branch would not have worked: the import survives it, and so do the devtools
+code and its `__REDUX_DEVTOOLS_EXTENSION__` string literal. `ng serve` builds the
+development configuration, so the tool is still there while developing.
+
+`src/no-devtools.spec.ts` reads the same emitted directory and fails on either
+`store-devtools` or `__REDUX_DEVTOOLS_EXTENSION__` appearing in any emitted script. Both
+markers survive minification — the first inside NgRx action-type string literals, the
+second as a `window` property name.
+
 ## Two gaps this test cannot close
 
 Federated sign-in still fetches `accounts.google.com/.well-known/openid-configuration` and, from

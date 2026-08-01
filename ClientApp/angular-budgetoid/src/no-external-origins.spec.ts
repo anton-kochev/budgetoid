@@ -1,6 +1,11 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  browserDir,
+  emittedFiles,
+  expectProductionBuild,
+} from './production-bundle';
 
 // FR-030/FR-031: the app loads nothing from an origin other than its own. This test
 // reads the production build rather than the sources, because the sources are not what
@@ -10,10 +15,6 @@ import { describe, expect, it } from 'vitest';
 //
 // Requires a production build: `npm run build && npm test`.
 // See docs/engineering/no-third-party-origins.md.
-
-// Only the emitted browser directory is served. `3rdpartylicenses.txt` and
-// `prerendered-routes.json` sit one level above it and never reach a browser.
-const browserDir = join(process.cwd(), 'dist', 'angular-budgetoid', 'browser');
 
 // Absolute URLs that may appear in a JavaScript bundle without any of them being
 // fetched. Each entry is a deliberate exception, not an oversight; a new library that
@@ -34,26 +35,7 @@ const allowedOrigins = new Map<string, string>([
   ],
 ]);
 
-// `assets/app-config*.json` carries the API base URL and the OAuth redirect URI. Both
-// are runtime configuration — an XHR target and a navigation target — not resources the
-// document loads, so the JSON is out of scope here.
-const scannedExtensions = ['.html', '.css', '.js', '.svg'];
-
 const urlPattern = /https?:\/\/[^\s"'`)\\<>]+/g;
-
-function listFiles(directory: string): string[] {
-  return readdirSync(directory).flatMap((entry) => {
-    const path = join(directory, entry);
-
-    return statSync(path).isDirectory() ? listFiles(path) : [path];
-  });
-}
-
-function scannedFiles(): string[] {
-  return listFiles(browserDir).filter((path) =>
-    scannedExtensions.some((extension) => path.endsWith(extension)),
-  );
-}
 
 function urlsIn(path: string): string[] {
   return readFileSync(path, 'utf8').match(urlPattern) ?? [];
@@ -63,28 +45,18 @@ function originOf(url: string): string {
   return new URL(url).origin;
 }
 
+// The tests below scan `.html`, `.css`, `.js` and `.svg`, and nothing else.
+// `assets/app-config*.json` carries the API base URL and the OAuth redirect URI. Both
+// are runtime configuration — an XHR target and a navigation target — not resources the
+// document loads, so the JSON is out of scope here.
 describe('production build', () => {
   it('is present and is a production build', () => {
-    // Arrange
-    const message = `${browserDir} is missing — run \`npm run build\` first`;
-
-    // Act
-    const built = existsSync(browserDir);
-
-    // Assert
-    expect(built, message).toBe(true);
-    // `outputHashing: all` is production-only, so an unhashed entry point means a
-    // development build is sitting in dist/ and this suite would pass too easily.
-    expect(readFileSync(join(browserDir, 'index.html'), 'utf8')).toMatch(
-      /main-[A-Z0-9]+\.js/,
-    );
+    expectProductionBuild();
   });
 
   it('references no external origin from the document or its stylesheets', () => {
     // Arrange
-    const documents = scannedFiles().filter(
-      (path) => path.endsWith('.html') || path.endsWith('.css'),
-    );
+    const documents = emittedFiles(['.html', '.css']);
 
     // Act
     const external = documents.flatMap((path) =>
@@ -97,9 +69,7 @@ describe('production build', () => {
 
   it('reaches no unreviewed origin from its scripts and images', () => {
     // Arrange
-    const bundles = scannedFiles().filter(
-      (path) => path.endsWith('.js') || path.endsWith('.svg'),
-    );
+    const bundles = emittedFiles(['.js', '.svg']);
 
     // Act
     const unreviewed = bundles.flatMap((path) =>
