@@ -16,9 +16,24 @@ jobs:
   # against a populated database and a regenerated baseline (new id) makes the next push try to
   # re-create every table. Only additions are allowed; the model snapshot is exempt because EF
   # rewrites it on every `migrations add`.
+  #
+  # REBASELINE_WINDOW suspends that rule, and is the recorded exception rather than a switch to
+  # flip in passing. It is open because the production database holds no data, so the schema
+  # changes still ahead can collapse into one regenerated baseline instead of a chain of
+  # migrations no database ever replays step by step. Whoever regenerates the baseline resets
+  # production's history in the same deploy or the deploy fails. Closing the window is one word
+  # here plus FROZEN_FROM set to the new baseline id; docs/engineering/migrations.md carries the
+  # reasoning and DEPLOYMENT.md the reset procedure.
   migrations-guard:
     name: Migrations only grow
     runs-on: ubuntu-latest
+
+    env:
+      # The id from which the freeze applies. Earlier ids are prehistory, removed when the
+      # baseline was frozen.
+      FROZEN_FROM: '20260728195844'
+      # 'open' suspends the freeze; any other value enforces it.
+      REBASELINE_WINDOW: open
 
     steps:
       - name: Checkout
@@ -40,15 +55,15 @@ jobs:
             fi
           fi
 
-          # Police migration ids from the frozen baseline (20260728195844) onward — earlier ids
-          # are prehistory removed when the baseline was frozen, and the model snapshot (no
-          # timestamp prefix) is rewritten by every `migrations add`. A rename line carries two
-          # paths, so every path field is checked.
+          # Police migration ids from FROZEN_FROM onward — earlier ids are prehistory removed
+          # when the baseline was frozen, and the model snapshot (no timestamp prefix) is
+          # rewritten by every `migrations add`. A rename line carries two paths, so every path
+          # field is checked.
           violations="$(
             git diff --name-status --find-renames "$base" HEAD -- \
               'BudgetoidApp/Infrastructure/Persistence/Migrations/*.cs' \
             | grep -Ev '^A\b' \
-            | awk -F'\t' -v frozen=20260728195844 '{
+            | awk -F'\t' -v frozen="$FROZEN_FROM" '{
                 for (i = 2; i <= NF; i++) {
                   n = split($i, parts, "/"); f = parts[n];
                   if (f ~ /^[0-9]{14}_/ && substr(f, 1, 14) >= frozen) { print; next }
@@ -56,6 +71,18 @@ jobs:
               }' \
             || true
           )"
+
+          # The window is announced on every run, so an open one cannot go unnoticed while the
+          # database it is safe against fills up.
+          if [ "$REBASELINE_WINDOW" = "open" ]; then
+            echo "Rebaseline window is OPEN — the migration freeze is suspended."
+            if [ -n "$violations" ]; then
+              echo "Permitted changes to existing migrations:"
+              echo "$violations"
+            fi
+            echo "Close it in this job (REBASELINE_WINDOW + FROZEN_FROM) once the schema settles."
+            exit 0
+          fi
 
           if [ -n "$violations" ]; then
             echo "Existing migration files were modified, deleted, or renamed:"

@@ -189,6 +189,36 @@ PGPASSWORD="$TOKEN" psql "host=$HOST user=$(az ad signed-in-user show --query us
 
 The role is never dropped either way, so its grants and policies survive the attempt.
 
+### Resetting the migration history after a rebaseline
+
+A regenerated baseline carries a new migration id. Production's `__EFMigrationsHistory` still names
+the old one, so the pipeline finds nothing applied and runs the new baseline against a schema that
+already exists — the deploy dies on the first `CREATE TABLE`. The fix is to hand the database back
+its empty state so the new baseline is true: **drop the schema, then migrate from scratch.**
+
+This is destructive and unconditional. It is available only because the production database holds no
+data, and it belongs in the same deploy that ships the regenerated baseline — never as a follow-up.
+Whether the rebaseline is permitted at all is recorded in the `migrations-guard` CI job
+(`REBASELINE_WINDOW`); [migrations](docs/engineering/migrations.md) explains when that window closes.
+
+Set up `$HOST` and `$TOKEN` exactly as in the break-glass recipe above, including the firewall rule,
+then, as an Entra administrator of the server:
+
+```sh
+PGPASSWORD="$TOKEN" psql "host=$HOST user=$(az ad signed-in-user show --query userPrincipalName -o tsv) dbname=budgetoid sslmode=require" \
+  -c 'drop schema public cascade' -c 'create schema public'
+```
+
+That takes `__EFMigrationsHistory`, every table, and the `case_insensitive` ICU collation with it.
+All three come back from the baseline — the collation is a model-level annotation the migration
+emits, not a hand-run statement. Then run the same `DbProvision` command the break-glass recipe
+uses: it migrates the fresh schema, re-runs `app-role-grants.sql` (idempotent by design, and the
+source of the `USAGE` grant on the recreated schema), verifies row-level security coverage, and
+rebinds `budgetoid_app` to the API's managed identity. The role itself is never dropped, so only its
+grants need restoring, and provisioning restores them.
+
+Then remove the firewall rule, as always.
+
 ### Verifying by hand
 
 The tool's own verification covers row-level security. To inspect the grant matrix as well:
