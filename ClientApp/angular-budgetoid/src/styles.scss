@@ -2,6 +2,7 @@
 // See docs / branding/BRAND.md for the palette rationale. The active accent palette
 // is chosen in `assets/theming/_palettes.scss` ($active-brand).
 @use '@angular/material' as mat;
+@use 'assets/theming/fonts';
 @use 'assets/theming/theme-config' as theme;
 @use 'assets/theming/brand-tokens';
 

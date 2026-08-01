@@ -217,13 +217,17 @@ jobs:
         working-directory: ClientApp/angular-budgetoid
         run: npm ci
 
-      - name: Test
-        working-directory: ClientApp/angular-budgetoid
-        run: npm test
-
+      # Build before Test: `no-external-origins.spec.ts` and `no-devtools.spec.ts` read
+      # the production bundle, because the bundle is what the browser fetches — the
+      # builder inlines external font CSS into index.html and drops the devtools module
+      # only at build time, so the sources cannot prove either absence.
       - name: Build
         working-directory: ClientApp/angular-budgetoid
         run: npm run build
+
+      - name: Test
+        working-directory: ClientApp/angular-budgetoid
+        run: npm test
 
       - name: Deploy to Static Web Apps
         uses: Azure/static-web-apps-deploy@v1
