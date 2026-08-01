@@ -201,8 +201,10 @@ remember the database half.
   migrations apply unattended on every push, so a regenerated baseline gets a new id, and the next push
   finds nothing applied and tries to re-create every table against a populated database. The human
   checkpoint that would have caught that is gone by design. The invariant is recorded in
-  `docs/engineering/migrations.md`, and a CI guard that the migrations directory only ever grows
-  is the follow-up.
+  `docs/engineering/migrations.md`, and the `migrations-guard` CI job holds it by failing any
+  change to a migration file that is not an addition. That job also carries the one recorded way
+  out — a rebaseline window, open while the production database holds no data, which suspends the
+  guard and nothing else.
   `Migrations_KeepTheBaselineFrozen` holds that line in the suite: it pins the first migration id
   to the literal `20260728195844_InitialCreate` and deliberately not the count, so additive
   migrations pass and only a regenerated or back-dated baseline fails. The assertion that

@@ -142,8 +142,12 @@ lowest capable layer, the doc describing it says why. See
   firewall-rule list` must come back empty outside a deploy.
 - **`budgetoid.app` is registered but not yet wired up.** The generated Azure hostnames are
   still the live ones; treat any doc claiming otherwise as wrong.
-- **The baseline migration is frozen.** Schema changes are additive migrations from here
-  on; the `migrations-guard` CI job fails any edit to an existing migration file.
+- **The baseline migration is frozen, but its rebaseline window is open.** Schema changes are
+  additive migrations and the `migrations-guard` CI job fails any edit to an existing migration
+  file — except while `REBASELINE_WINDOW` in that job is `open`, which it is, because the
+  production database holds no data. Regenerating the baseline under that window means resetting
+  production's `__EFMigrationsHistory` in the same deploy. Read
+  [migrations](docs/engineering/migrations.md) before touching the folder.
 - Production migrations run from the pipeline, never at API startup: migrate **then**
   provision **then** verify, an order that lives in `DeploymentDatabaseProvisioning` rather
   than in a runbook. Verification is not optional.
