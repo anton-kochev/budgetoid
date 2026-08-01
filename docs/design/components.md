@@ -14,8 +14,14 @@ All interactive components share: focus ring `2px solid var(--bud-focus-ring)` w
 **Material Symbols Rounded**, weight 400, grade 0, optical size 24, outlined
 (`FILL 0`). Filled (`FILL 1`) marks exactly one thing: the active navigation
 destination. Sizes: 20 (inline), 24 (default), 40 (empty states). Icons never appear
-without an accessible name — a visible label or `aria-label`. Replaces the classic
-Material Icons font in `index.html`.
+without an accessible name — a visible label or `aria-label`.
+
+No icon font is loaded today, because no component uses an icon yet. The first icon to
+ship brings a woff2 **subsetted to the glyph names actually used**, served from
+`public/fonts/` — the whole face is 1.38 MB against roughly 1.3 kB for two glyphs, and
+it may never come from a CDN. The `FILL` axis stays variable so the active-destination
+state needs no second file. See
+[no third-party origins](../engineering/no-third-party-origins.md).
 
 ## App shell and navigation
 

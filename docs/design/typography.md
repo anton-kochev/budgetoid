@@ -6,8 +6,11 @@ number you trust. The boundary is strict because Mohave is a condensed display f
 distinctive in short bursts, wrong for reading and dangerous for data.
 
 Families: `--bud-font-display: 'Mohave', sans-serif` ·
-`--bud-font-ui: 'Inter', sans-serif`. Both load from Google Fonts (weights: Mohave
-500–700, Inter 400–600). The wordmark is not typography — it ships as outlined paths
+`--bud-font-ui: 'Inter', sans-serif`. Both are served from the app's own origin as
+variable woff2 files in `public/fonts/` — Mohave `wght 300–700` latin, Inter
+`wght 100–900` latin and Cyrillic, all `font-display: swap`. Nothing loads from a font
+CDN; see [no third-party origins](../engineering/no-third-party-origins.md). The
+wordmark is not typography — it ships as outlined paths
 (see [`branding/BRAND.md`](../../../branding/BRAND.md)); never set "budgetoid" in live
 text.
 

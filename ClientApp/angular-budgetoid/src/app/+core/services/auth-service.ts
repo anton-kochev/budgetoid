@@ -6,7 +6,6 @@ import { ConfigurationService } from './configuration.service';
 interface Profile {
   email: string;
   name: string;
-  picture: string;
 }
 
 @Injectable({
@@ -33,7 +32,6 @@ export class AuthService {
       map((claims) => ({
         email: this.getStringClaim(claims, 'email'),
         name: this.getStringClaim(claims, 'name'),
-        picture: this.getStringClaim(claims, 'picture'),
       })),
     );
   }

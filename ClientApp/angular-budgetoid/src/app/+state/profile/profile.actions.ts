@@ -6,7 +6,6 @@ export const profileActions = createActionGroup({
     setUserProfile: props<{
       name: string;
       email: string;
-      picture: string;
     }>(),
   },
 });

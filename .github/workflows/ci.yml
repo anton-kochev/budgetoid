@@ -151,8 +151,11 @@ jobs:
       - name: Lint
         run: npx ng lint
 
-      - name: Test
-        run: npm test
-
+      # Build before Test: `no-external-origins.spec.ts` reads the production bundle,
+      # because the bundle is what the browser fetches — the builder inlines external
+      # font CSS into index.html, so the sources cannot prove the absence.
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm test

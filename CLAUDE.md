@@ -33,7 +33,7 @@ AppHost, API registration, and test overrides.
 ```sh
 npm start        # ng serve (dev server)
 npm run build    # production build
-npm test         # Vitest unit tests (single run)
+npm test         # Vitest unit tests (single run); needs a prior `npm run build`
 npm run test:watch     # Vitest watch mode
 npm run test:coverage  # Vitest with coverage
 npm run lint     # ESLint with --fix
@@ -88,6 +88,10 @@ Load-bearing rules, each explained there or in the linked decision:
 - Path aliases: `@app-core/*`, `@app-shared/*`, `@app-state/*` (baseUrl is `./src`)
 - Auth: Google OAuth via `angular-oauth2-oidc`
 - UI: Angular Material + Angular CDK, styled with SCSS
+- **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, or
+  image, and no identity-provider profile picture. Typefaces live in `public/fonts/`.
+  `src/no-external-origins.spec.ts` reads the production bundle, so `npm test` needs a
+  `npm run build` first. See [no third-party origins](docs/engineering/no-third-party-origins.md).
 
 ## Documentation
 
@@ -100,9 +104,10 @@ Load-bearing rules, each explained there or in the linked decision:
 - **Business logic** — start at `docs/business-logic/_overview.md`. Read the relevant file
   before modifying business rules; if none exists for the domain area, create one following
   the structure of the others.
-- **Engineering invariants** — [data isolation](docs/engineering/data-isolation.md) and
-  [migrations](docs/engineering/migrations.md). Each names the tests that lock it: removing
-  a `HasQueryFilter` line or a policy must fail one.
+- **Engineering invariants** — [data isolation](docs/engineering/data-isolation.md),
+  [migrations](docs/engineering/migrations.md), and
+  [no third-party origins](docs/engineering/no-third-party-origins.md). Each names the tests
+  that lock it: removing a `HasQueryFilter` line, a policy, or a self-hosted font must fail one.
 - A change to a design rule, business rule, or invariant updates the owning doc **in the
   same commit**.
 - **`docs/` documents only what is true today.** Agreed-but-unbuilt design lives in the
@@ -177,6 +182,7 @@ lowest capable layer, the doc describing it says why. See
 ## Workflow
 
 - Backend: run `dotnet build BudgetoidApp.sln` and `dotnet test` before committing
-- Frontend: run `npm test`, `npm run lint`, and `npm run format` before committing
+- Frontend: run `npm run build && npm test`, `npm run lint`, and `npm run format` before
+  committing — the build must come first, one spec reads its output
 - Commits follow Conventional Commits (`feat:`, `fix:`, `ci:`, `chore:`, …)
 - One logical change per commit
