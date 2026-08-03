@@ -32,12 +32,12 @@ resolves a Google principal into an internal user together with the ambient budg
   because what is never collected never leaks and never has to be erased.
 - **Credential** — one way of signing in to an account, carrying exactly one `CredentialType`:
   `Federated` (an external provider vouches for the user) or `Passkey` (the authenticator holds it,
-  and no external party is involved). A federated credential names its `Provider` (at most
-  `Credential.MaxProviderLength` = 50 characters; `google` is the only one today) and the provider's
-  `Subject` — the OAuth `sub` claim, stable and at most `Credential.MaxSubjectLength` = 255
-  characters. A passkey credential carries neither. An account may hold more than one credential;
-  registering and revoking them is not built yet, so today every account is created with exactly one
-  federated Google credential.
+  and no external party is involved). A federated credential names its `Provider` — drawn from a
+  dictionary the database enforces, of which `google` is the only member today — and the provider's
+  `Subject`, the OAuth `sub` claim, stable, non-empty and at most `Credential.MaxSubjectLength` =
+  255 characters. A passkey credential carries neither. An account may hold more than one
+  credential, but **at most one of type `federated`**; registering and revoking them is not built
+  yet, so today every account is created with exactly one federated Google credential.
 - **Email** — a value object wrapping the email string; required, trimmed, and at most
   `Email.MaxLength` = 254 characters. Two `Email` values are equal iff their strings are equal.
   Uniqueness is a **wider** comparison than that equality: `users.email` carries a unique index on
@@ -203,8 +203,48 @@ erDiagram
   `Credential.CreateFederated` so the caller gets a 400 with a sentence instead of a database error.
   The two expressions of each bound cannot drift, because each configuration reads `Email.MaxLength`,
   `Credential.MaxSubjectLength` and `Credential.MaxProviderLength` rather than repeating the numbers.
+  `Provider`'s 50 is now only the column width: the dictionary below rejects every value the length
+  bound would have, so no branch in the domain tests it separately.
 - **Example**: a 300-character `email` claim is rejected by `Email.Create` with "Email must be 254
   characters or fewer." rather than being silently cut to fit.
+- **Related rule**: a federated credential's `Provider` must be a member of a **dictionary**, and its
+  `Subject` must be non-empty.
+- **Why**: `"Google"` and `"google"` are the same provider to a person and two identities to a
+  unique index, so one human ends up with two accounts and neither can see the other's budget. The
+  `Subject` half closes a phantom identity: `('federated', 'google', '')` used to be a legal row
+  occupying a slot in the unique index, refused only by the domain — and the tests reach this table
+  with raw SQL. Note what the fix is **not**: `Credential.CreateFederated` *rejects* a non-canonical
+  spelling rather than lowercasing it. Coercing would make acceptable a value the column is about to
+  refuse, which [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules
+  out, and it would be a live bug besides — `FindByFederatedCredentialAsync` trims but does not fold
+  case, so a coerced write would store a row its own lookup could never find.
+- **Enforced in**: `CK_credentials_provider` (`provider is null or provider in ('google')`) and the
+  `length(subject) > 0` term added to the federated arm of `CK_credentials_type_shape`; restated in
+  `Credential.CreateFederated` for message quality. The two live in separate constraints on purpose:
+  one defect must report one name, because `RepositoryConstraintAttributionTests` pins attribution by
+  constraint name. `subject is not null` stays alongside `length(subject) > 0` and is **not**
+  redundant — `length(null)` is `null`, and a CHECK evaluating to `null` is satisfied, so dropping
+  the null test would silently readmit a null subject.
+- **Counterexample**: adding `length(provider) > 0` "for symmetry". The dictionary already refuses an
+  empty provider, and two constraints refusing the same row make the reported name nondeterministic.
+- **Source**: `[SOURCE: discussion — 2026-08-03]`
+
+---
+
+- **Rule**: An account holds **at most one** credential of type `federated`.
+- **Why**: it is what makes "which provider gates this account" a question with one answer. Nothing
+  is being built that would add a second, which is the point — this guards against a **bug** on the
+  credential-insert paths, and more of those are coming.
+- **Enforced in**: the partial unique index `IX_credentials_user_id_federated` on `(user_id) WHERE
+  type = 'federated'`, pinned as `CredentialConfiguration.FederatedPerUserIndexName`. It is a
+  *different* rule from `IX_credentials_provider_subject`, which says one account per provider
+  identity: that one catches two users claiming one Google identity, this one catches one user
+  holding two. Both tests exist and neither is a duplicate of the other.
+- **Gotcha**: declaring this index made EF's `ForeignKeyIndexConvention` stop generating the plain
+  `IX_credentials_user_id`, because the convention backs off as soon as *any* index covers the
+  column — uniqueness and filter irrelevant. It is therefore declared explicitly now. Removing that
+  declaration would silently leave cascade delete and every read of an account's credentials with
+  only a federated-rows-only index.
 - **Counterexample**: assuming the column *truncates* to fit. It does not — `varchar(n)` **rejects**
   an over-long value with SQLSTATE `22001`, which is what makes it enforcement in the sense
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) means. Contrast

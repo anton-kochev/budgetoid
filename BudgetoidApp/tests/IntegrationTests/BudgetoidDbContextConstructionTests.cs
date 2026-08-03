@@ -291,12 +291,18 @@ public sealed class BudgetoidDbContextConstructionTests
             "CK_accounts_type: accounts type in ('Checking', 'Savings', 'Cash', 'CreditCard')",
             "CK_categories_position: categories position >= 0",
             "CK_category_groups_position: category_groups position >= 0",
+            // The issuer vocabulary, bounded the way the type vocabulary below it is: neither the
+            // column nor UserRepository's lookup folds case, so without this 'Google' and 'google'
+            // are two accounts for one person.
+            "CK_credentials_provider: credentials provider is null or provider in ('google')",
             "CK_credentials_type: credentials type in ('passkey', 'federated')",
             // The shape check is what makes "a credential is exactly one type" a database rule: a
             // federated row with no issuer, or a passkey row carrying one, is rejected rather than
-            // stored.
+            // stored. The length test sits alongside the null test rather than replacing it —
+            // length(null) is null and a check evaluating to null is satisfied.
             "CK_credentials_type_shape: credentials (type = 'federated' and provider is not null and "
-            + "subject is not null) or (type = 'passkey' and provider is null and subject is null)",
+            + "subject is not null and length(subject) > 0) or (type = 'passkey' and provider is null "
+            + "and subject is null)",
             "CK_currencies_code: currencies code ~ '^[A-Z]{3}$'",
             "CK_currencies_minor_unit: currencies minor_unit between 0 and 4",
             "CK_transactions_amount: transactions abs(amount) <= 1000000000",

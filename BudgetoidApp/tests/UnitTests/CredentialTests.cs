@@ -89,9 +89,28 @@ public sealed class CredentialTests
     }
 
     [Test]
-    public async Task CreateFederated_WithAnOverLongProvider_ThrowsValidationException()
+    public async Task CreateFederated_WithANonCanonicalProviderSpelling_ThrowsValidationException()
     {
-        // Arrange
+        // Arrange — 'Google' is the spelling an OIDC configuration or a hand-written call is most
+        // likely to arrive with, and it is the one a lowercasing "fix" would make silently legal.
+        // Act
+        ValidationException exception = ThrowsValidationException(() =>
+            Credential.CreateFederated(Guid.CreateVersion7(), "Google", "google-subject", UtcNow()));
+
+        // Assert — refused, not folded. CK_credentials_provider will not accept 'Google' either, so
+        // coercing it here would only move the failure to the insert; and UserRepository matches the
+        // provider column case-sensitively, so a folded write would store a row its own lookup could
+        // never find. ADR 0002: enforcement rejects, it does not coerce.
+        await Assert.That(exception.Errors.ContainsKey("Provider")).IsTrue();
+    }
+
+    [Test]
+    public async Task CreateFederated_WithAnUnsupportedProvider_ThrowsValidationException()
+    {
+        // Arrange — deliberately longer than the column as well as absent from the vocabulary. There
+        // is no length branch to hit any more: nothing but 'google' gets that far, so the length
+        // bound is unreachable from here and is owned at the column instead, by
+        // UserRepositoryTests' Database_RejectsACredentialValueLongerThanItsColumn.
         string provider = new('p', Credential.MaxProviderLength + 1);
 
         // Act

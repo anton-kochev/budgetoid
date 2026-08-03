@@ -128,6 +128,11 @@ public sealed class SchemaConstraintSnapshotTests
             // unique indexes are in scope for this query, so credentials' non-unique
             // IX_credentials_user_id is deliberately absent rather than missing.
             """CREATE UNIQUE INDEX "IX_credentials_provider_subject" ON public.credentials USING btree (provider, subject) WHERE ((type)::text = 'federated'::text)""",
+            // A different rule from the line above, and the two are easy to mistake for one: that one
+            // says one account per provider identity, this one says one federated credential per
+            // account. Its WHERE is what keeps passkey rows out — an account may hold several of
+            // those, which AppRoleGrantsTests inserts and relies on.
+            """CREATE UNIQUE INDEX "IX_credentials_user_id_federated" ON public.credentials USING btree (user_id) WHERE ((type)::text = 'federated'::text)""",
             """CREATE UNIQUE INDEX "IX_payees_budget_id_name" ON public.payees USING btree (budget_id, name)""",
             // One email, one account. The index is only half the rule: users.email carries
             // case_insensitive, which the collation snapshot below pins, and pg_get_indexdef does
@@ -181,11 +186,20 @@ public sealed class SchemaConstraintSnapshotTests
             """CK_accounts_type: accounts CHECK (((type)::text = ANY ((ARRAY['Checking'::character varying, 'Savings'::character varying, 'Cash'::character varying, 'CreditCard'::character varying])::text[])))""",
             """CK_categories_position: categories CHECK (("position" >= 0))""",
             """CK_category_groups_position: category_groups CHECK (("position" >= 0))""",
+            // Bounds the issuer vocabulary the way CK_credentials_type below bounds the type
+            // vocabulary, and without it 'Google' and 'google' are two accounts for one person.
+            // PostgreSQL renders a single-element IN as '=' rather than as = ANY (ARRAY[...]), so
+            // this deliberately does not read like the line beneath it — same idiom in the
+            // configuration, different rendering in the catalog. "Fixing" it to look like a list is
+            // how this test starts failing for no reason.
+            """CK_credentials_provider: credentials CHECK (((provider IS NULL) OR ((provider)::text = 'google'::text)))""",
             """CK_credentials_type: credentials CHECK (((type)::text = ANY ((ARRAY['passkey'::character varying, 'federated'::character varying])::text[])))""",
             // The shape check is the reason `type` can be a varchar with a CHECK instead of a native
             // enum: it is what makes "a credential is exactly one type" a rule the database holds
-            // rather than a convention the application is trusted to keep.
-            """CK_credentials_type_shape: credentials CHECK (((((type)::text = 'federated'::text) AND (provider IS NOT NULL) AND (subject IS NOT NULL)) OR (((type)::text = 'passkey'::text) AND (provider IS NULL) AND (subject IS NULL))))""",
+            // rather than a convention the application is trusted to keep. The length test on the
+            // federated arm is not redundant with the null test beside it: length(null) is null and a
+            // check evaluating to null is satisfied, so neither test covers the other.
+            """CK_credentials_type_shape: credentials CHECK (((((type)::text = 'federated'::text) AND (provider IS NOT NULL) AND (subject IS NOT NULL) AND (length((subject)::text) > 0)) OR (((type)::text = 'passkey'::text) AND (provider IS NULL) AND (subject IS NULL))))""",
             """CK_currencies_code: currencies CHECK (((code)::text ~ '^[A-Z]{3}$'::text))""",
             """CK_currencies_minor_unit: currencies CHECK (((minor_unit >= 0) AND (minor_unit <= 4)))""",
             """CK_transactions_amount: transactions CHECK ((abs(amount) <= (1000000000)::numeric))""",

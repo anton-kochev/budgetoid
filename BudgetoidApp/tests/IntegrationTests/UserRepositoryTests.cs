@@ -1,5 +1,6 @@
 using Domain.Users;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -84,10 +85,40 @@ public sealed class UserRepositoryTests
         PostgresException exception = await ThrowsPostgresExceptionAsync(
             connection, "google-1", "second@example.com");
 
-        // Assert — one account per provider identity. Without this the same Google user could end
-        // up with two accounts, and FindByFederatedCredentialAsync's SingleOrDefault would start
-        // throwing on a sign-in that used to work.
+        // Assert — one account per provider identity, the rule IX_credentials_provider_subject owns.
+        // Its neighbour below owns the converse one and the two are easy to read as duplicates: this
+        // test uses two different users and one identity, that one uses one user and two identities.
+        // Without this the same Google user could end up with two accounts, and
+        // FindByFederatedCredentialAsync's SingleOrDefault would start throwing on a sign-in that
+        // used to work.
         await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.UniqueViolation);
+    }
+
+    [Test]
+    public async Task Database_RejectsASecondFederatedCredentialForTheSameUser()
+    {
+        // Arrange — one account that already holds its Google credential.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
+        await InsertCredentialAsync(
+            connection, userId, CredentialTypes.Federated, Credential.GoogleProvider, "google-1");
+
+        // Act — a different subject, so the provider-identity index above cannot be what refuses it.
+        PostgresException exception = await ThrowsCredentialPostgresExceptionAsync(
+            connection, userId, CredentialTypes.Federated, Credential.GoogleProvider, "google-2");
+
+        // Assert — one federated credential per account, the rule
+        // IX_credentials_user_id_federated owns. Nothing was stopping an account growing a second
+        // one; not a feature anyone is adding, but exactly what a bug on a credential-insert path
+        // would do, leaving the account with two Google identities that both resolve to it. The name
+        // is asserted rather than just the SQLSTATE because this row breaches exactly one index, so
+        // it is deterministic here rather than an artifact of creation order — unlike
+        // TryAddAsync_WithADuplicateCredentialAndEmail_ReturnsFalse below, which breaches two.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.UniqueViolation);
+        await Assert.That(exception.ConstraintName)
+            .IsEqualTo(CredentialConfiguration.FederatedPerUserIndexName);
     }
 
     [Test]
@@ -151,6 +182,71 @@ public sealed class UserRepositoryTests
         // Assert — a federated credential with nothing to match on would be invisible to every
         // sign-in while still occupying the account, so the shape check refuses it outright.
         await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+    }
+
+    [Test]
+    public async Task Database_RejectsAFederatedCredentialWithAnEmptySubject()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
+
+        // Act
+        PostgresException exception = await ThrowsCredentialPostgresExceptionAsync(
+            connection, userId, CredentialTypes.Federated, Credential.GoogleProvider, subject: "");
+
+        // Assert — the empty string is the gap the null test above cannot close: '' is not null, so
+        // the shape check used to accept it, and the resulting row was an identity nobody could sign
+        // in as while it held a slot in the provider-identity index. The length test is what refuses
+        // it, and it has to sit alongside the null test rather than replace it, because length(null)
+        // is null and a check evaluating to null is satisfied.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(exception.ConstraintName).IsEqualTo("CK_credentials_type_shape");
+    }
+
+    [Test]
+    public async Task Database_RejectsAFederatedCredentialWithAnEmptyProvider()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
+
+        // Act
+        PostgresException exception = await ThrowsCredentialPostgresExceptionAsync(
+            connection, userId, CredentialTypes.Federated, provider: "", subject: "google-1");
+
+        // Assert — the provider vocabulary, not the shape check, is what refuses this: '' is not
+        // null, so the shape check is satisfied. That is why provider needs no length test of its
+        // own — the dictionary already excludes every empty and every over-long value, and a row
+        // breaching two checks would make the reported name an accident.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(exception.ConstraintName).IsEqualTo("CK_credentials_provider");
+    }
+
+    [Test]
+    public async Task Database_RejectsAFederatedCredentialWhoseProviderDiffersOnlyByCase()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
+
+        // Act
+        PostgresException exception = await ThrowsCredentialPostgresExceptionAsync(
+            connection, userId, CredentialTypes.Federated, provider: "Google", subject: "google-1");
+
+        // Assert — the provider column carries no case-insensitive collation, deliberately, so
+        // ('Google', s) and ('google', s) are two rows under IX_credentials_provider_subject and
+        // therefore two accounts for one person. This check is the only thing standing between the
+        // vocabulary and that outcome; Credential.CreateFederated refuses the same spelling one layer
+        // up, for error quality rather than for enforcement.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(exception.ConstraintName).IsEqualTo("CK_credentials_provider");
     }
 
     [Test]
