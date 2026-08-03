@@ -81,7 +81,7 @@ Load-bearing rules, each explained there or in the linked decision:
 
 - Angular 21 standalone components (no NgModules)
 - Slice-1 transaction state uses an Angular signal-based service; NgRx remains for existing
-  auth/profile scaffolding only
+  auth scaffolding only
 - `+core/` — API services, guards, interceptors, app-wide providers
 - `+shared/` — shared components and utilities
 - `+state/` — NgRx actions, effects, selectors, reducers

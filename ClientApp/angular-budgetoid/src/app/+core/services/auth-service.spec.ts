@@ -1,26 +1,40 @@
 import { TestBed } from '@angular/core/testing';
 import { OAuthEvent, OAuthService } from 'angular-oauth2-oidc';
-import { firstValueFrom, Subject } from 'rxjs';
-import { describe, expect, it } from 'vitest';
+import { isObservable, Observable, Subject } from 'rxjs';
+import { describe, expect, it, vi } from 'vitest';
 import { AuthService } from './auth-service';
 import { ConfigurationService } from './configuration.service';
 
-// FR-086: no image supplied by the identity provider is displayed. The boundary that
-// enforces it is here, where the claims are mapped: an image the app never holds is an
-// image no later component can render, and no request to the provider on every paint.
+// FR-086: no image supplied by the identity provider is displayed. This pins something
+// stronger than dropping the picture claim — the app reads no ID-token claim at all. A
+// claim the app never holds is a claim no component can render, and reading none of them
+// is what makes asking Google for only `openid email` safe to keep: a claim nobody
+// consumes is a scope nobody needs.
+//
+// The check subscribes to every observable AuthService exposes, because a claim read
+// inside a cold observable stays invisible until something subscribes.
+function exposedObservables(service: AuthService): Observable<unknown>[] {
+  const members = service as unknown as Record<string, unknown>;
+
+  return Object.keys(members)
+    .map((key) => members[key])
+    .filter(isObservable);
+}
+
 describe('AuthService', () => {
-  it('drops the identity provider picture claim', async () => {
+  it('reads no claim from the ID token', () => {
     // Arrange
     const events = new Subject<OAuthEvent>();
+    const getIdentityClaims = vi.fn(() => ({
+      email: 'someone@example.com',
+      name: 'Someone',
+      picture: 'https://lh3.googleusercontent.com/a/photo',
+    }));
     const oAuth = {
       events,
+      getIdentityClaims,
       hasValidAccessToken: () => true,
       hasValidIdToken: () => true,
-      getIdentityClaims: () => ({
-        email: 'someone@example.com',
-        name: 'Someone',
-        picture: 'https://lh3.googleusercontent.com/a/photo',
-      }),
     } as unknown as OAuthService;
 
     TestBed.configureTestingModule({
@@ -30,15 +44,19 @@ describe('AuthService', () => {
         { provide: ConfigurationService, useValue: {} },
       ],
     });
-    const profile = firstValueFrom(TestBed.inject(AuthService).userProfile$);
+    const service = TestBed.inject(AuthService);
+    const subscriptions = exposedObservables(service).map((observable) =>
+      observable.subscribe(),
+    );
 
     // Act
+    events.next({ type: 'discovery_document_loaded' });
     events.next({ type: 'token_received' });
+    subscriptions.forEach((subscription) => {
+      subscription.unsubscribe();
+    });
 
     // Assert
-    expect(await profile).toEqual({
-      email: 'someone@example.com',
-      name: 'Someone',
-    });
+    expect(getIdentityClaims).not.toHaveBeenCalled();
   });
 });

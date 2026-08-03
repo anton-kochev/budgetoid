@@ -8,6 +8,35 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-03 — The client stops reading the identity token, and the greeting goes with it
+
+**Context:** the entry below removed the stored name but left the client's home-screen greeting
+alone, on the argument that a name rendered from the ID token and never sent to the API is not
+something the product *stores*. That reasoning holds, and it is not why this changes. The owner
+decided the greeting is not worth what it costs: it was the **only** thing on the client reading
+any ID-token claim, and so the only reason to ask Google for the `profile` scope at all.
+
+**Decision:** remove the greeting, and with it everything that existed to serve it — the NgRx
+`profile` slice, the `userProfileInformation` effect, `AuthService.userProfile$`, `+common/guid.ts`
+and the `immer` dependency. The authorization request narrows to `openid email`. `AuthService` now
+reads no claim from the token whatsoever; the token is a bearer credential and nothing else.
+
+**A route moved as a consequence, not as an intention.** The greeting was the entire content of
+`/app/home`, so removing it would have left the post-sign-in landing screen blank. `/app` now lands
+on `/app/transactions` — the screen that actually shows something — and the `home` route is gone
+rather than kept as an empty shell waiting for a dashboard nobody has designed.
+
+**On the invariant that was guarding this:** `auth-service.spec.ts` pinned FR-086 ("no image
+supplied by the identity provider is displayed") at the claims-mapping boundary. Deleting the
+mapping would have deleted the guard, so it was replaced by a stronger one — that no observable
+`AuthService` exposes reads *any* ID-token claim. "Drops the picture" is a special case of that.
+`no-profile-scope.spec.ts` reads the **built bundle** and asserts the shipped config requests
+`openid` and `email` and nothing else; it is an allow-list rather than a `profile` deny-list, so a
+scope nobody vetted fails it too. Pinning the artifact rather than a test fixture is the point —
+the fixture proves nothing about what deploys.
+
+---
+
 ## 2026-08-03 — The account keeps the address and nothing else the provider says
 
 **Context:** `users.display_name` was written from the Google `name` claim on every sign-in and read

@@ -328,9 +328,10 @@ The budget branch that runs after this, on every path, is in
   federated credential rather than through a column on the user. The API reads the `sub` and `email`
   claims and no others — the token carries more, and the rest is deliberately dropped rather than
   stored against the account. The frontend attaches the **ID token** (not the access token) as the
-  `Authorization: Bearer` header on API calls (see the client `AuthInterceptor`), and separately
-  renders the token's `name` claim on the home screen from client-side state that never reaches the
-  API.
+  `Authorization: Bearer` header on API calls (see the client `AuthInterceptor`) and reads no claim
+  out of it at all; the authorization request asks for `openid email` and nothing more.
+  `auth-service.spec.ts` pins the first half and `no-profile-scope.spec.ts`, which reads the built
+  bundle, pins the second.
 - **[Budgets](budgets.md)**: provisioning resolves the identity *and* the ambient budget in one step.
   Everything a user can see hangs off that budget, so all tenancy rules — stamping, filtering, name
   uniqueness, the 404 behaviour — are documented there.

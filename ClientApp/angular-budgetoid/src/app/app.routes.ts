@@ -13,12 +13,6 @@ export const routes: Routes = [
     path: 'app',
     children: [
       {
-        path: 'home',
-        // prettier-ignore
-        loadComponent: () => import('./home/home.component').then(x => x.HomeComponent),
-        canActivate: [authGuard],
-      },
-      {
         path: 'transactions',
         // prettier-ignore
         loadComponent: () => import('./transactions/transactions.component').then(x => x.TransactionsComponent),
@@ -37,7 +31,7 @@ export const routes: Routes = [
         canActivate: [authGuard],
       },
       { path: 'groups', redirectTo: 'categories', pathMatch: 'full' },
-      { path: '', redirectTo: 'home', pathMatch: 'full' },
+      { path: '', redirectTo: 'transactions', pathMatch: 'full' },
     ],
   },
   // Root is the OAuth post-login landing spot; authGuard bounces anonymous visitors to /welcome.
