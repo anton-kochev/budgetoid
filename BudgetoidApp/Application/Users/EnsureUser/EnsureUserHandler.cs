@@ -31,19 +31,10 @@ public sealed class EnsureUserHandler(
             cancellationToken);
         if (existing is not null)
         {
-            Email previousEmail = existing.Email;
-            string? previousDisplayName = existing.DisplayName;
-
-            existing.UpdateProfile(command.Email, command.DisplayName);
-            if (existing.Email != previousEmail || existing.DisplayName != previousDisplayName)
-            {
-                // The result is ignored deliberately. A false means another user holds that email, so
-                // the refresh was rolled back and this user keeps its stored one — identity is the
-                // credential row that got us here, and a stale cached attribute must not lock anyone
-                // out.
-                _ = await repository.UpdateProfileAsync(existing, cancellationToken);
-            }
-
+            // The stored profile is left exactly as registration captured it. The provider gates
+            // registration and is not consulted again, so what it now reports about this account is
+            // not authority to change anything: an email change is a separate exchange the user
+            // deliberately initiates. Refreshing here would apply one nobody asked for.
             return existing.Id;
         }
 

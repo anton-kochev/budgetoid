@@ -33,7 +33,7 @@ public sealed class EnsureUserHandlerTests
     }
 
     [Test]
-    public async Task EnsureUser_ExistingSubject_ReturnsSameIdNoDuplicateAndRefreshesProfile()
+    public async Task EnsureUser_ExistingSubject_ReturnsSameIdNoDuplicateAndKeepsTheRegisteredEmail()
     {
         await using RepositoryTestHost host = await StartHostAsync();
         await using BudgetoidDbContext db = CreateDb(host.ConnectionString);
@@ -47,9 +47,13 @@ public sealed class EnsureUserHandlerTests
         await Assert.That(second.UserId).IsEqualTo(original.UserId);
         await Assert.That(second.BudgetId).IsEqualTo(original.BudgetId);
         await Assert.That(await db.Users.CountAsync()).IsEqualTo(1);
-        await Assert.That((await db.Users.SingleAsync()).Email.Value).IsEqualTo("new@example.com");
 
-        // A profile refresh must not mint a second credential for an identity that already resolves.
+        // The second sign-in carried a different email, and the stored row ignored it: the provider
+        // gates registration and is never consulted again, so changing an email is an exchange the
+        // user initiates rather than something a later token silently applies.
+        await Assert.That((await db.Users.SingleAsync()).Email.Value).IsEqualTo("old@example.com");
+
+        // A repeat sign-in must not mint a second credential for an identity that already resolves.
         await Assert.That(await db.Credentials.CountAsync()).IsEqualTo(1);
     }
 

@@ -10,27 +10,12 @@ namespace UnitTests;
 public sealed class EnsureUserHandlerTests
 {
     [Test]
-    public async Task ExistingCredential_WithUnchangedProfile_DoesNotSaveChanges()
+    public async Task EnsureUser_ReturningUserWhoseProviderEmailChanged_KeepsTheRegisteredEmail()
     {
-        // Arrange
-        User user = User.Create("person@example.com", "Person", UtcNow());
-        var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
-        var budgets = new InMemoryBudgetRepository();
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
-
-        // Act
-        ProvisionedUser provisioned = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", " person@example.com ", " Person "));
-
-        // Assert
-        await Assert.That(provisioned.UserId).IsEqualTo(user.Id);
-        await Assert.That(users.UpdateProfileCalls).IsEqualTo(0);
-    }
-
-    [Test]
-    public async Task ExistingCredential_WithChangedProfile_SavesOnceAndRefreshesProfile()
-    {
-        // Arrange
+        // Arrange — the provider now reports a different email than the one registration captured.
+        // It gates registration and is never consulted again, so what it reports later is not
+        // authority to change anything: an email change is a separate exchange the user deliberately
+        // initiates.
         User user = User.Create("old@example.com", "Old", UtcNow());
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
@@ -40,11 +25,11 @@ public sealed class EnsureUserHandlerTests
         ProvisionedUser provisioned = await handler.HandleAsync(
             new EnsureUserCommand("google-1", "new@example.com", "New"));
 
-        // Assert
+        // Assert — the sign-in resolves to the same account, and that account still holds the email
+        // it registered with. Reintroducing a silent per-request refresh fails this line.
         await Assert.That(provisioned.UserId).IsEqualTo(user.Id);
-        await Assert.That(users.UpdateProfileCalls).IsEqualTo(1);
-        await Assert.That(user.Email.Value).IsEqualTo("new@example.com");
-        await Assert.That(user.DisplayName).IsEqualTo("New");
+        User stored = (await users.FindByFederatedCredentialAsync(Credential.GoogleProvider, "google-1"))!;
+        await Assert.That(stored.Email.Value).IsEqualTo("old@example.com");
     }
 
     [Test]
@@ -202,29 +187,6 @@ public sealed class EnsureUserHandlerTests
         await Assert.That(budgets.Budgets.Count).IsEqualTo(0);
     }
 
-    [Test]
-    public async Task EnsureUser_ExistingCredentialWhoseRefreshedEmailCollides_SignsInOnTheStoredEmail()
-    {
-        // Arrange — the IdP now reports an email another user already holds. Identity is the
-        // credential, not the email, so this must not fail the sign-in.
-        User user = User.Create("stored@example.com", "Stored", UtcNow());
-        var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
-        users.RejectNextProfileUpdate();
-        var budgets = new InMemoryBudgetRepository();
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
-
-        // Act
-        ProvisionedUser provisioned = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "taken@example.com", "Fresh"));
-
-        // Assert — the session continues, and it continues on the stored (stale) profile.
-        await Assert.That(provisioned.UserId).IsEqualTo(user.Id);
-        await Assert.That(provisioned.BudgetId).IsNotEqualTo(Guid.Empty);
-        await Assert.That(users.UpdateProfileCalls).IsEqualTo(1);
-        await Assert.That(user.Email.Value).IsEqualTo("stored@example.com");
-        await Assert.That(user.DisplayName).IsEqualTo("Stored");
-    }
-
     private static DateTime UtcNow() => new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
     private static Credential GoogleCredentialFor(User user, string subject) =>
@@ -245,35 +207,28 @@ public sealed class EnsureUserHandlerTests
     }
 
     /// <summary>
-    /// In-memory <see cref="IUserRepository"/> that reproduces the three ways the write can be
-    /// refused, all of them reported as <see langword="false"/>: a lost race on the unique
-    /// <c>(provider, subject)</c> credential rule, an email already linked to another account on
-    /// insert, and the same email collision on a profile refresh. The two insert refusals are
-    /// deliberately indistinguishable from the outside — what separates them is whether a row is then
-    /// there to be re-read, which is the caller's question to ask. The rejected refresh additionally
-    /// discards the change from the caller's own instance, the way <c>ReloadAsync</c> does.
+    /// In-memory <see cref="IUserRepository"/> that reproduces the two ways the write can be refused,
+    /// both of them reported as <see langword="false"/>: a lost race on the unique
+    /// <c>(provider, subject)</c> credential rule, and an email already linked to another account.
+    /// The two are deliberately indistinguishable from the outside — what separates them is whether a
+    /// row is then there to be re-read, which is the caller's question to ask.
     /// </summary>
     private sealed class InMemoryUserRepository : IUserRepository
     {
         private readonly List<Credential> _addedCredentials = [];
         private User? _existingUser;
         private Credential? _existingCredential;
-        private string _persistedEmail = string.Empty;
-        private string? _persistedDisplayName;
         private bool _failNextAddWithCredentialRace;
         private User? _raceWinner;
         private Credential? _raceWinnerCredential;
         private bool _failNextAddWithEmailConflict;
-        private bool _rejectNextProfileUpdate;
 
         public InMemoryUserRepository(User? existingUser = null, Credential? existingCredential = null)
         {
             _existingUser = existingUser;
             _existingCredential = existingCredential;
-            CapturePersistedProfile();
         }
 
-        public int UpdateProfileCalls { get; private set; }
         public int AddCallCount { get; private set; }
 
         /// <summary>Every credential handed to <see cref="TryAddAsync"/>, refused calls included.</summary>
@@ -298,12 +253,6 @@ public sealed class EnsureUserHandlerTests
         /// the caller's re-read is what finds it.
         /// </summary>
         public void FailNextAddWithEmailConflict() => _failNextAddWithEmailConflict = true;
-
-        /// <summary>
-        /// Makes the next <see cref="UpdateProfileAsync"/> call reject the refresh because another
-        /// user holds the new email.
-        /// </summary>
-        public void RejectNextProfileUpdate() => _rejectNextProfileUpdate = true;
 
         public Task<User?> FindByFederatedCredentialAsync(
             string provider,
@@ -339,42 +288,12 @@ public sealed class EnsureUserHandlerTests
                 _existingCredential = _raceWinnerCredential;
                 _raceWinner = null;
                 _raceWinnerCredential = null;
-                CapturePersistedProfile();
                 return Task.FromResult(false);
             }
 
             _existingUser = user;
             _existingCredential = credential;
-            CapturePersistedProfile();
             return Task.FromResult(true);
-        }
-
-        public Task<bool> UpdateProfileAsync(User user, CancellationToken cancellationToken = default)
-        {
-            UpdateProfileCalls++;
-
-            if (_rejectNextProfileUpdate)
-            {
-                _rejectNextProfileUpdate = false;
-
-                // Rolling the caller's instance back is the whole contract: a fake that returned
-                // false while leaving the rejected email in place would let a handler bug through.
-                user.UpdateProfile(_persistedEmail, _persistedDisplayName);
-                return Task.FromResult(false);
-            }
-
-            CapturePersistedProfile();
-            return Task.FromResult(true);
-        }
-
-        /// <summary>
-        /// Snapshots what the stored row now holds, standing in for the original values EF's change
-        /// tracker keeps and <c>ReloadAsync</c> restores.
-        /// </summary>
-        private void CapturePersistedProfile()
-        {
-            _persistedEmail = _existingUser?.Email.Value ?? string.Empty;
-            _persistedDisplayName = _existingUser?.DisplayName;
         }
     }
 }

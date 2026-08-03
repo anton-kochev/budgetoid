@@ -61,24 +61,6 @@ public sealed class UserRepository(BudgetoidDbContext dbContext) : IUserReposito
         }
     }
 
-    public async Task<bool> UpdateProfileAsync(User user, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            await dbContext.SaveChangesAsync(cancellationToken);
-            return true;
-        }
-        catch (DbUpdateException exception) when (IsUniqueViolationOf(exception, UserConfiguration.EmailIndexName))
-        {
-            // A failed profile refresh must never block a sign-in: identity is the credential row the
-            // caller signed in with, and email is only a cached copy of an IdP attribute. Reload
-            // discards the rejected change — in the caller's instance too — so the session continues
-            // on the stored email.
-            await dbContext.Entry(user).ReloadAsync(cancellationToken);
-            return false;
-        }
-    }
-
     private static bool IsUniqueViolationOf(DbUpdateException exception, string indexName) =>
         exception.InnerException is PostgresException
         {

@@ -8,6 +8,44 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-03 — The provider is not consulted about an account after it exists
+
+**Context:** provisioning re-read the Google ID token's `email` and `name` claims on **every**
+authenticated request and wrote back anything that differed. That made the provider a standing
+authority over the account: whatever it reported today became what the account held today. It also
+meant the one channel by which the product can reach its user could move without the user doing
+anything, and that the provider was consulted continuously rather than once. "One email, one user"
+(2026-07-28) and the entry below both assumed that refresh existed — the email was described there
+as a *cached copy of an attribute the identity provider owns*, and this entry is what retires that
+description.
+
+**Decision:** the provider vouches for a person **once**, when the account is created, and is not
+asked again. `EnsureUserHandler`'s existing-user branch resolves the account and returns; it
+performs no write at all. Changing the stored address becomes its own operation, requiring its own
+fresh authorization exchange, rather than a side effect of signing in. `User.UpdateProfile` and
+`UserRepository.UpdateProfileAsync` are deleted rather than left unused — an unused write path is
+one somebody restores.
+
+**Consequence, accepted rather than worked around:** the stored address **freezes** at whatever
+registration captured, and there is no way to change it until the gated exchange is built. A user
+whose provider address changes keeps the old one on file. That is worse than a stale-free refresh
+in exactly one respect and better in three: nothing moves the account's reachable address without
+the user asking, the provider stops observing every sign-in, and a compromised provider account no
+longer silently rewrites what the product knows about its owner.
+
+**What this deletes, so nobody looks for it:** the asymmetry where an email collision was a 409 on
+the insert path and *ignored* on the refresh path. There is now one path on which a collision can
+occur, and it fails closed. The reasoning for the asymmetry was sound while two paths existed; it
+is not a rule that was wrong, it is a rule whose second half no longer has a subject.
+
+**Alternatives considered:** *Refresh only when the address is unclaimed, and warn otherwise* —
+rejected: it keeps the provider as standing authority and only changes what happens on the rare
+conflict. *Keep the refresh until the gated change ships, so no address ever goes stale* — rejected:
+the refresh is not a stopgap for the missing feature, it is the behaviour the feature exists to
+replace, and shipping the replacement is not made easier by leaving the thing it replaces running.
+
+---
+
 ## 2026-08-03 — A credential is a typed row, and the account holds no identity key of its own
 
 **Context:** "One email, one user" (2026-07-28) and the entries around it treat `users.google_subject`

@@ -25,11 +25,4 @@ public interface IUserRepository
     /// later sign-in with that address would be refused with a 409 and no way to heal.
     /// </remarks>
     Task<bool> TryAddAsync(User user, Credential credential, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Persists a profile refresh, returning <see langword="false"/> when another user already holds
-    /// the new email. On <see langword="false"/> the change is rolled back and
-    /// <paramref name="user"/> is reset to its persisted state.
-    /// </summary>
-    Task<bool> UpdateProfileAsync(User user, CancellationToken cancellationToken = default);
 }

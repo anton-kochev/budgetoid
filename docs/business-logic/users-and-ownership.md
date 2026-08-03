@@ -38,10 +38,11 @@ resolves a Google principal into an internal user together with the ambient budg
   registering and revoking them is not built yet, so today every account is created with exactly one
   federated Google credential.
 - **Email** — a value object wrapping the email string; required, trimmed, and at most
-  `Email.MaxLength` = 254 characters. Two `Email` values are equal iff their strings are equal, which
-  is what the profile dirty check compares. Uniqueness is a **wider** comparison than that equality:
-  `users.email` carries a unique index on the `case_insensitive` collation, so at most one user row
-  holds a given address whatever its casing.
+  `Email.MaxLength` = 254 characters. Two `Email` values are equal iff their strings are equal.
+  Uniqueness is a **wider** comparison than that equality: `users.email` carries a unique index on
+  the `case_insensitive` collation, so at most one user row holds a given address whatever its
+  casing. The address is written once, when the account is provisioned, and no later request
+  changes it — see the provisioning rule below.
 
 ```mermaid
 erDiagram
@@ -118,23 +119,36 @@ erDiagram
 
 ## Business Rules & Invariants
 
-- **Rule**: A user is provisioned (or their profile synced) idempotently on sign-in, keyed on the
-  Google `sub`.
+- **Rule**: A user is provisioned idempotently on sign-in, keyed on the federated credential's
+  `(provider, subject)`. What the provider reports on a **later** sign-in changes nothing about the
+  stored account.
 - **Why**: There is no registration step. The first authenticated request must create the internal
-  user; subsequent requests must find the same one and keep email/display name fresh, without ever
-  creating duplicates.
+  user; subsequent requests must find the same one without ever creating duplicates. The provider's
+  role ends there. It vouched for this person once, and that is not standing authority to rewrite
+  what the account holds — an address the user never asked to change is not an address they can be
+  reached at, and silently adopting one would move the account's only human-readable identifier
+  because a token said so.
 - **Enforced in**: `EnsureUserHandler` (`Application/Users/EnsureUser/EnsureUserHandler.cs`),
-  invoked by `UserProvisioningMiddleware`; it returns `ProvisionedUser(UserId, BudgetId)`. The same
+  invoked by `UserProvisioningMiddleware`; it returns `ProvisionedUser(UserId, BudgetId)`. The
+  existing-user branch resolves the id and returns — there is no write on that path at all. The same
   handler then find-or-creates the user's default budget, because "an account exists ⇒ it has its
   budget" is one idea and splitting it would open a window where a user exists with no budget; that
   half of the step is documented in
   [budgets.md](budgets.md#business-rules--invariants) and not restated here.
-- **Example**: A returning user whose Google display name changed from "Sam" to "Samantha" — on her
-  next request the handler finds her by `sub`, sees the display name differs, and updates the
-  profile. If nothing changed, no write happens.
-- **Counterexample**: Keying on `email` instead of `sub` would break if the user changed their
-  Google email — they'd be provisioned as a brand-new user and lose access to all their data.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Example**: A returning user whose Google address changed from `old@example.com` to
+  `new@example.com` signs in. The handler finds her by `(provider, subject)`, returns the same
+  account, and the stored address stays `old@example.com`.
+  `EnsureUserHandlerTests.EnsureUser_ReturningUserWhoseProviderEmailChanged_KeepsTheRegisteredEmail`
+  pins it, at both the handler and the database level.
+- **Counterexample**: Keying on `email` instead of the credential would break if the user changed
+  their Google email — they'd be provisioned as a brand-new user and lose access to all their data.
+  Which is also why the address is not refreshed: the credential is the identity, so a changed
+  address is new *information about* the account, not a new account and not a fact the account must
+  adopt.
+- **Consequence, accepted**: the stored address goes stale, and there is no way to update it yet.
+  Changing it is its own operation, requiring its own fresh authorization exchange, and that is not
+  built.
+- **Source**: `[SOURCE: discussion — 2026-08-03]`
 
 ---
 
@@ -143,7 +157,8 @@ erDiagram
 - **Why**: The credential is the identity anchor — repointing its subject would silently hand an
   account to a different principal, and changing its `user_id` would move a sign-in between accounts.
   A credential is written whole at registration and has no edit that means anything. Email and name
-  are mutable profile attributes the provider may update.
+  are the columns a profile edit would touch — the grant is what an edit *may* reach, and today no
+  code path reaches it at all.
 - **Enforced in**: **database-owned, restated in the domain.** The application role has no `UPDATE`
   grant on `credentials` of any shape — not a column list with nothing on it, but no grant at all —
   and no `DELETE` either, so every write except `INSERT` is refused with `42501` on the connection
@@ -154,9 +169,15 @@ erDiagram
   `AppRoleGrantsTests.Database_RefusesEveryCredentialWriteExceptInsert` pins the refusals column for
   column against a permitted insert, and
   `Database_RefusesToChangeAUsersCreatedAt_WhileStillAllowingProfileEdits` pins that the users grant
-  really is a list. Above them, `User.UpdateProfile(email, displayName)` sets email and name only,
-  and `Domain/Users/Credential.cs` exposes no mutator at all.
-- **Example**: `UpdateProfile` re-runs `Email.Create`, so a blanked email would be rejected.
+  really is a list. Above them, neither `Domain/Users/User.cs` nor `Domain/Users/Credential.cs`
+  exposes a mutator: both are written whole and never edited.
+- **Example**: nothing in the application can change a stored email, so the 409 on the insert path
+  is the only outcome a duplicate address can produce.
+- **Gap, stated rather than hidden**: the `users` `UPDATE` grant now has no caller. It is a
+  privilege the role holds and nothing exercises, which is the opposite of how the rest of this
+  matrix is built. It stays because the gated email change and the erasure scheduling that need it
+  are both specified and both next; if either slips, the grant should be revoked rather than left
+  standing.
 - **Source**: `[SOURCE: discussion — 2026-07-29]`
 
 ---
@@ -173,12 +194,12 @@ erDiagram
   from the column surfacing to the caller as a 500.
 - **Enforced in**: `varchar(254)` and `varchar(200)` columns declared in `UserConfiguration`,
   `varchar(255)` and `varchar(50)` in `CredentialConfiguration`; the domain restates each bound in
-  `Email.Create`, `User.Create`/`User.UpdateProfile` and `Credential.CreateFederated` so the caller
-  gets a 400 with a sentence instead of a database error. The two expressions of each bound cannot
+  `Email.Create`, `User.Create` and `Credential.CreateFederated` so the caller gets a 400 with a
+  sentence instead of a database error. The two expressions of each bound cannot
   drift, because each configuration reads `Email.MaxLength`, `User.MaxDisplayNameLength`,
   `Credential.MaxSubjectLength` and `Credential.MaxProviderLength` rather than repeating the numbers.
-- **Example**: a 300-character `name` claim is rejected by `User.UpdateProfile` with "Display name
-  must be 200 characters or fewer." rather than being silently cut to fit.
+- **Example**: a 300-character `name` claim is rejected by `User.Create` with "Display name must be
+  200 characters or fewer." rather than being silently cut to fit.
 - **Counterexample**: assuming the column *truncates* to fit. It does not — `varchar(n)` **rejects**
   an over-long value with SQLSTATE `22001`, which is what makes it enforcement in the sense
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) means. Contrast
@@ -190,14 +211,13 @@ erDiagram
 
 ---
 
-- **Rule**: An email address may be held by only one user. A collision is a **409** on the insert
-  path and is **ignored** on the profile-refresh path.
-- **Why**: Identity is the credential row; `email` is only a cached copy of an attribute the
-  identity provider owns. That asymmetry follows directly. On insert, a collision that is not a lost
-  race leaves nothing to adopt — no credential carries this subject, so the person behind it is new,
-  and failing closed with a legible 409 is the honest answer. On refresh the user is already identified,
-  and a cached attribute that fails to refresh must **never** lock a person out of their own budget;
-  the sign-in continues on the stored, stale email.
+- **Rule**: An email address may be held by only one user. A collision on the insert path is a
+  **409**. There is no other path on which one can occur.
+- **Why**: Identity is the credential row; `email` is what the provider asserted when the account
+  was created. A collision that is not a lost race leaves nothing to adopt — no credential carries
+  this subject, so the person behind it is new, and failing closed with a legible 409 is the honest
+  answer. Nothing updates `users.email` after the insert, so a returning user cannot collide with
+  anyone: the only write that could breach the index is the one that creates the account.
 - **Enforced in**: three layers, deliberately. The unique index `IX_users_email` on the
   `case_insensitive` collation is what makes the rule *true*. `UserRepository` reports the rejection
   without interpreting it: `TryAddAsync` writes the user row and its first credential in one save and
@@ -209,24 +229,19 @@ erDiagram
   re-reads by `(provider, subject)`, adopts the winning row when there is one, and otherwise throws
   `ConflictException` ("This
   email address is already linked to a different Google account."), which `ConflictExceptionHandler`
-  renders as 409 ProblemDetails. On the refresh path `UpdateProfileAsync` returns `false` after
-  `ReloadAsync` discards the rejected change, and `EnsureUserHandler` ignores that `false` — the
-  discard is the whole handling. **Which of the two a collision gets is application policy, sitting
-  above the database on purpose**: the database rejects both writes identically, and cannot even say
-  which rule it rejected them for, so only the application knows that one of them is a sign-in it
-  must not break.
+  renders as 409 ProblemDetails. **Whether a collision is a conflict or a lost race is application
+  policy, sitting above the database on purpose**: the database rejects the write and cannot even
+  say which of the two rules it rejected it for, so only the application can separate a person
+  racing themselves from a stranger holding their address.
 - **Example**: a person whose Google account was recreated signs in with a new `sub` and their old
   address. Provisioning refuses with 409 and a sentence naming the cause, rather than quietly
   handing them an empty second budget.
-- **Counterexample**: making the two paths symmetric. Throwing `ConflictException` from
-  `UpdateProfileAsync` would fail an existing user's request because someone else took the address
-  their token now carries — the exact lockout the `sub`-keyed identity model exists to prevent.
-  Deciding the insert-path outcome from the reported constraint name — email index means 409,
-  subject index means a lost race — looks like the precise version of the same idea and is unsound:
-  two concurrent first requests from one person insert the same subject *and* the same email, so the
-  loser breaches both indexes, and PostgreSQL names whichever of them it checked first. The user row
-  is written before its credential, so the email index is the one that reports — and that person is
-  told their own address belongs to a different Google account.
+- **Counterexample**: deciding the outcome from the reported constraint name — email index means
+  409, subject index means a lost race — looks like the precise version of the re-read and is
+  unsound: two concurrent first requests from one person insert the same subject *and* the same
+  email, so the loser breaches both indexes, and PostgreSQL names whichever of them it checked
+  first. The user row is written before its credential, so the email index is the one that reports
+  — and that person is told their own address belongs to a different Google account.
 - **Source**: `[SOURCE: discussion — 2026-07-28]`
 
 ## Workflows & State Transitions
@@ -240,11 +255,7 @@ stateDiagram-v2
     Authenticated --> Lookup : has sub + email
     Lookup --> Existing : user found by federated credential
     Lookup --> Creating : no credential found
-    Existing --> ProfileSyncing : email/displayName changed → UpdateProfile
-    Existing --> Resolved : nothing changed (no write)
-    ProfileSyncing --> Resolved : write accepted
-    ProfileSyncing --> RefreshRejected : email already held by another user
-    RefreshRejected --> Resolved : Reload discards the change; the stored email stands
+    Existing --> Resolved : the stored account stands as registered (no write)
     Creating --> Resolved : TryAdd wrote the user and its credential
     Creating --> InsertRejected : unique violation on the credential, the email, or both
     InsertRejected --> RaceReread : re-read by provider and subject
@@ -260,10 +271,7 @@ stateDiagram-v2
 |---|---|---|
 | Authenticated → Rejected | Auth succeeds but claims missing | `sub` and `email` both required, else 401 |
 | Lookup → Existing | A federated credential holds this `(provider, subject)`; its user is the account | — |
-| Existing → ProfileSyncing | Email or display name differs | `UpdateProfile` re-validates email presence and length, and display name length; an over-long value is a 400 |
-| Existing → Resolved | Nothing changed | Dirty check skips the write |
-| ProfileSyncing → Resolved | The unique email index accepted the write | — |
-| ProfileSyncing → RefreshRejected → Resolved | Another user already holds that email | `UpdateProfileAsync` returns `false`, `ReloadAsync` discards the change, and the request proceeds on the stored email — a refresh failure never fails a sign-in |
+| Existing → Resolved | Always, once the credential resolves | None. The branch reads and returns; whatever the token now says about this person is not applied |
 | Creating → Resolved | New user and its first credential inserted in one save | `User.Create` validates email presence and both length bounds; `Credential.CreateFederated` validates provider and subject |
 | Creating → InsertRejected | A unique violation on the credential index, the email index, or both | `TryAddAsync` returns `false` without deciding which rule fired — the reported constraint name cannot say — and neither row is left behind |
 | InsertRejected → RaceReread → Resolved | A concurrent request registered this credential first | The re-read finds the winning credential and the request adopts its user id |
@@ -280,13 +288,7 @@ IF the request is not authenticated
 ELSE IF the sub or email claim is missing or blank
   THEN 401 ProblemDetails "Authenticated principal is missing required claims."
 ELSE IF a federated credential already holds that provider and sub
-  re-run UpdateProfile with the token's email and name   ← an over-long email or name is a 400 here
-  IF either value changed
-    THEN try to persist the profile
-    IF another user already holds that email             ← a stale cached attribute must not lock anyone out
-      THEN reload, discard the change, and carry on with the stored email
-  ELSE                                                   ← a dirty check, not an unconditional write
-    THEN no write happens
+  THEN use its user                                      ← no write; the token's claims are not applied
 ELSE                                                     ← no credential for that sub yet
   try to insert a user and its credential in one save    ← a refusal leaves neither row behind
   IF the insert succeeded
@@ -304,8 +306,8 @@ ELSE                                                     ← no credential for t
 Every repository catch that handles a PostgreSQL error filters on `PostgresException.ConstraintName`
 as well as on the SQLSTATE, against a name pinned as a constant on the owning configuration — the
 practice lives in [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md), under
-"A violation report names one rule, not every rule that was violated". Here that is why both
-`UserRepository` catch clauses filter on pinned index names — `IX_users_email` on
+"A violation report names one rule, not every rule that was violated". Here that is why
+`UserRepository`'s catch clause filters on two pinned index names — `IX_users_email` on
 `UserConfiguration` and `IX_credentials_provider_subject` on `CredentialConfiguration` — declared as
 constants instead of left to EF's naming
 convention. What that filter decides is whether a `23505` is a failure this path models at all: a
@@ -356,11 +358,14 @@ The budget branch that runs after this, on every path, is in
   is therefore a reachable state, and it is the unconditional find-or-create on the next request that
   repairs it. The budget half of that story is in [budgets.md](budgets.md#edge-cases--known-gotchas).
 
-- **The insert and refresh paths handle an email collision differently on purpose. Do not make them
-  symmetric.** Insert fails closed (409); refresh swallows and continues on the stored email. A
-  reader who assumes the two should agree will "fix" one of them and either lock existing users out
-  of their own budgets or trade the explained 409 for an unexplained 500. The reasoning is in
-  Business Rules & Invariants above.
+- **A returning user's stored email is deliberately never refreshed, and it will go stale.** The
+  obvious "fix" is to re-apply the token's claims on the existing-user branch, which is what the
+  code did until 2026-08-03. Do not restore it: the provider gates registration and is not standing
+  authority to rewrite the account afterwards, and a silent refresh both contacts the provider on
+  every request and moves the account's only reachable address without anyone asking. Changing the
+  address is its own operation with its own fresh authorization, and it is not built yet.
+  `EnsureUserHandlerTests.EnsureUser_ReturningUserWhoseProviderEmailChanged_KeepsTheRegisteredEmail`
+  is what fails if someone restores it.
 
 - **`case_insensitive` folds case but not accents.** It is ICU `und-u-ks-level2`, so
   `josé@example.com` and `jose@example.com` are two distinct rows and both can exist at once. This is
@@ -372,10 +377,10 @@ The budget branch that runs after this, on every path, is in
   search-by-email or autocomplete over it needs an explicit `COLLATE` on the expression rather than a
   plain `LIKE`, and the failure will arrive at runtime, not at compile time.
 
-- **An over-long email from the identity provider fails an existing user's sign-in with a 400.** The
-  254-character bound applies on the refresh path exactly as it does on insert, and this is a
-  *different* case from an email collision, which must not block sign-in. Softening it would mean
-  truncating the address or swallowing the validation error, and
+- **An over-long email from the identity provider fails the *first* sign-in with a 400, and only
+  the first.** The 254-character bound is checked where the value is written, so an existing user
+  never meets it again however long their provider address grows. Softening it on the insert path
+  would mean truncating the address or swallowing the validation error, and
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out both: a
   coercion that quietly changes the value is not enforcement, and a swallowed rule has no owner. It
   is an accepted consequence, not an oversight.

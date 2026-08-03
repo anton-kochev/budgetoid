@@ -35,24 +35,9 @@ public sealed class User
         };
     }
 
-    public void UpdateProfile(string email, string? displayName)
-    {
-        Dictionary<string, string[]> errors = new();
-        string? trimmedDisplayName = NormalizeDisplayName(displayName);
-        Email? emailValue = ValidateProfile(email, trimmedDisplayName, errors);
-
-        if (errors.Count > 0)
-        {
-            throw new ValidationException(errors);
-        }
-
-        Email = emailValue!;
-        DisplayName = trimmedDisplayName;
-    }
-
     /// <summary>
-    /// Validates the two fields a profile refresh can change, appending any problems to
-    /// <paramref name="errors"/> so <see cref="Create"/> can report them alongside its own.
+    /// Validates the two caller-supplied fields <see cref="Create"/> accepts, appending any problems
+    /// to <paramref name="errors"/> so they are reported together rather than one per attempt.
     /// </summary>
     private static Email? ValidateProfile(string email, string? trimmedDisplayName, Dictionary<string, string[]> errors)
     {
