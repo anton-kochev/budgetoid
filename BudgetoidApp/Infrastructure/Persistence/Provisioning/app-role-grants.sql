@@ -123,11 +123,26 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 -- above AND a policy below; RlsCoverageTests derives its subject from the live schema so that a
 -- missing policy fails a test rather than shipping.
 --
--- Exactly the five budget-owned tables are policed, mirroring the BudgetIsolation query filters.
--- budgets, users, credentials and currencies are out because a budget is the tenant rather than a
--- tenant's row and the other three belong to no tenant — and provisioning reads credentials, users
--- and budgets before an ambient budget exists, so a policy on any of them would break sign-in.
--- None of the three carries a budget_id, which is also what keeps them out of the coverage check.
+-- The budget-owned tables are policed, mirroring the BudgetIsolation query filters. Every other
+-- table in the schema is exempt, and each exemption is written down in RlsCoverageTests with its
+-- reason rather than falling out of a query by accident:
+--
+--   budgets       a budget is the tenant, not a tenant's row
+--   users         belongs to no budget, and provisioning reads it before one is resolved
+--   credentials   the same, and it is read to discover WHO is asking — before any identity exists
+--   currencies    shared reference data belonging to no tenant
+--   __EFMigrationsHistory   EF's own bookkeeping
+--
+-- The reason that list is spelled out rather than inferred: the coverage test used to discover its
+-- subjects by looking for a budget_id column, so a new non-tenant table skipped the check without
+-- anyone deciding it should. That is the silent half of the asymmetry above, applied to the test
+-- meant to catch it. Every table in public is now classified — policed, or exempt with a reason —
+-- and a new one fails the test until someone says which it is.
+--
+-- The direction is what matters, so do not "simplify" the exemption list back into a discovery
+-- rule. A list of policed tables fails OPEN: the sixth table nobody added to it keeps the suite
+-- green. A list of exemptions fails CLOSED: the sixth table is red until someone decides. Same
+-- five names either way, opposite properties.
 --
 -- No table gets FORCE ROW LEVEL SECURITY, and that is a decision rather than an oversight. Owner
 -- and superuser bypass is load-bearing here: the schema is created and migrated on the admin

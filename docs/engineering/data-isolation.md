@@ -16,8 +16,14 @@ Enforced today:
   migration ([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)).
   **A new budget-owned table needs a grant *and* a policy**: the grants are fail-closed, so a
   missing one fails loudly with `42501`, but RLS is fail-**open** — a granted table with no policy
-  is readable across every tenant, silently. `tests/IntegrationTests/RlsCoverageTests.cs` derives
-  its subject from the live schema so that drift fails a test instead of shipping.
+  is readable across every tenant, silently. `tests/IntegrationTests/RlsCoverageTests.cs` reads the
+  live schema and requires **every** table in `public` to be accounted for: policed, or on an
+  explicit exemption list carrying its reason. A new table is red until someone says which it is.
+  That direction is the whole point and must not be inverted — a list of *policed* tables fails
+  open, because the table nobody added to it keeps the suite green. Exempt today: `budgets` (the
+  tenant, not a tenant's row), `users` and `credentials` (read during provisioning, before an
+  ambient budget or even an identity exists), `currencies` (reference data owned by no tenant),
+  and `__EFMigrationsHistory`.
 - **Read-side filter.** `BudgetoidDbContext` defines a global query filter named
   `BudgetIsolation` on `Transaction`, `Account`, `Payee`, `CategoryGroup`, and `Category`, scoped
   to the current `IBudgetContext.BudgetId`. Every LINQ query against those sets is auto-scoped —
@@ -37,8 +43,12 @@ Enforced today:
   `(Id, BudgetId)` alternate key. PostgreSQL rejects a cross-budget reference whatever code path
   wrote it. This proves internal consistency only; *which* budget a write lands in is still the
   filter's and `IBudgetContext`'s job alone.
-- **`Budget` itself has no filter.** The provisioning lookup runs before a budget id exists, so
-  every query over `Budgets` must scope by owner explicitly (`FindFirstForUserAsync`).
+- **`Budget`, `User` and `Credential` have no filter.** The provisioning lookup runs before a
+  budget id exists — and the credential lookup runs before even the *user* is known, since reading
+  it is how the request discovers who is asking — so every query over `Budgets` must scope by owner
+  explicitly (`FindFirstForUserAsync`), and the other two are reached only by the identity the
+  request is still in the middle of resolving. These are the same three tables the coverage
+  exemption list names, for the same reason.
 - **Immutable ownership.** `Transaction.BudgetId` has no public setter and is set only via the
   factory. The query filter is read-side only — `SaveChanges` ignores it — so that immutability is
   what stops the *application* from moving a row between budgets. The database holds the same rule
@@ -73,8 +83,9 @@ RS0030 compile error.
 
 Tests that lock this: `tests/IntegrationTests/RlsIsolationTests.cs` (raw SQL on the application
 role, every negative paired with the same statement against the session's own budget),
-`tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so a new budget-owned table without a
-policy fails), `tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level
+`tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so any new table without a policy or
+a stated exemption fails — including one carrying no `budget_id`),
+`tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level
 two-budgets-same-process + endpoint-level two-factory) and the `BudgetId` immutability unit test in
 `tests/UnitTests/TransactionTests.cs`. Removing a `HasQueryFilter` line must make the
 DbContext-level test fail; removing a policy must make the RLS ones fail.

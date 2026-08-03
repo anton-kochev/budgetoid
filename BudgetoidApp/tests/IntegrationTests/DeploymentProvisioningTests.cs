@@ -702,13 +702,15 @@ public sealed class DeploymentProvisioningTests
     /// </summary>
     /// <remarks>
     /// The <c>budget_id</c> column <i>is</i> the definition of budget-owned, which is why it and not
-    /// a name list is the filter. <c>budgets</c>, <c>users</c>, <c>currencies</c> and
-    /// <c>__EFMigrationsHistory</c> drop out for free: a budget is the tenant rather than a tenant's
-    /// row, and none of the other three belongs to one. <c>relrowsecurity</c> is read in the same
-    /// row as the discovery so that "is this table budget-owned" and "is it protected" cannot drift
-    /// into two lists that disagree. This duplicates the query <c>RlsCoverageTests</c> runs, on
-    /// purpose: both files need to observe the fact from outside the code that establishes it, and a
-    /// shared helper would make one test's subject the other's fixture.
+    /// a name list is the filter. <c>budgets</c>, <c>users</c>, <c>currencies</c>,
+    /// <c>credentials</c> and <c>__EFMigrationsHistory</c> drop out for free: a budget is the tenant
+    /// rather than a tenant's row, and none of the other four belongs to one. <c>relrowsecurity</c>
+    /// is read in the same row as the discovery so that "is this table budget-owned" and "is it
+    /// protected" cannot drift into two lists that disagree. This and <c>RlsCoverageTests</c> ask
+    /// different questions of the catalog: here it is "which tables are budget-owned, so I can
+    /// sabotage one", there it is "is every table in the schema accounted for". Both files need to
+    /// observe the fact from outside the code that establishes it, and a shared helper would make
+    /// one test's subject the other's fixture.
     /// </remarks>
     private static async Task<IReadOnlyList<(string Table, bool RowSecurityEnabled)>>
         DiscoverBudgetOwnedTablesAsync(NpgsqlConnection connection)
