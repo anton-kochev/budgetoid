@@ -75,21 +75,19 @@ public sealed class ApiFactory(
         });
     }
 
-    public HttpClient CreateAuthenticatedClient(string? subject = null, string? email = null, string? name = null)
+    public HttpClient CreateAuthenticatedClient(string? subject = null, string? email = null)
     {
         HttpClient client = CreateClient();
         client.DefaultRequestHeaders.Add(TestAuthHandler.SubjectHeader, subject ?? defaultSubject ?? "test-subject");
         client.DefaultRequestHeaders.Add(TestAuthHandler.EmailHeader, email ?? $"{subject ?? defaultSubject ?? "test-subject"}@example.com");
-        client.DefaultRequestHeaders.Add(TestAuthHandler.NameHeader, name ?? "Test User");
         return client;
     }
 
-    public HttpClient CreateAuthenticatedClientWithoutEmail(string? subject = null, string? name = null)
+    public HttpClient CreateAuthenticatedClientWithoutEmail(string? subject = null)
     {
         HttpClient client = CreateClient();
         client.DefaultRequestHeaders.Add(TestAuthHandler.SubjectHeader, subject ?? defaultSubject ?? "test-subject");
         client.DefaultRequestHeaders.Add(TestAuthHandler.OmitEmailHeader, "true");
-        client.DefaultRequestHeaders.Add(TestAuthHandler.NameHeader, name ?? "Test User");
         return client;
     }
 }

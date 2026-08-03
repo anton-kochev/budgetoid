@@ -16,14 +16,14 @@ public sealed class EnsureUserHandlerTests
         // It gates registration and is never consulted again, so what it reports later is not
         // authority to change anything: an email change is a separate exchange the user deliberately
         // initiates.
-        User user = User.Create("old@example.com", "Old", UtcNow());
+        User user = User.Create("old@example.com", UtcNow());
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "new@example.com", "New"));
+            new EnsureUserCommand("google-1", "new@example.com"));
 
         // Assert — the sign-in resolves to the same account, and that account still holds the email
         // it registered with. Reintroducing a silent per-request refresh fails this line.
@@ -42,7 +42,7 @@ public sealed class EnsureUserHandlerTests
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
-            new EnsureUserCommand("google-new", "new@example.com", "New Person"));
+            new EnsureUserCommand("google-new", "new@example.com"));
 
         // Assert
         await Assert.That(budgets.Budgets.Count).IsEqualTo(1);
@@ -64,7 +64,7 @@ public sealed class EnsureUserHandlerTests
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
-            new EnsureUserCommand("google-new", "new@example.com", "New Person"));
+            new EnsureUserCommand("google-new", "new@example.com"));
 
         // Assert — the subject reaches the credential row and nothing else, which is what keeps a
         // second sign-in method addable later without touching the user row.
@@ -80,7 +80,7 @@ public sealed class EnsureUserHandlerTests
     public async Task EnsureUser_ExistingCredentialWithABudget_DoesNotCreateAnother()
     {
         // Arrange
-        User user = User.Create("person@example.com", "Person", UtcNow());
+        User user = User.Create("person@example.com", UtcNow());
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         Budget existingBudget = Budget.CreateDefault(user.Id, UtcNow());
@@ -89,9 +89,9 @@ public sealed class EnsureUserHandlerTests
 
         // Act
         ProvisionedUser first = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "person@example.com", "Person"));
+            new EnsureUserCommand("google-1", "person@example.com"));
         ProvisionedUser second = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "person@example.com", "Person"));
+            new EnsureUserCommand("google-1", "person@example.com"));
 
         // Assert
         await Assert.That(budgets.Budgets.Count).IsEqualTo(1);
@@ -104,14 +104,14 @@ public sealed class EnsureUserHandlerTests
     public async Task EnsureUser_ExistingCredentialWithoutABudget_CreatesTheMissingBudget()
     {
         // Arrange — a user row from a partially completed provisioning, with no budget yet.
-        User user = User.Create("person@example.com", "Person", UtcNow());
+        User user = User.Create("person@example.com", UtcNow());
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "person@example.com", "Person"));
+            new EnsureUserCommand("google-1", "person@example.com"));
 
         // Assert
         await Assert.That(provisioned.UserId).IsEqualTo(user.Id);
@@ -126,7 +126,7 @@ public sealed class EnsureUserHandlerTests
     public async Task EnsureUser_WhenBudgetInsertLosesTheRace_ReturnsTheConcurrentlyCreatedBudget()
     {
         // Arrange — a concurrent request inserts the default budget between our read and our write.
-        User user = User.Create("person@example.com", "Person", UtcNow());
+        User user = User.Create("person@example.com", UtcNow());
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         Budget concurrentBudget = Budget.CreateDefault(user.Id, UtcNow());
@@ -135,7 +135,7 @@ public sealed class EnsureUserHandlerTests
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "person@example.com", "Person"));
+            new EnsureUserCommand("google-1", "person@example.com"));
 
         // Assert
         await Assert.That(provisioned.UserId).IsEqualTo(user.Id);
@@ -151,14 +151,14 @@ public sealed class EnsureUserHandlerTests
         // between our read and our write, which the repository reports as false rather than as a
         // throw.
         var users = new InMemoryUserRepository();
-        User concurrentUser = User.Create("person@example.com", "Person", UtcNow());
+        User concurrentUser = User.Create("person@example.com", UtcNow());
         users.FailNextAddWithCredentialRace(concurrentUser, GoogleCredentialFor(concurrentUser, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "person@example.com", "Person"));
+            new EnsureUserCommand("google-1", "person@example.com"));
 
         // Assert
         await Assert.That(provisioned.UserId).IsEqualTo(concurrentUser.Id);
@@ -179,7 +179,7 @@ public sealed class EnsureUserHandlerTests
         // path can resolve — and that empty re-read is precisely where the exception now comes from,
         // in place of the InvalidOperationException the branch used to raise.
         ConflictException exception = await ThrowsConflictExceptionAsync(() =>
-            handler.HandleAsync(new EnsureUserCommand("google-new", "taken@example.com", "New Person")));
+            handler.HandleAsync(new EnsureUserCommand("google-new", "taken@example.com")));
 
         // Assert
         await Assert.That(exception.Message).IsNotEmpty();

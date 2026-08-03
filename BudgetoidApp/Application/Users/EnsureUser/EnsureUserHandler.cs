@@ -41,7 +41,7 @@ public sealed class EnsureUserHandler(
         // One `now` for both rows: the user and the credential that resolves to it come into
         // existence in the same save, so they carry the same creation instant.
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
-        User user = User.Create(command.Email, command.DisplayName, now);
+        User user = User.Create(command.Email, now);
         Credential credential = Credential.CreateFederated(
             user.Id,
             Credential.GoogleProvider,

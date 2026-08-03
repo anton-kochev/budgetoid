@@ -154,12 +154,14 @@ public sealed class AppRoleGrantsTests
 
         // Act — created_at_utc is an audit fact and immutable by omission. With the identity
         // columns gone from this table it is the only omitted column left, which makes it the one
-        // statement that can still tell a real GRANT UPDATE (email, display_name) list apart from
-        // a table-wide grant. display_name is on that list.
+        // statement that can still tell a real GRANT UPDATE (email) list apart from a table-wide
+        // grant: a table-wide grant would let it through. email is the only column on that list,
+        // and editing it is what rules out the other way this test could pass — the role holding
+        // no UPDATE on users at all.
         PostgresException refusal = await ThrowsPostgresExceptionAsync(
             app, "update users set created_at_utc = @value where id = @id", ForgedInstant, userId);
         int profileEdited = await ExecuteAsync(
-            app, "update users set display_name = @value where id = @id", "Person Example", userId);
+            app, "update users set email = @value where id = @id", "edited@example.com", userId);
 
         // Assert
         await Assert.That(refusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
@@ -171,8 +173,8 @@ public sealed class AppRoleGrantsTests
                 admin, "select created_at_utc from users where id = @id", userId))
             .IsEqualTo(SeedInstant);
         await Assert.That(await SelectScalarAsync(
-                admin, "select display_name from users where id = @id", userId))
-            .IsEqualTo("Person Example");
+                admin, "select email from users where id = @id", userId))
+            .IsEqualTo("edited@example.com");
     }
 
     [Test]

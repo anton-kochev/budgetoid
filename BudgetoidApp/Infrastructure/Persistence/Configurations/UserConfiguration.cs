@@ -27,7 +27,6 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
             // this column fails with SQLSTATE 0A000, so search-by-email needs an explicit COLLATE;
             // and it folds case but not accents, so josé@x.com and jose@x.com are distinct rows.
             .UseCollation("case_insensitive");
-        builder.Property(user => user.DisplayName).HasColumnName("display_name").HasMaxLength(User.MaxDisplayNameLength);
         builder.Property(user => user.CreatedAtUtc).HasColumnName("created_at_utc").HasColumnType("timestamp with time zone").IsRequired();
 
         builder.HasIndex(user => user.Email).IsUnique().HasDatabaseName(EmailIndexName);

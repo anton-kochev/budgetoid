@@ -22,13 +22,13 @@ public sealed class UserRepositoryTests
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-        await InsertUserAsync(connection, "google-1", "sam@example.com", "Sam");
+        await InsertUserAsync(connection, "google-1", "sam@example.com");
 
         // Act — raw Npgsql on purpose: the subject is the unique index itself, and an EF-based
         // insert would only prove what UserRepository does with the violation, not that the database
         // raises one.
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            connection, "google-2", "sam@example.com", "Sam Again");
+            connection, "google-2", "sam@example.com");
 
         // Assert
         await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.UniqueViolation);
@@ -41,11 +41,11 @@ public sealed class UserRepositoryTests
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-        await InsertUserAsync(connection, "google-1", "Sam@example.com", "Sam");
+        await InsertUserAsync(connection, "google-1", "Sam@example.com");
 
         // Act
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            connection, "google-2", "sam@example.com", "Sam Again");
+            connection, "google-2", "sam@example.com");
 
         // Assert — this is the case_insensitive collation doing its work, and pg_get_indexdef does
         // not render it, so without this test the collation could be dropped from
@@ -62,8 +62,8 @@ public sealed class UserRepositoryTests
         await connection.OpenAsync();
 
         // Act
-        await InsertUserAsync(connection, "google-1", "josé@example.com", "José");
-        await InsertUserAsync(connection, "google-2", "jose@example.com", "Jose");
+        await InsertUserAsync(connection, "google-1", "josé@example.com");
+        await InsertUserAsync(connection, "google-2", "jose@example.com");
 
         // Assert — case_insensitive is ICU und-u-ks-level2, which folds case but not accents. This
         // pins the real behaviour so nobody later reports it as a bug and "fixes" it to level1,
@@ -78,11 +78,11 @@ public sealed class UserRepositoryTests
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-        await InsertUserAsync(connection, "google-1", "first@example.com", "First");
+        await InsertUserAsync(connection, "google-1", "first@example.com");
 
         // Act — a second account, so nothing but the credential index can refuse this.
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            connection, "google-1", "second@example.com", "Second");
+            connection, "google-1", "second@example.com");
 
         // Assert — one account per provider identity. Without this the same Google user could end
         // up with two accounts, and FindByFederatedCredentialAsync's SingleOrDefault would start
@@ -91,24 +91,17 @@ public sealed class UserRepositoryTests
     }
 
     [Test]
-    [Arguments("email", Email.MaxLength)]
-    [Arguments("display_name", User.MaxDisplayNameLength)]
-    public async Task Database_RejectsAUserValueLongerThanItsColumn(string column, int maxLength)
+    public async Task Database_RejectsAUserValueLongerThanItsColumn()
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-        string email = column == "email"
-            ? EmailOfLength(maxLength + 1)
-            : "person@example.com";
-        string displayName = column == "display_name"
-            ? new string('d', maxLength + 1)
-            : "Person";
+        string email = EmailOfLength(Email.MaxLength + 1);
 
         // Act
         PostgresException exception = await ThrowsPostgresExceptionAsync(
-            connection, "google-1", email, displayName);
+            connection, "google-1", email);
 
         // Assert — 22001 is a rejection, which is what "the database enforces it" has to mean. The
         // contrast worth remembering is numeric scale, which silently rounds instead of refusing and
@@ -125,7 +118,7 @@ public sealed class UserRepositoryTests
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-        Guid userId = await InsertUserRowAsync(connection, "person@example.com", "Person");
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
         string provider = column == "provider"
             ? new string('p', maxLength + 1)
             : Credential.GoogleProvider;
@@ -149,7 +142,7 @@ public sealed class UserRepositoryTests
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-        Guid userId = await InsertUserRowAsync(connection, "person@example.com", "Person");
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
 
         // Act
         PostgresException exception = await ThrowsCredentialPostgresExceptionAsync(
@@ -167,7 +160,7 @@ public sealed class UserRepositoryTests
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-        Guid userId = await InsertUserRowAsync(connection, "person@example.com", "Person");
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
 
         // Act
         PostgresException exception = await ThrowsCredentialPostgresExceptionAsync(
@@ -185,7 +178,7 @@ public sealed class UserRepositoryTests
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-        Guid userId = await InsertUserRowAsync(connection, "person@example.com", "Person");
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
 
         // Act
         PostgresException exception = await ThrowsCredentialPostgresExceptionAsync(
@@ -204,7 +197,7 @@ public sealed class UserRepositoryTests
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
-        Guid userId = await InsertUserRowAsync(connection, "person@example.com", "Person");
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
         await InsertCredentialAsync(
             connection, userId, CredentialTypes.Federated, Credential.GoogleProvider, "google-1");
 
@@ -266,7 +259,7 @@ public sealed class UserRepositoryTests
         // Act — a lost race on the provider identity, which the provisioning handler resolves by
         // re-reading that credential, so it must surface as false rather than as a throw.
         bool added = await repository.TryAddAsync(
-            NewUser("second@example.com", "Second", out Guid userId),
+            NewUser("second@example.com", out Guid userId),
             NewGoogleCredential(userId, "google-1"));
 
         // Assert
@@ -287,7 +280,7 @@ public sealed class UserRepositoryTests
 
         // Act
         bool added = await repository.TryAddAsync(
-            NewUser("shared@example.com", "Second", out Guid userId),
+            NewUser("shared@example.com", out Guid userId),
             NewGoogleCredential(userId, "google-2"));
 
         // Assert — the repository deliberately declines to decide what this refusal meant. From
@@ -314,7 +307,7 @@ public sealed class UserRepositoryTests
         // arriving after their own pair has landed, so it carries the same subject and the same
         // email and violates both unique rules at once.
         bool added = await repository.TryAddAsync(
-            NewUser("person@example.com", "Person", out Guid userId),
+            NewUser("person@example.com", out Guid userId),
             NewGoogleCredential(userId, "google-1"));
 
         // Assert — PostgreSQL names only one constraint for this pair, and which one is decided by
@@ -340,7 +333,7 @@ public sealed class UserRepositoryTests
 
         // Act
         bool added = await repository.TryAddAsync(
-            NewUser("loser@example.com", "Loser", out Guid userId),
+            NewUser("loser@example.com", out Guid userId),
             NewGoogleCredential(userId, "google-1"));
 
         // Assert — the count is the whole point, not a second opinion on the boolean. The two rows
@@ -376,9 +369,9 @@ public sealed class UserRepositoryTests
     /// Builds a user and hands back its generated id, which the credential needs before either row
     /// is saved.
     /// </summary>
-    private static User NewUser(string email, string? displayName, out Guid userId)
+    private static User NewUser(string email, out Guid userId)
     {
-        User user = User.Create(email, displayName, SeedInstant);
+        User user = User.Create(email, SeedInstant);
         userId = user.Id;
         return user;
     }
@@ -403,21 +396,17 @@ public sealed class UserRepositoryTests
     private static async Task InsertUserAsync(
         NpgsqlConnection connection,
         string googleSubject,
-        string email,
-        string? displayName)
+        string email)
     {
-        Guid userId = await InsertUserRowAsync(connection, email, displayName);
+        Guid userId = await InsertUserRowAsync(connection, email);
         await InsertCredentialAsync(
             connection, userId, CredentialTypes.Federated, Credential.GoogleProvider, googleSubject);
     }
 
-    private static async Task<Guid> InsertUserRowAsync(
-        NpgsqlConnection connection,
-        string email,
-        string? displayName)
+    private static async Task<Guid> InsertUserRowAsync(NpgsqlConnection connection, string email)
     {
         Guid userId = Guid.CreateVersion7();
-        await using NpgsqlCommand command = BuildUserInsert(connection, userId, email, displayName);
+        await using NpgsqlCommand command = BuildUserInsert(connection, userId, email);
         await command.ExecuteNonQueryAsync();
         return userId;
     }
@@ -440,14 +429,13 @@ public sealed class UserRepositoryTests
     private static async Task<PostgresException> ThrowsPostgresExceptionAsync(
         NpgsqlConnection connection,
         string googleSubject,
-        string email,
-        string? displayName)
+        string email)
     {
         Guid userId = Guid.CreateVersion7();
 
         try
         {
-            await using NpgsqlCommand user = BuildUserInsert(connection, userId, email, displayName);
+            await using NpgsqlCommand user = BuildUserInsert(connection, userId, email);
             await user.ExecuteNonQueryAsync();
             await using NpgsqlCommand credential = BuildCredentialInsert(
                 connection, userId, CredentialTypes.Federated, Credential.GoogleProvider, googleSubject);
@@ -486,18 +474,16 @@ public sealed class UserRepositoryTests
     private static NpgsqlCommand BuildUserInsert(
         NpgsqlConnection connection,
         Guid userId,
-        string email,
-        string? displayName)
+        string email)
     {
         NpgsqlCommand command = new(
             """
-            insert into users (id, email, display_name, created_at_utc)
-            values (@id, @email, @display_name, @created_at_utc)
+            insert into users (id, email, created_at_utc)
+            values (@id, @email, @created_at_utc)
             """,
             connection);
         command.Parameters.AddWithValue("id", userId);
         command.Parameters.AddWithValue("email", email);
-        command.Parameters.AddWithValue("display_name", (object?)displayName ?? DBNull.Value);
         command.Parameters.AddWithValue("created_at_utc", SeedInstant);
         return command;
     }

@@ -8,6 +8,33 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-03 — The account keeps the address and nothing else the provider says
+
+**Context:** `users.display_name` was written from the Google `name` claim on every sign-in and read
+by **nothing** — no endpoint returns it, no serialiser touches it, and the client's home-screen
+greeting renders the claim straight from the ID token without ever asking the API. So the column
+was a copy of somebody's real name, kept indefinitely, protected at every layer, included in any
+future export and any future breach, serving no purpose that could be named out loud. It arrived
+because the claim was in the token, which is the worst reason to store anything.
+
+**Decision:** the user row holds an internal id, an email address, and a creation timestamp. Of
+what the identity provider asserts, only the address is kept — it is the one channel by which the
+product can reach its user and the reason one provider account maps to one account here. The
+`name` claim is no longer read at all. `User.Create` loses its multi-field validation aggregation
+along with the second field, because aggregating one field's errors is machinery with nothing to do.
+
+**Why the column and not just the write:** leaving it nullable and unwritten would keep every row
+that already has a value, so the data would still be there to leak and still have to be erased. A
+column nobody writes is not minimization, it is a slower version of the same exposure.
+
+**What did not change, and is worth knowing:** the greeting on the home screen still shows the
+person's name. It comes from the ID token into client-side state and never crosses the API, so it
+is not something the product stores. When sign-in stops carrying an ID token on every request that
+feature loses its source and gets decided then, on its own merits, rather than being quietly
+removed here as a side effect of a storage decision.
+
+---
+
 ## 2026-08-03 — The provider is not consulted about an account after it exists
 
 **Context:** provisioning re-read the Google ID token's `email` and `name` claims on **every**

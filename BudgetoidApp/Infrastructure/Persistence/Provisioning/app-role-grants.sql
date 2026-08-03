@@ -45,11 +45,13 @@ REVOKE ALL ON currencies FROM budgetoid_app;
 GRANT SELECT ON currencies TO budgetoid_app;
 
 -- users: a user row carries no identity key of its own — sign-in resolves through credentials
--- below — so email and display_name, both cached copies of a provider attribute, are the only
--- updatable columns. created_at_utc is an audit fact, immutable by omission from the list.
+-- below — so email, the address the account is reached at, is the only updatable column.
+-- created_at_utc is an audit fact, immutable by omission from the list. A one-column list is
+-- still a list: do not collapse it into a table-wide GRANT UPDATE ON users, which would take
+-- created_at_utc with it.
 REVOKE ALL ON users FROM budgetoid_app;
 GRANT SELECT, INSERT ON users TO budgetoid_app;
-GRANT UPDATE (email, display_name) ON users TO budgetoid_app;
+GRANT UPDATE (email) ON users TO budgetoid_app;
 
 -- credentials: every column is immutable, so there is no UPDATE grant of any shape rather than
 -- a column list with nothing on it. A credential is written whole at registration and never

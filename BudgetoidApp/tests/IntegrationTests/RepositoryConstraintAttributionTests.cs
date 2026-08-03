@@ -135,7 +135,7 @@ public sealed class RepositoryConstraintAttributionTests
         await using BudgetoidDbContext db = new(CreateOptions(host));
         // No credential for this one: a user row without one is legal at the schema level, and the
         // subject here is the email index, not identity resolution.
-        db.Users.Add(User.Create("person@example.com", displayName: null, UtcNow()));
+        db.Users.Add(User.Create("person@example.com", UtcNow()));
         var repository = new BudgetRepository(db);
 
         // Act

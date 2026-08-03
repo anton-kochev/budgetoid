@@ -137,7 +137,7 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     public async Task<Guid> SeedUserAsync(string googleSubject, string email)
     {
         await using var db = CreateSeedingDbContext();
-        User user = User.Create(email, displayName: null, SeedInstant);
+        User user = User.Create(email, SeedInstant);
         db.Users.Add(user);
         db.Credentials.Add(Credential.CreateFederated(
             user.Id, Credential.GoogleProvider, googleSubject, SeedInstant));

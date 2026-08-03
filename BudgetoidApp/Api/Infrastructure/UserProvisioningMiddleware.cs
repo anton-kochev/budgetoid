@@ -20,10 +20,11 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
                 return;
             }
 
-            string? displayName = principal.FindFirstValue("name");
-
+            // Only the subject and the verified email are read off the principal. Every other claim
+            // the provider offers is deliberately left on the token: an account stores what it needs
+            // to be reached, and a claim nothing reads is data we would be holding for no one.
             ProvisionedUser provisioned = await handler.HandleAsync(
-                new EnsureUserCommand(googleSubject, email, displayName),
+                new EnsureUserCommand(googleSubject, email),
                 httpContext.RequestAborted);
 
             currentUser.UserId = provisioned.UserId;

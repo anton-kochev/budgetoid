@@ -1,6 +1,6 @@
 # Migration Invariant
 
-> Read this before touching `Infrastructure/Migrations/`.
+> Read this before touching `Infrastructure/Persistence/Migrations/`.
 
 **Applied migrations are frozen.** The repo used to keep a single baseline it regenerated freely.
 Production's `__EFMigrationsHistory` now references the current migration id, and the deploy pipeline

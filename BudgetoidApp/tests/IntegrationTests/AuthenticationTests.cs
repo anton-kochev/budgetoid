@@ -41,7 +41,7 @@ public sealed class AuthenticationTests
     public async Task AuthenticatedRequest_ProvisionsUserAndAllowsTransactionRequests()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient("google-auth", "auth@example.com", "Auth User");
+        HttpClient client = host.Factory.CreateAuthenticatedClient("google-auth", "auth@example.com");
 
         Guid accountId = await CreateAccountAsync(client);
         HttpResponseMessage created = await client.PostAsJsonAsync("/api/transactions", new

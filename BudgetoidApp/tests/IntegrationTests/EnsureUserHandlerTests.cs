@@ -17,7 +17,7 @@ public sealed class EnsureUserHandlerTests
         EnsureUserHandler handler = CreateHandler(db);
 
         ProvisionedUser provisioned = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "person@example.com", "Person"));
+            new EnsureUserCommand("google-1", "person@example.com"));
 
         await Assert.That(provisioned.UserId).IsNotEqualTo(Guid.Empty);
         await Assert.That(await db.Users.CountAsync()).IsEqualTo(1);
@@ -39,10 +39,10 @@ public sealed class EnsureUserHandlerTests
         await using BudgetoidDbContext db = CreateDb(host.ConnectionString);
         EnsureUserHandler handler = CreateHandler(db);
         ProvisionedUser original = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "old@example.com", "Old"));
+            new EnsureUserCommand("google-1", "old@example.com"));
 
         ProvisionedUser second = await handler.HandleAsync(
-            new EnsureUserCommand("google-1", "new@example.com", "New"));
+            new EnsureUserCommand("google-1", "new@example.com"));
 
         await Assert.That(second.UserId).IsEqualTo(original.UserId);
         await Assert.That(second.BudgetId).IsEqualTo(original.BudgetId);
@@ -66,7 +66,7 @@ public sealed class EnsureUserHandlerTests
         {
             await using BudgetoidDbContext db = CreateDb(host.ConnectionString);
             EnsureUserHandler handler = CreateHandler(db);
-            return await handler.HandleAsync(new EnsureUserCommand("google-1", "person@example.com", "Person"));
+            return await handler.HandleAsync(new EnsureUserCommand("google-1", "person@example.com"));
         }));
 
         // The budgets assertions are not confirming a schema invariant — there is deliberately no
@@ -97,7 +97,7 @@ public sealed class EnsureUserHandlerTests
         // adopt means this was not a race, which leaves only one honest reading: someone else has
         // the address. The handler decides that, because it is the layer holding the re-read.
         ConflictException exception = await ThrowsConflictExceptionAsync(() =>
-            handler.HandleAsync(new EnsureUserCommand("google-2", "shared@example.com", "Second")));
+            handler.HandleAsync(new EnsureUserCommand("google-2", "shared@example.com")));
 
         // Assert — the rejected sign-in provisioned nothing: no second user, and no budget for one.
         await Assert.That(exception.Message).IsNotEmpty();

@@ -26,9 +26,10 @@ resolves a Google principal into an internal user together with the ambient budg
 ## Key Entities
 
 - **User** — the account owner, identified by a `Guid Id` no external party supplies. It carries no
-  identity key of its own: every way of signing in is a **Credential** row instead. Holds an `Email`
-  and an optional `DisplayName` of at most `User.MaxDisplayNameLength` = 200 characters, both cached
-  copies of what the identity provider supplied.
+  identity key of its own: every way of signing in is a **Credential** row instead. It holds an
+  `Email` and a creation timestamp, and that is the whole row. Of everything the identity provider
+  asserts, only the address is kept — a claim the product does not use is one it does not store,
+  because what is never collected never leaks and never has to be erased.
 - **Credential** — one way of signing in to an account, carrying exactly one `CredentialType`:
   `Federated` (an external provider vouches for the user) or `Passkey` (the authenticator holds it,
   and no external party is involved). A federated credential names its `Provider` (at most
@@ -56,7 +57,6 @@ erDiagram
     USER {
         guid Id
         string Email
-        string DisplayName
         datetime CreatedAtUtc
     }
     CREDENTIAL {
@@ -152,19 +152,20 @@ erDiagram
 
 ---
 
-- **Rule**: A credential row is immutable in every column; on `users`, `Email` and `DisplayName` can
-  change and nothing else.
+- **Rule**: A credential row is immutable in every column; on `users`, `Email` is the only column
+  that can change.
 - **Why**: The credential is the identity anchor — repointing its subject would silently hand an
   account to a different principal, and changing its `user_id` would move a sign-in between accounts.
-  A credential is written whole at registration and has no edit that means anything. Email and name
-  are the columns a profile edit would touch — the grant is what an edit *may* reach, and today no
-  code path reaches it at all.
+  A credential is written whole at registration and has no edit that means anything. The address is
+  the one column an edit could ever legitimately touch — the grant is what an edit *may* reach, and
+  today no code path reaches it at all.
 - **Enforced in**: **database-owned, restated in the domain.** The application role has no `UPDATE`
   grant on `credentials` of any shape — not a column list with nothing on it, but no grant at all —
   and no `DELETE` either, so every write except `INSERT` is refused with `42501` on the connection
-  every request is served by. On `users` the `UPDATE` grant names `email` and `display_name`, leaving
+  every request is served by. On `users` the `UPDATE` grant names `email` alone, leaving
   `created_at_utc` immutable by *omission* rather than by a `REVOKE`, which additive column
-  privileges could not express; see
+  privileges could not express. A one-column list is still a list, and must not be "simplified"
+  into a table-wide grant; see
   [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
   `AppRoleGrantsTests.Database_RefusesEveryCredentialWriteExceptInsert` pins the refusals column for
   column against a permitted insert, and
@@ -183,23 +184,21 @@ erDiagram
 ---
 
 - **Rule**: An email must be present (non-blank, trimmed) and at most 254 characters. Format is
-  **not** validated. A credential's `Subject` is bounded at 255 characters, its `Provider` at 50,
-  and `DisplayName` at 200.
+  **not** validated. A credential's `Subject` is bounded at 255 characters and its `Provider` at 50.
 - **Why**: The email comes from a trusted Google ID token, which has already verified it — a regex
-  check would add friction without adding trust. Presence is still required because it's a
-  displayed, required profile field. The bounds are what the values are: 254 is the practical
-  RFC 5321 address limit (the 256-octet path less the enclosing angle brackets), 255 is Google's
-  documented cap for the `sub` claim, and 200 matches every other name column in the schema. The
-  domain restatement exists so an over-long value is a 400 with a sentence, rather than a raw `22001`
-  from the column surfacing to the caller as a 500.
-- **Enforced in**: `varchar(254)` and `varchar(200)` columns declared in `UserConfiguration`,
-  `varchar(255)` and `varchar(50)` in `CredentialConfiguration`; the domain restates each bound in
-  `Email.Create`, `User.Create` and `Credential.CreateFederated` so the caller gets a 400 with a
-  sentence instead of a database error. The two expressions of each bound cannot
-  drift, because each configuration reads `Email.MaxLength`, `User.MaxDisplayNameLength`,
+  check would add friction without adding trust. Presence is still required because it is the one
+  channel by which the product can reach its user. The bounds are what the values are: 254 is the
+  practical RFC 5321 address limit (the 256-octet path less the enclosing angle brackets) and 255 is
+  Google's documented cap for the `sub` claim. The domain restatement exists so an over-long value
+  is a 400 with a sentence, rather than a raw `22001` from the column surfacing to the caller as
+  a 500.
+- **Enforced in**: the `varchar(254)` column declared in `UserConfiguration`, `varchar(255)` and
+  `varchar(50)` in `CredentialConfiguration`; the domain restates each bound in `Email.Create` and
+  `Credential.CreateFederated` so the caller gets a 400 with a sentence instead of a database error.
+  The two expressions of each bound cannot drift, because each configuration reads `Email.MaxLength`,
   `Credential.MaxSubjectLength` and `Credential.MaxProviderLength` rather than repeating the numbers.
-- **Example**: a 300-character `name` claim is rejected by `User.Create` with "Display name must be
-  200 characters or fewer." rather than being silently cut to fit.
+- **Example**: a 300-character `email` claim is rejected by `Email.Create` with "Email must be 254
+  characters or fewer." rather than being silently cut to fit.
 - **Counterexample**: assuming the column *truncates* to fit. It does not — `varchar(n)` **rejects**
   an over-long value with SQLSTATE `22001`, which is what makes it enforcement in the sense
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) means. Contrast
@@ -326,9 +325,12 @@ The budget branch that runs after this, on every path, is in
 ## Integration Points
 
 - **Google OAuth / OIDC**: identity comes from the Google ID token, and reaches the account through a
-  federated credential rather than through a column on the user. The API trusts the `sub`, `email`,
-  and optional `name` claims. The frontend attaches the **ID token** (not the access token) as the
-  `Authorization: Bearer` header on API calls (see the client `AuthInterceptor`).
+  federated credential rather than through a column on the user. The API reads the `sub` and `email`
+  claims and no others — the token carries more, and the rest is deliberately dropped rather than
+  stored against the account. The frontend attaches the **ID token** (not the access token) as the
+  `Authorization: Bearer` header on API calls (see the client `AuthInterceptor`), and separately
+  renders the token's `name` claim on the home screen from client-side state that never reaches the
+  API.
 - **[Budgets](budgets.md)**: provisioning resolves the identity *and* the ambient budget in one step.
   Everything a user can see hangs off that budget, so all tenancy rules — stamping, filtering, name
   uniqueness, the 404 behaviour — are documented there.
