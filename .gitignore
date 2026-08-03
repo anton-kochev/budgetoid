@@ -49,7 +49,11 @@ __queuestorage__/
 /BudgetoidApp/AppHost/infra/
 
 CLAUDE.local.md
-/.claude/agent-memory
+# Same leading **/ as the two rules above, and for the same reason: subagents write
+# their memory next to the directory they were working in, so it lands under
+# BudgetoidApp/ or ClientApp/ rather than at the root. A root-anchored rule caught
+# none of those, and they were committed by accident twice.
+**/.claude/agent-memory/
 /.claude/skills/grimoire.*
 /.claude/agents/grimoire.*
 /.claude/grimoire.json
