@@ -8,6 +8,50 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-03 — A credential is a typed row, and the account holds no identity key of its own
+
+**Context:** "One email, one user" (2026-07-28) and the entries around it treat `users.google_subject`
+as the identity anchor: one column, one provider, one way in. That shape can hold exactly one sign-in
+method per account, so a second authenticator or a provider-free sign-in has nowhere to live, and it
+puts an identifier an external party issues in the position of *defining* the account rather than
+merely reaching it.
+
+**Decision:** Move every way of signing in into a **`credentials` table**, each row carrying exactly
+one type — `federated` (a provider vouches, naming its `provider` and the `subject` it issued) or
+`passkey` (the authenticator holds it, so neither column applies). The user row keeps only its
+internal id, its cached email and display name, and its creation timestamp; `google_subject` ceases
+to exist. `EnsureUserHandler` resolves a principal by `(provider, subject)` and adopts a race
+winner's *user* rather than its row. An account may hold more than one credential — nothing today
+registers a second, but the schema no longer refuses one.
+
+Three choices inside that, each the reason a later reader might otherwise "simplify" it back:
+
+- **One table with CHECK-enforced shape**, not table-per-type and not a discriminated hierarchy.
+  `CK_credentials_type` bounds the vocabulary; `CK_credentials_type_shape` says federated rows carry
+  provider and subject while passkey rows carry neither, which is what makes "exactly one type" a
+  database rule instead of a convention. Passkey columns arrive later as nullable additions and one
+  widened arm.
+- **The unique index over `(provider, subject)` is partial**, filtered to federated rows. A plain
+  unique index would also work — `NULL`s are distinct — but by accident rather than by statement.
+- **The user row and its first credential are written in one save.** A refused insert must leave
+  neither behind: an orphaned user row would hold its unique email while no credential resolved to
+  it, and every later sign-in with that address would 409 with no path back. Unlike a missing default
+  budget, nothing heals it on the next request.
+
+**Alternatives considered:** *Keep `google_subject` and add a second nullable column per future
+method* — rejected: it re-decides the same thing at every new method and cannot express "more than
+one of the same kind". *Give credentials their own repository now* — rejected as premature: the only
+consumer is provisioning, and the atomic two-row insert wants one `DbContext` and one save; the
+question reopens when listing and revoking arrive. *Deciding the insert outcome from the reported
+constraint name* — still rejected, for the reason the 2026-07-28 entry gives, and now with an extra
+edge: the user row is written before its credential, so a self-race reports the email index.
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md),
+[ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md) (the grant matrix gains a table
+with no `UPDATE` and no `DELETE` grant of any shape).
+
+---
+
 ## 2026-07-29 — A payee's name is correctable, and the payee list gains no other write
 
 **Context:** "Payees are free-text find-or-create, not a managed list" (2026-07-13) below chose the

@@ -4,9 +4,6 @@ namespace Domain.Users;
 
 public sealed class User
 {
-    /// <summary>Google's documented maximum length for the <c>sub</c> claim.</summary>
-    public const int MaxGoogleSubjectLength = 255;
-
     public const int MaxDisplayNameLength = 200;
 
     private User()
@@ -14,26 +11,14 @@ public sealed class User
     }
 
     public Guid Id { get; private set; }
-    public string GoogleSubject { get; private set; } = string.Empty;
     public Email Email { get; private set; } = null!;
     public string? DisplayName { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
 
-    public static User Create(string googleSubject, string email, string? displayName, DateTime createdAtUtc)
+    public static User Create(string email, string? displayName, DateTime createdAtUtc)
     {
         Dictionary<string, string[]> errors = new();
-        string trimmedGoogleSubject = googleSubject.Trim();
         string? trimmedDisplayName = NormalizeDisplayName(displayName);
-
-        if (string.IsNullOrWhiteSpace(trimmedGoogleSubject))
-        {
-            errors[nameof(GoogleSubject)] = ["Google subject is required."];
-        }
-        else if (trimmedGoogleSubject.Length > MaxGoogleSubjectLength)
-        {
-            errors[nameof(GoogleSubject)] = [$"Google subject must be {MaxGoogleSubjectLength} characters or fewer."];
-        }
-
         Email? emailValue = ValidateProfile(email, trimmedDisplayName, errors);
 
         if (errors.Count > 0)
@@ -44,7 +29,6 @@ public sealed class User
         return new User
         {
             Id = Guid.CreateVersion7(),
-            GoogleSubject = trimmedGoogleSubject,
             Email = emailValue!,
             DisplayName = trimmedDisplayName,
             CreatedAtUtc = createdAtUtc

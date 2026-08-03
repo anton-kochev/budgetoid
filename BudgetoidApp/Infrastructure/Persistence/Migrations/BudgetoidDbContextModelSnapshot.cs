@@ -66,7 +66,8 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasIndex("CurrencyCode");
 
                     b.HasIndex("BudgetId", "Name")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasDatabaseName("IX_accounts_budget_id_name");
 
                     b.ToTable("accounts", null, t =>
                         {
@@ -107,7 +108,8 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasIndex("BaseCurrencyCode");
 
                     b.HasIndex("UserId", "Name")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasDatabaseName("IX_budgets_user_id_name");
 
                     NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("UserId", "Name"), false);
 
@@ -152,7 +154,8 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BudgetId", "Name")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasDatabaseName("IX_categories_budget_id_name");
 
                     b.HasIndex("CategoryGroupId", "BudgetId");
 
@@ -198,7 +201,8 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BudgetId", "Name")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasDatabaseName("IX_category_groups_budget_id_name");
 
                     b.HasIndex("BudgetId", "Position");
 
@@ -359,7 +363,8 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BudgetId", "Name")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasDatabaseName("IX_payees_budget_id_name");
 
                     b.ToTable("payees", (string)null);
                 });
@@ -421,6 +426,54 @@ namespace Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Domain.Users.Credential", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Provider")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("Subject")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("subject");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("type");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("Provider", "Subject")
+                        .IsUnique()
+                        .HasDatabaseName("IX_credentials_provider_subject")
+                        .HasFilter("type = 'federated'");
+
+                    b.ToTable("credentials", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_credentials_type", "type in ('passkey', 'federated')");
+
+                            t.HasCheckConstraint("CK_credentials_type_shape", "(type = 'federated' and provider is not null and subject is not null) or (type = 'passkey' and provider is null and subject is null)");
+                        });
+                });
+
             modelBuilder.Entity("Domain.Users.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -444,21 +497,11 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnName("email")
                         .UseCollation("case_insensitive");
 
-                    b.Property<string>("GoogleSubject")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)")
-                        .HasColumnName("google_subject");
-
                     b.HasKey("Id");
 
                     b.HasIndex("Email")
                         .IsUnique()
                         .HasDatabaseName("IX_users_email");
-
-                    b.HasIndex("GoogleSubject")
-                        .IsUnique()
-                        .HasDatabaseName("IX_users_google_subject");
 
                     b.ToTable("users", (string)null);
                 });
@@ -505,7 +548,8 @@ namespace Infrastructure.Persistence.Migrations
                         .HasForeignKey("CategoryGroupId", "BudgetId")
                         .HasPrincipalKey("Id", "BudgetId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .IsRequired()
+                        .HasConstraintName("FK_categories_category_groups_category_group_id_budget_id");
                 });
 
             modelBuilder.Entity("Domain.CategoryGroups.CategoryGroup", b =>
@@ -539,19 +583,30 @@ namespace Infrastructure.Persistence.Migrations
                         .HasForeignKey("AccountId", "BudgetId")
                         .HasPrincipalKey("Id", "BudgetId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .IsRequired()
+                        .HasConstraintName("FK_transactions_accounts_account_id_budget_id");
 
                     b.HasOne("Domain.Categories.Category", null)
                         .WithMany()
                         .HasForeignKey("CategoryId", "BudgetId")
                         .HasPrincipalKey("Id", "BudgetId")
-                        .OnDelete(DeleteBehavior.Restrict);
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("FK_transactions_categories_category_id_budget_id");
 
                     b.HasOne("Domain.Payees.Payee", null)
                         .WithMany()
                         .HasForeignKey("PayeeId", "BudgetId")
                         .HasPrincipalKey("Id", "BudgetId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Domain.Users.Credential", b =>
+                {
+                    b.HasOne("Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }

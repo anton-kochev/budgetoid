@@ -10,11 +10,11 @@ namespace UnitTests;
 public sealed class EnsureUserHandlerTests
 {
     [Test]
-    public async Task ExistingSubject_WithUnchangedProfile_DoesNotSaveChanges()
+    public async Task ExistingCredential_WithUnchangedProfile_DoesNotSaveChanges()
     {
         // Arrange
-        User user = User.Create("google-1", "person@example.com", "Person", UtcNow());
-        var users = new InMemoryUserRepository(user);
+        User user = User.Create("person@example.com", "Person", UtcNow());
+        var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
@@ -28,11 +28,11 @@ public sealed class EnsureUserHandlerTests
     }
 
     [Test]
-    public async Task ExistingSubject_WithChangedProfile_SavesOnceAndRefreshesProfile()
+    public async Task ExistingCredential_WithChangedProfile_SavesOnceAndRefreshesProfile()
     {
         // Arrange
-        User user = User.Create("google-1", "old@example.com", "Old", UtcNow());
-        var users = new InMemoryUserRepository(user);
+        User user = User.Create("old@example.com", "Old", UtcNow());
+        var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
@@ -70,11 +70,33 @@ public sealed class EnsureUserHandlerTests
     }
 
     [Test]
-    public async Task EnsureUser_ExistingSubjectWithABudget_DoesNotCreateAnother()
+    public async Task EnsureUser_NewSubject_StoresExactlyOneFederatedGoogleCredential()
     {
         // Arrange
-        User user = User.Create("google-1", "person@example.com", "Person", UtcNow());
-        var users = new InMemoryUserRepository(user);
+        var users = new InMemoryUserRepository();
+        var budgets = new InMemoryBudgetRepository();
+        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+
+        // Act
+        ProvisionedUser provisioned = await handler.HandleAsync(
+            new EnsureUserCommand("google-new", "new@example.com", "New Person"));
+
+        // Assert — the subject reaches the credential row and nothing else, which is what keeps a
+        // second sign-in method addable later without touching the user row.
+        await Assert.That(users.AddedCredentials.Count).IsEqualTo(1);
+        Credential credential = users.AddedCredentials[0];
+        await Assert.That(credential.UserId).IsEqualTo(provisioned.UserId);
+        await Assert.That(credential.Type).IsEqualTo(CredentialType.Federated);
+        await Assert.That(credential.Provider).IsEqualTo(Credential.GoogleProvider);
+        await Assert.That(credential.Subject).IsEqualTo("google-new");
+    }
+
+    [Test]
+    public async Task EnsureUser_ExistingCredentialWithABudget_DoesNotCreateAnother()
+    {
+        // Arrange
+        User user = User.Create("person@example.com", "Person", UtcNow());
+        var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         Budget existingBudget = Budget.CreateDefault(user.Id, UtcNow());
         budgets.Seed(existingBudget);
@@ -94,11 +116,11 @@ public sealed class EnsureUserHandlerTests
     }
 
     [Test]
-    public async Task EnsureUser_ExistingSubjectWithoutABudget_CreatesTheMissingBudget()
+    public async Task EnsureUser_ExistingCredentialWithoutABudget_CreatesTheMissingBudget()
     {
         // Arrange — a user row from a partially completed provisioning, with no budget yet.
-        User user = User.Create("google-1", "person@example.com", "Person", UtcNow());
-        var users = new InMemoryUserRepository(user);
+        User user = User.Create("person@example.com", "Person", UtcNow());
+        var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
@@ -119,8 +141,8 @@ public sealed class EnsureUserHandlerTests
     public async Task EnsureUser_WhenBudgetInsertLosesTheRace_ReturnsTheConcurrentlyCreatedBudget()
     {
         // Arrange — a concurrent request inserts the default budget between our read and our write.
-        User user = User.Create("google-1", "person@example.com", "Person", UtcNow());
-        var users = new InMemoryUserRepository(user);
+        User user = User.Create("person@example.com", "Person", UtcNow());
+        var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         Budget concurrentBudget = Budget.CreateDefault(user.Id, UtcNow());
         budgets.FailNextAdd(concurrentBudget);
@@ -138,13 +160,14 @@ public sealed class EnsureUserHandlerTests
     }
 
     [Test]
-    public async Task EnsureUser_WhenUserInsertLosesTheSubjectRace_ReturnsTheConcurrentlyCreatedUser()
+    public async Task EnsureUser_WhenUserInsertLosesTheCredentialRace_ReturnsTheConcurrentlyCreatedUser()
     {
-        // Arrange — a concurrent request inserts the same google_subject between our read and our
-        // write, which the repository reports as false rather than as a throw.
+        // Arrange — a concurrent request inserts a credential on the same provider and subject
+        // between our read and our write, which the repository reports as false rather than as a
+        // throw.
         var users = new InMemoryUserRepository();
-        User concurrentUser = User.Create("google-1", "person@example.com", "Person", UtcNow());
-        users.FailNextAddWithSubjectRace(concurrentUser);
+        User concurrentUser = User.Create("person@example.com", "Person", UtcNow());
+        users.FailNextAddWithCredentialRace(concurrentUser, GoogleCredentialFor(concurrentUser, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
@@ -160,14 +183,14 @@ public sealed class EnsureUserHandlerTests
     [Test]
     public async Task EnsureUser_NewSubjectWithAnEmailAnotherAccountHolds_ThrowsConflictException()
     {
-        // Arrange — a brand-new google_subject whose email is already linked to a different account.
+        // Arrange — a brand-new subject whose email is already linked to a different account.
         var users = new InMemoryUserRepository();
         users.FailNextAddWithEmailConflict();
         var budgets = new InMemoryBudgetRepository();
         var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act — anything other than ConflictException escapes this helper and fails the test. The
-        // insert is refused and the re-read by subject finds nothing, so this is not a race that
+        // insert is refused and the re-read by credential finds nothing, so this is not a race that
         // path can resolve — and that empty re-read is precisely where the exception now comes from,
         // in place of the InvalidOperationException the branch used to raise.
         ConflictException exception = await ThrowsConflictExceptionAsync(() =>
@@ -180,12 +203,12 @@ public sealed class EnsureUserHandlerTests
     }
 
     [Test]
-    public async Task EnsureUser_ExistingSubjectWhoseRefreshedEmailCollides_SignsInOnTheStoredEmail()
+    public async Task EnsureUser_ExistingCredentialWhoseRefreshedEmailCollides_SignsInOnTheStoredEmail()
     {
         // Arrange — the IdP now reports an email another user already holds. Identity is the
-        // google_subject, so this must not fail the sign-in.
-        User user = User.Create("google-1", "stored@example.com", "Stored", UtcNow());
-        var users = new InMemoryUserRepository(user);
+        // credential, not the email, so this must not fail the sign-in.
+        User user = User.Create("stored@example.com", "Stored", UtcNow());
+        var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         users.RejectNextProfileUpdate();
         var budgets = new InMemoryBudgetRepository();
         var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
@@ -204,6 +227,9 @@ public sealed class EnsureUserHandlerTests
 
     private static DateTime UtcNow() => new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
+    private static Credential GoogleCredentialFor(User user, string subject) =>
+        Credential.CreateFederated(user.Id, Credential.GoogleProvider, subject, UtcNow());
+
     private static async Task<ConflictException> ThrowsConflictExceptionAsync(Func<Task> action)
     {
         try
@@ -219,42 +245,50 @@ public sealed class EnsureUserHandlerTests
     }
 
     /// <summary>
-    /// In-memory <see cref="IUserRepository"/> that reproduces the three ways the users table can
-    /// refuse a write, all of them reported as <see langword="false"/>: a lost race on the unique
-    /// <c>google_subject</c>, an email already linked to another account on insert, and the same
-    /// email collision on a profile refresh. The two insert refusals are deliberately
-    /// indistinguishable from the outside — what separates them is whether a row is then there to be
-    /// re-read, which is the caller's question to ask. The rejected refresh additionally discards
-    /// the change from the caller's own instance, the way <c>ReloadAsync</c> does.
+    /// In-memory <see cref="IUserRepository"/> that reproduces the three ways the write can be
+    /// refused, all of them reported as <see langword="false"/>: a lost race on the unique
+    /// <c>(provider, subject)</c> credential rule, an email already linked to another account on
+    /// insert, and the same email collision on a profile refresh. The two insert refusals are
+    /// deliberately indistinguishable from the outside — what separates them is whether a row is then
+    /// there to be re-read, which is the caller's question to ask. The rejected refresh additionally
+    /// discards the change from the caller's own instance, the way <c>ReloadAsync</c> does.
     /// </summary>
     private sealed class InMemoryUserRepository : IUserRepository
     {
+        private readonly List<Credential> _addedCredentials = [];
         private User? _existingUser;
+        private Credential? _existingCredential;
         private string _persistedEmail = string.Empty;
         private string? _persistedDisplayName;
-        private bool _failNextAddWithSubjectRace;
+        private bool _failNextAddWithCredentialRace;
         private User? _raceWinner;
+        private Credential? _raceWinnerCredential;
         private bool _failNextAddWithEmailConflict;
         private bool _rejectNextProfileUpdate;
 
-        public InMemoryUserRepository(User? existingUser = null)
+        public InMemoryUserRepository(User? existingUser = null, Credential? existingCredential = null)
         {
             _existingUser = existingUser;
+            _existingCredential = existingCredential;
             CapturePersistedProfile();
         }
 
         public int UpdateProfileCalls { get; private set; }
         public int AddCallCount { get; private set; }
 
+        /// <summary>Every credential handed to <see cref="TryAddAsync"/>, refused calls included.</summary>
+        public IReadOnlyList<Credential> AddedCredentials => _addedCredentials;
+
         /// <summary>
-        /// Makes the next <see cref="TryAddAsync"/> call report a lost <c>google_subject</c> race.
-        /// The winning row is stored instead, which is what makes the caller's re-read path
-        /// observable.
+        /// Makes the next <see cref="TryAddAsync"/> call report a lost race on the unique
+        /// <c>(provider, subject)</c> rule. The winning pair is stored instead, which is what makes
+        /// the caller's re-read path observable.
         /// </summary>
-        public void FailNextAddWithSubjectRace(User insertedByConcurrentRequest)
+        public void FailNextAddWithCredentialRace(User winner, Credential winnerCredential)
         {
-            _failNextAddWithSubjectRace = true;
-            _raceWinner = insertedByConcurrentRequest;
+            _failNextAddWithCredentialRace = true;
+            _raceWinner = winner;
+            _raceWinnerCredential = winnerCredential;
         }
 
         /// <summary>
@@ -271,34 +305,46 @@ public sealed class EnsureUserHandlerTests
         /// </summary>
         public void RejectNextProfileUpdate() => _rejectNextProfileUpdate = true;
 
-        public Task<User?> FindByGoogleSubjectAsync(string googleSubject, CancellationToken cancellationToken = default)
+        public Task<User?> FindByFederatedCredentialAsync(
+            string provider,
+            string subject,
+            CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(_existingUser?.GoogleSubject == googleSubject.Trim() ? _existingUser : null);
+            bool matches = _existingCredential is not null
+                           && _existingCredential.Provider == provider.Trim()
+                           && _existingCredential.Subject == subject.Trim();
+
+            return Task.FromResult(matches ? _existingUser : null);
         }
 
-        public Task<bool> TryAddAsync(User user, CancellationToken cancellationToken = default)
+        public Task<bool> TryAddAsync(User user, Credential credential, CancellationToken cancellationToken = default)
         {
             AddCallCount++;
+            _addedCredentials.Add(credential);
 
             if (_failNextAddWithEmailConflict)
             {
                 _failNextAddWithEmailConflict = false;
 
-                // Nothing is stored, on purpose: the handler's follow-up FindByGoogleSubjectAsync
-                // has to come back empty, because that empty re-read is the signal it keys on.
+                // Nothing is stored, on purpose: the handler's follow-up
+                // FindByFederatedCredentialAsync has to come back empty, because that empty re-read
+                // is the signal it keys on.
                 return Task.FromResult(false);
             }
 
-            if (_failNextAddWithSubjectRace)
+            if (_failNextAddWithCredentialRace)
             {
-                _failNextAddWithSubjectRace = false;
+                _failNextAddWithCredentialRace = false;
                 _existingUser = _raceWinner;
+                _existingCredential = _raceWinnerCredential;
                 _raceWinner = null;
+                _raceWinnerCredential = null;
                 CapturePersistedProfile();
                 return Task.FromResult(false);
             }
 
             _existingUser = user;
+            _existingCredential = credential;
             CapturePersistedProfile();
             return Task.FromResult(true);
         }

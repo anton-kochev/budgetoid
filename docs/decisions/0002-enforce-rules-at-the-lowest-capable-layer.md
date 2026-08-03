@@ -53,9 +53,9 @@ constraints at once, and PostgreSQL returns one constraint name, chosen by index
 rather than by anything the caller did. Filtering a catch by constraint name therefore answers
 *whether this code models the failure*, not *what went wrong*; where two rules can fire together,
 the discrimination has to come from a second question the application asks after the rejection.
-`EnsureUserHandler` asks it by re-reading the `google_subject`
-(`BudgetoidApp/Application/Users/EnsureUser/EnsureUserHandler.cs:61`), because a losing concurrent
-sign-in duplicates a subject and its email in the same row.
+`EnsureUserHandler` asks it by re-reading the credential's provider and subject
+(`BudgetoidApp/Application/Users/EnsureUser/EnsureUserHandler.cs`), because a losing concurrent
+sign-in duplicates a subject and its email in the same write.
 
 **A precheck is racy by design.** `IBudgetRepository.HasTransactionsAsync`
 (`BudgetoidApp/Domain/Budgets/IBudgetRepository.cs:44`, implemented at

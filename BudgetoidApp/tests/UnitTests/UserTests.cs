@@ -10,69 +10,20 @@ public sealed class UserTests
     {
         DateTime createdAtUtc = UtcNow();
 
-        User user = User.Create(" google-subject ", " person@example.com ", " Person ", createdAtUtc);
+        User user = User.Create(" person@example.com ", " Person ", createdAtUtc);
 
         await Assert.That(user.Id).IsNotEqualTo(Guid.Empty);
-        await Assert.That(user.GoogleSubject).IsEqualTo("google-subject");
         await Assert.That(user.Email.Value).IsEqualTo("person@example.com");
         await Assert.That(user.DisplayName).IsEqualTo("Person");
         await Assert.That(user.CreatedAtUtc).IsEqualTo(createdAtUtc);
     }
 
     [Test]
-    public async Task Create_WithBlankGoogleSubject_ThrowsValidationException()
-    {
-        ValidationException exception = ThrowsValidationException(() => User.Create("   ", "person@example.com", null, UtcNow()));
-
-        await Assert.That(exception.Errors.ContainsKey("GoogleSubject")).IsTrue();
-    }
-
-    [Test]
     public async Task Create_WithBlankEmail_ThrowsValidationException()
     {
-        ValidationException exception = ThrowsValidationException(() => User.Create("google-subject", "   ", null, UtcNow()));
+        ValidationException exception = ThrowsValidationException(() => User.Create("   ", null, UtcNow()));
 
         await Assert.That(exception.Errors.ContainsKey("Email")).IsTrue();
-    }
-
-    [Test]
-    public async Task Create_WithTheMaximumLengthGoogleSubject_IsAccepted()
-    {
-        // Arrange — Google's documented maximum for the sub claim, which the column is sized to.
-        string googleSubject = new('s', User.MaxGoogleSubjectLength);
-
-        // Act
-        User user = User.Create(googleSubject, "person@example.com", null, UtcNow());
-
-        // Assert
-        await Assert.That(user.GoogleSubject.Length).IsEqualTo(User.MaxGoogleSubjectLength);
-    }
-
-    [Test]
-    public async Task Create_WithAnOverLongGoogleSubject_ThrowsValidationException()
-    {
-        // Arrange
-        string googleSubject = new('s', User.MaxGoogleSubjectLength + 1);
-
-        // Act
-        ValidationException exception = ThrowsValidationException(() =>
-            User.Create(googleSubject, "person@example.com", null, UtcNow()));
-
-        // Assert
-        await Assert.That(exception.Errors.ContainsKey("GoogleSubject")).IsTrue();
-    }
-
-    [Test]
-    public async Task Create_MeasuresGoogleSubjectLengthAfterTrimming()
-    {
-        // Arrange — the trimmed value is what reaches the column, so it is what the bound applies to.
-        string googleSubject = $"   {new string('s', User.MaxGoogleSubjectLength)}   ";
-
-        // Act
-        User user = User.Create(googleSubject, "person@example.com", null, UtcNow());
-
-        // Assert
-        await Assert.That(user.GoogleSubject.Length).IsEqualTo(User.MaxGoogleSubjectLength);
     }
 
     [Test]
@@ -82,7 +33,7 @@ public sealed class UserTests
         string displayName = new('d', User.MaxDisplayNameLength);
 
         // Act
-        User user = User.Create("google-subject", "person@example.com", displayName, UtcNow());
+        User user = User.Create("person@example.com", displayName, UtcNow());
 
         // Assert
         await Assert.That(user.DisplayName?.Length).IsEqualTo(User.MaxDisplayNameLength);
@@ -96,7 +47,7 @@ public sealed class UserTests
 
         // Act
         ValidationException exception = ThrowsValidationException(() =>
-            User.Create("google-subject", "person@example.com", displayName, UtcNow()));
+            User.Create("person@example.com", displayName, UtcNow()));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("DisplayName")).IsTrue();
@@ -109,7 +60,7 @@ public sealed class UserTests
         string displayName = $"   {new string('d', User.MaxDisplayNameLength)}   ";
 
         // Act
-        User user = User.Create("google-subject", "person@example.com", displayName, UtcNow());
+        User user = User.Create("person@example.com", displayName, UtcNow());
 
         // Assert
         await Assert.That(user.DisplayName?.Length).IsEqualTo(User.MaxDisplayNameLength);
@@ -120,7 +71,7 @@ public sealed class UserTests
     {
         // Arrange, Act — a missing display name is normal (Google need not supply one) and is not an
         // error; only an over-long one is.
-        User user = User.Create("google-subject", "person@example.com", "   ", UtcNow());
+        User user = User.Create("person@example.com", "   ", UtcNow());
 
         // Assert
         await Assert.That(user.DisplayName).IsNull();
@@ -131,23 +82,22 @@ public sealed class UserTests
     {
         // Arrange — Create was restructured to share its profile validation with UpdateProfile; this
         // is the guard that the restructuring did not turn aggregation into fail-fast.
-        string googleSubject = new('s', User.MaxGoogleSubjectLength + 1);
         string email = new string('a', Email.MaxLength + 1 - "@example.com".Length) + "@example.com";
         string displayName = new('d', User.MaxDisplayNameLength + 1);
 
         // Act
         ValidationException exception = ThrowsValidationException(() =>
-            User.Create(googleSubject, email, displayName, UtcNow()));
+            User.Create(email, displayName, UtcNow()));
 
         // Assert
         await Assert.That(exception.Errors.Keys.ToArray())
-            .IsEquivalentTo(new[] { "GoogleSubject", "Email", "DisplayName" });
+            .IsEquivalentTo(new[] { "Email", "DisplayName" });
     }
 
     [Test]
     public async Task UpdateProfile_RefreshesEmailAndDisplayName()
     {
-        User user = User.Create("google-subject", "old@example.com", "Old", UtcNow());
+        User user = User.Create("old@example.com", "Old", UtcNow());
 
         user.UpdateProfile(" new@example.com ", " New ");
 
@@ -159,7 +109,7 @@ public sealed class UserTests
     public async Task UpdateProfile_WithAWhitespaceOnlyDisplayName_ClearsIt()
     {
         // Arrange
-        User user = User.Create("google-subject", "old@example.com", "Old", UtcNow());
+        User user = User.Create("old@example.com", "Old", UtcNow());
 
         // Act
         user.UpdateProfile("new@example.com", "   ");
@@ -174,7 +124,7 @@ public sealed class UserTests
         // Arrange — a returning user cannot bypass a bound a new user is held to, and the rejection
         // must not half-apply: the email here is valid and new, so an assign-then-validate order
         // would leave the entity holding it.
-        User user = User.Create("google-subject", "old@example.com", "Old", UtcNow());
+        User user = User.Create("old@example.com", "Old", UtcNow());
         string displayName = new('d', User.MaxDisplayNameLength + 1);
 
         // Act
@@ -192,7 +142,7 @@ public sealed class UserTests
     public async Task UpdateProfile_WithAnOverLongEmail_ThrowsAndLeavesTheEntityUntouched()
     {
         // Arrange
-        User user = User.Create("google-subject", "old@example.com", "Old", UtcNow());
+        User user = User.Create("old@example.com", "Old", UtcNow());
         string email = new string('a', Email.MaxLength + 1 - "@example.com".Length) + "@example.com";
 
         // Act

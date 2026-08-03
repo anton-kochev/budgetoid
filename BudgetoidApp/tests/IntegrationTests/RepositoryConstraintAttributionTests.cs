@@ -133,7 +133,9 @@ public sealed class RepositoryConstraintAttributionTests
         // No IBudgetContext: neither Budget nor User carries a BudgetIsolation query filter, so this
         // context never needs an ambient budget.
         await using BudgetoidDbContext db = new(CreateOptions(host));
-        db.Users.Add(User.Create("google-2", "person@example.com", displayName: null, UtcNow()));
+        // No credential for this one: a user row without one is legal at the schema level, and the
+        // subject here is the email index, not identity resolution.
+        db.Users.Add(User.Create("person@example.com", displayName: null, UtcNow()));
         var repository = new BudgetRepository(db);
 
         // Act

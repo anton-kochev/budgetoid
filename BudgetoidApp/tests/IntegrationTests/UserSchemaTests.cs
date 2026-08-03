@@ -59,6 +59,12 @@ public sealed class UserSchemaTests
         await connection.OpenAsync();
         await Assert.That(await CountRowsAsync(connection, "users", "id", userId)).IsEqualTo(1L);
         await Assert.That(await CountRowsAsync(connection, "budgets", "user_id", userId)).IsEqualTo(1L);
+
+        // The credential is on the same rolled-back statement, and it is the row whose survival
+        // matters most: it is the only thing that resolves a sign-in to this account, so a refusal
+        // that had taken it out would leave the user permanently unreachable while still holding
+        // their email and their transactions.
+        await Assert.That(await CountRowsAsync(connection, "credentials", "user_id", userId)).IsEqualTo(1L);
         await Assert.That(await CountRowsAsync(connection, "accounts", "budget_id", budgetId)).IsEqualTo(1L);
         await Assert.That(await CountRowsAsync(connection, "transactions", "budget_id", budgetId)).IsEqualTo(1L);
     }
@@ -99,6 +105,11 @@ public sealed class UserSchemaTests
         // budget-level equivalent and worth re-proving there.
         await Assert.That(await CountRowsAsync(connection, "users", "id", userId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "budgets", "user_id", userId)).IsEqualTo(0L);
+
+        // Credentials cascade rather than restrict: they are how the account is reached, not
+        // something it owes anyone, so nothing about them should be able to hold an erasure up.
+        // Left behind, they would also be a stranded record of which Google account this was.
+        await Assert.That(await CountRowsAsync(connection, "credentials", "user_id", userId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "accounts", "budget_id", budgetId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "category_groups", "budget_id", budgetId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "categories", "budget_id", budgetId)).IsEqualTo(0L);

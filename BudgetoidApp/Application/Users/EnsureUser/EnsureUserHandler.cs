@@ -25,7 +25,10 @@ public sealed class EnsureUserHandler(
 
     private async Task<Guid> EnsureUserIdAsync(EnsureUserCommand command, CancellationToken cancellationToken)
     {
-        User? existing = await repository.FindByGoogleSubjectAsync(command.GoogleSubject, cancellationToken);
+        User? existing = await repository.FindByFederatedCredentialAsync(
+            Credential.GoogleProvider,
+            command.GoogleSubject,
+            cancellationToken);
         if (existing is not null)
         {
             Email previousEmail = existing.Email;
@@ -35,30 +38,39 @@ public sealed class EnsureUserHandler(
             if (existing.Email != previousEmail || existing.DisplayName != previousDisplayName)
             {
                 // The result is ignored deliberately. A false means another user holds that email, so
-                // the refresh was rolled back and this user keeps its stored one — identity comes from
-                // the google_subject, and a stale cached attribute must not lock anyone out.
+                // the refresh was rolled back and this user keeps its stored one — identity is the
+                // credential row that got us here, and a stale cached attribute must not lock anyone
+                // out.
                 _ = await repository.UpdateProfileAsync(existing, cancellationToken);
             }
 
             return existing.Id;
         }
 
-        User user = User.Create(
+        // One `now` for both rows: the user and the credential that resolves to it come into
+        // existence in the same save, so they carry the same creation instant.
+        DateTime now = timeProvider.GetUtcNow().UtcDateTime;
+        User user = User.Create(command.Email, command.DisplayName, now);
+        Credential credential = Credential.CreateFederated(
+            user.Id,
+            Credential.GoogleProvider,
             command.GoogleSubject,
-            command.Email,
-            command.DisplayName,
-            timeProvider.GetUtcNow().UtcDateTime);
-        if (await repository.TryAddAsync(user, cancellationToken))
+            now);
+        if (await repository.TryAddAsync(user, credential, cancellationToken))
         {
             return user.Id;
         }
 
-        // The insert lost to an existing row on the subject or on the email, and only this re-read
-        // separates the two. A reported unique violation means the conflicting transaction committed
-        // — under read committed the insert waits for it, and would have succeeded had it aborted —
-        // so a winner on this subject is visible here. Finding none therefore proves the subject was
-        // never duplicated and the email alone collided, with a different Google account holding it.
-        User? concurrentExisting = await repository.FindByGoogleSubjectAsync(command.GoogleSubject, cancellationToken);
+        // The insert lost to an existing row on the credential's (provider, subject) or on the email,
+        // and only this re-read separates the two. A reported unique violation means the conflicting
+        // transaction committed — under read committed the insert waits for it, and would have
+        // succeeded had it aborted — so a winning credential on this subject is visible here. Finding
+        // none therefore proves the subject was never duplicated and the email alone collided, with a
+        // different account holding it.
+        User? concurrentExisting = await repository.FindByFederatedCredentialAsync(
+            Credential.GoogleProvider,
+            command.GoogleSubject,
+            cancellationToken);
 
         return concurrentExisting?.Id
                ?? throw new ConflictException("This email address is already linked to a different Google account.");

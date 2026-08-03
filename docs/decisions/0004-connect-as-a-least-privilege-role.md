@@ -72,9 +72,10 @@ privileges are additive.** This is the single most important thing about the fil
 `REVOKE UPDATE (col) ON t` cannot subtract a column from a table-wide `GRANT UPDATE ON t` — it only
 removes a column-level privilege that was granted column-level. So every `UPDATE` grant names its
 columns, and an immutable column is one that is simply not on the list: `budget_id` appears on none
-of the five owned tables, `currency_code` is absent from `accounts`, `google_subject` is absent from
-`users`, `created_at_utc` is absent everywhere, and `budgets` has no `UPDATE` grant of any shape,
-which is the whole content of B2. **"Simplifying" any column-list grant into a table-wide one
+of the five owned tables, `currency_code` is absent from `accounts`, `created_at_utc` is absent
+everywhere, and `budgets` and `credentials` have no `UPDATE` grant of any shape — the whole content
+of B2, and of the rule that a credential is written once and never edited.
+**"Simplifying" any column-list grant into a table-wide one
 silently re-opens every hole the list exists to close**, and nothing fails at the time it is done.
 
 **The script is idempotent and convergent, and is deliberately not an EF migration.** Each table's

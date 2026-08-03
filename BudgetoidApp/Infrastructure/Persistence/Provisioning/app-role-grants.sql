@@ -44,11 +44,20 @@ GRANT USAGE ON SCHEMA public TO budgetoid_app;
 REVOKE ALL ON currencies FROM budgetoid_app;
 GRANT SELECT ON currencies TO budgetoid_app;
 
--- users: google_subject is the key the whole sign-in resolves through, and created_at_utc is
--- an audit fact — both immutable by omission from the UPDATE list.
+-- users: a user row carries no identity key of its own — sign-in resolves through credentials
+-- below — so email and display_name, both cached copies of a provider attribute, are the only
+-- updatable columns. created_at_utc is an audit fact, immutable by omission from the list.
 REVOKE ALL ON users FROM budgetoid_app;
 GRANT SELECT, INSERT ON users TO budgetoid_app;
 GRANT UPDATE (email, display_name) ON users TO budgetoid_app;
+
+-- credentials: every column is immutable, so there is no UPDATE grant of any shape rather than
+-- a column list with nothing on it. A credential is written whole at registration and never
+-- edited: changing its subject would silently repoint an account at a different principal.
+-- No DELETE either — no revocation path exists yet, and until one does the absent grant is what
+-- stops a bug removing someone's only way in.
+REVOKE ALL ON credentials FROM budgetoid_app;
+GRANT SELECT, INSERT ON credentials TO budgetoid_app;
 
 -- budgets: a budgets row is never updated at all (rule B2), so there is no UPDATE grant of
 -- any shape. No delete path exists either.
@@ -113,9 +122,10 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 -- missing policy fails a test rather than shipping.
 --
 -- Exactly the five budget-owned tables are policed, mirroring the BudgetIsolation query filters.
--- budgets, users and currencies are out because a budget is the tenant rather than a tenant's row
--- and the other two belong to no tenant — and provisioning reads users and budgets before an
--- ambient budget exists, so a policy on either would break sign-in.
+-- budgets, users, credentials and currencies are out because a budget is the tenant rather than a
+-- tenant's row and the other three belong to no tenant — and provisioning reads credentials, users
+-- and budgets before an ambient budget exists, so a policy on any of them would break sign-in.
+-- None of the three carries a budget_id, which is also what keeps them out of the coverage check.
 --
 -- No table gets FORCE ROW LEVEL SECURITY, and that is a decision rather than an oversight. Owner
 -- and superuser bypass is load-bearing here: the schema is created and migrated on the admin

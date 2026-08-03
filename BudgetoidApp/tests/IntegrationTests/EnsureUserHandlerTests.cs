@@ -1,5 +1,6 @@
 using Application.Users.EnsureUser;
 using Domain.Common;
+using Domain.Users;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
@@ -20,6 +21,15 @@ public sealed class EnsureUserHandlerTests
 
         await Assert.That(provisioned.UserId).IsNotEqualTo(Guid.Empty);
         await Assert.That(await db.Users.CountAsync()).IsEqualTo(1);
+
+        // The credential is what the next sign-in resolves through, so "a user exists" is only half
+        // of what provisioning owes. Asserted field by field because a row of the right shape
+        // pointing at the wrong user, or carrying the wrong provider, would still count as one.
+        Credential credential = await db.Credentials.SingleAsync();
+        await Assert.That(credential.UserId).IsEqualTo(provisioned.UserId);
+        await Assert.That(credential.Type).IsEqualTo(CredentialType.Federated);
+        await Assert.That(credential.Provider).IsEqualTo(Credential.GoogleProvider);
+        await Assert.That(credential.Subject).IsEqualTo("google-1");
     }
 
     [Test]
@@ -38,6 +48,9 @@ public sealed class EnsureUserHandlerTests
         await Assert.That(second.BudgetId).IsEqualTo(original.BudgetId);
         await Assert.That(await db.Users.CountAsync()).IsEqualTo(1);
         await Assert.That((await db.Users.SingleAsync()).Email.Value).IsEqualTo("new@example.com");
+
+        // A profile refresh must not mint a second credential for an identity that already resolves.
+        await Assert.That(await db.Credentials.CountAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -59,6 +72,11 @@ public sealed class EnsureUserHandlerTests
         await Assert.That(provisioned.Select(result => result.BudgetId).Distinct().Count()).IsEqualTo(1);
         await Assert.That(await assertionDb.Users.CountAsync()).IsEqualTo(1);
         await Assert.That(await assertionDb.Budgets.CountAsync()).IsEqualTo(1);
+
+        // Seven of the eight racers lost their insert and adopted the winner's row. Each loser
+        // carried its own credential into that save, so a second row here would mean one of them
+        // half-landed.
+        await Assert.That(await assertionDb.Credentials.CountAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -82,6 +100,12 @@ public sealed class EnsureUserHandlerTests
         await using BudgetoidDbContext verify = CreateDb(host.ConnectionString);
         await Assert.That(await verify.Users.CountAsync()).IsEqualTo(1);
         await Assert.That(await verify.Budgets.CountAsync()).IsEqualTo(1);
+
+        // And no credential either. "google-2" landing on its own would make the next attempt from
+        // that account resolve to the first user's row — the email conflict would silently become an
+        // account takeover.
+        await Assert.That(await verify.Credentials.CountAsync()).IsEqualTo(1);
+        await Assert.That((await verify.Credentials.SingleAsync()).Subject).IsEqualTo("google-1");
     }
 
     /// <summary>

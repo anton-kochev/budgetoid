@@ -24,8 +24,8 @@ bound account type and money magnitude, composite foreign keys refuse a cross-bu
 whatever code path wrote it, and unique indexes are what make name uniqueness and provisioning
 race-safe. Immutability is owned down there too: the application connects as a least-privilege role
 whose `UPDATE` privileges are granted per column, so a column left off the list — `budget_id` on
-every owned table, `accounts.currency_code`, `users.google_subject`, every column of `budgets` — is
-one PostgreSQL refuses to write at all (see
+every owned table, `accounts.currency_code`, `users.created_at_utc`, every column of `budgets` and
+every column of `credentials` — is one PostgreSQL refuses to write at all (see
 [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). Tenancy is owned down there as
 well: row-level security policies on the five budget-owned tables mean that role reaches no other
 budget's rows on any statement at all and can insert into no budget but the ambient one, so the query

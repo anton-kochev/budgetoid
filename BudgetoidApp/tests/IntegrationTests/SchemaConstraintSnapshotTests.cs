@@ -64,6 +64,9 @@ public sealed class SchemaConstraintSnapshotTests
             "categories.FK_categories_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
             "categories.FK_categories_category_groups_category_group_id_budget_id: FOREIGN KEY (category_group_id, budget_id) REFERENCES category_groups(id, budget_id) ON DELETE RESTRICT",
             "category_groups.FK_category_groups_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
+            // Cascade, and deliberately not Restrict: a credential is how the account is reached,
+            // not something the account owes anyone, so it must never be able to hold an erasure up.
+            "credentials.FK_credentials_users_user_id: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
             "payees.FK_payees_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
             "transactions.FK_transactions_accounts_account_id_budget_id: FOREIGN KEY (account_id, budget_id) REFERENCES accounts(id, budget_id) ON DELETE RESTRICT",
             "transactions.FK_transactions_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE RESTRICT",
@@ -119,12 +122,18 @@ public sealed class SchemaConstraintSnapshotTests
             """CREATE UNIQUE INDEX "IX_budgets_user_id_name" ON public.budgets USING btree (user_id, name) NULLS NOT DISTINCT""",
             """CREATE UNIQUE INDEX "IX_categories_budget_id_name" ON public.categories USING btree (budget_id, name)""",
             """CREATE UNIQUE INDEX "IX_category_groups_budget_id_name" ON public.category_groups USING btree (budget_id, name)""",
+            // One account per provider identity. The WHERE is rendered here, so this line alone
+            // catches its removal — and removing it would make the index cover passkey rows too,
+            // where every row carries (NULL, NULL) and the second one would be refused. Only
+            // unique indexes are in scope for this query, so credentials' non-unique
+            // IX_credentials_user_id is deliberately absent rather than missing.
+            """CREATE UNIQUE INDEX "IX_credentials_provider_subject" ON public.credentials USING btree (provider, subject) WHERE ((type)::text = 'federated'::text)""",
             """CREATE UNIQUE INDEX "IX_payees_budget_id_name" ON public.payees USING btree (budget_id, name)""",
             // One email, one account. The index is only half the rule: users.email carries
             // case_insensitive, which the collation snapshot below pins, and pg_get_indexdef does
             // not render it here.
             """CREATE UNIQUE INDEX "IX_users_email" ON public.users USING btree (email)""",
-            """CREATE UNIQUE INDEX "IX_users_google_subject" ON public.users USING btree (google_subject)""",
+            """CREATE UNIQUE INDEX "PK_credentials" ON public.credentials USING btree (id)""",
             """CREATE UNIQUE INDEX "PK___EFMigrationsHistory" ON public."__EFMigrationsHistory" USING btree ("MigrationId")""",
             """CREATE UNIQUE INDEX "PK_accounts" ON public.accounts USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_budgets" ON public.budgets USING btree (id)""",
@@ -172,6 +181,11 @@ public sealed class SchemaConstraintSnapshotTests
             """CK_accounts_type: accounts CHECK (((type)::text = ANY ((ARRAY['Checking'::character varying, 'Savings'::character varying, 'Cash'::character varying, 'CreditCard'::character varying])::text[])))""",
             """CK_categories_position: categories CHECK (("position" >= 0))""",
             """CK_category_groups_position: category_groups CHECK (("position" >= 0))""",
+            """CK_credentials_type: credentials CHECK (((type)::text = ANY ((ARRAY['passkey'::character varying, 'federated'::character varying])::text[])))""",
+            // The shape check is the reason `type` can be a varchar with a CHECK instead of a native
+            // enum: it is what makes "a credential is exactly one type" a rule the database holds
+            // rather than a convention the application is trusted to keep.
+            """CK_credentials_type_shape: credentials CHECK (((((type)::text = 'federated'::text) AND (provider IS NOT NULL) AND (subject IS NOT NULL)) OR (((type)::text = 'passkey'::text) AND (provider IS NULL) AND (subject IS NULL))))""",
             """CK_currencies_code: currencies CHECK (((code)::text ~ '^[A-Z]{3}$'::text))""",
             """CK_currencies_minor_unit: currencies CHECK (((minor_unit >= 0) AND (minor_unit <= 4)))""",
             """CK_transactions_amount: transactions CHECK ((abs(amount) <= (1000000000)::numeric))""",

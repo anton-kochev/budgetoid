@@ -123,14 +123,24 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Persists a user and returns its generated id, for the few tests whose subject is the
-    /// user-to-budget link itself. Tests of budget-owned entities want <see cref="SeedBudgetAsync"/>.
+    /// Persists a user together with the federated Google credential that resolves to it, and
+    /// returns the <b>user</b> id. Tests of budget-owned entities want
+    /// <see cref="SeedBudgetAsync"/>.
     /// </summary>
+    /// <remarks>
+    /// Both rows go in one <c>SaveChangesAsync</c>, mirroring the shape <c>UserRepository</c>
+    /// inserts them in: a seeded user without its credential would be a state production can never
+    /// produce, so tests written against it would be testing a schema nobody ships.
+    /// <paramref name="googleSubject"/> is still the caller's handle on the identity, which is why
+    /// this signature outlived the column it used to write.
+    /// </remarks>
     public async Task<Guid> SeedUserAsync(string googleSubject, string email)
     {
         await using var db = CreateSeedingDbContext();
-        User user = User.Create(googleSubject, email, displayName: null, SeedInstant);
+        User user = User.Create(email, displayName: null, SeedInstant);
         db.Users.Add(user);
+        db.Credentials.Add(Credential.CreateFederated(
+            user.Id, Credential.GoogleProvider, googleSubject, SeedInstant));
         await db.SaveChangesAsync();
         return user.Id;
     }

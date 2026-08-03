@@ -291,6 +291,12 @@ public sealed class BudgetoidDbContextConstructionTests
             "CK_accounts_type: accounts type in ('Checking', 'Savings', 'Cash', 'CreditCard')",
             "CK_categories_position: categories position >= 0",
             "CK_category_groups_position: category_groups position >= 0",
+            "CK_credentials_type: credentials type in ('passkey', 'federated')",
+            // The shape check is what makes "a credential is exactly one type" a database rule: a
+            // federated row with no issuer, or a passkey row carrying one, is rejected rather than
+            // stored.
+            "CK_credentials_type_shape: credentials (type = 'federated' and provider is not null and "
+            + "subject is not null) or (type = 'passkey' and provider is null and subject is null)",
             "CK_currencies_code: currencies code ~ '^[A-Z]{3}$'",
             "CK_currencies_minor_unit: currencies minor_unit between 0 and 4",
             "CK_transactions_amount: transactions abs(amount) <= 1000000000",
@@ -308,7 +314,7 @@ public sealed class BudgetoidDbContextConstructionTests
         // unattended on every push to main, so a regenerated baseline arrives under a new id, the
         // next push finds nothing applied, and it re-creates every table against a populated
         // database. Having to edit this line is the checkpoint the retired manual deploy step was.
-        const string frozenBaselineId = "20260728195844_InitialCreate";
+        const string frozenBaselineId = "20260803100119_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

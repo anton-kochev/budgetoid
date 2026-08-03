@@ -15,8 +15,10 @@ public sealed class BudgetoidDbContext(
     DbContextOptions<BudgetoidDbContext> options,
     IBudgetContext? budgetContext = null) : DbContext(options)
 {
-    // Budget deliberately has no global query filter: the provisioning lookup runs before a budget
-    // id exists, so every query over this set must scope by owner explicitly.
+    // Budgets, Users and Credentials deliberately carry no BudgetIsolation query filter: they are
+    // what provisioning reads and writes before an ambient budget exists, and a credential is keyed
+    // on the user it lets in rather than on a budget at all. Every query over these sets must
+    // therefore scope by owner explicitly.
     public DbSet<Budget> Budgets => Set<Budget>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
     public DbSet<Account> Accounts => Set<Account>();
@@ -25,6 +27,7 @@ public sealed class BudgetoidDbContext(
     public DbSet<CategoryGroup> CategoryGroups => Set<CategoryGroup>();
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<User> Users => Set<User>();
+    public DbSet<Credential> Credentials => Set<Credential>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
