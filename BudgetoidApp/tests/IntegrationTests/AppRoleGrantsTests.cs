@@ -230,7 +230,7 @@ public sealed class AppRoleGrantsTests
         // Revoking a credential is a later story; until it lands, the missing privilege is what
         // stops a bug removing someone's only way back into their account.
         PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
-            app, "delete from credentials where id = @id", credentialId, credentialId);
+            app, "delete from credentials where id = @id", credentialId);
 
         // Assert
         await Assert.That(subjectRefusal.SqlState)
@@ -294,7 +294,26 @@ public sealed class AppRoleGrantsTests
         Guid rowId)
     {
         await using NpgsqlCommand command = BuildWrite(connection, sql, value, rowId);
+        return await RefusalOfAsync(command);
+    }
 
+    /// <summary>
+    /// The same expectation for a statement whose only parameter is the row id. A <c>delete</c> sets
+    /// no column, so it has no <c>@value</c> to bind, and passing the id twice to satisfy the
+    /// overload above would only work because Npgsql ignores a parameter the SQL never names.
+    /// </summary>
+    private static async Task<PostgresException> ThrowsPostgresExceptionAsync(
+        NpgsqlConnection connection,
+        string sql,
+        Guid rowId)
+    {
+        await using NpgsqlCommand command = new(sql, connection);
+        command.Parameters.AddWithValue("id", rowId);
+        return await RefusalOfAsync(command);
+    }
+
+    private static async Task<PostgresException> RefusalOfAsync(NpgsqlCommand command)
+    {
         try
         {
             await command.ExecuteNonQueryAsync();

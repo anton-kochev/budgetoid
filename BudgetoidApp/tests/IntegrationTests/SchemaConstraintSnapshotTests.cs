@@ -138,12 +138,12 @@ public sealed class SchemaConstraintSnapshotTests
             // case_insensitive, which the collation snapshot below pins, and pg_get_indexdef does
             // not render it here.
             """CREATE UNIQUE INDEX "IX_users_email" ON public.users USING btree (email)""",
-            """CREATE UNIQUE INDEX "PK_credentials" ON public.credentials USING btree (id)""",
             """CREATE UNIQUE INDEX "PK___EFMigrationsHistory" ON public."__EFMigrationsHistory" USING btree ("MigrationId")""",
             """CREATE UNIQUE INDEX "PK_accounts" ON public.accounts USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_budgets" ON public.budgets USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_categories" ON public.categories USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_category_groups" ON public.category_groups USING btree (id)""",
+            """CREATE UNIQUE INDEX "PK_credentials" ON public.credentials USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_currencies" ON public.currencies USING btree (code)""",
             """CREATE UNIQUE INDEX "PK_payees" ON public.payees USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_transactions" ON public.transactions USING btree (id)""",

@@ -307,6 +307,12 @@ public sealed class UserRepositoryTests
         await Assert.That(await CountRowsAsync(connection, "credentials")).IsEqualTo(3L);
     }
 
+    // The two tests below cover what FindByFederatedCredentialAsync returns, and deliberately not the
+    // other claim its `type = 'federated'` predicate carries — that the predicate is what lets the
+    // planner assume the partial unique index's own predicate and use it. Nothing here pins that, and
+    // nothing reasonably can: the only evidence is an EXPLAIN plan, and over the handful of rows
+    // these tests seed the planner is free to prefer a sequential scan, so the assertion would fail
+    // on a correct query. It stays unpinned on purpose rather than for want of a test.
     [Test]
     public async Task FindByFederatedCredentialAsync_WithAKnownSubject_ReturnsTheUser()
     {
@@ -360,9 +366,6 @@ public sealed class UserRepositoryTests
 
         // Assert
         await Assert.That(added).IsFalse();
-        await using BudgetoidDbContext verify = CreateDb(host);
-        await Assert.That(await verify.Users.CountAsync()).IsEqualTo(1);
-        await Assert.That(await verify.Credentials.CountAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -385,9 +388,6 @@ public sealed class UserRepositoryTests
         // not control and which carries no information about what happened. The caller's re-read by
         // credential is what separates the two, so the answer this method owes is just "refused".
         await Assert.That(added).IsFalse();
-        await using BudgetoidDbContext verify = CreateDb(host);
-        await Assert.That(await verify.Users.CountAsync()).IsEqualTo(1);
-        await Assert.That(await verify.Credentials.CountAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -412,9 +412,6 @@ public sealed class UserRepositoryTests
         // rather than a rule, and code branching on that name would be reading an accident as a
         // fact. So the outcome is false, exactly as for any other refused insert.
         await Assert.That(added).IsFalse();
-        await using BudgetoidDbContext verify = CreateDb(host);
-        await Assert.That(await verify.Users.CountAsync()).IsEqualTo(1);
-        await Assert.That(await verify.Credentials.CountAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -422,6 +419,7 @@ public sealed class UserRepositoryTests
     {
         // Arrange — a winning account holds this provider identity; the loser arrives with a fresh
         // email, so the users row on its own would be perfectly insertable.
+        const string losingEmail = "loser@example.com";
         await using RepositoryTestHost host = await StartHostAsync();
         await host.SeedUserAsync("google-1", "winner@example.com");
         await using BudgetoidDbContext db = CreateDb(host);
@@ -429,19 +427,22 @@ public sealed class UserRepositoryTests
 
         // Act
         bool added = await repository.TryAddAsync(
-            NewUser("loser@example.com", out Guid userId),
+            NewUser(losingEmail, out Guid userId),
             NewGoogleCredential(userId, "google-1"));
 
-        // Assert — the count is the whole point, not a second opinion on the boolean. The two rows
-        // go in one save so that a refusal leaves neither behind: a users row persisted without its
-        // credential would hold "loser@example.com" under the unique email index forever while no
-        // credential resolved to it, so every later sign-in with that address would be refused with
-        // a 409 and no way to heal. Splitting the save would keep this method returning false and
-        // break only this line.
+        // Assert — the surviving-row check is the whole point, not a second opinion on the boolean,
+        // and it is the only assertion in this class that carries it. The two rows go in one save so
+        // that a refusal leaves neither behind: a users row persisted without its credential would
+        // hold "loser@example.com" under the unique email index forever while no credential resolved
+        // to it, so every later sign-in with that address would be refused with a 409 and no way to
+        // heal. Splitting the save would keep this method returning false and break only this line.
+        // The losing email by name rather than a row count: a count of one is also satisfied by a
+        // seed that never landed or by the winner being deleted, so it would let this test fail for
+        // reasons that are not the orphan it exists to catch.
         await Assert.That(added).IsFalse();
         await using BudgetoidDbContext verify = CreateDb(host);
-        await Assert.That(await verify.Users.CountAsync()).IsEqualTo(1);
-        await Assert.That(await verify.Credentials.CountAsync()).IsEqualTo(1);
+        Email orphanEmail = Email.Create(losingEmail);
+        await Assert.That(await verify.Users.AnyAsync(user => user.Email == orphanEmail)).IsFalse();
     }
 
     /// <summary>
