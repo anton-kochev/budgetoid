@@ -74,9 +74,12 @@ removes a column-level privilege that was granted column-level. So every `UPDATE
 columns, and an immutable column is one that is simply not on the list: `budget_id` appears on none
 of the five owned tables, `currency_code` is absent from `accounts`, `created_at_utc` is absent
 everywhere, and `budgets` and `credentials` have no `UPDATE` grant of any shape — the whole content
-of B2, and of the rule that a credential is written once and never edited.
-**"Simplifying" any column-list grant into a table-wide one
-silently re-opens every hole the list exists to close**, and nothing fails at the time it is done.
+of B2, and of the rule that a credential's **identity** (`user_id`, `type`, `provider`, `subject`,
+`created_at_utc`) is written once and never edited. On `credentials` the empty grant is the present
+state of that list rather than a property of the table: a passkey signature counter and a last-used
+timestamp are both specified, and each joins the list while the identity columns stay off it.
+**"Simplifying" any column-list grant into a table-wide one silently re-opens every hole the list
+exists to close**, and nothing fails at the time it is done.
 
 **The script is idempotent and convergent, and is deliberately not an EF migration.** Each table's
 block is `REVOKE ALL` followed by the grants it should have, so a re-run converges the role to

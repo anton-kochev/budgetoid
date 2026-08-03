@@ -53,11 +53,21 @@ REVOKE ALL ON users FROM budgetoid_app;
 GRANT SELECT, INSERT ON users TO budgetoid_app;
 GRANT UPDATE (email) ON users TO budgetoid_app;
 
--- credentials: every column is immutable, so there is no UPDATE grant of any shape rather than
--- a column list with nothing on it. A credential is written whole at registration and never
--- edited: changing its subject would silently repoint an account at a different principal.
+-- credentials: the identity columns — user_id, type, provider, subject, created_at_utc — are
+-- immutable. Changing a subject would silently repoint an account at a different principal, and
+-- changing user_id would move a sign-in between accounts; a credential's identity is written
+-- whole at registration and has no edit that means anything.
+--
+-- Today that is every column, so there is no UPDATE grant of any shape rather than a column list
+-- with nothing on it. Read that as the current state of the list and not as a property of the
+-- table: a passkey's signature counter and a credential's last-used timestamp are both specified,
+-- and each arrives as a column that goes ON the list while the five above stay off it. The rule
+-- being defended is "identity is immutable", not "credentials are never written".
+--
 -- No DELETE either — no revocation path exists yet, and until one does the absent grant is what
--- stops a bug removing someone's only way in.
+-- stops a bug removing someone's only way in. Revoking a credential and replacing the federated
+-- one on an email change are both specified, and both need this grant; when one lands, the reason
+-- written here is what has to be re-argued rather than quietly deleted.
 REVOKE ALL ON credentials FROM budgetoid_app;
 GRANT SELECT, INSERT ON credentials TO budgetoid_app;
 

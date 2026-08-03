@@ -123,6 +123,18 @@ must not depend on state left behind by an earlier attempt.
   permanent, because payees cannot be deleted by any application path, and it accumulates: every
   disconnect at the wrong moment adds a row that nothing will ever remove.
 
+## Scope: when one save beats this port
+
+The port exists for handlers that write through more than one **repository**. Two writes that share
+one repository and one `DbContext` do not need it, and provisioning is the case that proves the
+distinction: `UserRepository.TryAddAsync` adds a `users` row and its first `credentials` row and
+saves **once**. Reaching for `ITransactionalExecutor` there would be the obvious move and the
+weaker one — a single save is already atomic, so the execution-strategy retry loop guards nothing,
+and it keeps the `23505` attribution in one `catch` rather than splitting it across two writes that
+can each fail for a different reason. The rule is therefore "one transaction per handler", not "one
+`ITransactionalExecutor` per handler": when a single save already spans everything that must land
+together, that *is* the transaction.
+
 ## Consequences
 
 - **Any future handler that writes through more than one repository has this port available and

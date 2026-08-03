@@ -152,13 +152,19 @@ erDiagram
 
 ---
 
-- **Rule**: A credential row is immutable in every column; on `users`, `Email` is the only column
-  that can change.
+- **Rule**: A credential's **identity columns** — `user_id`, `type`, `provider`, `subject`,
+  `created_at_utc` — are immutable. On `users`, `Email` is the only column that can change.
 - **Why**: The credential is the identity anchor — repointing its subject would silently hand an
-  account to a different principal, and changing its `user_id` would move a sign-in between accounts.
-  A credential is written whole at registration and has no edit that means anything. The address is
-  the one column an edit could ever legitimately touch — the grant is what an edit *may* reach, and
-  today no code path reaches it at all.
+  account to a different principal, and changing its `user_id` would move a sign-in between
+  accounts. That identity is written whole at registration and has no edit that means anything. The
+  address is the one column on `users` an edit could ever legitimately touch — the grant is what an
+  edit *may* reach, and today no code path reaches it at all.
+- **Scope, stated precisely because it is about to matter**: today the identity columns *are* every
+  column of `credentials`, so the table has no `UPDATE` grant at all. That is the current state of
+  the list, not a property of the table. A passkey signature counter and a last-used timestamp are
+  both specified; each arrives as a column that goes **on** the list while the five above stay off
+  it. Anyone reading "a credential is never written" rather than "a credential's identity is never
+  rewritten" will read the first counter update as a violation of a rule that was never claimed.
 - **Enforced in**: **database-owned, restated in the domain.** The application role has no `UPDATE`
   grant on `credentials` of any shape — not a column list with nothing on it, but no grant at all —
   and no `DELETE` either, so every write except `INSERT` is refused with `42501` on the connection
@@ -167,8 +173,8 @@ erDiagram
   privileges could not express. A one-column list is still a list, and must not be "simplified"
   into a table-wide grant; see
   [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
-  `AppRoleGrantsTests.Database_RefusesEveryCredentialWriteExceptInsert` pins the refusals column for
-  column against a permitted insert, and
+  `AppRoleGrantsTests.Database_RefusesEveryUpdateOnACredentialsIdentity_WhileStillAllowingInsert`
+  pins the refusals column for column against a permitted insert, and
   `Database_RefusesToChangeAUsersCreatedAt_WhileStillAllowingProfileEdits` pins that the users grant
   really is a list. Above them, neither `Domain/Users/User.cs` nor `Domain/Users/Credential.cs`
   exposes a mutator: both are written whole and never edited.
@@ -356,6 +362,22 @@ The budget branch that runs after this, on every path, is in
   path. Unlike the missing-budget case below, nothing heals it.
   `UserRepositoryTests.TryAddAsync_WhenOnlyTheCredentialCollides_LeavesNoOrphanedUserRow` is what
   fails if someone splits the save.
+
+  Two shapes were considered and rejected, both of which a later reader is likely to propose.
+  **Wrapping the two writes in `ITransactionalExecutor`** ([ADR 0003](../decisions/0003-wrap-multi-repository-writes-in-one-transaction.md))
+  is the named mechanism for exactly "two writes in one handler must be atomic", and it is the
+  first thing to reach for here. One save is better: it needs no execution-strategy retry loop, and
+  it keeps the `23505` attribution in a single `catch` instead of splitting it across two writes
+  that can each fail for a different reason. **Modelling `Credential` inside the `User` aggregate**
+  would make atomicity automatic rather than argued — but the aggregate would then have to grow to
+  hold sessions and passkeys too, and a root loaded on every authenticated request is the wrong
+  place to accumulate them.
+
+- **Writers take `users` before `credentials`, always, and that is what makes deadlock impossible
+  here.** Two transactions inserting into both tables cannot form a cycle if neither ever takes the
+  second lock first. It is a property of the write order rather than of any lock hint, so it
+  survives only as long as the order does — a future path that touched `credentials` first would
+  reintroduce the cycle without changing a line of the code that documents this.
 
 - **A user row is written before its budget row, in a separate `SaveChanges`**: a user with no budget
   is therefore a reachable state, and it is the unconditional find-or-create on the next request that

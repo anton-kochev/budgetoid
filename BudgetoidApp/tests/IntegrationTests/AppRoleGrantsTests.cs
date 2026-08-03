@@ -8,12 +8,14 @@ namespace IntegrationTests;
 /// <summary>
 /// Covers the immutability rules that only the application role's column grants can enforce: a
 /// budgets row is never updated at all, an account's currency never changes, and a credential —
-/// the row the whole sign-in resolves through — is created whole and never edited, every one of
-/// its columns immutable because the role holds no <c>UPDATE</c> grant on that table of any
-/// shape. The role's <c>UPDATE</c> grant names its columns explicitly, and PostgreSQL column
-/// privileges are
-/// additive, so an immutable column is one that is simply absent from the list; writing it fails
-/// with <c>42501</c> before the row is touched. Every statement here is raw Npgsql on
+/// the row the whole sign-in resolves through — has an immutable identity: user_id, type,
+/// provider, subject and created_at_utc are written whole at registration and have no edit that
+/// means anything. Today those five are every column credentials has, which is why the role holds
+/// no <c>UPDATE</c> grant on that table of any shape rather than a column list with nothing on
+/// it — read that as where the list stands today, not as a property of the table. The role's
+/// <c>UPDATE</c> grant names its columns explicitly, and PostgreSQL column privileges are additive,
+/// so an immutable column is one that is simply absent from the list; writing it fails with
+/// <c>42501</c> before the row is touched. Every statement here is raw Npgsql on
 /// <see cref="RepositoryTestHost.AppConnectionString" />, because grants only bind connections
 /// opened as the role — the host's own connection is the container superuser and answers every
 /// privilege question with yes.
@@ -23,9 +25,12 @@ namespace IntegrationTests;
 /// connection. Without the pair the <c>42501</c> is vacuous: a role with no <c>UPDATE</c> grant
 /// at all — or a grants script that is an empty file — refuses everything with the same SQLSTATE.
 /// The success half is what pins "exactly this column is immutable" rather than "the role cannot
-/// write". On <c>budgets</c> and on <c>credentials</c> no column is updatable — that is the whole
-/// content of both rules — so their pair is a permitted <c>INSERT</c> instead: provisioning
-/// creates budgets and sign-up creates credentials, and the role must still be able to.
+/// write". On <c>budgets</c> no column is updatable — that is the whole content of that rule. On
+/// <c>credentials</c> none is updatable today, not because the table is closed to writes but
+/// because the identity columns happen to be all the columns there are. Either way the pair is a
+/// permitted <c>INSERT</c> instead: provisioning creates budgets and sign-up creates credentials,
+/// and the role must still be able to. That stays the right pairing when an updatable column joins
+/// credentials — the <c>INSERT</c> is still the success the refusals need beside them.
 /// </remarks>
 public sealed class AppRoleGrantsTests
 {
@@ -178,7 +183,7 @@ public sealed class AppRoleGrantsTests
     }
 
     [Test]
-    public async Task Database_RefusesEveryCredentialWriteExceptInsert()
+    public async Task Database_RefusesEveryUpdateOnACredentialsIdentity_WhileStillAllowingInsert()
     {
         // Arrange — one user with the federated credential SeedUserAsync gives it, plus a second
         // real user for the user_id statement below to aim at: if the grant ever leaked user_id,
@@ -200,10 +205,13 @@ public sealed class AppRoleGrantsTests
         await using NpgsqlConnection app = new(host.AppConnectionString);
         await app.OpenAsync();
 
-        // Act — every column of credentials by name. The rule is "a credential is created whole
-        // and never edited", and column-for-column is the only shape the absence of an UPDATE
-        // grant can be pinned in. Each statement is refused on privilege before the row is
-        // reached, so none of them ever meets CK_credentials_type_shape.
+        // Act — every identity column of credentials by name: user_id, type, provider, subject,
+        // created_at_utc. The rule is "a credential's identity is written whole at registration
+        // and has no edit that means anything", and column-for-column is the only shape the
+        // absence of an UPDATE grant can be pinned in. Those five are every column the table has
+        // today, which is why the absence covers them all; an updatable column arriving later
+        // joins the list and leaves these five off it. Each statement is refused on privilege
+        // before the row is reached, so none of them ever meets CK_credentials_type_shape.
         PostgresException subjectRefusal = await ThrowsPostgresExceptionAsync(
             app, "update credentials set subject = @value where id = @id", "google-2", credentialId);
         PostgresException providerRefusal = await ThrowsPostgresExceptionAsync(
