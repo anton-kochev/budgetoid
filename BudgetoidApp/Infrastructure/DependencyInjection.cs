@@ -38,10 +38,11 @@ public static class DependencyInjection
         services.AddScoped<ICategoryReadService, CategoryReadService>();
         services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();
 
-        // Scoped, because it reads the scoped IBudgetContext. Api/Program.cs attaches it through
-        // the (serviceProvider, options) overload of AddDbContext, whose optionsLifetime is Scoped,
-        // so the instance resolves from the request scope rather than the root one.
-        services.AddScoped<BudgetSessionInterceptor>();
+        // Scoped, because it reads the scoped IBudgetContext and IUserContext. Api/Program.cs
+        // attaches it through the (serviceProvider, options) overload of AddDbContext, whose
+        // optionsLifetime is Scoped, so the instance resolves from the request scope rather than the
+        // root one.
+        services.AddScoped<SessionContextInterceptor>();
         return services;
     }
 }

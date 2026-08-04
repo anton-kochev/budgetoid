@@ -8,6 +8,7 @@ namespace Application.Users.EnsureUser;
 public sealed class EnsureUserHandler(
     IUserRepository repository,
     IBudgetRepository budgetRepository,
+    IUserContextWriter userContextWriter,
     TimeProvider timeProvider) : ICommandHandler<EnsureUserCommand, ProvisionedUser>
 {
     public async Task<ProvisionedUser> HandleAsync(
@@ -23,19 +24,26 @@ public sealed class EnsureUserHandler(
         return new ProvisionedUser(userId, budgetId);
     }
 
+    // Every publication below lands before the next statement that touches a policed table, which is
+    // the whole ordering contract: app.current_user_id reaches the database on the next connection
+    // open, so an id published afterwards is an id that statement ran without.
     private async Task<Guid> EnsureUserIdAsync(EnsureUserCommand command, CancellationToken cancellationToken)
     {
-        User? existing = await repository.FindByFederatedCredentialAsync(
+        // Reads credentials alone — the one table still exempt from row-level security, because it
+        // is what answers "who is asking".
+        Guid? existingUserId = await repository.FindUserIdByFederatedCredentialAsync(
             Credential.GoogleProvider,
             command.GoogleSubject,
             cancellationToken);
-        if (existing is not null)
+        if (existingUserId is not null)
         {
-            // The stored profile is left exactly as registration captured it. The provider gates
-            // registration and is not consulted again, so what it now reports about this account is
-            // not authority to change anything: an email change is a separate exchange the user
-            // deliberately initiates. Refreshing here would apply one nobody asked for.
-            return existing.Id;
+            // Nothing about the stored profile is touched here, and the credential row was all this
+            // path read. The provider gates registration and is not consulted again, so what it now
+            // reports about this account is not authority to change anything: an email change is a
+            // separate exchange the user deliberately initiates. Refreshing here would apply one
+            // nobody asked for.
+            userContextWriter.ResolveUser(existingUserId.Value);
+            return existingUserId.Value;
         }
 
         // One `now` for both rows: the user and the credential that resolves to it come into
@@ -47,6 +55,11 @@ public sealed class EnsureUserHandler(
             Credential.GoogleProvider,
             command.GoogleSubject,
             now);
+
+        // Before the insert, not after: User.Create mints the id with Guid.CreateVersion7 on this
+        // side, so it exists before the row does, and the users INSERT is checked against
+        // app.current_user_id — publish afterwards and WITH CHECK refuses every new account.
+        userContextWriter.ResolveUser(user.Id);
         if (await repository.TryAddAsync(user, credential, cancellationToken))
         {
             return user.Id;
@@ -58,13 +71,22 @@ public sealed class EnsureUserHandler(
         // succeeded had it aborted — so a winning credential on this subject is visible here. Finding
         // none therefore proves the subject was never duplicated and the email alone collided, with a
         // different account holding it.
-        User? concurrentExisting = await repository.FindByFederatedCredentialAsync(
+        Guid? concurrentUserId = await repository.FindUserIdByFederatedCredentialAsync(
             Credential.GoogleProvider,
             command.GoogleSubject,
             cancellationToken);
+        if (concurrentUserId is null)
+        {
+            throw new ConflictException("This email address is already linked to a different Google account.");
+        }
 
-        return concurrentExisting?.Id
-               ?? throw new ConflictException("This email address is already linked to a different Google account.");
+        // Overwrites the id published above, which named a row that was never written. The session
+        // carries the last word into the budgets read and on into the rest of the request, so leaving
+        // the loser's id there would police every later statement against an account that does not
+        // exist.
+        userContextWriter.ResolveUser(concurrentUserId.Value);
+
+        return concurrentUserId.Value;
     }
 
     private async Task<Guid> EnsureDefaultBudgetIdAsync(Guid userId, CancellationToken cancellationToken)

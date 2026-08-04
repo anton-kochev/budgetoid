@@ -3,10 +3,18 @@ namespace Domain.Users;
 public interface IUserRepository
 {
     /// <summary>
-    /// Resolves the user a federated credential points at, or <see langword="null"/> when no
-    /// credential holds that <paramref name="provider"/> and <paramref name="subject"/> pair.
+    /// Resolves the id of the user a federated credential points at, or <see langword="null"/> when
+    /// no credential holds that <paramref name="provider"/> and <paramref name="subject"/> pair.
     /// </summary>
-    Task<User?> FindByFederatedCredentialAsync(
+    /// <remarks>
+    /// An id rather than a <see cref="User"/>, because this call is what establishes the request's
+    /// identity: it runs on a session that names nobody yet, and <c>users</c> is policed on exactly
+    /// the identity it has not established, so reading that row here would refuse the question that
+    /// produces the answer. Nothing is lost by not reading it — <c>credentials.user_id</c> is a NOT
+    /// NULL foreign key to <c>users.id</c>, so the key already carries everything the row would
+    /// prove about which account this is.
+    /// </remarks>
+    Task<Guid?> FindUserIdByFederatedCredentialAsync(
         string provider,
         string subject,
         CancellationToken cancellationToken = default);

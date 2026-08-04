@@ -52,7 +52,7 @@ public sealed class Credential
         }
         // Refused rather than lowercased, and the comparison is ordinal on purpose. CK_credentials_provider
         // will not accept 'Google' either, so folding the case here would quietly make acceptable a value
-        // the column is about to refuse; and UserRepository.FindByFederatedCredentialAsync matches the
+        // the column is about to refuse; and UserRepository.FindUserIdByFederatedCredentialAsync matches the
         // column case-sensitively, so a folded write would store a row its own lookup could never find.
         // The length bound the column carries needs no branch of its own — no spelling other than the one
         // below gets this far.

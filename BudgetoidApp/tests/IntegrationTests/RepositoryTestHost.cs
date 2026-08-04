@@ -39,40 +39,94 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     }.ConnectionString;
 
     /// <summary>
-    /// Opens a connection as the least-privilege application role <b>with the ambient budget
-    /// already on the session</b>, so that "an app-role connection" and "an app-role connection
-    /// carrying its ambient budget" are the same thing rather than two states a caller can get
-    /// wrong. Callers own the returned connection and dispose it.
+    /// Opens a connection as the least-privilege application role <b>with the signed-in user and
+    /// the ambient budget already on the session</b>, so that "an app-role connection" and "an
+    /// app-role connection carrying the session state production puts on it" are the same thing
+    /// rather than two states a caller can get wrong. Callers own the returned connection and
+    /// dispose it.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Row-level security on the budget-owned tables keys its policies to
-    /// <c>app.current_budget_id</c>. A raw connection that sets nothing sees none of those rows, and
-    /// the damage is silent rather than loud: an UPDATE that should affect one row affects zero and
+    /// Row-level security polices these tables on two axes: <c>budget_isolation</c> on the
+    /// budget-owned tables keys its policies to <c>app.current_budget_id</c>, and
+    /// <c>user_isolation</c> on <c>users</c> and <c>budgets</c> keys its policies to
+    /// <c>app.current_user_id</c>. That is why this overload takes two arguments and not one. The
+    /// two axes fail in opposite ways, and which is which is worth knowing before reading a red run.
+    /// A wrong or missing budget is silent: an UPDATE that should affect one row affects zero and
     /// reports success, so an assertion on the affected count fails while an assertion on a refusal
-    /// passes for entirely the wrong reason. <paramref name="budgetId" /> must therefore be the
-    /// budget the statements on this connection target rows in, not just any real budget.
+    /// passes for entirely the wrong reason. A wrong user is loud — the row is simply invisible, and
+    /// an unset <c>app.current_user_id</c> reaches the policy as <c>''::uuid</c> and raises
+    /// <c>22P02</c>. <paramref name="budgetId" /> must therefore be the budget the statements on
+    /// this connection target rows in, not just any real budget — and <paramref name="userId" />
+    /// must be the user that owns it.
+    /// </para>
+    /// <para>
+    /// Both settings, always, which is why this takes two arguments rather than keeping a
+    /// one-argument overload beside them. The production interceptor writes both on every connection
+    /// it opens, so a session naming only a budget is a state production cannot produce and a test
+    /// running in it measures a database no request ever reaches. An overload would also be quietly
+    /// dangerous in the other direction: an existing one-argument call site would keep compiling and
+    /// silently rebind its budget id to <paramref name="userId" />, which in a security test is the
+    /// difference between a green run and a green run that proves nothing.
+    /// <see cref="OpenAppConnectionForUserAsync" /> is the deliberate exception, for the tables that
+    /// have no ambient budget at all.
     /// </para>
     /// <para>
     /// <c>set_config(..., false)</c> — not <c>SET LOCAL</c>. These tests send statements in
-    /// autocommit, and <c>SET LOCAL</c> outside a transaction sets nothing and warns. The value is
+    /// autocommit, and <c>SET LOCAL</c> outside a transaction sets nothing and warns. Both calls
+    /// travel in one statement, so the session is never observable half-configured. The value is
     /// passed as text because <c>set_config</c> takes text: bind the <see cref="Guid" /> itself and
     /// Npgsql infers <c>uuid</c>, which no <c>set_config</c> overload accepts. Setting a custom GUC
-    /// — one with a dotted namespace — needs no privilege and no policy, so this is inert until the
-    /// policies exist.
+    /// — one with a dotted namespace — needs no privilege, so the statement succeeds whatever value
+    /// it names; the policies that read those settings are what decide the cost of naming the wrong
+    /// one, and both policies exist.
     /// </para>
     /// </remarks>
-    public async Task<NpgsqlConnection> OpenAppConnectionAsync(Guid budgetId)
+    public Task<NpgsqlConnection> OpenAppConnectionAsync(Guid userId, Guid budgetId) =>
+        OpenConfiguredAppConnectionAsync(
+            "select set_config('app.current_user_id', @user, false), "
+                + "set_config('app.current_budget_id', @budget, false)",
+            [("user", userId), ("budget", budgetId)]);
+
+    /// <summary>
+    /// Opens an app-role connection carrying <b>only</b> the signed-in user, which is what every
+    /// app-role statement against <c>users</c> and <c>budgets</c> has to go through. Both tables are
+    /// policed on <c>app.current_user_id</c>, so this is a requirement and not a convenience: a bare
+    /// app-role connection does not quietly read the wrong rows there, it fails outright with
+    /// <c>22P02</c>, because an unset setting reaches the policy as <c>''::uuid</c>. Neither table is
+    /// budget-owned — a user owns budgets rather than belonging to one, and a budget is the tenant
+    /// rather than a tenant's row — so there is no ambient budget for such a session to carry, and
+    /// naming one would only suggest there was. Callers own the returned connection and dispose it.
+    /// </summary>
+    /// <remarks>
+    /// Everything <see cref="OpenAppConnectionAsync" /> says about <c>set_config(..., false)</c> and
+    /// about passing the value as text holds here unchanged; the only difference is which settings
+    /// the session declares.
+    /// </remarks>
+    public Task<NpgsqlConnection> OpenAppConnectionForUserAsync(Guid userId) =>
+        OpenConfiguredAppConnectionAsync(
+            "select set_config('app.current_user_id', @user, false)",
+            [("user", userId)]);
+
+    /// <summary>
+    /// Opens an app-role connection and applies one <c>set_config</c> statement to it. Shared so the
+    /// two openers above cannot drift on the half that is not about which settings they declare.
+    /// </summary>
+    private async Task<NpgsqlConnection> OpenConfiguredAppConnectionAsync(
+        string setConfigSql,
+        (string Name, Guid Value)[] settings)
     {
         NpgsqlConnection connection = new(AppConnectionString);
 
         try
         {
             await connection.OpenAsync();
-            await using NpgsqlCommand command = new(
-                "select set_config('app.current_budget_id', @budget, false)",
-                connection);
-            command.Parameters.AddWithValue("budget", budgetId.ToString());
+            await using NpgsqlCommand command = new(setConfigSql, connection);
+            foreach ((string name, Guid value) in settings)
+            {
+                command.Parameters.AddWithValue(name, value.ToString());
+            }
+
             await command.ExecuteNonQueryAsync();
         }
         catch
@@ -104,23 +158,43 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Persists a user together with its default budget and returns the <b>budget</b> id, so tests
-    /// can satisfy the budgets foreign key on every owned entity with a real tenant row.
+    /// The user and the default budget one call to <see cref="SeedOwnerAsync" /> created, paired
+    /// because the two ids are only meaningful together: an app-role session names both, and a test
+    /// that holds one without the other cannot open one.
+    /// </summary>
+    /// <remarks>
+    /// A <see langword="readonly" /> <see langword="record" /> <see langword="struct" /> rather than
+    /// a class: this is a pair of ids with no identity of its own, it is destructured at nearly
+    /// every call site, and it is never stored, mutated or compared by reference.
+    /// </remarks>
+    public readonly record struct SeededOwner(Guid UserId, Guid BudgetId);
+
+    /// <summary>
+    /// Persists a user together with its default budget and returns <b>both</b> ids, so a test can
+    /// open an app-role connection — which names a user and a budget — from one seeding call.
     /// </summary>
     /// <remarks>
     /// The seeding context is built without an <c>IBudgetContext</c>, which is only safe because
     /// <c>Budget</c> deliberately carries no global query filter — its owner scoping is explicit at
     /// every call site instead.
     /// </remarks>
-    public async Task<Guid> SeedBudgetAsync(string googleSubject, string email)
+    public async Task<SeededOwner> SeedOwnerAsync(string googleSubject, string email)
     {
         Guid userId = await SeedUserAsync(googleSubject, email);
         await using var db = CreateSeedingDbContext();
         Budget budget = Budget.CreateDefault(userId, SeedInstant);
         db.Budgets.Add(budget);
         await db.SaveChangesAsync();
-        return budget.Id;
+        return new SeededOwner(userId, budget.Id);
     }
+
+    /// <summary>
+    /// Persists a user together with its default budget and returns the <b>budget</b> id, so tests
+    /// can satisfy the budgets foreign key on every owned entity with a real tenant row. Tests that
+    /// also need the owner want <see cref="SeedOwnerAsync" />, which this delegates to.
+    /// </summary>
+    public async Task<Guid> SeedBudgetAsync(string googleSubject, string email) =>
+        (await SeedOwnerAsync(googleSubject, email)).BudgetId;
 
     /// <summary>
     /// Persists a user together with the federated Google credential that resolves to it, and

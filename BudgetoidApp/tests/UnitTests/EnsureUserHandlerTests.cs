@@ -19,7 +19,9 @@ public sealed class EnsureUserHandlerTests
         User user = User.Create("old@example.com", UtcNow());
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+        var handler = new EnsureUserHandler(
+            users, budgets, new RecordingUserContextWriter(),
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -27,8 +29,12 @@ public sealed class EnsureUserHandlerTests
 
         // Assert — the sign-in resolves to the same account, and that account still holds the email
         // it registered with. Reintroducing a silent per-request refresh fails this line.
+        // The stored row is read off the fake rather than through the repository, because discovery
+        // now answers with an id and nothing else — by design, since that lookup runs on a session
+        // that has no identity yet and must touch no policed table. The claim under test is unchanged:
+        // what the users table holds is still what registration wrote.
         await Assert.That(provisioned.UserId).IsEqualTo(user.Id);
-        User stored = (await users.FindByFederatedCredentialAsync(Credential.GoogleProvider, "google-1"))!;
+        User stored = users.StoredUsers[provisioned.UserId];
         await Assert.That(stored.Email.Value).IsEqualTo("old@example.com");
     }
 
@@ -38,7 +44,9 @@ public sealed class EnsureUserHandlerTests
         // Arrange
         var users = new InMemoryUserRepository();
         var budgets = new InMemoryBudgetRepository();
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+        var handler = new EnsureUserHandler(
+            users, budgets, new RecordingUserContextWriter(),
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -60,7 +68,9 @@ public sealed class EnsureUserHandlerTests
         // Arrange
         var users = new InMemoryUserRepository();
         var budgets = new InMemoryBudgetRepository();
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+        var handler = new EnsureUserHandler(
+            users, budgets, new RecordingUserContextWriter(),
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -85,7 +95,9 @@ public sealed class EnsureUserHandlerTests
         var budgets = new InMemoryBudgetRepository();
         Budget existingBudget = Budget.CreateDefault(user.Id, UtcNow());
         budgets.Seed(existingBudget);
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+        var handler = new EnsureUserHandler(
+            users, budgets, new RecordingUserContextWriter(),
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser first = await handler.HandleAsync(
@@ -107,7 +119,9 @@ public sealed class EnsureUserHandlerTests
         User user = User.Create("person@example.com", UtcNow());
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+        var handler = new EnsureUserHandler(
+            users, budgets, new RecordingUserContextWriter(),
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -131,7 +145,9 @@ public sealed class EnsureUserHandlerTests
         var budgets = new InMemoryBudgetRepository();
         Budget concurrentBudget = Budget.CreateDefault(user.Id, UtcNow());
         budgets.FailNextAdd(concurrentBudget);
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+        var handler = new EnsureUserHandler(
+            users, budgets, new RecordingUserContextWriter(),
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -154,7 +170,9 @@ public sealed class EnsureUserHandlerTests
         User concurrentUser = User.Create("person@example.com", UtcNow());
         users.FailNextAddWithCredentialRace(concurrentUser, GoogleCredentialFor(concurrentUser, "google-1"));
         var budgets = new InMemoryBudgetRepository();
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+        var handler = new EnsureUserHandler(
+            users, budgets, new RecordingUserContextWriter(),
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -172,7 +190,9 @@ public sealed class EnsureUserHandlerTests
         var users = new InMemoryUserRepository();
         users.FailNextAddWithEmailConflict();
         var budgets = new InMemoryBudgetRepository();
-        var handler = new EnsureUserHandler(users, budgets, new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+        var handler = new EnsureUserHandler(
+            users, budgets, new RecordingUserContextWriter(),
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
 
         // Act — anything other than ConflictException escapes this helper and fails the test. The
         // insert is refused and the re-read by credential finds nothing, so this is not a race that
@@ -185,6 +205,87 @@ public sealed class EnsureUserHandlerTests
         await Assert.That(exception.Message).IsNotEmpty();
         await Assert.That(users.AddCallCount).IsEqualTo(1);
         await Assert.That(budgets.Budgets.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task EnsureUser_ExistingSubject_PublishesTheResolvedUserId()
+    {
+        // Arrange — a returning sign-in, where the credential row already names an account.
+        User user = User.Create("person@example.com", UtcNow());
+        var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
+        var budgets = new InMemoryBudgetRepository();
+        var writer = new RecordingUserContextWriter();
+        var handler = new EnsureUserHandler(
+            users, budgets, writer,
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+
+        // Act
+        ProvisionedUser provisioned = await handler.HandleAsync(
+            new EnsureUserCommand("google-1", "person@example.com"));
+
+        // Assert — exactly one publication, carrying the id the credential resolved. The budgets read
+        // that follows is policed on app.current_user_id, so a handler that resolved the id and kept
+        // it to itself would find no budget for an account that has one and provision a second.
+        await Assert.That(writer.Published.Count).IsEqualTo(1);
+        await Assert.That(writer.Published[0]).IsEqualTo(user.Id);
+        await Assert.That(writer.Published[0]).IsEqualTo(provisioned.UserId);
+    }
+
+    [Test]
+    public async Task EnsureUser_NewSubject_PublishesTheNewUserIdBeforeTheUserIsWritten()
+    {
+        // Arrange — the repository is armed to snapshot the writer as TryAddAsync is entered. Ordering
+        // is the entire claim, and User.Create mints the id with Guid.CreateVersion7 client-side, so
+        // the id genuinely exists before the row does and nothing stops the publication preceding the
+        // insert.
+        var users = new InMemoryUserRepository();
+        var budgets = new InMemoryBudgetRepository();
+        var writer = new RecordingUserContextWriter();
+        users.ObservePublicationsDuring(writer);
+        var handler = new EnsureUserHandler(
+            users, budgets, writer,
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+
+        // Act
+        ProvisionedUser provisioned = await handler.HandleAsync(
+            new EnsureUserCommand("google-new", "new@example.com"));
+
+        // Assert — the id was already published when the insert began, and it is the id being
+        // inserted. Publish it afterwards and the users INSERT runs on a session with no
+        // app.current_user_id, so WITH CHECK (id = current_user_id) refuses the row and registration
+        // is broken for every new account — while a test that read the writer only at the end would
+        // still be green, which is exactly why the snapshot is taken from inside the call.
+        await Assert.That(users.PublishedWhenAddWasEntered.Count).IsEqualTo(1);
+        await Assert.That(users.PublishedWhenAddWasEntered[0]).IsEqualTo(provisioned.UserId);
+        await Assert.That(users.AddedCredentials[0].UserId).IsEqualTo(provisioned.UserId);
+    }
+
+    [Test]
+    public async Task EnsureUser_LostTheRace_PublishesTheWinningUserId()
+    {
+        // Arrange — the same lost credential race the returns-the-concurrent-user test above drives,
+        // read from the publication side rather than the return value.
+        var users = new InMemoryUserRepository();
+        User concurrentUser = User.Create("person@example.com", UtcNow());
+        users.FailNextAddWithCredentialRace(concurrentUser, GoogleCredentialFor(concurrentUser, "google-1"));
+        var budgets = new InMemoryBudgetRepository();
+        var writer = new RecordingUserContextWriter();
+        var handler = new EnsureUserHandler(
+            users, budgets, writer,
+            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+
+        // Act
+        ProvisionedUser provisioned = await handler.HandleAsync(
+            new EnsureUserCommand("google-1", "person@example.com"));
+
+        // Assert — the loser published its own id before its doomed insert, so the count is not the
+        // subject; what matters is who gets the last word, because the session carries that id into
+        // the budgets read and on into the rest of the request. A stale loser id there polices every
+        // later query against a user row that was never written. Pinning the last publication to
+        // ProvisionedUser.UserId as well as to the winner states the rule that outlives this
+        // particular race: the caller is never told one account while the session holds another.
+        await Assert.That(writer.Published[^1]).IsEqualTo(concurrentUser.Id);
+        await Assert.That(writer.Published[^1]).IsEqualTo(provisioned.UserId);
     }
 
     private static DateTime UtcNow() => new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
@@ -216,6 +317,9 @@ public sealed class EnsureUserHandlerTests
     private sealed class InMemoryUserRepository : IUserRepository
     {
         private readonly List<Credential> _addedCredentials = [];
+        private readonly Dictionary<Guid, User> _storedUsers = [];
+        private List<Guid> _publishedWhenAddWasEntered = [];
+        private RecordingUserContextWriter? _observedWriter;
         private User? _existingUser;
         private Credential? _existingCredential;
         private bool _failNextAddWithCredentialRace;
@@ -227,12 +331,41 @@ public sealed class EnsureUserHandlerTests
         {
             _existingUser = existingUser;
             _existingCredential = existingCredential;
+
+            if (existingUser is not null)
+            {
+                _storedUsers[existingUser.Id] = existingUser;
+            }
         }
 
         public int AddCallCount { get; private set; }
 
         /// <summary>Every credential handed to <see cref="TryAddAsync"/>, refused calls included.</summary>
         public IReadOnlyList<Credential> AddedCredentials => _addedCredentials;
+
+        /// <summary>
+        /// Every user row this repository holds, by id. Discovery no longer hands back a user, so this
+        /// is the only way left to ask what was actually stored — and it is a fair question for a test
+        /// to ask, because the row is what a later request reads.
+        /// </summary>
+        public IReadOnlyDictionary<Guid, User> StoredUsers => _storedUsers;
+
+        /// <summary>
+        /// What <paramref name="writer"/> had published at the instant <see cref="TryAddAsync"/> was
+        /// entered.
+        /// </summary>
+        /// <remarks>
+        /// The snapshot has to be taken from inside the call because the ordering is the claim. Read
+        /// once the handler has returned, a handler that publishes before its insert and one that
+        /// publishes after are indistinguishable — both end with the same list — yet only the first
+        /// survives the <c>WITH CHECK</c> on the users INSERT.
+        /// </remarks>
+        public void ObservePublicationsDuring(RecordingUserContextWriter writer) => _observedWriter = writer;
+
+        /// <summary>
+        /// The snapshot <see cref="ObservePublicationsDuring"/> arms. Empty when nothing was observed.
+        /// </summary>
+        public IReadOnlyList<Guid> PublishedWhenAddWasEntered => _publishedWhenAddWasEntered;
 
         /// <summary>
         /// Makes the next <see cref="TryAddAsync"/> call report a lost race on the unique
@@ -254,7 +387,11 @@ public sealed class EnsureUserHandlerTests
         /// </summary>
         public void FailNextAddWithEmailConflict() => _failNextAddWithEmailConflict = true;
 
-        public Task<User?> FindByFederatedCredentialAsync(
+        // Answers from the credential alone, which is not a simplification of the fake but the
+        // contract: the real query may not join users, because discovery runs before the session
+        // carries an identity and users is policed. Returning _existingUser?.Id here would let a
+        // production query that still joined pass this suite.
+        public Task<Guid?> FindUserIdByFederatedCredentialAsync(
             string provider,
             string subject,
             CancellationToken cancellationToken = default)
@@ -263,7 +400,7 @@ public sealed class EnsureUserHandlerTests
                            && _existingCredential.Provider == provider.Trim()
                            && _existingCredential.Subject == subject.Trim();
 
-            return Task.FromResult(matches ? _existingUser : null);
+            return Task.FromResult<Guid?>(matches ? _existingCredential!.UserId : null);
         }
 
         public Task<bool> TryAddAsync(User user, Credential credential, CancellationToken cancellationToken = default)
@@ -271,13 +408,20 @@ public sealed class EnsureUserHandlerTests
             AddCallCount++;
             _addedCredentials.Add(credential);
 
+            // Before anything else in this method: a snapshot taken after the store mutated would be
+            // measuring the fake, not the handler.
+            if (_observedWriter is not null)
+            {
+                _publishedWhenAddWasEntered = [.. _observedWriter.Published];
+            }
+
             if (_failNextAddWithEmailConflict)
             {
                 _failNextAddWithEmailConflict = false;
 
                 // Nothing is stored, on purpose: the handler's follow-up
-                // FindByFederatedCredentialAsync has to come back empty, because that empty re-read
-                // is the signal it keys on.
+                // FindUserIdByFederatedCredentialAsync has to come back with no id, because that
+                // empty re-read is the signal it keys on.
                 return Task.FromResult(false);
             }
 
@@ -286,6 +430,12 @@ public sealed class EnsureUserHandlerTests
                 _failNextAddWithCredentialRace = false;
                 _existingUser = _raceWinner;
                 _existingCredential = _raceWinnerCredential;
+
+                if (_raceWinner is not null)
+                {
+                    _storedUsers[_raceWinner.Id] = _raceWinner;
+                }
+
                 _raceWinner = null;
                 _raceWinnerCredential = null;
                 return Task.FromResult(false);
@@ -293,6 +443,7 @@ public sealed class EnsureUserHandlerTests
 
             _existingUser = user;
             _existingCredential = credential;
+            _storedUsers[user.Id] = user;
             return Task.FromResult(true);
         }
     }

@@ -133,21 +133,38 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 -- above AND a policy below; RlsCoverageTests derives its subject from the live schema so that a
 -- missing policy fails a test rather than shipping.
 --
--- The budget-owned tables are policed, mirroring the BudgetIsolation query filters. Every other
--- table in the schema is exempt, and each exemption is written down in RlsCoverageTests with its
--- reason rather than falling out of a query by accident:
+-- Ownership decides which policy a table owes. A table carrying budget_id is budget-owned and owes
+-- budget_isolation; a table carrying user_id — or being users itself, whose own row has no user_id
+-- column — is user-owned and owes user_isolation. budget_id wins where both could apply, because a
+-- budget belongs to exactly one user and the budget-keyed predicate is therefore strictly narrower.
+-- A table carrying neither is refused rather than waved through: nobody can say which of two
+-- policies it owes, and "we forgot" and "it needs nothing" leave the identical catalog behind.
 --
---   budgets       a budget is the tenant, not a tenant's row
---   users         belongs to no budget, and provisioning reads it before one is resolved
---   credentials   the same, and it is read to discover WHO is asking — before any identity exists
+-- Every other table is exempt, and each exemption is written down with its reason rather than
+-- falling out of a query by accident:
+--
+--   credentials   read to discover WHO is asking — a policy keyed on the identity it resolves
+--                 would refuse the query that resolves it
 --   currencies    shared reference data belonging to no tenant
 --   __EFMigrationsHistory   EF's own bookkeeping
 --
--- The reason that list is spelled out rather than inferred: the coverage test used to discover its
+-- budgets and users used to be on that list, and the reason was real at the time: provisioning read
+-- them before any identity existed. It read users only because the credential lookup joined to it
+-- for a value the caller then discarded. Reading the credential alone yields the same user id, so
+-- the identity is now known before either table is touched — including at registration, where
+-- User.Create mints the id on the application side and the row's id therefore exists before the row
+-- does. See docs/decisions/0011.
+--
+-- The reason the list is spelled out rather than inferred: the coverage test used to discover its
 -- subjects by looking for a budget_id column, so a new non-tenant table skipped the check without
 -- anyone deciding it should. That is the silent half of the asymmetry above, applied to the test
--- meant to catch it. Every table in public is now classified — policed, or exempt with a reason —
--- and a new one fails the test until someone says which it is.
+-- meant to catch it. Every table in public is now classified — policed by ownership, or exempt with
+-- a reason — and a new one fails the test until someone says which it is.
+--
+-- That classification lives in Infrastructure/Persistence/Provisioning/RowLevelSecurityCoverage.cs,
+-- which RlsCoverageTests and the deploy-time verifier both read. This comment block is a human
+-- restatement for whoever is editing this file; it is deliberately not a second EXECUTED list,
+-- because two of those have no adjudicator when they disagree and the loser fails open.
 --
 -- The direction is what matters, so do not "simplify" the exemption list back into a discovery
 -- rule. A list of policed tables fails OPEN: the sixth table nobody added to it keeps the suite
@@ -174,6 +191,11 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 -- POLICY has no OR REPLACE, so a changed policy body only takes effect on a re-run because the old
 -- one is dropped first.
 
+-- Two settings, one shape. app.current_budget_id names the ambient budget and app.current_user_id
+-- names the authenticated user; SessionContextInterceptor writes both on every connection open, in
+-- one round-trip, and writes '' rather than skipping when either is unresolved. Everything the next
+-- paragraph argues about the budget setting applies unchanged to the user setting.
+--
 -- The policies below read the setting as COALESCE(current_setting(..., true), ''), and that shape
 -- is load-bearing rather than defensive. A session that names no budget must fail the same way
 -- whatever the connection's history: strict current_setting raises 42704 ("unrecognized
@@ -220,3 +242,30 @@ DROP POLICY IF EXISTS budget_isolation ON transactions;
 CREATE POLICY budget_isolation ON transactions FOR ALL TO budgetoid_app
     USING      (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid)
     WITH CHECK (budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid);
+
+-- The user-owned tables, keyed on the second session setting. Same shape, same reasons, different
+-- question: budget_isolation asks which tenant a row belongs to, user_isolation asks which person.
+-- A budget belongs to exactly one user, so where both could apply the budget-keyed rule is the
+-- narrower one — which is why nothing below carries both.
+--
+-- These two used to be exempt, and the reason was real: discovery read them before any identity
+-- existed. It read them because the credential lookup joined credentials to users for a value the
+-- caller then discarded. Reading the credential alone yields the same user id, so the identity is
+-- known before any statement below is reached — including on registration, where User.Create mints
+-- the id client-side and the id therefore exists before the row does. See docs/decisions/0011.
+--
+-- credentials keeps the exemption, and is now the only table that has one it could have outgrown.
+-- It is the table read to answer "who is asking", so a policy keyed on the answer would refuse the
+-- question that produces it.
+
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_isolation ON users;
+CREATE POLICY user_isolation ON users FOR ALL TO budgetoid_app
+    USING      (id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
+    WITH CHECK (id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
+
+ALTER TABLE budgets ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_isolation ON budgets;
+CREATE POLICY user_isolation ON budgets FOR ALL TO budgetoid_app
+    USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
+    WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);

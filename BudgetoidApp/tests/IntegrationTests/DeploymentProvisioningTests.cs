@@ -82,6 +82,67 @@ public sealed class DeploymentProvisioningTests
     private const string SabotagedTable = "payees";
 
     /// <summary>
+    /// The user-owned table whose policy the users sabotage test drops. Unlike
+    /// <see cref="SabotagedTable" /> this one is not interchangeable with its neighbours: it is the
+    /// only table in the schema that is owned by a tenant without carrying an ownership column, so it
+    /// is the one table a discovery query keyed on a column can miss entirely.
+    /// </summary>
+    private const string UsersTable = "users";
+
+    /// <summary>
+    /// The table that is tenant-owned and deliberately unpoliced, written down here so that the
+    /// discovery below can excuse it by name.
+    /// </summary>
+    /// <remarks>
+    /// It carries <c>user_id</c>, so a query that asked only "does this table own rows" would demand
+    /// a policy it must not have: <c>credentials</c> is read to answer "who is asking", and a policy
+    /// keyed on that answer would refuse the question that produces it. One written-down name is the
+    /// honest way to say that; a column filter that quietly dropped it would be the same fail-open
+    /// shape this file exists to catch.
+    /// </remarks>
+    private const string PolicyExemptTenantOwnedTable = "credentials";
+
+    /// <summary>
+    /// The policy name a budget-owned table owes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Written as a literal rather than read from <c>RowLevelSecurityCoverage</c>, and this is the
+    /// same argument the discovery helper below already makes for itself. A test that asked the code
+    /// under test which policy name it requires would agree with that code by construction: rename
+    /// the constant in production and the expectation renames itself, so the assertion could never
+    /// fail. Duplicating two short strings is the price of an expectation that is independently
+    /// stated, and it is a price this file already pays — the missing-policy test has spelled
+    /// <c>budget_isolation</c> into its sabotage SQL since it was written.
+    /// </para>
+    /// <para>
+    /// The duplication is also self-announcing rather than silent: change the name in
+    /// <c>app-role-grants.sql</c> without changing it here and these tests go red immediately, which
+    /// is exactly the conversation a rename ought to start.
+    /// </para>
+    /// </remarks>
+    private const string BudgetIsolationPolicy = "budget_isolation";
+
+    /// <summary>
+    /// The policy name a user-owned table owes. A literal for the reason given on
+    /// <see cref="BudgetIsolationPolicy" />.
+    /// </summary>
+    private const string UserIsolationPolicy = "user_isolation";
+
+    /// <summary>
+    /// The name a policy is renamed to by the rename sabotage. Anything not equal to either isolation
+    /// policy name would do; it is spelled out so the failure message reads as a rename rather than as
+    /// an unrelated policy someone added.
+    /// </summary>
+    private const string RenamedPolicy = "budget_isolation_v2";
+
+    /// <summary>
+    /// A table created by the unclassifiable sabotage: in <c>public</c>, ordinary, and carrying
+    /// neither ownership column. The name is one nobody would mistake for a migration's output.
+    /// </summary>
+    private const string UnclassifiableTable = "sabotage_unclassified";
+
+    /// <summary>
     /// A fixed object id standing in for the deployed container app's managed identity. Fixed rather
     /// than <c>Guid.NewGuid()</c> because the emitted SQL is pinned character for character, and a
     /// value that changed per run would make the expected string unwritable.
@@ -203,7 +264,7 @@ public sealed class DeploymentProvisioningTests
     }
 
     [Test]
-    public async Task ProvisionAsync_PolicesEveryBudgetOwnedTable()
+    public async Task ProvisionAsync_PolicesEveryTenantOwnedTable()
     {
         // Arrange
         await using PostgreSqlContainer container = await StartBareContainerAsync();
@@ -214,26 +275,38 @@ public sealed class DeploymentProvisioningTests
         await using NpgsqlConnection admin = await OpenAdminAsync(container);
 
         // The table list is derived from the live schema, never written down. A hardcoded list of
-        // the five known names would keep passing on the day someone adds the sixth, which is the
-        // only day this assertion matters.
-        IReadOnlyList<(string Table, bool RowSecurityEnabled)> tables =
-            await DiscoverBudgetOwnedTablesAsync(admin);
+        // the known names would keep passing on the day someone adds the next one, which is the
+        // only day this assertion matters. "Tenant-owned" rather than "budget-owned" because a
+        // budget is not the only tenant any more: a user is one too, and a table owned by a person
+        // is no less of a breach for being reachable through the wrong kind of key.
+        IReadOnlyList<(string Table, bool RowSecurityEnabled, string RequiredPolicy)> tables =
+            await DiscoverTenantOwnedTablesAsync(admin);
         List<string> unprotected = tables
             .Where(entry => !entry.RowSecurityEnabled)
             .Select(entry => entry.Table)
             .ToList();
 
         List<string> wronglyPoliced = [];
-        foreach ((string table, _) in tables)
+        foreach ((string table, _, string requiredPolicy) in tables)
         {
-            int policies = await CountIsolationPoliciesAsync(admin, table);
+            (int total, int matching) = await CountIsolationPoliciesAsync(admin, table, requiredPolicy);
 
             // Exactly one, not at least one. These policies are permissive and permissive policies
             // OR together, so a second one can only widen what the first allows — a table that grew
             // a stray policy has quietly stopped meaning what its isolation policy says.
-            if (policies != 1)
+            if (total != 1)
             {
-                wronglyPoliced.Add($"{table}: {policies} policies, wanted 1");
+                wronglyPoliced.Add($"{table}: {total} policies, wanted 1");
+            }
+
+            // And the one policy has to be the rule this table's ownership calls for, not merely a
+            // rule. A count answers "is something enforced here"; only the name answers "is the
+            // thing enforced here the thing this table owes". A user-keyed policy on a budget-owned
+            // table is a real, enforced policy — and wider than the tenancy the table is supposed
+            // to have, because a budget belongs to exactly one user but a user owns many budgets.
+            if (matching != 1)
+            {
+                wronglyPoliced.Add($"{table}: {matching} policies named {requiredPolicy}, wanted 1");
             }
         }
 
@@ -243,6 +316,12 @@ public sealed class DeploymentProvisioningTests
         await Assert.That(tables).IsNotEmpty();
         await Assert.That(unprotected).IsEmpty();
         await Assert.That(wronglyPoliced).IsEmpty();
+
+        // Both ownership shapes are actually present in what was discovered, which is what stops
+        // this test from silently narrowing back to the budget-keyed half it grew out of. Without
+        // it, a discovery query that lost its user_id branch would still pass every line above.
+        await Assert.That(tables.Select(entry => entry.RequiredPolicy).Distinct().Order().ToList())
+            .IsEquivalentTo(new[] { BudgetIsolationPolicy, UserIsolationPolicy });
     }
 
     [Test]
@@ -317,7 +396,8 @@ public sealed class DeploymentProvisioningTests
             admin, $"alter table {SabotagedTable} disable row level security");
 
         // Act
-        int survivingPolicies = await CountIsolationPoliciesAsync(admin, SabotagedTable);
+        (int survivingPolicies, _) =
+            await CountIsolationPoliciesAsync(admin, SabotagedTable, BudgetIsolationPolicy);
 
         List<string> logLines = [];
         InvalidOperationException? caught = null;
@@ -348,6 +428,156 @@ public sealed class DeploymentProvisioningTests
         await Assert.That(caught).IsTypeOf<RowLevelSecurityCoverageException>();
         await Assert.That(reportedTables).Contains(SabotagedTable);
         await Assert.That(caught!.Message).Contains(SabotagedTable);
+        await Assert.That(logLines).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyRowLevelSecurityCoverageAsync_MissingPolicyOnUsers_ThrowsListingTheTable()
+    {
+        // Arrange — the same sabotage as the missing-policy test, aimed at the one table that owns
+        // rows without carrying an ownership column. That difference is the whole test: a verifier
+        // that finds its subjects by looking for a budget_id column cannot see users at all, so
+        // dropping the policy that stands between the application role and every person's row leaves
+        // the deploy reporting full coverage. The check is not weaker here, it is absent, and absence
+        // is invisible from the outside — which is the exact fail-open shape this verifier was
+        // written to prevent, now sitting inside the verifier.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(admin, $"drop policy {UserIsolationPolicy} on {UsersTable}");
+
+        // Act — the verifier directly, never through ProvisionAsync, for the reason spelled out in
+        // the missing-policy test: ProvisionAsync re-applies the grants script before verifying and
+        // would heal this damage on the way past.
+        List<string> logLines = [];
+        InvalidOperationException? caught = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
+                container.GetConnectionString(),
+                log: logLines.Add);
+        }
+        catch (InvalidOperationException exception)
+        {
+            caught = exception;
+        }
+
+        List<string> reportedTables =
+            (caught as RowLevelSecurityCoverageException)?.Tables.ToList() ?? [];
+
+        // Assert — the same four claims as the budget-owned sabotage, and deliberately not a weaker
+        // set. A user-owned table left unpoliced is not a lesser breach that deserves a softer
+        // report: it is every registered person's row readable by a session that named somebody
+        // else. The reasoning behind each line is in the missing-policy test above.
+        await Assert.That(caught).IsTypeOf<RowLevelSecurityCoverageException>();
+        await Assert.That(reportedTables).Contains(UsersTable);
+        await Assert.That(caught!.Message).Contains(UsersTable);
+        await Assert.That(logLines).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyRowLevelSecurityCoverageAsync_RenamedPolicy_ThrowsListingTheTable()
+    {
+        // Arrange — rename rather than drop, so the table still has exactly one policy and still has
+        // row-level security switched on. Everything a count can see is unchanged; only the name
+        // moved.
+        //
+        // That is why counting was never enough. A count answers "does a rule exist here", and the
+        // question a deploy has to answer is "is the rule that exists here the rule this table
+        // owes". Those come apart in two directions and both ship silently: the policy body can be
+        // rewritten under a name nobody reads, and — once there are two isolation rules in the
+        // schema — a table can end up carrying the wrong one of them, which is a real, enforced
+        // policy that is simply wider than its tenancy. A rename is the cheapest way to make that
+        // gap visible, because it changes nothing else at all.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin,
+            $"alter policy {BudgetIsolationPolicy} on {SabotagedTable} rename to {RenamedPolicy}");
+
+        // Act
+        (int survivingPolicies, int surviving) =
+            await CountIsolationPoliciesAsync(admin, SabotagedTable, BudgetIsolationPolicy);
+
+        List<string> logLines = [];
+        InvalidOperationException? caught = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
+                container.GetConnectionString(),
+                log: logLines.Add);
+        }
+        catch (InvalidOperationException exception)
+        {
+            caught = exception;
+        }
+
+        List<string> reportedTables =
+            (caught as RowLevelSecurityCoverageException)?.Tables.ToList() ?? [];
+
+        // Assert — the state of the sabotaged table first, because without it this test could be the
+        // missing-policy one wearing a different name. One policy present and none of it named
+        // budget_isolation is what pins the sabotage as "renamed" rather than "gone", and it is the
+        // precise state every count-based check calls healthy.
+        await Assert.That(survivingPolicies).IsEqualTo(1);
+        await Assert.That(surviving).IsEqualTo(0);
+
+        await Assert.That(caught).IsTypeOf<RowLevelSecurityCoverageException>();
+        await Assert.That(reportedTables).Contains(SabotagedTable);
+        await Assert.That(caught!.Message).Contains(SabotagedTable);
+        await Assert.That(logLines).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyRowLevelSecurityCoverageAsync_UnclassifiableTable_Throws()
+    {
+        // Arrange — a new ordinary table in public carrying neither ownership column. Today the
+        // verifier finds its subjects by looking for budget_id, so this table is exempted by a query
+        // rather than by anybody's decision, and the deploy passes.
+        //
+        // Refusing it is not pedantry about a table that may well need nothing. It is that "we
+        // forgot to police this" and "this genuinely needs no policy" produce the identical catalog,
+        // and the difference between them is a judgement only a person can make. Left to a query,
+        // every future table gets the benefit of the doubt silently and permanently — and the deploy
+        // is the last moment anyone is looking. A red build asking someone to decide costs a minute;
+        // the alternative costs whatever the table turns out to hold.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin, $"create table public.{UnclassifiableTable} (id uuid primary key, note text)");
+
+        // Act — again straight at the verifier. Here that matters for a second reason on top of the
+        // healing one: this table is outside the grants script entirely, so ProvisionAsync would not
+        // touch it and the sabotage would survive — but the call would still be the whole pipeline
+        // rather than the one step whose behaviour is in question.
+        List<string> logLines = [];
+        InvalidOperationException? caught = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
+                container.GetConnectionString(),
+                log: logLines.Add);
+        }
+        catch (InvalidOperationException exception)
+        {
+            caught = exception;
+        }
+
+        List<string> reportedTables =
+            (caught as RowLevelSecurityCoverageException)?.Tables.ToList() ?? [];
+
+        // Assert — the coverage exception rather than a bare InvalidOperationException, because an
+        // operator reading this needs to be sent to the same place the other coverage failures send
+        // them: a table in the schema is not accounted for, and here it is. The table name in both
+        // the structured list and the message, for the reasons the missing-policy test gives.
+        await Assert.That(caught).IsTypeOf<RowLevelSecurityCoverageException>();
+        await Assert.That(reportedTables).Contains(UnclassifiableTable);
+        await Assert.That(caught!.Message).Contains(UnclassifiableTable);
         await Assert.That(logLines).IsNotEmpty();
     }
 
@@ -697,70 +927,112 @@ public sealed class DeploymentProvisioningTests
     }
 
     /// <summary>
-    /// Returns every ordinary table in <c>public</c> carrying a <c>budget_id</c> column, with
-    /// whether row-level security is switched on for it.
+    /// Returns every ordinary table in <c>public</c> whose rows belong to a tenant, with whether
+    /// row-level security is switched on for it and the policy name its ownership requires.
     /// </summary>
     /// <remarks>
-    /// The <c>budget_id</c> column <i>is</i> the definition of budget-owned, which is why it and not
-    /// a name list is the filter. <c>budgets</c>, <c>users</c>, <c>currencies</c>,
-    /// <c>credentials</c> and <c>__EFMigrationsHistory</c> drop out for free: a budget is the tenant
-    /// rather than a tenant's row, and none of the other four belongs to one. <c>relrowsecurity</c>
-    /// is read in the same row as the discovery so that "is this table budget-owned" and "is it
-    /// protected" cannot drift into two lists that disagree. This and <c>RlsCoverageTests</c> ask
-    /// different questions of the catalog: here it is "which tables are budget-owned, so I can
-    /// sabotage one", there it is "is every table in the schema accounted for". Both files need to
-    /// observe the fact from outside the code that establishes it, and a shared helper would make
-    /// one test's subject the other's fixture.
+    /// <para>
+    /// Ownership is read from the table's own columns, because the column <i>is</i> the definition:
+    /// <c>budget_id</c> makes a table budget-owned, <c>user_id</c> makes it user-owned. Budget first
+    /// where both could apply — a budget belongs to exactly one user, so the budget-keyed rule is
+    /// the narrower of the two and a table carrying both must be protected by it. <c>users</c> is
+    /// named outright, and that is the one place a literal is safe in this direction: the row that
+    /// <i>is</i> the person has no <c>user_id</c> to be recognised by, so without the name it would
+    /// look like it owned nothing. A hardcoded name here can only <b>add</b> a subject, never remove
+    /// one.
+    /// </para>
+    /// <para>
+    /// <c>credentials</c> is excused by name, and that exclusion is a written-down decision rather
+    /// than a shape: it is genuinely user-owned and deliberately unpoliced, because it is the table
+    /// read to work out who is asking. <c>currencies</c> and <c>__EFMigrationsHistory</c> need no
+    /// mention — they carry neither column, so they are not tenant-owned in the first place.
+    /// </para>
+    /// <para>
+    /// This stays <b>private</b> rather than calling <c>RowLevelSecurityCoverage</c>, and the reason
+    /// is unchanged by the widening: this test has to choose its subject from outside the code it is
+    /// checking. Asking the classifier which tables are owned, and which policy each owes, would make
+    /// the expectation a restatement of the implementation — the two would agree by construction and
+    /// the assertion could never fail. The same argument keeps the policy names above as literals.
+    /// <c>relrowsecurity</c> is read in the same row as the discovery so "is this table owned" and
+    /// "is it protected" cannot drift into two lists that disagree.
+    /// </para>
     /// </remarks>
-    private static async Task<IReadOnlyList<(string Table, bool RowSecurityEnabled)>>
-        DiscoverBudgetOwnedTablesAsync(NpgsqlConnection connection)
+    private static async Task<IReadOnlyList<(string Table, bool RowSecurityEnabled, string RequiredPolicy)>>
+        DiscoverTenantOwnedTablesAsync(NpgsqlConnection connection)
     {
         await using NpgsqlCommand command = new(
             """
-            select c.relname, c.relrowsecurity
+            select c.relname,
+                   c.relrowsecurity,
+                   exists (
+                       select 1
+                       from pg_attribute a
+                       where a.attrelid = c.oid
+                         and a.attname = 'budget_id'
+                         and a.attnum > 0
+                         and not a.attisdropped) as budget_owned
             from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
             where n.nspname = 'public'
               and c.relkind = 'r'
-              and exists (
-                  select 1
-                  from pg_attribute a
-                  where a.attrelid = c.oid
-                    and a.attname = 'budget_id'
-                    and a.attnum > 0
-                    and not a.attisdropped)
+              and c.relname <> @exempt
+              and (
+                  c.relname = @usersTable
+                  or exists (
+                      select 1
+                      from pg_attribute a
+                      where a.attrelid = c.oid
+                        and a.attname in ('budget_id', 'user_id')
+                        and a.attnum > 0
+                        and not a.attisdropped))
             order by c.relname
             """,
             connection);
+        command.Parameters.AddWithValue("exempt", PolicyExemptTenantOwnedTable);
+        command.Parameters.AddWithValue("usersTable", UsersTable);
 
-        List<(string, bool)> tables = [];
+        List<(string, bool, string)> tables = [];
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            tables.Add((reader.GetString(0), reader.GetBoolean(1)));
+            tables.Add((
+                reader.GetString(0),
+                reader.GetBoolean(1),
+                reader.GetBoolean(2) ? BudgetIsolationPolicy : UserIsolationPolicy));
         }
 
         return tables;
     }
 
     /// <summary>
-    /// Counts the policies defined on one table. Every policy, not only the ones named
-    /// <c>budget_isolation</c>: the count is asserted to be exactly one, and narrowing the query to
-    /// a name would hide the extra policy that assertion exists to catch.
+    /// Counts the policies on one table twice over: all of them, and the ones carrying the name that
+    /// table's ownership requires.
     /// </summary>
-    private static async Task<int> CountIsolationPoliciesAsync(
+    /// <remarks>
+    /// Both numbers are needed and neither implies the other. The total is what makes "exactly one"
+    /// meaningful — these policies are permissive and permissive policies OR together, so a second
+    /// one can only widen what the first allows, and a query narrowed to a name would hide the stray.
+    /// The named count is what makes "one policy" mean the right policy: with two isolation rules in
+    /// the schema, a table carrying the other one has a rule, enforced, and wider than its tenancy.
+    /// </remarks>
+    private static async Task<(int Total, int WithRequiredName)> CountIsolationPoliciesAsync(
         NpgsqlConnection connection,
-        string table)
+        string table,
+        string requiredPolicyName)
     {
         await using NpgsqlCommand command = new(
             """
-            select count(*)
+            select count(*), count(*) filter (where policyname = @policy)
             from pg_policies
             where schemaname = 'public' and tablename = @table
             """,
             connection);
         command.Parameters.AddWithValue("table", table);
-        return (int)(long)(await command.ExecuteScalarAsync())!;
+        command.Parameters.AddWithValue("policy", requiredPolicyName);
+
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        await reader.ReadAsync();
+        return ((int)reader.GetInt64(0), (int)reader.GetInt64(1));
     }
 
     /// <summary>

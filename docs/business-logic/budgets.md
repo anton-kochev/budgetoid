@@ -97,9 +97,11 @@ erDiagram
     policy on each of the five tables compares `budget_id` against the session's ambient budget in
     both `USING` and `WITH CHECK`, so no statement on the connection every request is served by
     reaches another budget's rows and an insert can only land in the ambient budget, whatever
-    produced the statement. `BudgetSessionInterceptor` puts that budget on every connection the
-    context opens; the mechanism, its scope and what it deliberately does not cover are in
-    [ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md). Above it sit
+    produced the statement. `SessionContextInterceptor` puts that budget on every connection the
+    context opens, alongside the authenticated user that `user_isolation` reads on `budgets` itself;
+    the mechanism, its scope and what it deliberately does not cover are in
+    [ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md) and
+    [ADR 0011](../decisions/0011-police-the-user-owned-tables.md). Above it sit
     the EF Core global query filters named `BudgetIsolation` in
     `BudgetoidApp/Infrastructure/Persistence/BudgetoidDbContext.cs`, applied to `Transaction`,
     `Account`, `Payee`, `CategoryGroup` and `Category`, each comparing `BudgetId` against

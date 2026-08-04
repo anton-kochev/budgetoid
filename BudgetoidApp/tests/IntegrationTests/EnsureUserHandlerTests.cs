@@ -134,7 +134,43 @@ public sealed class EnsureUserHandlerTests
     private static EnsureUserHandler CreateHandler(BudgetoidDbContext db) => new(
         new UserRepository(db),
         new BudgetRepository(db),
+        new UnpolicedUserContextWriter(),
         TimeProvider.System);
+
+    /// <summary>
+    /// Discards the published identity, because on this fixture nothing reads it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not a silenced dependency. Every context in this file is built on
+    /// <see cref="RepositoryTestHost.ConnectionString"/>, which is the container <b>superuser</b>,
+    /// and PostgreSQL skips row-level security entirely for a superuser. The session setting the
+    /// handler publishes is what the <c>user_isolation</c> policies read, so on this connection it
+    /// is inert: publishing the right id, the wrong id or no id at all produces byte-identical
+    /// results here. These tests are about what provisioning <em>writes</em> — one user, one budget,
+    /// one credential, and nothing at all on the conflict path — not about which rows a policed
+    /// session may then see.
+    /// </para>
+    /// <para>
+    /// The publication itself is covered where it can actually be observed: the unit tests assert
+    /// the sequence of published ids against a recording writer, and the app-role fixtures
+    /// (<see cref="RepositoryTestHost.OpenAppConnectionForUserAsync"/>) exercise the policies on a
+    /// connection that is subject to them. A test needing either belongs there, not here — pointing
+    /// this helper at a real writer would not make these tests measure the policies.
+    /// </para>
+    /// <para>
+    /// Nested and private rather than shared: <c>UnitTests.Fakes.RecordingUserContextWriter</c> lives
+    /// in a project this one does not reference, and one call site does not justify adding that
+    /// reference.
+    /// </para>
+    /// </remarks>
+    private sealed class UnpolicedUserContextWriter : IUserContextWriter
+    {
+        public void ResolveUser(Guid userId)
+        {
+            // Intentionally empty — see the type's remarks.
+        }
+    }
 
     private static BudgetoidDbContext CreateDb(string connectionString) => new(
         new DbContextOptionsBuilder<BudgetoidDbContext>()

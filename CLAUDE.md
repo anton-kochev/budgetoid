@@ -60,13 +60,20 @@ Load-bearing rules, each explained there or in the linked decision:
 - Budget-owned rows are isolated twice: PostgreSQL `budget_isolation` RLS policies enforce,
   EF `BudgetIsolation` query filters turn a foreign row into the API's 404/400. Neither is
   duplication — do not delete either. See [ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md).
+- `users` and `budgets` are policed on the **user** by `user_isolation`, not on a budget.
+  `credentials` is the one exempt user-owned table — it is read to discover who is asking,
+  so the discovery lookup must never join `users`. See
+  [ADR 0011](docs/decisions/0011-police-the-user-owned-tables.md).
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
   `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
-- A new budget-owned table needs a grant **and** a policy. Grants fail closed (`42501`),
-  RLS fails open — `RlsCoverageTests` exists to catch the silent case.
-- `BudgetSessionInterceptor` must stay a **connection-opened** interceptor, and
-  `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string.
-  See [ADR 0008](docs/decisions/0008-read-the-ambient-budget-inside-the-policy.md).
+- A new tenant-owned table needs a grant **and** a policy — `budget_isolation` if it carries
+  `budget_id`, `user_isolation` if it carries `user_id`. Grants fail closed (`42501`),
+  RLS fails open. `RlsCoverageTests` and the deploy-time verifier read one shared classifier
+  (`RowLevelSecurityCoverage`); a table carrying neither column fails both.
+- `SessionContextInterceptor` must stay a **connection-opened** interceptor, and
+  `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string —
+  now for two settings, `app.current_user_id` and `app.current_budget_id`, which raises the
+  cost of ever flipping them. See [ADR 0008](docs/decisions/0008-read-the-ambient-budget-inside-the-policy.md).
 - The app connects as `budgetoid_app` on `ConnectionStrings:budgetoid`; the elevated
   `budgetoid-admin` is read only by the Development startup block. Migrations never run on
   the app role. See [ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md).

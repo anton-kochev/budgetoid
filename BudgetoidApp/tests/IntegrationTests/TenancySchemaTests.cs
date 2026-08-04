@@ -55,7 +55,7 @@ public sealed class TenancySchemaTests
         // Arrange — one account and the transaction on it. The transaction's account reference is
         // composite and mandatory, so there is no shape of transaction this refusal misses.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (_, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid transactionId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
@@ -112,7 +112,7 @@ public sealed class TenancySchemaTests
         // Arrange — a category always sits in a group, and the reference to that group is composite,
         // so this refusal has no gap either.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (_, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid categoryId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
@@ -157,7 +157,7 @@ public sealed class TenancySchemaTests
         // thing standing between it and another budget's ledger is the app role's grant list, in
         // which accounts.budget_id does not appear.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (Guid userId, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid accountId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
@@ -174,7 +174,7 @@ public sealed class TenancySchemaTests
         // and the refusal it is paired with would go vacuous. The destination budget is real (see
         // SeedTwoBudgetsAsync), so if the grant ever leaked budget_id the move would succeed
         // outright instead of tripping a foreign key and passing for the wrong reason.
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(userId, budgetId);
         PostgresException exception = await ThrowsPostgresExceptionAsync(
             app, "accounts", accountId, otherBudgetId);
 
@@ -202,7 +202,7 @@ public sealed class TenancySchemaTests
         // the categories foreign key has no row to object with, so the grant list on
         // category_groups — which does not carry budget_id — is the rule's only enforcement.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (Guid userId, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid groupId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
@@ -214,7 +214,7 @@ public sealed class TenancySchemaTests
 
         // Act — app role connection carrying budgetId, real destination budget, on the same terms
         // as the account test above.
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(userId, budgetId);
         PostgresException exception = await ThrowsPostgresExceptionAsync(
             app, "category_groups", groupId, otherBudgetId);
 
@@ -243,7 +243,7 @@ public sealed class TenancySchemaTests
         // for that whole window the grant list on payees — no budget_id in it — is the only thing
         // holding the tenancy line.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (Guid userId, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid payeeId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
@@ -255,7 +255,7 @@ public sealed class TenancySchemaTests
 
         // Act — app role connection carrying budgetId, real destination budget, on the same terms
         // as the two tests above.
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(userId, budgetId);
         PostgresException exception = await ThrowsPostgresExceptionAsync(
             app, "payees", payeeId, otherBudgetId);
 
@@ -283,8 +283,10 @@ public sealed class TenancySchemaTests
     private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
     /// <summary>
-    /// Seeds one owner with two budgets and returns both ids: the one every row starts in, and the
-    /// one every UPDATE moves it to.
+    /// Seeds one owner with two budgets and returns the owner together with both budget ids: the
+    /// one every row starts in, and the one every UPDATE moves it to. The owner is returned because
+    /// an app-role session names a user as well as a budget — see
+    /// <see cref="RepositoryTestHost.OpenAppConnectionAsync" />.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -303,13 +305,13 @@ public sealed class TenancySchemaTests
     /// <c>IX_budgets_user_id_name</c>.
     /// </para>
     /// </remarks>
-    private static async Task<(Guid BudgetId, Guid OtherBudgetId)> SeedTwoBudgetsAsync(
+    private static async Task<(Guid UserId, Guid BudgetId, Guid OtherBudgetId)> SeedTwoBudgetsAsync(
         RepositoryTestHost host)
     {
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         Guid budgetId = await host.SeedAdditionalBudgetAsync(userId, "Household");
         Guid otherBudgetId = await host.SeedAdditionalBudgetAsync(userId, "Holiday Fund");
-        return (budgetId, otherBudgetId);
+        return (userId, budgetId, otherBudgetId);
     }
 
     /// <summary>
@@ -317,8 +319,9 @@ public sealed class TenancySchemaTests
     /// the connection rather than handing over a string, because the two refusals under test live
     /// on different ones and the app-role one is not interchangeable with its connection string:
     /// composite-FK refusals fire anywhere, so the admin connection exercises them, while grant
-    /// refusals only exist for the app role — and an app-role connection has to carry its ambient
-    /// budget, which only <see cref="RepositoryTestHost.OpenAppConnectionAsync" /> arranges.
+    /// refusals only exist for the app role — and an app-role connection has to carry the signed-in
+    /// user and its ambient budget, which only
+    /// <see cref="RepositoryTestHost.OpenAppConnectionAsync" /> arranges.
     /// </summary>
     private static async Task<PostgresException> ThrowsPostgresExceptionAsync(
         NpgsqlConnection connection,

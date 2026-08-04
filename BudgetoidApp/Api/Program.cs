@@ -3,6 +3,7 @@ using Api.Endpoints;
 using Api.Infrastructure;
 using Application;
 using Application.Abstractions;
+using Application.Users.EnsureUser;
 using Infrastructure;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
@@ -22,11 +23,11 @@ builder.AddServiceDefaults();
 // IBudgetContext for its budget isolation query filters, and pooled contexts can't take scoped
 // dependencies. Aspire's AddNpgsqlDbContext pools contexts; the Enrich call re-applies Aspire's
 // retry/health/telemetry defaults here.
-// The (serviceProvider, options) overload, not the plain one: BudgetSessionInterceptor is scoped
-// because it reads the scoped IBudgetContext, and this overload's optionsLifetime defaults to
-// Scoped, so it resolves from the request scope. The interceptor is what puts the ambient budget on
-// each connection for the row-level security policies — without it the role's every policied query
-// fails with 22P02.
+// The (serviceProvider, options) overload, not the plain one: SessionContextInterceptor is scoped
+// because it reads the scoped IBudgetContext and IUserContext, and this overload's optionsLifetime
+// defaults to Scoped, so it resolves from the request scope. The interceptor is what puts the
+// signed-in user and the ambient budget on each connection for the row-level security policies —
+// without it the role's every policied query fails with 22P02.
 //
 // The Azure enrichment, not the plain EnrichNpgsqlDbContext: the deployed API holds no database
 // password. EnrichAzureNpgsqlDbContext layers a password provider onto the data source that fetches
@@ -48,13 +49,19 @@ builder.Services.AddDbContext<BudgetoidDbContext>((serviceProvider, options) =>
         .UseNpgsql(BuildConnectionString(
             builder.Configuration.GetConnectionString("budgetoid"),
             builder.Environment.IsDevelopment()))
-        .AddInterceptors(serviceProvider.GetRequiredService<BudgetSessionInterceptor>()));
+        .AddInterceptors(serviceProvider.GetRequiredService<SessionContextInterceptor>()));
 builder.EnrichAzureNpgsqlDbContext<BudgetoidDbContext>();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<IBudgetContext, HttpContextBudgetContext>();
+// Reader and writer are two registrations over the one scoped CurrentUser on purpose: everything
+// that needs to know who is signed in takes IUserContext, and only user provisioning takes
+// IUserContextWriter, so the capability to name the request's identity is visible in one constructor
+// rather than travelling with every read.
+builder.Services.AddScoped<IUserContext, HttpContextUserContext>();
+builder.Services.AddScoped<IUserContextWriter, CurrentUserWriter>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -208,12 +215,14 @@ await app.RunAsync();
 // from this host is configured." A null connection string is returned unchanged so the null case
 // preserves the existing fail-later behavior.
 //
-// Two Npgsql options are now forbidden in any connection string this reaches, because budget
-// isolation is enforced by a session setting (see BudgetSessionInterceptor). `No Reset On Close=true`
-// would keep a returned connection's app.current_budget_id, making the pool reset — now a security
-// control, not a hygiene one — stop clearing one tenant's budget before the next borrower.
+// Two Npgsql options are now forbidden in any connection string this reaches, because both budget
+// isolation and user isolation are enforced by session settings (see SessionContextInterceptor).
+// `No Reset On Close=true` would keep a returned connection's app.current_budget_id and
+// app.current_user_id, making the pool reset — now a security control, not a hygiene one — stop
+// clearing one tenant's budget and one person's identity before the next borrower.
 // `Multiplexing=true` interleaves logical sessions over one physical connection, which no
-// session-setting design can survive at all.
+// session-setting design can survive at all. Two settings now ride on this, so flipping either
+// option leaks tenancy and identity rather than tenancy alone.
 static string? BuildConnectionString(string? connectionString, bool isDevelopment)
 {
     if (connectionString is null || isDevelopment)

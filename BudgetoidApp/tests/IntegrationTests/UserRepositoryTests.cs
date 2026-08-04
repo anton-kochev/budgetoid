@@ -89,8 +89,8 @@ public sealed class UserRepositoryTests
         // Its neighbour below owns the converse one and the two are easy to read as duplicates: this
         // test uses two different users and one identity, that one uses one user and two identities.
         // Without this the same Google user could end up with two accounts, and
-        // FindByFederatedCredentialAsync's SingleOrDefault would start throwing on a sign-in that
-        // used to work.
+        // FindUserIdByFederatedCredentialAsync's SingleOrDefault would start throwing on a sign-in
+        // that used to work.
         await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.UniqueViolation);
     }
 
@@ -307,14 +307,14 @@ public sealed class UserRepositoryTests
         await Assert.That(await CountRowsAsync(connection, "credentials")).IsEqualTo(3L);
     }
 
-    // The two tests below cover what FindByFederatedCredentialAsync returns, and deliberately not the
-    // other claim its `type = 'federated'` predicate carries — that the predicate is what lets the
-    // planner assume the partial unique index's own predicate and use it. Nothing here pins that, and
-    // nothing reasonably can: the only evidence is an EXPLAIN plan, and over the handful of rows
+    // The two tests below cover what FindUserIdByFederatedCredentialAsync returns, and deliberately
+    // not the other claim its `type = 'federated'` predicate carries — that the predicate is what lets
+    // the planner assume the partial unique index's own predicate and use it. Nothing here pins that,
+    // and nothing reasonably can: the only evidence is an EXPLAIN plan, and over the handful of rows
     // these tests seed the planner is free to prefer a sequential scan, so the assertion would fail
     // on a correct query. It stays unpinned on purpose rather than for want of a test.
     [Test]
-    public async Task FindByFederatedCredentialAsync_WithAKnownSubject_ReturnsTheUser()
+    public async Task FindUserIdByFederatedCredentialAsync_WithAKnownSubject_ReturnsTheUserId()
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
@@ -322,17 +322,19 @@ public sealed class UserRepositoryTests
         await using BudgetoidDbContext db = CreateDb(host);
         var repository = new UserRepository(db);
 
-        // Act
-        User? found = await repository.FindByFederatedCredentialAsync(
+        // Act — an id and nothing more. This lookup is the one statement that runs before the session
+        // has an identity, so the users table is closed to it; credentials.user_id is NOT NULL and
+        // references users.id, which means the key already carries everything the dropped join proved.
+        Guid? found = await repository.FindUserIdByFederatedCredentialAsync(
             Credential.GoogleProvider, "google-1");
 
         // Assert
         await Assert.That(found).IsNotNull();
-        await Assert.That(found!.Id).IsEqualTo(userId);
+        await Assert.That(found!.Value).IsEqualTo(userId);
     }
 
     [Test]
-    public async Task FindByFederatedCredentialAsync_WithAnUnknownSubject_ReturnsNull()
+    public async Task FindUserIdByFederatedCredentialAsync_WithAnUnknownSubject_ReturnsNull()
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
@@ -341,7 +343,7 @@ public sealed class UserRepositoryTests
         var repository = new UserRepository(db);
 
         // Act
-        User? found = await repository.FindByFederatedCredentialAsync(
+        Guid? found = await repository.FindUserIdByFederatedCredentialAsync(
             Credential.GoogleProvider, "google-2");
 
         // Assert — null rather than a throw, and it has to stay that way: the handler reads exactly

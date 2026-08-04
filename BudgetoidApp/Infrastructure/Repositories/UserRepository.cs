@@ -8,7 +8,7 @@ namespace Infrastructure.Repositories;
 
 public sealed class UserRepository(BudgetoidDbContext dbContext) : IUserRepository
 {
-    public Task<User?> FindByFederatedCredentialAsync(
+    public Task<Guid?> FindUserIdByFederatedCredentialAsync(
         string provider,
         string subject,
         CancellationToken cancellationToken = default)
@@ -18,13 +18,21 @@ public sealed class UserRepository(BudgetoidDbContext dbContext) : IUserReposito
 
         // The type predicate is not redundant with the provider match: it is what lets PostgreSQL use
         // the partial unique index, whose predicate the planner will only assume from an explicit
-        // `type = 'federated'`. No navigation property links the two entities, so the user is reached
-        // by an explicit join rather than by an Include.
+        // `type = 'federated'`.
+        //
+        // credentials alone, projected to the key. This statement runs before the session names
+        // anyone, so it may touch no policed table — and joining users would touch the one policed on
+        // the very id being resolved.
+        //
+        // SingleOrDefault, still: a second row would mean the unique (provider, subject) rule has
+        // been lost, and one Google identity resolving to two accounts is a broken database rather
+        // than a sign-in this method can answer honestly. The projection is nullable so the "no
+        // credential" default stays distinguishable from a real id.
         return dbContext.Credentials
             .Where(credential => credential.Type == CredentialType.Federated
                                  && credential.Provider == trimmedProvider
                                  && credential.Subject == trimmedSubject)
-            .Join(dbContext.Users, credential => credential.UserId, user => user.Id, (_, user) => user)
+            .Select(credential => (Guid?)credential.UserId)
             .SingleOrDefaultAsync(cancellationToken);
     }
 

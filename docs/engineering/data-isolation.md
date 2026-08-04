@@ -2,28 +2,35 @@
 
 > Read this before touching budget-scoped queries.
 
-**A row must never be visible to a budget it doesn't belong to.** This is enforced in layers; the
-bottom one is PostgreSQL row-level security, and the layers above it exist for error quality. Keep
-all of the following true.
+**A row must never be visible to a budget it doesn't belong to, nor to a person who does not own
+it.** Two axes, because two things own rows: the money data belongs to a budget, and the identity
+rows belong to a user. Both are enforced in layers; the bottom one is PostgreSQL row-level
+security, and the layers above it exist for error quality. Keep all of the following true.
 
 Enforced today:
-- **Row-level security.** A `budget_isolation` policy on `accounts`, `category_groups`,
-  `categories`, `payees` and `transactions` compares `budget_id` against the session's ambient
-  budget in both `USING` and `WITH CHECK`, so the connection every request is served by reaches no
-  other budget's rows and can insert into no budget but the ambient one — whatever produced the
-  statement. `BudgetSessionInterceptor` puts the budget on each connection the context opens. The
-  policies live in `Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a
-  migration ([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)).
-  **A new budget-owned table needs a grant *and* a policy**: the grants are fail-closed, so a
+- **Row-level security, on both axes.** A `budget_isolation` policy on `accounts`,
+  `category_groups`, `categories`, `payees` and `transactions` compares `budget_id` against the
+  session's ambient budget, and a `user_isolation` policy on `users` and `budgets` compares `id`
+  and `user_id` against the session's authenticated user — each in both `USING` and `WITH CHECK`,
+  so the connection every request is served by reaches no other tenant's rows and can insert into
+  no tenant but its own, whatever produced the statement. `SessionContextInterceptor` puts both
+  `app.current_user_id` and `app.current_budget_id` on each connection the context opens, in one
+  round-trip. The policies live in `Infrastructure/Persistence/Provisioning/app-role-grants.sql`,
+  never in a migration ([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md),
+  [ADR 0011](../decisions/0011-police-the-user-owned-tables.md)).
+  **A new tenant-owned table needs a grant *and* a policy**: the grants are fail-closed, so a
   missing one fails loudly with `42501`, but RLS is fail-**open** — a granted table with no policy
   is readable across every tenant, silently. `tests/IntegrationTests/RlsCoverageTests.cs` reads the
-  live schema and requires **every** table in `public` to be accounted for: policed, or on an
-  explicit exemption list carrying its reason. A new table is red until someone says which it is.
-  That direction is the whole point and must not be inverted — a list of *policed* tables fails
-  open, because the table nobody added to it keeps the suite green. Exempt today: `budgets` (the
-  tenant, not a tenant's row), `users` and `credentials` (read during provisioning, before an
-  ambient budget or even an identity exists), `currencies` (reference data owned by no tenant),
-  and `__EFMigrationsHistory`.
+  live schema and requires **every** table in `public` to be accounted for: policed with the policy
+  its ownership calls for, or on an explicit exemption list carrying its reason. A table carrying
+  neither `budget_id` nor `user_id` is refused rather than waved through, because "we forgot" and
+  "it needs nothing" produce the identical catalog. A new table is red until someone says which it
+  is. That direction is the whole point and must not be inverted — a list of *policed* tables fails
+  open, because the table nobody added to it keeps the suite green. Exempt today: `credentials`
+  (read to discover *who is asking*, so a policy keyed on the identity it resolves would refuse the
+  query that resolves it), `currencies` (reference data owned by no tenant), and
+  `__EFMigrationsHistory`. The same list and the same classification are what the deploy-time
+  verifier reads, so the gate and the test cannot drift apart.
 - **Read-side filter.** `BudgetoidDbContext` defines a global query filter named
   `BudgetIsolation` on `Transaction`, `Account`, `Payee`, `CategoryGroup`, and `Category`, scoped
   to the current `IBudgetContext.BudgetId`. Every LINQ query against those sets is auto-scoped —
@@ -43,12 +50,15 @@ Enforced today:
   `(Id, BudgetId)` alternate key. PostgreSQL rejects a cross-budget reference whatever code path
   wrote it. This proves internal consistency only; *which* budget a write lands in is still the
   filter's and `IBudgetContext`'s job alone.
-- **`Budget`, `User` and `Credential` have no filter.** The provisioning lookup runs before a
-  budget id exists — and the credential lookup runs before even the *user* is known, since reading
-  it is how the request discovers who is asking — so every query over `Budgets` must scope by owner
-  explicitly (`FindFirstForUserAsync`), and the other two are reached only by the identity the
-  request is still in the middle of resolving. These are the same three tables the coverage
-  exemption list names, for the same reason.
+- **`Budget`, `User` and `Credential` have no query filter.** The provisioning lookup runs before a
+  budget id exists, so every query over `Budgets` must scope by owner explicitly
+  (`FindFirstForUserAsync`). That is a statement about the *read-side filter* only, and it no
+  longer travels with the coverage exemption: `users` and `budgets` are policed on the user, and
+  only `credentials` is still exempt. It has to be — reading it is how the request discovers who is
+  asking, so it is the one table reached with no identity on the session at all
+  ([ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). That is also why the credential
+  lookup projects to `credentials.user_id` and never joins `users`: the join would touch the table
+  policed on the very id being resolved.
 - **Immutable ownership.** `Transaction.BudgetId` has no public setter and is set only via the
   factory. The query filter is read-side only — `SaveChanges` ignores it — so that immutability is
   what stops the *application* from moving a row between budgets. The database holds the same rule
@@ -62,9 +72,9 @@ Enforced today:
 
 Escape hatches the filter does **not** cover. These no longer leak — each one now meets the
 policies instead, and a cross-budget read comes back empty rather than populated. Still do not
-introduce them on budget-scoped data: an empty result where the code expects a row is a bug, the
-policies do not cover `budgets`, and a connection that names no ambient budget fails with `22P02`
-rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
+introduce them on budget-scoped data: an empty result where the code expects a row is a bug, and a
+connection that names no ambient budget — or no ambient user, for `users` and `budgets` — fails
+with `22P02` rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
 `Infrastructure` and `Api`, the only projects with an EF reference) turns each API below into an
 RS0030 compile error.
 - `IgnoreQueryFilters()` — never on `BudgetoidDbContext`.
@@ -82,10 +92,14 @@ RS0030 compile error.
   bug, not a leak, but worth knowing.)
 
 Tests that lock this: `tests/IntegrationTests/RlsIsolationTests.cs` (raw SQL on the application
-role, every negative paired with the same statement against the session's own budget),
-`tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so any new table without a policy or
-a stated exemption fails — including one carrying no `budget_id`),
-`tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level
-two-budgets-same-process + endpoint-level two-factory) and the `BudgetId` immutability unit test in
+role, on both axes, every negative paired with the same statement against the session's own budget
+or own user), `tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so any new table
+without the policy its ownership calls for, or without a stated exemption, fails — including one
+carrying neither ownership column), `tests/IntegrationTests/DeploymentProvisioningTests.cs` (the
+same rule at the deploy gate, sabotaged per failure mode: a dropped policy, a *renamed* one, row
+security switched off, an unclassifiable table),
+`tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level two-budgets-same-process +
+endpoint-level two-factory) and the `BudgetId` immutability unit test in
 `tests/UnitTests/TransactionTests.cs`. Removing a `HasQueryFilter` line must make the
-DbContext-level test fail; removing a policy must make the RLS ones fail.
+DbContext-level test fail; removing — or renaming — a policy must make the RLS ones fail, and must
+also refuse the next deploy.

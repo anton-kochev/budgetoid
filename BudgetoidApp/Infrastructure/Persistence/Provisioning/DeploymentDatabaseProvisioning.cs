@@ -6,7 +6,7 @@ namespace Infrastructure.Persistence.Provisioning;
 /// <summary>
 /// Performs a deploy's database work as one operation: migrate the schema on the admin connection,
 /// then provision the application role with its grants and row-level security policies, then verify
-/// that the policies actually cover every budget-owned table.
+/// that the policies actually cover every tenant-owned table.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -35,38 +35,6 @@ namespace Infrastructure.Persistence.Provisioning;
 public static class DeploymentDatabaseProvisioning
 {
     /// <summary>
-    /// Every ordinary table in <c>public</c> carrying a <c>budget_id</c> column, with whether
-    /// row-level security is enforced for it and how many policies it has.
-    /// </summary>
-    /// <remarks>
-    /// The <c>budget_id</c> column <i>is</i> the definition of budget-owned, so the subject is
-    /// derived from the live schema rather than from a list of the five names that exist today — a
-    /// hardcoded list would keep passing on the day someone adds the sixth, which is the only day
-    /// this check matters. <c>relrowsecurity</c> and the policy count are read in the same row as the
-    /// discovery so the three facts cannot drift into lists that disagree. Policies are counted
-    /// through <c>pg_policy.polrelid</c> rather than the <c>pg_policies</c> view's table
-    /// <i>name</i>, because the oid cannot match a same-named table in another schema.
-    /// </remarks>
-    private const string BudgetOwnedTableCoverageSql =
-        """
-        select c.relname,
-               c.relrowsecurity,
-               (select count(*) from pg_policy p where p.polrelid = c.oid)
-        from pg_class c
-        join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname = 'public'
-          and c.relkind = 'r'
-          and exists (
-              select 1
-              from pg_attribute a
-              where a.attrelid = c.oid
-                and a.attname = 'budget_id'
-                and a.attnum > 0
-                and not a.attisdropped)
-        order by c.relname
-        """;
-
-    /// <summary>
     /// Brings an empty or already-deployed database to the state the application expects: schema
     /// migrated, application role present with exactly its grant matrix and isolation policies, and
     /// that coverage verified. Idempotent — this runs on every deploy, so the second run is the
@@ -91,7 +59,8 @@ public static class DeploymentDatabaseProvisioning
     /// </param>
     /// <param name="cancellationToken">Cancels the provisioning run.</param>
     /// <exception cref="RowLevelSecurityCoverageException">
-    /// Provisioning ran but left at least one budget-owned table unprotected.
+    /// Provisioning ran but left at least one tenant-owned table unprotected, or the schema contains
+    /// a table whose tenancy nobody has decided.
     /// </exception>
     public static async Task ProvisionAsync(
         string adminConnectionString,
@@ -129,29 +98,53 @@ public static class DeploymentDatabaseProvisioning
     }
 
     /// <summary>
-    /// Asserts that every budget-owned table in the live schema enforces row-level security and
-    /// carries exactly one policy, and throws naming the tables that do not.
+    /// Asserts that every table in the live schema is accounted for — policed by the isolation policy
+    /// its own ownership requires, or excused by a written-down exemption — and throws naming the
+    /// tables that are not.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// It verifies row-level security and nothing else, which is why it is not named for provisioning
     /// as a whole: a missing grant is fail-closed and reports itself as <c>42501</c> the first time it
-    /// matters, so there is nothing silent there to verify. Exactly one policy, not at least one:
-    /// these policies are permissive and permissive policies OR together, so a second one can only
-    /// widen what the first allows — a table that grew a stray policy has quietly stopped meaning
-    /// what its isolation policy says.
+    /// matters, so there is nothing silent there to verify.
+    /// </para>
+    /// <para>
+    /// The subject and the rule come from <see cref="RowLevelSecurityCoverage" /> rather than from a
+    /// query written here, and that sharing is the one deviation from this repository's general
+    /// preference for deliberate restatement. The preference holds for restatements read by people —
+    /// the prose in <c>app-role-grants.sql</c> is one, and it is worth keeping. This would be a second
+    /// <b>executed</b> list of which tables must be policed, and two executed lists that disagree have
+    /// no adjudicator: whichever one loses simply stops noticing a table, which is the fail-open
+    /// failure this verifier exists to catch, reproduced inside it. That is not hypothetical here —
+    /// the query this method used to own found its subjects by looking for a <c>budget_id</c> column,
+    /// so it could not see <c>users</c> at all and reported full coverage on a schema where every
+    /// person's row was readable by a session that named somebody else. Do not "restore" the local
+    /// copy.
+    /// </para>
+    /// <para>
+    /// Exactly one policy, not at least one: these policies are permissive and permissive policies OR
+    /// together, so a second one can only widen what the first allows — a table that grew a stray
+    /// policy has quietly stopped meaning what its isolation policy says. And exactly the <i>named</i>
+    /// one, because a count answers "is a rule enforced here" while the deploy has to answer "is the
+    /// rule enforced here the rule this table owes". Those come apart silently: with two isolation
+    /// rules in the schema, a budget-owned table carrying <c>user_isolation</c> has a real, enforced
+    /// policy that is simply wider than its tenancy.
+    /// </para>
     /// </remarks>
     /// <param name="adminConnectionString">
-    /// Connection string used to read the catalogs. Any role can be used: <c>pg_class</c> and
-    /// <c>pg_policy</c> describe the schema, and the schema reads the same whoever asks.
+    /// Connection string used to read the catalogs. Any role can be used: <c>pg_class</c>,
+    /// <c>pg_policy</c> and <c>pg_roles</c> describe the schema, and the schema reads the same whoever
+    /// asks.
     /// </param>
     /// <param name="log">Sink for what was inspected; written on the failure path too.</param>
     /// <param name="cancellationToken">Cancels the catalog query.</param>
     /// <exception cref="InvalidOperationException">
-    /// The schema contains no budget-owned tables at all, which means the database is not migrated
-    /// and there is nothing to have verified.
+    /// The schema contains no table that needs a policy at all, which means the database is not
+    /// migrated and there is nothing to have verified.
     /// </exception>
     /// <exception cref="RowLevelSecurityCoverageException">
-    /// At least one budget-owned table is unprotected.
+    /// At least one tenant-owned table is unprotected, or the schema contains a table whose tenancy
+    /// nobody has decided.
     /// </exception>
     public static async Task VerifyRowLevelSecurityCoverageAsync(
         string adminConnectionString,
@@ -160,43 +153,108 @@ public static class DeploymentDatabaseProvisioning
     {
         ArgumentException.ThrowIfNullOrEmpty(adminConnectionString);
 
-        IReadOnlyList<(string Table, bool RowSecurityEnabled, long Policies)> tables =
-            await ReadBudgetOwnedTableCoverageAsync(adminConnectionString, cancellationToken);
+        SchemaClassification schema;
+        await using (NpgsqlConnection connection = new(adminConnectionString))
+        {
+            await connection.OpenAsync(cancellationToken);
+            schema = RowLevelSecurityCoverage.Classify(
+                await RowLevelSecurityCoverage.DiscoverAsync(connection, cancellationToken),
+                RowLevelSecurityCoverage.Exemptions);
+        }
 
-        // A discovery query that matched nothing would make every check below pass with nothing in
-        // it, on a database with no policies at all. It is not the coverage exception: no table is
+        // Measured on the tables that need a policy rather than on the count discovery returned,
+        // because discovery now returns every table in public and a bare count would be satisfied by
+        // a database holding nothing but __EFMigrationsHistory — every table exempt, every check
+        // below passing with nothing in it. It is still not the coverage exception: no table is
         // unprotected, the schema simply is not there.
-        if (tables.Count == 0)
+        if (schema.NeedingAPolicy.Count == 0)
         {
             throw new InvalidOperationException(
-                "Found no budget-owned tables in schema 'public', so row-level security coverage "
+                "Found no tenant-owned tables in schema 'public', so row-level security coverage "
                 + "could not be verified. A migrated database always has some; check that the "
                 + "migration ran against this database before provisioning did.");
         }
 
         // Logged before the verdict rather than only on success: called on its own this is a whole
         // deploy step, and an operator reading a refusal needs to see that the check ran against the
-        // database they think it did, not only that it failed.
+        // database they think it did, not only that it failed. The counts are broken out by ownership
+        // because "policed" is no longer one thing — a run that had quietly lost the user-owned half
+        // would otherwise report a plausible total.
+        int budgetOwned = schema.NeedingAPolicy.Count(
+            classified => classified.Table.Ownership == TableOwnership.BudgetOwned);
+        int userOwned = schema.NeedingAPolicy.Count - budgetOwned;
         log?.Invoke(
-            $"Verifying row-level security on {tables.Count} budget-owned table(s): "
-            + $"{string.Join(", ", tables.Select(entry => entry.Table))}.");
+            $"Verifying row-level security on {schema.NeedingAPolicy.Count} tenant-owned table(s) "
+            + $"({budgetOwned} budget-owned, {userOwned} user-owned), with {schema.Exempt.Count} "
+            + $"exempt: "
+            + $"{string.Join(", ", schema.NeedingAPolicy.Select(entry => entry.Table.Name))}.");
 
         List<string> unprotected = [];
         List<string> problems = [];
-        foreach ((string table, bool rowSecurityEnabled, long policies) in tables)
+
+        // Refused rather than waved through, because "we forgot to police this" and "this genuinely
+        // needs no policy" produce the identical catalog and only a person can tell them apart. The
+        // message has to carry both ways forward: without them the next contributor clears a red
+        // deploy by exempting whatever the verifier named, which is the one resolution that is wrong
+        // exactly when it matters.
+        foreach (DiscoveredTable table in schema.Unclassifiable)
         {
-            // Both halves are needed, and one without the other is a real failure mode: a table can
-            // have its policy defined and listed in the catalog while row-level security is switched
-            // off for it, in which case the policy is never enforced.
-            if (!rowSecurityEnabled)
+            unprotected.Add(table.Name);
+            problems.Add(
+                $"{table.Name} carries neither budget_id nor user_id, so nobody can say whether it "
+                + $"owes {RowLevelSecurityCoverage.BudgetIsolationPolicyName} or "
+                + $"{RowLevelSecurityCoverage.UserIsolationPolicyName}; give it an ownership column, "
+                + "or add it to RowLevelSecurityCoverage.Exemptions with a written reason.");
+        }
+
+        foreach (ClassifiedTable classified in schema.NeedingAPolicy)
+        {
+            DiscoveredTable table = classified.Table;
+
+            // Checked first and on its own, because it dominates everything below: a table with
+            // relrowsecurity off is open no matter what its policies say. PostgreSQL keeps the
+            // definitions and enforces none of them, so this is fully policed on paper and readable
+            // across every tenant in practice — the failure mode a policy-only check calls healthy.
+            if (!table.RowSecurityEnabled)
             {
-                unprotected.Add(table);
-                problems.Add($"{table} has row-level security disabled.");
+                unprotected.Add(table.Name);
+                problems.Add($"{table.Name} has row-level security disabled.");
+                continue;
             }
-            else if (policies != 1)
+
+            if (table.Policies is not [TablePolicy policy])
             {
-                unprotected.Add(table);
-                problems.Add($"{table} has {policies} policies, wanted exactly 1.");
+                unprotected.Add(table.Name);
+                problems.Add(
+                    $"{table.Name} has {table.Policies.Count} policies, wanted exactly 1.");
+                continue;
+            }
+
+            List<string> wrong = [];
+            if (!string.Equals(policy.Name, classified.RequiredPolicyName, StringComparison.Ordinal))
+            {
+                wrong.Add(
+                    $"{table.Name} is policed by '{policy.Name}', wanted "
+                    + $"'{classified.RequiredPolicyName}'.");
+            }
+
+            // "Binds the application role", not "names it and nothing else". A policy written
+            // TO PUBLIC binds every non-owner role, so it covers the app role too and is broader
+            // rather than weaker; refusing it would make this check brittle about spelling instead
+            // of about protection. Anything else leaves the app role unpoliced.
+            if (!policy.Roles.Contains(DatabaseProvisioning.AppRoleName)
+                && !policy.Roles.Contains("public"))
+            {
+                wrong.Add(
+                    $"{table.Name} is policed by '{policy.Name}', which binds "
+                    + $"[{string.Join(", ", policy.Roles)}] and so does not bind "
+                    + $"{DatabaseProvisioning.AppRoleName}.");
+            }
+
+            if (wrong.Count > 0)
+            {
+                unprotected.Add(table.Name);
+                problems.AddRange(wrong);
             }
         }
 
@@ -206,25 +264,7 @@ public static class DeploymentDatabaseProvisioning
         }
 
         log?.Invoke(
-            "Row-level security covers every budget-owned table with exactly one isolation policy.");
-    }
-
-    private static async Task<IReadOnlyList<(string Table, bool RowSecurityEnabled, long Policies)>>
-        ReadBudgetOwnedTableCoverageAsync(
-            string adminConnectionString,
-            CancellationToken cancellationToken)
-    {
-        await using NpgsqlConnection connection = new(adminConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        await using NpgsqlCommand command = new(BudgetOwnedTableCoverageSql, connection);
-
-        List<(string, bool, long)> tables = [];
-        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            tables.Add((reader.GetString(0), reader.GetBoolean(1), reader.GetInt64(2)));
-        }
-
-        return tables;
+            "Row-level security covers every tenant-owned table with exactly the one isolation "
+            + "policy its ownership requires, and every other table is exempt for a written reason.");
     }
 }

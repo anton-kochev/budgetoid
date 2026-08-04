@@ -18,9 +18,12 @@ namespace IntegrationTests;
 /// <c>42501</c> before the row is touched. Every statement here is raw Npgsql on
 /// <see cref="RepositoryTestHost.AppConnectionString" />, because grants only bind connections
 /// opened as the role — the host's own connection is the container superuser and answers every
-/// privilege question with yes.
+/// privilege question with yes. What each test then puts on that session is not uniform and is
+/// never incidental: three of them declare an identity so the row they aim at is reachable at all,
+/// and the <c>credentials</c> one declares nothing, which is the measurement rather than a gap.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Each refusal is paired, in the same test, with a write that must succeed on the same
 /// connection. Without the pair the <c>42501</c> is vacuous: a role with no <c>UPDATE</c> grant
 /// at all — or a grants script that is an empty file — refuses everything with the same SQLSTATE.
@@ -31,6 +34,27 @@ namespace IntegrationTests;
 /// permitted <c>INSERT</c> instead: provisioning creates budgets and sign-up creates credentials,
 /// and the role must still be able to. That stays the right pairing when an updatable column joins
 /// credentials — the <c>INSERT</c> is still the success the refusals need beside them.
+/// </para>
+/// <para>
+/// A missing grant is not the only way the success half can become unreachable, and the other way
+/// is the quiet one. Row-level security decides which rows exist for a session before any grant is
+/// consulted, and a session the policy cannot satisfy is not refused — it simply matches nothing.
+/// The permitted write then reports success against zero rows, the refusals beside it stay red for
+/// a reason nobody measured, and the test passes having proved only "the role cannot write", which
+/// is precisely the claim the pairing exists to rule out. So every test aiming at a policed row
+/// configures the session it sends on, and asserts an affected count of <c>1</c> rather than the
+/// absence of an exception. Each test argues this locally about its own table; it is stated here
+/// because a new test added to this class inherits the trap, not the argument.
+/// </para>
+/// <para>
+/// <c>credentials</c> is the exception, and its bare connection is load-bearing rather than an
+/// omission someone should tidy. That table is permanently exempt from row-level
+/// security because it is what the sign-in path reads to discover who is asking, so a policy keyed
+/// on the identity it resolves would refuse the query that resolves it. The anonymous session in
+/// that test is the executable form of the exemption: it is the statement that the table is
+/// reachable with no identity on the session at all, which is the property the entire sign-in path
+/// stands on. Give that connection a user and the property is checked nowhere.
+/// </para>
 /// </remarks>
 public sealed class AppRoleGrantsTests
 {
@@ -51,12 +75,13 @@ public sealed class AppRoleGrantsTests
         Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
         Guid budgetId = await host.SeedAdditionalBudgetAsync(userId, "Household");
 
-        // A bare app-role connection, not RepositoryTestHost.OpenAppConnectionAsync: every
-        // statement below targets budgets, which is not one of the budget-owned tables row-level
-        // security scopes — a budget is the tenant, not a tenant's row — so there is no ambient
-        // budget for this session to carry and setting one would only suggest there was.
-        await using NpgsqlConnection app = new(host.AppConnectionString);
-        await app.OpenAsync();
+        // A user-only app-role session, not RepositoryTestHost.OpenAppConnectionAsync: budgets is
+        // policed on the user — a budget is the tenant, not a tenant's row — so the session names
+        // the owner and no ambient budget. The identity is what keeps the pair below intact: on a
+        // session with no user id the INSERT would fail its WITH CHECK instead of landing, and a
+        // refusal with no permitted write beside it proves nothing (see the class remarks). With
+        // the row reachable, only the column grant decides, which is what this test measures.
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
 
         // Act — every column of budgets by name: name, user_id, base_currency_code. The rule is
         // "a budgets row is never updated", and column-for-column is the only shape the grant
@@ -93,7 +118,7 @@ public sealed class AppRoleGrantsTests
             "insert into budgets (id, user_id, name, created_at_utc) " +
             "values (@id, @user_id, @name, @created_at_utc)",
             app);
-        insert.Parameters.AddWithValue("id", Guid.NewGuid());
+        insert.Parameters.AddWithValue("id", Guid.CreateVersion7());
         insert.Parameters.AddWithValue("user_id", userId);
         insert.Parameters.AddWithValue("name", "Holiday Fund");
         insert.Parameters.AddWithValue("created_at_utc", SeedInstant);
@@ -107,7 +132,11 @@ public sealed class AppRoleGrantsTests
         // the grant ever leaked currency_code the statement would succeed outright instead of
         // tripping the currency foreign key and passing for the wrong reason.
         await using RepositoryTestHost host = await StartHostAsync();
-        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        // SeedOwnerAsync rather than SeedBudgetAsync: the app-role connection below names the user
+        // as well as the budget, and this is the seeding call that returns both.
+        RepositoryTestHost.SeededOwner owner =
+            await host.SeedOwnerAsync("google-1", "person@example.com");
+        Guid budgetId = owner.BudgetId;
         Guid accountId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
@@ -121,7 +150,7 @@ public sealed class AppRoleGrantsTests
         // accounts is row-level-security scoped, so this connection carries the budget the account
         // is in. Without it the rename would match zero rows and still report no error, which would
         // leave the refusal it is paired with proving nothing.
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(owner.UserId, budgetId);
 
         // Act — currency_code is absent from the accounts grant list; name is on it. Same table,
         // same row, same connection: only the column decides.
@@ -151,11 +180,12 @@ public sealed class AppRoleGrantsTests
         await using RepositoryTestHost host = await StartHostAsync();
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
 
-        // A bare app-role connection, for the same reason as the budgets test: users sits outside
-        // the budget-owned tables row-level security scopes — a user owns budgets rather than
-        // belonging to one — so this session has no ambient budget to carry.
-        await using NpgsqlConnection app = new(host.AppConnectionString);
-        await app.OpenAsync();
+        // A user-only app-role session, for the same reason as the budgets test: users is policed
+        // on the user — a user owns budgets rather than belonging to one — so the session names the
+        // owner and no ambient budget. The identity is also what keeps the pair intact: without it
+        // the email edit would match zero rows and report success, leaving the refusal it is paired
+        // with vacuous. With the row reachable, only the column grant decides.
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
 
         // Act — created_at_utc is an audit fact and immutable by omission. With the identity
         // columns gone from this table it is the only omitted column left, which makes it the one
@@ -198,10 +228,14 @@ public sealed class AppRoleGrantsTests
         Guid credentialId = (Guid)(await SelectScalarAsync(
             admin, "select id from credentials where user_id = @id", userId))!;
 
-        // A bare app-role connection, for the same reason as the users test: credentials sits
-        // outside the budget-owned tables row-level security scopes — a credential belongs to no
-        // tenant, and provisioning reads it to resolve a sign-in before an ambient budget exists —
-        // so this session has no ambient budget to carry.
+        // A bare app-role connection — no user, no budget, nothing on the session at all — and
+        // unlike the budgets and users tests above that is the point rather than a leftover.
+        // credentials is the one table row-level security deliberately and permanently exempts:
+        // it is what the sign-in path reads to discover who is asking, so a policy keyed on the
+        // identity it resolves would refuse the very query that resolves it. Every statement below
+        // going through on an anonymous session is the executable statement of that exemption, and
+        // the whole sign-in path depends on it. Do not "tidy" this into a configured connection:
+        // the moment this session names a user, the exemption stops being tested anywhere.
         await using NpgsqlConnection app = new(host.AppConnectionString);
         await app.OpenAsync();
 

@@ -10,14 +10,17 @@ using Npgsql;
 namespace IntegrationTests;
 
 /// <summary>
-/// Covers budget isolation as the <b>database</b> enforces it, on the five budget-owned tables:
-/// <c>accounts</c>, <c>category_groups</c>, <c>categories</c>, <c>payees</c>, <c>transactions</c>.
-/// Today that isolation exists only in EF's <c>BudgetIsolation</c> global query filters, which are
-/// application code and therefore hold exactly as long as the application remembers them: raw SQL,
-/// <c>IgnoreQueryFilters</c>, a repository written in a hurry, and a hand-run script all walk
-/// straight past. Row-level security is the layer that holds when they do, which is why every
-/// statement in this file is raw Npgsql on <see cref="RepositoryTestHost.AppConnectionString" /> —
-/// going through EF would only re-measure the filters these tests exist to be independent of.
+/// Covers tenant isolation as the <b>database</b> enforces it, on two axes. The budget-owned tables
+/// — <c>accounts</c>, <c>category_groups</c>, <c>categories</c>, <c>payees</c>,
+/// <c>transactions</c> — are isolated by the session's ambient budget; <c>users</c> and
+/// <c>budgets</c> sit above that scope (a user owns budgets rather than belonging to one, and a
+/// budget is the tenant rather than a tenant's row) and are isolated by the session's user instead.
+/// Both axes exist in EF's global query filters too, which are application code and therefore hold
+/// exactly as long as the application remembers them: raw SQL, <c>IgnoreQueryFilters</c>, a
+/// repository written in a hurry, and a hand-run script all walk straight past. Row-level security is
+/// the layer that holds when they do, which is why every statement in this file is raw Npgsql on
+/// <see cref="RepositoryTestHost.AppConnectionString" /> — going through EF would only re-measure the
+/// filters these tests exist to be independent of.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -101,8 +104,8 @@ public sealed class RlsIsolationTests
         // Arrange — both budgets carry the same shape of rows, so "budget B has none of this table"
         // is never the reason a count comes back zero.
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+        (Guid ownerId, BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ownerId, ambient.BudgetId);
 
         // Act — both halves per table. The ambient half is not decoration: a policy that hides every
         // row from everyone satisfies the foreign half on its own, and only this count notices.
@@ -133,8 +136,8 @@ public sealed class RlsIsolationTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+        (Guid ownerId, BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ownerId, ambient.BudgetId);
 
         // Act — a cross-budget update is not refused with an error under row-level security; the row
         // simply is not there to match, so the statement succeeds having affected nothing. That is
@@ -185,8 +188,8 @@ public sealed class RlsIsolationTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+        (Guid ownerId, BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ownerId, ambient.BudgetId);
 
         // Act — the foreign deletes run first and in dependency order. Order matters even though
         // every one of them is expected to affect nothing: if the policy is missing they will all
@@ -239,8 +242,8 @@ public sealed class RlsIsolationTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+        (Guid ownerId, BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ownerId, ambient.BudgetId);
 
         // Act — unlike UPDATE and DELETE, a refused INSERT is loud: the WITH CHECK half of the
         // policy raises 42501, "new row violates row-level security policy". Each probe row is built
@@ -296,7 +299,7 @@ public sealed class RlsIsolationTests
         // budget. This is the shape of every bug where application code forgets to set one, and it
         // must fail loudly rather than quietly returning an empty result that reads as "no data".
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, _) = await SeedTwoPopulatedBudgetsAsync(host);
+        (_, BudgetRows ambient, _) = await SeedTwoPopulatedBudgetsAsync(host);
         await using NpgsqlConnection bare = new(host.AppConnectionString);
         await bare.OpenAsync();
 
@@ -327,6 +330,120 @@ public sealed class RlsIsolationTests
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         await Assert.That(await CountRowsAsync(admin, "accounts", ambient.BudgetId)).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_ShowsOnlyTheSessionsOwnUserRow()
+    {
+        // Arrange — two owners, because users is isolated by user and not by budget: a second budget
+        // under the same owner would be invisible to this rule, and the foreign count would come
+        // back zero with or without a policy.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — both halves, on one session. The own count is not decoration: a policy that hides
+        // every row from everyone satisfies the foreign half on its own, and only this notices.
+        long own = await CountKeyedRowsAsync(app, "users", "id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(app, "users", "id", other.UserId);
+
+        // Assert
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_ShowsOnlyTheSessionsOwnBudgets()
+    {
+        // Arrange — two owners with one budget each, both keyed on user_id, so "the other owner has
+        // no budgets" is never the reason the foreign count is zero.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act
+        long own = await CountKeyedRowsAsync(app, "budgets", "user_id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(app, "budgets", "user_id", other.UserId);
+
+        // Assert
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToInsertABudgetForAnotherUser_WhileStillAllowingItsOwn()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // owner's budgets says nothing about whether this session can create one under their name.
+        // A refused INSERT is loud, unlike a filtered UPDATE — 42501, "new row violates row-level
+        // security policy".
+        await using NpgsqlCommand forOther = BuildBudgetInsertProbe(app, other.UserId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        await using NpgsqlCommand forOwn = BuildBudgetInsertProbe(app, session.UserId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — the null coalesce is for the failure message: a bare refusal?.SqlState renders a
+        // statement that went through as the empty string, which reads as a blank SQLSTATE rather
+        // than as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // owner still holds exactly the one budget they were seeded with. On the superuser
+        // connection, which row-level security does not apply to — no policed session could answer
+        // this question about another owner's rows.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(admin, "budgets", "user_id", other.UserId))
+            .IsEqualTo(1L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "budgets", "user_id", session.UserId))
+            .IsEqualTo(2L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToReadAUserWhenTheSessionNamesNoUser()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares no user. This
+        // is the shape of every bug where application code forgets to set one, and it must fail
+        // loudly rather than quietly returning an empty result that reads as "no such account".
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — users is seeded, and that is a precondition rather than a convenience. A policy qual
+        // is only evaluated when there are candidate rows, so the same query over an empty table
+        // returns zero rows without ever touching the setting and this guarantee does not reach it.
+        // That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new("select count(*) from users", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, not "unrecognized configuration parameter", for the same reason as the
+        // budget-less session above. The determinism comes from the shape of the policy, which reads
+        // the setting as COALESCE(current_setting('app.current_user_id', true), '')::uuid. Strict
+        // current_setting would be 42704 on a backend that has never seen the setting and 22P02 on
+        // one Npgsql had already recycled, which is not a thing a test can assert; the missing_ok
+        // overload turns the first case into NULL and the COALESCE turns that NULL into the same
+        // ''::uuid cast the recycled connection already produced. One bug, one SQLSTATE.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The session's own row is still there — the refusal above is the session's doing, not a
+        // seeding failure that would make the SQLSTATE assertion meaningless.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(admin, "users", "id", session.UserId))
+            .IsEqualTo(1L);
     }
 
     /// <summary>
@@ -366,8 +483,8 @@ public sealed class RlsIsolationTests
 
     /// <summary>
     /// Seeds one owner with two budgets, <b>both populated with the same shape of rows</b>, and
-    /// returns them: the budget every probe session declares, and the budget every probe tries to
-    /// reach across into.
+    /// returns them together with the owner: the budget every probe session declares, and the budget
+    /// every probe tries to reach across into.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -375,6 +492,12 @@ public sealed class RlsIsolationTests
     /// <c>TenancySchemaTests.SeedTwoBudgetsAsync</c>, which deliberately leaves its second budget
     /// empty. Isolation cannot be measured against an empty tenant: every "sees nothing" and every
     /// "affected zero rows" would be true because there was nothing there, with or without a policy.
+    /// </para>
+    /// <para>
+    /// One owner, on purpose: these probes are about the budget axis, and a session whose user owns
+    /// both budgets is the strictest form of the question — the only thing that can separate the two
+    /// tenants is <c>budget_id</c>. The user axis has <see cref="SeedTwoOwnersAsync" />, which needs
+    /// two owners for the mirrored reason.
     /// </para>
     /// <para>
     /// Names repeat across the two budgets on purpose — the unique indexes are on
@@ -388,8 +511,8 @@ public sealed class RlsIsolationTests
     /// the context's own ambient budget never reaches an INSERT.
     /// </para>
     /// </remarks>
-    private static async Task<(BudgetRows Ambient, BudgetRows Other)> SeedTwoPopulatedBudgetsAsync(
-        RepositoryTestHost host)
+    private static async Task<(Guid OwnerId, BudgetRows Ambient, BudgetRows Other)>
+        SeedTwoPopulatedBudgetsAsync(RepositoryTestHost host)
     {
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         Guid ambientBudgetId = await host.SeedAdditionalBudgetAsync(userId, "Household");
@@ -399,7 +522,30 @@ public sealed class RlsIsolationTests
         BudgetRows ambient = AddRows(seed, ambientBudgetId);
         BudgetRows other = AddRows(seed, otherBudgetId);
         await seed.SaveChangesAsync();
-        return (ambient, other);
+        return (userId, ambient, other);
+    }
+
+    /// <summary>
+    /// Seeds <b>two</b> owners, each with the default budget provisioning gives them, and returns
+    /// both: the owner every probe session declares, and the owner every probe tries to reach across
+    /// into.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="SeedTwoPopulatedBudgetsAsync" /> rather than an extension of it. The
+    /// <c>users</c> and <c>budgets</c> probes are isolated by user, so a second budget under the
+    /// same owner is not a second tenant to them at all — every "sees nothing" would be true because
+    /// there was only ever one owner, with or without a policy. Both owners are seeded with the same
+    /// nameless default budget, which is legal because <c>IX_budgets_user_id_name</c> keys on
+    /// <c>user_id</c> too.
+    /// </remarks>
+    private static async Task<(RepositoryTestHost.SeededOwner Session, RepositoryTestHost.SeededOwner Other)>
+        SeedTwoOwnersAsync(RepositoryTestHost host)
+    {
+        RepositoryTestHost.SeededOwner session =
+            await host.SeedOwnerAsync("google-1", "person@example.com");
+        RepositoryTestHost.SeededOwner other =
+            await host.SeedOwnerAsync("google-2", "other@example.com");
+        return (session, other);
     }
 
     /// <summary>
@@ -493,6 +639,33 @@ public sealed class RlsIsolationTests
     }
 
     /// <summary>
+    /// Builds the INSERT probe for <c>budgets</c>, owned by <paramref name="ownerId" />. Separate
+    /// from <see cref="BuildInsertProbe" /> because a budget names no budget: it is the tenant, so
+    /// the column a policy could object to is <c>user_id</c>.
+    /// </summary>
+    /// <remarks>
+    /// The name is explicit and unlike anything seeded, and that is load-bearing rather than tidy.
+    /// <c>IX_budgets_user_id_name</c> is unique on <c>(user_id, name)</c> with <c>NULLS NOT
+    /// DISTINCT</c>, and every seeded budget here is the nameless default — so a probe that left the
+    /// name null would collide with the owner's own default budget and be refused with <c>23505</c>,
+    /// which is not the refusal this test is reading. <c>base_currency_code</c> is left off the
+    /// column list because it is nullable and naming a currency here would only add a foreign key
+    /// that could fail for its own reasons.
+    /// </remarks>
+    private static NpgsqlCommand BuildBudgetInsertProbe(NpgsqlConnection connection, Guid ownerId)
+    {
+        NpgsqlCommand command = new(
+            "insert into budgets (id, user_id, name, created_at_utc) " +
+            "values (@id, @user_id, @name, @created_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("id", Guid.CreateVersion7());
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("name", "Inserted by a user isolation probe");
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        return command;
+    }
+
+    /// <summary>
     /// Runs a statement that is expected to be refused and returns the refusal, or
     /// <see langword="null" /> when it went through instead.
     /// </summary>
@@ -566,15 +739,28 @@ public sealed class RlsIsolationTests
     /// Counts a budget's rows in one table. On the app connection this measures what the session can
     /// see; on the superuser connection it measures what is actually there.
     /// </summary>
-    private static async Task<long> CountRowsAsync(
+    private static Task<long> CountRowsAsync(
         NpgsqlConnection connection,
         string table,
-        Guid budgetId)
+        Guid budgetId) =>
+        CountKeyedRowsAsync(connection, table, "budget_id", budgetId);
+
+    /// <summary>
+    /// The same count keyed on whichever column identifies the tenant. <c>users</c> and
+    /// <c>budgets</c> have no <c>budget_id</c> to filter on — a user is reached by <c>id</c> and a
+    /// budget by its owner's <c>user_id</c> — and widening <see cref="CountRowsAsync" /> instead
+    /// would let a budget-owned call site quietly pass the wrong column.
+    /// </summary>
+    private static async Task<long> CountKeyedRowsAsync(
+        NpgsqlConnection connection,
+        string table,
+        string column,
+        Guid id)
     {
         await using NpgsqlCommand command = new(
-            $"select count(*) from {table} where budget_id = @budget_id",
+            $"select count(*) from {table} where {column} = @id",
             connection);
-        command.Parameters.AddWithValue("budget_id", budgetId);
+        command.Parameters.AddWithValue("id", id);
 
         // Pattern-matched rather than cast-and-null-forgive: a null or unexpected scalar means the
         // query changed shape, and that should fail loudly here instead of at the assertion.

@@ -67,18 +67,22 @@ asserting that `__EFMigrationsHistory` does not exist after a rejected password 
 migration attempt leaves, and therefore the strongest available statement that nothing ran.
 
 **Coverage is verified rather than assumed, and the subject of the check is derived from the live
-schema.** `VerifyRowLevelSecurityCoverageAsync` reads every ordinary table in `public` carrying a
-`budget_id` column, together with `relrowsecurity` and its policy count, in one catalog query. The
-`budget_id` column *is* the definition of budget-owned, so a hardcoded list of the five tables that
-exist today would keep passing on the day someone adds a sixth — which is the only day the check
-matters. Both halves of the verdict are needed and each fails on its own: a table can carry its policy
-in `pg_policy` while row-level security is switched off for it, in which case the policy is never
-enforced. The test for that case is separate from the missing-policy one for exactly that reason. The
-assertion is **exactly one** policy per table rather than at least one, because these policies are
-permissive and permissive policies OR together, so a second policy can only widen what the first
-allows. A discovery query that matched nothing is treated as a third failure — a plain
-`InvalidOperationException` saying the database is not migrated — because otherwise every check below
-it would pass with nothing in it, against a database with no policies at all.
+schema.** `VerifyRowLevelSecurityCoverageAsync` reads every ordinary table in `public` through
+`RowLevelSecurityCoverage`, which is the same discovery and classification `RlsCoverageTests` runs.
+Sharing it is the one place this repository does not prefer deliberate restatement: a second
+*executed* list of which tables must be policed has no adjudicator when the two disagree, and the one
+that loses stops noticing a table. That is not hypothetical — the verifier used to find its own
+subjects by looking for a `budget_id` column, so it could not see `users` at all and reported full
+coverage on a schema where every person's row was reachable by a session that named somebody else.
+A table is required to carry the isolation policy its own ownership calls for, and every table that
+owes none is excused by a written-down exemption rather than by the shape of a query. Each failure
+below fails on its own: row-level security switched off (the policy stays in `pg_policy` and is never
+enforced), a policy count other than **exactly one** — permissive policies OR together, so a second
+can only widen what the first allows — a policy whose *name* is not the one that table owes, a policy
+binding neither `budgetoid_app` nor `public`, and a table carrying neither ownership column, which is
+refused rather than waved through because "we forgot" and "it needs nothing" produce the identical
+catalog. A schema with no table needing a policy at all is a plain `InvalidOperationException` saying
+the database is not migrated, because otherwise every check would pass with nothing in it.
 
 **A coverage failure throws `RowLevelSecurityCoverageException`, carrying the offending table names in
 both a property and the message.** It derives from `InvalidOperationException` so anything already

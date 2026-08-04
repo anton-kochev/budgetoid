@@ -73,12 +73,19 @@ erDiagram
 
 ### MUST
 
-- **Data isolation is scoped to a budget, not to a user.** The MUST/MUST NOT rules that define it —
-  every account, category group, category, payee and transaction belonging to exactly one budget,
-  per-budget name uniqueness and ordering, no response combining budgets — are documented once, in
-  [budgets.md](budgets.md#constraints). A user reaches their data only through the budget they own, so
-  "a user can only see their own data" is a consequence of budget isolation rather than a separate
-  rule.
+- **Money data is isolated by budget; the identity rows are isolated by user.** The MUST/MUST NOT
+  rules for the first — every account, category group, category, payee and transaction belonging to
+  exactly one budget, per-budget name uniqueness and ordering, no response combining budgets — are
+  documented once, in [budgets.md](budgets.md#constraints). A user reaches that data only through
+  the budget they own, so for money "a user can only see their own data" is a consequence of budget
+  isolation rather than a separate rule.
+
+  The two tables that name a person are the exception, and they carry their own rule: `users` and
+  `budgets` are policed by a `user_isolation` policy comparing `id` and `user_id` against the
+  session's authenticated user. Budget isolation cannot express that — a budget *is* the tenant, so
+  there is no ambient budget to check a budgets row against — and leaving it to application code
+  would make the two tables that name a person the only two the database does not guard. See
+  [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
 
 - **A request must resolve to a real internal user and an ambient budget before it can touch data.**
   - **Why**: Handlers stamp and filter by `IBudgetContext.BudgetId`; without a resolved budget there
@@ -216,8 +223,8 @@ erDiagram
   with raw SQL. Note what the fix is **not**: `Credential.CreateFederated` *rejects* a non-canonical
   spelling rather than lowercasing it. Coercing would make acceptable a value the column is about to
   refuse, which [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules
-  out, and it would be a live bug besides — `FindByFederatedCredentialAsync` trims but does not fold
-  case, so a coerced write would store a row its own lookup could never find.
+  out, and it would be a live bug besides — `FindUserIdByFederatedCredentialAsync` trims but does
+  not fold case, so a coerced write would store a row its own lookup could never find.
 - **Enforced in**: `CK_credentials_provider` (`provider is null or provider in ('google')`) and the
   `length(subject) > 0` term added to the federated arm of `CK_credentials_type_shape`; restated in
   `Credential.CreateFederated` for message quality. The two live in separate constraints on purpose:
