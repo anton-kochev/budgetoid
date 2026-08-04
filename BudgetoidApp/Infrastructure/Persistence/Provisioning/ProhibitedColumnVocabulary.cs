@@ -80,7 +80,11 @@ public sealed record ProhibitedColumnRule(
 /// phrases where it is not. <c>fingerprint</c> and <c>telemetry</c> can stand alone because no
 /// legitimate column in this domain is called either. <c>ga_client_id</c> is a phrase because
 /// <c>client</c> and <c>id</c> are both ordinary words, and <c>page_view</c> is a phrase because a
-/// saved <i>view</i> is a plausible product concept that this rule has no business refusing.
+/// saved <i>view</i> is a plausible product concept that this rule has no business refusing. The
+/// bare token <c>event</c> is deliberately <b>not</b> refused for the same reason: a transactional
+/// outbox is the expected pattern for cross-aggregate work here and it names its columns
+/// <c>event_type</c>, <c>event_id</c> and <c>event_data</c>, so the behavioural patterns are
+/// phrases naming the analytics idea rather than the token every outbox row carries.
 /// </para>
 /// <para>
 /// The first matching rule wins, but no name can reach a second one: the patterns are chosen to be
@@ -189,11 +193,28 @@ public static class ProhibitedColumnVocabulary
             + "stored address turns a budget row into a place-and-time record of where somebody "
             + "was"),
         new(
-            "event",
+            "event_name",
             ProhibitedColumnCategory.BehaviouralEvent,
-            "names a record of something a person did rather than something they own. The schema "
-            + "holds the money the person is managing; what they clicked to manage it is not the "
-            + "product's to keep"),
+            "is the analytics spelling of \"what did this person just do\" — the label an event "
+            + "stream is grouped by. A transactional outbox spells its discriminator "
+            + "event_type, so refusing this one costs the outbox nothing"),
+        new(
+            "event_count",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "counts how often somebody did a thing, which is a usage metric wearing a column "
+            + "name. The product measures money, not people"),
+        new(
+            "user_event",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "binds a record of an action directly to the person who took it, which is the join "
+            + "a behavioural log exists to make. An outbox row belongs to an aggregate, not to "
+            + "a user"),
+        new(
+            "event_log",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "is an accumulated history of actions rather than a single pending message. The "
+            + "distinction from an outbox is durability of intent: an outbox row is consumed and "
+            + "deleted, a log is kept because somebody wants to look back at it"),
         new(
             "seen",
             ProhibitedColumnCategory.BehaviouralEvent,

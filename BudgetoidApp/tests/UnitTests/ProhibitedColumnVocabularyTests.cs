@@ -102,6 +102,98 @@ public sealed class ProhibitedColumnVocabularyTests
     }
 
     /// <summary>
+    /// The columns a transactional outbox carries are names about a message, not about a person.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The outbox and the domain events feeding it are the expected pattern for cross-aggregate work
+    /// in this solution, so these names are not hypothetical — they are scheduled. <c>event_type</c>
+    /// holds a serialized .NET type name and <c>event_data</c> the payload of a domain event; neither
+    /// records what a person did, and the outbox exists to make a write and its consequences one
+    /// transaction rather than to watch anybody.
+    /// </para>
+    /// <para>
+    /// What this protects is the credibility of the check itself. The vocabulary's own remarks argue
+    /// that it is only worth having while its reds are believed, and a red bar on work the
+    /// architecture already calls for is spent credibility: the reviewer who meets it learns that the
+    /// list over-refuses, and the next real offender is waved through by the same reflex. The bare
+    /// token <c>event</c> is the pattern that buys a refusal it cannot justify.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("event_type")]
+    [Arguments("event_id")]
+    [Arguments("event_data")]
+    [Arguments("event_payload")]
+    [Arguments("event_version")]
+    [Arguments("occurred_at")]
+    [Arguments("processed_at")]
+    public async Task Vocabulary_DoesNotRefuseTheColumnsAnOutboxCarries(string columnName)
+    {
+        // Arrange — the argument rows above are the subject; each is a column name a canonical
+        // outbox_messages table carries.
+
+        // Act
+        ProhibitedColumnCategory? category = ProhibitedColumnVocabulary.Classify(columnName);
+
+        // Assert — null, meaning the product is happy to carry the name. A category here names the
+        // pattern that has to narrow.
+        await Assert.That(category).IsNull();
+    }
+
+    /// <summary>
+    /// The columns a first-party security record carries are names about access, not about behaviour.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// None of these columns exist in the schema yet. They are the names revocable sessions, passkey
+    /// credentials and recovery codes will bring, and this test is the only thing standing between the
+    /// deny-list and a red bar on a story already marked <c>Ready</c> — the pattern that refuses them
+    /// would be written before the table that needs them, and nothing else in the suite would notice.
+    /// </para>
+    /// <para>
+    /// The distinction the vocabulary has to keep is this: a first-party security record may
+    /// legitimately name the session or credential itself, when it began, when it expires or was
+    /// revoked, and when it was last used, because each of those is read in order to <i>end</i>
+    /// access. A person cannot revoke a session the schema is forbidden to name, and cannot be shown
+    /// what to revoke without the moment it was last used. That is the opposite of a usage log kept
+    /// about them, so the tracking patterns for login-, session- and cookie-shaped columns have to be
+    /// phrases naming the third-party idea — never the bare tokens <c>session</c>, <c>login</c> or
+    /// <c>cookie</c>, which refuse the mechanism that protects the account.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("session_id")]
+    [Arguments("sessions")]
+    [Arguments("token_hash")]
+    [Arguments("expires_at_utc")]
+    [Arguments("revoked_at_utc")]
+    [Arguments("last_used_at")]
+    [Arguments("credential_id")]
+    [Arguments("public_key")]
+    [Arguments("sign_count")]
+    [Arguments("aaguid")]
+    [Arguments("transports")]
+    [Arguments("device_name")]
+    [Arguments("cookie_hash")]
+    [Arguments("login_at")]
+    [Arguments("code_hash")]
+    [Arguments("consumed_at")]
+    public async Task Vocabulary_DoesNotRefuseTheColumnsAFirstPartySecurityRecordCarries(
+        string columnName)
+    {
+        // Arrange — the argument rows above are the subject; each is a column name a revocable
+        // session, a stored passkey credential or a recovery code will carry.
+
+        // Act
+        ProhibitedColumnCategory? category = ProhibitedColumnVocabulary.Classify(columnName);
+
+        // Assert — null. A category here is a pattern that has widened past the third-party tracker it
+        // was written for and into the record a person revokes access with.
+        await Assert.That(category).IsNull();
+    }
+
+    /// <summary>
     /// The column names the EF model maps to tables today.
     /// </summary>
     /// <remarks>
