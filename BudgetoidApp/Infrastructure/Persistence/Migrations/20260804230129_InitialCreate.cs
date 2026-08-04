@@ -38,7 +38,6 @@ public partial class InitialCreate : Migration
             {
                 id = table.Column<Guid>(type: "uuid", nullable: false),
                 email = table.Column<string>(type: "character varying(254)", maxLength: 254, nullable: false, collation: "case_insensitive"),
-                display_name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: true),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
@@ -87,8 +86,9 @@ public partial class InitialCreate : Migration
             constraints: table =>
             {
                 table.PrimaryKey("PK_credentials", x => x.id);
+                table.CheckConstraint("CK_credentials_provider", "provider is null or provider in ('google')");
                 table.CheckConstraint("CK_credentials_type", "type in ('passkey', 'federated')");
-                table.CheckConstraint("CK_credentials_type_shape", "(type = 'federated' and provider is not null and subject is not null) or (type = 'passkey' and provider is null and subject is null)");
+                table.CheckConstraint("CK_credentials_type_shape", "(type = 'federated' and provider is not null and subject is not null and length(subject) > 0) or (type = 'passkey' and provider is null and subject is null)");
                 table.ForeignKey(
                     name: "FK_credentials_users_user_id",
                     column: x => x.user_id,
@@ -330,6 +330,13 @@ public partial class InitialCreate : Migration
             name: "IX_credentials_user_id",
             table: "credentials",
             column: "user_id");
+
+        migrationBuilder.CreateIndex(
+            name: "IX_credentials_user_id_federated",
+            table: "credentials",
+            column: "user_id",
+            unique: true,
+            filter: "type = 'federated'");
 
         migrationBuilder.CreateIndex(
             name: "IX_payees_budget_id_name",

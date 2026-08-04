@@ -320,7 +320,7 @@ public sealed class BudgetoidDbContextConstructionTests
         // unattended on every push to main, so a regenerated baseline arrives under a new id, the
         // next push finds nothing applied, and it re-creates every table against a populated
         // database. Having to edit this line is the checkpoint the retired manual deploy step was.
-        const string frozenBaselineId = "20260803100119_InitialCreate";
+        const string frozenBaselineId = "20260804230129_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

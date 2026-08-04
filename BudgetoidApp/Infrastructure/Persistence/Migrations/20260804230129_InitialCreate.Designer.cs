@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BudgetoidDbContext))]
-    [Migration("20260803175047_ConstrainCredentialProviderAndFederatedShape")]
-    partial class ConstrainCredentialProviderAndFederatedShape
+    [Migration("20260804230129_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)

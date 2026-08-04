@@ -35,6 +35,11 @@ regenerated baseline, by design: the literal id in that test is a checkpoint a h
 deliberately, which is precisely what a rebaseline should be. Regenerating the baseline therefore
 means editing that literal too, in the same commit.
 
+`FROZEN_FROM` does **not** move when the baseline is regenerated. It is a lower bound, and every
+file present sorts above the id it names, so the guard already polices all of them; advancing it
+while the window is open would be a second, silent change to what the guard covers. It moves once,
+together with the window closing.
+
 Closing the window is two lines in `migrations-guard`: set `REBASELINE_WINDOW` to `closed` and
 `FROZEN_FROM` to the new baseline's id. That belongs in the commit that lands the last schema change
 the window exists for, not in a follow-up — an open window over a database that has started
