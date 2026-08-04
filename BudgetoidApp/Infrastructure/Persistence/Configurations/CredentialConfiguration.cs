@@ -54,13 +54,18 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
         builder.Property(credential => credential.Id).HasColumnName("id");
         builder.Property(credential => credential.UserId).HasColumnName("user_id").IsRequired();
 
-        // An explicit pair of lambdas rather than HasConversion<string>(): that would store the
-        // PascalCase member names. The lowercase spelling is deliberate — it is the vocabulary the
-        // requirement uses, and it is what both the CHECK above and the API surface read.
+        // The vocabulary is written out once per direction below, so adding a CredentialType member
+        // is a decision taken here at compile time rather than a spelling ToString() invents and a
+        // case-insensitive Enum.Parse then accepts on the way back — that parse also took "PASSKEY"
+        // and the numeric "0", neither of which CK_credentials_type allows. That HasConversion<string>()
+        // would store the PascalCase member names remains true and remains a reason not to use it.
+        // The lowercase spelling is deliberate — it is the vocabulary the requirement uses, and it is
+        // what both the CHECK above and the API surface read. The switches sit in methods because
+        // these arguments are expression trees, which cannot contain a switch expression.
         builder.Property(credential => credential.Type)
             .HasConversion(
-                type => type.ToString().ToLowerInvariant(),
-                value => Enum.Parse<CredentialType>(value, ignoreCase: true))
+                type => ToColumnValue(type),
+                value => FromColumnValue(value))
             .HasColumnName("type")
             .HasMaxLength(20)
             .IsRequired();
@@ -107,4 +112,30 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
             .HasForeignKey(credential => credential.UserId)
             .OnDelete(DeleteBehavior.Cascade);
     }
+
+    // The discard arm is unreachable from anything the domain can produce: it means a member was
+    // added to CredentialType and nobody chose a spelling for it here, or an undeclared value was
+    // cast into the enum. That is a caller handing the converter a value outside its declared range,
+    // and the exception says so — the enum member, not the column, is what is wrong.
+    private static string ToColumnValue(CredentialType type) => type switch
+    {
+        CredentialType.Passkey => "passkey",
+        CredentialType.Federated => "federated",
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(type),
+            type,
+            $"No credentials.type spelling is defined for this {nameof(CredentialType)} member."),
+    };
+
+    // A different failure from the one above, so a different exception: nothing was passed wrongly
+    // here — the row itself holds a type CK_credentials_type should have refused, which makes it
+    // state the model says cannot exist rather than a bad argument. Anyone reading the message needs
+    // the offending value, because finding the row is the only way to learn how it got written.
+    private static CredentialType FromColumnValue(string value) => value switch
+    {
+        "passkey" => CredentialType.Passkey,
+        "federated" => CredentialType.Federated,
+        _ => throw new InvalidOperationException(
+            $"The credentials.type column holds '{value}', a value CK_credentials_type should have refused."),
+    };
 }
