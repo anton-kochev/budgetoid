@@ -131,6 +131,19 @@ erDiagram
   - **Enforced in**: `EnsureUserCommand` carries only the subject and the email, so there is no field
     for the answer to land in; the pinned `users` column set leaves it nowhere to go.
 
+- **A user row carries an internal identifier, an email address and a creation timestamp, and no
+  other column.**
+  - **Why**: what is never collected can never leak, never needs protecting, and never has to be
+    erased. Every other claim an identity provider offers — a display name, a picture URL, a locale —
+    is read to answer who is asking and then dropped. The rule is worth pinning rather than trusting
+    to review because a column arrives one at a time and each one looks harmless on its own.
+  - **Enforced in**: `Schema_PinsTheColumnsOfTheUserRow`
+    (`tests/IntegrationTests/DataMinimizationSchemaTests.cs`) reads `pg_attribute` and pins the live
+    column set; `User_PinsEveryPublicInstanceProperty` (`tests/UnitTests/UserTests.cs`) pins the
+    entity's property surface, so a field reappearing in the domain fails before it can reach a
+    migration. The schema test reads the catalog rather than the EF model on purpose: a pinned set
+    checked against the same code that would have had to notice the column proves nothing.
+
 - **An email address belongs to at most one user, compared case-insensitively.**
   - **Why**: Two rows holding the same address are two people as far as every budget is concerned,
     and the address is the only human-readable thing that identifies a user — a support request, an
