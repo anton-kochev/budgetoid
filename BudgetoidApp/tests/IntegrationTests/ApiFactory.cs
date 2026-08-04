@@ -75,19 +75,45 @@ public sealed class ApiFactory(
         });
     }
 
-    public HttpClient CreateAuthenticatedClient(string? subject = null, string? email = null)
+    /// <param name="emailVerified">
+    /// Raw value for the <c>email_verified</c> claim. Declared last, and optional, so existing
+    /// positional call sites keep compiling. When omitted the handler emits its own default.
+    /// </param>
+    public HttpClient CreateAuthenticatedClient(string? subject = null, string? email = null, string? emailVerified = null)
     {
-        HttpClient client = CreateClient();
-        client.DefaultRequestHeaders.Add(TestAuthHandler.SubjectHeader, subject ?? defaultSubject ?? "test-subject");
-        client.DefaultRequestHeaders.Add(TestAuthHandler.EmailHeader, email ?? $"{subject ?? defaultSubject ?? "test-subject"}@example.com");
+        HttpClient client = CreateSubjectClient(subject, out string resolvedSubject);
+        client.DefaultRequestHeaders.Add(TestAuthHandler.EmailHeader, email ?? $"{resolvedSubject}@example.com");
+        if (emailVerified is not null)
+        {
+            client.DefaultRequestHeaders.Add(TestAuthHandler.EmailVerifiedHeader, emailVerified);
+        }
+
         return client;
     }
 
     public HttpClient CreateAuthenticatedClientWithoutEmail(string? subject = null)
     {
-        HttpClient client = CreateClient();
-        client.DefaultRequestHeaders.Add(TestAuthHandler.SubjectHeader, subject ?? defaultSubject ?? "test-subject");
+        HttpClient client = CreateSubjectClient(subject, out _);
         client.DefaultRequestHeaders.Add(TestAuthHandler.OmitEmailHeader, "true");
+        return client;
+    }
+
+    public HttpClient CreateAuthenticatedClientWithUnverifiedEmail(string? subject = null) =>
+        CreateAuthenticatedClient(subject, emailVerified: "false");
+
+    public HttpClient CreateAuthenticatedClientWithoutEmailVerifiedClaim(string? subject = null)
+    {
+        HttpClient client = CreateSubjectClient(subject, out string resolvedSubject);
+        client.DefaultRequestHeaders.Add(TestAuthHandler.EmailHeader, $"{resolvedSubject}@example.com");
+        client.DefaultRequestHeaders.Add(TestAuthHandler.OmitEmailVerifiedHeader, "true");
+        return client;
+    }
+
+    private HttpClient CreateSubjectClient(string? subject, out string resolvedSubject)
+    {
+        resolvedSubject = subject ?? defaultSubject ?? "test-subject";
+        HttpClient client = CreateClient();
+        client.DefaultRequestHeaders.Add(TestAuthHandler.SubjectHeader, resolvedSubject);
         return client;
     }
 }

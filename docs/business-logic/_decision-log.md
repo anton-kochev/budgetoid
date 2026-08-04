@@ -8,6 +8,46 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-05 — The provider must vouch for the address, and a takeover path closes with it
+
+**Context:** the API read `sub` and `email` off the principal and trusted both. An `email` claim the
+provider has not vouched for is an address anybody could have typed into a profile field, and the
+account row is keyed on exactly that address — it is unique, it is what a support request, an export
+and every future notification go on. "One email, one user" below is explicit that this was a known
+hole: it rejected rebinding a stale row's subject on collision partly *because* `email_verified` was
+not read, so an unverified address in a token would have been enough to reach an existing account.
+That premise no longer holds. Two other statements in that entry are also no longer true of the
+schema: the `google_subject` column it bounds moved to `credentials.subject`, and the `display_name`
+column it bounds was dropped outright. Neither change touches the decision that entry records — the
+uniqueness and case-insensitivity of `users.email` — which stands.
+
+**Decision:** require `email_verified` on every authenticated principal, checked in
+`UserProvisioningMiddleware` immediately after the missing-claim check and **before** provisioning, so
+a refused principal writes no row. Accept only a value `bool.TryParse` reads as `true`, which is
+case-insensitive and therefore takes `"True"`; reject absent, blank, `"false"` and anything
+unparseable, `"1"` included. No provider this codebase talks to emits a truthy-string dialect, and
+accepting one is how a gate quietly stops being a gate. Rejection is a 401 ProblemDetails of the same
+shape as the missing-claim path but with its own title, because the caller holds the token and can
+read the claim themselves — naming the reason leaks nothing and saves a debugging session. The claim
+is read and **not stored**: it decides whether the address may be registered, and answers nothing
+about the person worth keeping afterwards. No scope changes; Google returns `email_verified` under
+the `email` scope the client already asks for.
+
+**Alternatives considered:** *Enforce it inside JWT validation* — rejected: the integration host
+replaces the whole authentication stack, so the rule would ship with no test exercising it, and it
+conflates "is this token authentic" with "may this address be registered", which is a provisioning
+precondition of the same kind as "the principal carries a `sub`". *Carry the flag on
+`EnsureUserCommand`* — rejected: an authentication concern in the Application layer, and a command
+field nothing stores. *Enforce it in the database* — rejected: the database cannot inspect a token,
+and reaching it would need procedural logic, which ADR 0002 rules out; the API boundary is the lowest
+layer capable of the rule. *Revisit rebinding a stale row's subject now that the claim is checked* —
+rejected: that rejection rests on a second, independent ground — `sub` must not be mutable — and this
+change does not reopen it.
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md).
+
+---
+
 ## 2026-08-03 — The client stops reading the identity token, and the greeting goes with it
 
 **Context:** the entry below removed the stored name but left the client's home-screen greeting

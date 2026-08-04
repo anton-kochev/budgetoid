@@ -111,11 +111,25 @@ erDiagram
     `CurrentUser.UserId` exists because the middleware needs a request-scoped home for the identity it
     just provisioned — no query filters by it.
 
-- **An authenticated principal must carry `sub` and `email` claims.**
-  - **Why**: `sub` is the stable identity key we upsert on; `email` is a required profile field.
-    Without them we cannot provision a user.
+- **An authenticated principal must carry `sub`, `email` and `email_verified` claims.**
+  - **Why**: `sub` is the stable identity key we upsert on, and `email` is the address the account is
+    reached at — without either we cannot provision a user. `email_verified` decides whether that
+    address may be registered at all: an address the provider will not vouch for is one anybody could
+    have typed, and accepting it would let a token claim an address its holder never proved.
   - **Enforced in**: `UserProvisioningMiddleware` returns `401` (ProblemDetails, "missing required
-    claims") when either is absent.
+    claims") when `sub` or `email` is absent, and `401` ("email address is not asserted as verified")
+    when `email_verified` is absent or is anything `bool.TryParse` does not read as `true` — `"false"`
+    and `"1"` alike. The check runs **before** provisioning, so a refused principal writes no row.
+  - **Why here and not in the database**: the rule is about a token, and the database cannot inspect
+    one. Pushing it lower would mean procedural logic, which [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md)
+    rules out. The API boundary is the lowest layer capable of enforcing it.
+
+- **The verified-email claim is read and never stored.**
+  - **Why**: it answers one question — may this address be registered — and once answered it holds
+    nothing about the person worth keeping. Storing it would be a claim the product carries for no
+    reader, which is the thing the account row exists to avoid.
+  - **Enforced in**: `EnsureUserCommand` carries only the subject and the email, so there is no field
+    for the answer to land in; the pinned `users` column set leaves it nowhere to go.
 
 - **An email address belongs to at most one user, compared case-insensitively.**
   - **Why**: Two rows holding the same address are two people as far as every budget is concerned,
@@ -316,7 +330,8 @@ erDiagram
 stateDiagram-v2
     [*] --> Authenticated : request passes authentication
     Authenticated --> Rejected : missing sub or email claim
-    Authenticated --> Lookup : has sub + email
+    Authenticated --> Rejected : email not asserted as verified
+    Authenticated --> Lookup : has sub + email + verified email
     Lookup --> Existing : user found by federated credential
     Lookup --> Creating : no credential found
     Existing --> Resolved : the stored account stands as registered (no write)
@@ -333,7 +348,8 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| Authenticated → Rejected | Auth succeeds but claims missing | `sub` and `email` both required, else 401 |
+| Authenticated → Rejected | Auth succeeds but claims missing | `sub` and `email` both required, else 401 "missing required claims" |
+| Authenticated → Rejected | Auth succeeds, claims present, `email_verified` does not assert verification | Absent, blank, `false` or unparseable, else 401 "email address is not asserted as verified". One state, two titles: the caller holds the token and can read the claim, so naming the reason leaks nothing |
 | Lookup → Existing | A federated credential holds this `(provider, subject)`; its user is the account | — |
 | Existing → Resolved | Always, once the credential resolves | None. The branch reads and returns; whatever the token now says about this person is not applied |
 | Creating → Resolved | New user and its first credential inserted in one save | `User.Create` validates email presence and both length bounds; `Credential.CreateFederated` validates provider and subject |
@@ -351,6 +367,8 @@ IF the request is not authenticated
   THEN skip provisioning and continue                    ← public endpoints reach no budget-scoped data
 ELSE IF the sub or email claim is missing or blank
   THEN 401 ProblemDetails "Authenticated principal is missing required claims."
+ELSE IF email_verified does not parse as true                ← absent, blank, "false" and "1" all fail
+  THEN 401 ProblemDetails "Authenticated principal's email address is not asserted as verified."
 ELSE IF a federated credential already holds that provider and sub
   THEN use its user                                      ← no write; the token's claims are not applied
 ELSE                                                     ← no credential for that sub yet
@@ -390,9 +408,10 @@ The budget branch that runs after this, on every path, is in
 ## Integration Points
 
 - **Google OAuth / OIDC**: identity comes from the Google ID token, and reaches the account through a
-  federated credential rather than through a column on the user. The API reads the `sub` and `email`
-  claims and no others — the token carries more, and the rest is deliberately dropped rather than
-  stored against the account. The frontend attaches the **ID token** (not the access token) as the
+  federated credential rather than through a column on the user. The API reads three claims and no
+  others — `sub` and `email`, which are stored, and `email_verified`, which is **read and not
+  stored**: it gates registration and is then discarded. The token carries more, and the rest is
+  deliberately dropped rather than stored against the account. The frontend attaches the **ID token** (not the access token) as the
   `Authorization: Bearer` header on API calls (see the client `AuthInterceptor`) and reads no claim
   out of it at all; the authorization request asks for `openid email` and nothing more.
   `auth-service.spec.ts` pins the first half and `no-profile-scope.spec.ts`, which reads the built
