@@ -27,10 +27,13 @@ whose `UPDATE` privileges are granted per column, so a column left off the list 
 every owned table, `accounts.currency_code`, `users.created_at_utc`, every column of `budgets` and
 every column of `credentials` — is one PostgreSQL refuses to write at all (see
 [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). Tenancy is owned down there as
-well: row-level security policies on the five budget-owned tables mean that role reaches no other
-budget's rows on any statement at all and can insert into no budget but the ambient one, so the query
-filters above them shape the answer rather than hold the boundary (see
-[ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)). That split is a
+well, on both axes. `budget_isolation` policies on the five budget-owned tables mean that role
+reaches no other budget's rows on any statement at all and can insert into no budget but the ambient
+one, so the query filters above them shape the answer rather than hold the boundary (see
+[ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); and the two
+tables that name a person, `users` and `budgets`, are policed on the **user** instead by
+`user_isolation`, because a budget *is* the tenant and so has no ambient budget to be checked
+against (see [ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). That split is a
 general rule rather than a local one: each rule is owned by the lowest layer that can enforce it
 declaratively, and where one deliberately sits higher the doc says why — see
 [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The central tenancy

@@ -19,9 +19,11 @@ authenticated request.
 
 A user owns **Budgets** and nothing else. Everything else — accounts, category groups, categories,
 payees, transactions — belongs to a budget, so **the budget, not the user, is the unit of tenancy.**
-That invariant and the isolation rules that implement it live in [budgets.md](budgets.md); this area
-does not duplicate them. What it does own is the identity, its claims, and the provisioning step that
-resolves a Google principal into an internal user together with the ambient budget for the request.
+That invariant and the isolation rules for the money data live in [budgets.md](budgets.md); this area
+does not duplicate them. What it does own is the identity, its claims, the provisioning step that
+resolves a Google principal into an internal user together with the ambient budget for the request,
+and the isolation of the identity rows themselves — `users` and `budgets` are the two tables scoped
+to a **user** rather than to a budget, and that rule has its canonical statement here.
 
 ## Key Entities
 
@@ -86,6 +88,16 @@ erDiagram
   there is no ambient budget to check a budgets row against — and leaving it to application code
   would make the two tables that name a person the only two the database does not guard. See
   [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
+  - **Enforced in**: the `user_isolation` policies live beside the grants in
+    `BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration;
+    `SessionContextInterceptor` puts `app.current_user_id` on every connection the context opens, so
+    a session that resolved nobody fails with `22P02` rather than reading another person's row. There
+    is no EF query filter above them — the provisioning lookup runs before an identity exists, so
+    `Budgets` is scoped by owner explicitly in `FindFirstForUserAsync`. `credentials` is the one
+    user-owned table deliberately left unpoliced: reading it is *how* the request discovers who is
+    asking, which is also why that lookup projects to `credentials.user_id` and never joins `users`.
+    `tests/IntegrationTests/RlsIsolationTests.cs` proves the isolation on both axes and
+    `RlsCoverageTests.cs` fails any new table that owes a policy and has none.
 
 - **A request must resolve to a real internal user and an ambient budget before it can touch data.**
   - **Why**: Handlers stamp and filter by `IBudgetContext.BudgetId`; without a resolved budget there
