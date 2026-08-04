@@ -242,14 +242,30 @@ breaks the convention lands in the fourth bucket and goes red, which is the beha
   probe no address but their own. Whichever story lands the email-change flow owns re-arguing that,
   because it is the story that ends the precondition.
 - **The classifier fails closed on a new *table*. It says nothing about a new *column* on a table
-  that is already exempt.** That distinction is not pedantry: a passkey's signature counter and a
-  credential's last-used timestamp are both specified to arrive as columns on `credentials`, which
-  is exempt — so no new relation appears and nothing goes red. The structural cause outlives this
-  decision: **the exemption was granted to one query but applies to a whole table**, and PostgreSQL
-  offers no finer grain. While `credentials` holds `(user_id, type, provider, subject)` the cost is
-  small; once it holds a public key and a signature counter it is per-user cryptographic material
-  readable from any application session. The story that puts it there owns re-arguing the
-  exemption.
+  that is already exempt** — so the exemption itself now records the column set its reason was
+  argued over, and `credentials` growing a column goes red until someone answers for it. The
+  structural cause outlives this decision: **the exemption was granted to one query but applies to
+  a whole table**, and PostgreSQL offers no finer grain.
+
+  Be precise about what is at stake, because overstating it is how a rule gets ignored. A passkey's
+  **public key is public** and its signature counter is not a secret; both leaking across sessions
+  is an enumeration and correlation surface, not a credential compromise, and neither breaks
+  NFR-015. What does matter is what arrives next to them: each recovery factor stores its own
+  wrapped copy of the content and index keys, and a registered passkey *is* a recovery factor. Those
+  are AEAD ciphertext under a key-encryption key the deployment never holds, so cross-session
+  readability still does not yield plaintext — but handing every application session the ciphertext
+  of every account, alongside the hash of every recovery code, is the opposite of what a product
+  whose thesis is "the operator cannot read your records" should do by default.
+
+- **Where the cut belongs, so the next story does not have to re-derive it.** The exemption is not
+  removable: a WebAuthn assertion verifies a signature with the stored public key *before* it knows
+  whose account it is, so those columns genuinely have to be reachable with no identity on the
+  session. The fix is to make the exemption's **scope match its reason** — the exempt table holds
+  what answers *who is asking* and *is this really them*, and everything read **after** that answer
+  lives on a table carrying `user_id`, which the classifier then catches by itself. That is the
+  identity / key-custody split the requirements already draw, expressed as a table boundary:
+  discovery columns stay, wrapped keys leave. A red on the pinned column set is therefore an
+  instruction to **move the column**, never to append its name to the list.
 - **A trap for whoever re-argues it.** The obvious resolution — a policy admitting a row when the
   session names nobody *or* names its owner — satisfies discovery and breaks registration under a
   race. `EnsureUserHandler` publishes the new user's id *before* `TryAddAsync`, so when that insert

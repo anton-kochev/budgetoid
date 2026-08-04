@@ -69,14 +69,18 @@ GRANT UPDATE (email) ON users TO budgetoid_app;
 -- one on an email change are both specified, and both need this grant; when one lands, the reason
 -- written here is what has to be re-argued rather than quietly deleted.
 --
--- Note what the coverage rule does NOT do for those future columns. It fails closed on a new
--- TABLE; it is silent about a new COLUMN on a table already exempt, and credentials is exempt. So
--- a passkey's public key and signature counter arrive here with nothing going red, on a table the
--- application role holds a table-wide SELECT on and every session can read regardless of who it
--- names. The exemption was granted to one QUERY — the one that discovers who is asking — but
--- PostgreSQL applies it to the whole table, and that mismatch is cheap only while the columns are
--- (user_id, type, provider, subject). Whoever puts key material here owns re-arguing it, and
--- docs/decisions/0011 records the trap waiting for the obvious fix.
+-- Note what those future columns land on. The exemption was granted to one QUERY — the one that
+-- discovers who is asking — but PostgreSQL applies it to the whole TABLE, so anything added here
+-- is readable by every application session regardless of who that session names. That mismatch is
+-- cheap while the columns are (id, user_id, type, provider, subject, created_at_utc) and stops
+-- being cheap the moment a wrapped key or a recovery-code hash joins them.
+--
+-- So the exemption pins that column set, and adding a column here goes red. The red means MOVE THE
+-- COLUMN, not widen the pin: a WebAuthn assertion verifies its signature with the stored public key
+-- before it knows whose account it is, so the discovery columns have to stay reachable with no
+-- identity on the session — but everything read AFTER that answer belongs on a table carrying
+-- user_id, which the coverage rule polices by itself. See docs/decisions/0011, which also records
+-- the trap waiting for anyone who tries to fix this by policing credentials instead.
 REVOKE ALL ON credentials FROM budgetoid_app;
 GRANT SELECT, INSERT ON credentials TO budgetoid_app;
 

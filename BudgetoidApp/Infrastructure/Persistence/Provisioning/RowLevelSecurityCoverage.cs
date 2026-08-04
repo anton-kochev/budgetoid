@@ -37,11 +37,53 @@ public enum TableOwnership
 /// only "exempt" would make that drift invisible; recording "exempt, and it owned nothing at the
 /// time" turns it into a failing check.
 /// </para>
+/// <para>
+/// <paramref name="ColumnsTheReasonCovers" /> answers the same question one grain down, and it
+/// exists because an exemption is argued about a <b>query</b> and applied by PostgreSQL to a whole
+/// <b>table</b>. There is no finer grain to apply it at: the reason on <c>credentials</c> is "this
+/// is the table read to discover who is asking", which is an argument about a handful of columns,
+/// while the effect is a table-wide <c>SELECT</c> every application session holds regardless of
+/// which user it names. Coverage fails closed on a new table and says nothing at all about a new
+/// column on a table already exempt, so without the column set recorded, material that is only ever
+/// read <i>after</i> authentication answers who is asking can land on the one table whose whole
+/// justification is being readable before any tenant is known — and nothing goes red.
+/// </para>
+/// <para>
+/// Non-null means "this exemption was argued over exactly this column set, and a new column
+/// invalidates the argument". Null means the reason does not turn on the table's shape at all, and
+/// then <paramref name="Reason" /> has to say so in words rather than leave it inferred — a null
+/// that nobody justified is indistinguishable from a null somebody reached for to make the code
+/// compile.
+/// </para>
+/// <para>
+/// <b>When the pin goes red, the fix is to move the column, not to append its name here.</b>
+/// Appending is the drift the pin exists to stop, and it is the fix that looks obvious at the exact
+/// moment it is least true. The line the split follows is already drawn by the reason: the exempt
+/// table keeps what answers "who is asking" and "is this really them", read before any identity
+/// exists, and everything read <i>after</i> that answer belongs on a table carrying <c>user_id</c>
+/// — which the classifier then requires a policy on by itself, with no new rule. That mirrors the
+/// identity / key-custody split the requirements already draw.
+/// </para>
+/// <para>
+/// The honest limit: the pin trips on <b>any</b> new column, including a benign one such as a
+/// last-used timestamp that leaks nothing. That is intended rather than a false positive — what is
+/// being forced is the decision, not necessarily the column's exclusion — but the first legitimate
+/// red will read as the rule being wrong unless this is said out loud.
+/// </para>
 /// </remarks>
 /// <param name="Table">The table name exactly as <c>pg_class</c> stores it.</param>
 /// <param name="Reason">Why this table belongs to no tenant, or cannot be policed as if it did.</param>
 /// <param name="ExemptDespite">The ownership the schema is expected to still report for it.</param>
-public sealed record TableExemption(string Table, string Reason, TableOwnership ExemptDespite);
+/// <param name="ColumnsTheReasonCovers">
+/// Every column the reason was argued over, or null when the reason does not depend on the table's
+/// shape. No default value: an exemption whose scope nobody stated is the state this member was
+/// added to leave behind, so adding one has to answer the question out loud.
+/// </param>
+public sealed record TableExemption(
+    string Table,
+    string Reason,
+    TableOwnership ExemptDespite,
+    IReadOnlyList<string>? ColumnsTheReasonCovers);
 
 /// <summary>
 /// The kinds of relation discovery reaches, split by whether an enforced policy can be attached at
@@ -435,6 +477,14 @@ public static class RowLevelSecurityCoverage
     /// may carry an ownership column" would be wrong rather than strict.
     /// </para>
     /// <para>
+    /// It is also the only entry whose <see cref="TableExemption.ColumnsTheReasonCovers" /> is
+    /// pinned, and the pin is the whole of what keeps its exemption honest: the six columns below
+    /// are the ones "read to discover who is asking" is an argument about. Key material and per-
+    /// factor secrets are specified to arrive in this area, and they are read only after that
+    /// question has been answered, so they belong on a table carrying <c>user_id</c> — not appended
+    /// to this list. See <see cref="TableExemption" /> for why widening the list is the wrong fix.
+    /// </para>
+    /// <para>
     /// Callers pass this to <see cref="Classify" /> rather than the classifier reaching for it, so
     /// the same schema can be classified against a different set. That is what makes discovery
     /// testable instead of merely trustworthy.
@@ -446,15 +496,22 @@ public static class RowLevelSecurityCoverage
             "credentials",
             "read to discover who is asking — a policy keyed on the identity it resolves would "
             + "refuse the query that resolves it",
-            TableOwnership.UserOwned),
+            TableOwnership.UserOwned,
+            ["id", "user_id", "type", "provider", "subject", "created_at_utc"]),
         new(
             "currencies",
-            "shared reference data belonging to no tenant",
-            TableOwnership.None),
+            "shared reference data belonging to no tenant, whatever columns it grows — the reason "
+            + "is about who owns the rows and not about the table's shape, so no column set is "
+            + "pinned",
+            TableOwnership.None,
+            null),
         new(
             "__EFMigrationsHistory",
-            "EF's own bookkeeping, and the application role may only read it",
-            TableOwnership.None),
+            "EF's own bookkeeping, and the application role may only read it — EF owns this "
+            + "table's shape, so pinning its columns would turn an EF upgrade into a red with "
+            + "nothing to decide",
+            TableOwnership.None,
+            null),
     ];
 
     /// <summary>

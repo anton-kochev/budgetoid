@@ -36,6 +36,14 @@ Enforced today:
   `currencies` (reference data owned by no tenant), and `__EFMigrationsHistory`. The same list and
   the same classification are what the deploy-time verifier reads, so the gate and the test cannot
   drift apart.
+- **An exemption records the columns its reason was argued over, and `credentials` growing one goes
+  red.** The exemption is granted to a *query* — the one that discovers who is asking — but
+  PostgreSQL applies it to a whole *table*, so without this a column read only after authentication
+  could land beside the discovery columns and be readable by every session. Going red means **move
+  the column** to a table carrying `user_id`, which the coverage rule then polices by itself; it
+  never means appending the name to the pinned list. `currencies` and `__EFMigrationsHistory` pin
+  nothing on purpose — the first belongs to no tenant whatever columns it grows, the second has its
+  shape owned by EF.
 - **The column that decides tenancy must be `NOT NULL`.** Under `budget_id = current_budget` a row
   whose owner is NULL is invisible to every session — fail-closed, so not a leak, but a row that
   exists, that nobody can reach, and that nothing explains. The coverage gate refuses it.

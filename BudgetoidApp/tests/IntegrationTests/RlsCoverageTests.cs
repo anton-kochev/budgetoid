@@ -566,6 +566,81 @@ public sealed class RlsCoverageTests
     }
 
     [Test]
+    public async Task Exemptions_PinTheColumnsTheirReasonCovers()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // Act — the coverage rule fails closed on a new TABLE and says nothing at all about a new
+        // COLUMN on a table that is already exempt. That silence is not a small residue of the
+        // design, it is the exact shape of the next hole: an exemption is argued about one QUERY and
+        // applied by PostgreSQL to a whole TABLE, and there is no finer grain to apply it at. The
+        // credentials exemption reads "this is the table read to discover who is asking", which is
+        // an argument about four columns and a primary key; the effect is a table-wide SELECT the
+        // application role holds on every session regardless of which user that session names.
+        //
+        // That gap is cheap only while the columns are the discovery ones, and it is specified to
+        // stop being cheap. A passkey's public key and signature counter are specified to arrive
+        // here, and a recovery factor's wrapped content and index keys after them — a registered
+        // passkey IS a recovery factor. All of that is material read AFTER authentication has
+        // already answered who is asking, which is to say material with a real tenant, landing on
+        // the one table whose whole reason for being exempt is that it must be readable before any
+        // tenant is known.
+        //
+        // So the exemption is not what gets removed — removing it is not even available. A WebAuthn
+        // assertion verifies a signature with the public key BEFORE it knows whose account it is, so
+        // the discovery columns genuinely have to be reachable with no identity on the session. What
+        // gets fixed is the SCOPE: the exemption keeps only what answers "who is asking" and "is
+        // this really them", and everything read after that answer moves to a policed table carrying
+        // user_id — which the classifier then catches by itself, with no new rule at all.
+        //
+        // This test is the thing that forces that decision to be made rather than drifted past. A
+        // non-null ColumnsTheReasonCovers means "this exemption was argued over exactly this set of
+        // columns, and a new one invalidates the argument"; null means the reason does not depend on
+        // the table's shape and the reason itself has to say why.
+        //
+        // WHEN THIS GOES RED, THE FIX IS TO MOVE THE COLUMN, NOT TO WIDEN THE PINNED LIST. Appending
+        // the new column name here is the drift this test exists to stop, and it is the fix that
+        // will look obvious at the moment it is least true.
+        //
+        // Columns are read with a small query of this file's own rather than through the classifier,
+        // the same habit DeploymentProvisioningTests keeps and for the same reason: this test states
+        // independently what the schema holds, so a classifier that stopped seeing a column cannot
+        // also decide that the column is not there.
+        List<TableExemption> pinned = RowLevelSecurityCoverage.Exemptions
+            .Where(exemption => exemption.ColumnsTheReasonCovers is not null)
+            .ToList();
+        List<string> live = [];
+        List<string> argued = [];
+        foreach (TableExemption exemption in pinned)
+        {
+            // Qualified with the table name on both sides so one order-insensitive comparison can
+            // cover every pinned exemption at once and a failure still says which table grew or lost
+            // a column, instead of dumping two bare column lists the reader has to attribute by hand.
+            IReadOnlyList<string> columns = await ReadColumnNamesAsync(admin, exemption.Table);
+            live.AddRange(columns.Select(column => $"{exemption.Table}.{column}"));
+            argued.AddRange(
+                (exemption.ColumnsTheReasonCovers ?? []).Select(
+                    column => $"{exemption.Table}.{column}"));
+        }
+
+        // Assert — non-vacuity first, and it is not the usual discovery guard. Every entry on the
+        // list being null would make the real assertion below compare nothing against nothing and
+        // pass forever, which is precisely the state this test was written to leave behind: an
+        // exemption list where nobody has to say which columns their reason covers.
+        //
+        // Equality as SETS, order-insensitive, for the reason SchemaConstraintSnapshotTests gives
+        // about constraints — a column set is a set and catalog order is not policy. Equality rather
+        // than containment in either direction: a column appearing that the reason never covered is
+        // the leak, and a column disappearing means the argument was written about a table that no
+        // longer exists in that shape, and both have to be reconsidered by a person.
+        await Assert.That(pinned).IsNotEmpty();
+        await Assert.That(live).IsEquivalentTo(argued);
+    }
+
+    [Test]
     public async Task Exemptions_NameOnlyTablesThatExistInTheSchema()
     {
         // Arrange
@@ -773,6 +848,59 @@ public sealed class RlsCoverageTests
             + $"for all to {DatabaseProvisioning.AppRoleName} "
             + $"using ({BudgetIsolationPredicate}) "
             + $"with check ({BudgetIsolationPredicate})");
+    }
+
+    /// <summary>
+    /// Reads the column names a relation carries today, straight from <c>pg_attribute</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately not routed through <see cref="RowLevelSecurityCoverage" />. Everything else in
+    /// this file asks the production classifier what it thinks; this asks the catalog what is there,
+    /// so that a pinned column set is checked against the schema rather than against the same code
+    /// that would have to have noticed the column in the first place. It is the habit
+    /// <c>DeploymentProvisioningTests</c> keeps for the same reason.
+    /// </para>
+    /// <para>
+    /// <c>attnum &gt; 0</c> drops the system columns, which belong to PostgreSQL and not to anyone's
+    /// argument about a table; <c>not attisdropped</c> drops the tombstones a dropped column leaves
+    /// behind, which are still rows in <c>pg_attribute</c> under mangled names and would make an
+    /// otherwise-correct pinned set look wrong forever.
+    /// </para>
+    /// <para>
+    /// The table name is a real parameter rather than an interpolation, unlike the DDL helpers here:
+    /// it is a value in a <c>where</c> clause instead of an identifier, so nothing forces it into the
+    /// statement text.
+    /// </para>
+    /// </remarks>
+    private static async Task<IReadOnlyList<string>> ReadColumnNamesAsync(
+        NpgsqlConnection connection,
+        string table)
+    {
+        const string sql =
+            """
+            select a.attname::text
+            from pg_attribute a
+            join pg_class c on c.oid = a.attrelid
+            join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'public'
+              and c.relname = @table
+              and a.attnum > 0
+              and not a.attisdropped
+            order by a.attname
+            """;
+
+        await using NpgsqlCommand command = new(sql, connection);
+        command.Parameters.AddWithValue("table", table);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        List<string> columns = [];
+
+        while (await reader.ReadAsync())
+        {
+            columns.Add(reader.GetString(0));
+        }
+
+        return columns;
     }
 
     /// <summary>
