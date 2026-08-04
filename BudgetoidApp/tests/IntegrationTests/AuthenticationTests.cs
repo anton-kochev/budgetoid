@@ -210,6 +210,33 @@ public sealed class AuthenticationTests
             .IsEqualTo("Authenticated principal's email address is not asserted as verified.");
     }
 
+    [Test]
+    public async Task AuthenticatedRequest_ExistingAccount_EmailNotAssertedVerified_Returns401ProblemJson()
+    {
+        // Arrange — provision the account first, so the gate is met by a subject the system already
+        // knows. Pins the "we already know this user, why re-gate" optimisation: moving the check
+        // below the credential lookup leaves every fresh-subject test green.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient provisionedClient = host.Factory.CreateAuthenticatedClient(
+            "existing-account",
+            "existing@example.com");
+        await CreateAccountAsync(provisionedClient);
+
+        // Act
+        HttpClient unverifiedClient = host.Factory.CreateAuthenticatedClient(
+            "existing-account",
+            "existing@example.com",
+            emailVerified: "false");
+        HttpResponseMessage response = await unverifiedClient.GetAsync("/api/transactions");
+        JsonNode problem = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo("application/problem+json");
+        await Assert.That(problem["title"]!.GetValue<string>())
+            .IsEqualTo("Authenticated principal's email address is not asserted as verified.");
+    }
+
     /// <summary>
     /// Address used by the tests that assert nothing was written. Held as a constant so the value
     /// sent on the request and the value counted in the database cannot drift apart.

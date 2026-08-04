@@ -119,7 +119,12 @@ erDiagram
   - **Enforced in**: `UserProvisioningMiddleware` returns `401` (ProblemDetails, "missing required
     claims") when `sub` or `email` is absent, and `401` ("email address is not asserted as verified")
     when `email_verified` is absent or is anything `bool.TryParse` does not read as `true` — `"false"`
-    and `"1"` alike. The check runs **before** provisioning, so a refused principal writes no row.
+    and `"1"` alike. The check runs **before** provisioning, so a refused principal writes no row,
+    and it runs on **every** request rather than only the first: an account that already exists is
+    no more reachable with an unvouched address than a new one, which is what
+    `AuthenticatedRequest_ExistingAccount_EmailNotAssertedVerified_Returns401ProblemJson` pins. The
+    regression it guards against is moving the check below the credential lookup on the reasoning
+    that a known user need not be re-gated.
   - **Why here and not in the database**: the rule is about a token, and the database cannot inspect
     one. Pushing it lower would mean procedural logic, which [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md)
     rules out. The API boundary is the lowest layer capable of enforcing it.
