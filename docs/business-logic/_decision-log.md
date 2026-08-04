@@ -8,6 +8,39 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-05 — The list of columns the product refuses to carry is production code, not a test constant
+
+**Context:** "the account row holds nothing but an id, an address and a timestamp" is worth little if
+the same data arrives one table over. Refusing analytics identifiers, advertising identifiers, device
+fingerprints and behavioural events needs a list of what those look like, and the cheapest place to
+put a list read by exactly one assertion is inside that assertion. It would not stay read by one
+assertion: the data inventory that classifies every column will have to read the same list from a
+build gate, and a build gate cannot reference a test assembly.
+
+**Decision:** `ProhibitedColumnVocabulary` lives in the production assembly beside
+`RowLevelSecurityCoverage`, which is the same shape of object for the same reason — a classifier
+placed where more than one consumer can reach it so the rule has one spelling. It exposes the rules
+with a stated reason each, and a `Classify` that names the category a column name falls into.
+Matching is over `_`-separated tokens rather than substrings, because `event_name` must be caught
+while `name` must not. It is checked over **every** relation in the `public` schema rather than over
+`users`, so a new table is covered without anyone remembering. Two controls make the pair mean
+something: a probe table proves the scan can fail, and a false-positive test over the mapped columns
+proves the patterns are not wide enough to swallow a real one.
+
+**Alternatives considered:** *A constant in the schema test* — rejected: it is a source the inventory
+story is guaranteed to duplicate or move, and a follow-up commit that relocates a rule's definition is
+the kind of commit that quietly changes it. *Wire it into the deploy-time verifier beside the
+row-level security check* — rejected: that check runs at deploy time because a policy fails **open**
+and can drift from outside the repository. A column name cannot; it arrives through a migration CI
+already reads, so the check buys nothing there and adds a failure mode to the deploy path.
+*Enforce it in the database* — rejected: PostgreSQL cannot refuse a column for what its name
+connotes, and reaching it would need an event trigger, which ADR 0002 rules out. The build is the
+lowest capable layer, and a rule sitting above its apparent floor has to say why.
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md).
+
+---
+
 ## 2026-08-05 — The provider must vouch for the address, and a takeover path closes with it
 
 **Context:** the API read `sub` and `email` off the principal and trusted both. An `email` claim the

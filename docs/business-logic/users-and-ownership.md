@@ -144,6 +144,26 @@ erDiagram
     migration. The schema test reads the catalog rather than the EF model on purpose: a pinned set
     checked against the same code that would have had to notice the column proves nothing.
 
+- **A column on any table MUST NOT store an analytics identifier, an advertising identifier, a
+  device fingerprint, or a behavioural event record.**
+  - **Why**: the account row being minimal is worth little if the same data arrives one table over.
+    The product has no reader for any of it, and a column nothing reads is data held for no one — the
+    exact shape the minimal account row exists to refuse.
+  - **Enforced in**: `ProhibitedColumnVocabulary`
+    (`Infrastructure/Persistence/Provisioning/ProhibitedColumnVocabulary.cs`) is the single spelling
+    of the list; `Schema_HoldsNoAnalyticsOrTrackingColumn`
+    (`tests/IntegrationTests/DataMinimizationSchemaTests.cs`) runs it over **every** column of every
+    relation in the `public` schema, so a new table is covered without anyone remembering to add it,
+    and `..._ReportsATableThatGrowsOne` builds a probe carrying such a column to prove the scan can
+    actually fail. `Vocabulary_MatchesNoneOfTheColumnsTheSchemaCarries` is the opposite control: a
+    pattern wide enough to swallow a real column fails there rather than in a reviewer's inbox.
+  - **Why here and not in the database**: PostgreSQL cannot refuse a column for what its name
+    connotes, and reaching it would need an event trigger — procedural logic, which
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out. A forbidden
+    column can only arrive through a migration, so the build is genuinely the lowest capable layer.
+    Unlike the row-level security coverage check, this one is deliberately **not** run at deploy
+    time: a policy fails open and can drift from outside the repository, a column name cannot.
+
 - **An email address belongs to at most one user, compared case-insensitively.**
   - **Why**: Two rows holding the same address are two people as far as every budget is concerned,
     and the address is the only human-readable thing that identifies a user — a support request, an
