@@ -42,6 +42,20 @@ public sealed class ProhibitedColumnVocabularyTests
     [Arguments("last_seen_at", ProhibitedColumnCategory.BehaviouralEvent)]
     [Arguments("event_name", ProhibitedColumnCategory.BehaviouralEvent)]
     [Arguments("page_view_count", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("utm_source", ProhibitedColumnCategory.AnalyticsIdentifier)]
+    [Arguments("referrer_url", ProhibitedColumnCategory.AnalyticsIdentifier)]
+    [Arguments("http_referer", ProhibitedColumnCategory.AnalyticsIdentifier)]
+    [Arguments("anonymous_id", ProhibitedColumnCategory.AnalyticsIdentifier)]
+    [Arguments("distinct_id", ProhibitedColumnCategory.AnalyticsIdentifier)]
+    [Arguments("mixpanel_id", ProhibitedColumnCategory.AnalyticsIdentifier)]
+    [Arguments("last_login_at", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("login_count", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("sign_in_count", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("session_count", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("impression_count", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("click_count", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("cookie_id", ProhibitedColumnCategory.DeviceFingerprint)]
+    [Arguments("mac_address", ProhibitedColumnCategory.DeviceFingerprint)]
     public async Task Vocabulary_MatchesAColumnNameFromEachForbiddenCategory(
         string columnName,
         ProhibitedColumnCategory expectedCategory)

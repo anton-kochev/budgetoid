@@ -153,6 +153,52 @@ public static class ProhibitedColumnVocabulary
             + "so a person's activity can be joined to a profile held somewhere else. A phrase "
             + "rather than a token, because 'client' and 'id' are both ordinary words here"),
         new(
+            "utm",
+            ProhibitedColumnCategory.AnalyticsIdentifier,
+            "prefixes the campaign-attribution parameters a link carries — source, medium, "
+            + "campaign. Storing one against a row records how a person was steered here, which "
+            + "is marketing telemetry the product has no campaign to attribute to"),
+        new(
+            "referrer",
+            ProhibitedColumnCategory.AnalyticsIdentifier,
+            "records the page a person came from, which is a browsing history entry contributed "
+            + "by whoever they were visiting before. Nothing in a budget depends on it"),
+        new(
+            "referer",
+            ProhibitedColumnCategory.AnalyticsIdentifier,
+            "is the same value under the misspelling the HTTP header itself carries, listed "
+            + "separately because the header's spelling is the one that reaches a schema by copy "
+            + "and paste"),
+        new(
+            "anonymous_id",
+            ProhibitedColumnCategory.AnalyticsIdentifier,
+            "is the handle a measurement SDK mints before it knows who somebody is, kept so "
+            + "their activity can be stitched to an account later. \"Anonymous\" names the moment "
+            + "it was issued, not what it does"),
+        new(
+            "distinct_id",
+            ProhibitedColumnCategory.AnalyticsIdentifier,
+            "is the same stitching handle under the name two widely-used product-analytics "
+            + "vendors give it. A phrase, because \"distinct\" and \"id\" are both ordinary "
+            + "words"),
+        new(
+            "mixpanel",
+            ProhibitedColumnCategory.AnalyticsIdentifier,
+            "names a measurement vendor in a column, which means a row is being kept in that "
+            + "vendor's shape. The vendor is beside the point; a column named after one is a "
+            + "column whose reader is not this product"),
+        new(
+            "amplitude",
+            ProhibitedColumnCategory.AnalyticsIdentifier,
+            "is refused for the reason above it. Listed by name because a vendor identifier "
+            + "arrives copied from a quickstart, where nobody is deciding anything"),
+        new(
+            "posthog",
+            ProhibitedColumnCategory.AnalyticsIdentifier,
+            "is refused for the reason above it, and included because a self-hosted measurement "
+            + "product feels like an exception to a privacy rule and is not one — the data is the "
+            + "same data"),
+        new(
             "advertising",
             ProhibitedColumnCategory.AdvertisingIdentifier,
             "names an identifier issued so that a person can be matched to an advertising audience. "
@@ -193,6 +239,19 @@ public static class ProhibitedColumnVocabulary
             + "stored address turns a budget row into a place-and-time record of where somebody "
             + "was"),
         new(
+            "cookie_id",
+            ProhibitedColumnCategory.DeviceFingerprint,
+            "is the identifier a tracking cookie carries so one browser can be recognised across "
+            + "sites. A phrase rather than the bare token \"cookie\": a first-party session's "
+            + "opaque value is plausibly stored under a name containing it, and that value is a "
+            + "credential to be revoked rather than a handle to be joined on"),
+        new(
+            "mac_address",
+            ProhibitedColumnCategory.DeviceFingerprint,
+            "is the hardware address of a network interface, which does not change when somebody "
+            + "clears their data, signs out, or buys a new browser. It identifies a machine more "
+            + "durably than anything else on this list"),
+        new(
             "event_name",
             ProhibitedColumnCategory.BehaviouralEvent,
             "is the analytics spelling of \"what did this person just do\" — the label an event "
@@ -227,6 +286,39 @@ public static class ProhibitedColumnVocabulary
             "names a count or record of screens a person looked at — the smallest complete unit of "
             + "behavioural surveillance. A phrase rather than the token 'view', which a saved "
             + "report could legitimately be called"),
+        new(
+            "last_login",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "accumulates a sign-in history one overwrite at a time. A session record may say when "
+            + "it was created and when it was last used, because both are read to revoke it; a "
+            + "column on the person is read by nobody and outlives every session"),
+        new(
+            "login_count",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "counts sign-ins, which measures engagement and answers no question the product asks"),
+        new(
+            "sign_in_count",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "is the same count under the other spelling. Listed separately because the two "
+            + "spellings are chosen by habit and neither is more likely than the other"),
+        new(
+            "session_count",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "counts visits. Deliberately a phrase and not the bare token \"session\": a "
+            + "first-party revocable session is a security record this product intends to keep, "
+            + "and a rule that cannot tell it from a measurement session would refuse the "
+            + "feature"),
+        new(
+            "impression",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "counts times something was shown to somebody. The product shows a person their own "
+            + "money and has nothing to sell against the count"),
+        new(
+            "click_count",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "counts interactions, which is behaviour at the finest grain anybody bothers to "
+            + "record. A phrase rather than the bare token, so that a domain concept that happens "
+            + "to be called a click is not caught by a rule aimed at a metric"),
     ];
 
     /// <summary>The patterns above, pre-split into the tokens a column's tokens are matched against.</summary>

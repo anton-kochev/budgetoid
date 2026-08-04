@@ -162,6 +162,13 @@ erDiagram
     and `..._ReportsATableThatGrowsOne` builds a probe carrying such a column to prove the scan can
     actually fail. `Vocabulary_MatchesNoneOfTheColumnsTheSchemaCarries` is the opposite control: a
     pattern wide enough to swallow a real column fails there rather than in a reviewer's inbox.
+  - **What a first-party security record may still carry**: the session or credential's own
+    identifier, when it began, when it expires or was revoked, and when it was last used — each of
+    those is read in order to **end** access, and a record that cannot say which session to revoke
+    cannot be revoked. What such a record may not do is accumulate one row per sign-in as history,
+    or count them. This is why the vocabulary refuses phrases like `session_count` and `last_login`
+    rather than the bare words `session` and `login`: a rule that cannot tell a revocable session
+    from a measured one would refuse the security feature along with the surveillance.
   - **Why here and not in the database**: PostgreSQL cannot refuse a column for what its name
     connotes, and reaching it would need an event trigger — procedural logic, which
     [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out. A forbidden
