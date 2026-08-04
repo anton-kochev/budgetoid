@@ -21,16 +21,32 @@ Enforced today:
   **A new tenant-owned table needs a grant *and* a policy**: the grants are fail-closed, so a
   missing one fails loudly with `42501`, but RLS is fail-**open** — a granted table with no policy
   is readable across every tenant, silently. `tests/IntegrationTests/RlsCoverageTests.cs` reads the
-  live schema and requires **every** table in `public` to be accounted for: policed with the policy
-  its ownership calls for, or on an explicit exemption list carrying its reason. A table carrying
-  neither `budget_id` nor `user_id` is refused rather than waved through, because "we forgot" and
-  "it needs nothing" produce the identical catalog. A new table is red until someone says which it
-  is. That direction is the whole point and must not be inverted — a list of *policed* tables fails
-  open, because the table nobody added to it keeps the suite green. Exempt today: `credentials`
-  (read to discover *who is asking*, so a policy keyed on the identity it resolves would refuse the
-  query that resolves it), `currencies` (reference data owned by no tenant), and
-  `__EFMigrationsHistory`. The same list and the same classification are what the deploy-time
-  verifier reads, so the gate and the test cannot drift apart.
+  live schema and requires **every relation in `public` that can hold or expose rows** to be
+  accounted for: an ordinary or partitioned table policed with the policy its ownership calls for,
+  or an explicit exemption carrying its reason. Two refusals rather than one. A table carrying
+  neither `budget_id` nor `user_id` is refused because "we forgot" and "it needs nothing" produce
+  the identical catalog. A **view, materialized view or foreign table is refused outright** — a
+  view runs with its *owner's* privileges unless `security_invoker` is set, and an owner bypasses
+  RLS, so a granted view over a policed table reads every tenant; a materialized view cannot be
+  policed at all. Index, sequence, composite type and TOAST table stay out because they expose no
+  rows of their own, which is the test any future narrowing must pass. That direction is the whole
+  point and must not be inverted — a list of *policed* relations fails open, because the one nobody
+  added to it keeps the suite green. Exempt today: `credentials` (read to discover *who is asking*,
+  so a policy keyed on the identity it resolves would refuse the query that resolves it),
+  `currencies` (reference data owned by no tenant), and `__EFMigrationsHistory`. The same list and
+  the same classification are what the deploy-time verifier reads, so the gate and the test cannot
+  drift apart.
+- **The column that decides tenancy must be `NOT NULL`.** Under `budget_id = current_budget` a row
+  whose owner is NULL is invisible to every session — fail-closed, so not a leak, but a row that
+  exists, that nobody can reach, and that nothing explains. The coverage gate refuses it.
+- **The deploy gate reads a policy's content, not only its name.** It requires the single policy on
+  a policed relation to be permissive and `FOR ALL`, and its `USING` expression to name both the
+  session setting it is keyed on and the ownership column it turns on; a `WITH CHECK` may be absent
+  (PostgreSQL then reuses `USING`) but if present must be identical to it. Identity alone was not
+  enough: `FOR SELECT` instead of `FOR ALL` carries the right name and leaves every write
+  unconstrained, and so does `USING (true)`. The column is matched on a **word boundary**, not as a
+  substring — `users`' ownership column is `id`, which is a substring of `budget_id` and of
+  `app.current_user_id`, so a substring test would be vacuous on exactly that table.
 - **Read-side filter.** `BudgetoidDbContext` defines a global query filter named
   `BudgetIsolation` on `Transaction`, `Account`, `Payee`, `CategoryGroup`, and `Category`, scoped
   to the current `IBudgetContext.BudgetId`. Every LINQ query against those sets is auto-scoped —
@@ -95,9 +111,12 @@ Tests that lock this: `tests/IntegrationTests/RlsIsolationTests.cs` (raw SQL on 
 role, on both axes, every negative paired with the same statement against the session's own budget
 or own user), `tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so any new table
 without the policy its ownership calls for, or without a stated exemption, fails — including one
-carrying neither ownership column), `tests/IntegrationTests/DeploymentProvisioningTests.cs` (the
-same rule at the deploy gate, sabotaged per failure mode: a dropped policy, a *renamed* one, row
-security switched off, an unclassifiable table),
+carrying neither ownership column, and one that is a view or materialized view),
+`tests/IntegrationTests/DeploymentProvisioningTests.cs` (the same rule at the deploy gate,
+sabotaged once per failure mode: a dropped policy, a *renamed* one, row security switched off, an
+unclassifiable table, a policy narrowed to `FOR SELECT`, one with a trivial `USING`, one keyed on
+the wrong session setting, one on `users` naming no ownership column, one whose `WITH CHECK` is
+wider than its `USING`, a restrictive one, and a granted view over a policed table),
 `tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level two-budgets-same-process +
 endpoint-level two-factory) and the `BudgetId` immutability unit test in
 `tests/UnitTests/TransactionTests.cs`. Removing a `HasQueryFilter` line must make the

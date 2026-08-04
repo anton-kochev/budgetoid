@@ -60,7 +60,7 @@ public static class DeploymentDatabaseProvisioning
     /// <param name="cancellationToken">Cancels the provisioning run.</param>
     /// <exception cref="RowLevelSecurityCoverageException">
     /// Provisioning ran but left at least one tenant-owned table unprotected, or the schema contains
-    /// a table whose tenancy nobody has decided.
+    /// a table whose tenancy nobody has decided, or a relation no policy can cover.
     /// </exception>
     public static async Task ProvisionAsync(
         string adminConnectionString,
@@ -98,9 +98,9 @@ public static class DeploymentDatabaseProvisioning
     }
 
     /// <summary>
-    /// Asserts that every table in the live schema is accounted for — policed by the isolation policy
-    /// its own ownership requires, or excused by a written-down exemption — and throws naming the
-    /// tables that are not.
+    /// Asserts that every relation in the live schema is accounted for — policed by the isolation
+    /// policy its own ownership requires, excused by a written-down exemption, or reported as
+    /// something no policy can cover — and throws naming the ones that are not.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -122,13 +122,28 @@ public static class DeploymentDatabaseProvisioning
     /// copy.
     /// </para>
     /// <para>
-    /// Exactly one policy, not at least one: these policies are permissive and permissive policies OR
-    /// together, so a second one can only widen what the first allows — a table that grew a stray
-    /// policy has quietly stopped meaning what its isolation policy says. And exactly the <i>named</i>
-    /// one, because a count answers "is a rule enforced here" while the deploy has to answer "is the
-    /// rule enforced here the rule this table owes". Those come apart silently: with two isolation
-    /// rules in the schema, a budget-owned table carrying <c>user_isolation</c> has a real, enforced
-    /// policy that is simply wider than its tenancy.
+    /// The per-table rules are <see cref="RowLevelSecurityCoverage.FindProblems" /> and are no longer
+    /// spelled out here, for that same reason one layer down: "what a protected table looks like" was
+    /// executed both here and in the coverage suite, and the copy the tests do not read is the copy
+    /// that rots.
+    /// </para>
+    /// <para>
+    /// Those rules read the policy's <b>content</b> and not only its identity, which is a second axis
+    /// rather than a stricter version of the first. Exactly one policy, carrying exactly the required
+    /// name, bound to the application role, answers "is a rule enforced here"; a policy satisfying
+    /// all three while reading <c>USING (true)</c> answers it and isolates nothing. So the session
+    /// setting it is keyed on and the ownership column it decides tenancy by are demanded too, and
+    /// its <c>WITH CHECK</c> half is required to match its <c>USING</c> half — a write that can land
+    /// where a read cannot reach is worse than a leak, because the row vanishes into another tenant
+    /// and nobody is left able to see it.
+    /// </para>
+    /// <para>
+    /// <b>The limit is stated rather than left implied.</b> Those checks catch drift, accident and a
+    /// hand-edit that weakened one clause. They are not proof against a deliberately crafted
+    /// wider-but-plausible predicate — <c>… OR true</c> reads the setting, names the column, and
+    /// passes. That is outside the threat model: anyone able to rewrite <c>pg_policy</c> can
+    /// <c>DISABLE ROW LEVEL SECURITY</c> instead, and this gate would have nothing to say about that
+    /// either.
     /// </para>
     /// </remarks>
     /// <param name="adminConnectionString">
@@ -144,7 +159,7 @@ public static class DeploymentDatabaseProvisioning
     /// </exception>
     /// <exception cref="RowLevelSecurityCoverageException">
     /// At least one tenant-owned table is unprotected, or the schema contains a table whose tenancy
-    /// nobody has decided.
+    /// nobody has decided, or a relation no policy can cover.
     /// </exception>
     public static async Task VerifyRowLevelSecurityCoverageAsync(
         string adminConnectionString,
@@ -163,9 +178,9 @@ public static class DeploymentDatabaseProvisioning
         }
 
         // Measured on the tables that need a policy rather than on the count discovery returned,
-        // because discovery now returns every table in public and a bare count would be satisfied by
-        // a database holding nothing but __EFMigrationsHistory — every table exempt, every check
-        // below passing with nothing in it. It is still not the coverage exception: no table is
+        // because discovery now returns every relation in public — views and materialized views
+        // included — and a bare count would be satisfied by a database holding nothing but
+        // __EFMigrationsHistory and a stray view. It is still not the coverage exception: no table is
         // unprotected, the schema simply is not there.
         if (schema.NeedingAPolicy.Count == 0)
         {
@@ -183,10 +198,14 @@ public static class DeploymentDatabaseProvisioning
         int budgetOwned = schema.NeedingAPolicy.Count(
             classified => classified.Table.Ownership == TableOwnership.BudgetOwned);
         int userOwned = schema.NeedingAPolicy.Count - budgetOwned;
+
+        // The unpoliceable count is in the line rather than only in the refusal, because a bucket
+        // that is only ever mentioned when it is non-empty reads, on every green deploy, exactly like
+        // a bucket nobody inspected.
         log?.Invoke(
             $"Verifying row-level security on {schema.NeedingAPolicy.Count} tenant-owned table(s) "
             + $"({budgetOwned} budget-owned, {userOwned} user-owned), with {schema.Exempt.Count} "
-            + $"exempt: "
+            + $"exempt and {schema.Unpoliceable.Count} unpoliceable: "
             + $"{string.Join(", ", schema.NeedingAPolicy.Select(entry => entry.Table.Name))}.");
 
         List<string> unprotected = [];
@@ -207,54 +226,27 @@ public static class DeploymentDatabaseProvisioning
                 + "or add it to RowLevelSecurityCoverage.Exemptions with a written reason.");
         }
 
+        // The same refusal, for the relations a policy cannot be attached to at all. Beside the loop
+        // above rather than folded into it, because the decision being asked for is a different one:
+        // unclassifiable asks which tenant owns these rows, unpoliceable asks why the relation exists
+        // and what stops the application role reading every tenant through it. A view is the sharp
+        // case — it runs as its owner, and an owner is not subject to row-level security, so it
+        // routes around policies that are all present and all correct.
+        foreach (DiscoveredTable relation in schema.Unpoliceable)
+        {
+            unprotected.Add(relation.Name);
+            problems.Add(RowLevelSecurityCoverage.DescribeUnpoliceable(relation));
+        }
+
+        // Delegated rather than inlined: the coverage suite reads the same function, and two executed
+        // copies of "what a protected table looks like" have no adjudicator when they disagree.
         foreach (ClassifiedTable classified in schema.NeedingAPolicy)
         {
-            DiscoveredTable table = classified.Table;
-
-            // Checked first and on its own, because it dominates everything below: a table with
-            // relrowsecurity off is open no matter what its policies say. PostgreSQL keeps the
-            // definitions and enforces none of them, so this is fully policed on paper and readable
-            // across every tenant in practice — the failure mode a policy-only check calls healthy.
-            if (!table.RowSecurityEnabled)
+            IReadOnlyList<string> found = RowLevelSecurityCoverage.FindProblems(classified);
+            if (found.Count > 0)
             {
-                unprotected.Add(table.Name);
-                problems.Add($"{table.Name} has row-level security disabled.");
-                continue;
-            }
-
-            if (table.Policies is not [TablePolicy policy])
-            {
-                unprotected.Add(table.Name);
-                problems.Add(
-                    $"{table.Name} has {table.Policies.Count} policies, wanted exactly 1.");
-                continue;
-            }
-
-            List<string> wrong = [];
-            if (!string.Equals(policy.Name, classified.RequiredPolicyName, StringComparison.Ordinal))
-            {
-                wrong.Add(
-                    $"{table.Name} is policed by '{policy.Name}', wanted "
-                    + $"'{classified.RequiredPolicyName}'.");
-            }
-
-            // "Binds the application role", not "names it and nothing else". A policy written
-            // TO PUBLIC binds every non-owner role, so it covers the app role too and is broader
-            // rather than weaker; refusing it would make this check brittle about spelling instead
-            // of about protection. Anything else leaves the app role unpoliced.
-            if (!policy.Roles.Contains(DatabaseProvisioning.AppRoleName)
-                && !policy.Roles.Contains("public"))
-            {
-                wrong.Add(
-                    $"{table.Name} is policed by '{policy.Name}', which binds "
-                    + $"[{string.Join(", ", policy.Roles)}] and so does not bind "
-                    + $"{DatabaseProvisioning.AppRoleName}.");
-            }
-
-            if (wrong.Count > 0)
-            {
-                unprotected.Add(table.Name);
-                problems.AddRange(wrong);
+                unprotected.Add(classified.Table.Name);
+                problems.AddRange(found);
             }
         }
 
@@ -265,6 +257,7 @@ public static class DeploymentDatabaseProvisioning
 
         log?.Invoke(
             "Row-level security covers every tenant-owned table with exactly the one isolation "
-            + "policy its ownership requires, and every other table is exempt for a written reason.");
+            + "policy its ownership requires, keyed on the session setting and the ownership column "
+            + "that tenancy calls for, and every other relation is exempt for a written reason.");
     }
 }

@@ -24,9 +24,11 @@ discovered its subjects by looking for a `budget_id` column. Every table without
 check's scope with nobody deciding it should, which is how `credentials` fell outside row-level
 security by accident rather than by decision. Discovery was widened to every table in `public` with
 a written exemption list, but the *rule* remained single-axis: one policy name, one ownership kind.
-Server-side sessions, passkey public keys and wrapped encryption keys are all user-owned tables
-carrying `user_id`, and under a single-axis rule each of them would have had to be argued about
-individually, at the moment it was added, by whoever happened to add it.
+A user-owned table carrying `user_id` — server-side sessions and wrapped encryption keys are both
+specified to be exactly that — would under a single-axis rule have had to be argued about
+individually, at the moment it was added, by whoever happened to add it. See the Consequences for
+the sharp edge on that claim: it covers a new **table**, and says nothing about a new **column** on
+a table already exempt.
 
 ## What this reverses, and why the original reason no longer holds
 
@@ -82,14 +84,16 @@ The interceptor takes the reader. Had the reader also carried `ResolveUser`, eve
 holding it could reassign the request's identity — the exact capability these policies exist to
 constrain. Split, that capability is constructor-visible on precisely one class.
 
-**Coverage is settled by ownership rather than by one column.** Every ordinary table in `public`
-lands in exactly one bucket:
+**Coverage is settled by ownership rather than by one column.** Every relation in `public` that can
+hold or expose rows — `relkind` in `r`, `p`, `v`, `m`, `f` — lands in exactly one bucket:
 
 1. **Exempt** — a written exemption names it, so a deliberate decision is never overridden by a
-   column.
+   column, and this is the escape hatch for every bucket below.
 2. **Budget-owned** — carries `budget_id`; owes exactly one `budget_isolation`.
 3. **User-owned** — is `users`, or carries `user_id`; owes exactly one `user_isolation`.
 4. **Unclassifiable** — neither column, so nobody can say which of the two it owes.
+5. **Unpoliceable** — a view, materialized view or foreign table, which cannot carry an enforced
+   policy at all.
 
 Rule 2 outranks rule 3 deliberately: a budget belongs to exactly one user, so `budget_id =
 current_budget` is strictly narrower than `user_id = current_user`, and a table carrying both must
@@ -97,13 +101,38 @@ be protected by the narrower rule rather than by whichever check ran first. `use
 literally in rule 3 because the row that *is* the user has no `user_id` column — one hardcoded name
 in the only direction that is safe, since it can add a subject but never skip one.
 
-The fourth bucket is a **failure**, not a shrug. ADR 0005's coverage test argued there was no third
-bucket and that this was the point; that argument was right while one policy name existed. With
-two, a table carrying neither ownership column cannot be told what it owes, and inventing an answer
-would be guessing. The fail-closed property is preserved — unclassifiable is red — and the failure
-message has to say *why*, and name both ways forward (give the table an ownership column, or write
-down an exemption). Without that, the next contributor closes a red deploy by exempting a table
-that needed a policy.
+The fourth and fifth buckets are **failures**, not shrugs. ADR 0005's coverage test argued there
+was no third bucket and that this was the point; that argument was right while one policy name
+existed. With two, a table carrying neither ownership column cannot be told what it owes, and
+inventing an answer would be guessing. The fail-closed property is preserved — both are red — and
+each failure message has to say *why* and name the ways forward. Without that, the next contributor
+closes a red deploy by exempting a relation that needed a policy.
+
+**The subject is every relation that can hold or expose rows, not every ordinary table.** Narrowing
+discovery to `relkind = 'r'` was this mechanism's own fail-open shape, reintroduced one layer up. A
+**view** is not a table but it exposes rows, and unless `security_invoker` is set it runs with its
+**owner's** privileges — the owner being the schema owner, who bypasses row-level security — so a
+view granted to the application role reads every tenant while coverage reports green. A
+**materialized view** cannot be policed at all. A **partitioned table** is the worst shape: its
+partitions are `'r'` and visible, its parent is `'p'` and was not, and PostgreSQL applies the
+*parent's* policies to queries routed through the parent — so the invisible relation is precisely
+the one whose policies fire. Index, sequence, composite type, TOAST table and partitioned index
+stay out because they expose no rows of their own, which is the test any future narrowing must
+pass.
+
+**Views are refused outright, with no `security_invoker` exception in the verifier.**
+`security_invoker = true` does make a view safe, but it is a reloption one `ALTER VIEW` away from
+being flipped back, and asserting it would have the gate guarding a property that is not a policy.
+The escape is the written exemption list, the same escape everything else here uses: a future view
+goes into `Exemptions` with a reason, and a human reads that line in review. **Rejected — refusing
+only the views the application role is granted on.** It needs `aclexplode` over `relacl` with
+grantee 0 standing for `PUBLIC` and role membership resolved, and *that* query silently matching
+nothing is fail-open — this defect's own shape, reintroduced as a second mechanism. Making the
+grant irrelevant answers the objection without the query.
+
+**A column that decides tenancy must be `NOT NULL`, and the gate enforces it.** Under `user_id =
+current_user` a row whose owner is NULL is invisible to every session: fail-closed, so not a leak,
+but undiagnosable — the row exists, no one can reach it, and nothing says why.
 
 An exemption now declares the ownership it is exempt **despite**, which is what lets the rot guard
 survive `credentials` legitimately carrying `user_id`: `currencies` growing `user_id` goes red,
@@ -125,11 +154,39 @@ somebody else.
 what keeps it testable instead of merely trustworthy: a test classifies the same live schema
 against an empty set to prove discovery is still unfiltered.
 
-**The deploy verifier is strengthened while it is being widened.** It now also refuses a policy
-whose *name* is not the one that table's ownership requires, and a policy binding neither
-`budgetoid_app` nor `public`. Previously a renamed policy satisfied the count check and shipped.
-The role check is "binds the application role" rather than "names it and nothing else", because a
+**The deploy verifier reads a policy's content, not only its identity.** Name and bound role were
+the first strengthening: previously a renamed policy satisfied the count check and shipped. The
+role check is "binds the application role" rather than "names it and nothing else", because a
 policy written `TO PUBLIC` binds every non-owner role and is therefore broader, not weaker.
+
+Identity alone was still not enough. A policy declared `FOR SELECT` instead of `FOR ALL` carries
+the right name, binds the right role, counts as exactly one — and leaves `INSERT`, `UPDATE` and
+`DELETE` entirely unconstrained on tables the role holds those grants on. So does `USING (true)`.
+So does a policy declared `AS RESTRICTIVE`, which grants no access on its own and only narrows what
+a permissive policy already allowed, meaning a table whose sole policy is restrictive has no rule
+granting anything. The gate therefore also requires the policy to be permissive and `FOR ALL`, and
+requires its `USING` expression to name the two things it cannot work without: the session setting
+the policy is keyed on, and the ownership column the table's tenancy turns on.
+
+Content is matched **structurally, never against an expected string**. `pg_get_expr` emits
+normalized SQL, so an equivalently rewritten body must not refuse a legitimate deploy. The
+ownership column is matched on a **word boundary** rather than as a substring, and that is not
+fussiness: for `users` the required column is `id`, which is a substring of `budget_id` and of
+`app.current_user_id`, so a substring test passes a policy naming no ownership column at all —
+vacuous on precisely the table this decision added. `_` is a word character, so `\bid\b` matches
+the standalone reference and nothing inside `budget_id` or `current_user_id`.
+
+`WITH CHECK` being absent is **safe** — PostgreSQL reuses `USING` for the check — so requiring it
+would be wrong. The rule is that a `WITH CHECK` which is *present* must be textually identical to
+`USING`; both strings come from the same normalizer on the same server, so an equivalent rewrite
+normalizes identically on both sides. It is deliberately conservative in one direction: a
+legitimately narrower `WITH CHECK` would be refused. None exists or is planned, and relaxing it
+would be a visible decision.
+
+**The limit of these checks, stated rather than left to be discovered.** They catch drift,
+accident, and a hand-edit that weakened one clause. They are not proof against a deliberately
+crafted wider-but-plausible predicate — `… OR true` passes every rule above. That is outside the
+threat model, because anyone who can rewrite `pg_policy` can `DISABLE ROW LEVEL SECURITY` instead.
 
 ## Alternatives considered
 
@@ -148,6 +205,13 @@ future transaction spanning the whole of provisioning, for instance — breaks *
 `22P02` on a read or `42501` on the insert. There is no configuration in which a stale or empty
 identity returns the wrong rows instead of an error, which is precisely what the `''::uuid` shape
 buys.
+
+That claim has a load-bearing precondition, and it is a property of the middleware order rather
+than of the schema: it holds only while no policed statement runs inside a transaction opened
+*before* the identity is published. True today because `ITransactionalExecutor` wraps command
+handlers and never provisioning, and because EF opens and closes the connection per operation. Wrap
+provisioning in a transaction and the connection opens once with both settings empty — still loud,
+but loud at every request rather than none, so it is a break to notice rather than to survive.
 
 **`FORCE ROW LEVEL SECURITY`.** Rejected, unchanged from ADR 0005. Owner and superuser bypass is
 load-bearing: migrations run on it, test seeding writes both tenants through it, and every
@@ -173,7 +237,32 @@ breaks the convention lands in the fourth bucket and goes red, which is the beha
 - `IX_users_email` and `IX_budgets_user_id_name` are unique indexes, and indexes are not
   policy-aware. `TryAddAsync` still receives `23505` against a row the session cannot see, so the
   `ConflictException` path is unchanged. A reader may expect row-level security to hide the
-  conflict; it does not.
+  conflict; it does not. `IX_users_email` is therefore an account-enumeration channel, and it is
+  unexploitable **only** while the email arrives inside a provider-verified token, so a caller can
+  probe no address but their own. Whichever story lands the email-change flow owns re-arguing that,
+  because it is the story that ends the precondition.
+- **The classifier fails closed on a new *table*. It says nothing about a new *column* on a table
+  that is already exempt.** That distinction is not pedantry: a passkey's signature counter and a
+  credential's last-used timestamp are both specified to arrive as columns on `credentials`, which
+  is exempt — so no new relation appears and nothing goes red. The structural cause outlives this
+  decision: **the exemption was granted to one query but applies to a whole table**, and PostgreSQL
+  offers no finer grain. While `credentials` holds `(user_id, type, provider, subject)` the cost is
+  small; once it holds a public key and a signature counter it is per-user cryptographic material
+  readable from any application session. The story that puts it there owns re-arguing the
+  exemption.
+- **A trap for whoever re-argues it.** The obvious resolution — a policy admitting a row when the
+  session names nobody *or* names its owner — satisfies discovery and breaks registration under a
+  race. `EnsureUserHandler` publishes the new user's id *before* `TryAddAsync`, so when that insert
+  loses the race the re-read of `credentials` runs under the identity of a row that was never
+  written: such a policy sees a session naming somebody, returns nothing, and the handler reports
+  an email conflict where the truth is a lost race on the subject. Resolving the exemption
+  therefore requires reordering publication, not merely writing a policy.
+- **The phantom identity on the conflict path is deliberate.** When `TryAddAsync` loses and no
+  winning credential is found, the id published before the insert stays in request scope naming a
+  row that was never written. Nothing reads it — the request ends in a 409 — and anything that did
+  would fail closed, since every policed statement it could reach returns zero rows or `42501`.
+  Clearing it would mean a second identity-mutating capability on the one interface this decision
+  narrowed to a single constructor, which costs more than the state it removes.
 - `No Reset On Close=true` and `Multiplexing=true` remain forbidden, now for two settings, which
   raises the cost of ever flipping them.
 - The new statements need table ownership and nothing more — the same privilege the five existing
@@ -184,3 +273,7 @@ breaks the convention lands in the fourth bucket and goes red, which is the beha
 - A future user-owned table whose owner column is not named `user_id` lands in the fourth bucket
   and goes red. Safe, but it is the case where a contributor is most likely to reach for an
   exemption instead of a rename, which is why the message text is part of the deliverable.
+- A future view, materialized view or foreign table in `public` is red until someone exempts it
+  with a written reason — including one nobody granted the application role on. That is the
+  intended cost of not consulting grants.
+- An ownership column added as nullable is refused at the gate rather than at review.

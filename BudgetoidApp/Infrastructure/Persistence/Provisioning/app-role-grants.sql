@@ -68,6 +68,15 @@ GRANT UPDATE (email) ON users TO budgetoid_app;
 -- stops a bug removing someone's only way in. Revoking a credential and replacing the federated
 -- one on an email change are both specified, and both need this grant; when one lands, the reason
 -- written here is what has to be re-argued rather than quietly deleted.
+--
+-- Note what the coverage rule does NOT do for those future columns. It fails closed on a new
+-- TABLE; it is silent about a new COLUMN on a table already exempt, and credentials is exempt. So
+-- a passkey's public key and signature counter arrive here with nothing going red, on a table the
+-- application role holds a table-wide SELECT on and every session can read regardless of who it
+-- names. The exemption was granted to one QUERY — the one that discovers who is asking — but
+-- PostgreSQL applies it to the whole table, and that mismatch is cheap only while the columns are
+-- (user_id, type, provider, subject). Whoever puts key material here owns re-arguing it, and
+-- docs/decisions/0011 records the trap waiting for the obvious fix.
 REVOKE ALL ON credentials FROM budgetoid_app;
 GRANT SELECT, INSERT ON credentials TO budgetoid_app;
 
@@ -138,7 +147,21 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 -- column — is user-owned and owes user_isolation. budget_id wins where both could apply, because a
 -- budget belongs to exactly one user and the budget-keyed predicate is therefore strictly narrower.
 -- A table carrying neither is refused rather than waved through: nobody can say which of two
--- policies it owes, and "we forgot" and "it needs nothing" leave the identical catalog behind.
+-- policies it owes, and "we forgot" and "it needs nothing" leave the identical catalog behind. The
+-- column that decides tenancy must also be NOT NULL — under budget_id = current_budget a row whose
+-- owner is NULL is invisible to every session, which is fail-closed but undiagnosable.
+--
+-- The subject is every RELATION in public that can hold or expose rows, not every ordinary table,
+-- and the difference is one this file learned the hard way twice. A view is not a table but it
+-- exposes rows, and unless security_invoker is set it runs with its OWNER's privileges — the owner
+-- being the schema owner, who bypasses row-level security — so a view granted to budgetoid_app
+-- reads every tenant while coverage reports green. A materialized view cannot be policed at all. A
+-- partitioned parent is invisible as relkind 'p' while its partitions are 'r', and PostgreSQL
+-- applies the PARENT's policies to queries routed through the parent, so the relation nobody saw is
+-- the one whose policies fire. Views, materialized views and foreign tables are therefore refused
+-- outright and have to be exempted by name if one is ever wanted; index, sequence, composite type
+-- and TOAST table stay out because they expose no rows of their own, which is the test any future
+-- narrowing has to pass.
 --
 -- Every other table is exempt, and each exemption is written down with its reason rather than
 -- falling out of a query by accident:

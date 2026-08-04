@@ -77,6 +77,19 @@ public sealed class EnsureUserHandler(
             cancellationToken);
         if (concurrentUserId is null)
         {
+            // The id published before the insert is still in request scope, and it names a row that was
+            // never written. That is left standing on purpose. Nothing reads it — the request ends in a
+            // 409 — and anything that later did would fail closed rather than wrong: under an identity
+            // with no row, every policed statement reachable from here returns zero rows or 42501.
+            // Wrong rows is the only failure mode that would matter, and the ''::uuid policy shape does
+            // not produce it. Clearing the id is what costs something: it means adding ClearUser()
+            // beside ResolveUser on IUserContextWriter, and that interface exists narrowed to a single
+            // identity-mutating capability, visible in exactly one constructor, so that no collaborator
+            // can reassign the request's identity. Widening it to two buys less than the state it
+            // removes. The ruling rests on nothing running after this throw. Add post-provisioning
+            // middleware, an audit logger, anything that reads the ambient identity late in the
+            // request, and it runs as a user that does not exist — reconsider this then rather than
+            // inherit it.
             throw new ConflictException("This email address is already linked to a different Google account.");
         }
 
