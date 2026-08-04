@@ -156,12 +156,15 @@ erDiagram
     exact shape the minimal account row exists to refuse.
   - **Enforced in**: `ProhibitedColumnVocabulary`
     (`Infrastructure/Persistence/Provisioning/ProhibitedColumnVocabulary.cs`) is the single spelling
-    of the list; `Schema_HoldsNoAnalyticsOrTrackingColumn`
-    (`tests/IntegrationTests/DataMinimizationSchemaTests.cs`) runs it over **every** column of every
-    relation in the `public` schema, so a new table is covered without anyone remembering to add it,
-    and `..._ReportsATableThatGrowsOne` builds a probe carrying such a column to prove the scan can
-    actually fail. `Vocabulary_MatchesNoneOfTheColumnsTheSchemaCarries` is the opposite control: a
-    pattern wide enough to swallow a real column fails there rather than in a reviewer's inbox.
+    of the list; `Schema_HoldsNoAnalyticsOrTrackingIdentifier`
+    (`tests/IntegrationTests/DataMinimizationSchemaTests.cs`) runs it over **every relation in the
+    `public` schema and every column on one**, so a table whose own name says what it holds is
+    refused as readily as a column, and a new table is covered without anyone remembering to add it.
+    Two probes prove the scan can fail on each axis — `..._ReportsATableThatGrowsSuchAColumn` and
+    `..._ReportsATableWhoseOwnNameIsOne` — each deliberately innocent on the axis it is not testing,
+    so neither can pass for the wrong reason.
+    `Vocabulary_MatchesNoneOfTheColumnsTheSchemaCarries` is the opposite control: a pattern wide
+    enough to swallow a real column fails there rather than in a reviewer's inbox.
   - **What a first-party security record may still carry**: the session or credential's own
     identifier, when it began, when it expires or was revoked, and when it was last used — each of
     those is read in order to **end** access, and a record that cannot say which session to revoke

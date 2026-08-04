@@ -12,13 +12,24 @@ namespace IntegrationTests;
 /// the gap these tests close. More data-minimization schema pins belong in this file.
 /// </summary>
 /// <remarks>
-/// The schema-wide scan comes in a pair, and
-/// <see cref="Schema_HoldsNoAnalyticsOrTrackingColumn_ReportsATableThatGrowsOne" /> is what makes
-/// <see cref="Schema_HoldsNoAnalyticsOrTrackingColumn" /> more than decoration. A scan that stopped
-/// reaching the catalog, or a vocabulary that stopped matching anything, would both leave the
-/// assertion green over an empty result — and green is exactly what it looks like when the rule
-/// holds. The control grows the forbidden column on purpose and demands the scan name it, so the
-/// pair goes red when the schema is wrong and also when the check is.
+/// <para>
+/// The schema-wide scan comes with its own provable-fail controls, and they are what make
+/// <see cref="Schema_HoldsNoAnalyticsOrTrackingIdentifier" /> more than decoration. A scan that
+/// stopped reaching the catalog, or a vocabulary that stopped matching anything, would both leave
+/// the assertion green over an empty result — and green is exactly what it looks like when the rule
+/// holds. The controls grow the forbidden thing on purpose and demand the scan name it, so the set
+/// goes red when the schema is wrong and also when the check is.
+/// </para>
+/// <para>
+/// There are two controls because there are two ways to name a forbidden idea. A behavioural
+/// feature is modelled as a <i>table</i> far more often than as a column, so
+/// <see cref="Schema_HoldsNoAnalyticsOrTrackingIdentifier_ReportsATableThatGrowsSuchAColumn" />
+/// proves the column path can fail and
+/// <see cref="Schema_HoldsNoAnalyticsOrTrackingIdentifier_ReportsATableWhoseOwnNameIsOne" /> proves
+/// the relation path can. One probe offending on both axes would let either assertion pass for the
+/// other one's reason, which is why the two probes are deliberately innocent on the axis they do
+/// not exercise.
+/// </para>
 /// </remarks>
 public sealed class DataMinimizationSchemaTests
 {
@@ -42,55 +53,98 @@ public sealed class DataMinimizationSchemaTests
     }
 
     [Test]
-    public async Task Schema_HoldsNoAnalyticsOrTrackingColumn()
+    public async Task Schema_HoldsNoAnalyticsOrTrackingIdentifier()
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
 
-        // Act — every column of every row-bearing relation, classified by the production vocabulary.
-        IReadOnlyList<string> offenders = await FindProhibitedColumnsAsync(admin);
+        // Act — every row-bearing relation and every column it carries, both classified by the
+        // production vocabulary.
+        IReadOnlyList<string> offenders = await FindProhibitedIdentifiersAsync(admin);
 
         // Assert — the shipped schema stores what the product needs to answer "what did I spend" and
         // nothing that says who was asking, from where, or how often. The pinned user row above is
         // one table; this is the same rule everywhere, because a tracking column is no better on
-        // transactions than it is on users.
+        // transactions than it is on users, and a table whose own name says it tracks somebody is
+        // the same offence spelled one level up.
         await Assert.That(offenders).IsEmpty();
     }
 
     [Test]
-    public async Task Schema_HoldsNoAnalyticsOrTrackingColumn_ReportsATableThatGrowsOne()
+    public async Task Schema_HoldsNoAnalyticsOrTrackingIdentifier_ReportsATableThatGrowsSuchAColumn()
     {
         // Arrange — a throwaway relation carrying exactly the shape the rule forbids. It is created
         // on the admin connection and never dropped: the container goes away with the host, which is
         // also why the name carries a prefix saying what it is if one ever leaks into a shared
-        // database. RlsCoverageTests keeps the same habit for the same reason.
+        // database. RlsCoverageTests keeps the same habit for the same reason. Its own host, so the
+        // relation probe cannot end up in the result this assertion reads.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
-        await CreateProbeTableAsync(admin, TrackingProbeTable, "ip_address text not null");
+        await CreateProbeTableAsync(admin, ColumnProbeTable, "ip_address text not null");
 
         // Act — the same helper the test above runs, against the same database with one extra table.
         // Nothing about the probe is special-cased.
-        IReadOnlyList<string> offenders = await FindProhibitedColumnsAsync(admin);
+        IReadOnlyList<string> offenders = await FindProhibitedIdentifiersAsync(admin);
 
         // Assert — named as table.column rather than counted, so the failure it produces in anger
-        // says which row grew the column instead of saying that one did.
-        await Assert.That(offenders).Contains($"{TrackingProbeTable}.ip_address");
+        // says which row grew the column instead of saying that one did. The table name matches
+        // nothing, so the column is the only thing this can be seeing.
+        await Assert.That(offenders).Contains($"{ColumnProbeTable}.ip_address");
+    }
+
+    [Test]
+    public async Task Schema_HoldsNoAnalyticsOrTrackingIdentifier_ReportsATableWhoseOwnNameIsOne()
+    {
+        // Arrange — a throwaway relation whose columns are both ordinary and whose own name is not.
+        // Its own host, for the reason its sibling has one: a database carrying both probes would
+        // let each assertion pass on the other's offence.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await CreateProbeTableAsync(admin, RelationProbeTable, "user_id uuid not null");
+
+        // Act — the same helper again, unchanged and knowing nothing about the probe.
+        IReadOnlyList<string> offenders = await FindProhibitedIdentifiersAsync(admin);
+
+        // Assert — bare, with no dot: the offence is the relation itself rather than anything it
+        // carries, and reporting it as a column would name a column that does not exist.
+        await Assert.That(offenders).Contains(RelationProbeTable);
     }
 
     /// <summary>
-    /// The throwaway relation the provable-fail control creates. A constant rather than a literal at
-    /// the call site: a typo split across the create and the assertion would not fail, it would
-    /// simply never find the probe, and a control that cannot be found always agrees.
+    /// The column half of the probe pair: a relation whose <b>own name is deliberately innocent</b>
+    /// — it tokenizes as <c>data / minimization / probe / holder</c>, which matches no pattern — so
+    /// that the forbidden column it carries is the only thing its control's assertion can be seeing.
+    /// Renaming it to something that reads better would make both halves of the pair vacuous, since
+    /// each would then have a second reason to be reported.
     /// </summary>
-    private const string TrackingProbeTable = "data_minimization_probe_tracking";
+    /// <remarks>
+    /// A constant rather than a literal at the call site: a typo split across the create and the
+    /// assertion would not fail, it would simply never find the probe, and a control that cannot be
+    /// found always agrees.
+    /// </remarks>
+    private const string ColumnProbeTable = "data_minimization_probe_holder";
 
     /// <summary>
-    /// Reports every column in <c>public</c> that the production vocabulary classifies as an
-    /// analytics identifier, an advertising identifier, a device fingerprint or a behavioural event,
-    /// as <c>table.column</c>.
+    /// The relation half of the probe pair: a name carrying the forbidden token <c>analytics</c>,
+    /// over <b>deliberately innocent columns</b> — <c>id</c> and <c>user_id</c>, both of which the
+    /// vocabulary is known to allow — so that the relation name is the only thing its control's
+    /// assertion can be seeing. Giving it a column with anything to hide would let the assertion
+    /// pass with the relation path removed entirely.
+    /// </summary>
+    /// <remarks>
+    /// A constant for the reason <see cref="ColumnProbeTable" /> is one, and the two are created on
+    /// separate hosts so neither ever appears in the other's scan.
+    /// </remarks>
+    private const string RelationProbeTable = "data_minimization_probe_user_analytics";
+
+    /// <summary>
+    /// Reports every relation and every column in <c>public</c> that the production vocabulary
+    /// classifies as an analytics identifier, an advertising identifier, a device fingerprint or a
+    /// behavioural event — a relation as a bare name, a column as <c>table.column</c>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -102,7 +156,16 @@ public sealed class DataMinimizationSchemaTests
     /// The relation kinds are the widened set <c>RowLevelSecurityCoverage</c> discovers over —
     /// ordinary table, partitioned parent, view, materialized view, foreign table — and for the same
     /// reason: each one of them is a place a column can hide. Narrowing to <c>'r'</c> would leave a
-    /// view exposing a tracking column entirely unexamined.
+    /// view exposing a tracking column entirely unexamined. The scan is confined to the <c>public</c>
+    /// schema, mirroring <c>RowLevelSecurityCoverage</c>'s own discovery, so a relation created in
+    /// another schema is outside both.
+    /// </para>
+    /// <para>
+    /// A relation name is classified by the same call as a column name, because it is the same
+    /// question: no pattern here is legitimate in one position and forbidden in the other, and a
+    /// behavioural feature reaches a schema as a table at least as often as it reaches one as a
+    /// column. Relation offenders are de-duplicated because <c>pg_attribute</c> yields one row per
+    /// column, so an offending table would otherwise be reported once for every column it carries.
     /// </para>
     /// <para>
     /// <c>attnum &gt; 0</c> drops the system columns, which belong to PostgreSQL rather than to
@@ -110,7 +173,7 @@ public sealed class DataMinimizationSchemaTests
     /// leaves behind under a mangled name.
     /// </para>
     /// </remarks>
-    private static async Task<IReadOnlyList<string>> FindProhibitedColumnsAsync(
+    private static async Task<IReadOnlyList<string>> FindProhibitedIdentifiersAsync(
         NpgsqlConnection connection)
     {
         const string sql =
@@ -129,11 +192,18 @@ public sealed class DataMinimizationSchemaTests
         await using NpgsqlCommand command = new(sql, connection);
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
         List<string> offenders = [];
+        HashSet<string> reportedRelations = new(StringComparer.Ordinal);
 
         while (await reader.ReadAsync())
         {
             string table = reader.GetString(0);
             string column = reader.GetString(1);
+
+            if (ProhibitedColumnVocabulary.Classify(table) is not null
+                && reportedRelations.Add(table))
+            {
+                offenders.Add(table);
+            }
 
             if (ProhibitedColumnVocabulary.Classify(column) is not null)
             {
@@ -145,19 +215,23 @@ public sealed class DataMinimizationSchemaTests
     }
 
     /// <summary>
-    /// Creates the throwaway relation the provable-fail control scans.
+    /// Creates a throwaway relation the provable-fail controls scan: a clean <c>id</c> key plus the
+    /// one column the caller names.
     /// </summary>
     /// <remarks>
-    /// Interpolated rather than parameterised because an identifier cannot be a parameter, and both
-    /// arguments are literals written in this file. No policy, no grant and no foreign key: every one
+    /// One helper rather than two, because both probes want the same statement and differ only in
+    /// which of the two arguments carries the offence — the column probe passes a forbidden column
+    /// under an innocent name, the relation probe an innocent column under a forbidden name.
+    /// Interpolated rather than parameterised because an identifier cannot be a parameter, and every
+    /// argument is a literal written in this file. No policy, no grant and no foreign key: every one
     /// of those would be a claim about what the table is for, and the point is that the verdict comes
-    /// from the column name alone.
+    /// from the names alone.
     /// </remarks>
     private static Task CreateProbeTableAsync(
         NpgsqlConnection connection,
         string name,
-        string trackingColumn) =>
-        ExecuteAsync(connection, $"create table {name} (id uuid primary key, {trackingColumn})");
+        string column) =>
+        ExecuteAsync(connection, $"create table {name} (id uuid primary key, {column})");
 
     /// <summary>
     /// Runs one DDL statement on the admin connection.

@@ -8,6 +8,40 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-05 — The deny-list refuses a bare word only where no honest column can carry it
+
+**Context:** the vocabulary landed with `event` as a bare token, and the names most likely to arrive
+next are spelled with the same words a tracking column is. A transactional outbox carries
+`event_type`; revocable sessions carry `session_id` and `last_used_at`; a passkey record carries
+`credential_id` and `device_name`. Each of those is a security or correctness record, and a rule
+that cannot tell one from a measurement column refuses the feature along with the surveillance.
+
+**Decision:** the vocabulary refuses a bare token only where no legitimate column in this domain can
+carry it — `analytics`, `advertising`, `fingerprint`, `telemetry`, `tracking`, `utm`, `impression`,
+a vendor's name — and a phrase everywhere else. Four omissions are therefore deliberate and each
+looks like an oversight: **`event`** protects the outbox, **`session`** protects a revocable
+session, **`login`** protects a session's own start time, and **`cookie`** protects a first-party
+opaque value. The general rule: when a word cannot separate the surveillance case from the security
+case, the pattern narrows, because a red bar on a legitimate column is spent credibility and a
+missed column is still caught by review. The compensating move goes the other way — the scan now
+classifies **relation names** as well as column names, so scope rises a level even as individual
+patterns get narrower. A behavioural feature is modelled as a table far more often than as a column.
+
+**Alternatives considered:** *Refuse the bare tokens and carve the exceptions out in each rule's
+`Reason`* — rejected: prose is read after a red bar and can only help argue one away, never stop it,
+and the vocabulary's own remarks say the check is worth having only while its reds are believed.
+*Keep a per-table exemption list the way the row-level security coverage check does* — rejected: an
+exemption list is a thing people append to, and appending is the drift this rule exists to stop; a
+narrower pattern has no append surface. *Defer until the sessions story lands* — rejected: the
+collision would then be discovered as a red bar on somebody else's work, which is the worst moment
+to be arguing about a deny-list. *Keep `analytics_event` as a `BehaviouralEvent` rule* — rejected:
+it can never fire, because `analytics` matches first whatever the order, and a rule that cannot
+fire makes the list's claim to disjoint patterns false.
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md).
+
+---
+
 ## 2026-08-05 — The list of columns the product refuses to carry is production code, not a test constant
 
 **Context:** "the account row holds nothing but an id, an address and a timestamp" is worth little if

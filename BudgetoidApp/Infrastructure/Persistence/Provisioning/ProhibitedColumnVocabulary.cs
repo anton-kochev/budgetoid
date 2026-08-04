@@ -57,7 +57,10 @@ public sealed record ProhibitedColumnRule(
 /// <para>
 /// The rule is schema-wide rather than pointed at <c>users</c>. A tracking column is no better on
 /// <c>transactions</c> than it is on the account row, and a rule written about one table is a rule
-/// that can be satisfied by putting the column on another.
+/// that can be satisfied by putting the column on another. The same list is read against relation
+/// names for the same reason one level up: a table named for what it holds is the identical
+/// refusal, and it is the level a behavioural feature is actually modelled at — <c>user_analytics</c>
+/// and <c>device_fingerprints</c> arrive as tables far more often than as columns.
 /// </para>
 /// <para>
 /// <b>The mechanism is token matching, not substring matching.</b> A column name is split into
@@ -332,8 +335,8 @@ public static class ProhibitedColumnVocabulary
         Rules.Select(rule => (Tokenize(rule.Pattern), rule.Category)).ToArray();
 
     /// <summary>
-    /// Says which refusal a column name is an instance of, or <see langword="null" /> when the name
-    /// is one the product is happy to carry.
+    /// Says which refusal a column or relation name is an instance of, or <see langword="null" />
+    /// when the name is one the product is happy to carry.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -349,16 +352,16 @@ public static class ProhibitedColumnVocabulary
     /// machine the build ran on.
     /// </para>
     /// </remarks>
-    /// <param name="columnName">A column name, in any casing and from any source.</param>
+    /// <param name="identifier">A column or relation name, in any casing and from any source.</param>
     /// <returns>The category the name falls into, or <see langword="null" /> when it falls into none.</returns>
-    public static ProhibitedColumnCategory? Classify(string columnName)
+    public static ProhibitedColumnCategory? Classify(string identifier)
     {
-        if (string.IsNullOrWhiteSpace(columnName))
+        if (string.IsNullOrWhiteSpace(identifier))
         {
             return null;
         }
 
-        string[] tokens = Tokenize(columnName);
+        string[] tokens = Tokenize(identifier);
 
         foreach ((string[] patternTokens, ProhibitedColumnCategory category) in CompiledRules)
         {
