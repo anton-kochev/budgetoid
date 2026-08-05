@@ -5,6 +5,7 @@ using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Currencies;
 using Domain.Payees;
+using Domain.Sessions;
 using Domain.Transactions;
 using Domain.Users;
 using Microsoft.EntityFrameworkCore;
@@ -15,10 +16,13 @@ public sealed class BudgetoidDbContext(
     DbContextOptions<BudgetoidDbContext> options,
     IBudgetContext? budgetContext = null) : DbContext(options)
 {
-    // Budgets, Users and Credentials deliberately carry no BudgetIsolation query filter: they are
-    // what provisioning reads and writes before an ambient budget exists, and a credential is keyed
-    // on the user it lets in rather than on a budget at all. Every query over these sets must
-    // therefore scope by owner explicitly.
+    // Budgets, Users, Credentials and Sessions deliberately carry no BudgetIsolation query filter:
+    // they are what provisioning reads and writes before an ambient budget exists, and a credential is
+    // keyed on the user it lets in rather than on a budget at all. A session's reason is its own: it
+    // belongs to a person and names no budget, so there is no budget to filter it by — one person's
+    // session is established before any budget is ambient and outlives whichever budget was. It is
+    // isolated on user_id by the user_isolation policy in the database instead. Every query over these
+    // sets must therefore scope by owner explicitly.
     public DbSet<Budget> Budgets => Set<Budget>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
     public DbSet<Account> Accounts => Set<Account>();
@@ -28,6 +32,7 @@ public sealed class BudgetoidDbContext(
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<User> Users => Set<User>();
     public DbSet<Credential> Credentials => Set<Credential>();
+    public DbSet<Session> Sessions => Set<Session>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

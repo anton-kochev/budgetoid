@@ -68,6 +68,18 @@ public sealed class SchemaConstraintSnapshotTests
             // not something the account owes anyone, so it must never be able to hold an erasure up.
             "credentials.FK_credentials_users_user_id: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
             "payees.FK_payees_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
+            // Composite over three columns, and the composite is the rule: sessions carries user_id,
+            // credential_id and credential_type, and all three must agree with the credential row.
+            // Shortened to credential_id alone, the database would accept a session whose credential
+            // belongs to somebody else and user_isolation would show it to the wrong person, because
+            // the policy decides on user_id and never looks at the credential. Dropping
+            // credential_type is the subtler collapse: that column is the only thing on the row
+            // CK_sessions_kind_matches_credential can read, so without this reference it is a copy
+            // free to disagree with its source, and a session could claim a passkey opened it while
+            // naming a federated credential.
+            // Cascade for the reason the credentials -> users row above records: a session must never
+            // be able to hold an account erasure up.
+            "sessions.FK_sessions_credentials_credential_id_user_id_credential_type: FOREIGN KEY (credential_id, user_id, credential_type) REFERENCES credentials(id, user_id, type) ON DELETE CASCADE",
             "transactions.FK_transactions_accounts_account_id_budget_id: FOREIGN KEY (account_id, budget_id) REFERENCES accounts(id, budget_id) ON DELETE RESTRICT",
             "transactions.FK_transactions_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE RESTRICT",
             "transactions.FK_transactions_categories_category_id_budget_id: FOREIGN KEY (category_id, budget_id) REFERENCES categories(id, budget_id) ON DELETE RESTRICT",
@@ -110,6 +122,11 @@ public sealed class SchemaConstraintSnapshotTests
             """CREATE UNIQUE INDEX "AK_accounts_id_budget_id" ON public.accounts USING btree (id, budget_id)""",
             """CREATE UNIQUE INDEX "AK_categories_id_budget_id" ON public.categories USING btree (id, budget_id)""",
             """CREATE UNIQUE INDEX "AK_category_groups_id_budget_id" ON public.category_groups USING btree (id, budget_id)""",
+            // The alternate key the sessions composite foreign key targets, and the same reasoning as
+            // the four AK_*_id_budget_id rows: nobody queries through it, so dropping it reads as
+            // tidying while it is what makes a session and its credential unable to disagree about
+            // whose they are — or, since type joined the key, about what opened the session.
+            """CREATE UNIQUE INDEX "AK_credentials_id_user_id_type" ON public.credentials USING btree (id, user_id, type)""",
             """CREATE UNIQUE INDEX "AK_payees_id_budget_id" ON public.payees USING btree (id, budget_id)""",
             """CREATE UNIQUE INDEX "IX_accounts_budget_id_name" ON public.accounts USING btree (budget_id, name)""",
             // The trailing clause is the rule, not rendering noise. Without it PostgreSQL counts
@@ -146,6 +163,7 @@ public sealed class SchemaConstraintSnapshotTests
             """CREATE UNIQUE INDEX "PK_credentials" ON public.credentials USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_currencies" ON public.currencies USING btree (code)""",
             """CREATE UNIQUE INDEX "PK_payees" ON public.payees USING btree (id)""",
+            """CREATE UNIQUE INDEX "PK_sessions" ON public.sessions USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_transactions" ON public.transactions USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_users" ON public.users USING btree (id)""",
         ];
@@ -202,6 +220,20 @@ public sealed class SchemaConstraintSnapshotTests
             """CK_credentials_type_shape: credentials CHECK (((((type)::text = 'federated'::text) AND (provider IS NOT NULL) AND (subject IS NOT NULL) AND (length((subject)::text) > 0)) OR (((type)::text = 'passkey'::text) AND (provider IS NULL) AND (subject IS NULL))))""",
             """CK_currencies_code: currencies CHECK (((code)::text ~ '^[A-Z]{3}$'::text))""",
             """CK_currencies_minor_unit: currencies CHECK (((minor_unit >= 0) AND (minor_unit <= 4)))""",
+            // The kind vocabulary, and the lowercase spelling is the whole of it: the converter stores
+            // these two strings, so a HasConversion<string>() writing PascalCase members would be
+            // refused here rather than stored.
+            """CK_sessions_kind: sessions CHECK (((kind)::text = ANY ((ARRAY['full'::character varying, 'locked'::character varying])::text[])))""",
+            // The rule that a full session is opened by a passkey and by nothing else, held where it
+            // rejects rather than where it is merely performed: Session.Establish derives kind from
+            // the credential, but GRANT INSERT on this table covers the whole column list, so without
+            // this line a federated credential paired with kind = 'full' is a row the application
+            // role can write. An equality rather than an implication, so it refuses both directions
+            // — a passkey opening a locked session moves this line too.
+            """CK_sessions_kind_matches_credential: sessions CHECK ((((kind)::text = 'full'::text) = ((credential_type)::text = 'passkey'::text)))""",
+            // Separate from the vocabulary check rather than ANDed with it, so a row that breaches one
+            // reports exactly the name that describes what is wrong with it.
+            """CK_sessions_lifetime: sessions CHECK ((expires_at_utc > created_at_utc))""",
             """CK_transactions_amount: transactions CHECK ((abs(amount) <= (1000000000)::numeric))""",
         ];
         await Assert.That(checkConstraints).IsEquivalentTo(expected);

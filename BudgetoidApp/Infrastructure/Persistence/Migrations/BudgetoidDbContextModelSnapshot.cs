@@ -369,6 +369,64 @@ namespace Infrastructure.Persistence.Migrations
                     b.ToTable("payees", (string)null);
                 });
 
+            modelBuilder.Entity("Domain.Sessions.Session", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid>("CredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("credential_id");
+
+                    b.Property<string>("CredentialType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("credential_type");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at_utc");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("kind");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .IsConcurrencyToken()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CredentialId", "UserId", "CredentialType")
+                        .HasDatabaseName("IX_sessions_credential_id_user_id_credential_type");
+
+                    b.HasIndex(new[] { "UserId" }, "IX_sessions_user_id")
+                        .HasDatabaseName("IX_sessions_user_id");
+
+                    b.ToTable("sessions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_sessions_kind", "kind in ('full', 'locked')");
+
+                            t.HasCheckConstraint("CK_sessions_kind_matches_credential", "(kind = 'full') = (credential_type = 'passkey')");
+
+                            t.HasCheckConstraint("CK_sessions_lifetime", "expires_at_utc > created_at_utc");
+                        });
+                });
+
             modelBuilder.Entity("Domain.Transactions.Transaction", b =>
                 {
                     b.Property<Guid>("Id")
@@ -458,6 +516,9 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
+
+                    b.HasAlternateKey("Id", "UserId", "Type")
+                        .HasName("AK_credentials_id_user_id_type");
 
                     b.HasIndex("Provider", "Subject")
                         .IsUnique()
@@ -569,6 +630,16 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasOne("Domain.Budgets.Budget", null)
                         .WithMany()
                         .HasForeignKey("BudgetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Domain.Sessions.Session", b =>
+                {
+                    b.HasOne("Domain.Users.Credential", null)
+                        .WithMany()
+                        .HasForeignKey("CredentialId", "UserId", "CredentialType")
+                        .HasPrincipalKey("Id", "UserId", "Type")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

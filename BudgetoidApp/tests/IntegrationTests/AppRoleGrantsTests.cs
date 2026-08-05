@@ -7,10 +7,12 @@ namespace IntegrationTests;
 
 /// <summary>
 /// Covers the immutability rules that only the application role's column grants can enforce: a
-/// budgets row is never updated at all, an account's currency never changes, and a credential —
-/// the row the whole sign-in resolves through — has an immutable identity: user_id, type,
-/// provider, subject and created_at_utc are written whole at registration and have no edit that
-/// means anything. Today those five are every column credentials has, which is why the role holds
+/// budgets row is never updated at all, an account's currency never changes, a session's identity —
+/// who it belongs to, which credential opened it, how much it reaches and when it runs out — is
+/// written whole when the session is established and only revoked_at_utc can ever be edited, and a
+/// credential — the row the whole sign-in resolves through — has an immutable identity: user_id,
+/// type, provider, subject and created_at_utc are written whole at registration and have no edit
+/// that means anything. Today those five are every column credentials has, which is why the role holds
 /// no <c>UPDATE</c> grant on that table of any shape rather than a column list with nothing on
 /// it — read that as where the list stands today, not as a property of the table. The role's
 /// <c>UPDATE</c> grant names its columns explicitly, and PostgreSQL column privileges are additive,
@@ -19,8 +21,8 @@ namespace IntegrationTests;
 /// <see cref="RepositoryTestHost.AppConnectionString" />, because grants only bind connections
 /// opened as the role — the host's own connection is the container superuser and answers every
 /// privilege question with yes. What each test then puts on that session is not uniform and is
-/// never incidental: three of them declare an identity so the row they aim at is reachable at all,
-/// and the <c>credentials</c> one declares nothing, which is the measurement rather than a gap.
+/// never incidental: every test but one declares an identity so the row it aims at is reachable at
+/// all, and the <c>credentials</c> one declares nothing, which is the measurement rather than a gap.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -301,11 +303,176 @@ public sealed class AppRoleGrantsTests
             .IsEqualTo(2L);
     }
 
+    [Test]
+    public async Task Database_RefusesEveryUpdateOnASessionsIdentity_WhileStillAllowingRevocation()
+    {
+        // Arrange — one account, its federated credential, a second passkey credential on the same
+        // account, and one session established by the first. The second credential is there for the
+        // credential_id statement below to aim at: it belongs to the same user, so if the grant ever
+        // leaked that column the relabelling would succeed outright instead of tripping the composite
+        // foreign key and passing for the wrong reason. It is seeded with raw SQL because no domain
+        // factory mints a passkey yet; (passkey, null, null) is the shape
+        // CK_credentials_type_shape permits.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid credentialId = (Guid)(await SelectScalarAsync(
+            admin, "select id from credentials where user_id = @id", userId))!;
+        Guid otherCredentialId = await InsertPasskeyCredentialAsync(admin, userId);
+        Guid sessionId = await InsertSessionAsync(admin, userId, credentialId);
+
+        // sessions is policed on the user, like users and budgets, so the session names the owner and
+        // no ambient budget. The identity is what keeps the pair below intact: without it the
+        // revocation would match zero rows and still report success, leaving the refusals beside it
+        // proving nothing (see the class remarks).
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
+
+        // Act — every identity column of sessions by name: user_id, credential_id, credential_type,
+        // kind, created_at_utc, expires_at_utc. Relabelling credential_id would rewrite which key
+        // opened the door, which is the fact revocation is decided by; rewriting credential_type or
+        // kind would hand budget content to a session a federated credential opened, from either
+        // end of CK_sessions_kind_matches_credential.
+        //
+        // The timestamps are the forged values a leaked grant would land on: both keep expiry after
+        // creation, so neither is caught by a CHECK and passes for the wrong reason. The first three
+        // cannot be, and unavoidably so — the foreign key is composite on
+        // (credential_id, user_id, credential_type), so no value moves any one of them alone, and
+        // the equality check refuses every kind this row does not already hold. What still makes
+        // each of them a measurement is that the helper demands a refusal: a leaked grant that let
+        // the statement through, no-op or not, is reported as the exception that failed to arrive.
+        // Real values are named anyway rather than random ones, so a leak reports 23503 for one
+        // reason instead of two.
+        PostgresException userRefusal = await ThrowsPostgresExceptionAsync(
+            app, "update sessions set user_id = @value where id = @id", otherUserId, sessionId);
+        PostgresException credentialRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update sessions set credential_id = @value where id = @id",
+            otherCredentialId,
+            sessionId);
+        PostgresException credentialTypeRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update sessions set credential_type = @value where id = @id",
+            "passkey",
+            sessionId);
+        PostgresException kindRefusal = await ThrowsPostgresExceptionAsync(
+            app, "update sessions set kind = @value where id = @id", "full", sessionId);
+        PostgresException createdAtRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update sessions set created_at_utc = @value where id = @id",
+            ForgedSessionCreatedInstant,
+            sessionId);
+        PostgresException expiresAtRefusal = await ThrowsPostgresExceptionAsync(
+            app, "update sessions set expires_at_utc = @value where id = @id", ForgedInstant, sessionId);
+
+        // The success half of the pair, and it is the whole of the UPDATE grant: revoked_at_utc is
+        // the one column an edit can legitimately reach. The affected count is load-bearing rather
+        // than decorative — without it this pair passes when row-level security matched nothing and
+        // the update touched nobody, which is precisely the claim the pairing exists to rule out.
+        int revoked = await ExecuteAsync(
+            app,
+            "update sessions set revoked_at_utc = @value where id = @id",
+            RevocationInstant,
+            sessionId);
+
+        // Assert
+        await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(credentialRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(credentialTypeRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(kindRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(createdAtRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(expiresAtRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(revoked).IsEqualTo(1);
+
+        await Assert.That(await SelectScalarAsync(
+                admin, "select user_id from sessions where id = @id", sessionId))
+            .IsEqualTo(userId);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select credential_id from sessions where id = @id", sessionId))
+            .IsEqualTo(credentialId);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select credential_type from sessions where id = @id", sessionId))
+            .IsEqualTo("federated");
+        await Assert.That(await SelectScalarAsync(
+                admin, "select kind from sessions where id = @id", sessionId))
+            .IsEqualTo("locked");
+        await Assert.That(await SelectScalarAsync(
+                admin, "select created_at_utc from sessions where id = @id", sessionId))
+            .IsEqualTo(SeedInstant);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select expires_at_utc from sessions where id = @id", sessionId))
+            .IsEqualTo(SessionExpiryInstant);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select revoked_at_utc from sessions where id = @id", sessionId))
+            .IsEqualTo(RevocationInstant);
+    }
+
+    [Test]
+    public async Task Database_RefusesToDeleteASession()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid credentialId = (Guid)(await SelectScalarAsync(
+            admin, "select id from credentials where user_id = @id", userId))!;
+        Guid sessionId = await InsertSessionAsync(admin, userId, credentialId);
+
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
+
+        // Act
+        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
+            app, "delete from sessions where id = @id", sessionId);
+
+        // Assert — the absent DELETE grant is what keeps revocation a recorded fact rather than a
+        // disappearance: the role holds no privilege that can make a session unaccountable, and
+        // re-revoking converges instead of failing as a second delete of nothing. A retention sweep
+        // of expired and revoked rows is the path that would need this grant, and it is the thing
+        // that would have to re-argue the omission rather than quietly delete it. The surviving row
+        // is not a second opinion on the SQLSTATE: a refusal that had already removed the row on its
+        // way to failing is exactly what this rule exists to rule out.
+        await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from sessions where id = @id", sessionId))
+            .IsEqualTo(1L);
+    }
+
     /// <summary>
     /// Fixed UTC instant for rows these tests write. PostgreSQL <c>timestamptz</c> rejects a
     /// non-UTC <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
     /// </summary>
     private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Expiry of the seeded session. Strictly after <see cref="SeedInstant" />, which is the whole
+    /// content of <c>CK_sessions_lifetime</c>.
+    /// </summary>
+    private static readonly DateTime SessionExpiryInstant =
+        new(2026, 6, 13, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// The creation instant a leaked <c>created_at_utc</c> grant would have written. Before
+    /// <see cref="SessionExpiryInstant" /> on purpose: a forged value that breached
+    /// <c>CK_sessions_lifetime</c> would be refused by the check rather than by the grant, and the
+    /// test would go green against a table-wide <c>GRANT UPDATE</c>.
+    /// </summary>
+    private static readonly DateTime ForgedSessionCreatedInstant =
+        new(2026, 6, 12, 0, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// The instant the permitted revocation writes. Distinct from every other constant here so the
+    /// read-back cannot pass on a column that was never written.
+    /// </summary>
+    private static readonly DateTime RevocationInstant =
+        new(2026, 6, 12, 18, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
     /// The value an update of an immutable timestamp column would have written had the grant
@@ -315,6 +482,61 @@ public sealed class AppRoleGrantsTests
     /// <see cref="DateTimeKind.Utc" /> is load-bearing here too.
     /// </summary>
     private static readonly DateTime ForgedInstant = new(2031, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Writes a second credential onto an existing account, on the superuser connection. Raw SQL
+    /// because no domain factory mints a passkey yet; <c>(passkey, null, null)</c> is the shape
+    /// <c>CK_credentials_type_shape</c> permits, and the partial unique index on
+    /// <c>(provider, subject)</c> names only federated rows, so it does not collide.
+    /// </summary>
+    private static async Task<Guid> InsertPasskeyCredentialAsync(
+        NpgsqlConnection connection,
+        Guid userId)
+    {
+        Guid credentialId = Guid.CreateVersion7();
+        await using NpgsqlCommand command = new(
+            "insert into credentials (id, user_id, type, provider, subject, created_at_utc) " +
+            "values (@id, @user_id, 'passkey', null, null, @created_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("id", credentialId);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        await command.ExecuteNonQueryAsync();
+        return credentialId;
+    }
+
+    /// <summary>
+    /// Writes one live session established by <paramref name="credentialId" />, on the superuser
+    /// connection, and returns its id. Seeded rather than established through the domain because
+    /// these tests are about the role's write surface, not about how the row is produced.
+    /// </summary>
+    /// <remarks>
+    /// <c>('federated', 'locked')</c> rather than <c>'full'</c>: every caller passes the account's
+    /// federated credential, and <c>CK_sessions_kind_matches_credential</c> refuses a full session
+    /// opened by one. A seeding row that the schema rejects would fail these tests before they
+    /// reached the grant matrix they are about.
+    /// </remarks>
+    private static async Task<Guid> InsertSessionAsync(
+        NpgsqlConnection connection,
+        Guid userId,
+        Guid credentialId)
+    {
+        Guid sessionId = Guid.CreateVersion7();
+        await using NpgsqlCommand command = new(
+            "insert into sessions " +
+            "(id, user_id, credential_id, credential_type, kind, " +
+            "created_at_utc, expires_at_utc, revoked_at_utc) " +
+            "values (@id, @user_id, @credential_id, 'federated', 'locked', " +
+            "@created_at_utc, @expires_at_utc, null)",
+            connection);
+        command.Parameters.AddWithValue("id", sessionId);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("credential_id", credentialId);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        command.Parameters.AddWithValue("expires_at_utc", SessionExpiryInstant);
+        await command.ExecuteNonQueryAsync();
+        return sessionId;
+    }
 
     /// <summary>
     /// Sends one <c>update … set column = @value where id = @id</c> statement and returns the

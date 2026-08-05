@@ -10,9 +10,9 @@ security, and the layers above it exist for error quality. Keep all of the follo
 Enforced today:
 - **Row-level security, on both axes.** A `budget_isolation` policy on `accounts`,
   `category_groups`, `categories`, `payees` and `transactions` compares `budget_id` against the
-  session's ambient budget, and a `user_isolation` policy on `users` and `budgets` compares `id`
-  and `user_id` against the session's authenticated user — each in both `USING` and `WITH CHECK`,
-  so the connection every request is served by reaches no other tenant's rows and can insert into
+  session's ambient budget, and a `user_isolation` policy on `users`, `budgets` and `sessions`
+  compares `id` and `user_id` against the session's authenticated user — each in both `USING` and
+  `WITH CHECK`, so the connection every request is served by reaches no other tenant's rows and can insert into
   no tenant but its own, whatever produced the statement. `SessionContextInterceptor` puts both
   `app.current_user_id` and `app.current_budget_id` on each connection the context opens, in one
   round-trip. The policies live in `Infrastructure/Persistence/Provisioning/app-role-grants.sql`,
@@ -74,11 +74,12 @@ Enforced today:
   `(Id, BudgetId)` alternate key. PostgreSQL rejects a cross-budget reference whatever code path
   wrote it. This proves internal consistency only; *which* budget a write lands in is still the
   filter's and `IBudgetContext`'s job alone.
-- **`Budget`, `User` and `Credential` have no query filter.** The provisioning lookup runs before a
-  budget id exists, so every query over `Budgets` must scope by owner explicitly
-  (`FindFirstForUserAsync`). That is a statement about the *read-side filter* only, and it no
-  longer travels with the coverage exemption: `users` and `budgets` are policed on the user, and
-  only `credentials` is still exempt. It has to be — reading it is how the request discovers who is
+- **`Budget`, `User`, `Credential` and `Session` have no query filter.** The provisioning lookup
+  runs before a budget id exists, so every query over `Budgets` must scope by owner explicitly
+  (`FindFirstForUserAsync`); a session names no budget at all, so there is none to filter it by.
+  That is a statement about the *read-side filter* only, and it no longer travels with the coverage
+  exemption: `users`, `budgets` and `sessions` are policed on the user, and only `credentials` is
+  still exempt. It has to be — reading it is how the request discovers who is
   asking, so it is the one table reached with no identity on the session at all
   ([ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). That is also why the credential
   lookup projects to `credentials.user_id` and never joins `users`: the join would touch the table
@@ -97,8 +98,8 @@ Enforced today:
 Escape hatches the filter does **not** cover. These no longer leak — each one now meets the
 policies instead, and a cross-budget read comes back empty rather than populated. Still do not
 introduce them on budget-scoped data: an empty result where the code expects a row is a bug, and a
-connection that names no ambient budget — or no ambient user, for `users` and `budgets` — fails
-with `22P02` rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
+connection that names no ambient budget — or no ambient user, for `users`, `budgets` and `sessions`
+— fails with `22P02` rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
 `Infrastructure` and `Api`, the only projects with an EF reference) turns each API below into an
 RS0030 compile error.
 - `IgnoreQueryFilters()` — never on `BudgetoidDbContext`.

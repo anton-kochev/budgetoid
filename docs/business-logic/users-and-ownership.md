@@ -50,6 +50,7 @@ to a **user** rather than to a budget, and that rule has its canonical statement
 ```mermaid
 erDiagram
     USER ||--o{ CREDENTIAL : "signs in with"
+    CREDENTIAL ||--o{ SESSION : establishes
     USER ||--o{ BUDGET : owns
     BUDGET ||--o{ ACCOUNT : owns
     BUDGET ||--o{ CATEGORY_GROUP : owns
@@ -71,6 +72,9 @@ erDiagram
     }
 ```
 
+A **Session** is what a credential establishes once it has answered who is asking. It is its own
+area — see [sessions.md](sessions.md) — and this file does not restate its rules.
+
 ## Constraints
 
 ### MUST
@@ -82,9 +86,10 @@ erDiagram
   the budget they own, so for money "a user can only see their own data" is a consequence of budget
   isolation rather than a separate rule.
 
-  The two tables that name a person are the exception, and they carry their own rule: `users` and
-  `budgets` are policed by a `user_isolation` policy comparing `id` and `user_id` against the
-  session's authenticated user. Budget isolation cannot express that — a budget *is* the tenant, so
+  The three tables that name a person are the exception, and they carry their own rule: `users`,
+  `budgets` and `sessions` are policed by a `user_isolation` policy comparing `id` and `user_id`
+  against the session's authenticated user. Budget isolation cannot express that — a budget *is* the
+  tenant, so
   there is no ambient budget to check a budgets row against — and leaving it to application code
   would make the two tables that name a person the only two the database does not guard. See
   [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
@@ -171,7 +176,10 @@ erDiagram
     cannot be revoked. What such a record may not do is accumulate one row per sign-in as history,
     or count them. This is why the vocabulary refuses phrases like `session_count` and `last_login`
     rather than the bare words `session` and `login`: a rule that cannot tell a revocable session
-    from a measured one would refuse the security feature along with the surveillance.
+    from a measured one would refuse the security feature along with the surveillance. `sessions` is
+    the record that shape was argued for, and it carries less than the rule permits — `id`,
+    `user_id`, `credential_id`, `kind`, `created_at_utc`, `expires_at_utc`, `revoked_at_utc`, and
+    nothing else. See [sessions.md](sessions.md).
   - **Why here and not in the database**: PostgreSQL cannot refuse a column for what its name
     connotes, and reaching it would need an event trigger — procedural logic, which
     [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out. A forbidden
@@ -497,7 +505,9 @@ The budget branch that runs after this, on every path, is in
   that can each fail for a different reason. **Modelling `Credential` inside the `User` aggregate**
   would make atomicity automatic rather than argued — but the aggregate would then have to grow to
   hold sessions and passkeys too, and a root loaded on every authenticated request is the wrong
-  place to accumulate them.
+  place to accumulate them. `Session` landed as its own aggregate for exactly that reason, and it
+  references its user and its credential by id the same way `Credential` does — see
+  [sessions.md](sessions.md).
 
 - **Writers take `users` before `credentials`, always, and that is what makes deadlock impossible
   here.** Two transactions inserting into both tables cannot form a cycle if neither ever takes the

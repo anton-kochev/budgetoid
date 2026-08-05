@@ -18,6 +18,7 @@ using Application.CategoryGroups.UpdateCategoryGroup;
 using Application.Currencies.GetCurrencies;
 using Application.Payees.GetPayees;
 using Application.Payees.RenamePayee;
+using Application.Sessions.RevokeSessionsForCredential;
 using Application.Transactions.CreateTransaction;
 using Application.Transactions.DeleteTransaction;
 using Application.Transactions.GetTransaction;
@@ -59,6 +60,7 @@ public static class DependencyInjection
         services.AddScoped<GetPayeesHandler>();
         services.AddScoped<RenamePayeeHandler>();
         services.AddScoped<EnsureUserHandler>();
+        services.AddScoped<RevokeSessionsForCredentialHandler>();
 
         return services;
     }

@@ -1,0 +1,278 @@
+# Sessions
+
+## Table of Contents
+
+- [Purpose](#purpose)
+- [Key Entities](#key-entities)
+- [Constraints](#constraints)
+- [Business Rules & Invariants](#business-rules--invariants)
+- [Workflows & State Transitions](#workflows--state-transitions)
+- [Integration Points](#integration-points)
+- [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
+
+## Purpose
+
+This area covers **an established sign-in the product owns**: a row it wrote, can read, and can end
+without asking anyone. Identity — who a person is, and which credentials prove it — lives in
+[users-and-ownership.md](users-and-ownership.md); this file covers what happens *after* a credential
+has answered that question.
+
+The distinction is the whole point. A token issued by an identity provider cannot be taken back by
+this product: revoking access would mean asking the provider to revoke it. A session row can be
+ended here, in one write, by the same role that serves every request.
+
+**What is built today and what is not.** The `sessions` table, its entity, its isolation policy, its
+grant matrix entry, and the two operations — establish one, revoke every session a credential
+established — exist and are tested. Nothing issues a session to a client and nothing presents one:
+the API still authenticates each request from the Google ID token it is handed, exactly as
+[users-and-ownership.md](users-and-ownership.md) describes. So no request path reads a `sessions`
+row yet, and no code calls `RevokeSessionsForCredentialHandler` — there is no path that removes a
+credential for it to be called from.
+
+## Key Entities
+
+- **Session** — one established sign-in. It carries a `Guid Id` of its own, the `UserId` whose
+  account it reaches, the `CredentialId` of the credential that established it, that credential's
+  `CredentialType`, a `SessionKind`, the instant it began, the instant it expires, and a nullable
+  instant at which it was revoked. It holds no navigation properties: it names its user and its
+  credential by id, exactly as **Credential** names its user by id.
+- **SessionKind** — `Locked` or `Full`, and it is **derived from the establishing credential's
+  type**, never supplied. A `Passkey` credential opens a `Full` session; a `Federated` one opens a
+  `Locked` session. `Session.ReadsBudgetContent` is the computed reading of that, and it is true only
+  for `Full`. `Locked` is declared first so that `default(SessionKind)` is the value reaching
+  nothing — the order is the fail-closed direction, not alphabetical accident.
+- **`Session.CredentialType`** — a copy of the establishing credential's type, carried on the row so
+  the database can check the derivation. A `CHECK` sees only the row in front of it, so the fact
+  `kind` is derived from has to be on that row for the derivation to be checkable at all.
+
+A session record deliberately carries **no** token, token hash, last-used instant, device name, IP
+address, or user agent. Each would be a column nothing reads today, and a column nothing reads is
+data held for no one — the same rule the minimal account row is built on.
+
+```mermaid
+erDiagram
+    USER ||--o{ CREDENTIAL : "signs in with"
+    CREDENTIAL ||--o{ SESSION : establishes
+    SESSION {
+        guid Id
+        guid UserId
+        guid CredentialId
+        string CredentialType
+        string Kind
+        datetime CreatedAtUtc
+        datetime ExpiresAtUtc
+        datetime RevokedAtUtc
+    }
+```
+
+## Constraints
+
+### MUST
+
+- **A session is isolated by user, like `users` and `budgets`.** `sessions` carries `user_id` and no
+  `budget_id`, so it is user-owned by the same rule and owes the same policy. A session belongs to a
+  person; the budgets that person owns are reached through their own policies, one layer down.
+  - **Enforced in**: the `user_isolation` policy on `sessions` in
+    `BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, comparing `user_id`
+    against `app.current_user_id` in both `USING` and `WITH CHECK`;
+    `SessionContextInterceptor` puts that setting on every connection the context opens.
+    `RowLevelSecurityCoverage` reaches the verdict from the table's own columns rather than from a
+    list, so `RlsCoverageTests` and the deploy-time verifier both required this policy the moment
+    the table existed. `RlsIsolationTests` proves the three halves — another person's rows are
+    invisible, an insert naming another person is refused, and a connection naming nobody fails with
+    `22P02` rather than reading anything. See
+    [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
+  - `user_id` is `NOT NULL`, and that is load-bearing rather than tidy: a `NULL` owner fails
+    *closed*, because `NULL = anything` is `NULL` and never true, so the row would be invisible to
+    every session including the one that wrote it — a write that succeeds and a read that cannot be
+    explained.
+
+- **A session's identity columns — `user_id`, `credential_id`, `credential_type`, `kind`,
+  `created_at_utc`, `expires_at_utc` — are immutable. `revoked_at_utc` is the only column an edit
+  may reach.**
+  - **Why**: changing `credential_id` would relabel which key opened the door, and which key opened
+    it is the fact revocation is decided by. Changing `kind` would hand budget content to a session a
+    federated credential opened, which is the one thing the kind exists to refuse.
+  - **Enforced in**: the grant matrix. `GRANT SELECT, INSERT ON sessions` plus
+    `GRANT UPDATE (revoked_at_utc) ON sessions` — the other six are immutable by **omission from
+    the column list**, never by a `REVOKE`, which additive column privileges could not express. A
+    one-column list is still a list and must not be collapsed into a table-wide grant. Above it,
+    `Session` exposes no public setter. `AppRoleGrantsTests` pins a `42501` for each of them in
+    the same test as a permitted `revoked_at_utc` update that reports one affected row — the
+    affected-row count is what stops the pair passing when row-level security matched nothing. See
+    [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
+
+- **A session's expiry must be after its creation.**
+  - **Enforced in**: `CK_sessions_lifetime` (`expires_at_utc > created_at_utc`), restated in
+    `Session.Establish` so a bad call fails with a named field rather than a raw `23514`. Nothing
+    renders that into a response yet — no endpoint establishes a session — so the restatement is
+    for the caller the establishing path will be, not for a status code that exists today.
+
+### MUST NOT
+
+- **The application role MUST NOT hold `DELETE` on `sessions`.** Revocation writes `revoked_at_utc`;
+  it does not remove the row. The absent grant is what keeps the role from holding the one privilege
+  that could make a session unaccountable, and `Database_RefusesToDeleteASession` pins it. No
+  retention sweep exists; when one is built it needs this grant, and the paragraph in
+  `app-role-grants.sql` is what has to be re-argued rather than quietly deleted.
+
+- **No policy on `sessions` may read `kind`.** Whether a session reaches budget content is answered
+  by `budget_isolation` on the budget-owned tables, which a locked session never satisfies because it
+  resolves no ambient budget. A predicate here consulting `kind` would invent a third isolation axis
+  beside the two the schema already carries, and which rows a person could see would then depend on
+  which of the three fired last.
+
+## Business Rules & Invariants
+
+- **Rule**: A session's kind is **derived** from the establishing credential's type. There is no way
+  to ask for one.
+- **Why**: an authorization exchange with an identity provider returns claims, not a secret the
+  client can turn into a key. So any account reachable by a provider sign-in would be an account the
+  provider's holder could read — which is why a federated credential opens a session that reaches no
+  budget content at all. A passkey is the only credential type whose authenticator can hold the
+  account's keys.
+- **Enforced in**: `CK_sessions_kind_matches_credential`, `(kind = 'full') = (credential_type =
+  'passkey')`, which is the lowest layer that can state the rule declaratively. Without it the rule
+  lived only in the factory while `GRANT SELECT, INSERT ON sessions` stayed table-wide on `INSERT`
+  — `(credential_id = <a federated credential>, kind = 'full')` was a fully storable row.
+  `CK_sessions_kind` bounds only the vocabulary and the composite foreign key proves only whose the
+  two rows are; neither refuses that pair.
+  Above it, `Session.Establish` takes the `Credential` and no kind, and derives it through a switch
+  with both arms written out and a throwing discard arm.
+  `SessionTests.Session_ExposesNoWayToChooseItsKind` reflects over the public surface and fails on
+  any parameter or settable property of type `SessionKind`. That is what makes the rule
+  **unrepresentable** rather than merely untested: without it, the obvious accommodation for a caller
+  wanting a different kind is an overload taking one, and the rule dissolves with no test going red.
+- **Note on the copy**: `credential_type` duplicates `credentials.type` and cannot drift from it —
+  `credentials` holds no `UPDATE` grant of any shape, and the composite foreign key below ties the
+  two columns together on every insert.
+- **Counterexample**: a `bool canReadBudgetContent` argument on the factory. It reads as a permission
+  the caller sets, and the first caller that sets it wrongly is the whole rule gone.
+- **Source**: `[SOURCE: discussion — 2026-08-05]`
+
+---
+
+- **Rule**: Revocation is an **`UPDATE` of `revoked_at_utc`**, never a `DELETE`, and it is
+  **idempotent** — an already-revoked session keeps the instant access actually ended.
+- **Why**: the row is what says access ended and when. Deleting it needs a `DELETE` grant, which is
+  the single privilege that can erase every session on the system, and it cannot tell "already
+  revoked" from "never existed" — a distinction anything reporting a revocation needs. The usual
+  argument for `DELETE`, that updated rows accumulate, does not separate the two options: an
+  unrevoked but expired row accumulates identically, so retention is a problem either mechanism has
+  and neither solves.
+- **Enforced in**: `Session.Revoke` returns without writing when `RevokedAtUtc` is already set;
+  `SessionRepository.RevokeForCredentialAsync` loads the credential's unrevoked sessions and calls
+  it per row. `ExecuteUpdateAsync` is a compile error under `BudgetoidApp/BannedSymbols.txt`, and the
+  ban buys correctness here rather than uniformity: a set-based `UPDATE` would rewrite every matched
+  row's instant on every call and would report a retry as if it had ended access a second time.
+- **Concurrently, too**: `Session.Revoke`'s idempotence is a property of one object in memory, so on
+  its own it does not survive two sweeps running at once — both would read the rows as unrevoked and
+  the later commit would overwrite the first revocation instant. `revoked_at_utc` is therefore a
+  **concurrency token**: the `UPDATE` carries `and revoked_at_utc is null`, the losing sweep matches
+  zero rows and raises `DbUpdateConcurrencyException`, and `RevokeForCredentialAsync` answers it by
+  re-reading and retrying. A token in the `WHERE` clause needs only `SELECT`, so the
+  `GRANT UPDATE (revoked_at_utc)` column list is unaffected.
+- **What the returned count means**: the number of sessions **this call** ended, excluding any a
+  concurrent sweep ended first. Two simultaneous revocations of one credential therefore report a
+  total of the sessions ended, not that number twice.
+- **Note what this is not**: a tombstone. A session row exists only while its account does — the
+  cascade below takes every one of them — so a revoked session leaves nothing behind an erasure.
+- **Source**: `[SOURCE: discussion — 2026-08-05]`
+
+---
+
+- **Rule**: Revoking a credential ends **only** the sessions that credential established. Every other
+  credential on the same account stays signed in.
+- **Why**: revoking one device is the reason the operation exists. An account holding a passkey on a
+  phone and another on a laptop, told that losing the phone signs the laptop out too, has been given
+  a blunter instrument than it asked for.
+- **Enforced in**: `SessionRepository.RevokeForCredentialAsync` filters on `CredentialId` and never
+  on `UserId`, and `RevokeSessionsForCredentialHandler` names a credential in its command.
+- **Counterexample, and the one to watch**: a predicate keyed on `UserId`. Every session in a
+  single-credential account has the same owner, so every test in the suite passes under it except
+  the two written for exactly this —
+  `RevokeSessionsForCredentialHandlerTests.HandleAsync_LeavesAnotherCredentialsSessionsActive` and
+  `SessionRepositoryTests.RevokeForCredentialAsync_RevokesOnlyThatCredentialsSessions`.
+- **Source**: `[SOURCE: discussion — 2026-08-05]`
+
+---
+
+- **Rule**: A session and the credential that established it belong to the **same person**, and the
+  database refuses a row where they do not.
+- **Why**: `user_isolation` reads `user_id` and never looks at the credential, so a session naming
+  someone else's credential is a row the policy would happily show to the wrong person.
+- **Enforced in**: one composite foreign key, `sessions (credential_id, user_id, credential_type) →
+  credentials (id, user_id, type)`, against the `AK_credentials_id_user_id_type` alternate key. This
+  is the same idiom the budget-owned tables use one level down, where every cross-row reference
+  carries `budget_id`. `credential_type` rides along so a session cannot disagree with its credential
+  about what opened it, which is what makes `CK_sessions_kind_matches_credential` a claim about the
+  real credential rather than about a value the row asserted for itself.
+  `SessionSchemaTests.Database_RefusesASessionWhoseCredentialBelongsToAnotherUser` pins the `23503`.
+- **Consequence**: `credentials` gained an alternate key and **no new column**, which matters — the
+  exemption in `RowLevelSecurityCoverage.Exemptions` pins that table's exact column set, and a new
+  column there would correctly go red.
+- **Source**: `[SOURCE: discussion — 2026-08-05]`
+
+---
+
+- **Rule**: Deleting a credential deletes its sessions (`ON DELETE CASCADE`). There is deliberately
+  **no** second foreign key from `sessions` to `users`.
+- **Why**: `Restrict` would let a session hold up the deletion of a credential, and through it an
+  account erasure — a row of access bookkeeping outranking a person's request to be forgotten, which
+  is what the `credentials → users` foreign key already refuses. The credential's own cascade to
+  `users` reaches sessions transitively, so a direct one would add nothing but another constraint
+  name for the pinned snapshots to carry.
+- **Enforced in**: `SessionConfiguration`;
+  `SessionSchemaTests.Database_RemovesASessionWithTheCredentialThatEstablishedIt` and
+  `Database_RemovesASessionWithTheUserThatOwnsIt` pin both hops.
+- **Source**: `[SOURCE: discussion — 2026-08-05]`
+
+## Workflows & State Transitions
+
+```mermaid
+stateDiagram-v2
+    [*] --> Established : a credential authenticates its owner
+    Established --> Revoked : someone ends this session, or the credential that opened it
+    Established --> Expired : expires_at_utc passes with nobody revoking anything
+    Revoked --> [*]
+    Expired --> [*]
+```
+
+| Transition | Triggered by | Validations |
+|---|---|---|
+| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)` | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
+| Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached through `RevokeSessionsForCredentialHandler` | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
+| Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
+
+There is no transition back. Nothing un-revokes a session and nothing extends one.
+
+## Integration Points
+
+- **[Users & Ownership](users-and-ownership.md)** — the credential that establishes a session, and
+  the account it belongs to. A session adds nothing to identity; it records what a credential already
+  proved.
+- **`user_isolation`** — the same policy `users` and `budgets` carry, keyed on the same session
+  setting. `sessions` is the third table policed on the person rather than on a budget.
+- **`SessionContextInterceptor`** — **not** about a session in this file's sense. It writes
+  `app.current_user_id` and `app.current_budget_id` onto each PostgreSQL connection the context
+  opens; the PostgreSQL backend session and a `Domain.Sessions.Session` share a word and nothing
+  else. The isolation policy above is the one place the two meet, and only because the policy reads
+  the setting the interceptor writes.
+
+## Edge Cases & Known Gotchas
+
+- **The cascade can satisfy "revoking a credential ends its sessions" by accident.** Because deleting
+  a credential row deletes its sessions, a path that removes a credential without revoking first
+  passes a test asserting the sessions are gone — while leaving nothing to say when access ended. Any
+  credential-removal path must revoke explicitly **and then** delete, or the fact is unobservable.
+- **Revoked and expired rows accumulate.** Nothing sweeps them, and the application role holds no
+  `DELETE` grant to do it with. Not a defect at today's size; it becomes one before the product has
+  many users, and the grant that a sweep needs is the one this file argues against adding.
+- **`RevokeSessionsForCredentialHandler` has no caller.** It is the application half of the rule,
+  and the path that would call it — removing a credential — does not exist. That is the same shape
+  as the standing `users.email` update grant recorded in
+  [users-and-ownership.md](users-and-ownership.md): if the credential-removal path does not arrive,
+  this handler should be deleted rather than left standing.
+- **The expiry has no issuing policy behind it.** `Session.Establish` takes the expiry from its
+  caller and validates only that it is after the creation instant. How long a session lasts is a
+  decision that arrives with the code that issues one, and no default is hidden here.

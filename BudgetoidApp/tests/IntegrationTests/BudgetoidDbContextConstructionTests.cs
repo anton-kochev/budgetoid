@@ -305,6 +305,17 @@ public sealed class BudgetoidDbContextConstructionTests
             + "and subject is null)",
             "CK_currencies_code: currencies code ~ '^[A-Z]{3}$'",
             "CK_currencies_minor_unit: currencies minor_unit between 0 and 4",
+            // The kind vocabulary, bounded the way the credential vocabularies above are, and it is
+            // the column that decides whether a session reaches budget content at all.
+            "CK_sessions_kind: sessions kind in ('full', 'locked')",
+            // The derivation Session.Establish performs, restated where it can be rejected rather
+            // than merely performed: a rule deciding what a session may read is not one to leave to
+            // a single factory while the column list stays reachable by any INSERT.
+            "CK_sessions_kind_matches_credential: sessions (kind = 'full') = (credential_type = 'passkey')",
+            // A session whose expiry is at or before its creation was never live for an instant. A
+            // separate constraint from the one above rather than an AND of both, because one defect
+            // must report exactly one name.
+            "CK_sessions_lifetime: sessions expires_at_utc > created_at_utc",
             "CK_transactions_amount: transactions abs(amount) <= 1000000000",
         ];
         await Assert.That(checkConstraints).IsEquivalentTo(expected);
@@ -320,7 +331,7 @@ public sealed class BudgetoidDbContextConstructionTests
         // unattended on every push to main, so a regenerated baseline arrives under a new id, the
         // next push finds nothing applied, and it re-creates every table against a populated
         // database. Having to edit this line is the checkpoint the retired manual deploy step was.
-        const string frozenBaselineId = "20260804230129_InitialCreate";
+        const string frozenBaselineId = "20260805083918_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

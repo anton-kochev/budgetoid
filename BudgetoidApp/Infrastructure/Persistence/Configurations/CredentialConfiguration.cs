@@ -19,6 +19,11 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
 
     private const string UserIdIndexName = "IX_credentials_user_id";
 
+    // Pinned for the same reason as the index names above. This one names a unique constraint rather
+    // than an index, and it exists solely so sessions can reference (id, user_id, type) as a unit —
+    // see the alternate key below.
+    private const string IdUserIdTypeAlternateKeyName = "AK_credentials_id_user_id_type";
+
     public void Configure(EntityTypeBuilder<Credential> builder)
     {
         builder.ToTable("credentials", table =>
@@ -111,6 +116,25 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
             .WithMany()
             .HasForeignKey(credential => credential.UserId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        // Redundant as a uniqueness claim — id is already the primary key, so (id, user_id, type)
+        // cannot repeat — and that is not what it is for. It is the referencable target sessions
+        // needs: PostgreSQL will only accept a foreign key pointing at a unique constraint covering
+        // exactly the referenced columns, and sessions references (credential_id, user_id,
+        // credential_type) together so that a session can neither name a credential belonging to a
+        // different person nor disagree with it about which type of credential it was.
+        //
+        // Type joins the pair rather than being checked anywhere else because credentials.type is
+        // immutable — no UPDATE grant of any shape exists on this table — so the copy sessions holds
+        // cannot drift away from this source.
+        //
+        // This adds an INDEX, not a column. That matters here specifically: the credentials exemption
+        // in RowLevelSecurityCoverage.Exemptions pins this table's exact column set, and a new column
+        // would go red — correctly, because the exemption was argued about the columns read to
+        // discover who is asking. An index is not part of that argument and does not widen what an
+        // application session can read.
+        builder.HasAlternateKey(credential => new { credential.Id, credential.UserId, credential.Type })
+            .HasName(IdUserIdTypeAlternateKeyName);
     }
 
     // The discard arm is unreachable from anything the domain can produce: it means a member was

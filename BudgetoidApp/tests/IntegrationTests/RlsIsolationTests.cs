@@ -12,9 +12,10 @@ namespace IntegrationTests;
 /// <summary>
 /// Covers tenant isolation as the <b>database</b> enforces it, on two axes. The budget-owned tables
 /// — <c>accounts</c>, <c>category_groups</c>, <c>categories</c>, <c>payees</c>,
-/// <c>transactions</c> — are isolated by the session's ambient budget; <c>users</c> and
-/// <c>budgets</c> sit above that scope (a user owns budgets rather than belonging to one, and a
-/// budget is the tenant rather than a tenant's row) and are isolated by the session's user instead.
+/// <c>transactions</c> — are isolated by the session's ambient budget; <c>users</c>, <c>budgets</c>
+/// and <c>sessions</c> sit above that scope (a user owns budgets rather than belonging to one, a
+/// budget is the tenant rather than a tenant's row, and a sign-in reaches an account before it
+/// reaches any budget) and are isolated by the session's user instead.
 /// Both axes exist in EF's global query filters too, which are application code and therefore hold
 /// exactly as long as the application remembers them: raw SQL, <c>IgnoreQueryFilters</c>, a
 /// repository written in a hurry, and a hand-run script all walk straight past. Row-level security is
@@ -446,6 +447,149 @@ public sealed class RlsIsolationTests
             .IsEqualTo(1L);
     }
 
+    [Test]
+    public async Task Database_ShowsOnlyTheSignedInUsersSessionRows()
+    {
+        // Arrange — two owners with one session each, because sessions is isolated by user: a second
+        // session under the same owner would be invisible to this rule, and the foreign count would
+        // come back zero with or without a policy.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await SeedSessionAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — both halves, on one session. The own count is not decoration: a policy that hides
+        // every row from everyone satisfies the foreign half on its own, and only this notices.
+        long own = await CountKeyedRowsAsync(app, "sessions", "user_id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(app, "sessions", "user_id", other.UserId);
+
+        // Assert
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToInsertASessionForAnotherUser()
+    {
+        // Arrange — the probe below names the other owner's own credential, so the composite foreign
+        // key on (credential_id, user_id) is satisfied by construction and the only thing wrong with
+        // the row is whose session it is.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid ownCredentialId = await ReadCredentialIdAsync(admin, session.UserId);
+        Guid otherCredentialId = await ReadCredentialIdAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // owner's sessions says nothing about whether this session can establish one in their name,
+        // and a USING-only policy would let this through. A refused INSERT is loud, unlike a filtered
+        // UPDATE — 42501, "new row violates row-level security policy".
+        await using NpgsqlCommand forOther = BuildSessionInsertProbe(
+            app, other.UserId, otherCredentialId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        await using NpgsqlCommand forOwn = BuildSessionInsertProbe(
+            app, session.UserId, ownCredentialId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — the null coalesce is for the failure message: a bare refusal?.SqlState renders a
+        // statement that went through as the empty string, which reads as a blank SQLSTATE rather
+        // than as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // owner still has no session at all. On the superuser connection, which row-level security
+        // does not apply to — no policed session could answer this question about another owner.
+        await Assert.That(await CountKeyedRowsAsync(admin, "sessions", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "sessions", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToRevokeAnotherUsersSession()
+    {
+        // Arrange — one live session for each owner, because the foreign half of this measurement is
+        // a count of rows that were there to be touched: against an owner with no session at all,
+        // "affected zero rows" is true with or without a policy.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await SeedSessionAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the UPDATE half of the policy, and the half whose failure mode is silent. An INSERT
+        // across the boundary raises 42501 and an unpoliced read returns visibly wrong rows, but
+        // row-level security narrows an UPDATE by filtering it: a statement reaching another owner's
+        // session is not refused, it simply matches nothing, and the only observable difference
+        // between "the policy stopped me" and "the policy is gone and I rewrote their row" is the
+        // count. revoked_at_utc is the one column the role's UPDATE grant reaches, so the grant
+        // matrix cannot be what stops this and the policy is the only thing being measured.
+        int foreignRevoked = await RevokeSessionsOfAsync(app, other.UserId);
+
+        // The paired positive, on the same connection and the same statement shape. Without it a
+        // policy of USING (false) — or a grant that had quietly lost the column — satisfies the
+        // assertion above on its own.
+        int ownRevoked = await RevokeSessionsOfAsync(app, session.UserId);
+
+        // Assert — this is what measures the claim SessionRepository.RevokeForCredentialAsync makes
+        // by omission: it takes a credential id from outside and narrows on it alone, with no check
+        // in application code that the credential belongs to whoever is asking. The database is the
+        // only thing standing between that call and one person ending another's sessions, and the
+        // read-back on the superuser connection is what says the row is genuinely untouched rather
+        // than merely unreported.
+        await Assert.That(foreignRevoked).IsEqualTo(0);
+        await Assert.That(ownRevoked).IsEqualTo(1);
+        await Assert.That(await ReadRevocationOfAsync(admin, other.UserId)).IsEqualTo(DBNull.Value);
+        await Assert.That(await ReadRevocationOfAsync(admin, session.UserId))
+            .IsEqualTo(RevocationInstant);
+    }
+
+    [Test]
+    public async Task Database_RefusesToReadSessionsWhenTheConnectionNamesNoUser()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares no user. This
+        // is the shape of every bug where application code forgets to set one, and it must fail
+        // loudly rather than quietly returning an empty result that reads as "signed out everywhere".
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — sessions is seeded, and that is a precondition rather than a convenience. A policy
+        // qual is only evaluated when there are candidate rows, so the same query over an empty table
+        // returns zero rows without ever touching the setting and this guarantee does not reach it.
+        // That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new("select count(*) from sessions", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, the same failure the other policed tables pin, and for the same reason: the
+        // policy reads the setting as COALESCE(current_setting('app.current_user_id', true), '')::uuid,
+        // so an unset setting reaches it as the ''::uuid cast. One bug, one SQLSTATE.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The session's own row is still there — the refusal above is the connection's doing, not a
+        // seeding failure that would make the SQLSTATE assertion meaningless.
+        await Assert.That(await CountKeyedRowsAsync(admin, "sessions", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
     /// <summary>
     /// The one row of each budget-owned table that a budget was seeded with, so a probe can name
     /// "this budget's account" without every test re-deriving it.
@@ -576,6 +720,116 @@ public sealed class RlsIsolationTests
 
         return new BudgetRows(
             budgetId, account.Id, group.Id, category.Id, payee.Id, transaction.Id);
+    }
+
+    /// <summary>
+    /// The expiry every seeded session carries. Strictly after <see cref="SeedInstant" />, which is
+    /// the whole content of <c>CK_sessions_lifetime</c>.
+    /// </summary>
+    private static readonly DateTime SessionExpiryInstant =
+        new(2026, 6, 13, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Reads back the id of the federated credential <see cref="RepositoryTestHost.SeedOwnerAsync" />
+    /// gave an owner. Every session names one, and a probe that named somebody else's would trip the
+    /// composite foreign key before any policy was consulted.
+    /// </summary>
+    private static async Task<Guid> ReadCredentialIdAsync(NpgsqlConnection connection, Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            "select id from credentials where user_id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", userId);
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid credentialId => credentialId,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected one credential id, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// The instant a revocation probe writes. Distinct from every other constant here, so a
+    /// read-back cannot pass on a column nobody wrote.
+    /// </summary>
+    private static readonly DateTime RevocationInstant =
+        new(2026, 6, 12, 18, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Ends every session of one owner and returns the affected-row count. Keyed on
+    /// <c>user_id</c> rather than on a session id because that is the shape of the statement the
+    /// policy has to narrow, and the count is the whole measurement: a filtered UPDATE raises
+    /// nothing.
+    /// </summary>
+    private static async Task<int> RevokeSessionsOfAsync(NpgsqlConnection connection, Guid ownerId)
+    {
+        await using NpgsqlCommand command = new(
+            "update sessions set revoked_at_utc = @value where user_id = @id",
+            connection);
+        command.Parameters.AddWithValue("value", RevocationInstant);
+        command.Parameters.AddWithValue("id", ownerId);
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Reads one owner's session revocation instant back. On the superuser connection, which
+    /// row-level security does not apply to — no policed session could answer this about another
+    /// owner, which is the whole reason the question is worth asking. A SQL NULL comes back as
+    /// <see cref="DBNull.Value" />.
+    /// </summary>
+    private static async Task<object?> ReadRevocationOfAsync(
+        NpgsqlConnection connection,
+        Guid ownerId)
+    {
+        await using NpgsqlCommand command = new(
+            "select revoked_at_utc from sessions where user_id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", ownerId);
+        return await command.ExecuteScalarAsync();
+    }
+
+    /// <summary>
+    /// Writes one live session for an owner on the superuser connection, which row-level security
+    /// does not apply to — the seeding is a precondition of these probes rather than one of them.
+    /// </summary>
+    private static async Task SeedSessionAsync(NpgsqlConnection connection, Guid userId)
+    {
+        Guid credentialId = await ReadCredentialIdAsync(connection, userId);
+        await using NpgsqlCommand command = BuildSessionInsertProbe(connection, userId, credentialId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>sessions</c>, owned by <paramref name="ownerId" /> and
+    /// established by <paramref name="credentialId" />. Separate from
+    /// <see cref="BuildInsertProbe" /> because a session names no budget: it is user-owned, so the
+    /// column a policy could object to is <c>user_id</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>('federated', 'locked')</c> because every owner seeded here has a federated credential and
+    /// nothing else, and <c>CK_sessions_kind_matches_credential</c> refuses a full session opened by
+    /// one. These probes are about the policy rather than about the kind, so the cheapest row the
+    /// schema accepts is the right one: a row refused by a CHECK would never reach the policy at
+    /// all, and the refusal being read would be the wrong one.
+    /// </remarks>
+    private static NpgsqlCommand BuildSessionInsertProbe(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid credentialId)
+    {
+        NpgsqlCommand command = new(
+            "insert into sessions " +
+            "(id, user_id, credential_id, credential_type, kind, " +
+            "created_at_utc, expires_at_utc, revoked_at_utc) " +
+            "values (@id, @user_id, @credential_id, 'federated', 'locked', " +
+            "@created_at_utc, @expires_at_utc, null)",
+            connection);
+        command.Parameters.AddWithValue("id", Guid.CreateVersion7());
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("credential_id", credentialId);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        command.Parameters.AddWithValue("expires_at_utc", SessionExpiryInstant);
+        return command;
     }
 
     /// <summary>

@@ -84,6 +84,31 @@ GRANT UPDATE (email) ON users TO budgetoid_app;
 REVOKE ALL ON credentials FROM budgetoid_app;
 GRANT SELECT, INSERT ON credentials TO budgetoid_app;
 
+-- sessions: a session's identity — user_id, credential_id, kind, created_at_utc, expires_at_utc —
+-- is written whole when the session is established and has no edit that means anything. Changing
+-- credential_id would relabel which key opened the door, which is the fact revocation is decided
+-- by; changing kind would hand budget content to a session a federated credential opened, and that
+-- is the one thing the kind exists to refuse. revoked_at_utc is the only column an edit can
+-- legitimately reach, and it is therefore the whole UPDATE list. A one-column list is still a list:
+-- do not collapse it into a table-wide GRANT UPDATE ON sessions, which would take the five above
+-- with it.
+--
+-- No DELETE, and that is a decision rather than an omission. Revocation writes revoked_at_utc
+-- rather than removing the row, so the role holds no privilege that can make a session
+-- unaccountable, and re-revoking converges instead of failing as a second delete of nothing. The
+-- usual argument for DELETE — that updated rows accumulate — does not separate the two options: an
+-- unrevoked but expired row accumulates identically, so retention is a problem either mechanism
+-- has and neither solves. Sweeping expired and revoked rows is a path that does not exist yet;
+-- when it lands it needs this grant, and this paragraph is what has to be re-argued rather than
+-- quietly deleted.
+--
+-- Note what a session row is NOT: a tombstone. It exists only while its account does — the cascade
+-- from credentials, and through it from users, takes every one of them — so a revoked session
+-- leaves nothing behind an erasure.
+REVOKE ALL ON sessions FROM budgetoid_app;
+GRANT SELECT, INSERT ON sessions TO budgetoid_app;
+GRANT UPDATE (revoked_at_utc) ON sessions TO budgetoid_app;
+
 -- budgets: a budgets row is never updated at all (rule B2), so there is no UPDATE grant of
 -- any shape. No delete path exists either.
 REVOKE ALL ON budgets FROM budgetoid_app;
@@ -283,7 +308,9 @@ CREATE POLICY budget_isolation ON transactions FOR ALL TO budgetoid_app
 --
 -- credentials keeps the exemption, and is now the only table that has one it could have outgrown.
 -- It is the table read to answer "who is asking", so a policy keyed on the answer would refuse the
--- question that produces it.
+-- question that produces it. sessions is the counterexample that keeps that exemption honest: it is
+-- read after the question has been answered, so it is policed like everything else, and material
+-- attached to a session belongs there rather than on the exempt table.
 
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON users;
@@ -294,5 +321,20 @@ CREATE POLICY user_isolation ON users FOR ALL TO budgetoid_app
 ALTER TABLE budgets ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON budgets;
 CREATE POLICY user_isolation ON budgets FOR ALL TO budgetoid_app
+    USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
+    WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
+
+-- sessions carries user_id and no budget_id, so it is user-owned by the same rule as budgets, and
+-- the classifier reaches that verdict from its columns without being told. A session belongs to a
+-- person; the budgets that person owns are reached through their own policies, one layer down.
+--
+-- The policy deliberately does NOT read the kind column, and no future one may. Whether a session
+-- reaches budget content is answered by budget_isolation on the budget-owned tables, which a locked
+-- session never satisfies because it resolves no ambient budget. A predicate here consulting kind
+-- would be inventing a third isolation axis beside the two this file already carries, and the row a
+-- person may see would then depend on which of the three fired last.
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_isolation ON sessions;
+CREATE POLICY user_isolation ON sessions FOR ALL TO budgetoid_app
     USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
     WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);

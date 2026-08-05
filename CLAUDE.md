@@ -60,7 +60,7 @@ Load-bearing rules, each explained there or in the linked decision:
 - Budget-owned rows are isolated twice: PostgreSQL `budget_isolation` RLS policies enforce,
   EF `BudgetIsolation` query filters turn a foreign row into the API's 404/400. Neither is
   duplication — do not delete either. See [ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md).
-- `users` and `budgets` are policed on the **user** by `user_isolation`, not on a budget.
+- `users`, `budgets` and `sessions` are policed on the **user** by `user_isolation`, not on a budget.
   `credentials` is the one exempt user-owned table — it is read to discover who is asking,
   so the discovery lookup must never join `users`. See
   [ADR 0011](docs/decisions/0011-police-the-user-owned-tables.md).

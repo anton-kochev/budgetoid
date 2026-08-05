@@ -10,6 +10,7 @@ using Domain.Budgets;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Payees;
+using Domain.Sessions;
 using Domain.Transactions;
 using Domain.Users;
 using Infrastructure.Persistence;
@@ -30,6 +31,7 @@ public static class DependencyInjection
         services.AddScoped<ICategoryRepository, CategoryRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IBudgetRepository, BudgetRepository>();
+        services.AddScoped<ISessionRepository, SessionRepository>();
         services.AddScoped<ITransactionReadService, TransactionReadService>();
         services.AddScoped<IAccountReadService, AccountReadService>();
         services.AddScoped<ICurrencyReadService, CurrencyReadService>();

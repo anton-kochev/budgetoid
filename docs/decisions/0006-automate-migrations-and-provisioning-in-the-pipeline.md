@@ -210,7 +210,8 @@ remember the database half.
   out — a rebaseline window, open while the production database holds no data, which suspends the
   guard and nothing else.
   `Migrations_KeepTheBaselineFrozen` holds that line in the suite: it pins the first migration id
-  to the literal `20260804230129_InitialCreate` and deliberately not the count, so additive
+  to a literal — the one written in that test, deliberately not repeated here so the two cannot
+  disagree — and deliberately not the count, so additive
   migrations pass and only a regenerated or back-dated baseline fails. The assertion that
   `GetMigrations()` returns ids in apply order is what makes "first" mean "earliest", so a
   back-dated migration lands at index 0 and fails on the id rather than slipping in ahead of the

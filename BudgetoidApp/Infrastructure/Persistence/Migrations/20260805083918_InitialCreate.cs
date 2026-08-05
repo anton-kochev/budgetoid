@@ -86,6 +86,7 @@ public partial class InitialCreate : Migration
             constraints: table =>
             {
                 table.PrimaryKey("PK_credentials", x => x.id);
+                table.UniqueConstraint("AK_credentials_id_user_id_type", x => new { x.id, x.user_id, x.type });
                 table.CheckConstraint("CK_credentials_provider", "provider is null or provider in ('google')");
                 table.CheckConstraint("CK_credentials_type", "type in ('passkey', 'federated')");
                 table.CheckConstraint("CK_credentials_type_shape", "(type = 'federated' and provider is not null and subject is not null and length(subject) > 0) or (type = 'passkey' and provider is null and subject is null)");
@@ -171,6 +172,33 @@ public partial class InitialCreate : Migration
                     column: x => x.budget_id,
                     principalTable: "budgets",
                     principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "sessions",
+            columns: table => new
+            {
+                id = table.Column<Guid>(type: "uuid", nullable: false),
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                credential_id = table.Column<Guid>(type: "uuid", nullable: false),
+                credential_type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                kind = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                expires_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                revoked_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_sessions", x => x.id);
+                table.CheckConstraint("CK_sessions_kind", "kind in ('full', 'locked')");
+                table.CheckConstraint("CK_sessions_kind_matches_credential", "(kind = 'full') = (credential_type = 'passkey')");
+                table.CheckConstraint("CK_sessions_lifetime", "expires_at_utc > created_at_utc");
+                table.ForeignKey(
+                    name: "FK_sessions_credentials_credential_id_user_id_credential_type",
+                    columns: x => new { x.credential_id, x.user_id, x.credential_type },
+                    principalTable: "credentials",
+                    principalColumns: new[] { "id", "user_id", "type" },
                     onDelete: ReferentialAction.Cascade);
             });
 
@@ -345,6 +373,16 @@ public partial class InitialCreate : Migration
             unique: true);
 
         migrationBuilder.CreateIndex(
+            name: "IX_sessions_credential_id_user_id_credential_type",
+            table: "sessions",
+            columns: new[] { "credential_id", "user_id", "credential_type" });
+
+        migrationBuilder.CreateIndex(
+            name: "IX_sessions_user_id",
+            table: "sessions",
+            column: "user_id");
+
+        migrationBuilder.CreateIndex(
             name: "IX_transactions_account_id_budget_id",
             table: "transactions",
             columns: new[] { "account_id", "budget_id" });
@@ -376,10 +414,13 @@ public partial class InitialCreate : Migration
     protected override void Down(MigrationBuilder migrationBuilder)
     {
         migrationBuilder.DropTable(
-            name: "credentials");
+            name: "sessions");
 
         migrationBuilder.DropTable(
             name: "transactions");
+
+        migrationBuilder.DropTable(
+            name: "credentials");
 
         migrationBuilder.DropTable(
             name: "accounts");

@@ -30,8 +30,8 @@ every column of `credentials` — is one PostgreSQL refuses to write at all (see
 well, on both axes. `budget_isolation` policies on the five budget-owned tables mean that role
 reaches no other budget's rows on any statement at all and can insert into no budget but the ambient
 one, so the query filters above them shape the answer rather than hold the boundary (see
-[ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); and the two
-tables that name a person, `users` and `budgets`, are policed on the **user** instead by
+[ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); and the three
+tables that name a person, `users`, `budgets` and `sessions`, are policed on the **user** instead by
 `user_isolation`, because a budget *is* the tenant and so has no ambient budget to be checked
 against (see [ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). That split is a
 general rule rather than a local one: each rule is owned by the lowest layer that can enforce it
@@ -46,6 +46,9 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | Term | Definition |
 |---|---|
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. |
+| **Session** | An established sign-in recorded server-side, naming the credential that established it, which the product can end without asking any external party. Nothing issues one to a client yet — see [sessions.md](sessions.md). |
+| **Locked session** | A session established from a federated credential. It reaches no budget content, because an authorization exchange returns claims rather than a secret a client can turn into a key. |
+| **Full session** | A session established from a passkey — the only credential type whose authenticator can hold the account's keys, and so the only one that opens a session reaching budget content. |
 | **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
 | **Provisioning** | The step that turns an authenticated Google principal into an internal user and an ambient budget, run on every authenticated request. |
 | **Unnamed budget** | The budget provisioning creates when a user owns none. It has no name — `name` is null — and a client shows its own localized label in place of one. A user has at most one of these; named budgets are unconstrained in number. The invariant keys on the *absence of a name* rather than on a "default" flag or a well-known name, which is what makes provisioning race-safe — see [budgets.md](budgets.md#business-rules--invariants). "Default budget" names the same row from the provisioning side (`Budget.CreateDefault`, "find-or-create the user's default budget"); prefer "unnamed budget" when the rule turns on the missing name. |
@@ -98,6 +101,7 @@ references are additionally constrained by composite foreign keys to a row in th
 ## Table of contents
 
 - [Users & Ownership](users-and-ownership.md) — identity, claims, and provisioning.
+- [Sessions](sessions.md) — an established sign-in the product records and can end itself.
 - [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
   and its base currency.
 - [Accounts](accounts.md) — account types, currency denomination, and delete guard.

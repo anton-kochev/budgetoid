@@ -8,6 +8,39 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-05 — A session is revoked by writing an instant, not by deleting the row
+
+**Context:** the product now records a sign-in server-side so it can end one without asking an
+identity provider. That needs a decision on what "ended" is: a `revoked_at_utc` an application role
+may write, or a row it may delete.
+
+**Decision:** revocation is an **`UPDATE` of `revoked_at_utc`**, and the application role holds
+**no `DELETE` grant on `sessions` at all**. The row is what says access ended and when; deleting it
+needs the one privilege that could erase every session on the system, and it cannot tell "already
+revoked" from "never existed" — a distinction anything reporting a revocation needs. `Session.Revoke`
+is idempotent, so a retried sweep keeps the instant access actually ended rather than restamping it,
+and the `ExecuteUpdate` ban is what keeps the transition running in the domain per row where that
+idempotence lives.
+
+Alongside it: the foreign key from a session to its credential is **`CASCADE`, not `RESTRICT`**, so
+a session can never hold up the deletion of a credential and through it an account erasure — a row
+of access bookkeeping must not outrank a person's request to be forgotten. The cost is named rather
+than hidden: because the cascade exists, deleting a credential row satisfies "revoking a credential
+ends its sessions" invisibly, so any credential-removal path must revoke explicitly and then delete
+or the fact is unobservable.
+
+**Alternatives considered:** *Revocation by `DELETE`* — rejected above. The usual argument for it,
+that updated rows accumulate, does not separate the two options: an unrevoked but expired row
+accumulates identically, so retention is a problem either mechanism has and neither solves. No sweep
+exists yet, and the grant one would need is the grant this decision withholds. *A `bool` on the
+session saying whether it may read budget content* — rejected in favour of a derived `kind`: a
+boolean named after a permission reads as a permission a caller sets, and the kind is derived from
+the establishing credential's type with no way to supply one.
+
+**Affected areas:** [sessions.md](sessions.md), [users-and-ownership.md](users-and-ownership.md).
+
+---
+
 ## 2026-08-05 — The deny-list refuses a bare word only where no honest column can carry it
 
 **Context:** the vocabulary landed with `event` as a bare token, and the names most likely to arrive
