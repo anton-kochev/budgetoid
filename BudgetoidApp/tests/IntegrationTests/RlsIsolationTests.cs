@@ -355,6 +355,50 @@ public sealed class RlsIsolationTests
     }
 
     [Test]
+    public async Task Database_RefusesToDeleteAnotherUsersRow_WhileStillAllowingItsOwn()
+    {
+        // Arrange — two owners, because users is isolated by user: a second budget under one owner is
+        // not a second tenant to this rule, and a delete aimed at anything else would measure the
+        // budget axis instead.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — standalone rather than through DeletableTablesInDependencyOrder, which is a
+        // budget-owned array driven by budget-owned seeding: its rows are reached by RowIn(table) off
+        // a BudgetRows, users has no entry there and no budget_id for the ordering to be about, and
+        // bending it to carry one table with a different tenancy axis and a different session shape
+        // would make the array mean two things.
+        //
+        // The foreign delete first, then the identical statement aimed at this session's own row. The
+        // pair is the file's usual one and it is not decoration here: users is the ONLY user-owned
+        // table the role holds DELETE on, so without the positive half a zero could just as well mean
+        // the grant was never there — which would be a green run measuring nothing.
+        int foreignDeleted = await DeleteAsync(app, "users", other.UserId);
+        int ownDeleted = await DeleteAsync(app, "users", session.UserId);
+
+        // Assert — zero rows affected, NOT a 42501, and that distinction is the whole content of this
+        // test. A refusal would say the grant matrix stopped the statement; an affected count of zero
+        // says the POLICY did — the row was simply not in reach of this session, so there was nothing
+        // to delete. Only a table the role genuinely holds DELETE on can tell those two answers apart,
+        // which is why this probe could not be written until users was granted one.
+        await Assert.That(foreignDeleted).IsEqualTo(0);
+        await Assert.That(ownDeleted).IsEqualTo(1);
+
+        // And the other owner is still there. An affected count of zero and a statement that was
+        // silently filtered are indistinguishable from the count alone, so the read-back runs on the
+        // superuser connection, which row-level security does not apply to — no policed session could
+        // answer this question about another owner's row.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(admin, "users", "id", other.UserId))
+            .IsEqualTo(1L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "users", "id", session.UserId))
+            .IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task Database_ShowsOnlyTheSessionsOwnBudgets()
     {
         // Arrange — two owners with one budget each, both keyed on user_id, so "the other owner has

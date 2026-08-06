@@ -49,8 +49,39 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- created_at_utc is an audit fact, immutable by omission from the list. A one-column list is
 -- still a list: do not collapse it into a table-wide GRANT UPDATE ON users, which would take
 -- created_at_utc with it.
+--
+-- DELETE is here so that erasing an account runs as this role rather than on an elevated
+-- connection, which is the whole point of ADR 0004. It is policed: users carries user_isolation,
+-- so the role can only delete the row the session names.
+--
+-- IT IS THE ONLY TABLE ERASURE NEEDS A NEW GRANT ON, and the six absent grants are a decision
+-- rather than an oversight. Every owned table hangs off this row by ON DELETE CASCADE — users →
+-- budgets → {payees, accounts, category_groups → categories}, and users → credentials →
+-- {sessions, passkey_public_keys, passkey_signature_counters} — and PostgreSQL performs a
+-- referential action through internal triggers that run with the privileges of the REFERENCING
+-- table's owner, not of the role that issued the statement. So this one grant empties the
+-- structural graph and a grant on any child buys nothing.
+-- Database_AllowsDeletingAUserAndCascadesTheAccountAway is what says so: it deletes as this role
+-- and asserts every child table is empty afterwards.
+--
+-- IT IS NOT SUFFICIENT ON ITS OWN, and reading it that way is the mistake this paragraph exists to
+-- stop. budgets → transactions is Restrict, so a budget holding one recorded movement refuses the
+-- delete with 23503 — and a budgeting product's accounts hold transactions, which makes that the
+-- ordinary case rather than the corner. Erasure therefore deletes transactions first, per budget,
+-- and only then the user row. That is two shapes of session rather than one: transactions are
+-- policed by budget_isolation, so app.current_budget_id has to be set for each budget the user
+-- owns, while this delete needs only app.current_user_id. The transactions grant already exists
+-- further down; what does not exist yet is the sequence, and it belongs to the erasure story.
+--
+-- Two of the six would cost something to add. credentials and passkey_public_keys are exempt from
+-- row-level security — they are read before the request has an identity a policy could key on — so
+-- a DELETE there would be UNPOLICED, and one statement carrying the wrong id would remove somebody
+-- else's only way in with nothing to catch it. The cascade reaches those same rows as the table
+-- owner, which is scoped by the row it descends from rather than by a privilege. Do not "complete"
+-- this set: adding a grant to a child widens the role's reach without extending what erasure can
+-- do.
 REVOKE ALL ON users FROM budgetoid_app;
-GRANT SELECT, INSERT ON users TO budgetoid_app;
+GRANT SELECT, INSERT, DELETE ON users TO budgetoid_app;
 GRANT UPDATE (email) ON users TO budgetoid_app;
 
 -- credentials: the identity columns — user_id, type, provider, subject, created_at_utc — are
@@ -158,13 +189,15 @@ GRANT UPDATE (signature_counter) ON passkey_signature_counters TO budgetoid_app;
 -- what stops a person-identifying column landing here later.
 --
 -- Of the identity tables — users, credentials, sessions, passkey_public_keys,
--- passkey_signature_counters and this one — it is the only one granted DELETE, and that is deliberate
--- rather than the rule above being broken. (The budget-owned tables further down hold DELETE too, for
--- the ordinary reason that a person may delete their own accounts, categories and transactions.)
--- These rows are nonces: consuming one IS deleting it, which is the property that makes a challenge
--- single-use, and a row nobody can delete is a row swept by a path that does not exist. Contrast the
--- sessions block, where revocation writes a column precisely so the row stays accountable — opposite
--- decisions, because the rows mean opposite things.
+-- passkey_signature_counters and this one — exactly two are granted DELETE, and each for a reason the
+-- other four do not have. This one, because these rows are nonces: consuming one IS deleting it,
+-- which is the property that makes a challenge single-use, and a row nobody can delete is a row swept
+-- by a path that does not exist. users, because it is the root every other owned row cascades from,
+-- so deleting it is how an account is erased — see that block for why the cascade means the four in
+-- between need no grant of their own. Contrast the sessions block, where revocation writes a column
+-- precisely so the row stays accountable — opposite decisions, because the rows mean opposite things.
+-- (The budget-owned tables further down hold DELETE too, for the ordinary reason that a person may
+-- delete their own accounts, categories and transactions.)
 --
 -- Note the cost this accepts: the leg that issues an authentication challenge is unauthenticated, so
 -- this is the one table any caller can make the role insert into. Growth is bounded by a short

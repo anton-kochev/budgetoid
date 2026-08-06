@@ -127,11 +127,15 @@ erDiagram
     rule sits where it does; here the answer is that there is nothing to push down, so no
     constraint, grant or policy carries any part of it.
 
-- **A challenge is single-use, and consuming one is deleting it.** `webauthn_challenges` holds
-  `DELETE` alone among the identity tables — the budget-owned ones hold it too, for the ordinary
+- **A challenge is single-use, and consuming one is deleting it.** `webauthn_challenges` is one of
+  the two identity tables holding `DELETE` — the budget-owned ones hold it too, for the ordinary
   reason that people delete their own records. The paragraph beside the grant says why this one does:
   these rows are nonces, and a row nobody can delete is a row swept by a path that does not exist.
-  Contrast `sessions`, where revocation writes a column precisely so the row stays accountable.
+  Contrast `sessions`, where revocation writes a column precisely so the row stays accountable. The
+  other is `users`, for a reason that has nothing to do with nonces: it is the root every owned row
+  cascades from. `credentials`, `passkey_public_keys` and `passkey_signature_counters` are emptied by
+  that cascade and hold no `DELETE` of their own — see
+  [users-and-ownership.md](users-and-ownership.md) for why granting them one would cost something.
 
 ### MUST NOT
 

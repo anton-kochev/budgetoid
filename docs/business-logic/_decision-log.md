@@ -8,6 +8,45 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-06 — Erasure needs one delete grant, not one per table
+
+**Context:** erasing an account has to run as the least-privilege application role rather than on an
+elevated connection, so the role needs to be able to delete every user- and budget-owned row. The
+obvious reading is a `DELETE` grant per owned table — seven of them, on `users`, `budgets`, `payees`,
+`credentials`, `sessions`, `passkey_public_keys` and `passkey_signature_counters`.
+
+**Decision:** grant `DELETE` on **`users` alone**. Every owned table hangs off that row by
+`ON DELETE CASCADE`, and PostgreSQL performs a referential action through internal triggers running
+with the privileges of the **referencing table's owner** rather than of the role that issued the
+statement — so one grant empties the structural graph and a grant on any child buys nothing erasure
+can use. This is not a belief the code rests on:
+`AppRoleGrantsTests.Database_AllowsDeletingAUserAndCascadesTheAccountAway` deletes as the application
+role and asserts every child table is empty afterwards.
+
+**It is not sufficient on its own.** `budgets → transactions` is `Restrict`, so a budget holding one
+recorded movement refuses the delete — the ordinary case for a budgeting product, not the corner.
+Erasure deletes transactions first, per budget, and only then the user row; those are two shapes of
+session, because `transactions` is policed on the budget and this delete on the user.
+
+**Alternatives considered:** *all seven* — rejected, and not merely as surplus. `credentials` and
+`passkey_public_keys` are exempt from row-level security because they are read before a request has
+an identity a policy could key on, so a `DELETE` there would be **unpoliced**: one statement carrying
+the wrong id removes somebody else's only way in, with nothing to catch it. On
+`passkey_signature_counters` a `DELETE` reopens counter rewind — deleting the row and re-inserting it
+at zero is exactly what the single-column `GRANT UPDATE (signature_counter)` exists to forbid, and a
+clone giving itself away against that counter is the reason the column is there. *The four policed
+tables only* (`users`, `budgets`, `payees`, `sessions`) — rejected: the three extra grants still do
+nothing the cascade does not already do, and each would invert a written argument for no gain.
+
+**Read the six absences as a decision.** They look like an oversight, and the obvious "fix" for a
+future reader is to close them; the grant paragraph in `app-role-grants.sql` and the rule in
+[users-and-ownership.md](users-and-ownership.md) both say why they must not be.
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md), [passkeys.md](passkeys.md),
+[sessions.md](sessions.md).
+
+---
+
 ## 2026-08-06 — Registration is refused on an unverifiable claim, and the docs say so
 
 **Context:** an authenticator that cannot derive a PRF secret cannot hold the account's keys, and the

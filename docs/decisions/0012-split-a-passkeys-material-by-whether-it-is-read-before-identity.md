@@ -81,11 +81,16 @@ discoverable credential means — so there is nobody for a policy to key on, and
 column is refused at the gate anyway. `ExemptDespite = None`, with its column set pinned, because
 the pin is what keeps a person-identifying column from landing on it later.
 
-It is granted `DELETE` — alone among the identity tables (`users`, `credentials`, `sessions`,
-`passkey_public_keys`, `passkey_signature_counters` and this one), though the budget-owned tables
-hold it for the ordinary reason that people delete their own records. The grant paragraph says why
-this one does: its rows are nonces, consuming one *is* deleting it, and a row nobody can delete is a
-row swept by something that does not exist.
+It is granted `DELETE`, which two of the six identity tables (`users`, `credentials`, `sessions`,
+`passkey_public_keys`, `passkey_signature_counters` and this one) hold and four do not — the
+budget-owned tables hold it for the ordinary reason that people delete their own records. The grant
+paragraph says why this one does: its rows are nonces, consuming one *is* deleting it, and a row
+nobody can delete is a row swept by something that does not exist. `users` holds one for an unrelated
+reason — it is the root the whole owned graph cascades from, so deleting it is how an account is
+erased — and that grant reaches these two tables through the cascade rather than through a privilege
+of their own. That is what keeps them ungranted: a referential action runs as the referencing table's
+owner and descends from one row, whereas a `DELETE` privilege here would be unpoliced, because this
+table is exempt from row-level security.
 
 ### Both new rows reference the credential compositely
 

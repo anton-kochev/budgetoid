@@ -1,4 +1,7 @@
 using Domain.Accounts;
+using Domain.Categories;
+using Domain.CategoryGroups;
+using Domain.Payees;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -213,6 +216,128 @@ public sealed class AppRoleGrantsTests
         await Assert.That(await SelectScalarAsync(
                 admin, "select email from users where id = @id", userId))
             .IsEqualTo("edited@example.com");
+    }
+
+    [Test]
+    public async Task Database_AllowsDeletingAUserAndCascadesTheAccountAway()
+    {
+        // Arrange — one complete account: the user and its default budget, its federated credential,
+        // a second passkey credential with the public key and signature counter that hang off it, one
+        // session, and one row in each budget-owned table the cascade has to reach.
+        await using RepositoryTestHost host = await StartHostAsync();
+        RepositoryTestHost.SeededOwner owner =
+            await host.SeedOwnerAsync("google-1", "person@example.com");
+        Guid userId = owner.UserId;
+        Guid budgetId = owner.BudgetId;
+        await host.SeedPasskeyAsync(userId, SeededHandle, SeededCoseKey);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid federatedCredentialId = (Guid)(await SelectScalarAsync(
+            admin,
+            "select id from credentials where user_id = @id and type = 'federated'",
+            userId))!;
+        await InsertSessionAsync(admin, userId, federatedCredentialId);
+
+        // No transaction is seeded, and the omission is the measurement rather than forgetfulness.
+        // budgets → transactions is DeleteBehavior.Restrict, so one transaction would stop this
+        // cascade with a foreign-key violation instead of a privilege answer. That restriction is a
+        // different rule owned by a later story; this test must not collide with it. Do not "complete"
+        // the seeding by adding one.
+        await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
+        {
+            seed.Payees.Add(Payee.Create(budgetId, "Corner Shop", SeedInstant));
+            seed.Accounts.Add(Account.Create(
+                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
+            CategoryGroup categoryGroup =
+                CategoryGroup.Create(budgetId, "Essentials", null, 0, SeedInstant);
+            seed.CategoryGroups.Add(categoryGroup);
+            seed.Categories.Add(Category.Create(
+                budgetId, categoryGroup.Id, "Groceries", null, 0, SeedInstant));
+            await seed.SaveChangesAsync();
+        }
+
+        // users is policed on the user by user_isolation, so the session names the owner and no
+        // ambient budget. An unconfigured connection would not reach the grant at all: the policy
+        // reads app.current_user_id as ''::uuid and raises 22P02, which is not the thing under test.
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
+
+        // Every count below the DELETE is "count == 0", and a table that was never seeded satisfies
+        // that trivially — so the zeros mean nothing unless the rows were there first. That is the
+        // same vacuous-green hazard this test already guards against on the cascade side by scoping
+        // each count to this account, reproduced one step earlier on the seeding side: scoping stops
+        // an empty database from passing, it does not stop an empty *table* from passing. The hazard
+        // is live, not theoretical — SeedPasskeyAsync takes signatureCounter = 0 by default, so a
+        // future "only write the counter when it is non-zero" would leave passkey_signature_counters
+        // unseeded and its cascade claim asserted by nothing. Reading the same counts here, on the
+        // same admin connection and with the same predicates, is what makes each zero a change.
+        async Task AssertSeededAsync(string sql, Guid rowId, long expected) =>
+            await Assert.That(await SelectScalarAsync(admin, sql, rowId)).IsEqualTo(expected);
+
+        await AssertSeededAsync("select count(*) from users where id = @id", userId, 1L);
+        await AssertSeededAsync("select count(*) from budgets where user_id = @id", userId, 1L);
+
+        // Two credentials, and the pair is the point: SeedOwnerAsync writes the federated one and
+        // SeedPasskeyAsync the passkey the key and counter hang off. An exact count says both are
+        // there, where a non-zero check would pass on either alone.
+        await AssertSeededAsync("select count(*) from credentials where user_id = @id", userId, 2L);
+        await AssertSeededAsync("select count(*) from sessions where user_id = @id", userId, 1L);
+        await AssertSeededAsync(
+            "select count(*) from passkey_public_keys where user_id = @id", userId, 1L);
+        await AssertSeededAsync(
+            "select count(*) from passkey_signature_counters where user_id = @id", userId, 1L);
+        await AssertSeededAsync("select count(*) from payees where budget_id = @id", budgetId, 1L);
+        await AssertSeededAsync("select count(*) from accounts where budget_id = @id", budgetId, 1L);
+        await AssertSeededAsync(
+            "select count(*) from category_groups where budget_id = @id", budgetId, 1L);
+        await AssertSeededAsync(
+            "select count(*) from categories where budget_id = @id", budgetId, 1L);
+
+        // Act — the DELETE is both halves of this file's pairing at once (see the class remarks): it
+        // is the permitted write, and its affected count of 1 is what says row-level security really
+        // matched the row rather than the statement succeeding against nothing.
+        int deleted = await ExecuteAsync(app, "delete from users where id = @id", userId);
+
+        // Assert — the parent is gone and, with it, every owned row, on a role that holds DELETE on
+        // users and on no other owned table. That is the whole claim: PostgreSQL runs ON DELETE
+        // CASCADE through referential-integrity triggers that execute with the privileges of the
+        // referencing table's owner, not of the current role, so the cascade reaches budgets,
+        // credentials, sessions, passkey_public_keys, passkey_signature_counters, payees, accounts,
+        // category_groups and categories without a grant on any of them. It is why closing an account
+        // needs one grant rather than seven. Each count is scoped to this account rather than to the
+        // whole table — a global count would go green on an empty database and prove nothing.
+        await Assert.That(deleted).IsEqualTo(1);
+
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from users where id = @id", userId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from budgets where user_id = @id", userId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from credentials where user_id = @id", userId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from sessions where user_id = @id", userId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from passkey_public_keys where user_id = @id", userId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from passkey_signature_counters where user_id = @id", userId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from payees where budget_id = @id", budgetId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from accounts where budget_id = @id", budgetId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from category_groups where budget_id = @id", budgetId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from categories where budget_id = @id", budgetId))
+            .IsEqualTo(0L);
     }
 
     [Test]

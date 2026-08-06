@@ -115,10 +115,13 @@ erDiagram
 ### MUST NOT
 
 - **The application role MUST NOT hold `DELETE` on `sessions`.** Revocation writes `revoked_at_utc`;
-  it does not remove the row. The absent grant is what keeps the role from holding the one privilege
-  that could make a session unaccountable, and `Database_RefusesToDeleteASession` pins it. No
-  retention sweep exists; when one is built it needs this grant, and the paragraph in
-  `app-role-grants.sql` is what has to be re-argued rather than quietly deleted.
+  it does not remove the row. The absent grant is what keeps the role from removing a session while
+  the account it belongs to still exists, and `Database_RefusesToDeleteASession` pins it. Session
+  rows do leave — the cascade from `credentials`, and through it from `users`, takes every one of
+  them when the account is erased — but that reaches them by descending from a row rather than by a
+  privilege over this table, so it cannot single one out. No retention sweep exists; when one is
+  built it needs this grant, and the paragraph in `app-role-grants.sql` is what has to be re-argued
+  rather than quietly deleted.
 
 - **No policy on `sessions` may read `kind`.** Whether a session reaches budget content is answered
   by `budget_isolation` on the budget-owned tables, which a locked session never satisfies because it

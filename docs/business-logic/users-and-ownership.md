@@ -291,6 +291,54 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ---
 
+- **Rule**: The application role may **delete a `users` row**, and that one statement removes the
+  account's whole structural graph. It holds `DELETE` on no other owned table — `budgets`,
+  `credentials`, `sessions`, `passkey_public_keys`, `passkey_signature_counters` (user-owned) and
+  `payees` (budget-owned) are emptied by the cascade descending from that row, not by a privilege of
+  their own.
+- **It is not sufficient on its own.** `budgets → transactions` is `Restrict`, so a budget holding one
+  recorded movement refuses the delete with `23503` — and a budgeting product's accounts hold
+  transactions, which makes that the ordinary case rather than the corner. Erasure deletes
+  transactions first, per budget, and only then the user row. Those are two shapes of session:
+  `transactions` is policed by `budget_isolation` and needs `app.current_budget_id` set for each
+  budget the user owns, while this delete needs only `app.current_user_id`. The `transactions`
+  grant already exists; the sequence does not, and it belongs to the erasure feature.
+- **Why**: erasing an account has to run as the application rather than on an elevated connection —
+  that is the whole point of [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md), and
+  a role that needed a database administrator to delete a row would dissolve it. Every owned table
+  hangs off `users` by `ON DELETE CASCADE`: `users` → `budgets` → {`payees`, `accounts`,
+  `category_groups` → `categories`}, and `users` → `credentials` → {`sessions`,
+  `passkey_public_keys`, `passkey_signature_counters`}. PostgreSQL performs a referential action
+  through internal triggers running with the privileges of the **referencing table's owner**, not of
+  the role that issued the statement, so the cascade reaches every one of those tables with no grant
+  on any of them.
+- **The six absent grants are a decision, not an oversight.** Two of them would cost something real.
+  `credentials` and `passkey_public_keys` are exempt from row-level security — they are read *before*
+  a request has an identity a policy could key on — so a `DELETE` there would be **unpoliced**, and
+  one statement carrying the wrong id would remove somebody else's only way in with nothing to catch
+  it. On `passkey_signature_counters` a `DELETE` would reopen counter rewind: deleting the row and
+  re-inserting it at zero is the same thing the deliberately single-column
+  `GRANT UPDATE (signature_counter)` exists to forbid. The cascade reaches all three safely, because
+  it descends from one row rather than holding a privilege over a table.
+- **Enforced in**: **database-owned.** `GRANT SELECT, INSERT, DELETE ON users` in
+  `app-role-grants.sql`, scoped by the `user_isolation` policy — which is `FOR ALL`, so it constrains
+  the delete exactly as it constrains a read.
+  `AppRoleGrantsTests.Database_AllowsDeletingAUserAndCascadesTheAccountAway` is what turns the
+  cascade from a belief into a fact: it deletes as the application role and asserts every child table
+  is empty afterwards. `RlsIsolationTests.Database_RefusesToDeleteAnotherUsersRow_WhileStillAllowingItsOwn`
+  pins that the grant is tenant-scoped — a foreign row reports **zero rows affected**, not `42501`,
+  which is the policy holding rather than the grant matrix.
+  `AppRoleGrantMatrixTests.AppRoleGrants_MatchTheDeclaredMatrix` pins the whole privilege set in both
+  directions, so a `DELETE` added to a seventh table fails as loudly as one removed from this one.
+- **Gap, stated rather than hidden**: like the `users` `UPDATE` grant above it, this `DELETE` has no
+  caller. Nothing in `Domain`, `Application` or `Api` deletes a user — `ExecuteDelete` is a compile
+  error via `BannedSymbols.txt`, no repository exposes a removal, and no endpoint maps one. It stands
+  because the erasure feature that needs it is specified and next; if that slips, the grant should be
+  revoked rather than left standing.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
 - **Rule**: An email must be present (non-blank, trimmed) and at most 254 characters. Format is
   **not** validated. A credential's `Subject` is bounded at 255 characters and its `Provider` at 50.
 - **Why**: The email comes from a trusted Google ID token, which has already verified it — a regex
