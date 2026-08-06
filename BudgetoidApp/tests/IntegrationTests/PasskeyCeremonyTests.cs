@@ -612,34 +612,374 @@ public sealed class PasskeyCeremonyTests
         await Assert.That(options.AsObject().ContainsKey("allowCredentials")).IsFalse();
     }
 
+    /// <summary>
+    /// Registration refuses an authenticator that reports no <c>prf</c> extension result, and says so
+    /// in a sentence the person holding the device can act on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two cases rather than one is what forces the predicate to be "present <b>and</b> true". A check
+    /// written against a missing member — "the client sent no extension results" — passes the
+    /// unreported case and lets the disabled one straight through; a check written against the flag
+    /// alone — "the reported value is false" — does the exact reverse. Neither mistake survives both
+    /// cases, and either survives one of them.
+    /// </para>
+    /// <para>
+    /// What keeps the two distinguishable at all is <see cref="PostRegistrationAsync"/>, which sends
+    /// <c>clientExtensionResults</c> as JSON null when the result is null instead of sending a present
+    /// object carrying false. "Simplifying" that helper to always send the object would silently turn
+    /// this into one case run twice, and the pair would stop proving anything.
+    /// </para>
+    /// <para>
+    /// The sentence says the device "did not report an enabled prf extension result" rather than that
+    /// it "returned no prf extension result", because <c>prf.enabled: false</c> <b>is</b> a returned
+    /// result — one that means no. The wording is a literal transcription of the predicate and is
+    /// therefore true of every form this refusal covers rather than of only one of them.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task Registration_ResponseReportsWhetherThePrfExtensionWasEnabled()
+    [Arguments(false)]
+    [Arguments(null)]
+    public async Task Registration_WhoseAuthenticatorReportsNoPrfResult_Returns400NamingTheAuthenticator(
+        bool? prfEnabled)
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
         await using ApiFactory factory = CreateApiFactory(host);
         await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
         HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony in every respect except what the device says about the extension.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: prfEnabled);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert — the sentence is the acceptance criterion, so it is pinned whole rather than by a
+        // fragment of it: it names the authenticator as the reason, says what to use instead, and
+        // names no vendor.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
+    /// A response whose <c>prf</c> result is present but says nothing: the object is there and the
+    /// <c>enabled</c> member is absent. Refused, in the same sentence as every other form.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the form where the client object exists but says nothing about the extension. With the
+    /// member absent, <c>Enabled</c> binds to <c>null</c> — not to <c>false</c> — so nothing here
+    /// states a negative; what refuses the request is the gate's own requirement that the flag be
+    /// <b>present and true</b>. The test pins that silence refuses rather than passes, which is what a
+    /// check written as "not explicitly false" would get wrong.
+    /// </para>
+    /// <para>
+    /// The body is assembled by hand because <see cref="PostRegistrationAsync"/> cannot express it:
+    /// its parameter is a <c>bool?</c>, and neither of its two shapes is a present object with no
+    /// members. Everything else is the genuine ceremony — only <c>clientExtensionResults</c> is built
+    /// here.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhosePrfResultCarriesNoEnabledMember_Returns400NamingTheAuthenticator()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony carrying a prf object with the enabled member left out.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { } },
+        });
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
+    /// A response whose <c>prf</c> result reports <c>enabled</c> as an explicit JSON null. Refused, in
+    /// the same sentence as every other form.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This form used to fail model binding: with <c>Enabled</c> a non-nullable <c>bool</c>, an
+    /// explicit null was rejected before the handler ran and the caller got the framework's own
+    /// ProblemDetails rather than this feature's sentence. Widening the member to <c>bool?</c> is what
+    /// routes it to the handler instead, where the "present and true" gate judges it like any other
+    /// form, and this test is what holds that — a member narrowed back to <c>bool</c> stops answering
+    /// with the sentence asserted here.
+    /// </para>
+    /// <para>
+    /// The body is assembled by hand for the same reason as the test above:
+    /// <see cref="PostRegistrationAsync"/> takes a <c>bool?</c> and can express neither a present
+    /// object with no members nor one carrying an explicit null.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhosePrfResultReportsANullEnabledMember_Returns400NamingTheAuthenticator()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony carrying a prf object whose enabled member is an explicit null.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { enabled = (bool?)null } },
+        });
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
+    /// A present <c>clientExtensionResults</c> object carrying no <c>prf</c> member at all. Refused, in
+    /// the same sentence as every other form.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the form a real browser sends. <c>getClientExtensionResults()</c> always returns an
+    /// object, so an authenticator with no PRF support produces <c>{}</c> — a present object with the
+    /// member missing. It is <b>not</b> a JSON null: that is what the <c>[Arguments(null)]</c> case
+    /// exercises, and it only appears on the wire if client code deliberately substitutes it.
+    /// </para>
+    /// <para>
+    /// Said plainly so the enumeration of forms in these tests is not misleading about which one
+    /// arrives first in production: this one does, and the others are the shapes a hand-written or
+    /// hostile client can also produce.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhoseClientExtensionResultsCarryNoPrfMember_Returns400NamingTheAuthenticator()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony carrying the empty object a device without PRF support produces.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { },
+        });
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
+    /// A response that is wrong twice over — wrong origin <b>and</b> no <c>prf</c> result — is refused
+    /// for the origin, not for its authenticator.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This test owns the ordering that the handler's own comment, <c>passkeys.md</c> and ADR 0013 all
+    /// assert: the extension claim is weighed last, after everything signed has been judged. A
+    /// response that is malformed, replayed or wrong-origin must never be told its authenticator is at
+    /// fault, because that sentence would be a lie about the device — and one the person would act on
+    /// by going out to buy another.
+    /// </para>
+    /// <para>
+    /// Before this test the ordering held only incidentally: the unrelated ceiling tests happen to
+    /// send no <c>clientExtensionResults</c> and so would have noticed a prf check moved to the front,
+    /// but none of them is about the ordering and any of them could stop covering it without anyone
+    /// noticing.
+    /// </para>
+    /// <para>
+    /// One assertion is enough. The prf sentence starts differently, so the prefix asserted here
+    /// excludes it; a second assertion saying the same thing the other way round would only be a
+    /// second thing to keep in step.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhoseOriginIsWrongAndReportsNoPrfResult_IsRefusedForTheOriginRatherThanTheAuthenticator()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — two faults in one response, so only the order of the checks can decide which is named.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            LookalikeOrigin,
+            prfEnabled: null);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response))
+            .StartsWith("The registration response was refused:");
+    }
+
+    /// <summary>
+    /// The provable-fail control beside the refusal above: an authenticator that does report a
+    /// <c>prf</c> result registers, and the whole passkey is filed.
+    /// </summary>
+    /// <remarks>
+    /// Without this, a handler that refused <b>every</b> registration passes the refusal test
+    /// perfectly. This is the test such a handler fails, and that is what makes the pair provable
+    /// rather than one-sided.
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhoseAuthenticatorReportsAPrfResult_FilesTheCredentialAndItsKeyAndCounter()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act
-        JsonNode enabled = await RegisterForJsonAsync(
-            authenticated,
-            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
             prfEnabled: true);
-        JsonNode disabled = await RegisterForJsonAsync(
-            authenticated,
-            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
-            prfEnabled: false);
-        JsonNode unreported = await RegisterForJsonAsync(
-            authenticated,
-            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
-            prfEnabled: null);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
 
-        // Assert — reported, never stored: the claim is the client's and covered by no signature, so
-        // null has to stay distinguishable from false rather than collapsing into it.
-        await Assert.That(enabled["prfEnabled"]!.GetValue<bool>()).IsTrue();
-        await Assert.That(disabled["prfEnabled"]!.GetValue<bool>()).IsFalse();
-        await Assert.That(unreported["prfEnabled"]).IsNull();
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        // Nothing in the body: reporting the flag back would read as the server having established
+        // it, when all it did was repeat what the client just said.
+        await Assert.That(await response.Content.ReadAsStringAsync()).IsEqualTo(string.Empty);
+
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// A registration refused for its authenticator files nothing at all against the account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is true by <b>where the refusal sits</b> rather than by code written to make it true: the
+    /// check precedes <c>Credential.CreatePasskey</c>, so there is no row to undo. The test exists so
+    /// that moving the refusal below the save goes red rather than passing on the strength of a
+    /// rollback nobody wrote.
+    /// </para>
+    /// <para>
+    /// It does <b>not</b> prove FR-108's first clause — that an incomplete registration owns no
+    /// budget-owned row — and cannot: <c>EnsureUserHandler</c> provisions the account's default budget
+    /// on every authenticated request, before any ceremony runs, so a budget already exists by the
+    /// time this refusal happens. Satisfying that clause means moving provisioning behind the passkey,
+    /// which is a different change.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_RefusedForItsAuthenticator_FilesNothingAgainstTheAccount()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: false);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// A registration refused for its authenticator has already spent the challenge, so the same device
+    /// cannot simply answer again — it has to go back to the options leg for a fresh nonce.
+    /// </summary>
+    /// <remarks>
+    /// <c>passkeys.md</c> states this, and it is true by construction: <c>ConsumeAsync</c> precedes the
+    /// prf gate. Nothing pinned it, though, and the plausible "optimisation" — not burning a nonce on a
+    /// refusal that judged nothing but a client-written claim — would make the document false with
+    /// nothing going red. The second attempt here is a <b>fully valid</b> response from the same
+    /// authenticator over the same challenge, so only the spent nonce can refuse it, and the sentence
+    /// asserted is the one that says exactly that.
+    /// </remarks>
+    [Test]
+    public async Task Registration_RefusedForItsAuthenticator_ThenRetriedOnTheSameChallenge_FindsItSpent()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+
+        // Act — refused for the authenticator, then the same device answering the same challenge with
+        // nothing at all wrong with the response.
+        AttestationResult refusedAttempt = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: false);
+        HttpResponseMessage refused = await PostRegistrationAsync(authenticated, refusedAttempt);
+
+        AttestationResult retry = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage afterRefusal = await PostRegistrationAsync(authenticated, retry);
+
+        // Assert
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(afterRefusal.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(afterRefusal))
+            .IsEqualTo("The challenge is not a live registration challenge.");
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
     }
 
     [Test]
@@ -989,33 +1329,20 @@ public sealed class PasskeyCeremonyTests
     /// </summary>
     private static async Task<AttestationResult> RegisterAsync(
         HttpClient client,
-        SyntheticAuthenticator authenticator,
-        bool? prfEnabled = true)
+        SyntheticAuthenticator authenticator)
     {
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
-        AttestationResult result = authenticator.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: prfEnabled);
+        AttestationResult result = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
         HttpResponseMessage response = await PostRegistrationAsync(client, result);
         response.EnsureSuccessStatusCode();
         return result;
     }
 
-    private static async Task<JsonNode> RegisterForJsonAsync(
-        HttpClient client,
-        SyntheticAuthenticator authenticator,
-        bool? prfEnabled)
-    {
-        byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
-        AttestationResult result = authenticator.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: prfEnabled);
-        HttpResponseMessage response = await PostRegistrationAsync(client, result);
-        response.EnsureSuccessStatusCode();
-        return await ReadJsonAsync(response);
-    }
-
     private static Task<HttpResponseMessage> PostRegistrationAsync(HttpClient client, AttestationResult result)
     {
-        // Absent rather than present-and-false when the device reported nothing about the extension:
-        // the two are different claims, and collapsing them here would hide the response reporting
-        // them as one.
+        // JSON null rather than a present object carrying false when the device reported nothing about
+        // the extension: the two are different claims, and collapsing them here would hide the
+        // response reporting them as one.
         object? clientExtensionResults = result.PrfEnabled is { } enabled
             ? new { prf = new { enabled } }
             : null;
@@ -1166,11 +1493,17 @@ public sealed class PasskeyCeremonyTests
     /// The one validation message a refused registration carries, so a test asserts on the sentence
     /// the caller is actually told rather than on the status alone.
     /// </summary>
+    /// <remarks>
+    /// Read from the <c>Response</c> key by name rather than from whichever key happens to come first.
+    /// Every refusal on this leg is filed under that field by <c>CompleteRegistrationHandler</c>, and
+    /// several tests now depend on this helper — taking the first key would keep them green after a
+    /// refusal moved to a different field, which is a change the caller would see.
+    /// </remarks>
     private static async Task<string> ReadValidationErrorAsync(HttpResponseMessage response)
     {
         JsonNode errors = (await ReadJsonAsync(response))["errors"]!;
 
-        return errors.AsObject().First().Value!.AsArray()[0]!.GetValue<string>();
+        return errors["Response"]!.AsArray()[0]!.GetValue<string>();
     }
 
     /// <summary>
@@ -1259,6 +1592,17 @@ public sealed class PasskeyCeremonyTests
 
     private static Task<long> CountPasskeyPublicKeysAsync(RepositoryTestHost host) =>
         ScalarCountAsync(host, "select count(*) from passkey_public_keys", parameter: null);
+
+    /// <summary>
+    /// Scoped to the passkey rows, because <c>credentials</c> holds both kinds and seeding an account
+    /// already writes it a federated one — an unscoped count would never be zero and would never be
+    /// one either.
+    /// </summary>
+    private static Task<long> CountPasskeyCredentialsAsync(RepositoryTestHost host) =>
+        ScalarCountAsync(host, "select count(*) from credentials where type = 'passkey'", parameter: null);
+
+    private static Task<long> CountPasskeySignatureCountersAsync(RepositoryTestHost host) =>
+        ScalarCountAsync(host, "select count(*) from passkey_signature_counters", parameter: null);
 
     private static Task<long> CountUsersAsync(RepositoryTestHost host) =>
         ScalarCountAsync(host, "select count(*) from users", parameter: null);

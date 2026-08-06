@@ -9,21 +9,44 @@ namespace Application.Passkeys.CompleteRegistration;
 /// Verifies a registration response and files the credential, its public key and its counter.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Authenticated throughout, which is what lets every refusal here say what was wrong. The sign-in
 /// leg cannot afford that — see <see cref="PasskeyVerificationException"/> — but a person adding a
 /// passkey to an account they are already signed in to learns nothing from a real sentence that they
 /// could not learn by trying again.
+/// </para>
+/// <para>
+/// <b>Nothing about <c>prf</c> is stored.</b> The claim arrives in the client extension results: it
+/// is asserted by the client, it is covered by no signature, the server cannot reproduce it, and the
+/// PRF output itself never leaves the client. A column holding it would be a column recording an
+/// unverifiable assertion, which is data nothing can act on.
+/// </para>
+/// <para>
+/// Requiring it is therefore a <b>product gate on a claim the server cannot verify</b> — an upper
+/// layer restating a rule for error quality, never for enforcement (see the Rule Enforcement section
+/// of <c>CLAUDE.md</c> and ADR 0002). There is no attacker for it: the claim is the account holder's
+/// own browser describing the account holder's own authenticator, and whoever forges it registers a
+/// passkey whose keys they will not be able to derive, harming only themselves. The gate exists so
+/// that a device which cannot hold the account's keys is turned away while the person is still
+/// standing in front of it, not months later when their data cannot be decrypted.
+/// </para>
+/// <para>
+/// A later change deciding what PRF may gate has to start from that: this flag proves nothing about
+/// the authenticator, and any rule keyed on it is a rule a client can satisfy by saying so. Anything
+/// that needs to <i>rely</i> on PRF must key on a value derived through PRF that the server can
+/// check — never on this flag, and never on the fact that this endpoint refuses without it.
+/// </para>
 /// </remarks>
 public sealed class CompleteRegistrationHandler(
     IWebAuthnChallengeStore challengeStore,
     IPasskeyRepository passkeyRepository,
     IUserContext userContext,
     IPasskeyCeremonyPolicy policy,
-    TimeProvider timeProvider) : ICommandHandler<CompleteRegistrationCommand, RegisteredPasskey>
+    TimeProvider timeProvider) : ICommandHandler<CompleteRegistrationCommand>
 {
     private const string ResponseField = "Response";
 
-    public async Task<RegisteredPasskey> HandleAsync(
+    public async Task HandleAsync(
         CompleteRegistrationCommand command,
         CancellationToken cancellationToken = default)
     {
@@ -95,6 +118,20 @@ public sealed class CompleteRegistrationHandler(
             throw Refused($"The registration response was refused: {failure}.");
         }
 
+        // Last, and last on purpose. Everything above judges signed material; this judges a sentence
+        // the client wrote about its own device. Checked earlier, a malformed, replayed or
+        // wrong-origin response would be told "your authenticator cannot hold the keys" — a lie about
+        // the device, and one the person would act on by going to buy another. The claim is weighed
+        // only once the response is genuine in every verifiable respect, so that when this sentence is
+        // said, the device is the only thing left that it can be about.
+        if (command.ClientExtensionResults?.Prf is not { Enabled: true })
+        {
+            throw Refused(
+                "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+                + "extension result. Register a passkey from a device whose authenticator supports "
+                + "the prf extension — most current phones, laptops and hardware security keys do.");
+        }
+
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
 
         // One credential, its key and its counter, all derived from the credential so that none of
@@ -111,8 +148,6 @@ public sealed class CompleteRegistrationHandler(
         {
             throw new ConflictException("This authenticator is already registered.");
         }
-
-        return new RegisteredPasskey(command.ClientExtensionResults?.Prf?.Enabled);
     }
 
     // Domain.Common.ValidationException by name, because both layers declare one and only that one is

@@ -115,6 +115,18 @@ erDiagram
     the discovery lookup's index, and `PasskeyRepository.TryAddAsync`, which turns its `23505` into a
     409 by filtering on the **constraint name** rather than the SQLSTATE alone.
 
+- **A registration MUST NOT complete unless the client reports a `prf` extension result of true.**
+  - **Why**: an authenticator that cannot derive a PRF secret cannot hold the account's keys. This is
+    a product gate on a claim the server cannot verify, not a security control — see the rule below
+    for what it does and does not establish.
+  - **Enforced in**: `CompleteRegistrationHandler`, and nowhere lower — not because the rule sits
+    above its lowest capable layer, but because **no layer is capable of it**. Storing the flag
+    would let the database enforce "this column says true"; it would not let anything enforce
+    *the authenticator can derive a PRF secret*, which is the actual rule. That fact is not
+    observable to the database, the application, or the client — only asserted. ADR 0002 asks why a
+    rule sits where it does; here the answer is that there is nothing to push down, so no
+    constraint, grant or policy carries any part of it.
+
 - **A challenge is single-use, and consuming one is deleting it.** `webauthn_challenges` holds
   `DELETE` alone among the identity tables — the budget-owned ones hold it too, for the ordinary
   reason that people delete their own records. The paragraph beside the grant says why this one does:
@@ -223,15 +235,44 @@ erDiagram
 
 ---
 
-- **Rule**: The `prf` extension is requested on registration, and its reported result is returned to
-  the client and **stored nowhere**.
-- **Why**: `prf.enabled` is asserted by the *client*, is covered by no signature, and the server can
-  neither verify it nor ever see the PRF output, which never leaves the authenticator. Reporting it
-  is what lets the ceremony demonstrate the server observed it; a column would be data nothing reads.
-- **Carry this forward**: whichever change first refuses an authenticator that cannot hold the
-  account's keys has to decide what an unverifiable claim may gate. It must not assume this ceremony
-  proved anything about it.
-- **Source**: `[SOURCE: discussion — 2026-08-05]`
+- **Rule**: The `prf` extension is requested on registration, and registration **completes only when
+  the client reports a `prf` result that is present and true**. The reported value is **stored
+  nowhere**. Reporting nothing and reporting `enabled: false` are both refused, with one sentence
+  that names the authenticator as the reason and says what to use instead.
+- **Why**: an authenticator that cannot derive a PRF secret cannot hold the account's keys, and a
+  person who learns that months later learns it by losing their records — a loss no operator can
+  reverse, because there is no escrow and no administrative override. Telling them at the one moment
+  they can still choose a different device is the whole value of the rule.
+- **What this refusal is not**: `prf.enabled` is asserted by the *client*, is covered by no
+  signature, and the server can neither verify it nor ever see the PRF output, which never leaves the
+  authenticator. So this is a **product gate, not a security control** — an upper layer restating a
+  rule for error quality, never for enforcement. There is no adversary for it: the claim is the
+  account holder's own browser describing the account holder's own authenticator, and whoever forges
+  it registers a passkey whose keys they will not be able to derive, harming nobody else. Anything
+  that later needs to *rely* on PRF must key on a value derived through PRF that the server can
+  check — never on this flag, and never on the fact that this endpoint refuses without it.
+- **Enforced in**: `CompleteRegistrationHandler`, deliberately as the **last** check on the response,
+  after `PasskeyRegistrationVerifier.Verify`. Checked earlier, a malformed, replayed or wrong-origin
+  response would be told its authenticator cannot hold the keys, which is a lie about the device.
+  `Registration_WhoseOriginIsWrongAndReportsNoPrfResult_IsRefusedForTheOriginRatherThanTheAuthenticator`
+  owns that ordering, so it is held by a named test rather than incidentally by the payload shape
+  other tests happen to send.
+- **Also**: the refusal spends the challenge, like every refusal that gets past the decode — the
+  ceiling and parse refusals above `ConsumeAsync` do not. So a client that hits this one must return
+  to the options leg for a fresh nonce rather than retrying the same response against the old one.
+  `Registration_RefusedForItsAuthenticator_ThenRetriedOnTheSameChallenge_FindsItSpent` holds it.
+- **Every shape of silence refuses, and each is pinned.** A client can say nothing in four distinct
+  ways, and none of them may pass: `clientExtensionResults` as JSON null and `prf.enabled: false`
+  (`Registration_WhoseAuthenticatorReportsNoPrfResult_Returns400NamingTheAuthenticator`, two cases
+  because a predicate written against either half alone passes the other), the `prf` object present
+  and empty (`Registration_WhosePrfResultCarriesNoEnabledMember_…`), `prf.enabled` explicitly null
+  (`Registration_WhosePrfResultReportsANullEnabledMember_…`), and the object present with no `prf`
+  member at all (`Registration_WhoseClientExtensionResultsCarryNoPrfMember_…`) — which is the shape a
+  real browser sends, because `getClientExtensionResults()` always returns an object. `Enabled` is
+  `bool?` precisely so all four reach this refusal's sentence instead of the framework's generic
+  400. `Registration_WhoseAuthenticatorReportsAPrfResult_FilesTheCredentialAndItsKeyAndCounter` is
+  the control on the other side, which a handler refusing *everything* would fail.
+- **Source**: `[SOURCE: user-story]`
 
 ---
 

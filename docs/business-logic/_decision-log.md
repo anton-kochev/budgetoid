@@ -8,6 +8,41 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-06 — Registration is refused on an unverifiable claim, and the docs say so
+
+**Context:** an authenticator that cannot derive a PRF secret cannot hold the account's keys, and the
+person holding it finds out by losing their records permanently. The only signal the product has is
+`prf.enabled` in the client extension results — asserted by the client, covered by no signature, and
+impossible for the server to reproduce or check. Two earlier documents deferred the question rather
+than answer it: what may a claim like that be allowed to gate?
+
+**Decision:** gate registration on it, and record in the same breath that this is a **product gate,
+not a security control**, so no later reader mistakes it for a guarantee. The justification is
+narrower than "defence in depth": there is no adversary here. The claim is the account holder's own
+browser describing the account holder's own authenticator, and whoever forges it registers a passkey
+whose keys they will not be able to derive — harming only themselves. That places it exactly where
+ADR 0002 puts an upper-layer restatement: it exists for error quality, never for enforcement.
+Enforcement of key custody arrives with the keys themselves, where a wrapped key under a nonexistent
+PRF output simply cannot be produced.
+
+Two consequences worth keeping: the check runs **last**, after signature verification, so a
+malformed or replayed response is never told the lie that its authenticator is at fault; and the 201
+response stops echoing the flag, because a value the *server* returns reads as a value the server
+established.
+
+**Alternatives considered:** *refuse nothing until key custody exists* — correct on the letter, and
+it leaves every passkey registered in the meantime to fail silently at the moment it is needed most.
+*Put the check with the ceremony verification code* — rejected: everything there judges signed
+material, and a verification failure meaning "your client said no" would blur that boundary for
+every later reader. *Keep reporting the flag in the response body* — rejected: once `true` is the
+only reachable value it carries no information, and echoing it invites the exact misreading this
+entry exists to prevent.
+
+**Affected areas:** [passkeys.md](passkeys.md), [_overview.md](_overview.md) (glossary),
+[ADR 0013](../decisions/0013-verify-webauthn-ceremonies-without-a-fido-library.md).
+
+---
+
 ## 2026-08-05 — A passkey's material is split by whether it is read before or after identity
 
 **Context:** signing in with a passkey means finding a public key and checking a signature *before*

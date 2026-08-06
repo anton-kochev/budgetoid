@@ -34,17 +34,19 @@ public static class PasskeyEndpoints
             CompleteRegistrationHandler handler,
             CancellationToken cancellationToken) =>
         {
-            RegisteredPasskey registered = await handler.HandleAsync(
+            await handler.HandleAsync(
                 new CompleteRegistrationCommand(
                     request.ClientDataJson,
                     request.AttestationObject,
                     request.ClientExtensionResults),
                 cancellationToken);
 
-            // 201 with no Location header: the credential is a fact about the account, not a resource
-            // this API exposes at an address. Nothing may read a stored passkey back, so there is
-            // nowhere to point at.
-            return TypedResults.Created((string?)null, new RegistrationResponse(registered.PrfEnabled));
+            // 201 with no Location header and no body: the credential is a fact about the account,
+            // not a resource this API exposes at an address. Nothing may read a stored passkey back,
+            // so there is nowhere to point at — and nothing to report either, since the only thing
+            // left to say is what the client told the server about its own device, and echoing that
+            // back would read as the server having established it.
+            return TypedResults.Created();
         });
 
         // The sign-in legs. Anonymous on the group, because sign-in is the one exchange that by
@@ -96,8 +98,6 @@ public static class PasskeyEndpoints
         string ClientDataJson,
         string AttestationObject,
         PasskeyClientExtensionResults? ClientExtensionResults);
-
-    private sealed record RegistrationResponse(bool? PrfEnabled);
 
     private sealed record AssertionRequest(
         string CredentialId,

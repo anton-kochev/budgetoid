@@ -124,11 +124,15 @@ that no test corpus exercises, on a code path where a wrong branch is an authent
 - An authenticator producing a format outside the narrowings is **refused**, not misread. The
   likeliest first real-device failure is CBOR conformance mode or an unexpected attestation format,
   and both produce a clean refusal rather than a wrong acceptance.
-- The `prf` extension is requested on registration, and the response's `prf.enabled` flag is
-  reported back to the client and **stored nowhere**. It is asserted by the client, covered by no
-  signature, and the server can neither verify it nor ever see the PRF output, which never leaves
-  the authenticator. Whichever change first refuses an authenticator that cannot hold the account's
-  keys has to decide what an unverifiable claim may gate; it must not assume this one proved
-  anything about it.
+- The `prf` extension is requested on registration, and a registration whose client reports no
+  `prf.enabled: true` is **refused**. The flag is still **stored nowhere**: it is asserted by the
+  client, covered by no signature, and the server can neither verify it nor ever see the PRF output,
+  which never leaves the authenticator. The refusal is therefore a gate for the account holder's
+  benefit — it catches a device that silently cannot do the job — and establishes nothing about the
+  authenticator. It lives in `CompleteRegistrationHandler` and not in this decision's verification
+  code, because everything here judges signed material and a `PasskeyVerificationFailure` member
+  saying nothing about verification would blur that boundary for every later reader. Anything that
+  comes to rely on PRF must key on a value derived through PRF that the server can check, never on
+  this flag and never on the fact that registration refuses without it.
 - Adding an algorithm, or widening attestation, is a schema change and an ADR revision rather than
   a switch statement edit.
