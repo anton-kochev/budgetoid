@@ -58,10 +58,13 @@ CLAUDE.local.md
 /.claude/agents/grimoire.*
 /.claude/grimoire.json
 
-# Backlog tooling — both skills drive the private budgetoid-specs repository and the
+# Backlog tooling — these skills drive the private budgetoid-specs repository and the
 # personal GitHub Project, so they are useful only to an account that can reach those.
+# story-delivery is here for a second reason as well: it delegates to the grimoire.*
+# agents, which the rule above already keeps out of the repo.
 /.claude/skills/budgetoid.publish-backlog/
 /.claude/skills/budgetoid.story-context/
+/.claude/skills/budgetoid.story-delivery/
 
 # Pending hardening backlog — lives in the private budgetoid-specs repository,
 # because a public list of unclosed weaknesses is a map.
