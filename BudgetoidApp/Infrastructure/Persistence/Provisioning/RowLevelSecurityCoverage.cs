@@ -467,8 +467,8 @@ public static class RowLevelSecurityCoverage
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Three entries, and each one is a decision somebody made rather than a shape that fell out of a
-    /// query. Adding a fourth is deliberately as visible as adding a policy: the point of the list is
+    /// Five entries, and each one is a decision somebody made rather than a shape that fell out of a
+    /// query. Adding a sixth is deliberately as visible as adding a policy: the point of the list is
     /// that a table can only leave the policed set through it.
     /// </para>
     /// <para>
@@ -477,12 +477,59 @@ public static class RowLevelSecurityCoverage
     /// may carry an ownership column" would be wrong rather than strict.
     /// </para>
     /// <para>
-    /// It is also the only entry whose <see cref="TableExemption.ColumnsTheReasonCovers" /> is
-    /// pinned, and the pin is the whole of what keeps its exemption honest: the six columns below
-    /// are the ones "read to discover who is asking" is an argument about. Key material and per-
-    /// factor secrets are specified to arrive in this area, and they are read only after that
-    /// question has been answered, so they belong on a table carrying <c>user_id</c> — not appended
-    /// to this list. See <see cref="TableExemption" /> for why widening the list is the wrong fix.
+    /// Three entries pin a <see cref="TableExemption.ColumnsTheReasonCovers" /> and two deliberately
+    /// do not. <c>credentials</c>, <c>passkey_public_keys</c> and <c>webauthn_challenges</c> pin,
+    /// because each of their reasons is an argument about what the listed columns hold, so a sixth
+    /// column is a reason nobody has made yet. <c>currencies</c> and <c>__EFMigrationsHistory</c> do
+    /// not, because neither reason turns on the table's shape: the first belongs to no tenant
+    /// whatever columns it grows, and EF owns the second's shape, so pinning it would turn an EF
+    /// upgrade into a red with nothing to decide.
+    /// </para>
+    /// <para>
+    /// The pin on <c>credentials</c> is the whole of what keeps its exemption honest: the six
+    /// columns below are the ones "read to discover who is asking" is an argument about. Key
+    /// material and per-factor secrets are read only after that question has been answered, so they
+    /// belong on a table carrying <c>user_id</c> rather than appended here — and that split has
+    /// happened rather than remaining a forecast, which is what the next two paragraphs are about.
+    /// See docs/decisions/0012 for the split, and <see cref="TableExemption" /> for why widening the
+    /// list is the wrong fix.
+    /// </para>
+    /// <para>
+    /// <c>passkey_public_keys</c> is the second exemption resting on the same "the request has no
+    /// identity yet" argument: an assertion arrives naming a WebAuthn credential handle and nothing
+    /// else, so the read deciding whose account it is cannot itself be filtered by whose account it
+    /// is. What holds that exemption to its reason is the pin, together with the coverage suite's
+    /// <c>Exemptions_PinTheColumnsTheirReasonCovers</c> — not the grant matrix. The hazard
+    /// docs/decisions/0011 wrote down is not mutation: the exemption is argued about a query and
+    /// applied by PostgreSQL to a whole table, so every column here is readable by every
+    /// application session whatever user that session names, and the reason stops being cheap the
+    /// moment a wrapped key or a recovery-code hash joins the list. Such a secret is written once
+    /// at registration and never updated, so it satisfies an append-only rule perfectly — and this
+    /// table, already holding key material and already keyed on the credential, is the most
+    /// attractive place in the schema to propose putting one. The application role's missing
+    /// <c>UPDATE</c> of any shape and missing <c>DELETE</c> keep mutable per-user state from
+    /// accumulating, which is a real narrowing and a corollary; it constrains how a column may
+    /// change, never whether the wrong column may be read. When the pin goes red the fix is the
+    /// same one docs/decisions/0012 already took for <c>credentials</c>: move the column to a table
+    /// carrying <c>user_id</c>, which the classifier then polices by itself — never append the name
+    /// here. See <see cref="TableExemption" />.
+    /// </para>
+    /// <para>
+    /// <c>passkey_signature_counters</c> is the counterexample sitting beside it, named here despite
+    /// having no entry, because the absence is the lesson. It carries <c>user_id</c>, so the
+    /// classifier reaches <see cref="TableOwnership.UserOwned" /> from the table's own columns and
+    /// requires <see cref="UserIsolationPolicyName" /> with no rule added — the mechanism working
+    /// rather than an exception to it — and it can be policed because the ceremony compares a
+    /// counter only <i>after</i> the signature has verified, by which point the session knows whose
+    /// it is. Naming it here is what tells the next reader that the line is drawn at "reachable
+    /// before identity", not at "sensitive".
+    /// </para>
+    /// <para>
+    /// <c>webauthn_challenges</c> pins its columns even though it is
+    /// <see cref="TableOwnership.None" />, and for a different reason than <c>currencies</c> skips
+    /// the pin. <c>currencies</c> belongs to no tenant whatever columns it grows, so nothing its
+    /// shape does can invalidate the reason; this table's exemption rests on the row saying nothing
+    /// about a person, so a person-identifying column landing on it must go red.
     /// </para>
     /// <para>
     /// Callers pass this to <see cref="Classify" /> rather than the classifier reaching for it, so
@@ -498,6 +545,28 @@ public static class RowLevelSecurityCoverage
             + "refuse the query that resolves it",
             TableOwnership.UserOwned,
             ["id", "user_id", "type", "provider", "subject", "created_at_utc"]),
+        new(
+            "passkey_public_keys",
+            "read to decide whether the signature on an assertion is genuine, which a WebAuthn "
+            + "ceremony must answer before it knows whose account it is — a policy keyed on that "
+            + "identity would refuse the query that establishes it; the pinned columns are what "
+            + "hold the exemption to that reason, because a write-once secret — a wrapped key, a "
+            + "recovery-code hash — satisfies any append-only rule the grants can express while "
+            + "being exactly what must not sit on a table every session reads in full; the role's "
+            + "absent UPDATE and DELETE stop mutable per-user state accumulating, which is a "
+            + "narrower table but not the narrowing that matters",
+            TableOwnership.UserOwned,
+            [
+                "credential_id", "user_id", "credential_type", "webauthn_credential_id",
+                "public_key_cose", "cose_algorithm",
+            ]),
+        new(
+            "webauthn_challenges",
+            "a nonce belonging to a ceremony rather than to a person — the authentication "
+            + "ceremony issues one before anybody has said who they are, so there is nobody for a "
+            + "policy to key on, and the row holds nothing about whoever later uses it",
+            TableOwnership.None,
+            ["id", "challenge", "ceremony", "created_at_utc", "expires_at_utc"]),
         new(
             "currencies",
             "shared reference data belonging to no tenant, whatever columns it grows — the reason "

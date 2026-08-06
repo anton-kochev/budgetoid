@@ -1,4 +1,5 @@
 using Domain.Accounts;
+using Domain.Users;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -445,11 +446,361 @@ public sealed class AppRoleGrantsTests
             .IsEqualTo(1L);
     }
 
+    [Test]
+    public async Task Database_RefusesToUpdateAnyColumnOfAPasskeyPublicKey()
+    {
+        // Arrange — one registered passkey, a second bare passkey credential on the same account for
+        // the permitted INSERT below to hang off, and a second real user for the user_id statement to
+        // aim at: if the grant ever leaked a column, each statement lands rather than tripping a
+        // foreign key and passing for the wrong reason.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
+        Guid credentialId = await host.SeedPasskeyAsync(userId, SeededHandle, SeededCoseKey);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid freeCredentialId = await InsertPasskeyCredentialAsync(admin, userId);
+
+        // A bare app-role connection — no user, no budget — and like the credentials test above that
+        // is the point rather than a leftover. passkey_public_keys is the second table row-level
+        // security deliberately exempts: an assertion has to verify a signature with the stored key
+        // before it knows whose account it is, so a policy keyed on that identity would refuse the
+        // read that produces it. Every statement below reaching its row on an anonymous session is
+        // the executable statement of that exemption.
+        await using NpgsqlConnection app = new(host.AppConnectionString);
+        await app.OpenAsync();
+
+        // Act — every column of passkey_public_keys by name. The rule is "nothing on this row ever
+        // changes", and column-for-column is the only shape the absence of an UPDATE grant can be
+        // pinned in. RS256 rather than a number outside the vocabulary, and a well-formed handle and
+        // key rather than malformed ones, for the same reason the sessions test forges a lifetime-safe
+        // timestamp: a value a CHECK would refuse anyway would let this test pass against a table-wide
+        // GRANT UPDATE.
+        PostgresException credentialRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update passkey_public_keys set credential_id = @value where credential_id = @id",
+            freeCredentialId,
+            credentialId);
+        PostgresException userRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update passkey_public_keys set user_id = @value where credential_id = @id",
+            otherUserId,
+            credentialId);
+        PostgresException credentialTypeRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update passkey_public_keys set credential_type = @value where credential_id = @id",
+            "federated",
+            credentialId);
+        PostgresException handleRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update passkey_public_keys set webauthn_credential_id = @value where credential_id = @id",
+            ForgedHandle,
+            credentialId);
+        PostgresException keyRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update passkey_public_keys set public_key_cose = @value where credential_id = @id",
+            ForgedCoseKey,
+            credentialId);
+        PostgresException algorithmRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update passkey_public_keys set cose_algorithm = @value where credential_id = @id",
+            Rs256,
+            credentialId);
+
+        // Assert — rewriting public_key_cose is the whole attack this closes: an assertion is
+        // verified against whatever key this column holds, so a role that could edit it could make
+        // its own signatures verify as somebody's authenticator. The rest are the same door from
+        // other sides — repointing the handle would move an authenticator's identity onto another
+        // credential, and repointing user_id would move somebody's key material onto another account.
+        await Assert.That(credentialRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(credentialTypeRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(handleRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(keyRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(algorithmRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+
+        // The success half of the pair (see the class remarks), and here it is an INSERT by design
+        // rather than because no updatable column happens to exist today: this table holds no UPDATE
+        // grant of any shape, and it is the one table in this file where that is a property rather
+        // than a snapshot. Registering a passkey must still work, so the INSERT is the write that
+        // rules out the other way every refusal above could pass — the role reaching nothing at all.
+        await using NpgsqlCommand insert = new(
+            "insert into passkey_public_keys " +
+            "(credential_id, user_id, credential_type, webauthn_credential_id, public_key_cose, cose_algorithm) " +
+            "values (@credential_id, @user_id, 'passkey', @webauthn_credential_id, @public_key_cose, @cose_algorithm)",
+            app);
+        insert.Parameters.AddWithValue("credential_id", freeCredentialId);
+        insert.Parameters.AddWithValue("user_id", userId);
+        insert.Parameters.AddWithValue("webauthn_credential_id", ForgedHandle);
+        insert.Parameters.AddWithValue("public_key_cose", ForgedCoseKey);
+        insert.Parameters.AddWithValue("cose_algorithm", Rs256);
+        await Assert.That(await insert.ExecuteNonQueryAsync()).IsEqualTo(1);
+
+        // And the seeded row is untouched. A SQLSTATE says each statement was rejected; only this
+        // says none of them rewrote the row on its way to failing.
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select user_id from passkey_public_keys where credential_id = @id",
+                credentialId))
+            .IsEqualTo(userId);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select credential_type from passkey_public_keys where credential_id = @id",
+                credentialId))
+            .IsEqualTo("passkey");
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select cose_algorithm from passkey_public_keys where credential_id = @id",
+                credentialId))
+            .IsEqualTo(Es256);
+        // The two bytea columns read back through a cast rather than compared as objects: a byte[] is
+        // compared by reference otherwise, so an equality assertion on the boxed scalar would fail
+        // even when the bytes are identical.
+        byte[] storedHandle = await SelectBytesAsync(
+            admin,
+            "select webauthn_credential_id from passkey_public_keys where credential_id = @id",
+            credentialId);
+        byte[] storedKey = await SelectBytesAsync(
+            admin,
+            "select public_key_cose from passkey_public_keys where credential_id = @id",
+            credentialId);
+        await Assert.That(storedHandle).IsEquivalentTo(SeededHandle);
+        await Assert.That(storedKey).IsEquivalentTo(SeededCoseKey);
+    }
+
+    [Test]
+    public async Task Database_RefusesToDeleteAPasskeyPublicKey()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid credentialId = await host.SeedPasskeyAsync(userId, SeededHandle, SeededCoseKey);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // The exempt table again, so the anonymous session is deliberate — see the test above.
+        await using NpgsqlConnection app = new(host.AppConnectionString);
+        await app.OpenAsync();
+
+        // Act
+        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
+            app, "delete from passkey_public_keys where credential_id = @id", credentialId);
+
+        // Assert — no UPDATE of any shape and no DELETE is what holds this table to the reason it is
+        // exempt from row-level security. A role that could remove a key could lock somebody out of
+        // their own account with one statement, and because the table is unpoliced it could do it to
+        // anybody's. Rows leave here only by the cascade from credentials, and through it from users,
+        // which is a deletion somebody asked for rather than one a bug can reach. Removing a passkey
+        // on request is a path that does not exist yet; when it lands, that removal deletes the
+        // credential and this grant still stays absent.
+        await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select count(*) from passkey_public_keys where credential_id = @id",
+                credentialId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_AllowsUpdatingOnlyTheSignatureCounter()
+    {
+        // Arrange — one registered passkey with its counter, a second bare passkey credential on the
+        // same account, and a second real user. Both exist so a leaked grant would land its statement
+        // instead of tripping a foreign key and passing for the wrong reason: the free credential has
+        // no counter row, so repointing onto it would not collide with the primary key either.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
+        Guid credentialId = await host.SeedPasskeyAsync(userId, SeededHandle, SeededCoseKey);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid freeCredentialId = await InsertPasskeyCredentialAsync(admin, userId);
+
+        // Unlike passkey_public_keys, this table is policed on the user — the counter is read only
+        // after the assertion's signature has verified, so an identity is on the connection by then.
+        // The session therefore names the owner and no ambient budget, and the identity is what keeps
+        // the pair intact: without it the permitted update would match zero rows and report success,
+        // leaving the refusals beside it vacuous (see the class remarks).
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
+
+        // Act — the three immutable columns by name, then the one column the grant list holds.
+        PostgresException credentialRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update passkey_signature_counters set credential_id = @value where credential_id = @id",
+            freeCredentialId,
+            credentialId);
+        PostgresException userRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update passkey_signature_counters set user_id = @value where credential_id = @id",
+            otherUserId,
+            credentialId);
+        PostgresException credentialTypeRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update passkey_signature_counters set credential_type = @value where credential_id = @id",
+            "federated",
+            credentialId);
+
+        // The success half, and it is the whole of the UPDATE grant: advancing the counter is what
+        // every assertion does, so this column has to be writable for sign-in to work at all. The
+        // affected count is load-bearing rather than decorative — without it this pair passes when
+        // row-level security matched nothing and the update touched nobody.
+        int advanced = await ExecuteAsync(
+            app,
+            "update passkey_signature_counters set signature_counter = @value where credential_id = @id",
+            AdvancedCounter,
+            credentialId);
+
+        // Assert — repointing credential_id or user_id is the thing the one-column list exists to
+        // stop: it would move a counter onto another account's credential, and clone detection would
+        // then be comparing one authenticator's numbers against another's.
+        await Assert.That(credentialRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(credentialTypeRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(advanced).IsEqualTo(1);
+
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select user_id from passkey_signature_counters where credential_id = @id",
+                credentialId))
+            .IsEqualTo(userId);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select credential_type from passkey_signature_counters where credential_id = @id",
+                credentialId))
+            .IsEqualTo("passkey");
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select signature_counter from passkey_signature_counters where credential_id = @id",
+                credentialId))
+            .IsEqualTo(AdvancedCounter);
+    }
+
+    [Test]
+    public async Task Database_RefusesToDeleteAPasskeySignatureCounter()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid credentialId = await host.SeedPasskeyAsync(userId, SeededHandle, SeededCoseKey);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
+
+        // Act
+        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
+            app, "delete from passkey_signature_counters where credential_id = @id", credentialId);
+
+        // Assert — the absent DELETE grant is what makes the counter a floor a clone cannot get under.
+        // Deleting the row and re-inserting it at zero is the same thing as rewinding the counter, and
+        // that is precisely the move clone detection exists to catch; the UPDATE grant above cannot do
+        // it, so the DELETE must not offer a way around. Rows leave by the cascade from credentials.
+        await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select count(*) from passkey_signature_counters where credential_id = @id",
+                credentialId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_AllowsInsertingAndDeletingAWebAuthnChallenge()
+    {
+        // Arrange — nothing to seed beside it. A challenge belongs to a ceremony rather than to a
+        // person, so it carries no owner and there is no account for it to hang off.
+        await using RepositoryTestHost host = await StartHostAsync();
+
+        // A bare app-role connection, and here it is not an exemption argued around an identity that
+        // does not exist yet — it is the only session this table ever sees. The leg that issues an
+        // authentication challenge runs before anybody has said who they are.
+        await using NpgsqlConnection app = new(host.AppConnectionString);
+        await app.OpenAsync();
+
+        Guid challengeId = Guid.CreateVersion7();
+
+        // Act — both halves of the grant, in the order a ceremony performs them.
+        await using NpgsqlCommand insert = new(
+            "insert into webauthn_challenges (id, challenge, ceremony, created_at_utc, expires_at_utc) " +
+            "values (@id, @challenge, 'authentication', @created_at_utc, @expires_at_utc)",
+            app);
+        insert.Parameters.AddWithValue("id", challengeId);
+        insert.Parameters.AddWithValue("challenge", ChallengeBytes);
+        insert.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        insert.Parameters.AddWithValue("expires_at_utc", ChallengeExpiryInstant);
+        int inserted = await insert.ExecuteNonQueryAsync();
+
+        int consumed = await ExecuteAsync(
+            app, "delete from webauthn_challenges where id = @id", challengeId);
+
+        // Assert — this is the one table in this file the role may DELETE from, and the exception is
+        // deliberate rather than the rule being broken. These rows are nonces: consuming one IS
+        // deleting it, which is what makes a challenge single-use, so the grant that looks like a hole
+        // everywhere else is the mechanism here. Contrast sessions, where revocation writes a column
+        // precisely so the row stays accountable — opposite decisions, because the rows mean opposite
+        // things. The affected count on the delete is what says the row was really there to consume: a
+        // delete of nothing reports success just as happily.
+        await Assert.That(inserted).IsEqualTo(1);
+        await Assert.That(consumed).IsEqualTo(1);
+    }
+
     /// <summary>
     /// Fixed UTC instant for rows these tests write. PostgreSQL <c>timestamptz</c> rejects a
     /// non-UTC <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
     /// </summary>
     private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// The COSE identifiers of the two algorithms the product verifies. Both are values
+    /// <c>CK_passkey_public_keys_cose_algorithm</c> accepts, which is the point: a forged algorithm
+    /// outside the pair would be refused by the check rather than by the grant, and the test would go
+    /// green against a table-wide <c>GRANT UPDATE</c>.
+    /// </summary>
+    private const int Es256 = (int)CoseAlgorithm.Es256;
+
+    private const int Rs256 = (int)CoseAlgorithm.Rs256;
+
+    /// <summary>
+    /// The counter the permitted update advances to. Distinct from the zero every seeded passkey
+    /// starts at, so the read-back cannot pass on a column that was never written.
+    /// </summary>
+    private const long AdvancedCounter = 42L;
+
+    /// <summary>
+    /// The WebAuthn credential id and COSE key the seeded passkey carries, and the pair a leaked
+    /// grant would have written over them. Every one of the four is a length the column's own checks
+    /// accept, for the reason the algorithms above are both real: a value a CHECK would refuse anyway
+    /// makes a refusal say nothing about the grant. The forged pair differs from the seeded pair, or
+    /// the read-back asserting the row is unchanged would prove nothing.
+    /// </summary>
+    private static readonly byte[] SeededHandle = [.. Enumerable.Repeat((byte)0xC1, 32)];
+
+    private static readonly byte[] SeededCoseKey = [0xA5, 0x01, 0x02, 0x03];
+
+    private static readonly byte[] ForgedHandle = [.. Enumerable.Repeat((byte)0xD2, 32)];
+
+    private static readonly byte[] ForgedCoseKey = [0xB6, 0x04, 0x05, 0x06];
+
+    /// <summary>
+    /// The nonce the challenge test writes. Exactly 32 bytes, which is the whole content of
+    /// <c>CK_webauthn_challenges_length</c>.
+    /// </summary>
+    private static readonly byte[] ChallengeBytes = [.. Enumerable.Repeat((byte)0xE3, 32)];
+
+    /// <summary>
+    /// The expiry that challenge carries. Strictly after <see cref="SeedInstant" />, which is the
+    /// whole content of <c>CK_webauthn_challenges_lifetime</c>.
+    /// </summary>
+    private static readonly DateTime ChallengeExpiryInstant =
+        new(2026, 6, 12, 13, 19, 15, DateTimeKind.Utc);
 
     /// <summary>
     /// Expiry of the seeded session. Strictly after <see cref="SeedInstant" />, which is the whole
@@ -596,6 +947,21 @@ public sealed class AppRoleGrantsTests
         return await command.ExecuteNonQueryAsync();
     }
 
+    /// <summary>
+    /// The same permitted-write expectation for a statement whose only parameter is the row id, for
+    /// the reason the matching <see cref="ThrowsPostgresExceptionAsync" /> overload exists: a
+    /// <c>delete</c> sets no column, so it has no <c>@value</c> to bind.
+    /// </summary>
+    private static async Task<int> ExecuteAsync(
+        NpgsqlConnection connection,
+        string sql,
+        Guid rowId)
+    {
+        await using NpgsqlCommand command = new(sql, connection);
+        command.Parameters.AddWithValue("id", rowId);
+        return await command.ExecuteNonQueryAsync();
+    }
+
     private static NpgsqlCommand BuildWrite(
         NpgsqlConnection connection,
         string sql,
@@ -613,6 +979,21 @@ public sealed class AppRoleGrantsTests
     /// permitted write as "this landed" — a rows-affected count alone cannot tell those apart
     /// from a statement that matched no row. A SQL NULL comes back as <see cref="DBNull.Value" />.
     /// </summary>
+    /// <summary>
+    /// The same read for a <c>bytea</c> column, pattern-matched to the array rather than returned as
+    /// an object so a caller compares bytes instead of references.
+    /// </summary>
+    private static async Task<byte[]> SelectBytesAsync(
+        NpgsqlConnection connection,
+        string sql,
+        Guid rowId) =>
+        await SelectScalarAsync(connection, sql, rowId) switch
+        {
+            byte[] bytes => bytes,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected a byte string, got '{unexpected ?? "null"}'."),
+        };
+
     private static async Task<object?> SelectScalarAsync(
         NpgsqlConnection connection,
         string sql,

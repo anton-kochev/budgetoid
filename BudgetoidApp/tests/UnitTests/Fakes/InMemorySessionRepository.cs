@@ -24,6 +24,18 @@ public sealed class InMemorySessionRepository : ISessionRepository
     /// </remarks>
     public DateTime? LastRevokedAtUtc { get; private set; }
 
+    /// <summary>
+    /// Forgets every session added so far, which is what clearing the change tracker does to a row
+    /// that is still only queued for insert.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Sessions"/> is the set of rows a save would write, so discarding is emptying it. A
+    /// handler that adds a session inside a unit of work the provider replays adds a second one on
+    /// the replay, and both are still queued when the surviving attempt commits — one sign-in, two
+    /// rows. Only a fake that keeps them both can show that.
+    /// </remarks>
+    public void DiscardTrackedEntities() => _sessions.Clear();
+
     public Task AddAsync(Session session, CancellationToken cancellationToken = default)
     {
         _sessions.Add(session);

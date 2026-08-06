@@ -53,6 +53,60 @@ public sealed class DataMinimizationSchemaTests
     }
 
     [Test]
+    public async Task Schema_PinsTheColumnsOfThePasskeyPublicKeyRow()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Act
+        IReadOnlyList<string> columns = await ReadColumnNamesAsync(connection, "passkey_public_keys");
+
+        // Assert — a red here is an `aaguid`, a `transports` list, a `last_used_at_utc`, a
+        // `backup_eligible` flag or an attestation blob, and every one of them is data nothing reads.
+        // The row deliberately holds none of them: an AAGUID names the make and model of somebody's
+        // authenticator, transports and a backup flag say what kind of device they carry and how they
+        // sync it, a last-used timestamp is a record of when a person signed in, and attestation is a
+        // certificate chain identifying the hardware. A registration ceremony is handed all of it and
+        // this table keeps exactly what verifying a later assertion needs — the handle, the key and
+        // the algorithm — plus the three columns that say whose it is.
+        //
+        // The cost of a column arriving here is higher than on most tables, and that is the second
+        // reason for the pin. passkey_public_keys is exempt from row-level security, so anything
+        // stored here is readable by every application session regardless of who that session names.
+        string[] expected =
+        [
+            "cose_algorithm", "credential_id", "credential_type", "public_key_cose", "user_id",
+            "webauthn_credential_id",
+        ];
+        await Assert.That(string.Join(", ", columns)).IsEqualTo(string.Join(", ", expected));
+    }
+
+    [Test]
+    public async Task Schema_PinsTheColumnsOfThePasskeySignatureCounterRow()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Act
+        IReadOnlyList<string> columns =
+            await ReadColumnNamesAsync(connection, "passkey_signature_counters");
+
+        // Assert — the whole table is one number and the three columns saying whose it is. A red here
+        // is most likely a `last_used_at_utc` or a `last_seen_ip`, which is precisely the shape a
+        // sign-in history takes when it arrives one column at a time: this row is written on every
+        // assertion, so it is the cheapest place in the schema to accumulate a record of when and
+        // from where a person signs in. The counter is compared and overwritten, and it keeps no
+        // history by design.
+        string[] expected =
+            ["credential_id", "credential_type", "signature_counter", "user_id"];
+        await Assert.That(string.Join(", ", columns)).IsEqualTo(string.Join(", ", expected));
+    }
+
+    [Test]
     public async Task Schema_HoldsNoAnalyticsOrTrackingIdentifier()
     {
         // Arrange

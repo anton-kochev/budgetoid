@@ -66,3 +66,21 @@ CLAUDE.local.md
 # Pending hardening backlog — lives in the private budgetoid-specs repository,
 # because a public list of unclosed weaknesses is a map.
 TECH_DEBT.md
+
+# Same rule, same reason: a working list of the places the schema is not yet covered
+# is the same map under a different name.
+/PLAN.md
+
+# Specifications for capabilities that do not exist yet. docs/ documents only what is
+# true today, and agreed-but-unbuilt design lives in the private budgetoid-specs
+# repository until the day it ships.
+/SRS-*.md
+/SPEC-*.md
+/USER-STORIES.md
+
+# Personal tooling that drives this checkout rather than the product: the grimoire CLI
+# and its manifest belong to whoever installed them, not to the repository.
+/package.json
+/package-lock.json
+/.pithos
+/.pi/

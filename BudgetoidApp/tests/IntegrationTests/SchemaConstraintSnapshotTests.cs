@@ -67,6 +67,16 @@ public sealed class SchemaConstraintSnapshotTests
             // Cascade, and deliberately not Restrict: a credential is how the account is reached,
             // not something the account owes anyone, so it must never be able to hold an erasure up.
             "credentials.FK_credentials_users_user_id: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+            // The same three-column composite the sessions row below carries, and owed for the same
+            // reason: the key and the counter each hold a copy of user_id and credential_type, and
+            // only a reference over all three stops those copies from disagreeing with the credential
+            // they describe. Shortened to credential_id, the database would accept key material filed
+            // under somebody else's user_id — and user_isolation on the counter table decides on that
+            // column and never looks at the credential.
+            // Cascade, and deliberately not Restrict, for the reason the credentials row above gives:
+            // neither a stored key nor a counter may hold an account erasure up.
+            "passkey_public_keys.FK_passkey_public_keys_credentials: FOREIGN KEY (credential_id, user_id, credential_type) REFERENCES credentials(id, user_id, type) ON DELETE CASCADE",
+            "passkey_signature_counters.FK_passkey_signature_counters_credentials: FOREIGN KEY (credential_id, user_id, credential_type) REFERENCES credentials(id, user_id, type) ON DELETE CASCADE",
             "payees.FK_payees_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
             // Composite over three columns, and the composite is the rule: sessions carries user_id,
             // credential_id and credential_type, and all three must agree with the credential row.
@@ -150,11 +160,19 @@ public sealed class SchemaConstraintSnapshotTests
             // account. Its WHERE is what keeps passkey rows out — an account may hold several of
             // those, which AppRoleGrantsTests inserts and relies on.
             """CREATE UNIQUE INDEX "IX_credentials_user_id_federated" ON public.credentials USING btree (user_id) WHERE ((type)::text = 'federated'::text)""",
+            // One account per WebAuthn credential handle. Unlike the two credentials indexes above
+            // this one carries no WHERE, and it must not grow one: the handle an assertion arrives
+            // under is the whole of what the lookup has to go on, so a second row under the same
+            // handle would make "whose key is this" ambiguous before anybody is authenticated.
+            """CREATE UNIQUE INDEX "IX_passkey_public_keys_webauthn_credential_id" ON public.passkey_public_keys USING btree (webauthn_credential_id)""",
             """CREATE UNIQUE INDEX "IX_payees_budget_id_name" ON public.payees USING btree (budget_id, name)""",
             // One email, one account. The index is only half the rule: users.email carries
             // case_insensitive, which the collation snapshot below pins, and pg_get_indexdef does
             // not render it here.
             """CREATE UNIQUE INDEX "IX_users_email" ON public.users USING btree (email)""",
+            // A challenge is spent by being looked up under its own bytes, so uniqueness here is the
+            // rule that keeps a nonce from being redeemable twice through two rows.
+            """CREATE UNIQUE INDEX "IX_webauthn_challenges_challenge" ON public.webauthn_challenges USING btree (challenge)""",
             """CREATE UNIQUE INDEX "PK___EFMigrationsHistory" ON public."__EFMigrationsHistory" USING btree ("MigrationId")""",
             """CREATE UNIQUE INDEX "PK_accounts" ON public.accounts USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_budgets" ON public.budgets USING btree (id)""",
@@ -162,10 +180,16 @@ public sealed class SchemaConstraintSnapshotTests
             """CREATE UNIQUE INDEX "PK_category_groups" ON public.category_groups USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_credentials" ON public.credentials USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_currencies" ON public.currencies USING btree (code)""",
+            // Both keyed on credential_id alone, which is what makes each table hold at most one row
+            // per credential: a key that could be joined by a second row, or a counter that could,
+            // would leave the ceremony with two answers and no rule saying which one binds.
+            """CREATE UNIQUE INDEX "PK_passkey_public_keys" ON public.passkey_public_keys USING btree (credential_id)""",
+            """CREATE UNIQUE INDEX "PK_passkey_signature_counters" ON public.passkey_signature_counters USING btree (credential_id)""",
             """CREATE UNIQUE INDEX "PK_payees" ON public.payees USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_sessions" ON public.sessions USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_transactions" ON public.transactions USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_users" ON public.users USING btree (id)""",
+            """CREATE UNIQUE INDEX "PK_webauthn_challenges" ON public.webauthn_challenges USING btree (id)""",
         ];
         await Assert.That(uniqueIndexes).IsEquivalentTo(expected);
     }
@@ -220,6 +244,25 @@ public sealed class SchemaConstraintSnapshotTests
             """CK_credentials_type_shape: credentials CHECK (((((type)::text = 'federated'::text) AND (provider IS NOT NULL) AND (subject IS NOT NULL) AND (length((subject)::text) > 0)) OR (((type)::text = 'passkey'::text) AND (provider IS NULL) AND (subject IS NULL))))""",
             """CK_currencies_code: currencies CHECK (((code)::text ~ '^[A-Z]{3}$'::text))""",
             """CK_currencies_minor_unit: currencies CHECK (((minor_unit >= 0) AND (minor_unit <= 4)))""",
+            // The two COSE algorithms the verifier accepts, bounded here rather than trusted to the
+            // writer. A row naming any other algorithm is one no verification path can read back, so
+            // it would be a credential that authenticates nobody. Negative literals render with the
+            // sign inside the quotes and an explicit ::integer cast — that is PostgreSQL's rendering
+            // of the list, not a typo to tidy into (-7, -257).
+            """CK_passkey_public_keys_cose_algorithm: passkey_public_keys CHECK ((cose_algorithm = ANY (ARRAY['-7'::integer, '-257'::integer])))""",
+            // The copy of the credential's type that the composite foreign key ties back to its
+            // source, pinned to the one value this table may hold. Without it the column could agree
+            // with a federated credential and put key material on a row nothing verifies.
+            """CK_passkey_public_keys_credential_type: passkey_public_keys CHECK (((credential_type)::text = 'passkey'::text))""",
+            """CK_passkey_public_keys_public_key_length: passkey_public_keys CHECK (((length(public_key_cose) >= 1) AND (length(public_key_cose) <= 1024)))""",
+            """CK_passkey_public_keys_webauthn_credential_id_length: passkey_public_keys CHECK (((length(webauthn_credential_id) >= 16) AND (length(webauthn_credential_id) <= 1023)))""",
+            // The same type pin as on the key table, and it is owed separately: the two tables carry
+            // their own copy of the column, so one constraint cannot cover both.
+            """CK_passkey_signature_counters_credential_type: passkey_signature_counters CHECK (((credential_type)::text = 'passkey'::text))""",
+            // The unsigned 32-bit range a WebAuthn signature counter is defined over. The upper bound
+            // renders as a quoted ::bigint literal because the column is bigint and the value exceeds
+            // integer — matching the lower bound's bare 0 would be the wrong rendering.
+            """CK_passkey_signature_counters_value: passkey_signature_counters CHECK (((signature_counter >= 0) AND (signature_counter <= '4294967295'::bigint)))""",
             // The kind vocabulary, and the lowercase spelling is the whole of it: the converter stores
             // these two strings, so a HasConversion<string>() writing PascalCase members would be
             // refused here rather than stored.
@@ -235,6 +278,15 @@ public sealed class SchemaConstraintSnapshotTests
             // reports exactly the name that describes what is wrong with it.
             """CK_sessions_lifetime: sessions CHECK ((expires_at_utc > created_at_utc))""",
             """CK_transactions_amount: transactions CHECK ((abs(amount) <= (1000000000)::numeric))""",
+            // The two ceremonies a challenge can belong to. A nonce issued for one and spent on the
+            // other is the cross-ceremony replay this vocabulary refuses at the column.
+            """CK_webauthn_challenges_ceremony: webauthn_challenges CHECK (((ceremony)::text = ANY ((ARRAY['registration'::character varying, 'authentication'::character varying])::text[])))""",
+            // Exactly 32 bytes, not a range: a challenge shorter than the issuer emits is one the
+            // issuer never emitted, so equality is the honest rule and a minimum would accept it.
+            """CK_webauthn_challenges_length: webauthn_challenges CHECK ((length(challenge) = 32))""",
+            // The same shape as CK_sessions_lifetime above, owed for the same reason: a row whose
+            // expiry is at or before its creation was never live for an instant.
+            """CK_webauthn_challenges_lifetime: webauthn_challenges CHECK ((expires_at_utc > created_at_utc))""",
         ];
         await Assert.That(checkConstraints).IsEquivalentTo(expected);
     }

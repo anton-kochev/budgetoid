@@ -220,6 +220,56 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// Persists a whole passkey onto an existing account — the <c>credentials</c> row an
+    /// authenticator's key hangs off, the public key that verifies its signatures, and the signature
+    /// counter a clone gives itself away against — and returns the <b>credential</b> id, which is the
+    /// primary key of both dependent rows and therefore the handle every probe needs.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// All three rows in one <c>SaveChangesAsync</c>, mirroring the shape a registration writes them
+    /// in. A credential without its key, or a key without its counter, is a state no ceremony can
+    /// produce: the assertion path reads the key to verify the signature and the counter immediately
+    /// after, so a test written against a half-seeded passkey would be measuring a schema nobody
+    /// ships. Tests that deliberately want a bare passkey credential — a probe row aimed at the empty
+    /// primary key — build one with raw SQL instead, which is the honest way to say that the gap is
+    /// the point.
+    /// </para>
+    /// <para>
+    /// Through the domain factories rather than raw SQL, unlike the passkey credentials the schema
+    /// tests seed by hand. These three now have factories, and going through them means a seeded row
+    /// is one the application could really have written — so a probe that lands beside it is measured
+    /// against production's own shape rather than against whatever column list a test typed out.
+    /// </para>
+    /// </remarks>
+    public async Task<Guid> SeedPasskeyAsync(
+        Guid userId,
+        byte[] webAuthnCredentialId,
+        byte[]? coseKey = null,
+        CoseAlgorithm algorithm = CoseAlgorithm.Es256,
+        uint signatureCounter = 0)
+    {
+        ArgumentNullException.ThrowIfNull(webAuthnCredentialId);
+
+        await using var db = CreateSeedingDbContext();
+        Credential credential = Credential.CreatePasskey(userId, SeedInstant);
+        db.Credentials.Add(credential);
+        db.PasskeyPublicKeys.Add(PasskeyPublicKey.Register(
+            credential, webAuthnCredentialId, coseKey ?? DefaultCoseKey, algorithm));
+        db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(credential, signatureCounter));
+        await db.SaveChangesAsync();
+        return credential.Id;
+    }
+
+    /// <summary>
+    /// The COSE key seeded passkeys carry when a caller does not name one. Four bytes: nothing here
+    /// verifies a signature, and the only rule the column holds is that the key is between one byte
+    /// and <see cref="PasskeyPublicKey.MaxCoseKeyLength" />. A caller testing that bound passes its
+    /// own.
+    /// </summary>
+    private static readonly byte[] DefaultCoseKey = [0xA5, 0x01, 0x02, 0x03];
+
+    /// <summary>
     /// Adds another budget to an existing owner and returns its id, so a test can exercise two
     /// tenants without inventing a second user.
     /// </summary>

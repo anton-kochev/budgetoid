@@ -23,6 +23,14 @@ public sealed class BudgetoidDbContext(
     // session is established before any budget is ambient and outlives whichever budget was. It is
     // isolated on user_id by the user_isolation policy in the database instead. Every query over these
     // sets must therefore scope by owner explicitly.
+    //
+    // The three passkey sets are unfiltered too, and their reasons differ from each other. A public key
+    // and a signature counter belong to a credential, and through it to a person; neither names a
+    // budget, and both are read while authenticating — before any budget could be ambient. They are
+    // isolated on user_id by user_isolation, exactly as sessions are. A challenge is the odd one: it
+    // names nobody at all, because the authentication ceremony issues it before anybody has said who
+    // they are, so there is no owner for a filter or a policy to key on. See
+    // WebAuthnChallengeConfiguration for what stands in for isolation there.
     public DbSet<Budget> Budgets => Set<Budget>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
     public DbSet<Account> Accounts => Set<Account>();
@@ -33,6 +41,12 @@ public sealed class BudgetoidDbContext(
     public DbSet<User> Users => Set<User>();
     public DbSet<Credential> Credentials => Set<Credential>();
     public DbSet<Session> Sessions => Set<Session>();
+    public DbSet<PasskeyPublicKey> PasskeyPublicKeys => Set<PasskeyPublicKey>();
+    public DbSet<PasskeySignatureCounter> PasskeySignatureCounters => Set<PasskeySignatureCounter>();
+
+    // Internal rather than public, following its row type: nothing outside this assembly has a reason
+    // to read a protocol nonce, and a public set would be the first step towards one.
+    internal DbSet<WebAuthnChallengeRow> WebAuthnChallenges => Set<WebAuthnChallengeRow>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

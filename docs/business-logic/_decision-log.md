@@ -8,6 +8,43 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-05 — A passkey's material is split by whether it is read before or after identity
+
+**Context:** signing in with a passkey means finding a public key and checking a signature *before*
+the server knows whose account this is. Until that moment every statement runs with
+`app.current_user_id` empty, so a policed table would refuse the very query that establishes the
+identity. The question was which of a passkey's facts have to live on a table exempt from row-level
+security, and which must not.
+
+**Decision:** the line is drawn at **before proof / after proof**, and it is drawn as a *table
+boundary* rather than a convention. `passkey_public_keys` — credential id, public key, algorithm — is
+exempt, because all of it is read by the discovery lookup. `passkey_signature_counters` carries
+`user_id` and is policed, because the specification compares a counter only after the signature
+verifies. `credentials` grows no column at all, which also leaves its frozen constraint snapshot and
+its pinned exemption untouched.
+
+What holds the exempt table to its reason is its **pinned column set**, not the absent `UPDATE` and
+`DELETE` grants. Those stop mutable per-user state accumulating, which is real but is not the
+threat: a wrapped key or a recovery-code hash is written once and never updated, so it satisfies any
+append-only rule perfectly while being exactly what must not sit on a table every session reads in
+full. A red on the pin means move the column, never widen the pin.
+
+Four candidate columns were **refused outright** rather than relocated — AAGUID, transports, a
+last-used instant, and backup-eligibility flags. Nothing in this design reads any of them, and an
+authenticator model identifier is a device fingerprint by another name. Each arrives with the feature
+that reads it.
+
+**Consequence to carry:** the assertion path must publish the identity only after the signature
+verifies, and must not open a transaction before that publication — a transaction opened earlier
+configures the connection while the identity is still empty, and every policed statement inside it
+fails with `22P02`. The whole ceremony runs over the real least-privilege connection in an
+integration test for exactly this reason.
+
+Recorded as [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md);
+the verification decisions that go with it are [ADR 0013](../decisions/0013-verify-webauthn-ceremonies-without-a-fido-library.md).
+
+---
+
 ## 2026-08-05 — A session is revoked by writing an instant, not by deleting the row
 
 **Context:** the product now records a sign-in server-side so it can end one without asking an

@@ -85,4 +85,35 @@ public sealed class Credential
             CreatedAtUtc = createdAtUtc,
         };
     }
+
+    /// <summary>
+    /// Mints the credential a passkey registration hangs its public key and signature counter off.
+    /// </summary>
+    public static Credential CreatePasskey(Guid userId, DateTime createdAtUtc)
+    {
+        Dictionary<string, string[]> errors = new();
+
+        if (userId == Guid.Empty)
+        {
+            errors[nameof(UserId)] = ["User id is required."];
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new ValidationException(errors);
+        }
+
+        // Provider and Subject stay null: an authenticator holds this credential, nobody issued it.
+        // See the remarks on Provider. Leaving them null is also what keeps the federated discovery
+        // lookup on the (provider, subject) pair from ever matching a passkey row.
+        return new Credential
+        {
+            Id = Guid.CreateVersion7(),
+            UserId = userId,
+            Type = CredentialType.Passkey,
+            Provider = null,
+            Subject = null,
+            CreatedAtUtc = createdAtUtc,
+        };
+    }
 }

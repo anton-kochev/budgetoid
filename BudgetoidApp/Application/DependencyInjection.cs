@@ -16,6 +16,10 @@ using Application.CategoryGroups.GetCategoryGroups;
 using Application.CategoryGroups.MoveCategoryGroup;
 using Application.CategoryGroups.UpdateCategoryGroup;
 using Application.Currencies.GetCurrencies;
+using Application.Passkeys.BeginAssertion;
+using Application.Passkeys.BeginRegistration;
+using Application.Passkeys.CompleteAssertion;
+using Application.Passkeys.CompleteRegistration;
 using Application.Payees.GetPayees;
 using Application.Payees.RenamePayee;
 using Application.Sessions.RevokeSessionsForCredential;
@@ -61,6 +65,10 @@ public static class DependencyInjection
         services.AddScoped<RenamePayeeHandler>();
         services.AddScoped<EnsureUserHandler>();
         services.AddScoped<RevokeSessionsForCredentialHandler>();
+        services.AddScoped<BeginRegistrationHandler>();
+        services.AddScoped<CompleteRegistrationHandler>();
+        services.AddScoped<BeginAssertionHandler>();
+        services.AddScoped<CompleteAssertionHandler>();
 
         return services;
     }

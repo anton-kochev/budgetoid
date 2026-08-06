@@ -5,6 +5,7 @@ using Application.CategoryGroups;
 using Application.Currencies;
 using Application.Payees;
 using Application.Transactions;
+using Application.Users;
 using Domain.Accounts;
 using Domain.Budgets;
 using Domain.Categories;
@@ -32,13 +33,25 @@ public static class DependencyInjection
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IBudgetRepository, BudgetRepository>();
         services.AddScoped<ISessionRepository, SessionRepository>();
+        services.AddScoped<IPasskeyRepository, PasskeyRepository>();
+
+        // Scoped like every other writer over the DbContext, and for the same reason: it holds the
+        // scoped BudgetoidDbContext, so a longer lifetime would keep one request's context alive
+        // across requests.
+        services.AddScoped<IWebAuthnChallengeStore, DbWebAuthnChallengeStore>();
         services.AddScoped<ITransactionReadService, TransactionReadService>();
         services.AddScoped<IAccountReadService, AccountReadService>();
         services.AddScoped<ICurrencyReadService, CurrencyReadService>();
         services.AddScoped<IPayeeReadService, PayeeReadService>();
         services.AddScoped<ICategoryGroupReadService, CategoryGroupReadService>();
         services.AddScoped<ICategoryReadService, CategoryReadService>();
+        services.AddScoped<IUserAccountReadService, UserAccountReadService>();
         services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();
+
+        // Scoped for the reason every writer over the context is: it holds the scoped
+        // BudgetoidDbContext, and discarding the tracked entities of a request other than the current
+        // one is the one thing this must never be able to do.
+        services.AddScoped<IPersistenceState, DbContextPersistenceState>();
 
         // Scoped, because it reads the scoped IBudgetContext and IUserContext. Api/Program.cs
         // attaches it through the (serviceProvider, options) overload of AddDbContext, whose

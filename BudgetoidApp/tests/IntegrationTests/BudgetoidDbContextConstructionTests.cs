@@ -303,6 +303,29 @@ public sealed class BudgetoidDbContextConstructionTests
             "CK_credentials_type_shape: credentials (type = 'federated' and provider is not null and "
             + "subject is not null and length(subject) > 0) or (type = 'passkey' and provider is null "
             + "and subject is null)",
+            // The two COSE algorithms the verifier accepts. Anything else is a key no verification
+            // path can read back, so the row would be a credential that authenticates nobody.
+            "CK_passkey_public_keys_cose_algorithm: passkey_public_keys cose_algorithm in (-7, -257)",
+            // Each table carries its own copy of the credential's type, so each owes its own pin: the
+            // copy is what the composite foreign key ties back to the credential, and a copy free to
+            // say 'federated' would put key material on a row nothing verifies.
+            "CK_passkey_public_keys_credential_type: passkey_public_keys credential_type = 'passkey'",
+            "CK_passkey_public_keys_public_key_length: passkey_public_keys length(public_key_cose) between 1 and 1024",
+            "CK_passkey_public_keys_webauthn_credential_id_length: passkey_public_keys length(webauthn_credential_id) between 16 and 1023",
+            "CK_passkey_signature_counters_credential_type: passkey_signature_counters credential_type = 'passkey'",
+            // The unsigned 32-bit range a WebAuthn signature counter is defined over, written as two
+            // comparisons rather than between because the upper bound exceeds int.
+            "CK_passkey_signature_counters_value: passkey_signature_counters signature_counter >= 0 "
+            + "and signature_counter <= 4294967295",
+            // A nonce issued for one ceremony and spent on the other is cross-ceremony replay, which
+            // this vocabulary refuses at the column rather than in whichever handler reads it.
+            "CK_webauthn_challenges_ceremony: webauthn_challenges ceremony in ('registration', 'authentication')",
+            // Equality, not a minimum: a challenge of any other length is one the issuer never
+            // emitted, and a lower bound would accept it.
+            "CK_webauthn_challenges_length: webauthn_challenges length(challenge) = 32",
+            // The same rule CK_sessions_lifetime states, owed here for the same reason: a row whose
+            // expiry is at or before its creation was never live for an instant.
+            "CK_webauthn_challenges_lifetime: webauthn_challenges expires_at_utc > created_at_utc",
             "CK_currencies_code: currencies code ~ '^[A-Z]{3}$'",
             "CK_currencies_minor_unit: currencies minor_unit between 0 and 4",
             // The kind vocabulary, bounded the way the credential vocabularies above are, and it is
@@ -331,7 +354,7 @@ public sealed class BudgetoidDbContextConstructionTests
         // unattended on every push to main, so a regenerated baseline arrives under a new id, the
         // next push finds nothing applied, and it re-creates every table against a populated
         // database. Having to edit this line is the checkpoint the retired manual deploy step was.
-        const string frozenBaselineId = "20260805083918_InitialCreate";
+        const string frozenBaselineId = "20260805112735_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

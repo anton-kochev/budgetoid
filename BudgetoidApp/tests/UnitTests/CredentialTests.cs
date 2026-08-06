@@ -150,6 +150,41 @@ public sealed class CredentialTests
         await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
     }
 
+    [Test]
+    public async Task CreatePasskey_ProducesACredentialWithNoProviderAndNoSubject()
+    {
+        // Arrange
+        Guid userId = Guid.CreateVersion7();
+        DateTime createdAtUtc = UtcNow();
+
+        // Act
+        Credential credential = Credential.CreatePasskey(userId, createdAtUtc);
+
+        // Assert — a passkey is held by the authenticator, so there is no issuer to name and no
+        // issuer-assigned identifier to record. Provider and Subject are nullable for exactly this
+        // case, and leaving them null is what keeps the discovery lookup on the federated pair from
+        // ever matching a passkey row.
+        await Assert.That(credential.Id).IsNotEqualTo(Guid.Empty);
+        await Assert.That(credential.UserId).IsEqualTo(userId);
+        await Assert.That(credential.Type).IsEqualTo(CredentialType.Passkey);
+        await Assert.That(credential.Provider).IsNull();
+        await Assert.That(credential.Subject).IsNull();
+        await Assert.That(credential.CreatedAtUtc).IsEqualTo(createdAtUtc);
+    }
+
+    [Test]
+    public async Task CreatePasskey_WithAnEmptyUserId_Throws()
+    {
+        // Arrange, Act — the same rule the federated factory applies, and it is stated again here
+        // rather than assumed: a credential is only a way into an account, and one minted without an
+        // owner is orphaned the moment it is written.
+        ValidationException exception = ThrowsValidationException(() =>
+            Credential.CreatePasskey(Guid.Empty, UtcNow()));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("UserId")).IsTrue();
+    }
+
     private static DateTime UtcNow() => new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
     private static ValidationException ThrowsValidationException(Action action)

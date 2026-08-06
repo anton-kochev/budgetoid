@@ -60,10 +60,19 @@ Load-bearing rules, each explained there or in the linked decision:
 - Budget-owned rows are isolated twice: PostgreSQL `budget_isolation` RLS policies enforce,
   EF `BudgetIsolation` query filters turn a foreign row into the API's 404/400. Neither is
   duplication — do not delete either. See [ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md).
-- `users`, `budgets` and `sessions` are policed on the **user** by `user_isolation`, not on a budget.
-  `credentials` is the one exempt user-owned table — it is read to discover who is asking,
-  so the discovery lookup must never join `users`. See
-  [ADR 0011](docs/decisions/0011-police-the-user-owned-tables.md).
+- `users`, `budgets`, `sessions` and `passkey_signature_counters` are policed on the **user** by
+  `user_isolation`, not on a budget. `credentials`, `passkey_public_keys` and `webauthn_challenges`
+  are exempt, each because it is read *before* the request has an identity a policy could be keyed
+  on — so the credential lookup must never join `users`. **An exempt table scopes nothing**: only the
+  discovery lookup may omit an owner filter, and every other read of one must carry its own
+  `where user_id = …`. What holds each exemption to its reason is its **pinned column set**, not the
+  grant matrix — a write-once secret passes any append-only rule — so a new column there means *move
+  the column*, never widen the pin. See
+  [ADR 0011](docs/decisions/0011-police-the-user-owned-tables.md) and
+  [ADR 0012](docs/decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
+- **The passkey assertion path publishes the identity only after the signature verifies, and opens
+  its transaction only after that.** A transaction opened earlier configures the connection while
+  `app.current_user_id` is still empty, so every policed statement inside it fails with `22P02`.
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
   `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
 - A new tenant-owned table needs a grant **and** a policy — `budget_isolation` if it carries

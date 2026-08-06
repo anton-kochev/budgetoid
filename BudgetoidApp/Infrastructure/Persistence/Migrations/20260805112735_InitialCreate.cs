@@ -46,6 +46,24 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
+            name: "webauthn_challenges",
+            columns: table => new
+            {
+                id = table.Column<Guid>(type: "uuid", nullable: false),
+                challenge = table.Column<byte[]>(type: "bytea", nullable: false),
+                ceremony = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                expires_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_webauthn_challenges", x => x.id);
+                table.CheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication')");
+                table.CheckConstraint("CK_webauthn_challenges_length", "length(challenge) = 32");
+                table.CheckConstraint("CK_webauthn_challenges_lifetime", "expires_at_utc > created_at_utc");
+            });
+
+        migrationBuilder.CreateTable(
             name: "budgets",
             columns: table => new
             {
@@ -172,6 +190,54 @@ public partial class InitialCreate : Migration
                     column: x => x.budget_id,
                     principalTable: "budgets",
                     principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "passkey_public_keys",
+            columns: table => new
+            {
+                credential_id = table.Column<Guid>(type: "uuid", nullable: false),
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                credential_type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                webauthn_credential_id = table.Column<byte[]>(type: "bytea", nullable: false),
+                public_key_cose = table.Column<byte[]>(type: "bytea", nullable: false),
+                cose_algorithm = table.Column<int>(type: "integer", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_passkey_public_keys", x => x.credential_id);
+                table.CheckConstraint("CK_passkey_public_keys_cose_algorithm", "cose_algorithm in (-7, -257)");
+                table.CheckConstraint("CK_passkey_public_keys_credential_type", "credential_type = 'passkey'");
+                table.CheckConstraint("CK_passkey_public_keys_public_key_length", "length(public_key_cose) between 1 and 1024");
+                table.CheckConstraint("CK_passkey_public_keys_webauthn_credential_id_length", "length(webauthn_credential_id) between 16 and 1023");
+                table.ForeignKey(
+                    name: "FK_passkey_public_keys_credentials",
+                    columns: x => new { x.credential_id, x.user_id, x.credential_type },
+                    principalTable: "credentials",
+                    principalColumns: new[] { "id", "user_id", "type" },
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "passkey_signature_counters",
+            columns: table => new
+            {
+                credential_id = table.Column<Guid>(type: "uuid", nullable: false),
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                credential_type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                signature_counter = table.Column<long>(type: "bigint", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_passkey_signature_counters", x => x.credential_id);
+                table.CheckConstraint("CK_passkey_signature_counters_credential_type", "credential_type = 'passkey'");
+                table.CheckConstraint("CK_passkey_signature_counters_value", "signature_counter >= 0 and signature_counter <= 4294967295");
+                table.ForeignKey(
+                    name: "FK_passkey_signature_counters_credentials",
+                    columns: x => new { x.credential_id, x.user_id, x.credential_type },
+                    principalTable: "credentials",
+                    principalColumns: new[] { "id", "user_id", "type" },
                     onDelete: ReferentialAction.Cascade);
             });
 
@@ -367,6 +433,27 @@ public partial class InitialCreate : Migration
             filter: "type = 'federated'");
 
         migrationBuilder.CreateIndex(
+            name: "IX_passkey_public_keys_credential_id_user_id_credential_type",
+            table: "passkey_public_keys",
+            columns: new[] { "credential_id", "user_id", "credential_type" });
+
+        migrationBuilder.CreateIndex(
+            name: "IX_passkey_public_keys_webauthn_credential_id",
+            table: "passkey_public_keys",
+            column: "webauthn_credential_id",
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_passkey_signature_counters_credential_id_user_id_credential_type",
+            table: "passkey_signature_counters",
+            columns: new[] { "credential_id", "user_id", "credential_type" });
+
+        migrationBuilder.CreateIndex(
+            name: "IX_passkey_signature_counters_user_id",
+            table: "passkey_signature_counters",
+            column: "user_id");
+
+        migrationBuilder.CreateIndex(
             name: "IX_payees_budget_id_name",
             table: "payees",
             columns: new[] { "budget_id", "name" },
@@ -408,16 +495,36 @@ public partial class InitialCreate : Migration
             table: "users",
             column: "email",
             unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_webauthn_challenges_challenge",
+            table: "webauthn_challenges",
+            column: "challenge",
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_webauthn_challenges_expires_at_utc",
+            table: "webauthn_challenges",
+            column: "expires_at_utc");
     }
 
     /// <inheritdoc />
     protected override void Down(MigrationBuilder migrationBuilder)
     {
         migrationBuilder.DropTable(
+            name: "passkey_public_keys");
+
+        migrationBuilder.DropTable(
+            name: "passkey_signature_counters");
+
+        migrationBuilder.DropTable(
             name: "sessions");
 
         migrationBuilder.DropTable(
             name: "transactions");
+
+        migrationBuilder.DropTable(
+            name: "webauthn_challenges");
 
         migrationBuilder.DropTable(
             name: "credentials");

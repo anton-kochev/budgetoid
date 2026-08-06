@@ -58,21 +58,22 @@ GRANT UPDATE (email) ON users TO budgetoid_app;
 -- changing user_id would move a sign-in between accounts; a credential's identity is written
 -- whole at registration and has no edit that means anything.
 --
--- Today that is every column, so there is no UPDATE grant of any shape rather than a column list
--- with nothing on it. Read that as the current state of the list and not as a property of the
--- table: a passkey's signature counter and a credential's last-used timestamp are both specified,
--- and each arrives as a column that goes ON the list while the five above stay off it. The rule
--- being defended is "identity is immutable", not "credentials are never written".
+-- That is every column, so there is no UPDATE grant of any shape rather than a column list with
+-- nothing on it — and that is now a property of the table rather than a snapshot of it. The one
+-- mutable value the credential story was expected to bring, a passkey's signature counter, did not
+-- land here: it lives on passkey_signature_counters below, which carries user_id and is policed.
+-- See docs/decisions/0012. Anything proposed for this table from here on has to answer the same
+-- question that one did, and the answer is a table boundary rather than a column on this one.
 --
 -- No DELETE either — no revocation path exists yet, and until one does the absent grant is what
 -- stops a bug removing someone's only way in. Revoking a credential and replacing the federated
 -- one on an email change are both specified, and both need this grant; when one lands, the reason
 -- written here is what has to be re-argued rather than quietly deleted.
 --
--- Note what those future columns land on. The exemption was granted to one QUERY — the one that
--- discovers who is asking — but PostgreSQL applies it to the whole TABLE, so anything added here
--- is readable by every application session regardless of who that session names. That mismatch is
--- cheap while the columns are (id, user_id, type, provider, subject, created_at_utc) and stops
+-- Note what a column added here would land on. The exemption was granted to one QUERY — the one
+-- that discovers who is asking — but PostgreSQL applies it to the whole TABLE, so anything added
+-- here is readable by every application session regardless of who that session names. That mismatch
+-- is cheap while the columns are (id, user_id, type, provider, subject, created_at_utc) and stops
 -- being cheap the moment a wrapped key or a recovery-code hash joins them.
 --
 -- So the exemption pins that column set, and adding a column here goes red. The red means MOVE THE
@@ -108,6 +109,69 @@ GRANT SELECT, INSERT ON credentials TO budgetoid_app;
 REVOKE ALL ON sessions FROM budgetoid_app;
 GRANT SELECT, INSERT ON sessions TO budgetoid_app;
 GRANT UPDATE (revoked_at_utc) ON sessions TO budgetoid_app;
+
+-- passkey_public_keys: everything on this table is read to decide whether the signature on an
+-- assertion is genuine, which a WebAuthn ceremony has to answer BEFORE it knows whose account it is.
+-- So it is exempt from row-level security for the same reason credentials is, and it carries the
+-- same kind of pinned column set.
+--
+-- What holds this exemption to its reason is the PINNED COLUMN SET in RowLevelSecurityCoverage, not
+-- the two grant lines below. Read that carefully, because the appealing answer is the wrong one. The
+-- hazard is not mutation: the exemption is granted to a QUERY and applied to the whole TABLE, so
+-- every column here is readable by every application session whoever that session names. A wrapped
+-- key or a recovery-code hash is written once and never updated — each satisfies an append-only rule
+-- perfectly, and this table, already holding key material, is the most attractive place in the schema
+-- to propose one. The pin is what turns a new column red; the answer to that red is to MOVE THE
+-- COLUMN to a table carrying user_id, never to widen the pin.
+--
+-- The grants are the corollary, and worth having because they are checkable in one line: no UPDATE of
+-- any shape and no DELETE, ever, so mutable per-user state cannot accumulate here. credentials is
+-- exempt on a table that could one day take an UPDATE column list; this one cannot. That is a real
+-- narrowing — it just does not cover the case that actually threatens the exemption, which is a
+-- secret that never changes. See docs/decisions/0012.
+--
+-- Rows leave only by the cascade from credentials, and through it from users, so a passkey leaves
+-- nothing behind an erasure.
+REVOKE ALL ON passkey_public_keys FROM budgetoid_app;
+GRANT SELECT, INSERT ON passkey_public_keys TO budgetoid_app;
+
+-- passkey_signature_counters: the counter an authenticator reports, compared to detect a cloned
+-- one. It sits apart from the public key because the specification orders the ceremony that way —
+-- the signature is verified first and the counter is compared only after, so by the time this table
+-- is read the request has a trusted identity and can be policed like everything else. It carries
+-- user_id, so the coverage classifier reaches that verdict from the columns without being told.
+--
+-- signature_counter is the only column an edit can legitimately reach, and it is therefore the whole
+-- UPDATE list. credential_id, user_id and credential_type are immutable by omission. A one-column
+-- list is still a list: do not collapse it into a table-wide GRANT UPDATE, which would take the
+-- three above with it and let a bug repoint a counter at another account's credential.
+--
+-- No DELETE; rows leave by the cascade from credentials.
+REVOKE ALL ON passkey_signature_counters FROM budgetoid_app;
+GRANT SELECT, INSERT ON passkey_signature_counters TO budgetoid_app;
+GRANT UPDATE (signature_counter) ON passkey_signature_counters TO budgetoid_app;
+
+-- webauthn_challenges: the nonce each ceremony is bound to. It belongs to a ceremony rather than to
+-- a person — the authentication ceremony issues one before anybody has said who they are, which is
+-- what a discoverable credential means — so there is nobody for a policy to key on, and it carries
+-- no user_id at all. Exempt with that written reason, and its column set pinned, because the pin is
+-- what stops a person-identifying column landing here later.
+--
+-- Of the identity tables — users, credentials, sessions, passkey_public_keys,
+-- passkey_signature_counters and this one — it is the only one granted DELETE, and that is deliberate
+-- rather than the rule above being broken. (The budget-owned tables further down hold DELETE too, for
+-- the ordinary reason that a person may delete their own accounts, categories and transactions.)
+-- These rows are nonces: consuming one IS deleting it, which is the property that makes a challenge
+-- single-use, and a row nobody can delete is a row swept by a path that does not exist. Contrast the
+-- sessions block, where revocation writes a column precisely so the row stays accountable — opposite
+-- decisions, because the rows mean opposite things.
+--
+-- Note the cost this accepts: the leg that issues an authentication challenge is unauthenticated, so
+-- this is the one table any caller can make the role insert into. Growth is bounded by a short
+-- lifetime and an opportunistic sweep of expired rows, not by rate limiting, which does not exist
+-- here.
+REVOKE ALL ON webauthn_challenges FROM budgetoid_app;
+GRANT SELECT, INSERT, DELETE ON webauthn_challenges TO budgetoid_app;
 
 -- budgets: a budgets row is never updated at all (rule B2), so there is no UPDATE grant of
 -- any shape. No delete path exists either.
@@ -195,10 +259,16 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 -- Every other table is exempt, and each exemption is written down with its reason rather than
 -- falling out of a query by accident:
 --
---   credentials   read to discover WHO is asking — a policy keyed on the identity it resolves
---                 would refuse the query that resolves it
---   currencies    shared reference data belonging to no tenant
---   __EFMigrationsHistory   EF's own bookkeeping
+--   credentials           read to discover WHO is asking — a policy keyed on the identity it
+--                         resolves would refuse the query that resolves it
+--   passkey_public_keys   read to decide whether an assertion's signature is genuine, which the
+--                         ceremony answers before it knows whose account it is; held to that reason
+--                         by its pinned column set, because a write-once secret would pass any
+--                         append-only rule the grants can express
+--   webauthn_challenges   a nonce belonging to a ceremony rather than to a person, issued before
+--                         anybody has said who they are
+--   currencies            shared reference data belonging to no tenant
+--   __EFMigrationsHistory EF's own bookkeeping
 --
 -- budgets and users used to be on that list, and the reason was real at the time: provisioning read
 -- them before any identity existed. It read users only because the credential lookup joined to it
@@ -306,11 +376,17 @@ CREATE POLICY budget_isolation ON transactions FOR ALL TO budgetoid_app
 -- known before any statement below is reached — including on registration, where User.Create mints
 -- the id client-side and the id therefore exists before the row does. See docs/decisions/0011.
 --
--- credentials keeps the exemption, and is now the only table that has one it could have outgrown.
--- It is the table read to answer "who is asking", so a policy keyed on the answer would refuse the
--- question that produces it. sessions is the counterexample that keeps that exemption honest: it is
--- read after the question has been answered, so it is policed like everything else, and material
--- attached to a session belongs there rather than on the exempt table.
+-- credentials keeps the exemption. It is the table read to answer "who is asking", so a policy keyed
+-- on the answer would refuse the question that produces it. sessions is the counterexample that
+-- keeps that exemption honest: it is read after the question has been answered, so it is policed
+-- like everything else, and material attached to a session belongs there rather than on the exempt
+-- table.
+--
+-- passkey_public_keys is the second table with that reason, and the pair below it — the counter,
+-- policed — is that same before/after line drawn once more inside a single ceremony. Read the two
+-- together before proposing a third exemption: the question is never "is this sensitive" but "is
+-- this reachable before the request has an identity", and if the answer is no, a policy costs
+-- nothing.
 
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON users;
@@ -336,5 +412,20 @@ CREATE POLICY user_isolation ON budgets FOR ALL TO budgetoid_app
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON sessions;
 CREATE POLICY user_isolation ON sessions FOR ALL TO budgetoid_app
+    USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
+    WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
+
+-- passkey_signature_counters is the same case as sessions, one step further along the same
+-- ceremony: it is reached only after the assertion's signature has verified, so an identity is on
+-- the connection by the time this policy is evaluated. Its sibling passkey_public_keys is read one
+-- step earlier, with no identity at all, which is why that table is exempt and this one is not. Two
+-- tables rather than one is what makes that boundary a thing the schema states instead of a thing a
+-- reader has to reconstruct.
+--
+-- Like sessions, this policy reads only the ownership column. Whether a passkey may be used at all
+-- is decided by the ceremony above it, not by a predicate here.
+ALTER TABLE passkey_signature_counters ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_isolation ON passkey_signature_counters;
+CREATE POLICY user_isolation ON passkey_signature_counters FOR ALL TO budgetoid_app
     USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
     WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);

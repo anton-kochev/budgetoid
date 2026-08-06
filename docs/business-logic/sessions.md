@@ -23,11 +23,15 @@ ended here, in one write, by the same role that serves every request.
 
 **What is built today and what is not.** The `sessions` table, its entity, its isolation policy, its
 grant matrix entry, and the two operations — establish one, revoke every session a credential
-established — exist and are tested. Nothing issues a session to a client and nothing presents one:
-the API still authenticates each request from the Google ID token it is handed, exactly as
-[users-and-ownership.md](users-and-ownership.md) describes. So no request path reads a `sessions`
-row yet, and no code calls `RevokeSessionsForCredentialHandler` — there is no path that removes a
-credential for it to be called from.
+established — exist and are tested. **A verified passkey assertion establishes a session**, and it is
+the only thing that does; see [passkeys.md](passkeys.md).
+
+What still does not exist is anything that *presents* one. No session token is issued — the assertion
+response deliberately carries no handle to the row it created — and the API still authenticates every
+other request from the Google ID token it is handed, exactly as
+[users-and-ownership.md](users-and-ownership.md) describes. So a `sessions` row is written and read
+back only by its own tests, and no code calls `RevokeSessionsForCredentialHandler`: there is still no
+path that removes a credential for it to be called from.
 
 ## Key Entities
 
@@ -240,7 +244,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)` | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
+| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached today only from `CompleteAssertionHandler` after a passkey assertion verifies | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
 | Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached through `RevokeSessionsForCredentialHandler` | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
 
@@ -273,6 +277,11 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   as the standing `users.email` update grant recorded in
   [users-and-ownership.md](users-and-ownership.md): if the credential-removal path does not arrive,
   this handler should be deleted rather than left standing.
-- **The expiry has no issuing policy behind it.** `Session.Establish` takes the expiry from its
-  caller and validates only that it is after the creation instant. How long a session lasts is a
-  decision that arrives with the code that issues one, and no default is hidden here.
+- **The expiry is decided by the caller, and today there is exactly one.** `Session.Establish`
+  validates only that the expiry is after the creation instant; the number itself —
+  **14 days** — is a constant on `CompleteAssertionHandler`. It lives in Application rather than
+  Domain because how long a session lasts is product policy, which
+  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) keeps above the
+  invariants, and it is not on `IPasskeyCeremonyPolicy` because a session lifetime that varies per
+  environment is a difference nobody meant. A second establishing path must not quietly bring a
+  second number.

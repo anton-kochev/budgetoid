@@ -590,6 +590,224 @@ public sealed class RlsIsolationTests
             .IsEqualTo(1L);
     }
 
+    [Test]
+    public async Task Database_HidesAnotherUsersSignatureCounter()
+    {
+        // Arrange — two owners with one registered passkey each, because the counter is isolated by
+        // user: a second passkey under the same owner would be invisible to this rule, and the
+        // foreign count would come back zero with or without a policy. The two handles differ, or the
+        // unique index over webauthn_credential_id would refuse the second registration.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0xC1));
+        await host.SeedPasskeyAsync(other.UserId, PasskeyHandle(0xD2));
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — both halves, on one session. The own count is not decoration: a policy that hides
+        // every row from everyone satisfies the foreign half on its own, and only this notices.
+        long own = await CountKeyedRowsAsync(
+            app, "passkey_signature_counters", "user_id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(
+            app, "passkey_signature_counters", "user_id", other.UserId);
+
+        // Assert — the counter is where the passkey ceremony crosses from anonymous to identified.
+        // Its sibling passkey_public_keys is read one step earlier and is exempt precisely because
+        // nobody has said who they are yet; by the time this table is read the signature has verified,
+        // so there is an identity to police on and a leak here would be a leak with no excuse.
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToInsertASignatureCounterForAnotherUser()
+    {
+        // Arrange — a bare passkey credential for each owner, with no counter filed against it yet.
+        // Bare on purpose: credential_id is the primary key of the counter table, so a probe needs a
+        // credential whose slot is free, and each probe names its own owner's credential so the
+        // composite foreign key is satisfied by construction and the only thing wrong with the row is
+        // whose counter it is.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid ownCredentialId = await InsertPasskeyCredentialAsync(admin, session.UserId);
+        Guid otherCredentialId = await InsertPasskeyCredentialAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // owner's counter says nothing about whether this session can create one in their name, and a
+        // USING-only policy would let this through. A refused INSERT is loud, unlike a filtered
+        // UPDATE — 42501, "new row violates row-level security policy".
+        await using NpgsqlCommand forOther = BuildSignatureCounterInsertProbe(
+            app, other.UserId, otherCredentialId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        await using NpgsqlCommand forOwn = BuildSignatureCounterInsertProbe(
+            app, session.UserId, ownCredentialId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — planting a counter under somebody else's name is how the monotonic comparison
+        // would be attacked from the side: the row the clone check reads would be one this session
+        // chose the starting value of. The null coalesce is for the failure message — a bare
+        // refusal?.SqlState renders a statement that went through as the empty string, which reads as
+        // a blank SQLSTATE rather than as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // owner still has no counter at all. On the superuser connection, which row-level security
+        // does not apply to — no policed session could answer this question about another owner.
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "passkey_signature_counters", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "passkey_signature_counters", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToReadASignatureCounterWithNoUserOnTheSession()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares no user. This
+        // is the shape of every bug where application code forgets to set one, and it must fail
+        // loudly rather than quietly returning an empty result that reads as "this passkey has no
+        // counter yet" — which, on this table, is a result the caller would happily start from zero.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0xE3));
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the counter is seeded, and that is a precondition rather than a convenience. A policy
+        // qual is only evaluated when there are candidate rows, so the same query over an empty table
+        // returns zero rows without ever touching the setting and this guarantee does not reach it.
+        // That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new(
+            "select count(*) from passkey_signature_counters", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, the same failure every other policed table pins, and for the same reason:
+        // the policy reads the setting as COALESCE(current_setting('app.current_user_id', true),
+        // '')::uuid, so an unset setting reaches it as the ''::uuid cast. One bug, one SQLSTATE.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The owner's own counter is still there — the refusal above is the connection's doing, not a
+        // seeding failure that would make the SQLSTATE assertion meaningless.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "passkey_signature_counters", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_ReadsAPasskeyPublicKeyWithNoUserOnTheSession()
+    {
+        // Arrange — one registered passkey and a bare app-role connection: no set_config, so the
+        // session declares nobody. Every test above reads that state as a bug; this one reads it as
+        // the requirement.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0xF4));
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the read the assertion ceremony performs, on the session it performs it from.
+        await using NpgsqlCommand read = new("select count(*) from passkey_public_keys", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+        long visible = refusal is null
+            ? await CountKeyedRowsAsync(bare, "passkey_public_keys", "user_id", session.UserId)
+            : 0L;
+
+        // Assert — this is the positive control for the exemption, and it is the most important test
+        // in this group. A public key MUST be readable on a connection naming nobody, because a
+        // WebAuthn assertion arrives carrying a credential handle and a signature and nothing else:
+        // the ceremony has to verify that signature against the stored key before it can say whose
+        // account is being opened, so a policy keyed on that identity would refuse the very read that
+        // produces it. Without this test, a policy accidentally added to passkey_public_keys — by the
+        // coverage rule being widened, by someone "tidying" the exemption list, by a well-meant
+        // hardening pass — would break nothing in this file and surface only as a mysterious 401 in
+        // an end-to-end run, with the database reporting 22P02 from inside a code path nobody was
+        // looking at. Do not "fix" this test by giving the connection a user: that is the one change
+        // that makes it agree with everything and measure nothing.
+        await Assert.That(refusal?.SqlState ?? "no error").IsEqualTo("no error");
+        await Assert.That(visible).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_ReadsACredentialWithNoUserOnTheSession()
+    {
+        // Arrange — two owners, each with the federated credential provisioning gives them, and a
+        // bare app-role connection: no set_config, so the session declares nobody. Every test above
+        // reads that state as a bug; this one reads it as the requirement.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the read every sign-in starts with, on the session it starts from. Both owners are
+        // counted because the exemption is that this table is readable, full stop: a policy narrowing
+        // it to one identity is exactly the change being guarded against, and a count of one row
+        // would pass under it.
+        await using NpgsqlCommand read = new("select count(*) from credentials", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+        long visible = refusal is null
+            ? await CountKeyedRowsAsync(bare, "credentials", "user_id", session.UserId)
+                + await CountKeyedRowsAsync(bare, "credentials", "user_id", other.UserId)
+            : 0L;
+
+        // Assert — this is the positive control for the oldest and most load-bearing exemption in the
+        // schema. A credential MUST be readable on a connection naming nobody, because it is the
+        // table read to discover who is asking: the request arrives carrying a provider subject and
+        // nothing else, and the row is what turns that into a user id, so a policy keyed on that
+        // identity would refuse the very query that produces it.
+        //
+        // The failure this test stands between the product and is a hardening pass adding
+        // user_isolation to credentials, which is a plausible and well-meant change. RlsCoverageTests
+        // does NOT go red under it — an exemption says a policy is not required, never that one is
+        // forbidden — and the only symptom is that provisioning fails on every single sign-in, for
+        // everybody, with the database reporting 22P02 from inside the one code path that runs before
+        // any identity exists. Do not "fix" this test by giving the connection a user: that is the
+        // one change that makes it agree with everything and measure nothing.
+        await Assert.That(refusal?.SqlState ?? "no error").IsEqualTo("no error");
+        await Assert.That(visible).IsEqualTo(2L);
+    }
+
+    [Test]
+    public async Task Database_ReadsAWebAuthnChallengeWithNoUserOnTheSession()
+    {
+        // Arrange — one live challenge, written on the superuser connection, and a bare app-role
+        // connection to read it back from.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid challengeId = await SeedChallengeAsync(admin);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act
+        await using NpgsqlCommand read = new("select count(*) from webauthn_challenges", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+        long visible = refusal is null
+            ? await CountKeyedRowsAsync(bare, "webauthn_challenges", "id", challengeId)
+            : 0L;
+
+        // Assert — the same argument as the public key above, one step earlier and with no owner to
+        // key on even in principle. The authentication ceremony issues a challenge before anybody has
+        // said who they are — that is what makes a discoverable credential discoverable — so the row
+        // carries no user_id, and the second message of the ceremony has to find it by the nonce
+        // alone on a session that still names nobody. A policy here could only ever hide every row
+        // from every session, and it would do so silently: the read would come back empty and the
+        // ceremony would report a challenge that had expired or was never issued.
+        await Assert.That(refusal?.SqlState ?? "no error").IsEqualTo("no error");
+        await Assert.That(visible).IsEqualTo(1L);
+    }
+
     /// <summary>
     /// The one row of each budget-owned table that a budget was seeded with, so a probe can name
     /// "this budget's account" without every test re-deriving it.
@@ -831,6 +1049,95 @@ public sealed class RlsIsolationTests
         command.Parameters.AddWithValue("expires_at_utc", SessionExpiryInstant);
         return command;
     }
+
+    /// <summary>
+    /// Builds a WebAuthn credential handle of 32 bytes, every one of them <paramref name="fill" />.
+    /// The fill byte is required rather than defaulted: <c>webauthn_credential_id</c> is unique, so
+    /// two owners registering "a passkey" would collide on the index and the seeding would fail
+    /// before the probe ran.
+    /// </summary>
+    private static byte[] PasskeyHandle(byte fill) => [.. Enumerable.Repeat(fill, 32)];
+
+    /// <summary>
+    /// Writes a passkey credential with <b>no counter filed against it</b> on the superuser
+    /// connection, and returns its id. Bare rather than a whole registered passkey because
+    /// <c>credential_id</c> is the primary key of <c>passkey_signature_counters</c>: an INSERT probe
+    /// needs a credential whose slot is free, or it would be refused with <c>23505</c> before any
+    /// policy was consulted. <c>(passkey, null, null)</c> is the shape
+    /// <c>CK_credentials_type_shape</c> permits, and the partial unique index on
+    /// <c>(provider, subject)</c> names only federated rows, so it does not collide with the owner's
+    /// Google credential.
+    /// </summary>
+    private static async Task<Guid> InsertPasskeyCredentialAsync(
+        NpgsqlConnection connection,
+        Guid userId)
+    {
+        Guid credentialId = Guid.CreateVersion7();
+        await using NpgsqlCommand command = new(
+            "insert into credentials (id, user_id, type, provider, subject, created_at_utc) " +
+            "values (@id, @user_id, 'passkey', null, null, @created_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("id", credentialId);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        await command.ExecuteNonQueryAsync();
+        return credentialId;
+    }
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>passkey_signature_counters</c>, owned by
+    /// <paramref name="ownerId" /> and keyed on <paramref name="credentialId" />. Separate from
+    /// <see cref="BuildInsertProbe" /> because a counter names no budget: it is user-owned, so the
+    /// column a policy could object to is <c>user_id</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>'passkey'</c> and a counter of zero because <c>CK_passkey_signature_counters_credential_type</c>
+    /// accepts nothing else and zero is what a registration reports. These probes are about the
+    /// policy rather than about the value, so the cheapest row the schema accepts is the right one: a
+    /// row refused by a CHECK would never reach the policy at all, and the refusal being read would
+    /// be the wrong one.
+    /// </remarks>
+    private static NpgsqlCommand BuildSignatureCounterInsertProbe(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid credentialId)
+    {
+        NpgsqlCommand command = new(
+            "insert into passkey_signature_counters " +
+            "(credential_id, user_id, credential_type, signature_counter) " +
+            "values (@credential_id, @user_id, 'passkey', 0)",
+            connection);
+        command.Parameters.AddWithValue("credential_id", credentialId);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        return command;
+    }
+
+    /// <summary>
+    /// Writes one live challenge on the superuser connection and returns its id. The nonce is 32
+    /// bytes and the expiry is strictly after the creation, which are the whole content of
+    /// <c>CK_webauthn_challenges_length</c> and <c>CK_webauthn_challenges_lifetime</c>.
+    /// </summary>
+    private static async Task<Guid> SeedChallengeAsync(NpgsqlConnection connection)
+    {
+        Guid challengeId = Guid.CreateVersion7();
+        await using NpgsqlCommand command = new(
+            "insert into webauthn_challenges (id, challenge, ceremony, created_at_utc, expires_at_utc) " +
+            "values (@id, @challenge, 'authentication', @created_at_utc, @expires_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("id", challengeId);
+        command.Parameters.AddWithValue("challenge", PasskeyHandle(0xA7));
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        command.Parameters.AddWithValue("expires_at_utc", ChallengeExpiryInstant);
+        await command.ExecuteNonQueryAsync();
+        return challengeId;
+    }
+
+    /// <summary>
+    /// The expiry the seeded challenge carries. Strictly after <see cref="SeedInstant" />, which is
+    /// the whole content of <c>CK_webauthn_challenges_lifetime</c>.
+    /// </summary>
+    private static readonly DateTime ChallengeExpiryInstant =
+        new(2026, 6, 12, 13, 19, 15, DateTimeKind.Utc);
 
     /// <summary>
     /// Builds the INSERT probe for one table, aimed at <paramref name="target" />'s budget and using

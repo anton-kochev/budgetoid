@@ -19,6 +19,24 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
 
+// Kestrel's 30 MB default is a file-upload default, and this API accepts no files: every endpoint
+// takes a small JSON object, the largest being a passkey registration response whose attestation
+// object is a few kilobytes. Until this line, the anonymous sign-in endpoint would read 30 MB into
+// memory before the handler had looked at a single byte of it, and a scale-to-zero container's whole
+// memory budget is a small multiple of that.
+//
+// Global rather than on the two anonymous endpoints, for two reasons. A per-endpoint limit has to be
+// in force before the body is read, and a minimal-API endpoint filter runs after model binding — by
+// the time one could refuse the request the body has already been read into the strings it would have
+// judged. And a global ceiling is the shape that cannot be forgotten on whatever endpoint is added
+// next. An endpoint that legitimately needs more can raise it on itself; none does.
+//
+// This bounds the body. PasskeyPayloadLimits bounds each decoded member, and neither replaces the
+// other: this keeps 30 MB from being read at all, and those keep a body well inside this limit from
+// being validated and decoded four times over before the first check that could refuse it.
+const long maxRequestBodyBytes = 64 * 1024;
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxRequestBodyBytes);
+
 // Registered non-pooled (AddDbContext, scoped) because BudgetoidDbContext depends on the scoped
 // IBudgetContext for its budget isolation query filters, and pooled contexts can't take scoped
 // dependencies. Aspire's AddNpgsqlDbContext pools contexts; the Enrich call re-applies Aspire's
@@ -62,6 +80,10 @@ builder.Services.AddScoped<IBudgetContext, HttpContextBudgetContext>();
 // rather than travelling with every read.
 builder.Services.AddScoped<IUserContext, HttpContextUserContext>();
 builder.Services.AddScoped<IUserContextWriter, CurrentUserWriter>();
+// Singleton, unlike the two contexts above: the relying party and the origin allow-list are
+// configuration rather than request state, and one instance per request would only add a way for the
+// two legs of one sign-in to disagree about which site they are.
+builder.Services.AddSingleton<IPasskeyCeremonyPolicy, ConfiguredPasskeyCeremonyPolicy>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -108,6 +130,9 @@ builder.Services.AddExceptionHandler<ValidationExceptionHandler>();
 builder.Services.AddExceptionHandler<BadRequestExceptionHandler>();
 builder.Services.AddExceptionHandler<NotFoundExceptionHandler>();
 builder.Services.AddExceptionHandler<ConflictExceptionHandler>();
+// Before the catch-all, which would otherwise turn a refused sign-in into a 500 and log it as a
+// fault. Handlers run in registration order and the first to claim the exception wins.
+builder.Services.AddExceptionHandler<PasskeyVerificationExceptionHandler>();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddOpenApi();
 
@@ -120,6 +145,57 @@ WebApplication app = builder.Build();
 // user-secrets, environment, or appsettings.
 _ = app.Configuration["Authentication:Google:ClientId"]
     ?? throw new InvalidOperationException("Authentication:Google:ClientId is required.");
+
+// The passkey ceremony's configuration is refused at boot for the same reason as the Google client
+// id above: a deployment that comes up healthy and only breaks when somebody attempts a ceremony is a
+// deployment whose defect surfaces to a user instead of to the pipeline. Boot is the last moment the
+// pipeline is still watching.
+//
+// Both values are refused, and the second is the dangerous one. A relying party id is hashed into
+// every credential an authenticator stores, so a host that came up with the wrong one registers
+// passkeys nobody can ever use and no migration repairs them — but at least it is wrong loudly. An
+// empty origin allow-list is not a permissive default: it refuses every ceremony, and refuses it with
+// the one deliberately uninformative 401 that explains nothing, so the misconfiguration reads as a
+// working deployment that users simply cannot sign in to. The key names come from the reader's own
+// constants so the guard and the reader cannot drift apart.
+//
+// Presence is necessary and not sufficient. A value that passes a presence check and then refuses
+// every ceremony is a defect that surfaces to a user rather than to the pipeline, which is the whole
+// reason this guard is at boot rather than in a lazily-resolved singleton — so the form of each value
+// is checked here too, and the two values are checked against each other. The origin the browser puts
+// in client data is a serialized origin: scheme, host, and a non-default port, and nothing else. A
+// frontend origin written as "https://example.com/" or as a bare "example.com" is a plausible thing to
+// paste into a deployment variable and matches no client data that will ever arrive.
+string? relyingPartyId = app.Configuration[ConfiguredPasskeyCeremonyPolicy.RelyingPartyIdKey];
+if (string.IsNullOrWhiteSpace(relyingPartyId))
+{
+    throw new InvalidOperationException(
+        $"{ConfiguredPasskeyCeremonyPolicy.RelyingPartyIdKey} is required: it is the domain every "
+        + "registered passkey is permanently bound to.");
+}
+
+// A relying party id is a bare domain — never a URL, and never an address literal. Checking it here
+// rather than only through the origins below is what keeps a relying party id pasted as
+// "https://example.com" from being reported as every origin being wrong.
+if (Uri.CheckHostName(relyingPartyId) is not UriHostNameType.Dns)
+{
+    throw new InvalidOperationException(
+        $"{ConfiguredPasskeyCeremonyPolicy.RelyingPartyIdKey} is '{relyingPartyId}', which is not a "
+        + "bare domain name: a relying party id carries no scheme, port or path.");
+}
+
+if (app.Configuration.GetSection(ConfiguredPasskeyCeremonyPolicy.AllowedOriginsKey).Get<string[]>()
+    is not { Length: > 0 } allowedOrigins)
+{
+    throw new InvalidOperationException(
+        $"{ConfiguredPasskeyCeremonyPolicy.AllowedOriginsKey} must list at least one origin: no "
+        + "ceremony can be accepted from an empty allow-list.");
+}
+
+foreach (string allowedOrigin in allowedOrigins)
+{
+    RequireCeremonyOrigin(allowedOrigin, relyingPartyId);
+}
 
 app.UseExceptionHandler();
 app.UseStatusCodePages(async statusCodeContext =>
@@ -197,8 +273,70 @@ app.MapTransactionEndpoints();
 app.MapPayeeEndpoints();
 app.MapCategoryGroupEndpoints();
 app.MapCategoryEndpoints();
+app.MapPasskeyEndpoints();
 
 await app.RunAsync();
+
+// Refuse one configured passkey origin whose form or whose host cannot produce an accepted ceremony.
+//
+// Three things are checked, and each of them fails silently at runtime if it is not checked here.
+//
+// Form: an origin is scheme, host and a non-default port — no path, query, fragment or userinfo — and
+// the verifier compares it to the string a browser puts in client data, character for character. The
+// canonical serialization is compared rather than the parsed parts because Uri normalizes a trailing
+// slash away, so a "https://example.com/" that is wrong for our purposes parses into something
+// indistinguishable from the value that is right. Comparing against GetLeftPart also catches an
+// explicit default port and an uppercased scheme or host, neither of which a browser ever sends.
+//
+// Scheme: WebAuthn treats an origin as usable only if it is a potentially trustworthy one, which means
+// https everywhere except localhost, where plaintext http is allowed — the development configuration
+// relies on exactly that exception, so it stays.
+//
+// Agreement with the relying party id: the browser refuses a ceremony client-side when the calling
+// origin's host is neither the relying party id nor a subdomain of it. That refusal never reaches this
+// process, so a deployment whose two values drift apart — they arrive from two independent deployment
+// parameters — produces empty logs and a sign-in that simply never works.
+static void RequireCeremonyOrigin(string allowedOrigin, string relyingPartyId)
+{
+    const string key = ConfiguredPasskeyCeremonyPolicy.AllowedOriginsKey;
+
+    if (!Uri.TryCreate(allowedOrigin, UriKind.Absolute, out Uri? origin)
+        // Uri lowercases the scheme it parsed, so these two literals cover every spelling of it.
+        || origin.Scheme is not ("http" or "https"))
+    {
+        throw new InvalidOperationException(
+            $"{key} contains '{allowedOrigin}', which is not an absolute http or https URI: a "
+            + "ceremony origin is written in full, as 'https://example.com'.");
+    }
+
+    if (origin.UserInfo.Length > 0
+        || !string.Equals(allowedOrigin, origin.GetLeftPart(UriPartial.Authority), StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException(
+            $"{key} contains '{allowedOrigin}', which is not a serialized origin: an origin is a "
+            + "scheme, a host and a non-default port and nothing else — no trailing slash, path, "
+            + $"query or fragment. Expected '{origin.GetLeftPart(UriPartial.Authority)}'.");
+    }
+
+    if (origin.Scheme is "http"
+        && !string.Equals(origin.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            $"{key} contains '{allowedOrigin}', which is plaintext http on a host other than "
+            + "localhost: a browser will not run a ceremony from an origin that is not potentially "
+            + "trustworthy.");
+    }
+
+    if (!string.Equals(origin.Host, relyingPartyId, StringComparison.OrdinalIgnoreCase)
+        && !origin.Host.EndsWith($".{relyingPartyId}", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            $"{key} contains '{allowedOrigin}', whose host is neither "
+            + $"'{relyingPartyId}' nor a subdomain of it. "
+            + $"{ConfiguredPasskeyCeremonyPolicy.RelyingPartyIdKey} and {key} must describe the same "
+            + "site, or the browser refuses every ceremony before the request is made.");
+    }
+}
 
 // Force TLS on the PostgreSQL connection outside local development. Azure Database for PostgreSQL
 // Flexible Server rejects unencrypted connections (28000: no pg_hba.conf entry ... no encryption)

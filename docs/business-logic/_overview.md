@@ -46,7 +46,11 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | Term | Definition |
 |---|---|
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. |
-| **Session** | An established sign-in recorded server-side, naming the credential that established it, which the product can end without asking any external party. Nothing issues one to a client yet — see [sessions.md](sessions.md). |
+| **Session** | An established sign-in recorded server-side, naming the credential that established it, which the product can end without asking any external party. A verified passkey assertion establishes one; nothing issues a token for it yet — see [sessions.md](sessions.md). |
+| **Passkey** | A WebAuthn discoverable credential held by the user's authenticator. The only credential type that opens a session reaching budget content — see [passkeys.md](passkeys.md). |
+| **WebAuthn ceremony** | One of the two exchanges a passkey takes part in: registration, which attaches a passkey to an account, and assertion, which signs in with one. Each runs in two legs — a server-issued nonce, then a signed response. |
+| **PRF** | The WebAuthn `prf` extension: a secret the authenticator derives and the server never sees. Requested at registration and reported back to the client; the product stores nothing about it. |
+| **Relying party** | The site a passkey is bound to, named by its `rpId`. An authenticator signs over `SHA-256(rpId)`, so a credential registered here cannot be asserted anywhere else. |
 | **Locked session** | A session established from a federated credential. It reaches no budget content, because an authorization exchange returns claims rather than a secret a client can turn into a key. |
 | **Full session** | A session established from a passkey — the only credential type whose authenticator can hold the account's keys, and so the only one that opens a session reaching budget content. |
 | **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
@@ -101,6 +105,8 @@ references are additionally constrained by composite foreign keys to a row in th
 ## Table of contents
 
 - [Users & Ownership](users-and-ownership.md) — identity, claims, and provisioning.
+- [Passkeys](passkeys.md) — the two WebAuthn ceremonies, and the only path that opens a session
+  reaching budget content.
 - [Sessions](sessions.md) — an established sign-in the product records and can end itself.
 - [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
   and its base currency.

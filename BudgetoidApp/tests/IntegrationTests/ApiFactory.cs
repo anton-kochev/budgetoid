@@ -1,3 +1,4 @@
+using Api.Infrastructure;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -33,6 +34,21 @@ public sealed class ApiFactory(
     Action<IServiceCollection>? configureServices = null,
     string? adminConnectionString = null) : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// The relying party every host built here answers as. A real domain label rather than a made-up
+    /// one, because it is hashed into every credential the synthetic authenticator produces: a test
+    /// signing for one relying party against a host configured for another would fail on the hash and
+    /// say nothing about the check it meant to exercise.
+    /// </summary>
+    public const string PasskeyRelyingPartyId = "localhost";
+
+    /// <summary>
+    /// The single entry of the origin allow-list. Exposed so a ceremony's client data and the host's
+    /// configuration cannot drift apart — the origin is what the verifier compares, and a test that
+    /// typed its own copy would pass while the two agreed by accident.
+    /// </summary>
+    public const string PasskeyOrigin = "https://localhost";
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(environment);
@@ -43,7 +59,29 @@ public sealed class ApiFactory(
                 ["ConnectionStrings:budgetoid"] = appConnectionString,
                 ["ConnectionStrings:budgetoid-admin"] = adminConnectionString ?? appConnectionString,
                 ["Authentication:Google:ClientId"] = "test-client-id",
+
+                // Supplied for every environment, not only the ones that run a ceremony. The relying
+                // party id and the origin allow-list are values the application refuses to invent, so a
+                // host that came up without them is a host a boot-time check may legitimately refuse —
+                // and a factory that only supplied them in Development would make that check look like
+                // a Production-only regression the day it moves into Program.cs. A caller overrides
+                // either through the settings dictionary below, including to the empty string, which is
+                // how the refusals themselves stay reachable from a test.
+                [ConfiguredPasskeyCeremonyPolicy.RelyingPartyIdKey] = PasskeyRelyingPartyId,
             };
+
+            // The allow-list default is dropped whole the moment a caller names any key beneath it,
+            // rather than being overridden entry by entry like everything else here. An array cannot
+            // be emptied by overriding an element: a "…:0" entry bound to null is still one element,
+            // so the section still binds to a one-item array and still reads as configured. The only
+            // shape that produces the empty list the boot guard exists to refuse is no element keys at
+            // all, which means the default cannot be added in the first place.
+            bool callerSuppliesAllowedOrigins = settings?.Keys.Any(key =>
+                key.StartsWith(ConfiguredPasskeyCeremonyPolicy.AllowedOriginsKey, StringComparison.Ordinal)) is true;
+            if (!callerSuppliesAllowedOrigins)
+            {
+                values[$"{ConfiguredPasskeyCeremonyPolicy.AllowedOriginsKey}:0"] = PasskeyOrigin;
+            }
 
             // Applied after the defaults so a caller can still override either connection string
             // key — including pointing the application back at the admin account to isolate a

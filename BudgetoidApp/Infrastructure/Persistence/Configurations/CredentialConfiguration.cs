@@ -43,8 +43,10 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
 
             // This is what makes "a credential is exactly one type" a database rule rather than a
             // convention the application is trusted to keep: a federated row without an issuer, or a
-            // passkey row carrying one, is rejected rather than stored. Story 11.3 widens the passkey
-            // arm when the passkey columns arrive.
+            // passkey row carrying one, is rejected rather than stored. The passkey arm stays this
+            // narrow: it bounds the shape of the identity row and nothing more, because a passkey's
+            // verification material lives on its own tables — passkey_public_keys and
+            // passkey_signature_counters — rather than on a column here. See ADR 0012.
             // The null test stays alongside the length test rather than being replaced by it: length(null)
             // is null and a check evaluating to null is satisfied, so the length test alone would let the
             // subject-less row through. Provider gets no length test — the dictionary above already

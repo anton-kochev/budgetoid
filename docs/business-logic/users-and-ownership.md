@@ -38,8 +38,10 @@ to a **user** rather than to a budget, and that rule has its canonical statement
   dictionary the database enforces, of which `google` is the only member today — and the provider's
   `Subject`, the OAuth `sub` claim, stable, non-empty and at most `Credential.MaxSubjectLength` =
   255 characters. A passkey credential carries neither. An account may hold more than one
-  credential, but **at most one of type `federated`**; registering and revoking them is not built
-  yet, so today every account is created with exactly one federated Google credential.
+  credential, but **at most one of type `federated`**. Every account is created with exactly one
+  federated Google credential; a signed-in person may then register passkeys beside it, each carrying
+  its own verification material on its own tables — see [passkeys.md](passkeys.md). Nothing revokes a
+  credential of either type yet.
 - **Email** — a value object wrapping the email string; required, trimmed, and at most
   `Email.MaxLength` = 254 characters. Two `Email` values are equal iff their strings are equal.
   Uniqueness is a **wider** comparison than that equality: `users.email` carries a unique index on
@@ -51,6 +53,8 @@ to a **user** rather than to a budget, and that rule has its canonical statement
 erDiagram
     USER ||--o{ CREDENTIAL : "signs in with"
     CREDENTIAL ||--o{ SESSION : establishes
+    CREDENTIAL ||--o| PASSKEY_PUBLIC_KEY : "is verified by"
+    CREDENTIAL ||--o| PASSKEY_SIGNATURE_COUNTER : "is counted by"
     USER ||--o{ BUDGET : owns
     BUDGET ||--o{ ACCOUNT : owns
     BUDGET ||--o{ CATEGORY_GROUP : owns
@@ -86,13 +90,19 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   the budget they own, so for money "a user can only see their own data" is a consequence of budget
   isolation rather than a separate rule.
 
-  The three tables that name a person are the exception, and they carry their own rule: `users`,
-  `budgets` and `sessions` are policed by a `user_isolation` policy comparing `id` and `user_id`
-  against the session's authenticated user. Budget isolation cannot express that — a budget *is* the
-  tenant, so
-  there is no ambient budget to check a budgets row against — and leaving it to application code
-  would make the two tables that name a person the only two the database does not guard. See
-  [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
+  The tables that name a person are the exception, and they carry their own rule: `users`, `budgets`,
+  `sessions` and `passkey_signature_counters` are policed by a `user_isolation` policy comparing `id`
+  and `user_id` against the session's authenticated user. Budget isolation cannot express that — a
+  budget *is* the tenant, so there is no ambient budget to check a budgets row against — and leaving
+  it to application code would make the tables that name a person the only ones the database does not
+  guard. See [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
+
+  Two tables that name a person are nonetheless **exempt**, and each for the same reason: `credentials`
+  and `passkey_public_keys` are read to work out *who is asking* and *whether it is really them*,
+  before the request has an identity a policy could be keyed on. An exemption is granted to a query
+  but applied to a whole table, so each pins the exact column set its reason was argued over, and a
+  new column there goes red until someone moves it somewhere policed. See
+  [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
   - **Enforced in**: the `user_isolation` policies live beside the grants in
     `BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration;
     `SessionContextInterceptor` puts `app.current_user_id` on every connection the context opens, so
@@ -248,12 +258,15 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   accounts. That identity is written whole at registration and has no edit that means anything. The
   address is the one column on `users` an edit could ever legitimately touch — the grant is what an
   edit *may* reach, and today no code path reaches it at all.
-- **Scope, stated precisely because it is about to matter**: today the identity columns *are* every
-  column of `credentials`, so the table has no `UPDATE` grant at all. That is the current state of
-  the list, not a property of the table. A passkey signature counter and a last-used timestamp are
-  both specified; each arrives as a column that goes **on** the list while the five above stay off
-  it. Anyone reading "a credential is never written" rather than "a credential's identity is never
-  rewritten" will read the first counter update as a violation of a rule that was never claimed.
+- **Scope, stated precisely because the obvious reading is wrong**: the identity columns *are* every
+  column of `credentials`, so the table holds no `UPDATE` grant of any shape. Read that as a property
+  of the table rather than as the current state of a list. A passkey's mutable fact — the signature
+  counter its authenticator reports — lives on `passkey_signature_counters`, which carries `user_id`
+  and is policed, because it is compared only *after* an assertion's signature verifies, while
+  `credentials` is exempt from row-level security precisely because it is read *before* that. The rule
+  being defended is "a credential's identity is never rewritten" rather than "a credential is never
+  written", and the boundary that keeps the two apart is a table rather than a column list. See
+  [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
 - **Enforced in**: **database-owned, restated in the domain.** The application role has no `UPDATE`
   grant on `credentials` of any shape — not a column list with nothing on it, but no grant at all —
   and no `DELETE` either, so every write except `INSERT` is refused with `42501` on the connection
@@ -505,8 +518,9 @@ The budget branch that runs after this, on every path, is in
   that can each fail for a different reason. **Modelling `Credential` inside the `User` aggregate**
   would make atomicity automatic rather than argued — but the aggregate would then have to grow to
   hold sessions and passkeys too, and a root loaded on every authenticated request is the wrong
-  place to accumulate them. `Session` landed as its own aggregate for exactly that reason, and it
-  references its user and its credential by id the same way `Credential` does — see
+  place to accumulate them. `Session`, `PasskeyPublicKey` and `PasskeySignatureCounter` all landed as
+  their own aggregates for exactly that reason, and each references its user and its credential by id
+  the same way `Credential` does — see
   [sessions.md](sessions.md).
 
 - **Writers take `users` before `credentials`, always, and that is what makes deadlock impossible

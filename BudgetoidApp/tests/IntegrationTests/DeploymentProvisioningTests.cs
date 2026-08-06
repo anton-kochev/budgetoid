@@ -90,17 +90,46 @@ public sealed class DeploymentProvisioningTests
     private const string UsersTable = "users";
 
     /// <summary>
-    /// The table that is tenant-owned and deliberately unpoliced, written down here so that the
-    /// discovery below can excuse it by name.
+    /// The tables that own rows on behalf of a person and are nonetheless deliberately unpoliced,
+    /// written down here so the discovery below can excuse them by name.
     /// </summary>
     /// <remarks>
-    /// It carries <c>user_id</c>, so a query that asked only "does this table own rows" would demand
-    /// a policy it must not have: <c>credentials</c> is read to answer "who is asking", and a policy
-    /// keyed on that answer would refuse the question that produces it. One written-down name is the
-    /// honest way to say that; a column filter that quietly dropped it would be the same fail-open
-    /// shape this file exists to catch.
+    /// <para>
+    /// Both carry <c>user_id</c>, so a query that asked only "does this table own rows" would demand
+    /// a policy neither may have. <c>credentials</c> is read to answer "who is asking", and a policy
+    /// keyed on that answer would refuse the question that produces it. <c>passkey_public_keys</c> is
+    /// read to decide whether the signature on an assertion is genuine, which a WebAuthn ceremony has
+    /// to settle before it knows whose account it is. Each is read before the request has an identity
+    /// a policy could be keyed on; both reasons are written down in
+    /// <c>RowLevelSecurityCoverage.Exemptions</c> and argued in docs/decisions/0011 and
+    /// docs/decisions/0012.
+    /// </para>
+    /// <para>
+    /// Spelled out here rather than read from that list, and this is the same argument the policy
+    /// name constants above make. ADR 0011's objection to two lists is an objection about production
+    /// code paths, where both lists enforce and the loser of a disagreement fails open. A test is not
+    /// a second enforcer; it is an oracle, and an oracle that asks the code under test what to expect
+    /// agrees with it by construction and can never fail. Reading the shared list would mean that
+    /// appending a name to it silently removes that table from this test's subjects, leaving the
+    /// exemption list with no adversarial reader anywhere in the suite — a wrongly-granted exemption
+    /// on a <c>user_id</c>-carrying table would go green here while <c>RlsCoverageTests</c>, which
+    /// also reads the list, went green too.
+    /// </para>
+    /// <para>
+    /// The duplication fails <b>closed</b>. A name added to the shared list and not added here leaves
+    /// the table a subject of this test, so it goes red until somebody writes the name down twice, on
+    /// purpose. The failure asks for a decision rather than granting one.
+    /// </para>
+    /// <para>
+    /// Only tenant-owned exemptions belong in it, which is why there are two names here and five in
+    /// the shared list. <c>currencies</c>, <c>webauthn_challenges</c> and <c>__EFMigrationsHistory</c>
+    /// carry neither ownership column, so the query's own shape predicate already excludes them;
+    /// naming them here would turn an independent statement into a copy of a list and invite somebody
+    /// to keep the two mechanically in sync. A future exemption on a table with no ownership column
+    /// therefore stays green, because it was never a subject.
+    /// </para>
     /// </remarks>
-    private const string PolicyExemptTenantOwnedTable = "credentials";
+    private static readonly string[] UnpolicedUserOwnedTables = ["credentials", "passkey_public_keys"];
 
     /// <summary>
     /// The policy name a budget-owned table owes.
@@ -1492,19 +1521,28 @@ public sealed class DeploymentProvisioningTests
     /// one.
     /// </para>
     /// <para>
-    /// <c>credentials</c> is excused by name, and that exclusion is a written-down decision rather
-    /// than a shape: it is genuinely user-owned and deliberately unpoliced, because it is the table
-    /// read to work out who is asking. <c>currencies</c> and <c>__EFMigrationsHistory</c> need no
-    /// mention — they carry neither column, so they are not tenant-owned in the first place.
+    /// The excused tables are <see cref="UnpolicedUserOwnedTables" />, stated there rather than read
+    /// from <c>RowLevelSecurityCoverage.Exemptions</c>. Reading the shared list would not remove a
+    /// second executed list, it would remove this test's oracle: the deploy gate and
+    /// <c>RlsCoverageTests</c> both read that classifier to <i>enforce</i>, and ADR 0011's argument
+    /// that two executed lists have no adjudicator is an argument about production code paths. Here
+    /// the list would be the expectation, and an expectation taken from the code under test agrees
+    /// with it by construction — appending a name to <c>Exemptions</c> would silently drop that table
+    /// from this test's subjects, and the exemption list would have no adversarial reader left
+    /// anywhere in the suite. <c>currencies</c>, <c>webauthn_challenges</c> and
+    /// <c>__EFMigrationsHistory</c> need no naming here: they carry neither ownership column, so the
+    /// shape predicate already excludes them. <c>passkey_signature_counters</c> is named by no
+    /// exemption and carries <c>user_id</c>, so it stays a subject here and owes <c>user_isolation</c>
+    /// like any other user-owned table.
     /// </para>
     /// <para>
-    /// This stays <b>private</b> rather than calling <c>RowLevelSecurityCoverage</c>, and the reason
-    /// is unchanged by the widening: this test has to choose its subject from outside the code it is
-    /// checking. Asking the classifier which tables are owned, and which policy each owes, would make
-    /// the expectation a restatement of the implementation — the two would agree by construction and
-    /// the assertion could never fail. The same argument keeps the policy names above as literals.
-    /// <c>relrowsecurity</c> is read in the same row as the discovery so "is this table owned" and
-    /// "is it protected" cannot drift into two lists that disagree.
+    /// Every input to this query is therefore <b>independent</b> of the code under test: which tables
+    /// own rows, and which policy each owes, are derived here from the live schema's columns, and
+    /// which tables are excused is stated here as a literal. Asking the classifier any of the three
+    /// would make the expectation a restatement of the implementation — the two would agree by
+    /// construction and the assertion could never fail. The same argument keeps the policy names
+    /// above as literals. <c>relrowsecurity</c> is read in the same row as the discovery so "is this
+    /// table owned" and "is it protected" cannot drift into two lists that disagree.
     /// </para>
     /// </remarks>
     private static async Task<IReadOnlyList<(string Table, bool RowSecurityEnabled, string RequiredPolicy)>>
@@ -1525,7 +1563,7 @@ public sealed class DeploymentProvisioningTests
             join pg_namespace n on n.oid = c.relnamespace
             where n.nspname = 'public'
               and c.relkind = 'r'
-              and c.relname <> @exempt
+              and c.relname <> all(@exempt)
               and (
                   c.relname = @usersTable
                   or exists (
@@ -1538,7 +1576,10 @@ public sealed class DeploymentProvisioningTests
             order by c.relname
             """,
             connection);
-        command.Parameters.AddWithValue("exempt", PolicyExemptTenantOwnedTable);
+        // Both excused names at once, so the second written-down decision cannot read as a table
+        // whose policy was forgotten. <> all(...) is false as soon as one element matches, and an
+        // empty array excludes nothing rather than everything.
+        command.Parameters.AddWithValue("exempt", UnpolicedUserOwnedTables);
         command.Parameters.AddWithValue("usersTable", UsersTable);
 
         List<(string, bool, string)> tables = [];

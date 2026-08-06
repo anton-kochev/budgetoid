@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <RootNamespace>TestSupport</RootNamespace>
+        <IsPackable>false</IsPackable>
+        <!-- Deliberately not a test project: it carries no test framework and runs no tests. It is
+             shared production-shaped code that both test projects reference, so the synthetic
+             authenticator exists exactly once and the two suites cannot disagree about the wire
+             format they are testing. -->
+        <IsTestProject>false</IsTestProject>
+    </PropertyGroup>
+    <ItemGroup>
+        <!-- Same CBOR reader/writer the Application layer parses with, so a key this project encodes
+             and the verifier decodes are held to one library's idea of the encoding. -->
+        <PackageReference Include="System.Formats.Cbor" Version="10.0.9"/>
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\..\Application\Application.csproj"/>
+        <ProjectReference Include="..\..\Domain\Domain.csproj"/>
+    </ItemGroup>
+</Project>

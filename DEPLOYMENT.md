@@ -74,15 +74,14 @@ azd up              # provisions ACA + the Postgres Flexible Server, builds/push
                     # (azd regenerates the Bicep from the AppHost each run; ./infra is gitignored)
 ```
 
-`azd up` prompts for subscription + region, then for three app parameters (wired in the AppHost, so
+`azd up` prompts for subscription + region, then for the app parameters (wired in the AppHost, so
 they land in the committed Bicep — no manual container-app edits):
 
 | Prompt | Value |
 |---|---|
-| Prompt | Value |
-|---|---|
 | `google-client-id` | your Google OAuth client id |
-| `frontend-origin` | the Static Web App URL from Step 1 |
+| `frontend-origin` | the Static Web App URL from Step 1. It is injected twice — as the CORS allowed origin and as the passkey ceremony's allowed origin — because those are the same origin by definition. |
+| `passkey-relying-party-id` | the **registrable domain** of that origin (`budgetoid.app` for `https://budgetoid.app`; the generated `*.azurestaticapps.net` hostname while Step 6 is outstanding). **Permanent.** Every passkey an authenticator stores hashes this value into the credential, so changing it later does not re-point existing passkeys — it invalidates every one of them, and no migration repairs them. Choose the domain the app is meant to keep. |
 | `pipeline-principal-id` | the **object id** of the service principal that will deploy. `azd pipeline config` in Step 5 creates it; on a first bootstrap use your own principal's object id and re-run `azd up` after Step 5. It is registered as a Microsoft Entra administrator of the Postgres server, which is the only identity that can migrate the schema. |
 | `pipeline-principal-name` | that principal's display name. Postgres needs a role name to log in as even though the token is what proves which principal it is. |
 
@@ -92,7 +91,14 @@ Microsoft Entra only, and nothing in this deployment holds a database password
 handed `Host=…;Username=budgetoid_app;Database=budgetoid` and fetches an access token from its own
 managed identity to authenticate — the **absence** of a password in that string is what turns the
 token provider on, so do not "complete" it. Note the API's public URL from the output. To change a
-parameter later: `azd env set <name> <value>` then `azd up`.
+parameter later: `azd env set <name> <value>` then `azd up` — except `passkey-relying-party-id`,
+which is permanent once passkeys exist (see the table above).
+
+The API **refuses to boot** without the Google client id, the CORS origin and both passkey settings;
+there is no `Api/appsettings.json` supplying defaults. That is deliberate: a container that starts
+healthy and only fails when somebody attempts a sign-in reports its defect to a user instead of to
+this pipeline. A missing parameter shows up as a crash-looping revision on the very deploy that
+introduced it.
 
 > **Note.** Earlier deploys needed a post-deploy step to repair a bare connection-string secret azd
 > wrote. That is **root-fixed** — `AppHost/Program.cs` injects the connection string directly, so
@@ -308,6 +314,7 @@ It needs these GitHub secrets/vars:
 | secret | `AZURE_STATIC_WEB_APPS_API_TOKEN` | SWA deployment token (Step 1) |
 | var | `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` | from `azd pipeline config` |
 | var | `AZURE_ENV_NAME` / `AZURE_LOCATION` | your azd env name + region |
+| var | `AZURE_FRONTEND_ORIGIN` / `AZURE_GOOGLE_CLIENT_ID` / `AZURE_PASSKEY_RELYING_PARTY_ID` | the Step 2 app parameters. The CI config store is empty, so azd reads them from here; the API refuses to boot without any of them |
 | var | `AZURE_PIPELINE_PRINCIPAL_ID` / `AZURE_PIPELINE_PRINCIPAL_NAME` | the deploy principal's object id and display name — they register it as an Entra administrator of the Postgres server |
 
 There is no database secret in that table, and that is the point: the pipeline authenticates to
@@ -398,8 +405,12 @@ them leaves a deployment that looks healthy and is not:
    `https://api.budgetoid.app`, `auth.google.redirectUri` → `https://budgetoid.app`. Commit it.
 2. **The azd environment**, not just the repo: `azd env set AZURE_FRONTEND_ORIGIN
    https://budgetoid.app`. This is what the next `azd provision` bakes into the container app as
-   `Cors__AllowedOrigins__0`. Forget it and the browser reports a network failure that is really a
-   CORS rejection.
+   `Cors__AllowedOrigins__0` **and** as `Authentication__Passkey__AllowedOrigins__0`. Forget it and
+   the browser reports a network failure that is really a CORS rejection.
+   `AZURE_PASSKEY_RELYING_PARTY_ID` does **not** move with it: passkeys registered under the old
+   relying party id cannot be re-pointed at `budgetoid.app`, so moving the domain after passkeys
+   exist means every one of them has to be registered again. Decide the relying party id before the
+   first passkey is created, not during this cutover.
 3. **Google Cloud console** → the OAuth 2.0 client → add `https://budgetoid.app` to **Authorized
    JavaScript origins** and **Authorized redirect URIs**. Nothing in this repository can verify this
    step; it is the one that breaks login while everything else reports success.
