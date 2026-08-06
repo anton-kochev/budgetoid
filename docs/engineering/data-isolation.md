@@ -60,9 +60,12 @@ Enforced today:
 - **An exempt table scopes nothing, so the application is the only thing scoping reads of it.** The
   discovery lookup is the one query allowed to read `passkey_public_keys` without naming an owner;
   every other read must carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on
-  `budgets`. The `excludeCredentials` read in the registration ceremony is the one such call site
-  today, and the endpoint test registering a passkey to two accounts is the only thing that would
-  notice it losing the filter.
+  `budgets`. Two call sites carry that filter today: the `excludeCredentials` read in the
+  registration ceremony, watched by the endpoint test registering a passkey to two accounts, and
+  `FindByWebAuthnCredentialIdForUserAsync` on the re-authentication gate in front of erasure, watched
+  by `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount`.
+  Those tests are the only thing that would notice either read losing its filter — no layer below the
+  application can.
 - **The column that decides tenancy must be `NOT NULL`.** Under `budget_id = current_budget` a row
   whose owner is NULL is invisible to every session — fail-closed, so not a leak, but a row that
   exists, that nobody can reach, and that nothing explains. The coverage gate refuses it.

@@ -20,6 +20,7 @@ using Application.Passkeys.BeginAssertion;
 using Application.Passkeys.BeginRegistration;
 using Application.Passkeys.CompleteAssertion;
 using Application.Passkeys.CompleteRegistration;
+using Application.Passkeys.Reauthentication;
 using Application.Payees.GetPayees;
 using Application.Payees.RenamePayee;
 using Application.Sessions.RevokeSessionsForCredential;
@@ -71,6 +72,11 @@ public static class DependencyInjection
         services.AddScoped<CompleteRegistrationHandler>();
         services.AddScoped<BeginAssertionHandler>();
         services.AddScoped<CompleteAssertionHandler>();
+        services.AddScoped<BeginReauthenticationHandler>();
+
+        // Registered as the concrete type, because it has no interface and must not grow one: a
+        // stubbable gate would let a test prove erasure works with the proof faked out.
+        services.AddScoped<PasskeyReauthentication>();
 
         return services;
     }

@@ -694,7 +694,7 @@ partial class BudgetoidDbContextModelSnapshot : ModelSnapshot
 
                 b.ToTable("webauthn_challenges", null, t =>
                     {
-                        t.HasCheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication')");
+                        t.HasCheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication', 'reauthentication')");
 
                         t.HasCheckConstraint("CK_webauthn_challenges_length", "length(challenge) = 32");
 

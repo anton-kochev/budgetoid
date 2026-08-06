@@ -50,6 +50,26 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
             .FirstOrDefault(entry => entry.PublicKey.WebAuthnCredentialId.Span.SequenceEqual(webAuthnCredentialId.Span))
             ?.PublicKey);
 
+    /// <summary>
+    /// The owner-scoped lookup, written with a real owner filter rather than delegating to the
+    /// discovery finder above.
+    /// </summary>
+    /// <remarks>
+    /// The filter is the behaviour under test, so it has to be here. A fake that forwarded to
+    /// <see cref="FindByWebAuthnCredentialIdAsync"/> and ignored <paramref name="userId"/> would hand
+    /// back another account's key and let every unit test of the account binding pass against a gate
+    /// that had no binding at all — the exact defect the scoped finder exists to make unreachable.
+    /// </remarks>
+    public Task<PasskeyPublicKey?> FindByWebAuthnCredentialIdForUserAsync(
+        Guid userId,
+        ReadOnlyMemory<byte> webAuthnCredentialId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(_entries
+            .FirstOrDefault(entry =>
+                entry.Credential.UserId == userId
+                && entry.PublicKey.WebAuthnCredentialId.Span.SequenceEqual(webAuthnCredentialId.Span))
+            ?.PublicKey);
+
     public Task<IReadOnlyList<ReadOnlyMemory<byte>>> ListWebAuthnCredentialIdsForUserAsync(
         Guid userId,
         CancellationToken cancellationToken = default) =>

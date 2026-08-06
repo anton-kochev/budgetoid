@@ -34,6 +34,29 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
                 cancellationToken);
 
     /// <inheritdoc />
+    public Task<PasskeyPublicKey?> FindByWebAuthnCredentialIdForUserAsync(
+        Guid userId,
+        ReadOnlyMemory<byte> webAuthnCredentialId,
+        CancellationToken cancellationToken = default) =>
+        // The same handle predicate as the discovery lookup above, with the owner filter that one is
+        // the codebase's single exception to. The difference is not caution: this statement runs with
+        // an identity already published, so there IS an owner to name, and passkey_public_keys is
+        // exempt from row-level security — nothing beneath this line narrows the read to the person
+        // asking. Drop the user_id predicate and this method becomes the discovery lookup, which
+        // answers with a stranger's key and lets an assertion signed by somebody else's authenticator
+        // verify against it.
+        //
+        // Two predicates, still SingleOrDefault: the unique index on webauthn_credential_id already
+        // means one handle resolves to at most one row, and adding the owner can only narrow that. A
+        // second row would mean the index has been lost, which is a broken database rather than a
+        // question this read can answer honestly.
+        dbContext.PasskeyPublicKeys
+            .SingleOrDefaultAsync(
+                publicKey => publicKey.UserId == userId
+                             && publicKey.WebAuthnCredentialId.Equals(webAuthnCredentialId),
+                cancellationToken);
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<ReadOnlyMemory<byte>>> ListWebAuthnCredentialIdsForUserAsync(
         Guid userId,
         CancellationToken cancellationToken = default) =>

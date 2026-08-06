@@ -317,9 +317,13 @@ public sealed class BudgetoidDbContextConstructionTests
             // comparisons rather than between because the upper bound exceeds int.
             "CK_passkey_signature_counters_value: passkey_signature_counters signature_counter >= 0 "
             + "and signature_counter <= 4294967295",
-            // A nonce issued for one ceremony and spent on the other is cross-ceremony replay, which
-            // this vocabulary refuses at the column rather than in whichever handler reads it.
-            "CK_webauthn_challenges_ceremony: webauthn_challenges ceremony in ('registration', 'authentication')",
+            // A nonce issued for one ceremony and spent on another is cross-ceremony replay, which
+            // this vocabulary refuses at the column rather than in whichever handler reads it. Three
+            // pools, not two: 'reauthentication' is minted only from an authenticated endpoint and is
+            // the only one that authorizes account erasure, so a nonce from either of the other two
+            // reaching that path would make the whole gate a formality.
+            "CK_webauthn_challenges_ceremony: webauthn_challenges ceremony in ('registration', "
+            + "'authentication', 'reauthentication')",
             // Equality, not a minimum: a challenge of any other length is one the issuer never
             // emitted, and a lower bound would accept it.
             "CK_webauthn_challenges_length: webauthn_challenges length(challenge) = 32",
@@ -354,7 +358,7 @@ public sealed class BudgetoidDbContextConstructionTests
         // unattended on every push to main, so a regenerated baseline arrives under a new id, the
         // next push finds nothing applied, and it re-creates every table against a populated
         // database. Having to edit this line is the checkpoint the retired manual deploy step was.
-        const string frozenBaselineId = "20260805112735_InitialCreate";
+        const string frozenBaselineId = "20260806233305_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

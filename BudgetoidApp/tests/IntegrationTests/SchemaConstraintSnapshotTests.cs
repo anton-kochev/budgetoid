@@ -278,9 +278,9 @@ public sealed class SchemaConstraintSnapshotTests
             // reports exactly the name that describes what is wrong with it.
             """CK_sessions_lifetime: sessions CHECK ((expires_at_utc > created_at_utc))""",
             """CK_transactions_amount: transactions CHECK ((abs(amount) <= (1000000000)::numeric))""",
-            // The two ceremonies a challenge can belong to. A nonce issued for one and spent on the
-            // other is the cross-ceremony replay this vocabulary refuses at the column.
-            """CK_webauthn_challenges_ceremony: webauthn_challenges CHECK (((ceremony)::text = ANY ((ARRAY['registration'::character varying, 'authentication'::character varying])::text[])))""",
+            // The three ceremonies a challenge can belong to. A nonce issued for one and spent on
+            // another is the cross-ceremony replay this vocabulary refuses at the column.
+            """CK_webauthn_challenges_ceremony: webauthn_challenges CHECK (((ceremony)::text = ANY ((ARRAY['registration'::character varying, 'authentication'::character varying, 'reauthentication'::character varying])::text[])))""",
             // Exactly 32 bytes, not a range: a challenge shorter than the issuer emits is one the
             // issuer never emitted, so equality is the honest rule and a minimum would accept it.
             """CK_webauthn_challenges_length: webauthn_challenges CHECK ((length(challenge) = 32))""",

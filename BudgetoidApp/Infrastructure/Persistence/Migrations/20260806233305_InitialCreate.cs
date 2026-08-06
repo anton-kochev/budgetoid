@@ -58,7 +58,7 @@ public partial class InitialCreate : Migration
             constraints: table =>
             {
                 table.PrimaryKey("PK_webauthn_challenges", x => x.id);
-                table.CheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication')");
+                table.CheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication', 'reauthentication')");
                 table.CheckConstraint("CK_webauthn_challenges_length", "length(challenge) = 32");
                 table.CheckConstraint("CK_webauthn_challenges_lifetime", "expires_at_utc > created_at_utc");
             });

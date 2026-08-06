@@ -16,6 +16,10 @@ Erasure is the one action that destroys an account and everything owned beneath 
 that leaving the product means actually leaving, rather than being archived: after it completes, no
 row in any table references the erased user or any budget it owned.
 
+Because it is irreversible, it is the one action a bearer token does not buy on its own. A request
+must carry a WebAuthn assertion made moments earlier on an authenticator registered to the account —
+so a stolen session cannot destroy a budget.
+
 It cuts across almost every domain area — `users` and `credentials` from
 [users-and-ownership.md](users-and-ownership.md), the identity material in
 [passkeys.md](passkeys.md) and [sessions.md](sessions.md), and every budget-owned table — so the
@@ -64,6 +68,9 @@ that is the one table erasure empties itself.
   not retry hygiene; see the rule below, where the reason is the grant matrix.
 - Erasure **MUST** delete, in dependency order and before the user row, every table a `RESTRICT`
   edge would otherwise block.
+- Erasure **MUST** be authorized by a fresh WebAuthn assertion on a `reauthentication` challenge, for
+  a passkey registered to **the account the request is authenticated as**. A bearer token alone is
+  not proof; it is the thing the gate exists to distrust.
 
 ### MUST NOT
 
@@ -71,11 +78,63 @@ that is the one table erasure empties itself.
   the body, not from a query string. It reads `IUserContext` and nothing else.
 - Erasure **MUST NOT** answer `404` for an account that is already gone. It states a post-condition
   rather than acting on a row, and a `404` would tell someone their data might still be there.
+- The re-authentication gate **MUST NOT** publish an identity — it never calls `IUserContextWriter`.
+  The sign-in handler does exactly that and the rule does not transfer, which makes this the most
+  inviting wrong turn in the area. `SessionContextInterceptor` writes `app.current_user_id` and
+  `app.current_budget_id` together at connection open, so a user id re-published mid-request does
+  **not** move the budget: Alice's bearer token with Bob's passkey would empty Alice's budget while
+  deleting Bob's user row.
+- The gate **MUST NOT** run inside the transactional delegate. See the rule below — the reasons are
+  the nonce, not the `22P02` that governs the sign-in path.
 - The application role **MUST NOT** be granted `DELETE` on `budgets`. Budget rows leave by the
   database's own cascade from `users`, which runs with the referencing table owner's privileges. A
   `42501` naming `budgets` is a change-tracker fault, never a missing grant — see the rule below.
 
 ## Business Rules & Invariants
+
+---
+
+- **Rule**: The freshness window is the **challenge's own server-issued lifetime**, five minutes. No
+  re-authentication instant is stored anywhere, and no timestamp is accepted from the client.
+- **Why**: the assertion travels in the erasure request itself, so the only thing that can be stale is
+  the nonce it was built on — and that nonce is minted by the server, held by the server, and expired
+  by the server inside `ConsumeAsync`. There is nothing for a client to supply and therefore nothing
+  to trust. **The gate reads no clock at all**; a `TimeProvider` on it would suggest a second instant
+  somewhere matters.
+- **This is stricter than the requirement, not looser.** The window is measured from **challenge
+  issue**, which is strictly before the person touched their authenticator, so the enforced gap
+  between proof and destruction is shorter than five minutes rather than longer.
+- **The absence of a stored instant is a decision, not an omission.** A `reauthentications` table
+  would be mutable per-user state on an account whose whole point is that it can be destroyed
+  wholesale, and it would exist before sessions authenticate requests at all. Anyone reaching for one
+  should read the decision-log entry first.
+- **Enforced in**: `DbWebAuthnChallengeStore.ChallengeLifetime` and the expiry comparison inside
+  `ConsumeAsync`. `ErasureReauthenticationTests.Erasure_OnAChallengeOlderThanTheWindow_IsRefusedAnd`
+  `ErasesNothing` inserts a pre-expired `reauthentication` row out of band and signs those exact
+  bytes; `…Erasure_OnALiveChallengeInsertedTheSameWay_ReturnsNoContent` is its control, without which
+  a gate refusing every out-of-band challenge for an unrelated reason would pass the first vacuously.
+  `…Erasure_SendsNoTimestampAndReadsNone` pins the shape on both legs.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The gate runs to completion **outside** the transactional delegate.
+- **Why**: two reasons, and **neither is the `22P02` one** that governs `CompleteAssertionHandler`.
+  Identity here is published by `UserProvisioningMiddleware` before the handler runs, so the
+  connection is configured correctly whenever it opens.
+  1. `ConsumeAsync` deletes the nonce on its own save. Inside the erasure transaction, a rolled-back
+     erasure would **restore the spent nonce** and make the same assertion replayable — destroying the
+     single-use property the design rests on.
+  2. The delegate is replayed under `NpgsqlRetryingExecutionStrategy`. A gate inside it would consume
+     a second time, find the nonce spent, and refuse a **valid** erasure with the same 401 an attacker
+     gets, because the database blinked.
+- **Enforced in**: the call ordering in `EraseAccountHandler`, with both reasons on the call site.
+  `EraseAccountHandlerTests.HandleAsync_WhenTheUnitOfWorkIsReplayed_StillErasesTheAccount` runs a
+  single-use challenge stub through `RetryingTransactionalExecutor(2)` and goes red the moment the
+  call moves below `ExecuteAsync`. It is an outcome pin, not a call-order pin.
+- **Counterexample**: wrapping gate and erasure in one transaction for tidiness. Both halves of the
+  damage are invisible on a green day.
+- **Source**: `[SOURCE: user-story]`
 
 ---
 
@@ -148,8 +207,11 @@ that is the one table erasure empties itself.
 ---
 
 - **Rule**: The account erased is whichever one the request is authenticated as. The identity comes
-  from `IUserContext` and from nowhere else, and `EraseAccountCommand` is parameterless so that no
-  field exists for a caller to name one in.
+  from `IUserContext` and from nowhere else, and **no field exists for a caller to name an account
+  in**. `EraseAccountCommand` carries the assertion and nothing else: its members name a credential
+  *handle*, and the owner-scoped lookup makes a handle incapable of selecting an account — one
+  registered to somebody else answers nothing rather than redirecting the erasure. The rule is "no
+  account may be named", not "no members".
 - **Why**: `user_isolation` is `FOR ALL`, so a `DELETE` naming another user's id affects **zero rows
   and reports success**. There is no error to catch and no refusal to log; a handler that took an id
   from the request and got it wrong would answer `204` having erased nothing. Keeping the id out of
@@ -165,13 +227,26 @@ that is the one table erasure empties itself.
 
 ---
 
-- **Rule**: Erasing an account that is already gone completes with `204`.
+- **Rule**: Erasure never answers `404`. A handler that is reached over an account already gone
+  completes with `204`.
 - **Why**: the caller asked for a post-condition — that the account not exist — and that
   post-condition holds. A `404` would be an answer about a row, and the one thing it would
   communicate to the person asking is uncertainty about whether their data is still there.
 - **Enforced in**: `UserRepository.DeleteAsync`, which removes whatever the id matched and saves; an
   absent row leaves an empty set and the save is a no-op rather than a branch. The handler never
   reads the user first.
+- **A second request from the same client is nonetheless refused, and that does not contradict the
+  rule.** It never reaches the handler: `UserProvisioningMiddleware` runs on every authenticated
+  request and mints a **brand-new** account, which holds no passkey, so the gate refuses with `401`.
+  That answer makes no claim about data at all — it says the request did not prove who it was, which
+  is true of a freshly-provisioned account. **Erasure is therefore no longer idempotent to the
+  caller**, and the cost is real: a client retrying after a lost `204` sees a failure over data that
+  is already destroyed. The remedy is client-side — do not re-run the ceremony on a presumed-lost
+  response — and it must not be answered by storing a marker that an erasure happened, which the rule
+  against tombstones forbids outright.
+  `AccountErasureEndpointTests.Erase_CalledASecondTime_IsRefusedAndLeavesTheNewAccountIntact` pins
+  both halves; its final assertion is that `users` holds exactly one row and it is **not** the erased
+  id, which a handler erasing without the gate would leave empty.
 - **This holds for a row that leaves between the read and the save, too.** Two erasures of the same
   account in flight at once — a double-click, or a client retrying a slow response — both load the
   rows; the loser blocks on the winner's locks, then finds nothing to delete and gets zero rows
@@ -210,12 +285,22 @@ that is the one table erasure empties itself.
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant A as DELETE /api/me
+    participant O as POST /api/passkeys/reauthentication/options
+    participant A as POST /api/me/erasure
     participant H as EraseAccountHandler
+    participant G as PasskeyReauthentication
     participant D as PostgreSQL
 
-    C->>A: DELETE /api/me (authenticated)
-    A->>H: EraseAccountCommand
+    C->>O: authenticated
+    O->>D: issue a reauthentication challenge (lives 5 minutes)
+    O-->>C: challenge
+    Note over C: the authenticator signs it
+    C->>A: assertion (authenticated)
+    A->>H: EraseAccountCommand(assertion)
+    H->>G: VerifyAsync — outside the transaction
+    G->>D: consume the nonce, require ceremony = reauthentication
+    G->>D: find the key BY HANDLE AND OWNER, verify, accept the counter
+    G-->>H: proved, nothing returned
     H->>H: DiscardTrackedEntities()
     H->>D: BEGIN
     H->>D: delete transactions (ambient budget)
@@ -225,8 +310,12 @@ sequenceDiagram
     A-->>C: 204 No Content
 ```
 
+The transaction opens **after** the gate, and the diagram is drawn to make that visible — see the
+rule above for the two reasons.
+
 There is no state to transition through: an account is present or it is not. Nothing is marked,
-scheduled or flagged, and no row survives to record that an erasure happened.
+scheduled or flagged, and no row survives to record that an erasure happened — including the proof
+that authorized it, which leaves as the deleted nonce.
 
 ## Integration Points
 
@@ -240,7 +329,15 @@ scheduled or flagged, and no row survives to record that an erasure happened.
   referential action through internal triggers running with the **referencing table owner's**
   privileges, not the caller's. That is why no grant on any child table is needed, and why adding
   one would widen the role's reach without extending what erasure can do.
-- **`ITransactionalExecutor`** — both saves run in one transaction.
+- **`ITransactionalExecutor`** — both saves run in one transaction, and the gate is deliberately not
+  inside it.
+- **[Passkeys](passkeys.md)** — the `reauthentication` ceremony, the third nonce pool, and the rule
+  that on this path the account comes from the request rather than from the credential.
+- **The grant matrix, again, by what it did *not* need.** The gate reads `passkey_public_keys`, writes
+  `passkey_signature_counters.signature_counter`, and deletes a `webauthn_challenges` row — all
+  already granted. `AppRoleGrantMatrixTests` and
+  `RlsCoverageTests.Exemptions_PinTheColumnsTheirReasonCovers` staying green **untouched** is the
+  proof this design added neither a privilege nor a column.
 
 ## Edge Cases & Known Gotchas
 
@@ -248,11 +345,12 @@ scheduled or flagged, and no row survives to record that an erasure happened.
   provisioning was still attached; the fix is `DiscardTrackedEntities()`, never a grant. This is the
   single most likely wrong turn in this area, because the error message points at exactly the wrong
   layer.
-- **Erasing twice creates an account in between.** `UserProvisioningMiddleware` runs on every
-  authenticated request, and the first erasure took the credential, so the second request resolves
-  nothing and provisions a **brand-new** user and default budget before the handler is reached —
-  which is then erased in the same request. The endpoint is idempotent to the caller and is not a
-  no-op to the database.
+- **Erasing twice creates an account in between, and no longer erases it.**
+  `UserProvisioningMiddleware` runs on every authenticated request, and the first erasure took the
+  credential, so the second request resolves nothing and provisions a **brand-new** user and default
+  budget before the handler is reached. That account holds no passkey, so the gate refuses and the
+  fresh account survives. A caller who wants it gone must register a passkey to it and run the
+  ceremony again.
 - **The request's own session row is deleted mid-request.** Nothing in the request path reads a
   `sessions` row today — the API authenticates with a bearer token from the identity provider — so
   the row cascades away and the response completes normally. The moment a session-bearing token

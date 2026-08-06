@@ -8,6 +8,65 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-07 — Erasure is gated by an assertion carried in the request, not by a stored re-authentication instant
+
+**Context:** erasure had to stop being reachable on a bearer token alone. The requirement is stated in
+two halves — a fresh WebAuthn assertion for a credential registered to the account, and a rejection
+once more than five minutes have elapsed since that re-authentication — and the second half reads like
+a two-step flow in which the server records when someone re-authenticated and checks that record
+later. There is nowhere to record it: no session token is issued or presented, so the API has no
+per-session state to hang it on, and `webauthn_challenges` cannot gain an owner column because its
+pinned column set is exactly what holds its row-level-security exemption to its reason.
+
+**Decision:** the assertion travels in the erasure request itself, and the five-minute window is
+realised as the lifetime of the server-issued challenge it was built on — already five minutes,
+already server-held, already enforced inside `ConsumeAsync`. Chosen to keep the elapsed check
+server-side with no client-supplied instant to distrust and no new mutable per-user table, accepting
+that the window is measured from challenge issue rather than from the authenticator touch. That
+accepted tradeoff runs in the safe direction: the enforced gap is **shorter** than five minutes, so
+the rule is stricter than the requirement rather than looser.
+
+**A future reader will read the missing table as an oversight and try to add one. It is not.**
+
+**Alternatives considered:**
+
+- *A `reauthentications` table holding the instant.* Rejected. It is mutable per-user state on an
+  account whose whole purpose is to be destroyable wholesale, it is the shape `app-role-grants.sql`
+  argues against accumulating, and it would exist before sessions authenticate requests at all — so
+  its owner column would have nothing to key on but the same bearer identity the gate exists to
+  distrust.
+- *A column on `webauthn_challenges` binding the nonce to a user.* Rejected, and it fails closed by
+  design: `RowLevelSecurityCoverage.Exemptions` pins that table's five columns and the coverage test
+  goes red on any addition. That pin is what pushed the account binding into the handler, which is
+  where it belongs anyway.
+- *A short-lived server-signed token minted by a separate re-authentication step.* Rejected: the
+  product already refuses to hand the client a handle to a session for exactly this reason, and a
+  second bearer artifact would be the thing somebody later decides is close enough to a session token.
+- *Reusing the ordinary sign-in nonce pool.* Rejected — that pool is minted from an **anonymous**
+  endpoint, so a phished ordinary sign-in assertion would destroy an account. A third ceremony value
+  was added instead, and the registration pool is refused too because it is minted for an
+  already-signed-in person, which is the stolen-session adversary itself.
+
+**The account comes from the request here, and from the credential at sign-in.** Sign-in has no
+identity yet, so the verified credential establishes one; erasure already has one, and publishing the
+credential's account over it would be destructive rather than redundant, because
+`SessionContextInterceptor` fixes the user and the budget together at connection open and a
+re-published user id does not move the budget. Alice's bearer token with Bob's passkey would empty
+Alice's budget while deleting Bob's user row. The binding is therefore an owner-scoped lookup rather
+than a comparison, so another account's handle is indistinguishable from one nothing answers to.
+
+**Erasure stopped being idempotent to the caller, and that was accepted rather than worked around.** A
+second request authenticates as the brand-new account user provisioning just minted, which holds no
+passkey, so it is refused. Answering `204` without a valid assertion would defeat the gate, and
+storing a marker that an erasure happened would contradict the rule against tombstones. The cost — a
+client retrying a lost response sees a failure over data that is already gone — is a client-side
+concern.
+
+**Affected areas:** [erasure.md](erasure.md), [passkeys.md](passkeys.md),
+[data isolation](../engineering/data-isolation.md).
+
+---
+
 ## 2026-08-06 — Erasure empties one table itself and leaves the rest of the graph to the cascade
 
 **Context:** the entry below establishes that one `DELETE` on `users` empties the account's

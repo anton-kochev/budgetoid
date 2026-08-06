@@ -529,7 +529,10 @@ public static class RowLevelSecurityCoverage
     /// <see cref="TableOwnership.None" />, and for a different reason than <c>currencies</c> skips
     /// the pin. <c>currencies</c> belongs to no tenant whatever columns it grows, so nothing its
     /// shape does can invalidate the reason; this table's exemption rests on the row saying nothing
-    /// about a person, so a person-identifying column landing on it must go red.
+    /// about a person, so a person-identifying column landing on it must go red. That is what forces
+    /// a ceremony issued to a signed-in person — re-authentication — to bind its nonce to an account
+    /// in the handler that spends it rather than by growing a <c>user_id</c> here: the answer to
+    /// "just store the user id on the challenge" is a new ceremony value, never a sixth column.
     /// </para>
     /// <para>
     /// Callers pass this to <see cref="Classify" /> rather than the classifier reaching for it, so
@@ -562,9 +565,11 @@ public static class RowLevelSecurityCoverage
             ]),
         new(
             "webauthn_challenges",
-            "a nonce belonging to a ceremony rather than to a person — the authentication "
-            + "ceremony issues one before anybody has said who they are, so there is nobody for a "
-            + "policy to key on, and the row holds nothing about whoever later uses it",
+            "a nonce belonging to a ceremony rather than to a person — one of the three "
+            + "ceremonies, authentication, issues one before anybody has said who they are, so for "
+            + "that pool there is nobody for a policy to key on, and the other two share the table "
+            + "rather than the row carrying an owner, because the row holds nothing about whoever "
+            + "later uses it",
             TableOwnership.None,
             ["id", "challenge", "ceremony", "created_at_utc", "expires_at_utc"]),
         new(

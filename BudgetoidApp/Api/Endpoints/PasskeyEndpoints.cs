@@ -3,6 +3,7 @@ using Application.Passkeys.BeginAssertion;
 using Application.Passkeys.BeginRegistration;
 using Application.Passkeys.CompleteAssertion;
 using Application.Passkeys.CompleteRegistration;
+using Application.Passkeys.Reauthentication;
 
 namespace Api.Endpoints;
 
@@ -47,6 +48,20 @@ public static class PasskeyEndpoints
             // left to say is what the client told the server about its own device, and echoing that
             // back would read as the server having established it.
             return TypedResults.Created();
+        });
+
+        // The re-authentication options leg, and it belongs in THIS group. It mints the one nonce that
+        // authorizes destroying an account, so an anonymous caller able to obtain one would make the
+        // erasure endpoint's refusal of the other two pools worth nothing. There is no finish leg here:
+        // the ceremony is completed by POST /api/me/erasure, which is the action it authorizes.
+        authenticated.MapPost("/reauthentication/options", async (
+            BeginReauthenticationHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            PasskeyRequestOptions options = await handler.HandleAsync(
+                new BeginReauthenticationCommand(),
+                cancellationToken);
+            return TypedResults.Ok(options);
         });
 
         // The sign-in legs. Anonymous on the group, because sign-in is the one exchange that by

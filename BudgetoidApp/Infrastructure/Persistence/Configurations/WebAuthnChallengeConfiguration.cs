@@ -35,7 +35,9 @@ internal sealed class WebAuthnChallengeConfiguration : IEntityTypeConfiguration<
             // A CHECK rather than a native PostgreSQL enum type, exactly as on credentials.type and
             // sessions.kind: the conversion below already stores the member as text, so the check costs
             // nothing extra, while a PG enum turns adding a member into an ALTER TYPE dance.
-            table.HasCheckConstraint(CeremonyCheckName, "ceremony in ('registration', 'authentication')");
+            table.HasCheckConstraint(
+                CeremonyCheckName,
+                "ceremony in ('registration', 'authentication', 'reauthentication')");
 
             // A challenge whose expiry is at or before its creation was never live for an instant, and
             // so was never a challenge. The bound matters more here than on most tables: the expiry is
@@ -53,10 +55,13 @@ internal sealed class WebAuthnChallengeConfiguration : IEntityTypeConfiguration<
 
         builder.Property(challenge => challenge.Id).HasColumnName("id");
 
-        // No user_id column, and its absence is a decision rather than an omission. The authentication
-        // ceremony issues a challenge before anybody has said who they are — that is what makes a
-        // discoverable credential discoverable — so at the moment the row is written there is no owner
-        // for a policy to key on. A nullable ownership column would not fix that: RLS on a NULL owner
+        // No user_id column, and its absence is a decision rather than an omission. One of the three
+        // ceremonies — authentication — issues a challenge before anybody has said who they are, which
+        // is what makes a discoverable credential discoverable, so for that pool there is no owner at
+        // the moment the row is written for a policy to key on. One column set serves all three: the
+        // two pools that are issued to a signed-in person carry the binding in the handler that spends
+        // the nonce, not on the row, because the pinned column set is what keeps this table saying
+        // nothing about anybody. A nullable ownership column would not fix that: RLS on a NULL owner
         // fails closed, so the row would be invisible to the very request that has to read it back,
         // and RowLevelSecurityCoverage refuses a nullable ownership column outright. What guards this
         // table instead is that its rows say nothing about anybody: a random 32 bytes and two instants,
@@ -114,6 +119,7 @@ internal sealed class WebAuthnChallengeConfiguration : IEntityTypeConfiguration<
     {
         WebAuthnCeremony.Registration => "registration",
         WebAuthnCeremony.Authentication => "authentication",
+        WebAuthnCeremony.Reauthentication => "reauthentication",
         _ => throw new ArgumentOutOfRangeException(
             nameof(ceremony),
             ceremony,
@@ -128,6 +134,7 @@ internal sealed class WebAuthnChallengeConfiguration : IEntityTypeConfiguration<
     {
         "registration" => WebAuthnCeremony.Registration,
         "authentication" => WebAuthnCeremony.Authentication,
+        "reauthentication" => WebAuthnCeremony.Reauthentication,
         _ => throw new InvalidOperationException(
             $"The webauthn_challenges.ceremony column holds '{value}', a value {CeremonyCheckName} "
             + "should have refused."),

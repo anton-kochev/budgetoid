@@ -1,4 +1,5 @@
 using Application.Abstractions;
+using Application.Passkeys.Reauthentication;
 using Domain.Transactions;
 using Domain.Users;
 
@@ -46,23 +47,50 @@ namespace Application.Users.EraseAccount;
 /// on a row: it never reads the user first and never turns absence into a 404, because a 404 would
 /// tell someone their data might still be there.
 /// </para>
+/// <para>
+/// What it is <b>not</b> idempotent about is the caller's experience. A second request authenticates
+/// as a brand-new account that user provisioning minted moments earlier, holding no passkey, so the
+/// gate refuses it — a 401 that makes no claim about data at all, which is why it does not violate the
+/// paragraph above.
+/// </para>
 /// </remarks>
 public sealed class EraseAccountHandler(
     ITransactionRepository transactions,
     IUserRepository users,
     IUserContext userContext,
     IPersistenceState persistenceState,
-    ITransactionalExecutor transactionalExecutor)
+    ITransactionalExecutor transactionalExecutor,
+    PasskeyReauthentication reauthentication)
     : ICommandHandler<EraseAccountCommand>
 {
-    public Task HandleAsync(
+    public async Task HandleAsync(
         EraseAccountCommand command,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(command);
+
+        // The gate runs to completion OUTSIDE the transactional delegate, and the position is
+        // load-bearing for two reasons — neither of them the 22P02 one CompleteAssertionHandler gives
+        // for its own ordering. Identity is already published here by UserProvisioningMiddleware, so
+        // the connection is configured correctly whenever it opens.
+        //
+        // 1. The consume must commit independently of the erasure. ConsumeAsync deletes the nonce row
+        //    on its own save; inside the erasure transaction, a rolled-back erasure would RESTORE the
+        //    spent nonce and make the same assertion replayable, destroying the single-use property the
+        //    whole design rests on.
+        // 2. The delegate is replayed. ITransactionalExecutor runs under
+        //    NpgsqlRetryingExecutionStrategy, so a transient failure runs the whole delegate again — a
+        //    gate inside it would consume a second time, find the nonce already spent, and refuse a
+        //    VALID erasure with the same 401 an attacker gets, because the database blinked.
+        //
+        // EraseAccountHandlerTests.HandleAsync_WhenTheUnitOfWorkIsReplayed_StillErasesTheAccount goes
+        // red the moment this call moves below the ExecuteAsync line.
+        await reauthentication.VerifyAsync(command.Assertion, cancellationToken);
+
         // One transaction over both saves. Each repository saves on its own, and an erasure that
         // committed the transactions delete and then failed would have destroyed recorded movement
         // while leaving the account that justified it.
-        return transactionalExecutor.ExecuteAsync(
+        await transactionalExecutor.ExecuteAsync(
             async token =>
             {
                 // Load-bearing on the FIRST attempt of the FIRST request, not just under retry.
@@ -78,6 +106,11 @@ public sealed class EraseAccountHandler(
                 // the failure names a permission but the cause is the change tracker. It is also what
                 // makes the delegate safe to replay, which is the reason CompleteAssertionHandler
                 // states for its own copy of this call.
+                //
+                // More load-bearing since the gate above, not less: verifying the assertion
+                // materialises a PasskeyPublicKey and a PasskeySignatureCounter on this same scoped
+                // context, the counter possibly with an advance the rollback would not undo. This
+                // discard sweeps them along with the tracked Budget.
                 persistenceState.DiscardTrackedEntities();
 
                 // The order is a property of this method, stated here, rather than one EF derives.

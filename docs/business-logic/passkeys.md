@@ -12,8 +12,9 @@
 
 ## Purpose
 
-This area covers **the two WebAuthn ceremonies**: registering a passkey to an account, and signing in
-with one. It is the only path that opens a session reaching budget content, because it is the only
+This area covers **the three WebAuthn ceremonies**: registering a passkey to an account, signing in
+with one, and re-proving possession of one before an action too destructive to take on a bearer token
+alone. It is the only path that opens a session reaching budget content, because it is the only
 credential type whose authenticator can hold the account's keys.
 
 Identity — who a person is, and which credentials prove it — lives in
@@ -46,7 +47,10 @@ lists, revokes, or replaces a passkey.
   in step with the protocol.
 - **`WebAuthnChallengeRow`** — a 32-byte nonce, the ceremony it was issued for, and its lifetime. A
   persistence-layer type rather than a domain entity: a protocol nonce is not a domain concept, it is
-  a row the infrastructure keeps so a stateless protocol can be resumed.
+  a row the infrastructure keeps so a stateless protocol can be resumed. Its `ceremony` vocabulary is
+  `registration`, `authentication`, `reauthentication`, bounded by
+  `CK_webauthn_challenges_ceremony`. The row carries **no owner column** and must not gain one — see
+  the pinned column set below.
 
 Deliberately **absent**: AAGUID, transports, a last-used instant, backup-eligibility flags, and the
 attestation statement. Nothing in this design reads any of them — no `allowCredentials` is ever sent,
@@ -280,6 +284,54 @@ erDiagram
 
 ---
 
+- **Rule**: A nonce issued for one ceremony is **never** spendable in another, and the three pools are
+  kept apart by the `ceremony` value the finish leg is required to see — not merely by the nonce being
+  live.
+- **Why**: the pools are minted under different conditions, so accepting the wrong one hands an
+  adversary a ceremony they could obtain cheaply in place of one they could not. An `authentication`
+  nonce is minted from the **anonymous** options leg, so anything that can walk a person through a
+  WebAuthn prompt for this relying party can obtain a signed one — which must not authorize erasing an
+  account. A `registration` nonce is minted for an already-signed-in person, which is exactly the
+  stolen-session adversary re-authentication exists to stop.
+- **The ceremony is never a request member.** Each options leg hard-codes its own value, and no
+  command carries one. A `ceremony` parameter on the anonymous assertion leg would let anybody mint a
+  re-authentication nonce and would dissolve the separation in a single field.
+- **Enforced in**: `WebAuthnCeremony`, the `ConsumeAsync` check in each finish leg written as
+  `is not <the expected member>` rather than as a null check, and `CK_webauthn_challenges_ceremony`
+  bounding the vocabulary. The nine-cell matrix is pinned by
+  `PasskeyCeremonyTests.Assertion_BuiltOnARegistrationChallenge_…`,
+  `…Assertion_BuiltOnAReauthenticationChallenge_…`,
+  `…Registration_BuiltOnAnAssertionChallenge_…`, `…Registration_BuiltOnAReauthenticationChallenge_…`,
+  and `ErasureReauthenticationTests.Erasure_OnAnAssertionChallenge_…` /
+  `…Erasure_OnARegistrationChallenge_…`.
+- **Counterexample**: testing `ConsumeAsync` for non-null. Every happy path passes, every ordinary
+  refusal passes, and the one thing that breaks is the separation the pools exist for.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: On the **re-authentication** ceremony the account comes from the **request**; on sign-in it
+  comes from the **credential**. The gate never publishes an identity.
+- **Why**: sign-in has no identity yet — the presented handle is the only thing naming an account, so
+  the verified credential is what establishes who is asking. Re-authentication already has one, and
+  publishing the credential's account over it would be actively destructive rather than merely
+  redundant: `SessionContextInterceptor` writes `app.current_user_id` and `app.current_budget_id`
+  together at connection open, so a user id re-published mid-request does **not** move the budget.
+  Alice's bearer token with Bob's passkey would empty **Alice's** budget while deleting **Bob's** user
+  row — two accounts destroyed, neither as asked.
+- **This is the single thing a future reader is most likely to get backwards**, because the sign-in
+  handler's rule is the more memorable one and it is written two paragraphs above.
+- **Enforced in**: `PasskeyReauthentication`, which takes `IUserContext` and never
+  `IUserContextWriter`, and looks the key up through the **owner-scoped**
+  `FindByWebAuthnCredentialIdForUserAsync` rather than the discovery lookup — so another account's
+  handle answers nothing, refused by construction instead of by a comparison a refactor can delete.
+  `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount`
+  asserts **both** accounts survive; the "Neither" is the point, because the wrong design damages one
+  of each.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
 - **Rule**: The assertion response carries the session's **kind and expiry, and no identifier**.
 - **Why**: the body has to say something the behaviour can be observed through, and the kind is
   exactly the fact that matters. Returning the row's id would hand the client a stable handle to a
@@ -297,6 +349,7 @@ stateDiagram-v2
     Consumed --> Verified : format, origin, relying party, flags, signature
     Verified --> Registered : registration — credential, key and counter in one save
     Verified --> SignedIn : assertion — counter accepted, then a Full session
+    Verified --> Proved : re-authentication — counter accepted, nothing returned
     Consumed --> Refused : any check fails
     ChallengeIssued --> Expired : five minutes pass
     Refused --> [*]
@@ -305,11 +358,17 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → ChallengeIssued | `POST /api/passkeys/{registration,assertion}/options` | registration requires a bearer token; assertion is anonymous |
-| ChallengeIssued → Consumed | either finish leg | the nonce must exist, be unexpired, and name the right ceremony |
+| → ChallengeIssued | `POST /api/passkeys/{registration,assertion,reauthentication}/options` | registration and re-authentication require a bearer token; assertion is anonymous |
+| ChallengeIssued → Consumed | any finish leg | the nonce must exist, be unexpired, and name the right ceremony |
 | Consumed → Verified | the verifier | client-data type; origin by **equality**; not cross-origin; `SHA-256(rpId)`; user present **and** verified; the signature |
 | Verified → Registered | `TryAddAsync` | attestation `none`; algorithm offered and supported; key strength; credential id 16–1023 bytes; the authenticator credential not already registered |
 | Verified → SignedIn | `Session.Establish` | the counter must advance, or both sides be zero |
+| Verified → Proved | `PasskeyReauthentication.VerifyAsync` returning | the key must be registered to the account the **request** is authenticated as; the counter must advance, or both sides be zero |
+
+A proved re-authentication is **not a state anything stores**. The gate returns, its caller acts, and
+the only durable trace is the deleted nonce. That is deliberate — see the rule in
+[erasure.md](erasure.md) on why the freshness window is the challenge's own lifetime rather than a
+recorded instant.
 
 The session's lifetime is **14 days**, a constant on `CompleteAssertionHandler`. It lives in
 Application rather than Domain because `Session.Establish` deliberately takes an expiry and how long
@@ -332,9 +391,15 @@ environment, and a session lifetime that varies per environment is a difference 
 - **The exempt table scopes nothing, so the application is the only thing scoping reads of it.** The
   discovery lookup is the one query allowed to read `passkey_public_keys` without naming an owner.
   Every other read must carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on
-  `budgets`. The `excludeCredentials` read is the one such call site today, and
-  `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential` is the only thing that would
-  notice it losing the filter — no layer below the application can.
+  `budgets`. Two call sites carry that filter today: the `excludeCredentials` read, watched by
+  `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential`, and
+  `FindByWebAuthnCredentialIdForUserAsync` on the re-authentication gate, watched by
+  `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount`.
+  Those tests are the only thing that would notice either losing its filter — no layer below the
+  application can.
+- **The re-authentication pool is one ceremony, not one per sensitive action.** Erasure is the only
+  thing that spends it today. If two sensitive actions ever need telling apart, the split is a new
+  **ceremony value** — never a column on `webauthn_challenges`, which the pinned column set forbids.
 - **The assertion options leg is the first unauthenticated write path in the system.** Anyone can
   make the role insert a challenge row. Growth is bounded by a five-minute lifetime and an
   opportunistic capped sweep on each options call, **not** by rate limiting, which does not exist

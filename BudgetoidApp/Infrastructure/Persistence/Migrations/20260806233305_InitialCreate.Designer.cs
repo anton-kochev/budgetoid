@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations;
 
 [DbContext(typeof(BudgetoidDbContext))]
-[Migration("20260805112735_InitialCreate")]
+[Migration("20260806233305_InitialCreate")]
 partial class InitialCreate
 {
     /// <inheritdoc />
@@ -697,7 +697,7 @@ partial class InitialCreate
 
                 b.ToTable("webauthn_challenges", null, t =>
                     {
-                        t.HasCheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication')");
+                        t.HasCheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication', 'reauthentication')");
 
                         t.HasCheckConstraint("CK_webauthn_challenges_length", "length(challenge) = 32");
 

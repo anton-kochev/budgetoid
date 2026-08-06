@@ -1,11 +1,13 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using Application.Passkeys;
 using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -25,6 +27,19 @@ namespace IntegrationTests;
 /// Every count asserted zero after the erasure is asserted non-zero before it, against the same
 /// predicate on the same connection. Without that half, a suite whose every assertion is "no rows"
 /// passes just as happily against a database where the seeding never worked.
+/// </para>
+/// <para>
+/// Every test here now performs a real WebAuthn ceremony first, because erasure is authorized by a
+/// fresh assertion rather than by the bearer token. That is why each one registers a
+/// <see cref="SyntheticAuthenticator" /> over HTTP instead of relying on the passkey material
+/// <see cref="SeedIdentityRowsAsync" /> writes out of band: the seeded key answers to no private key,
+/// so no signature could ever verify against it. The seeded rows stay, and are still what puts a row
+/// in <c>sessions</c> — a table no endpoint writes to yet.
+/// </para>
+/// <para>
+/// What this file is about is unchanged: the deletion order, the post-condition, and the tables the
+/// cascade reaches. The gate itself — which nonce pool authorizes an erasure, and whose credential
+/// has to answer it — is measured in <c>ErasureReauthenticationTests</c>.
 /// </para>
 /// </remarks>
 public sealed class AccountErasureEndpointTests
@@ -90,37 +105,50 @@ public sealed class AccountErasureEndpointTests
     private const string Subject = "google-erasing";
 
     [Test]
-    public async Task Delete_ForAnAuthenticatedUser_ReturnsNoContent()
+    public async Task Erase_ForAnAuthenticatedUserWithAFreshAssertion_ReturnsNoContent()
     {
-        // Arrange — nothing seeded beyond what account provisioning itself creates. The bare case is
-        // worth its own test: it is the only one that fails if the route is simply missing.
+        // Arrange — nothing seeded beyond what account provisioning itself creates, plus the passkey
+        // the ceremony needs. The bare case is worth its own test: it is the only one that fails if
+        // the route is simply missing.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        (await client.GetAsync("/api/accounts")).EnsureSuccessStatusCode();
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        (Guid userId, _) = await ResolveOwnerAsync(host, Subject);
 
         // Act
-        HttpResponseMessage response = await client.DeleteAsync("/api/me");
+        HttpResponseMessage response = await EraseAsync(client, device, userId);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
     }
 
     [Test]
-    public async Task Delete_WithoutAuthentication_IsRefused()
+    public async Task Erase_WithoutAuthentication_IsRefused()
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
 
-        // Act — no subject header, so nothing authenticates and the fallback policy decides.
-        HttpResponseMessage response = await host.Factory.CreateClient().DeleteAsync("/api/me");
+        // Act — no subject header, so nothing authenticates and the fallback policy decides. The body
+        // is well formed on purpose: a request turned away for its shape would prove nothing about
+        // authorization.
+        HttpResponseMessage response = await host.Factory.CreateClient().PostAsJsonAsync(ErasurePath, new
+        {
+            credentialId = "AA",
+            clientDataJson = "AA",
+            authenticatorData = "AA",
+            signature = "AA",
+            userHandle = (string?)null,
+        });
 
         // Assert — the endpoint declares no authorization metadata of its own, so this is the test
-        // that would notice an AllowAnonymous added to it.
+        // that would notice an AllowAnonymous added to it. The title separates this 401 from the one
+        // the re-authentication gate answers with: refused before the ceremony, not by it.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
     }
 
     [Test]
-    public async Task Delete_ForAFullyFurnishedAccount_ReturnsNoContent()
+    public async Task Erase_ForAFullyFurnishedAccount_ReturnsNoContent()
     {
         // Arrange — an account carrying a row in every table it can own, including a categorized
         // transaction. That transaction is what makes this test different from the bare one above:
@@ -129,22 +157,26 @@ public sealed class AccountErasureEndpointTests
         // answers 23503 here.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await FurnishAccountAsync(host, client, Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        (Guid userId, _) = await FurnishAccountAsync(host, client, Subject);
+        await RegisterPasskeyAsync(client, device);
 
         // Act
-        HttpResponseMessage response = await client.DeleteAsync("/api/me");
+        HttpResponseMessage response = await EraseAsync(client, device, userId);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
     }
 
     [Test]
-    public async Task Delete_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable()
+    public async Task Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable()
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         (Guid userId, Guid budgetId) = await FurnishAccountAsync(host, client, Subject);
+        await RegisterPasskeyAsync(client, device);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -159,7 +191,7 @@ public sealed class AccountErasureEndpointTests
         }
 
         // Act
-        HttpResponseMessage response = await client.DeleteAsync("/api/me");
+        HttpResponseMessage response = await EraseAsync(client, device, userId);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
@@ -185,18 +217,20 @@ public sealed class AccountErasureEndpointTests
     /// </para>
     /// <para>
     /// This is the test that goes red if that ever stops holding. It cannot be left to
-    /// <see cref="Delete_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable" />, which seeds a
+    /// <see cref="Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable" />, which seeds a
     /// transaction: the explicit transactions delete runs first there and empties the table the
     /// category is referenced from, so a cascade that could not reach the categories would never be
     /// asked to. No transaction here, which leaves the categories to the cascade alone.
     /// </para>
     /// </remarks>
     [Test]
-    public async Task Delete_ForAnAccountWithCategoriesAndNoTransaction_LeavesNoneOfEither()
+    public async Task Erase_ForAnAccountWithCategoriesAndNoTransaction_LeavesNoneOfEither()
     {
         // Arrange — a categorised budget with no movement in it at all.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
         Guid categoryGroupId = await CreateAsync(client, "/api/category-groups", new
         {
             name = "Essentials",
@@ -208,7 +242,7 @@ public sealed class AccountErasureEndpointTests
             description = (string?)null,
             categoryGroupId,
         });
-        (_, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
+        (Guid userId, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -216,7 +250,7 @@ public sealed class AccountErasureEndpointTests
         await Assert.That(await CountBudgetRowsAsync(admin, "categories", budgetId)).IsEqualTo(1L);
 
         // Act
-        HttpResponseMessage response = await client.DeleteAsync("/api/me");
+        HttpResponseMessage response = await EraseAsync(client, device, userId);
 
         // Assert — a cascade that reached the groups before the categories would answer 23503 and
         // this would be a 500 rather than two zeros.
@@ -226,7 +260,7 @@ public sealed class AccountErasureEndpointTests
     }
 
     [Test]
-    public async Task Delete_LeavesAnotherAccountUntouched()
+    public async Task Erase_LeavesAnotherAccountUntouched()
     {
         // Arrange — two furnished accounts. Without this test a handler that emptied every table in
         // the database would satisfy every other assertion in this file.
@@ -235,7 +269,9 @@ public sealed class AccountErasureEndpointTests
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient erased = host.Factory.CreateAuthenticatedClient(erasedSubject);
         HttpClient survivor = host.Factory.CreateAuthenticatedClient(survivorSubject);
-        await FurnishAccountAsync(host, erased, erasedSubject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        (Guid erasedUserId, _) = await FurnishAccountAsync(host, erased, erasedSubject);
+        await RegisterPasskeyAsync(erased, device);
         (Guid survivorUserId, Guid survivorBudgetId) =
             await FurnishAccountAsync(host, survivor, survivorSubject);
 
@@ -249,7 +285,7 @@ public sealed class AccountErasureEndpointTests
         }
 
         // Act
-        HttpResponseMessage response = await erased.DeleteAsync("/api/me");
+        HttpResponseMessage response = await EraseAsync(erased, device, erasedUserId);
 
         // Assert — the survivor's counts are compared to what they were, not merely to "more than
         // zero": an erasure that took some of another account's rows and left others would pass a
@@ -264,21 +300,51 @@ public sealed class AccountErasureEndpointTests
         }
     }
 
+    /// <summary>
+    /// Erasure is no longer idempotent to the caller, and the second call is refused rather than
+    /// answered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This replaces the old <c>Delete_CalledTwice_ReturnsNoContentBothTimes</c>, whose expectation
+    /// moved for a stated reason. <c>UserProvisioningMiddleware</c> runs on every authenticated
+    /// request, and the first erasure took the credential — so the second request authenticates as a
+    /// <b>brand-new</b> account, provisioned moments earlier, that holds no passkey at all. The gate
+    /// then finds nothing to verify against and refuses. Measured against the rule that erasure never
+    /// answers 404 for an account already gone: a 401 makes no claim about data. It says the request
+    /// did not prove who it was, which is true of a fresh account holding no credential.
+    /// </para>
+    /// <para>
+    /// The final assertion is <b>flipped</b> from the old test's, and that flip is the control. The
+    /// old one asserted <c>users</c> came back empty, because the second request erased the account it
+    /// had just provisioned. Now that account must survive — so a handler that erased without ever
+    /// consulting the gate leaves zero here and goes red, which is the one outcome the rest of this
+    /// file cannot distinguish.
+    /// </para>
+    /// <para>
+    /// The wart is real and is accepted rather than solved: a client retrying a lost 204 sees a
+    /// failure over data that is genuinely gone. There is deliberately no stored record that an
+    /// erasure happened, so nothing on the server could answer differently; the mitigation is
+    /// client-side.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task Delete_CalledTwice_ReturnsNoContentBothTimes()
+    public async Task Erase_CalledASecondTime_IsRefusedAndLeavesTheNewAccountIntact()
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         (Guid firstUserId, Guid firstBudgetId) = await FurnishAccountAsync(host, client, Subject);
+        await RegisterPasskeyAsync(client, device);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
 
         // The seeding is proved before the act, table by table, on the same connection and with the
         // same predicates the assertions below use — the promise this class's remarks make about
-        // every count it asserts zero. Without it, eleven "count is zero" assertions and an unfiltered
-        // users count of zero are all satisfied by a database the furnishing never reached.
+        // every count it asserts zero. Without it, eleven "count is zero" assertions are all satisfied
+        // by a database the furnishing never reached.
         IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
         foreach (OwnedTable table in OwnedTables)
         {
@@ -287,17 +353,13 @@ public sealed class AccountErasureEndpointTests
 
         await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsGreaterThan(0L);
 
-        // Act
-        HttpResponseMessage first = await client.DeleteAsync("/api/me");
-        HttpResponseMessage second = await client.DeleteAsync("/api/me");
+        // Act — the same device, the same subject, the whole ceremony run twice.
+        HttpResponseMessage first = await EraseAsync(client, device, firstUserId);
+        HttpResponseMessage second = await EraseAsync(client, device, firstUserId);
 
-        // Assert — idempotent to the caller, and deliberately not a no-op to the database. The
-        // cascade took the credential, so the second request's provisioning finds nothing to resolve
-        // and mints a fresh user and default budget before the handler is reached; that account is
-        // then erased in the same request. Both are checked because "the second call answered 204"
-        // would also be true of a handler that erased nothing at all.
+        // Assert
         await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
-        await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
 
         IReadOnlyDictionary<string, long> afterFirst =
             await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
@@ -306,9 +368,75 @@ public sealed class AccountErasureEndpointTests
             await Assert.That(afterFirst[table.Name]).IsEqualTo(0L);
         }
 
-        // The second account has no id this test ever learned, because nothing hands one out — so it
-        // is asserted about the only way it can be: nothing is left in users at all.
-        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
+        // Exactly one row, and the loop above already proved it is not the erased id — so what is left
+        // is the account the second request was provisioned as, still there. That is what "the gate
+        // refused it" looks like from the database, and it is the assertion a handler that erased
+        // without the gate fails.
+        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(1L);
+        await Assert.That(afterFirst["users"]).IsEqualTo(0L);
+    }
+
+    private const string ErasurePath = "/api/me/erasure";
+    private const string ReauthenticationOptionsPath = "/api/passkeys/reauthentication/options";
+    private const string RegistrationOptionsPath = "/api/passkeys/registration/options";
+    private const string RegistrationPath = "/api/passkeys/registration";
+
+    /// <summary>
+    /// Runs both authenticated legs of a registration so the account holds a passkey a signature can
+    /// actually be verified against.
+    /// </summary>
+    /// <remarks>
+    /// A real ceremony rather than seeded rows, and that is not preference. <see cref="SeedIdentityRowsAsync" />
+    /// writes four bytes of stand-in key material that no private key answers to, so an assertion
+    /// checked against it could never verify — the erasure would be refused and every test in this
+    /// file would fail for a reason that has nothing to do with what it measures.
+    /// </remarks>
+    private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
+    {
+        byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
+        AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
+        HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { enabled = true } },
+        });
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// Runs the whole erasure exchange: the authenticated options leg, the authenticator, and the
+    /// erasure request carrying what it produced.
+    /// </summary>
+    private static async Task<HttpResponseMessage> EraseAsync(
+        HttpClient client,
+        SyntheticAuthenticator device,
+        Guid userId)
+    {
+        byte[] challenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
+        AssertionResult assertion = device.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(userId));
+
+        return await client.PostAsJsonAsync(ErasurePath, new
+        {
+            credentialId = assertion.CredentialIdBase64Url,
+            clientDataJson = assertion.ClientDataJsonBase64Url,
+            authenticatorData = assertion.AuthenticatorDataBase64Url,
+            signature = assertion.SignatureBase64Url,
+            userHandle = assertion.UserHandleBase64Url,
+        });
+    }
+
+    /// <summary>Runs an options leg and returns the challenge bytes it issued.</summary>
+    private static async Task<byte[]> BeginCeremonyAsync(HttpClient client, string path)
+    {
+        HttpResponseMessage response = await client.PostAsync(path, content: null);
+        response.EnsureSuccessStatusCode();
+        JsonNode options = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+
+        return Base64UrlText.Decode(options["challenge"]!.GetValue<string>());
     }
 
     /// <summary>
@@ -524,7 +652,7 @@ public sealed class AccountErasureEndpointTests
     /// <c>CK_passkey_public_keys_webauthn_credential_id_length</c>, which admits 16 to 1023 bytes; the
     /// derivation satisfies <c>IX_passkey_public_keys_webauthn_credential_id</c>, which is
     /// <b>unique</b> — a constant handle makes the second account in
-    /// <see cref="Delete_LeavesAnotherAccountUntouched" /> unseedable, and a seeding failure there
+    /// <see cref="Erase_LeavesAnotherAccountUntouched" /> unseedable, and a seeding failure there
     /// would read as a bug in the erasure rather than in the fixture.
     /// </remarks>
     private static byte[] WebAuthnCredentialIdFor(Guid userId) =>

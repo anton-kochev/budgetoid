@@ -17,6 +17,34 @@ public interface IPasskeyRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Resolves the public key registered under <paramref name="webAuthnCredentialId"/> <b>and</b>
+    /// owned by <paramref name="userId"/>, or <see langword="null"/> when no passkey of that account
+    /// answers to that handle.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The pair with the lookup directly above, and the contrast between them is the point. That one
+    /// runs before the request has an identity and is the single query in the codebase permitted to
+    /// omit an owner filter; this one runs when an identity is already established, so it names the
+    /// owner like every other read of an exempt table. An exempt table scopes nothing — no policy and
+    /// no query filter narrows <c>passkey_public_keys</c> — so the predicate here is the only thing
+    /// standing between a caller and somebody else's credential.
+    /// </para>
+    /// <para>
+    /// It exists so that a handle belonging to another account is indistinguishable from a handle
+    /// nothing answers to <b>by construction</b>, rather than by a comparison a later refactor can
+    /// delete with one test noticing. Re-authentication before erasure is what needs that: the
+    /// account being erased comes from the request, and the credential proving the person is present
+    /// has to be one of that account's — reusing the discovery lookup here would verify a stranger's
+    /// signature perfectly and then erase the caller's own account on the strength of it.
+    /// </para>
+    /// </remarks>
+    Task<PasskeyPublicKey?> FindByWebAuthnCredentialIdForUserAsync(
+        Guid userId,
+        ReadOnlyMemory<byte> webAuthnCredentialId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The handles of every passkey already registered to <paramref name="userId"/>, which a
     /// registration ceremony offers back so an authenticator does not enrol itself twice.
     /// </summary>

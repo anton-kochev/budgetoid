@@ -189,10 +189,13 @@ GRANT SELECT, INSERT ON passkey_signature_counters TO budgetoid_app;
 GRANT UPDATE (signature_counter) ON passkey_signature_counters TO budgetoid_app;
 
 -- webauthn_challenges: the nonce each ceremony is bound to. It belongs to a ceremony rather than to
--- a person — the authentication ceremony issues one before anybody has said who they are, which is
--- what a discoverable credential means — so there is nobody for a policy to key on, and it carries
--- no user_id at all. Exempt with that written reason, and its column set pinned, because the pin is
--- what stops a person-identifying column landing here later.
+-- a person — one of the three, authentication, issues one before anybody has said who they are,
+-- which is what a discoverable credential means — so for that pool there is nobody for a policy to
+-- key on, and the table carries no user_id at all. The other two pools are issued to a signed-in
+-- person and share the same shape deliberately: what binds a re-authentication nonce to an account
+-- is the owner-scoped credential lookup in the handler that spends it, not a column here. Exempt
+-- with that written reason, and its column set pinned, because the pin is what stops a
+-- person-identifying column landing here later.
 --
 -- Of the identity tables — users, credentials, sessions, passkey_public_keys,
 -- passkey_signature_counters and this one — exactly two are granted DELETE, and each for a reason the
@@ -304,8 +307,8 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 --                         ceremony answers before it knows whose account it is; held to that reason
 --                         by its pinned column set, because a write-once secret would pass any
 --                         append-only rule the grants can express
---   webauthn_challenges   a nonce belonging to a ceremony rather than to a person, issued before
---                         anybody has said who they are
+--   webauthn_challenges   a nonce belonging to a ceremony rather than to a person; the
+--                         authentication pool is issued before anybody has said who they are
 --   currencies            shared reference data belonging to no tenant
 --   __EFMigrationsHistory EF's own bookkeeping
 --

@@ -313,6 +313,68 @@ public sealed class PasskeyCeremonyTests
     }
 
     /// <summary>
+    /// The third pool, spent on the sign-in leg. A re-authentication nonce authorizes account
+    /// destruction, so one that could also open a session would let a person talked through one
+    /// erasure prompt be signed in instead — and, worse, the reverse door is what this file's
+    /// companion test on the erasure side closes.
+    /// </summary>
+    /// <remarks>
+    /// This completes as a 3×3 what the two tests above keep as a 2×2. Without it the new ceremony is
+    /// a one-way guard: erasure refuses the older pools while the older legs accept the new one.
+    /// </remarks>
+    [Test]
+    public async Task Assertion_BuiltOnAReauthenticationChallenge_Returns401AndEstablishesNoSession()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        HttpClient anonymous = factory.CreateClient();
+
+        // Act — a live, unspent challenge in every respect except the ceremony it was issued for.
+        byte[] reauthenticationChallenge = await BeginCeremonyAsync(authenticated, ReauthenticationOptionsPath);
+        AssertionResult assertion = authenticator.Authenticate(
+            reauthenticationChallenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(owner.UserId));
+        HttpResponseMessage response = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(response)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The last cell of the 3×3: a re-authentication nonce spent on the registration leg. Cheap, and
+    /// it says the separation is a property of the vocabulary rather than a guard someone remembered
+    /// to write on two of the three finish legs.
+    /// </summary>
+    [Test]
+    public async Task Registration_BuiltOnAReauthenticationChallenge_IsRefused()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act
+        byte[] reauthenticationChallenge = await BeginCeremonyAsync(authenticated, ReauthenticationOptionsPath);
+        AttestationResult attestation = authenticator.Register(reauthenticationChallenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert — the registration leg is authenticated throughout, so it may say what was wrong, and
+        // a refused response leaves nothing filed.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
     /// A counter that went backwards is what a cloned authenticator produces, and the domain reports it
     /// by throwing. This is the test of the <b>translation</b>: an untranslated regression escapes as a
     /// 500 while an unknown credential answers 401, and a caller who can tell those apart has learned
@@ -1286,6 +1348,14 @@ public sealed class PasskeyCeremonyTests
     private const string RegistrationPath = "/api/passkeys/registration";
     private const string AssertionOptionsPath = "/api/passkeys/assertion/options";
     private const string AssertionPath = "/api/passkeys/assertion";
+
+    /// <summary>
+    /// The third nonce pool's options leg, which lives in this file's authenticated group. Named here
+    /// because the two cross-ceremony refusals above have to draw from it, and there is no finish leg
+    /// for it in this file — the ceremony is completed by the erasure endpoint, whose own tests live
+    /// in <c>ErasureReauthenticationTests</c>.
+    /// </summary>
+    private const string ReauthenticationOptionsPath = "/api/passkeys/reauthentication/options";
 
     /// <summary>
     /// One <c>sessions</c> row, read out of the database rather than out of a response, because the
