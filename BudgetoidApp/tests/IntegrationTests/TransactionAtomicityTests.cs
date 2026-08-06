@@ -98,6 +98,11 @@ public sealed class TransactionAtomicityTests
 
         public Task DeleteAsync(Transaction transaction, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        // Also deliberately does not throw: nothing here erases an account, and failing this would
+        // claim a rollback path these tests never cover.
+        public Task DeleteAllForAmbientBudgetAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 
     private static async Task<Guid> CreateAccountAsync(HttpClient client)

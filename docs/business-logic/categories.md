@@ -126,6 +126,9 @@ erDiagram
     redundant cover for the other: do not drop the constraint because the precheck passes first, and
     do not drop the catch because the precheck usually gets there first.
   - **Error**: “Category cannot be deleted because it has transactions.”
+  - **Erasure does not bypass this, and does not delete categories at all.** It empties the budget's
+    transactions and then deletes the *user*; the categories leave by the cascade descending from
+    that row, with nothing left referencing them — see [erasure.md](erasure.md).
 
 ## Business Rules & Invariants
 

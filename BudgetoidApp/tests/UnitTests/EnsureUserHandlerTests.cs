@@ -446,5 +446,31 @@ public sealed class EnsureUserHandlerTests
             _storedUsers[user.Id] = user;
             return Task.FromResult(true);
         }
+
+        /// <summary>
+        /// Drops the row and, with it, the credential that resolved to it — the cascade the real
+        /// delete relies on, in the only shape this fake can hold. A row that is already gone is not
+        /// an error, as the interface documents: the call states a post-condition rather than acting
+        /// on a row.
+        /// </summary>
+        /// <remarks>
+        /// No erasure test drives this fake — erasure has its own in <c>UnitTests.Fakes</c>, which
+        /// carries the RESTRICT rule this one has no collaborator to model. It is implemented in
+        /// state rather than as a throw so that the fake stays internally consistent: leaving
+        /// <see cref="FindUserIdByFederatedCredentialAsync"/> resolving an id whose row was deleted
+        /// would be a behaviour the real repository cannot produce.
+        /// </remarks>
+        public Task DeleteAsync(Guid userId, CancellationToken cancellationToken = default)
+        {
+            _storedUsers.Remove(userId);
+
+            if (_existingUser?.Id == userId)
+            {
+                _existingUser = null;
+                _existingCredential = null;
+            }
+
+            return Task.CompletedTask;
+        }
     }
 }

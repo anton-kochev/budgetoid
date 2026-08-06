@@ -274,6 +274,7 @@ app.MapPayeeEndpoints();
 app.MapCategoryGroupEndpoints();
 app.MapCategoryEndpoints();
 app.MapPasskeyEndpoints();
+app.MapAccountErasureEndpoints();
 
 await app.RunAsync();
 

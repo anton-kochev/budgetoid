@@ -54,6 +54,7 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | **Locked session** | A session established from a federated credential. It reaches no budget content, because an authorization exchange returns claims rather than a secret a client can turn into a key. |
 | **Full session** | A session established from a passkey — the only credential type whose authenticator can hold the account's keys, and so the only one that opens a session reaching budget content. |
 | **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
+| **Erasure** | Destroying an account and everything owned beneath it, so that no row in any table references the erased user or any budget it owned. Not a status and not a soft delete: nothing is marked, and no row survives to record that it happened — see [erasure.md](erasure.md). |
 | **Provisioning** | The step that turns an authenticated Google principal into an internal user and an ambient budget, run on every authenticated request. |
 | **Unnamed budget** | The budget provisioning creates when a user owns none. It has no name — `name` is null — and a client shows its own localized label in place of one. A user has at most one of these; named budgets are unconstrained in number. The invariant keys on the *absence of a name* rather than on a "default" flag or a well-known name, which is what makes provisioning race-safe — see [budgets.md](budgets.md#business-rules--invariants). "Default budget" names the same row from the provisioning side (`Budget.CreateDefault`, "find-or-create the user's default budget"); prefer "unnamed budget" when the rule turns on the missing name. |
 | **Ambient budget** | The one budget a request is scoped to, resolved server-side at provisioning and read through `IBudgetContext`. Never supplied by the client. |
@@ -118,5 +119,7 @@ references are additionally constrained by composite foreign keys to a row in th
 - [Categories and Category Groups](categories.md) — hierarchy, uniqueness, ordering, movement, and
   delete guards.
 - [Currencies](currencies.md) — global ISO-4217 reference data.
+- [Erasure](erasure.md) — the one action that destroys an account and everything under it, and the
+  order it has to delete in.
 
 Non-obvious decisions are recorded in [_decision-log.md](_decision-log.md).

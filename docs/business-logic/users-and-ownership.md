@@ -296,13 +296,14 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   `credentials`, `sessions`, `passkey_public_keys`, `passkey_signature_counters` (user-owned) and
   `payees` (budget-owned) are emptied by the cascade descending from that row, not by a privilege of
   their own.
-- **It is not sufficient on its own.** `budgets → transactions` is `Restrict`, so a budget holding one
-  recorded movement refuses the delete with `23503` — and a budgeting product's accounts hold
-  transactions, which makes that the ordinary case rather than the corner. Erasure deletes
-  transactions first, per budget, and only then the user row. Those are two shapes of session:
-  `transactions` is policed by `budget_isolation` and needs `app.current_budget_id` set for each
-  budget the user owns, while this delete needs only `app.current_user_id`. The `transactions`
-  grant already exists; the sequence does not, and it belongs to the erasure feature.
+- **It is not sufficient on its own.** Five edges in the owned graph are `Restrict` rather than
+  `Cascade`, and erasure empties the one table that is the child of four of them — `transactions` —
+  before it deletes this row; see
+  [erasure.md](erasure.md), which owns the sequence and the reasons for it. The whole sequence runs
+  on **one** session: `SessionContextInterceptor` writes `app.current_user_id` and
+  `app.current_budget_id` in the same statement on every connection open, so the connection serving
+  an authenticated request already names both the user `user_isolation` reads and the budget
+  `budget_isolation` reads.
 - **Why**: erasing an account has to run as the application rather than on an elevated connection —
   that is the whole point of [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md), and
   a role that needed a database administrator to delete a row would dissolve it. Every owned table
@@ -330,11 +331,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   which is the policy holding rather than the grant matrix.
   `AppRoleGrantMatrixTests.AppRoleGrants_MatchTheDeclaredMatrix` pins the whole privilege set in both
   directions, so a `DELETE` added to a seventh table fails as loudly as one removed from this one.
-- **Gap, stated rather than hidden**: like the `users` `UPDATE` grant above it, this `DELETE` has no
-  caller. Nothing in `Domain`, `Application` or `Api` deletes a user — `ExecuteDelete` is a compile
-  error via `BannedSymbols.txt`, no repository exposes a removal, and no endpoint maps one. It stands
-  because the erasure feature that needs it is specified and next; if that slips, the grant should be
-  revoked rather than left standing.
+- **Its caller is the erasure endpoint.** `DELETE /api/me` reaches this grant through
+  `EraseAccountHandler` and `IUserRepository.DeleteAsync`, and the id it deletes is read from
+  `IUserContext` rather than from the route or the body — `EraseAccountCommand` is parameterless
+  precisely so there is no field a caller could name an account in. See [erasure.md](erasure.md).
 - **Source**: `[SOURCE: user-story]`
 
 ---

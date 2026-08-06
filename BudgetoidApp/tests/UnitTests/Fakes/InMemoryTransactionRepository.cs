@@ -14,6 +14,14 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
     public int UpdateCallCount { get; private set; }
     public int DeleteCallCount { get; private set; }
 
+    /// <summary>
+    /// The rows still here. Exposed so a collaborator can be given the database's own referential
+    /// rule — this table is the child of four of the owned graph's five <c>ON DELETE RESTRICT</c>
+    /// edges, to <c>budgets</c>, <c>accounts</c>, <c>categories</c> and <c>payees</c>, so a user
+    /// delete is refused while any of these survive. See <c>InMemoryUserRepository</c>.
+    /// </summary>
+    public IReadOnlyList<Transaction> Transactions => _transactions;
+
     public void SetPayeeProjection(Guid payeeId, string payeeName) =>
         _payeeNames[payeeId] = payeeName;
 
@@ -59,6 +67,19 @@ public sealed class InMemoryTransactionRepository : ITransactionRepository, ITra
     {
         DeleteCallCount++;
         _transactions.Remove(transaction);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Empties the fake, standing in for a delete the <c>BudgetIsolation</c> query filter scopes to
+    /// one budget. There is no budget to scope to here: this fake holds one tenant's rows and is not
+    /// constructed with a budget id, so clearing it is the whole of the behaviour there is to stand
+    /// in for. That the real method scopes to the ambient budget is proved against PostgreSQL in
+    /// <c>TransactionRepositoryTests</c>.
+    /// </summary>
+    public Task DeleteAllForAmbientBudgetAsync(CancellationToken cancellationToken = default)
+    {
+        _transactions.Clear();
         return Task.CompletedTask;
     }
 

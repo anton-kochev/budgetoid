@@ -340,7 +340,9 @@ erDiagram
 
 - **Rule**: A budget that holds at least one transaction cannot be deleted. A budget that holds
   structure but no transaction can, and its accounts, category groups, categories and payees go out
-  with it.
+  with it. Account erasure is not an exception to this: it empties the transactions first and then
+  deletes the *user*, so the budget leaves by the cascade with nothing left to hold it — see
+  [erasure.md](erasure.md).
 - **Why**: Recorded money movement is the only data in the system a user cannot reconstruct from
   memory, and losing it in bulk is the worst outcome a money app has. Empty scaffolding does not earn
   the same protection: a budget nobody recorded anything in was a mistake, and making it permanently

@@ -44,8 +44,11 @@ namespace IntegrationTests;
 /// handler that performs two writes on one context.
 /// </para>
 /// <para>
-/// <c>TransactionRepository</c> is absent on purpose: it has no <c>catch</c> at all, so it has
-/// nothing to attribute and nothing to get wrong.
+/// <c>TransactionRepository</c> is absent on purpose: it catches no constraint violation, so it has
+/// nothing to attribute and nothing to get wrong. Its one <c>catch</c> is for a concurrency conflict,
+/// which carries no constraint name and no SQLSTATE for a filter to mis-read; the entries are what
+/// narrows it, and that narrowing is pinned in <c>TransactionRepositoryTests</c> beside the method,
+/// as <c>UserRepository.DeleteAsync</c>'s is in <c>UserRepositoryTests</c>.
 /// </para>
 /// </remarks>
 public sealed class RepositoryConstraintAttributionTests

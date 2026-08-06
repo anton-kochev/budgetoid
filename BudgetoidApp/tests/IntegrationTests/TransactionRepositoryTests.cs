@@ -7,6 +7,7 @@ using Domain.Transactions;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Npgsql;
 
 namespace IntegrationTests;
@@ -331,6 +332,284 @@ public sealed class TransactionRepositoryTests
         await Assert.That(await CountTransactionsAsync(connection, budgetId)).IsEqualTo(1L);
     }
 
+    [Test]
+    public async Task Database_DeletesEveryTransactionInTheAmbientBudget()
+    {
+        // Arrange — two rows, because a delete written to take one would still empty a single-row
+        // table and look correct.
+        await using RepositoryTestHost host = await StartHostAsync();
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        Guid budgetId = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await InsertTransactionAsync(connection, budgetId, accountId, Money("-10"));
+        await InsertTransactionAsync(connection, budgetId, accountId, Money("-20"));
+        await Assert.That(await CountTransactionsAsync(connection, budgetId)).IsEqualTo(2L);
+
+        // Act
+        await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId)))
+        {
+            await new TransactionRepository(db).DeleteAllForAmbientBudgetAsync();
+        }
+
+        // Assert — counted on the container account, not through the query filter that did the
+        // scoping, so the observation cannot inherit the mistake it is looking for.
+        await Assert.That(await CountTransactionsAsync(connection, budgetId)).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_LeavesAnotherBudgetsTransactionsInPlace()
+    {
+        // Arrange — two tenants with a row each. This is the test that proves the BudgetIsolation
+        // filter is what scopes the delete: without it, a repository method that simply emptied the
+        // table would pass the test above.
+        await using RepositoryTestHost host = await StartHostAsync();
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        Guid budgetA = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid budgetB = await host.SeedBudgetAsync("google-b", "b@example.com");
+        Guid accountA = await SeedAccountAsync(host, budgetA);
+        Guid accountB = await SeedAccountAsync(host, budgetB);
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await InsertTransactionAsync(connection, budgetA, accountA, Money("-10"));
+        await InsertTransactionAsync(connection, budgetB, accountB, Money("-20"));
+        await Assert.That(await CountTransactionsAsync(connection, budgetA)).IsEqualTo(1L);
+        await Assert.That(await CountTransactionsAsync(connection, budgetB)).IsEqualTo(1L);
+
+        // Act — the ambient budget is A's, and the method takes no budget id at all.
+        await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetA)))
+        {
+            await new TransactionRepository(db).DeleteAllForAmbientBudgetAsync();
+        }
+
+        // Assert
+        await Assert.That(await CountTransactionsAsync(connection, budgetA)).IsEqualTo(0L);
+        await Assert.That(await CountTransactionsAsync(connection, budgetB)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// The losing side of two concurrent erasures of one account, which lands here first whenever the
+    /// budget holds any movement.
+    /// </summary>
+    /// <remarks>
+    /// Both requests read these rows; the loser blocks on the winner's locks until it commits and
+    /// then deletes nothing, so EF counts zero affected rows where it expected one per row and raises
+    /// a conflict. The budget holds no transactions, which is the entire post-condition — reporting a
+    /// failure would answer a completed erasure with a 500.
+    /// <para>
+    /// The vanishing is staged rather than raced, for the reason
+    /// <see cref="ConcurrentDeleteInterceptor" /> gives: the state is what the code responds to, and
+    /// this way it is the state on every run rather than on a lucky one. That the state really does
+    /// raise the conflict is proved in
+    /// <c>UserRepositoryTests.Database_WhenTheRowIsDeletedBetweenTheReadAndTheSave_RaisesAConcurrencyConflict</c>,
+    /// and again by the escape test below, which reaches it here and watches it come out.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task DeleteAllForAmbientBudgetAsync_WhenAnotherRequestDeletedTheRowsFirst_Completes()
+    {
+        // Arrange — two rows, both taken by the winner after this call has read them.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await InsertTransactionAsync(connection, budgetId, accountId, Money("-10"));
+        await InsertTransactionAsync(connection, budgetId, accountId, Money("-20"));
+        ConcurrentDeleteInterceptor winner = new(
+            host.ConnectionString, "delete from transactions where budget_id = @id", budgetId);
+        await using BudgetoidDbContext db = new(
+            CreateOptions(host, winner), new TestBudgetContext(budgetId));
+        var repository = new TransactionRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.DeleteAllForAmbientBudgetAsync());
+
+        // Assert — nothing escaped, the winner really did take both rows, and the budget holds no
+        // transactions, which is the entire post-condition.
+        await Assert.That(escaped).IsNull();
+        await Assert.That(winner.Deleted).IsEqualTo(2);
+        await Assert.That(await CountTransactionsAsync(connection, budgetId)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// The detach inside that catch, which is what lets the enclosing unit of work carry on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Leave a conflicting entry Deleted and the next save on this request-scoped context re-flushes a
+    /// delete that has already been answered — and erasure's next step is exactly such a save,
+    /// <c>UserRepository.DeleteAsync</c> on the same context. So without the detach the swallow buys
+    /// nothing.
+    /// </para>
+    /// <para>
+    /// <b>Two rows, and the second row is the whole test.</b> EF reports only the first mismatching
+    /// command's entries on <c>DbUpdateConcurrencyException.Entries</c>, so a detach driven by the
+    /// exception rather than by the change tracker sweeps one entry and leaves every surplus one
+    /// Deleted. One row passes under either sweep and therefore proves nothing; from two rows up, only
+    /// the tracker sweep leaves the context clean.
+    /// </para>
+    /// <para>
+    /// Asserted on the tracker rather than on nothing having been thrown, because a surplus entry
+    /// throws nothing here: it waits for the next save. What that costs is pinned by the test below.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task DeleteAllForAmbientBudgetAsync_WhenAnotherRequestDeletedTheRowsFirst_LeavesNothingToReplay()
+    {
+        // Arrange — two rows, one more than the exception can report.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await InsertTransactionAsync(connection, budgetId, accountId, Money("-10"));
+        await InsertTransactionAsync(connection, budgetId, accountId, Money("-20"));
+        ConcurrentDeleteInterceptor winner = new(
+            host.ConnectionString, "delete from transactions where budget_id = @id", budgetId);
+        await using BudgetoidDbContext db = new(
+            CreateOptions(host, winner), new TestBudgetContext(budgetId));
+
+        // Act
+        await new TransactionRepository(db).DeleteAllForAmbientBudgetAsync();
+
+        // Assert — the winner really did take both rows, and the context is left holding neither of
+        // them. Counted over every tracked transaction and not only the Deleted ones: this call is the
+        // only thing that has tracked a transaction on this context, so any survivor at all is one the
+        // catch failed to sweep.
+        await Assert.That(winner.Deleted).IsEqualTo(2);
+        await Assert.That(db.ChangeTracker.Entries<Transaction>().Count()).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// What a surplus Deleted entry actually costs, which is worse than the 500 it looks like: the
+    /// account is not erased at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Erasure's next step is <c>UserRepository.DeleteAsync</c> on this same context. A transaction
+    /// left Deleted re-flushes there, EF finds a row already gone and raises a conflict naming a
+    /// <see cref="Transaction" /> — which that method's <c>when</c> clause correctly refuses to
+    /// swallow, since it swallows only conflicts over <c>users</c> rows it marked itself. The
+    /// transaction rolls back and the <c>users</c> row survives, so the account whose erasure was
+    /// requested twice is erased neither time.
+    /// </para>
+    /// <para>
+    /// The real next call rather than a bare <c>SaveChangesAsync</c> standing in for it, and the
+    /// surviving-row count rather than the absence of an exception: a test that only watched for a
+    /// throw would go green again the day a surplus entry came back and merely moved which call
+    /// raised it.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task DeleteAllForAmbientBudgetAsync_WhenAnotherRequestDeletedTheRowsFirst_LetsTheErasureFinish()
+    {
+        // Arrange — the same two rows. The interceptor fires once, so the users delete below is not
+        // preceded by an out-of-band delete of its own: the row it removes is really there to remove.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (Guid userId, Guid budgetId) = await host.SeedOwnerAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await InsertTransactionAsync(connection, budgetId, accountId, Money("-10"));
+        await InsertTransactionAsync(connection, budgetId, accountId, Money("-20"));
+        ConcurrentDeleteInterceptor winner = new(
+            host.ConnectionString, "delete from transactions where budget_id = @id", budgetId);
+        await using BudgetoidDbContext db = new(
+            CreateOptions(host, winner), new TestBudgetContext(budgetId));
+        await new TransactionRepository(db).DeleteAllForAmbientBudgetAsync();
+
+        // Act — the step EraseAccountHandler takes next, unabridged and on the same context.
+        Exception? escaped = await CaptureAsync(() => new UserRepository(db).DeleteAsync(userId));
+
+        // Assert — counted on the container superuser, not through the context that was asked to do
+        // the erasing, so the observation cannot inherit the failure it is looking for.
+        await Assert.That(winner.Deleted).IsEqualTo(2);
+        await Assert.That(escaped).IsNull();
+        await Assert.That(await CountUsersAsync(connection, userId)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// The narrowing on that catch, which is the half a widened <c>when</c> clause would take away.
+    /// </summary>
+    /// <remarks>
+    /// A conflict carries no SQLSTATE, so the entries are what the method filters on: every
+    /// conflicting row must be a transaction it marked Deleted itself. A conflict over anything else
+    /// riding along on the same <c>SaveChangesAsync</c> is a failure this method does not model, and
+    /// swallowing it would report an erasure that the rolled-back transaction did not perform.
+    /// </remarks>
+    [Test]
+    public async Task DeleteAllForAmbientBudgetAsync_WhenTheConflictNamesAnotherEntity_LetsItEscape()
+    {
+        // Arrange — an empty category group is removed out of band and then marked Deleted here, so
+        // the one delete that finds nothing is a category_groups row. The transaction delete this
+        // method actually makes is sound and affects its row. No interceptor: the conflicting row is
+        // already gone before the call starts, which is all the mismatch needs.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await InsertTransactionAsync(connection, budgetId, accountId, Money("-10"));
+        Guid categoryGroupId = await SeedCategoryGroupAsync(host, budgetId);
+        await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
+        CategoryGroup categoryGroup = await db.CategoryGroups.SingleAsync(
+            group => group.Id == categoryGroupId);
+        await DeleteRowAsync(connection, "delete from category_groups where id = @id", categoryGroupId);
+        db.CategoryGroups.Remove(categoryGroup);
+        var repository = new TransactionRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.DeleteAllForAmbientBudgetAsync());
+
+        // Assert
+        await Assert.That(escaped).IsTypeOf<DbUpdateConcurrencyException>();
+    }
+
+    /// <summary>
+    /// Writes an empty category group into <paramref name="budgetId" /> and returns its id. Empty on
+    /// purpose: nothing references it, so its row can be removed out of band without a RESTRICT edge
+    /// refusing the removal.
+    /// </summary>
+    private static async Task<Guid> SeedCategoryGroupAsync(RepositoryTestHost host, Guid budgetId)
+    {
+        await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
+        CategoryGroup categoryGroup = CategoryGroup.Create(budgetId, "Essentials", null, 0, UtcNow());
+        db.CategoryGroups.Add(categoryGroup);
+        await db.SaveChangesAsync();
+        return categoryGroup.Id;
+    }
+
+    /// <summary>
+    /// Runs one parameterised delete on the container superuser, standing in for a row another
+    /// request took.
+    /// </summary>
+    private static async Task DeleteRowAsync(NpgsqlConnection connection, string sql, Guid id)
+    {
+        await using NpgsqlCommand command = new(sql, connection);
+        command.Parameters.AddWithValue("id", id);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action" /> and hands back whatever escaped, or <see langword="null" />
+    /// when nothing did. Deliberately untyped: the question the two tests above ask is <i>which</i>
+    /// exception surfaces, so catching a specific one here would decide the answer in the helper.
+    /// </summary>
+    private static async Task<Exception?> CaptureAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
     /// <summary>
     /// Fixed UTC instant for every row these tests write. PostgreSQL <c>timestamptz</c> rejects a
     /// non-UTC <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
@@ -409,12 +688,20 @@ public sealed class TransactionRepositoryTests
         return command;
     }
 
-    private static async Task<long> CountTransactionsAsync(NpgsqlConnection connection, Guid budgetId)
+    private static Task<long> CountTransactionsAsync(NpgsqlConnection connection, Guid budgetId) =>
+        CountAsync(connection, "select count(*) from transactions where budget_id = @id", budgetId);
+
+    /// <summary>
+    /// Counts the rows <paramref name="userId" /> still has in <c>users</c>, which is how a test says
+    /// "the erasure completed" without asking the context that performed it.
+    /// </summary>
+    private static Task<long> CountUsersAsync(NpgsqlConnection connection, Guid userId) =>
+        CountAsync(connection, "select count(*) from users where id = @id", userId);
+
+    private static async Task<long> CountAsync(NpgsqlConnection connection, string sql, Guid id)
     {
-        await using NpgsqlCommand command = new(
-            "select count(*) from transactions where budget_id = @id",
-            connection);
-        command.Parameters.AddWithValue("id", budgetId);
+        await using NpgsqlCommand command = new(sql, connection);
+        command.Parameters.AddWithValue("id", id);
 
         // Pattern-matched rather than cast-and-null-forgive: a null or unexpected scalar means the
         // query changed shape, and that should fail loudly here instead of at the assertion.
@@ -422,14 +709,26 @@ public sealed class TransactionRepositoryTests
         {
             long count => count,
             var unexpected => throw new InvalidOperationException(
-                $"Expected a count from 'transactions', got '{unexpected ?? "null"}'."),
+                $"Expected a count from '{sql}', got '{unexpected ?? "null"}'."),
         };
     }
 
-    private static DbContextOptions<BudgetoidDbContext> CreateOptions(RepositoryTestHost host)
+    /// <summary>
+    /// Builds the context options these tests connect through.
+    /// </summary>
+    /// <param name="host">The container this context connects to.</param>
+    /// <param name="interceptors">
+    /// Interceptors to attach, for the one test that needs something to happen inside a
+    /// <c>SaveChangesAsync</c>. Empty for every other caller, which is why it is a
+    /// <see langword="params" /> tail rather than a second factory.
+    /// </param>
+    private static DbContextOptions<BudgetoidDbContext> CreateOptions(
+        RepositoryTestHost host,
+        params IInterceptor[] interceptors)
     {
         return new DbContextOptionsBuilder<BudgetoidDbContext>()
             .UseNpgsql(host.ConnectionString)
+            .AddInterceptors(interceptors)
             .Options;
     }
 

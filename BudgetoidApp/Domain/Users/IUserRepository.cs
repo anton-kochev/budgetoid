@@ -33,4 +33,20 @@ public interface IUserRepository
     /// later sign-in with that address would be refused with a 409 and no way to heal.
     /// </remarks>
     Task<bool> TryAddAsync(User user, Credential credential, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes the user row, which cascades away everything that hangs off it. A row that is already
+    /// gone is not an error: this states a post-condition rather than acting on a row, and a caller
+    /// asking for an account to be absent has its answer either way. That covers a row another
+    /// request erased while this one was in flight, not only one that was missing before it started
+    /// — losing that race is the post-condition holding, not a failure to report.
+    /// </summary>
+    /// <remarks>
+    /// Takes the id explicitly, unlike the budget-scoped repositories, which take none. Those are
+    /// scoped by the <c>BudgetIsolation</c> query filter and would be handed a tenancy argument with
+    /// no ownership check to pair with it; <c>users</c> carries no query filter at all, so the id has
+    /// to be named and the <c>user_isolation</c> policy is what decides whether the named row is one
+    /// this session may touch. That is why the only caller reads the id from <c>IUserContext</c>.
+    /// </remarks>
+    Task DeleteAsync(Guid userId, CancellationToken cancellationToken = default);
 }

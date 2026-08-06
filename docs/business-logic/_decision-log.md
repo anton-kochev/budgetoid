@@ -8,6 +8,62 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-06 — Erasure empties one table itself and leaves the rest of the graph to the cascade
+
+**Context:** the entry below establishes that one `DELETE` on `users` empties the account's
+structural graph, because PostgreSQL performs a referential action with the referencing table
+owner's privileges. That is true of every edge that is a cascade. Five are not:
+`transactions → budgets`, `→ accounts`, `→ categories`, `→ payees`, and
+`categories → category_groups`.
+
+**Decision:** erasure deletes explicitly **only what a `RESTRICT` edge would otherwise block**, in
+dependency order, and leaves everything joined by `CASCADE` alone to the cascade — to get a rule a
+future table can be measured against rather than a list of statements, accepting one extra
+round-trip on an action that runs once per account.
+
+Today exactly one table satisfies that rule: `transactions`, the child of four of the five edges.
+Emptying it also disarms the fifth, because a `RESTRICT` edge cannot bite once its child rows are
+gone. So the sequence is `transactions`, then the user row — two saves in one transaction, ordered
+by the handler rather than by EF.
+
+**`categories → category_groups` is deliberately left to the cascade**, and it was worth settling
+rather than assuming. Both tables cascade from `budgets`, so one `budgets` delete reaches two tables
+joined to each other by a `RESTRICT` edge, which looks like it should depend on which referential
+trigger fires first. It does not: PostgreSQL queues the check for that edge as an after-row trigger
+when the `category_groups` row is deleted, strictly after the cascade into `categories` was already
+queued, and the after-trigger queue is FIFO. Verified on PostgreSQL 17 against schemas built with
+the two constraints created in either order, so their OIDs — and with them the RI trigger names that
+decide firing order — were reversed. Both leave the tables empty.
+
+**Alternatives considered:**
+
+- *Delete `categories` explicitly as well.* This is what shipped first, on the belief that the
+  cascade rested on constraint-creation order. Removed once that was disproved: it bought nothing,
+  and its unit test asserted a refusal PostgreSQL does not make, so it could not fail.
+- *Trust the cascade for the `transactions` edges too.* Rejected outright: a budgeting product's
+  accounts hold transactions, so `23503` would be the ordinary case rather than the corner.
+- *Migrate `budgets → transactions` to `ON DELETE CASCADE`.* Rejected twice over. It dissolves the
+  guard that edge exists for — an ordinary budget delete would then silently take recorded money
+  movement with it — and it does not even buy the one statement it appears to: `transactions →
+  accounts` and `→ payees` stay `RESTRICT`, so a `budgets` delete would still be cascading into
+  tables joined to each other by a `RESTRICT` edge, in the opposite direction to the one settled
+  above.
+- *One `SaveChanges` for the whole batch.* Rejected: EF orders a batch topologically by the foreign
+  keys between the entity types **in** it, and `Budget` — the type carrying the edge — is never in
+  the tracker. No edge means no guarantee, and a draw that puts the user delete first is refused.
+- *Relax `BannedSymbols.txt` to allow `ExecuteDelete` here.* Rejected. The ban's value is that it has
+  no exceptions, and erasure is the highest-consequence write in the product — a set-based delete
+  with a wrong predicate is the last statement that should be unreadable by the type system.
+
+**Read the absent `budgets` DELETE grant as a decision too.** Removing the tracked `Budget` from the
+context is what stops EF composing its own `DELETE FROM budgets`; without it the request dies with
+`42501`, an error that names a permission while the cause is the change tracker. Answering that with
+a grant would widen the role's reach and fail the grant-matrix pin.
+
+**Affected areas:** erasure (new), users-and-ownership, transactions, categories, budgets.
+
+---
+
 ## 2026-08-06 — Erasure needs one delete grant, not one per table
 
 **Context:** erasing an account has to run as the least-privilege application role rather than on an

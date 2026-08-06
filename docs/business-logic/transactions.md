@@ -82,9 +82,12 @@ erDiagram
     category cannot be removed out from under the transactions that name it, whatever wrote the
     delete; `DeleteAccountHandler` and `DeleteCategoryHandler` precheck with `HasTransactionsAsync`
     for the message rather than for the guarantee, per
-    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The one path that
-    removes recorded movement is a delete aimed at the transaction itself, which is a rule of its
-    own under [Business Rules & Invariants](#business-rules--invariants).
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). Two paths remove
+    recorded movement: a delete aimed at the transaction itself, which is a rule of its own under
+    [Business Rules & Invariants](#business-rules--invariants), and account erasure, which deletes
+    every transaction in the budget before it deletes the account — the `Restrict` edge above is
+    exactly why erasure cannot leave that to the cascade, and [erasure.md](erasure.md) owns the
+    order.
 
 - **A Payee referenced by any Transaction MUST NOT be deleted.** The Transaction's existence is what
   makes the rule bite; the rule itself, its reasoning and its enforcement are stated once, in

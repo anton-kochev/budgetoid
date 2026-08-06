@@ -1,0 +1,545 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json.Nodes;
+using Domain.Sessions;
+using Domain.Users;
+using Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
+
+namespace IntegrationTests;
+
+/// <summary>
+/// Erasure is one action that removes an account and everything owned beneath it. These tests drive
+/// the real HTTP pipeline rather than the handler directly, so they run through the least-privilege
+/// role, the row-level security policies and the referential cascade exactly as a request does.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Every after-the-fact count is read on <see cref="PostgresTestHost.ConnectionString" /> — the
+/// container superuser — and never on the application role. Both policies are <c>FOR ALL</c>, so a
+/// policed connection reports zero rows for a row that is still there exactly as it does for one
+/// that is gone. Verified on the app role, the central assertion of this file could not fail.
+/// </para>
+/// <para>
+/// Every count asserted zero after the erasure is asserted non-zero before it, against the same
+/// predicate on the same connection. Without that half, a suite whose every assertion is "no rows"
+/// passes just as happily against a database where the seeding never worked.
+/// </para>
+/// </remarks>
+public sealed class AccountErasureEndpointTests
+{
+    /// <summary>
+    /// Which id a table files its owner under. The distinction is not cosmetic: an enumeration that
+    /// guessed from the column name would keep working right up until a table carried both.
+    /// </summary>
+    private enum OwnedBy
+    {
+        /// <summary>The row names the erased user, directly or through a credential of theirs.</summary>
+        User,
+
+        /// <summary>The row names a budget the erased user owns.</summary>
+        Budget,
+    }
+
+    /// <summary>
+    /// One table an account owns, with the column naming its owner and which id that column holds.
+    /// </summary>
+    private readonly record struct OwnedTable(string Name, string OwnerColumn, OwnedBy Owner);
+
+    /// <summary>
+    /// The tables an account owns. Held as one list because the point of the FR-025 assertion is
+    /// that <b>no</b> table keeps a row, and a test that enumerated its tables inline would silently
+    /// stop covering the one added next.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>webauthn_challenges</c> is absent on purpose rather than by oversight: a challenge belongs
+    /// to a ceremony rather than to a person, carries neither <c>user_id</c> nor <c>budget_id</c>,
+    /// and so satisfies "no row references the erased user" vacuously. <c>currencies</c> is global
+    /// reference data and is owned by nobody.
+    /// </para>
+    /// <para>
+    /// <c>passkey_public_keys</c> and <c>passkey_signature_counters</c> are keyed on
+    /// <c>credential_id</c> and carry <c>user_id</c> beside it, which is the column asserted on here:
+    /// it is the one that says whose material this is, and it is what a stray row would still be
+    /// naming after the account it belongs to is gone.
+    /// </para>
+    /// </remarks>
+    private static readonly OwnedTable[] OwnedTables =
+    [
+        new("users", "id", OwnedBy.User),
+        new("credentials", "user_id", OwnedBy.User),
+        new("sessions", "user_id", OwnedBy.User),
+        new("passkey_public_keys", "user_id", OwnedBy.User),
+        new("passkey_signature_counters", "user_id", OwnedBy.User),
+        new("budgets", "user_id", OwnedBy.User),
+        new("accounts", "budget_id", OwnedBy.Budget),
+        new("category_groups", "budget_id", OwnedBy.Budget),
+        new("categories", "budget_id", OwnedBy.Budget),
+        new("payees", "budget_id", OwnedBy.Budget),
+        new("transactions", "budget_id", OwnedBy.Budget),
+    ];
+
+    /// <summary>
+    /// The Google subject every single-account test authenticates as. Named here rather than left to
+    /// the factory's default because the furnishing helper resolves the seeded ids by looking the
+    /// credential up on it — a client and a lookup that disagreed would furnish one account and
+    /// assert about another.
+    /// </summary>
+    private const string Subject = "google-erasing";
+
+    [Test]
+    public async Task Delete_ForAnAuthenticatedUser_ReturnsNoContent()
+    {
+        // Arrange — nothing seeded beyond what account provisioning itself creates. The bare case is
+        // worth its own test: it is the only one that fails if the route is simply missing.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (await client.GetAsync("/api/accounts")).EnsureSuccessStatusCode();
+
+        // Act
+        HttpResponseMessage response = await client.DeleteAsync("/api/me");
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+    }
+
+    [Test]
+    public async Task Delete_WithoutAuthentication_IsRefused()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+
+        // Act — no subject header, so nothing authenticates and the fallback policy decides.
+        HttpResponseMessage response = await host.Factory.CreateClient().DeleteAsync("/api/me");
+
+        // Assert — the endpoint declares no authorization metadata of its own, so this is the test
+        // that would notice an AllowAnonymous added to it.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+    }
+
+    [Test]
+    public async Task Delete_ForAFullyFurnishedAccount_ReturnsNoContent()
+    {
+        // Arrange — an account carrying a row in every table it can own, including a categorized
+        // transaction. That transaction is what makes this test different from the bare one above:
+        // transactions is the child of four RESTRICT edges — to budgets, accounts, categories and
+        // payees — so an erasure that leant on the cascade, or that deleted in the wrong order,
+        // answers 23503 here.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await FurnishAccountAsync(host, client, Subject);
+
+        // Act
+        HttpResponseMessage response = await client.DeleteAsync("/api/me");
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+    }
+
+    [Test]
+    public async Task Delete_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (Guid userId, Guid budgetId) = await FurnishAccountAsync(host, client, Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // The seeding is proved before the act, table by table, on the same connection and with the
+        // same predicates the assertion below uses. This half is not decoration: without it every
+        // assertion in this test is "count is zero", which an empty database satisfies.
+        IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, userId, budgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(before[table.Name]).IsGreaterThan(0L);
+        }
+
+        // Act
+        HttpResponseMessage response = await client.DeleteAsync("/api/me");
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        IReadOnlyDictionary<string, long> after = await CountOwnedRowsAsync(admin, userId, budgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(after[table.Name]).IsEqualTo(0L);
+        }
+    }
+
+    /// <summary>
+    /// The one erasure step the handler does <b>not</b> take, measured on its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>categories → category_groups</c> is the fifth RESTRICT edge in the owned graph and the only
+    /// one no explicit delete answers: both tables cascade from <c>budgets</c>, PostgreSQL queues that
+    /// edge's check as an after-row trigger when the <c>category_groups</c> row is deleted — strictly
+    /// after the cascade into <c>categories</c> was queued — and the after-trigger queue is FIFO. So
+    /// the categories are gone whichever of the two triggers fires first, and the order the
+    /// constraints happen to have been created in does not come into it.
+    /// </para>
+    /// <para>
+    /// This is the test that goes red if that ever stops holding. It cannot be left to
+    /// <see cref="Delete_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable" />, which seeds a
+    /// transaction: the explicit transactions delete runs first there and empties the table the
+    /// category is referenced from, so a cascade that could not reach the categories would never be
+    /// asked to. No transaction here, which leaves the categories to the cascade alone.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Delete_ForAnAccountWithCategoriesAndNoTransaction_LeavesNoneOfEither()
+    {
+        // Arrange — a categorised budget with no movement in it at all.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        Guid categoryGroupId = await CreateAsync(client, "/api/category-groups", new
+        {
+            name = "Essentials",
+            description = (string?)null,
+        });
+        await CreateAsync(client, "/api/categories", new
+        {
+            name = "Groceries",
+            description = (string?)null,
+            categoryGroupId,
+        });
+        (_, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountBudgetRowsAsync(admin, "category_groups", budgetId)).IsEqualTo(1L);
+        await Assert.That(await CountBudgetRowsAsync(admin, "categories", budgetId)).IsEqualTo(1L);
+
+        // Act
+        HttpResponseMessage response = await client.DeleteAsync("/api/me");
+
+        // Assert — a cascade that reached the groups before the categories would answer 23503 and
+        // this would be a 500 rather than two zeros.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(await CountBudgetRowsAsync(admin, "categories", budgetId)).IsEqualTo(0L);
+        await Assert.That(await CountBudgetRowsAsync(admin, "category_groups", budgetId)).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Delete_LeavesAnotherAccountUntouched()
+    {
+        // Arrange — two furnished accounts. Without this test a handler that emptied every table in
+        // the database would satisfy every other assertion in this file.
+        const string erasedSubject = "google-erased";
+        const string survivorSubject = "google-survivor";
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient erased = host.Factory.CreateAuthenticatedClient(erasedSubject);
+        HttpClient survivor = host.Factory.CreateAuthenticatedClient(survivorSubject);
+        await FurnishAccountAsync(host, erased, erasedSubject);
+        (Guid survivorUserId, Guid survivorBudgetId) =
+            await FurnishAccountAsync(host, survivor, survivorSubject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        IReadOnlyDictionary<string, long> before =
+            await CountOwnedRowsAsync(admin, survivorUserId, survivorBudgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(before[table.Name]).IsGreaterThan(0L);
+        }
+
+        // Act
+        HttpResponseMessage response = await erased.DeleteAsync("/api/me");
+
+        // Assert — the survivor's counts are compared to what they were, not merely to "more than
+        // zero": an erasure that took some of another account's rows and left others would pass a
+        // non-zero check.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        IReadOnlyDictionary<string, long> after =
+            await CountOwnedRowsAsync(admin, survivorUserId, survivorBudgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(after[table.Name]).IsEqualTo(before[table.Name]);
+        }
+    }
+
+    [Test]
+    public async Task Delete_CalledTwice_ReturnsNoContentBothTimes()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (Guid firstUserId, Guid firstBudgetId) = await FurnishAccountAsync(host, client, Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // The seeding is proved before the act, table by table, on the same connection and with the
+        // same predicates the assertions below use — the promise this class's remarks make about
+        // every count it asserts zero. Without it, eleven "count is zero" assertions and an unfiltered
+        // users count of zero are all satisfied by a database the furnishing never reached.
+        IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(before[table.Name]).IsGreaterThan(0L);
+        }
+
+        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsGreaterThan(0L);
+
+        // Act
+        HttpResponseMessage first = await client.DeleteAsync("/api/me");
+        HttpResponseMessage second = await client.DeleteAsync("/api/me");
+
+        // Assert — idempotent to the caller, and deliberately not a no-op to the database. The
+        // cascade took the credential, so the second request's provisioning finds nothing to resolve
+        // and mints a fresh user and default budget before the handler is reached; that account is
+        // then erased in the same request. Both are checked because "the second call answered 204"
+        // would also be true of a handler that erased nothing at all.
+        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        IReadOnlyDictionary<string, long> afterFirst =
+            await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(afterFirst[table.Name]).IsEqualTo(0L);
+        }
+
+        // The second account has no id this test ever learned, because nothing hands one out — so it
+        // is asserted about the only way it can be: nothing is left in users at all.
+        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// Writes one row into every table an account can own and returns the ids the assertions key on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The money data goes in over HTTP, so every row is one the application itself could really have
+    /// written — through the same validation, the same repositories and the same least-privilege role
+    /// a request uses. A seeding path that wrote those rows directly could put the account into a
+    /// shape no request produces, and an erasure proved against that shape proves nothing.
+    /// </para>
+    /// <para>
+    /// The identity rows have no endpoint that creates them yet, so they are written out of band on
+    /// the container superuser — but through the domain factories rather than raw SQL, which is what
+    /// keeps a seeded passkey the same shape a registration would write. The transaction carries both
+    /// a category and a payee name: the category is what makes the <c>transactions → categories</c>
+    /// RESTRICT edge live, and the payee name is the only thing that puts a row in <c>payees</c>.
+    /// </para>
+    /// </remarks>
+    private static async Task<(Guid UserId, Guid BudgetId)> FurnishAccountAsync(
+        PostgresTestHost host,
+        HttpClient client,
+        string subject)
+    {
+        Guid accountId = await CreateAsync(client, "/api/accounts", new
+        {
+            name = "Checking",
+            type = "Checking",
+            openingBalance = 0m,
+            currencyCode = "USD",
+        });
+        Guid categoryGroupId = await CreateAsync(client, "/api/category-groups", new
+        {
+            name = "Essentials",
+            description = (string?)null,
+        });
+        Guid categoryId = await CreateAsync(client, "/api/categories", new
+        {
+            name = "Groceries",
+            description = (string?)null,
+            categoryGroupId,
+        });
+        await CreateAsync(client, "/api/transactions", new
+        {
+            amount = -10m,
+            date = "2026-06-26",
+            accountId,
+            description = "Coffee",
+            payeeName = "Starbucks",
+            categoryId,
+        });
+
+        (Guid userId, Guid budgetId) = await ResolveOwnerAsync(host, subject);
+        await SeedIdentityRowsAsync(host, userId);
+        return (userId, budgetId);
+    }
+
+    /// <summary>
+    /// Reads back the user and default budget that provisioning minted for
+    /// <paramref name="subject" />. Nothing the API returns names either id, so the lookup goes
+    /// through the credential the middleware resolved the request on.
+    /// </summary>
+    private static async Task<(Guid UserId, Guid BudgetId)> ResolveOwnerAsync(
+        PostgresTestHost host,
+        string subject)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            """
+            select credentials.user_id, budgets.id
+            from credentials
+            join budgets on budgets.user_id = credentials.user_id
+            where credentials.provider = 'google' and credentials.subject = @subject
+            """,
+            connection);
+        command.Parameters.AddWithValue("subject", subject);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+
+        if (!await reader.ReadAsync())
+        {
+            throw new InvalidOperationException(
+                $"Provisioning wrote no account for subject '{subject}'.");
+        }
+
+        (Guid userId, Guid budgetId) = (reader.GetGuid(0), reader.GetGuid(1));
+
+        // A second row would mean two budgets, which the product cannot produce — and would silently
+        // scope every budget-owned assertion in this file to whichever one came back first.
+        if (await reader.ReadAsync())
+        {
+            throw new InvalidOperationException(
+                $"Subject '{subject}' owns more than one budget; the enumeration assumes exactly one.");
+        }
+
+        return (userId, budgetId);
+    }
+
+    /// <summary>
+    /// Adds the passkey material and the session row no endpoint writes yet, so the FR-025
+    /// enumeration has something to find in every user-owned table rather than only in the two
+    /// provisioning fills.
+    /// </summary>
+    private static async Task SeedIdentityRowsAsync(PostgresTestHost host, Guid userId)
+    {
+        await using BudgetoidDbContext db = new(
+            new DbContextOptionsBuilder<BudgetoidDbContext>()
+                .UseNpgsql(host.ConnectionString)
+                .Options);
+
+        Credential passkey = Credential.CreatePasskey(userId, SeedInstant);
+        db.Credentials.Add(passkey);
+        db.PasskeyPublicKeys.Add(PasskeyPublicKey.Register(
+            passkey, WebAuthnCredentialIdFor(userId), CoseKey, CoseAlgorithm.Es256));
+        db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(passkey, 0));
+
+        // Established against the passkey rather than the federated credential because
+        // CK_sessions_kind_matches_credential ties the two together; the seeded row is the full
+        // session a passkey earns, which is the shape production writes.
+        db.Sessions.Add(Session.Establish(passkey, SeedInstant, SeedInstant.AddDays(14)));
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Counts the rows each owned table holds for one account, on whichever id that table files its
+    /// owner under.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, long>> CountOwnedRowsAsync(
+        NpgsqlConnection connection,
+        Guid userId,
+        Guid budgetId)
+    {
+        Dictionary<string, long> counts = new(OwnedTables.Length, StringComparer.Ordinal);
+
+        foreach (OwnedTable table in OwnedTables)
+        {
+            // The table and column names are compile-time constants from the private list above, not
+            // anything a caller supplies; the owner id is bound as a parameter like everywhere else.
+            await using NpgsqlCommand command = new(
+                $"select count(*) from {table.Name} where {table.OwnerColumn} = @owner",
+                connection);
+            command.Parameters.AddWithValue(
+                "owner",
+                table.Owner is OwnedBy.Budget ? budgetId : userId);
+            counts[table.Name] = await ReadCountAsync(command, table.Name);
+        }
+
+        return counts;
+    }
+
+    /// <summary>
+    /// Counts the rows one budget-owned table holds for one budget, for the tests that name a table
+    /// rather than sweep the whole list.
+    /// </summary>
+    private static async Task<long> CountBudgetRowsAsync(
+        NpgsqlConnection connection,
+        string table,
+        Guid budgetId)
+    {
+        // The table name is a compile-time constant from the call site, not anything a caller
+        // supplies at run time; the owner id is bound as a parameter like everywhere else.
+        await using NpgsqlCommand command = new(
+            $"select count(*) from {table} where budget_id = @owner",
+            connection);
+        command.Parameters.AddWithValue("owner", budgetId);
+        return await ReadCountAsync(command, table);
+    }
+
+    private static async Task<long> ScalarAsync(NpgsqlConnection connection, string sql)
+    {
+        await using NpgsqlCommand command = new(sql, connection);
+        return await ReadCountAsync(command, sql);
+    }
+
+    /// <summary>
+    /// Reads a count, refusing anything else. Pattern-matched rather than cast-and-null-forgive: a
+    /// null or unexpected scalar means the query changed shape, and that should fail loudly here
+    /// instead of at the assertion.
+    /// </summary>
+    private static async Task<long> ReadCountAsync(NpgsqlCommand command, string source) =>
+        await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected a count from '{source}', got '{unexpected ?? "null"}'."),
+        };
+
+    /// <summary>
+    /// Posts <paramref name="body" /> and returns the id of the row it created, failing loudly on
+    /// any status other than success — a furnishing step that quietly did nothing would make the
+    /// whole file vacuous.
+    /// </summary>
+    private static async Task<Guid> CreateAsync(HttpClient client, string path, object body)
+    {
+        HttpResponseMessage response = await client.PostAsJsonAsync(path, body);
+        response.EnsureSuccessStatusCode();
+        JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        return json["id"]!.GetValue<Guid>();
+    }
+
+    /// <summary>
+    /// Fixed UTC instant for the out-of-band rows. PostgreSQL <c>timestamptz</c> rejects a non-UTC
+    /// <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
+    /// </summary>
+    private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// A 32-byte authenticator handle, derived from the owner so two seeded accounts never share one.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are load-bearing. The length satisfies
+    /// <c>CK_passkey_public_keys_webauthn_credential_id_length</c>, which admits 16 to 1023 bytes; the
+    /// derivation satisfies <c>IX_passkey_public_keys_webauthn_credential_id</c>, which is
+    /// <b>unique</b> — a constant handle makes the second account in
+    /// <see cref="Delete_LeavesAnotherAccountUntouched" /> unseedable, and a seeding failure there
+    /// would read as a bug in the erasure rather than in the fixture.
+    /// </remarks>
+    private static byte[] WebAuthnCredentialIdFor(Guid userId) =>
+        [.. userId.ToByteArray(), .. userId.ToByteArray()];
+
+    /// <summary>
+    /// Four bytes of stand-in key material. Nothing here verifies a signature, and the only rule the
+    /// column holds is that the key is between one byte and <see cref="PasskeyPublicKey.MaxCoseKeyLength" />.
+    /// </summary>
+    private static readonly byte[] CoseKey = [0xA5, 0x01, 0x02, 0x03];
+
+    private static async Task<PostgresTestHost> StartHostAsync()
+    {
+        PostgresTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+}

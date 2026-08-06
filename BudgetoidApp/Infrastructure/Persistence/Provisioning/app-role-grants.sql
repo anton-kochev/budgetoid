@@ -65,13 +65,19 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- and asserts every child table is empty afterwards.
 --
 -- IT IS NOT SUFFICIENT ON ITS OWN, and reading it that way is the mistake this paragraph exists to
--- stop. budgets → transactions is Restrict, so a budget holding one recorded movement refuses the
--- delete with 23503 — and a budgeting product's accounts hold transactions, which makes that the
--- ordinary case rather than the corner. Erasure therefore deletes transactions first, per budget,
--- and only then the user row. That is two shapes of session rather than one: transactions are
--- policed by budget_isolation, so app.current_budget_id has to be set for each budget the user
--- owns, while this delete needs only app.current_user_id. The transactions grant already exists
--- further down; what does not exist yet is the sequence, and it belongs to the erasure story.
+-- stop. Five edges in the owned graph are Restrict rather than Cascade, and transactions is the
+-- child of four of them — transactions → budgets, → accounts, → categories and → payees. Those four
+-- are the guard that stops an ordinary delete taking recorded money movement with it, and a
+-- budgeting product's accounts hold transactions, so a delete that leant on the cascade would
+-- answer 23503 in the ordinary case rather than the corner. Erasure therefore empties transactions
+-- first and then deletes this row; emptying that one table also disarms the fifth edge,
+-- categories → category_groups, because a Restrict edge cannot bite once its child rows are gone.
+--
+-- The transactions grant already exists further down. What the erasure feature adds is the
+-- sequence, and it runs on ONE session rather than two: SessionContextInterceptor writes
+-- app.current_user_id and app.current_budget_id in the same statement on every connection open, so
+-- the connection serving an authenticated request already names both the user for user_isolation
+-- and the budget for budget_isolation.
 --
 -- Two of the six would cost something to add. credentials and passkey_public_keys are exempt from
 -- row-level security — they are read before the request has an identity a policy could key on — so
