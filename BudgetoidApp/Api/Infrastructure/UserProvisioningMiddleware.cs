@@ -14,7 +14,8 @@ namespace Api.Infrastructure;
 /// The route's own <see cref="IAllowAnonymous" /> marker is read first and ends the method: an endpoint
 /// that runs without a principal runs without an account, and those are the same statement. A route
 /// carrying both markers therefore mints nothing, which is why <c>UserProvisioningRouteTests</c> holds
-/// the two sets disjoint. Below that arm an authenticated request takes one of three ways:
+/// the two sets disjoint. Below that arm an authenticated request that clears both claim gates takes
+/// one of three ways:
 /// </para>
 /// <list type="bullet">
 /// <item>the endpoint declares <see cref="ProvisionsUserAttribute" /> — find or create;</item>
@@ -66,11 +67,28 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
     /// <summary>
     /// The one sentence a request that authenticated as an account this product does not have receives.
     /// Public so a test can pin it: the caller's corrective action for this 401 is "sign in again", which
-    /// is different from both other refusals reachable on the same path — one says the token is
-    /// malformed, the other says a passkey was rejected — and a caller cannot act on a distinction the
-    /// response does not make.
+    /// is different from all three other titled refusals reachable on the same path —
+    /// <see cref="MissingClaimsTitle" /> says the token is malformed,
+    /// <see cref="UnverifiedEmailTitle" /> says the address is not asserted verified, and
+    /// <c>PasskeyVerificationExceptionHandler.Title</c> says a passkey was rejected — and a caller cannot
+    /// act on a distinction the response does not make. A fifth 401 reaches
+    /// <c>POST /api/me/erasure</c> from the authentication scheme itself, with no title at all.
     /// </summary>
     public const string NoAccountTitle = "No account exists for the authenticated principal.";
+
+    /// <summary>
+    /// The 401 an authenticated principal carrying no <c>sub</c> or no <c>email</c> receives. Public for
+    /// the same reason as <see cref="NoAccountTitle" />: distinctness from the other titles is a property
+    /// only a test naming both can hold.
+    /// </summary>
+    public const string MissingClaimsTitle = "Authenticated principal is missing required claims.";
+
+    /// <summary>
+    /// The 401 a principal whose address the provider does not assert as verified receives. Public for
+    /// the same reason as <see cref="MissingClaimsTitle" />.
+    /// </summary>
+    public const string UnverifiedEmailTitle =
+        "Authenticated principal's email address is not asserted as verified.";
 
     public async Task InvokeAsync(
         HttpContext httpContext,
@@ -102,7 +120,7 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
             !TryGetRequiredClaim(principal, "email", out string email))
         {
             await Results.Problem(
-                    title: "Authenticated principal is missing required claims.",
+                    title: MissingClaimsTitle,
                     statusCode: StatusCodes.Status401Unauthorized)
                 .ExecuteAsync(httpContext);
             return;
@@ -111,7 +129,7 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
         if (!HasVerifiedEmailClaim(principal))
         {
             await Results.Problem(
-                    title: "Authenticated principal's email address is not asserted as verified.",
+                    title: UnverifiedEmailTitle,
                     statusCode: StatusCodes.Status401Unauthorized)
                 .ExecuteAsync(httpContext);
             return;

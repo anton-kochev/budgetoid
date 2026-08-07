@@ -66,9 +66,9 @@ because the same sentence is being enforced twice at two depths and a difference
 lists would be a rule with two meanings. `budgets`, `users` and `currencies` are deliberately out. A
 budget is the tenant rather than a tenant's row, so there is nothing for a policy to compare;
 `currencies` belongs to no tenant at all; and provisioning reads `users` and `budgets` **before** an
-ambient budget exists — `EnsureUserHandler` resolves the principal and then find-or-creates the
-budget — so a policy on either would refuse the very query that decides which budget is ambient, and
-break sign-in for everyone.
+ambient budget exists — `ResolveUserHandler` resolves the principal and then reads the budget it owns
+— so a policy on either would refuse the very query that decides which budget is ambient, and break
+sign-in for everyone.
 
 **The policies live in `app-role-grants.sql` itself, not in a migration and not in a sibling
 script.** They are written `TO budgetoid_app`, so they are part of that role's privilege story rather

@@ -9,8 +9,8 @@ public static class PayeeEndpoints
 {
     public static IEndpointRouteBuilder MapPayeeEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        // One of the six groups allowed to bring an account into existence; the reason the marker is
-        // opt-in and sits on the group is written out in AccountEndpoints.
+        // One of the six groups allowed to bring an account into existence; why the permission is
+        // opt-in is in ProvisionsUserAttribute, why it sits on the group in AccountEndpoints.
         RouteGroupBuilder group = endpoints.MapGroup("/api/payees")
             .WithMetadata(new ProvisionsUserAttribute());
 

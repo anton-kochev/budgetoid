@@ -28,9 +28,11 @@ namespace IntegrationTests;
 public sealed class UserProvisioningRouteTests
 {
     /// <summary>
-    /// The six route groups that serve a signed-in person's own data, and the only ones that may mint
-    /// an account. Written out rather than derived, because a list derived from the route table would
-    /// agree with whatever the route table said.
+    /// The six route groups a client's first authenticated request may legitimately land on, and the
+    /// only ones that may mint an account. Not all six read tenant data — currencies serves a shared
+    /// reference table owned by nobody, and is in the set because the server cannot constrain which of
+    /// the six the client opens on. Written out rather than derived, because a list derived from the
+    /// route table would agree with whatever the route table said.
     /// </summary>
     private static readonly string[] DataRouteGroups =
     [

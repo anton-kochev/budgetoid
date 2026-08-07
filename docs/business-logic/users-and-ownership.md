@@ -137,6 +137,13 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     one place. `UserProvisioningRouteTests.ProvisionsUserMetadata_IsCarriedByExactlyTheDataRouteGroups`
     pins the set in both directions, so a marker added to `/api/passkeys` "so registration works" fails
     rather than quietly reopening the door.
+  - **A client must reach a marked route before any `/api/passkeys/*` or `/api/me/*` call.** Neither
+    the passkey groups nor the erasure route mints, so a brand-new identity that goes straight to
+    `POST /api/passkeys/registration/options` is refused — onboarding is ordered: provider sign-in, one
+    request to a marked group, then the passkey. Today that ordering lives only in
+    `ApiFactory.EstablishAccountAsync` and bites whoever builds the client's passkey flow, as a 401 at
+    the first step. It disappears when account creation becomes a consented act and the six markers
+    collapse to one.
   - **What it does not fix, stated rather than implied**: a client that calls a *marked* route on app
     boot still resurrects an erased account within the token's remaining life. That hole is older than
     this rule and closes when account creation becomes a consented act and the six markers collapse to
@@ -491,7 +498,8 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ## Workflows & State Transitions
 
-**User provisioning on an authenticated request** (`UserProvisioningMiddleware` → `EnsureUserHandler`):
+**User provisioning on an authenticated request** (`UserProvisioningMiddleware` → `ResolveUserHandler`,
+then `EnsureUserHandler` only where the route declares `ProvisionsUser`):
 
 ```mermaid
 stateDiagram-v2

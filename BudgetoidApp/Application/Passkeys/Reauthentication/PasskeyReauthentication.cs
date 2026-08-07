@@ -21,11 +21,18 @@ namespace Application.Passkeys.Reauthentication;
 /// <b>The account is <see cref="IUserContext.UserId"/>, always.</b> The credential's own account is
 /// never published and never selects anything; it is only ever checked against. This gate must
 /// therefore never call <c>IUserContextWriter</c>, which is where the sign-in handler's most memorable
-/// rule does <em>not</em> transfer. <c>SessionContextInterceptor</c> writes
-/// <c>app.current_user_id</c> and <c>app.current_budget_id</c> together, at connection open — so
-/// re-publishing a user id mid-request does not move the budget. Alice's bearer token with Bob's
-/// passkey would empty <b>Alice's</b> budget while deleting <b>Bob's</b> user row: two accounts
-/// destroyed, neither as asked.
+/// rule does <em>not</em> transfer. Publishing an identity here would <em>clear</em> the ambient budget
+/// the erasure is about to be scoped by — <c>CurrentUserWriter.ResolveUser</c> clears it with every
+/// publication — and the erasure reads that budget through
+/// <c>TransactionRepository.DeleteAllForAmbientBudgetAsync</c>, whose entire scoping is the query
+/// filter over it. The request would die at <c>IBudgetContext.BudgetId</c> instead of erasing anything.
+/// </para>
+/// <para>
+/// That clearing is also what now prevents the older hazard, which is the second reason not to
+/// reintroduce the call: were a republished id to leave the budget standing, Alice's bearer token with
+/// Bob's passkey would empty <b>Alice's</b> budget while deleting <b>Bob's</b> user row — two accounts
+/// destroyed, neither as asked. A publication here paired with a <c>ResolveBudget</c> beside it puts
+/// that back.
 /// </para>
 /// <para>
 /// The steps below repeat the shape of <c>CompleteAssertionHandler</c> and each states its own reason

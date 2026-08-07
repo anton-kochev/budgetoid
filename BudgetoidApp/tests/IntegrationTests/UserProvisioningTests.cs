@@ -44,15 +44,6 @@ public sealed class UserProvisioningTests
     private const string AssertionPath = "/api/passkeys/assertion";
 
     /// <summary>
-    /// The refusal a request whose email is present but not asserted verified receives. Copied from the
-    /// middleware's own sentence rather than referenced, exactly as <c>AuthenticationTests</c> does: the
-    /// point of pinning it is that a caller's corrective action is different for this 401 than for the
-    /// others, and a shared constant would let the sentence and the expectation move together.
-    /// </summary>
-    private const string UnverifiedEmailTitle =
-        "Authenticated principal's email address is not asserted as verified.";
-
-    /// <summary>
     /// The erasure route mints nothing, even for a subject the product has never seen.
     /// </summary>
     /// <remarks>
@@ -265,12 +256,13 @@ public sealed class UserProvisioningTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The claim gate runs above the endpoint lookup, so it refuses before anything has asked whether
-    /// this route is anonymous at all. The consequence is not theoretical: a person revokes the email
-    /// grant in their provider account while leaving the application authorized, the client interceptor
-    /// keeps attaching the id token to every <c>/api/</c> call, and passkey sign-in — the one path whose
-    /// whole purpose is to work without the provider — is refused on a claim this ceremony never reads
-    /// and never stores.
+    /// Stated in the past tense because the middleware no longer does it: the claim gate used to run
+    /// above the endpoint lookup, so it refused before anything had asked whether this route is
+    /// anonymous at all. The consequence was not theoretical: a person revokes the email grant in their
+    /// provider account while leaving the application authorized, the client interceptor keeps attaching
+    /// the id token to every <c>/api/</c> call, and passkey sign-in — the one path whose whole purpose
+    /// is to work without the provider — was refused on a claim this ceremony never reads and never
+    /// stores. What this test holds is that the anonymous arm still comes first.
     /// </para>
     /// <para>
     /// Driven on the <b>options</b> leg alone, and paired with the finish leg below rather than folded
@@ -468,10 +460,15 @@ public sealed class UserProvisioningTests
         await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo("application/problem+json");
         await Assert.That(title).IsEqualTo(UserProvisioningMiddleware.NoAccountTitle);
 
-        // Distinct from the two 401s already reachable on this path, both of which would mislead: one
-        // says the token is malformed, the other says the passkey was rejected.
+        // Distinct from all three other titled 401s reachable on this path, each of which would send the
+        // caller somewhere else: the token is malformed, the address is not asserted verified, or the
+        // passkey was rejected. All three are named, because two compared against this one prove only
+        // that those two differ from it. Named through the middleware's own constants rather than
+        // through copies of its sentences — a copy and the constant drift apart in silence, and what is
+        // under test here is that the four titles differ, not how any of them is worded.
+        await Assert.That(title).IsNotEqualTo(UserProvisioningMiddleware.MissingClaimsTitle);
+        await Assert.That(title).IsNotEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
         await Assert.That(title).IsNotEqualTo(PasskeyVerificationExceptionHandler.Title);
-        await Assert.That(title).IsNotEqualTo(UnverifiedEmailTitle);
     }
 
     /// <summary>
@@ -497,7 +494,8 @@ public sealed class UserProvisioningTests
 
         // Assert — refused by the claim gate, named by its own sentence, and nothing written.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-        await Assert.That(await ReadTitleAsync(response)).IsEqualTo(UnverifiedEmailTitle);
+        await Assert.That(await ReadTitleAsync(response))
+            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();

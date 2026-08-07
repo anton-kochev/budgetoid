@@ -398,10 +398,11 @@ public sealed class EnsureUserHandlerTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The writer and the clock are built once and shared with the resolve half, because in the
-    /// composition root they are the same request-scoped writer and the same clock. Handing the two
-    /// halves separate instances would let a handler that published the identity only on its own
-    /// writer still pass.
+    /// The repositories and the writer are built once and shared with the resolve half, because in the
+    /// composition root the two halves hold those same request-scoped instances. Handing them separate
+    /// ones would let a handler that published the identity only on its own writer still pass. The
+    /// clock is not among the shared collaborators: only the creating half stamps a row, so
+    /// <see cref="ResolveUserHandler" /> takes no <see cref="TimeProvider" /> at all.
     /// </para>
     /// <para>
     /// <paramref name="existingBudget" /> is a separate argument rather than something this factory

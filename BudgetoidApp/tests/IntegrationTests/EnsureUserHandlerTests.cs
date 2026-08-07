@@ -133,9 +133,11 @@ public sealed class EnsureUserHandlerTests
 
     private static EnsureUserHandler CreateHandler(BudgetoidDbContext db)
     {
-        // Built once and shared with the resolve half, because in the composition root they are the
-        // same request-scoped writer and the same clock. Handing the two halves separate instances
-        // would let a handler that published the identity only on its own writer still pass.
+        // Built once and shared with the resolve half, because in the composition root the two halves
+        // hold the same request-scoped repositories and the same writer. Handing them separate
+        // instances would let a handler that published the identity only on its own writer still pass.
+        // The clock is not among the shared collaborators: only this half stamps a row, so
+        // ResolveUserHandler takes no TimeProvider at all.
         UserRepository users = new(db);
         BudgetRepository budgets = new(db);
         UnpolicedUserContextWriter writer = new();

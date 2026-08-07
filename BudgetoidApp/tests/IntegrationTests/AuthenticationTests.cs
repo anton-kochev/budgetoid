@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using Api.Infrastructure;
 using Npgsql;
 
 namespace IntegrationTests;
@@ -205,9 +206,10 @@ public sealed class AuthenticationTests
         JsonNode problem = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
 
         // Assert — a distinct title, not the shared missing-claims one: the two rejections are the
-        // same status but different corrective actions for the caller.
+        // same status but different corrective actions for the caller. Pinned through the middleware's
+        // own constant, so the sentence cannot be reworded in one place and left behind in the other.
         await Assert.That(problem["title"]!.GetValue<string>())
-            .IsEqualTo("Authenticated principal's email address is not asserted as verified.");
+            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
     }
 
     [Test]
@@ -234,7 +236,7 @@ public sealed class AuthenticationTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo("application/problem+json");
         await Assert.That(problem["title"]!.GetValue<string>())
-            .IsEqualTo("Authenticated principal's email address is not asserted as verified.");
+            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
     }
 
     /// <summary>

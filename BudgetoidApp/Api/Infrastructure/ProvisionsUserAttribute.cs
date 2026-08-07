@@ -2,7 +2,8 @@ namespace Api.Infrastructure;
 
 /// <summary>
 /// Declares that an authenticated request reaching this route may bring an account into existence.
-/// Applied to a route group; every route without it can only resolve an account that already exists.
+/// Applied to a route group; a route without it writes nothing at all — it resolves an account that
+/// already exists, or the request is refused.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -21,11 +22,8 @@ namespace Api.Infrastructure;
 /// "Provisioning" is the word this codebase already uses for bringing a user into existence.
 /// </para>
 /// <para>
-/// <see cref="AttributeTargets.Class" /> and <see cref="AttributeTargets.Method" /> are declared so the
-/// marker can also be written as an attribute on a handler should a future route need it, but it is
-/// read purely as endpoint metadata — <see cref="UserProvisioningMiddleware" /> asks the endpoint, not
-/// the method. <c>Inherited = false</c> for the same reason: nothing about the permission should ride
-/// on a base type.
+/// Read purely as endpoint metadata: <see cref="UserProvisioningMiddleware" /> asks the endpoint, and
+/// every application of it is a <c>WithMetadata</c> call on a route group.
 /// </para>
 /// </remarks>
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, Inherited = false)]

@@ -235,11 +235,19 @@ public sealed class ErasureReauthenticationTests
     /// <remarks>
     /// <para>
     /// The "neither" in the name is the whole point. The wrong design here destroys one of each:
-    /// publishing the credential's owner mid-request moves <c>app.current_user_id</c> but not
-    /// <c>app.current_budget_id</c>, which <c>SessionContextInterceptor</c> fixed when the connection
-    /// opened — so the transactions delete empties <b>Alice's</b> budget while the user delete removes
-    /// <b>Bob's</b> row. Two accounts damaged, neither as asked. Asserting only that the request was
-    /// refused, or only that Alice survived, misses half of that.
+    /// publishing the credential's owner mid-request while its budget stays resolved moves
+    /// <c>app.current_user_id</c> and not <c>app.current_budget_id</c>, which
+    /// <c>SessionContextInterceptor</c> fixed when the connection opened — so the transactions delete
+    /// empties <b>Alice's</b> budget while the user delete removes <b>Bob's</b> row. Two accounts
+    /// damaged, neither as asked. Asserting only that the request was refused, or only that Alice
+    /// survived, misses half of that.
+    /// </para>
+    /// <para>
+    /// That pairing is no longer one edit away, which is why this test still asserts both halves rather
+    /// than only Alice's: <c>CurrentUserWriter.ResolveUser</c> clears the ambient budget with every
+    /// publication, so a republication on its own now kills the request at <c>IBudgetContext.BudgetId</c>
+    /// instead of emptying anything. The clearing is one line in a type this gate does not own, and a
+    /// <c>ResolveBudget</c> written beside a republication puts the two-account outcome straight back.
     /// </para>
     /// <para>
     /// The response carries <b>no</b> user handle, and the reason is not that the handle check would
@@ -515,11 +523,22 @@ public sealed class ErasureReauthenticationTests
     /// together, not the body alone.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The same argument the sign-in leg makes, sharpened: a caller able to tell "that passkey is not
     /// yours" from "that challenge was for another ceremony" is a caller mapping which handles exist
     /// and which pool a nonce came from, while holding a stolen bearer token. Two reasons compared
     /// against each other prove only that those two agree, so this drives all of them and asserts they
     /// collapse to one value.
+    /// </para>
+    /// <para>
+    /// <b>What this list cannot show is how deep an entry got.</b> Nothing here can observe which step
+    /// refused a request — that indistinguishability is the property being asserted — so an entry that
+    /// quietly began failing at an earlier step than the one it was written for stays green and stops
+    /// covering the step it was added for. The counter regression is the single exception, and only
+    /// because it is the one entry whose step would, if it disappeared, let the erasure through and
+    /// change the body of every entry after it. Read every "refused at step N" below as what the entry
+    /// was built to reach, not as something this comparison measures.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task EveryReachableErasureRefusal_ProducesTheIdenticalResponse()
@@ -588,8 +607,10 @@ public sealed class ErasureReauthenticationTests
         refusals.Add(("no assertion members", await client.PostAsJsonAsync(ErasurePath, new { })));
 
         // This account's own device, its own live nonce, a correct signature — and a handle naming an
-        // account that does not exist. The only entry that reaches step 5: every other one either
-        // omits the handle or is turned away before the lookup that step 5 stands behind.
+        // account that does not exist. The only entry refused AT step 5, which is not the same as the
+        // only one to reach it: every other entry either omits the handle, is turned away before the
+        // lookup step 5 stands behind, or carries this account's own handle and passes straight
+        // through the check — the two entries below it do the last of those.
         byte[] handleChallenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
         refusals.Add((
             "user handle mismatch",
