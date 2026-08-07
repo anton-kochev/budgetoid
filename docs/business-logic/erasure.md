@@ -60,6 +60,9 @@ that is the one table erasure empties itself.
 - Erasure **MUST** leave no row in any table referencing the erased user or any budget it owned.
   That is the post-condition the feature exists to deliver, and it is what a verification query
   asserts rather than a count of statements issued.
+- Erasure **MUST** run as one database transaction, and **MUST** either delete every row it covers
+  or leave every one of them exactly as it found them. A half-finished erasure is worse than none:
+  the person cannot tell what survived, and nothing in the product would be left to tell them.
 - Erasure **MUST** run as the least-privilege application role, on the connection serving the
   request. Doing it on an elevated connection would dissolve
   [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md), and an administrator is not
@@ -134,6 +137,41 @@ that is the one table erasure empties itself.
   call moves below `ExecuteAsync`. It is an outcome pin, not a call-order pin.
 - **Counterexample**: wrapping gate and erasure in one transaction for tidiness. Both halves of the
   damage are invisible on a green day.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The unit of atomicity is the **transactional delegate, not the request**. Everything
+  erasure covers commits together or not at all — but the gate's writes commit *before* the
+  transaction opens and are deliberately **not** rolled back with it.
+- **There are exactly two such writes**: the spent nonce, which `ConsumeAsync` deletes from
+  `webauthn_challenges` on its own save, and the advanced
+  `passkey_signature_counters.signature_counter`, which `SaveCounterAsync` flushes. One moves a row
+  count; the other moves only a value, so a verification that counted rows would catch the first and
+  be structurally blind to the second. Both are pinned, and by different means.
+- **Why the scope is the erasure and not the request**, when the rule is stated as "every row": the
+  atomicity rule states its own scope — an erasure either deletes every row **it covers** or none —
+  and the condition that triggers the guarantee is a failure in *part of an erasure*. The gate is the
+  authorization deciding whether an erasure begins at all, not a part of one. When it refuses, no
+  erasure runs and nothing it covers moves, which is what the re-authentication tests already show.
+- **What the literal reading would cost**, beyond the two reasons the rule above already carries: a
+  rolled-back erasure would also rewind the counter, so a cloned authenticator could re-assert at a
+  value it had already used.
+- **Enforced in**: `EraseAccountHandler`, whose single `ITransactionalExecutor.ExecuteAsync` covers
+  both saves, and `DbContextTransactionalExecutor`, which opens one transaction inside the execution
+  strategy and commits once.
+  `ErasureAtomicityTests.Erasure_WhenTheUserDeleteFails_LeavesEveryRowCountUnchanged`
+  fails the **second** save and compares every ordinary table in the database either side of the
+  request; the claim is that whole comparison, and the surviving `transactions` rows are the one
+  count that carries the conclusion, because two transactions would have committed the first.
+  `…Erasure_WhenNothingFails_RemovesEveryOwnedRow` is the control that keeps the comparison from
+  passing vacuously — an enumeration that found nothing would satisfy "every count is unchanged"
+  perfectly. `…Erasure_WhenTheUserDeleteFails_SpendsTheAssertionAnyway` pins the boundary from the
+  other side, the nonce by count and the counter by value, and goes red the moment the gate moves
+  inside.
+- **Counterexample**: proving the boundary with a verification that counts rows. It catches the spent
+  nonce and is structurally blind to the advanced counter, so green there does not mean the boundary
+  holds — which is why the counter is pinned by its value instead.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -334,7 +372,8 @@ that authorized it, which leaves as the deleted nonce.
   privileges, not the caller's. That is why no grant on any child table is needed, and why adding
   one would widen the role's reach without extending what erasure can do.
 - **`ITransactionalExecutor`** — both saves run in one transaction, and the gate is deliberately not
-  inside it.
+  inside it. `ErasureAtomicityTests` holds both halves: that a failure moves no row the erasure
+  covers, and that the gate's own writes survive that failure rather than being undone by it.
 - **[Passkeys](passkeys.md)** — the `reauthentication` ceremony, the third nonce pool, and the rule
   that on this path the account comes from the request rather than from the credential.
 - **The grant matrix, again, by what it did *not* need.** The gate reads `passkey_public_keys`, writes
@@ -366,6 +405,11 @@ that authorized it, which leaves as the deleted nonce.
   the row cascades away and the response completes normally. The moment a session-bearing token
   authenticates a request, this endpoint will be deleting the row that authorizes the request it is
   running inside, and that is worth checking then rather than assuming.
+- **A failed erasure still spends the assertion, and still advances the signature counter.** Both are
+  the gate's writes, both were committed before the transaction opened, and neither returns with the
+  rollback — so the person has to run the ceremony again to try once more. That is correct rather
+  than a defect; see the atomicity rule above for why the boundary is drawn where it is. It must
+  **not** be answered by moving the gate inside the transaction.
 - **`webauthn_challenges` is not in the verification query, and that is not an oversight.** A
   challenge belongs to a ceremony rather than to a person and carries neither `user_id` nor
   `budget_id`, so "no row references the erased user" holds vacuously.

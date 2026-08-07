@@ -8,6 +8,46 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-07 — "Every row unchanged" means the erasure's rows, not the request's
+
+**Context:** a failed erasure must leave every row unchanged. Read as covering the whole request that
+is false here, and not by accident: the re-authentication gate runs to completion *before* the
+transaction opens, and it writes twice. `ConsumeAsync` deletes the spent nonce from
+`webauthn_challenges`; `SaveCounterAsync` advances `passkey_signature_counters.signature_counter`.
+Neither comes back with the rollback. Either the rule is scoped, or the gate moves inside the
+transaction — there is no third position, and the two cannot both stand.
+
+**Decision:** the rule is scoped to the erasure, and the scope is not chosen here — it is already in
+the wording of the requirements themselves. Atomicity is stated as deleting every row **an erasure
+covers** or none, and the guarantee is triggered by a failure in *part of an erasure*, where the gate
+is the authorization deciding whether an erasure begins rather than a part of one. Accepting that a
+failed erasure costs the person their assertion: they must repeat the ceremony before trying again.
+
+**That the anchor is the requirement's own phrasing is load-bearing and not decoration.** Read as a
+scope this codebase picked afterwards, the whole entry is the implementation excusing itself, and the
+next reader would be right to distrust it.
+
+**Alternatives considered:**
+
+- *Move the gate inside the transaction* — the literal reading, and rejected twice over. A rolled-back
+  erasure would restore the spent nonce, making the same assertion replayable; and the delegate is
+  replayed by the retrying execution strategy, so a valid erasure would be refused with an attacker's
+  error because the database blinked.
+- *Gate inside, but consume the nonce on a second connection* — buys nothing, since the delete commits
+  either way, and drags the counter advance inside, where a rollback destroys the clone-detection
+  evidence. Strictly worse than doing nothing.
+- *Only the counter advance inside* — the same defect. An accepted assertion has to mean the same
+  thing on every path, and rewinding lets a cloned authenticator re-assert at a value already used.
+- *Mark the nonce spent instead of deleting it* — a changed row is still a changed row, so it does not
+  make the literal reading true, and it turns a self-cleaning table into a store of spent nonces.
+- *Reissue a fresh nonce when the erasure fails* — creates a row rather than restoring one, and
+  auto-minting proof of presence for a failed destructive request is a worse rule than asking the
+  person to repeat a ceremony they can repeat.
+
+**Affected areas:** `erasure.md`.
+
+---
+
 ## 2026-08-07 — An account and its first budget stopped being two saves
 
 **Context:** the user row and its first credential were written in one `SaveChanges` — an orphan user
