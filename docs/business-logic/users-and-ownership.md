@@ -274,14 +274,14 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   may create an account. `EnsureUserHandler` calls it first and mints only on `null`, so the
   existing-user branch lives in one place rather than being copied. `UserProvisioningMiddleware`
   invokes whichever the route's metadata calls for.
-  Both find-or-create the user's default budget through the shared `DefaultBudgetProvisioning`,
-  because "an account exists ⇒ it has its budget" is one idea and splitting it would open a window
-  where a user exists with no budget; that half of the step is documented in
-  [budgets.md](budgets.md#business-rules--invariants) and not restated here. **The budget heal stays
-  on the resolve path**, which is why that handler is an `ICommandHandler` rather than a query: the
-  insert needs a `user_id` that already resolved, so it cannot bring an erased account back, and
-  without it a user whose budget insert was lost could never erase — the erasure handler reads the
-  ambient budget, and the erasure route is unmarked.
+  The default budget is written **in the same save** as the user and its credential, so "an account
+  exists ⇒ it owns a budget" needs no repair step; `ResolveUserHandler` reads that budget and throws
+  if it is absent. That half is documented in
+  [budgets.md](budgets.md#business-rules--invariants) and not restated here.
+  `ResolveUserHandler` is an `ICommandHandler` rather than a query even though it writes nothing to
+  the database, because it publishes the request's identity through `IUserContextWriter` — the single
+  act the whole row-level-security model rests on. A query classification would advertise "no effects,
+  safe to call anywhere" about the one call where that is most dangerously false.
 - **Example**: A returning user whose Google address changed from `old@example.com` to
   `new@example.com` signs in. The handler finds her by `(provider, subject)`, returns the same
   account, and the stored address stays `old@example.com`.
@@ -525,11 +525,12 @@ stateDiagram-v2
 | Lookup → Refused | No credential holds it and the endpoint carries no `ProvisionsUser` metadata | 401 ProblemDetails. The request stops before routing dispatches, so no handler runs and no row is written |
 | Authenticated → Anonymous | The endpoint carries `IAllowAnonymous` | None. The marker is read **before** the claim gate and the request continues with no identity at all, exactly as an unauthenticated one would. It never reaches the lookup, so a token attached by a client interceptor changes nothing about those routes — which is what lets a passkey sign-in complete on a token the claim gate would refuse |
 | Existing → Resolved | Always, once the credential resolves | None. The branch reads and returns; whatever the token now says about this person is not applied |
-| Creating → Resolved | New user and its first credential inserted in one save | `User.Create` validates email presence and both length bounds; `Credential.CreateFederated` validates provider and subject |
+| Creating → Resolved | New user, its first credential **and its default budget** inserted in one save | `User.Create` validates email presence and both length bounds; `Credential.CreateFederated` validates provider and subject; `Budget.CreateDefault` validates the owner |
 | Creating → InsertRejected | A unique violation on the credential index, the email index, or both | `TryAddAsync` returns `false` without deciding which rule fired — the reported constraint name cannot say — and neither row is left behind |
 | InsertRejected → RaceReread → Resolved | A concurrent request registered this credential first | The re-read finds the winning credential and the request adopts its user id |
 | InsertRejected → RaceReread → Conflict | The re-read finds no credential for this subject | Only the email can have collided, so a different Google account holds it: 409 ProblemDetails |
-| Resolved → BudgetEnsured | Always, on every authenticated request | Find-or-create the default budget; heals a user left without one — see [budgets.md](budgets.md#workflows--state-transitions) |
+| Resolved → BudgetEnsured | An account that already existed | Read its default budget; throw if absent. Nothing heals — the budget arrived with the account and only a direct delete can remove it. See [budgets.md](budgets.md#workflows--state-transitions) |
+| InsertRejected → RaceReread → Resolved | (ordering) | The winner is published **before** its budget is read: `budgets` is policed by `user_isolation`, so a read under the loser's phantom id matches nothing. `EnsureUser_WhenTheInsertLosesTheCredentialRace_PublishesTheWinnerBeforeReadingItsBudget` pins it |
 
 ## Decision Trees
 
@@ -615,19 +616,27 @@ The budget branch that runs after this, on every path, is in
   names only one of them; the re-read is sound because a reported unique violation means the winning
   transaction committed, which makes its rows visible here.
 
-- **The user row and its first credential are written in one `SaveChanges`, and that is load-bearing.**
-  Splitting them would make a user with no credential reachable — a row holding its unique email that
-  no sign-in can ever resolve to, so every later attempt with that address is a 409 with no repair
-  path. Unlike the missing-budget case below, nothing heals it.
-  `UserRepositoryTests.TryAddAsync_WhenOnlyTheCredentialCollides_LeavesNoOrphanedUserRow` is what
-  fails if someone splits the save.
+- **The user row, its first credential and its default budget are written in one `SaveChanges`, and
+  that is load-bearing.** Splitting off the credential would make a user with no credential reachable —
+  a row holding its unique email that no sign-in can ever resolve to, so every later attempt with that
+  address is a 409 with no repair path, and nothing heals it. Splitting off the budget is what used to
+  happen, and it made a user with no budget reachable; that state now has no repair either, so the
+  save is what keeps it from arising.
+  `UserRepositoryTests.TryAddAsync_WhenOnlyTheCredentialCollides_LeavesNoOrphanedUserRow` and
+  `…TryAddAsync_WhenTheEmailCollides_LeavesNoUserCredentialOrBudgetRow` are what fail if someone
+  splits it.
 
   Two shapes were considered and rejected, both of which a later reader is likely to propose.
-  **Wrapping the two writes in `ITransactionalExecutor`** ([ADR 0003](../decisions/0003-wrap-multi-repository-writes-in-one-transaction.md))
-  is the named mechanism for exactly "two writes in one handler must be atomic", and it is the
-  first thing to reach for here. One save is better: it needs no execution-strategy retry loop, and
-  it keeps the `23505` attribution in a single `catch` instead of splitting it across two writes
-  that can each fail for a different reason. **Modelling `Credential` inside the `User` aggregate**
+  **Wrapping the writes in `ITransactionalExecutor`** ([ADR 0003](../decisions/0003-wrap-multi-repository-writes-in-one-transaction.md))
+  is the named mechanism for exactly "several writes in one handler must be atomic", and it is the
+  first thing to reach for here. One save is better, and at three rows the argument is no longer only
+  about cost: `BeginTransactionAsync` opens the connection, and opening the connection is when
+  `SessionContextInterceptor` writes `app.current_user_id`. Inside a transaction that runs **once**, at
+  the begin — so a wrap whose delegate contains `ResolveUser` configures the connection while the
+  setting is still empty and the `users` INSERT fails `22P02` against its own `WITH CHECK`. It also
+  needs no execution-strategy retry loop, and it keeps the `23505` attribution in a single `catch`
+  instead of splitting it across writes that can each fail for a different reason.
+  **Modelling `Credential` inside the `User` aggregate**
   would make atomicity automatic rather than argued — but the aggregate would then have to grow to
   hold sessions and passkeys too, and a root loaded on every authenticated request is the wrong
   place to accumulate them. `Session`, `PasskeyPublicKey` and `PasskeySignatureCounter` all landed as
@@ -641,9 +650,13 @@ The budget branch that runs after this, on every path, is in
   survives only as long as the order does — a future path that touched `credentials` first would
   reintroduce the cycle without changing a line of the code that documents this.
 
-- **A user row is written before its budget row, in a separate `SaveChanges`**: a user with no budget
-  is therefore a reachable state, and it is the unconditional find-or-create on the next request that
-  repairs it. The budget half of that story is in [budgets.md](budgets.md#edge-cases--known-gotchas).
+- **A user with no budget is no longer reachable from any path that creates a user**, because the
+  budget arrives in the same save. It is not forbidden by the schema, though: a direct
+  `DELETE FROM budgets` still produces it, and the account is then **dead rather than healed** —
+  every resolve throws and the person cannot even erase, because the erasure handler reads the ambient
+  budget. That trade is bounded by production holding no data, and the stronger option is recorded in
+  the decision log. The budget half of that story is in
+  [budgets.md](budgets.md#edge-cases--known-gotchas).
 
 - **A returning user's stored email is deliberately never refreshed, and it will go stale.** The
   obvious "fix" is to re-apply the token's claims on the existing-user branch, which is what the

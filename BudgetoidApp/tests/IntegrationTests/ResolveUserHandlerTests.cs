@@ -2,6 +2,7 @@ using Application.Users.EnsureUser;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace IntegrationTests;
 
@@ -18,51 +19,71 @@ namespace IntegrationTests;
 /// </para>
 /// <para>
 /// Written against the real repositories over a real database, in the style of
-/// <c>EnsureUserHandlerTests</c> beside it: the two claims here are "one budget row appeared" and "no
-/// row appeared anywhere", and both are claims about what a table holds.
+/// <c>EnsureUserHandlerTests</c> beside it. Both claims here are the same claim from two directions —
+/// this path writes nothing, whether the subject resolves to nobody or to an account whose budget row
+/// has gone missing — and both are claims about what a table holds.
 /// </para>
 /// </remarks>
 public sealed class ResolveUserHandlerTests
 {
     /// <summary>
-    /// The one write the resolve path keeps.
+    /// The resolve path writes nothing, even for the one state that used to make it write.
     /// </summary>
     /// <remarks>
-    /// A provisioning that inserted the user and its credential and then lost the budget insert leaves
-    /// an account every budget-scoped query comes back empty for — a signed-in person staring at an
-    /// application that has forgotten their money. The heal has to survive the split, and the resolve
-    /// path is where it lands, because it is the path every returning request now takes.
+    /// <para>
+    /// <b>This replaces the heal, and asserts its opposite.</b> An account without a budget was
+    /// reachable while provisioning wrote in two saves: the user and its credential landed, the budget
+    /// insert was lost, and every returning request paid for a find-or-create that repaired it. All
+    /// three rows now go in one save, so the state is unreachable — production holds no data that
+    /// could already be in it (ASM-007) — and a resolve that met it anyway would be meeting something
+    /// the design says cannot happen. The honest answer to that is to fail, not to invent a tenant.
+    /// </para>
+    /// <para>
+    /// The budget is deleted out of band rather than left unseeded, because
+    /// <c>RepositoryTestHost.SeedUserAsync</c> would produce the same rows by omission, and a test
+    /// that gets its premise from a helper's omission stops describing anything the moment the helper
+    /// changes. Deleting it says out loud that something outside this handler removed a row nothing in
+    /// the product removes on its own.
+    /// </para>
+    /// <para>
+    /// The second half — that <c>budgets</c> is still empty afterwards — is the part that proves the
+    /// heal is gone rather than merely relocated, and it pins a race a reviewer found in the erasure
+    /// path. An erasure in flight holds a share lock on the pending <c>DELETE FROM users</c>; a
+    /// resolve-path <c>INSERT INTO budgets</c> blocks on that foreign key and surfaces to the caller
+    /// as a 500. After this there is no resolve-path insert left to block on it.
+    /// </para>
+    /// <para>
+    /// <see cref="InvalidOperationException" /> and not a <c>NotFoundException</c>: a 404 would tell a
+    /// signed-in person their account does not exist, when what happened is that the application's own
+    /// invariant broke. The loud 500 is the honest one, and it is the same exception type the removed
+    /// heal already raised when its re-read came back empty.
+    /// </para>
     /// </remarks>
     [Test]
-    public async Task ResolveUser_ForAnAccountWhoseBudgetInsertWasLost_HealsIt()
+    public async Task ResolveUser_ForAnAccountWhoseBudgetRowIsMissing_FailsLoudlyAndHealsNothing()
     {
-        // Arrange — a user and the credential that resolves to it, and deliberately no budget: exactly
-        // the state a half-landed provisioning leaves behind.
+        // Arrange — a complete account, then its budget removed behind the application's back.
         await using RepositoryTestHost host = await StartHostAsync();
-        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        (Guid userId, _) = await host.SeedOwnerAsync("google-1", "person@example.com");
+        await DeleteBudgetsAsync(host, userId);
         await using BudgetoidDbContext db = CreateDb(host.ConnectionString);
         ResolveUserHandler handler = CreateHandler(db);
         await Assert.That(await db.Budgets.CountAsync()).IsEqualTo(0);
 
         // Act
-        ProvisionedUser? resolved = await handler.HandleAsync(new ResolveUserCommand("google-1"));
+        Exception? escaped = await CaptureAsync(() => handler.HandleAsync(new ResolveUserCommand("google-1")));
 
-        // Assert
-        await Assert.That(resolved).IsNotNull();
-        await Assert.That(resolved!.UserId).IsEqualTo(userId);
+        // Assert — it failed, and it failed as a broken invariant rather than as a missing account.
+        await Assert.That(escaped).IsTypeOf<InvalidOperationException>();
 
+        // And it healed nothing on the way out. This is the assertion the old heal test inverted.
         await using BudgetoidDbContext verify = CreateDb(host.ConnectionString);
-        await Assert.That(await verify.Budgets.CountAsync()).IsEqualTo(1);
+        await Assert.That(await verify.Budgets.CountAsync()).IsEqualTo(0);
 
-        // The budget it reported is the budget it wrote, not merely some budget: a handler that healed
-        // the row and answered with a different id would leave every later statement in the request
-        // scoped to a tenant that does not exist.
-        await Assert.That((await verify.Budgets.SingleAsync()).Id).IsEqualTo(resolved.BudgetId);
-        await Assert.That((await verify.Budgets.SingleAsync()).UserId).IsEqualTo(userId);
-
-        // And the heal is a budget insert and nothing else — no second user, no second credential.
+        // The account itself is untouched — failing loudly is not licence to remove anything.
         await Assert.That(await verify.Users.CountAsync()).IsEqualTo(1);
         await Assert.That(await verify.Credentials.CountAsync()).IsEqualTo(1);
+        await Assert.That((await verify.Users.SingleAsync()).Id).IsEqualTo(userId);
     }
 
     /// <summary>
@@ -110,11 +131,41 @@ public sealed class ResolveUserHandlerTests
         await Assert.That(await verify.Budgets.CountAsync()).IsEqualTo(budgetsBefore);
     }
 
+    /// <summary>
+    /// Removes an owner's budgets on the container superuser, standing in for whatever left the
+    /// account in a state the application itself can no longer produce.
+    /// </summary>
+    private static async Task DeleteBudgetsAsync(RepositoryTestHost host, Guid userId)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new("delete from budgets where user_id = @user_id", connection);
+        command.Parameters.AddWithValue("user_id", userId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action" /> and hands back whatever escaped, or <see langword="null" />
+    /// when nothing did. Deliberately untyped: the question is <i>which</i> exception surfaces, so
+    /// catching a specific one here would decide the answer in the helper.
+    /// </summary>
+    private static async Task<Exception?> CaptureAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
     private static ResolveUserHandler CreateHandler(BudgetoidDbContext db) => new(
         new UserRepository(db),
         new BudgetRepository(db),
-        new UnpolicedUserContextWriter(),
-        TimeProvider.System);
+        new UnpolicedUserContextWriter());
 
     /// <summary>
     /// Discards the published identity, because on this fixture nothing reads it.

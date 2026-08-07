@@ -120,22 +120,52 @@ public sealed class UserProvisioningTests
     }
 
     /// <summary>
-    /// The second control: an account that does exist reaches the unmarked routes normally.
+    /// The second control: an account that does exist reaches the unmarked routes normally, and those
+    /// requests write nothing whatsoever.
     /// </summary>
     /// <remarks>
-    /// Without it the fix could be "every unmarked route answers 401" — which passes both refusal tests
-    /// above and locks every signed-in person out of registering a passkey or erasing their account.
-    /// The erasure call at the end is deliberately refused <b>by the ceremony</b> and the title is what
-    /// says so: reaching the gate at all is the claim, and a provisioning refusal would carry a
-    /// different sentence.
+    /// <para>
+    /// The reaching-them-normally half is why this test was written, and it still carries it: without
+    /// it the fix could be "every unmarked route answers 401", which passes both refusal tests above
+    /// and locks every signed-in person out of registering a passkey or erasing their account. That
+    /// claim now lives in the three status assertions rather than in the name. The erasure call is
+    /// deliberately refused <b>by the ceremony</b> and the title is what says so: reaching the gate at
+    /// all is the claim, and a provisioning refusal would carry a different sentence.
+    /// </para>
+    /// <para>
+    /// <b>A pin rather than a driver — it is green before the change and after it.</b> The name is
+    /// what changed: "an unmarked route writes nothing" was a slight overstatement while the budget
+    /// heal existed, because the resolve path really could insert a row, and only the fact that these
+    /// accounts already own their budget kept it from doing so here. With the heal gone the resolve
+    /// path has no insert left at all, so the sentence is now literally true and the counts say it for
+    /// all three tables instead of for <c>users</c> alone.
+    /// </para>
+    /// <para>
+    /// Before and after rather than against literals: the subject is that the three calls changed
+    /// nothing, and a pair of literals would also be satisfied by a run that deleted a row and minted
+    /// a replacement.
+    /// </para>
     /// </remarks>
     [Test]
-    public async Task AuthenticatedRequestToAnUnmarkedRoute_WithAnExistingAccount_Succeeds()
+    public async Task AuthenticatedRequestToAnUnmarkedRoute_WithAnExistingAccount_WritesNothing()
     {
         // Arrange — one request to a marked route, which is the whole of how an account comes to exist.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient("google-established");
         await ApiFactory.EstablishAccountAsync(client);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        (long usersBefore, long credentialsBefore, long budgetsBefore) = (
+            await CountUsersAsync(admin),
+            await CountCredentialsAsync(admin),
+            await CountBudgetsAsync(admin));
+
+        // The account really is complete before the act, so a later "unchanged" means unchanged from
+        // something rather than unchanged from nothing.
+        await Assert.That(usersBefore).IsEqualTo(1L);
+        await Assert.That(credentialsBefore).IsEqualTo(1L);
+        await Assert.That(budgetsBefore).IsEqualTo(1L);
 
         // Act — one endpoint from each unmarked group an authenticated caller may reach.
         HttpResponseMessage registrationOptions = await client.PostAsync(RegistrationOptionsPath, content: null);
@@ -149,10 +179,10 @@ public sealed class UserProvisioningTests
         await Assert.That(erasure.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await ReadTitleAsync(erasure)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
 
-        // And the three calls minted nothing on top of the one account.
-        await using NpgsqlConnection admin = new(host.ConnectionString);
-        await admin.OpenAsync();
-        await Assert.That(await CountUsersAsync(admin)).IsEqualTo(1L);
+        // And the three calls wrote nothing at all — not a user, not a credential, not a budget.
+        await Assert.That(await CountUsersAsync(admin)).IsEqualTo(usersBefore);
+        await Assert.That(await CountCredentialsAsync(admin)).IsEqualTo(credentialsBefore);
+        await Assert.That(await CountBudgetsAsync(admin)).IsEqualTo(budgetsBefore);
     }
 
     /// <summary>

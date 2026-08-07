@@ -238,7 +238,8 @@ that is the one table erasure empties itself.
 - **A second request from the same client is refused, and — this is the part that matters — it
   creates nothing.** It never reaches the handler. The erasure route declares no `ProvisionsUser`
   metadata, so `UserProvisioningMiddleware` finds no credential for the still-valid token, answers
-  `401`, and writes no row: see [users-and-ownership.md](users-and-ownership.md). That answer makes no
+  `401`, and writes no row — literally none, since the budget heal that used to run on every
+  authenticated request is gone: see [users-and-ownership.md](users-and-ownership.md). That answer makes no
   claim about data — it says the request did not prove who it was, which is true, because the account
   it names no longer exists.
 - **Erasure is therefore not idempotent to the caller**, and the cost is real: a client retrying after

@@ -1,3 +1,4 @@
+using Domain.Budgets;
 using Domain.Users;
 
 namespace UnitTests.Fakes;
@@ -42,11 +43,25 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
 {
     private readonly List<User> _users = [];
     private readonly List<Credential> _credentials = [];
+    private readonly List<Budget> _budgets = [];
 
     public int DeleteCallCount { get; private set; }
 
     /// <summary>The rows still here, so an erasure's post-condition can be asserted directly.</summary>
     public IReadOnlyList<User> Users => _users;
+
+    /// <summary>
+    /// The budgets provisioning wrote through this repository.
+    /// </summary>
+    /// <remarks>
+    /// Nothing in the erasure tests reads it, and nothing in them calls
+    /// <see cref="TryAddAsync"/> either — the whole of provisioning is covered by the fakes in
+    /// <c>EnsureUserHandlerTests</c>. The rows are kept anyway rather than discarded, for the same
+    /// reason <see cref="DeleteAsync"/> removes rows instead of throwing: a fake that accepted a
+    /// write and then had nothing to show for it would be a behaviour the real repository cannot
+    /// produce.
+    /// </remarks>
+    public IReadOnlyList<Budget> Budgets => _budgets;
 
     /// <summary>Stores a user and its credential directly, as if an earlier request had provisioned them.</summary>
     public void Seed(User user, Credential credential)
@@ -67,9 +82,15 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
         return Task.FromResult(credential?.UserId);
     }
 
+    /// <summary>
+    /// Inserts all three rows or none of them, which is what the one save the real repository makes
+    /// means: a refusal leaves no user holding a unique email nothing resolves to, and no account
+    /// without the budget every budget-scoped query needs.
+    /// </summary>
     public Task<bool> TryAddAsync(
         User user,
         Credential credential,
+        Budget defaultBudget,
         CancellationToken cancellationToken = default)
     {
         // Both unique rules the real insert can lose to, modelled together because the real one
@@ -86,6 +107,7 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
         }
 
         Seed(user, credential);
+        _budgets.Add(defaultBudget);
         return Task.FromResult(true);
     }
 

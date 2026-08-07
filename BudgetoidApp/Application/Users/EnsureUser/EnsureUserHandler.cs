@@ -10,9 +10,23 @@ namespace Application.Users.EnsureUser;
 /// a route group carrying <c>ProvisionsUserAttribute</c>.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Resolving is delegated to <see cref="ResolveUserHandler" /> rather than repeated here, so the
-/// returning-user branch — and with it the budget heal — is defined in exactly one place, and this
-/// class is only ever the part that creates.
+/// returning-user branch is defined in exactly one place and this class is only ever the part that
+/// creates.
+/// </para>
+/// <para>
+/// <b>No <c>ITransactionalExecutor</c> wraps the mint, and that is a correctness ruling rather than a
+/// cost one.</b> Such an executor opens its transaction through <c>CreateExecutionStrategy()</c>, and
+/// <c>BeginTransactionAsync</c> is what opens the connection — which is when
+/// <c>SessionContextInterceptor</c> writes <c>app.current_user_id</c>. Inside a transaction the
+/// interceptor runs once, at the begin, so any wrap whose delegate contains the publication below
+/// configures the connection while the setting is still empty and the <c>users</c> INSERT meets
+/// <c>''::uuid</c> in its <c>WITH CHECK</c> — a <c>22P02</c>, the exact trap already documented for the
+/// passkey assertion path. Publishing outside the wrap fixes it, at the price of a new ordering rule
+/// nobody may re-break and a retry that must not re-publish. One save through
+/// <see cref="IUserRepository.TryAddAsync" /> carries no such rule.
+/// </para>
 /// </remarks>
 public sealed class EnsureUserHandler(
     IUserRepository repository,
@@ -25,9 +39,8 @@ public sealed class EnsureUserHandler(
         EnsureUserCommand command,
         CancellationToken cancellationToken = default)
     {
-        // Resolve first, mint only when nothing resolved. Everything a returning request needs —
-        // publishing the identity, and healing a budget insert that was lost — already happened in
-        // there, so nothing below runs for an account that exists.
+        // Resolve first, mint only when nothing resolved. Publishing the identity and reading the
+        // budget already happened in there, so nothing below runs for an account that exists.
         ProvisionedUser? resolved = await resolveUserHandler.HandleAsync(
             new ResolveUserCommand(command.GoogleSubject),
             cancellationToken);
@@ -36,26 +49,18 @@ public sealed class EnsureUserHandler(
             return resolved;
         }
 
-        Guid userId = await CreateUserIdAsync(command, cancellationToken);
-
-        // Reached on the conflict path too, where the id adopted below belongs to an account that
-        // already existed and may already own a budget — hence find-or-create rather than a bare insert.
-        Guid budgetId = await DefaultBudgetProvisioning.EnsureDefaultBudgetIdAsync(
-            budgetRepository,
-            timeProvider,
-            userId,
-            cancellationToken);
-
-        return new ProvisionedUser(userId, budgetId);
+        return await CreateAsync(command, cancellationToken);
     }
 
     // Every publication below lands before the next statement that touches a policed table, which is
     // the whole ordering contract: app.current_user_id reaches the database on the next connection
     // open, so an id published afterwards is an id that statement ran without.
-    private async Task<Guid> CreateUserIdAsync(EnsureUserCommand command, CancellationToken cancellationToken)
+    private async Task<ProvisionedUser> CreateAsync(
+        EnsureUserCommand command,
+        CancellationToken cancellationToken)
     {
-        // One `now` for both rows: the user and the credential that resolves to it come into
-        // existence in the same save, so they carry the same creation instant.
+        // One `now` for all three rows: the user, the credential that resolves to it and the budget it
+        // owns come into existence in the same save, so they carry the same creation instant.
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
         User user = User.Create(command.Email, now);
         Credential credential = Credential.CreateFederated(
@@ -63,14 +68,15 @@ public sealed class EnsureUserHandler(
             Credential.GoogleProvider,
             command.GoogleSubject,
             now);
+        Budget defaultBudget = Budget.CreateDefault(user.Id, now);
 
         // Before the insert, not after: User.Create mints the id with Guid.CreateVersion7 on this
         // side, so it exists before the row does, and the users INSERT is checked against
         // app.current_user_id — publish afterwards and WITH CHECK refuses every new account.
         userContextWriter.ResolveUser(user.Id);
-        if (await repository.TryAddAsync(user, credential, cancellationToken))
+        if (await repository.TryAddAsync(user, credential, defaultBudget, cancellationToken))
         {
-            return user.Id;
+            return new ProvisionedUser(user.Id, defaultBudget.Id);
         }
 
         // The insert lost to an existing row on the credential's (provider, subject) or on the email,
@@ -79,11 +85,11 @@ public sealed class EnsureUserHandler(
         // succeeded had it aborted — so a winning credential on this subject is visible here. Finding
         // none therefore proves the subject was never duplicated and the email alone collided, with a
         // different account holding it.
-        Guid? concurrentUserId = await repository.FindUserIdByFederatedCredentialAsync(
+        Guid? winnerId = await repository.FindUserIdByFederatedCredentialAsync(
             Credential.GoogleProvider,
             command.GoogleSubject,
             cancellationToken);
-        if (concurrentUserId is null)
+        if (winnerId is null)
         {
             // The id published before the insert is still in request scope, and it names a row that was
             // never written. That is left standing on purpose. Nothing reads it — the request ends in a
@@ -108,12 +114,22 @@ public sealed class EnsureUserHandler(
             throw new ConflictException("This email address is already linked to a different Google account.");
         }
 
-        // Overwrites the id published above, which named a row that was never written. The session
-        // carries the last word into the budgets read and on into the rest of the request, so leaving
-        // the loser's id there would police every later statement against an account that does not
-        // exist.
-        userContextWriter.ResolveUser(concurrentUserId.Value);
+        // Overwrites the id published above, which named a row that was never written — and it lands
+        // before the budget read, which is what makes the ordering load-bearing rather than tidy:
+        // budgets is policed by user_isolation, so a read still carrying the loser's phantom id comes
+        // back empty and this method would report a broken invariant about an intact account. The
+        // session also carries the last word into the rest of the request.
+        userContextWriter.ResolveUser(winnerId.Value);
 
-        return concurrentUserId.Value;
+        // This save wrote nothing, so the only budget there is to report is the winner's — and it is
+        // certainly there: the reported unique violation means the winner's transaction committed, and
+        // one save means that transaction contained its budget row. Minting one here instead would
+        // leave a second, orphaned budget nobody ever opens.
+        Budget winnersBudget = await budgetRepository.FindFirstForUserAsync(winnerId.Value, cancellationToken)
+                               ?? throw new InvalidOperationException(
+                                   "The account that won the credential race owns no budget, which one "
+                                   + "save cannot produce.");
+
+        return new ProvisionedUser(winnerId.Value, winnersBudget.Id);
     }
 }

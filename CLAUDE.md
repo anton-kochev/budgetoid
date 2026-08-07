@@ -55,7 +55,9 @@ Auth is live Google OAuth.
 `sub` (via `ResolveUserHandler`) into a user id and default budget id on the scoped
 `CurrentUser`; `IBudgetContext` exposes the ambient budget. **Only a route carrying
 `ProvisionsUser` metadata may create an account** — every other authenticated route resolves
-or answers 401, so a token outliving an erasure cannot resurrect the row. The marker is
+or answers 401 and writes nothing at all, so a token outliving an erasure cannot resurrect
+the row. An account, its first credential and its default budget are created in **one**
+`SaveChanges`; there is no heal, and a resolved account with no budget throws. The marker is
 opt-in on six route groups; adding it anywhere else needs the argument in
 [users-and-ownership.md](docs/business-logic/users-and-ownership.md). Read
 [data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries.

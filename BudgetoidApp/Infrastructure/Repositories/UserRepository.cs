@@ -1,3 +1,4 @@
+using Domain.Budgets;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Configurations;
@@ -37,19 +38,22 @@ public sealed class UserRepository(BudgetoidDbContext dbContext) : IUserReposito
             .SingleOrDefaultAsync(cancellationToken);
     }
 
+    /// <inheritdoc />
     public async Task<bool> TryAddAsync(
         User user,
         Credential credential,
+        Budget defaultBudget,
         CancellationToken cancellationToken = default)
     {
         dbContext.Users.Add(user);
         dbContext.Credentials.Add(credential);
+        dbContext.Budgets.Add(defaultBudget);
 
         try
         {
-            // One save, so the two rows land together or not at all. A user row without its
-            // credential would hold the unique email while nothing resolved to it, refusing that
-            // address forever.
+            // One save, so the three rows land together or not at all — see the interface for why
+            // each of them is unhealable on its own, and why a wrapping ITransactionalExecutor is not
+            // the way to get the same property.
             await dbContext.SaveChangesAsync(cancellationToken);
             return true;
         }
@@ -57,15 +61,18 @@ public sealed class UserRepository(BudgetoidDbContext dbContext) : IUserReposito
         // email — and PostgreSQL names only one of them, picked by the order the rows are written
         // rather than by what happened. So this cannot tell the two apart and does not try: either
         // name means "an existing row already holds this identity", and the caller decides which by
-        // re-reading the credential. The filter still lists both names, so a 23505 from any other
-        // unique rule propagates on purpose: it is a constraint this method does not model, and a 500
-        // naming it is more useful than a false "someone else won the race".
+        // re-reading the credential. The filter still lists exactly those two names, so a 23505 from
+        // any other unique rule propagates on purpose: it is a constraint this method does not model,
+        // and a 500 naming it is more useful than a false "someone else won the race". The budget's
+        // own index is deliberately not among them, and is unreachable besides — its user_id is minted
+        // in this call, so no other row can share it.
         catch (DbUpdateException exception) when (
             IsUniqueViolationOf(exception, CredentialConfiguration.ProviderSubjectIndexName)
             || IsUniqueViolationOf(exception, UserConfiguration.EmailIndexName))
         {
             dbContext.Entry(user).State = EntityState.Detached;
             dbContext.Entry(credential).State = EntityState.Detached;
+            dbContext.Entry(defaultBudget).State = EntityState.Detached;
             return false;
         }
     }

@@ -8,6 +8,61 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-07 — An account and its first budget stopped being two saves
+
+**Context:** the user row and its first credential were written in one `SaveChanges` — an orphan user
+holding a unique email no sign-in resolves to is unhealable — while the default budget went in a
+second. That second save made "a user row with no budget" a reachable state, which is why a
+find-or-create heal ran on **every** authenticated request. The heal cost a `SELECT` per request, and
+it was a rule the next reader could delete as apparent duplication once it lived in two handlers: doing
+so would leave a person whose budget insert was lost unable even to erase their account, with every
+test still green.
+
+**Decision:** all three rows are written in one save, through
+`IUserRepository.TryAddAsync(User, Credential, Budget, …)`, and the heal is deleted. A resolved account
+with no budget now throws. Chosen to remove the state rather than tolerate it — the atomicity argument
+already made for the credential applies to the budget verbatim — accepting that the state is
+unreachable *from the only path that creates a user* rather than unreachable outright.
+
+**That distinction is the accepted cost and must not be read as an oversight.** Nothing in the schema
+forbids the state, so a direct `DELETE FROM budgets` still produces it, and the account is then dead
+rather than healed. The stronger guarantee is a participation constraint — a circular
+`users.default_budget_id → budgets(id)`, `NOT NULL DEFERRABLE INITIALLY DEFERRED`, checked at commit —
+which PostgreSQL can express declaratively and which would make the state unstorable. It was
+**deliberately deferred as a separate decision**, because it puts a new column on a table whose column
+set is deliberately pinned, and the pin's own rule is *move the column, never widen the pin*. The
+present trade is bounded by production holding no data.
+
+**Alternatives considered:**
+
+- *`ITransactionalExecutor` over the three writes* — the named mechanism for "several writes in one
+  handler must be atomic". Rejected, and at three rows the reason became correctness rather than cost:
+  `BeginTransactionAsync` opens the connection, and that is when `SessionContextInterceptor` writes
+  `app.current_user_id`. Inside a transaction the interceptor runs once, at the begin, so a wrap whose
+  delegate contains the identity publication configures the connection while the setting is empty and
+  the `users` INSERT fails `22P02` against its own `WITH CHECK`. Fixable by publishing outside the
+  wrap, but the fix is a new ordering rule someone must not re-break.
+- *A dedicated `IAccountProvisioning` port* — a third port for one call site, and it would carry the
+  `23505` attribution away from the repository where every other constraint catch in this codebase
+  lives. What it buys is a better name, and a name is cheaper to get from a method.
+- *Modelling `Credential` inside the `User` aggregate* — already rejected before this change, for
+  reasons unchanged: the root would then have to grow to hold sessions and passkeys too.
+- *Keeping the heal as belt-and-braces* — rejected. With one save it repairs a state nothing produces,
+  and an unconditional repair whose reason has evaporated is exactly the code a future reader deletes
+  without understanding what it was for.
+
+**A property the split save did not have, gained here.** When the credential insert loses a race, the
+loser now wrote nothing and must adopt the winner's budget — and that budget is *guaranteed* to exist,
+because a reported unique violation means the winner's transaction committed and that transaction
+contained its budget row. Under the split save the winner could commit its user and lose its budget.
+The loser must publish the winner's identity **before** reading its budget: `budgets` is policed by
+`user_isolation`, so a read under the loser's phantom id matches nothing.
+
+**Affected areas:** [budgets.md](budgets.md), [users-and-ownership.md](users-and-ownership.md),
+[erasure.md](erasure.md).
+
+---
+
 ## 2026-08-07 — Provisioning mints an account only where a route declares it may
 
 **Context:** the entry below accepted that a second erasure request is refused, and weighed only the

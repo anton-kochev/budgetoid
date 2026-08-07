@@ -1,3 +1,4 @@
+using Domain.Budgets;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Configurations;
@@ -12,8 +13,9 @@ namespace IntegrationTests;
 /// Covers the identity rules the users and credentials tables hold between them, from both sides:
 /// the schema that rejects a duplicate, an over-long or a mis-shaped row, and
 /// <see cref="UserRepository"/>'s translation of those rejections into the one outcome it can
-/// report honestly — <see langword="false"/>, the pair was refused. Which refusal it was is the
-/// caller's question, not this layer's.
+/// report honestly — <see langword="false"/>, the account was refused. Which refusal it was is the
+/// caller's question, not this layer's. The account is three rows now, not two: the default budget
+/// joined the same save, so the refusal covers it as well.
 /// <para>
 /// It also covers the one thing <c>DeleteAsync</c> decides, which is not an identity rule at all:
 /// which lost race counts as the post-condition already holding, and which is a failure to report.
@@ -369,7 +371,8 @@ public sealed class UserRepositoryTests
         // re-reading that credential, so it must surface as false rather than as a throw.
         bool added = await repository.TryAddAsync(
             NewUser("second@example.com", out Guid userId),
-            NewGoogleCredential(userId, "google-1"));
+            NewGoogleCredential(userId, "google-1"),
+            NewDefaultBudget(userId));
 
         // Assert
         await Assert.That(added).IsFalse();
@@ -387,7 +390,8 @@ public sealed class UserRepositoryTests
         // Act
         bool added = await repository.TryAddAsync(
             NewUser("shared@example.com", out Guid userId),
-            NewGoogleCredential(userId, "google-2"));
+            NewGoogleCredential(userId, "google-2"),
+            NewDefaultBudget(userId));
 
         // Assert — the repository deliberately declines to decide what this refusal meant. From
         // here, a stranger holding the email and a request that raced itself look the same; the only
@@ -411,7 +415,8 @@ public sealed class UserRepositoryTests
         // email and violates both unique rules at once.
         bool added = await repository.TryAddAsync(
             NewUser("person@example.com", out Guid userId),
-            NewGoogleCredential(userId, "google-1"));
+            NewGoogleCredential(userId, "google-1"),
+            NewDefaultBudget(userId));
 
         // Assert — PostgreSQL names only one constraint for this pair, and which one is decided by
         // the order the baseline migration happens to create the two indexes in, not by what
@@ -425,24 +430,27 @@ public sealed class UserRepositoryTests
     public async Task TryAddAsync_WhenOnlyTheCredentialCollides_LeavesNoOrphanedUserRow()
     {
         // Arrange — a winning account holds this provider identity; the loser arrives with a fresh
-        // email, so the users row on its own would be perfectly insertable.
+        // email, so the users row on its own would be perfectly insertable. The winner is seeded with
+        // its budget, so the budget count below starts at one and "no budget was added" is
+        // distinguishable from "the seeding never landed".
         const string losingEmail = "loser@example.com";
         await using RepositoryTestHost host = await StartHostAsync();
-        await host.SeedUserAsync("google-1", "winner@example.com");
+        await host.SeedOwnerAsync("google-1", "winner@example.com");
         await using BudgetoidDbContext db = CreateDb(host);
         var repository = new UserRepository(db);
 
         // Act
         bool added = await repository.TryAddAsync(
             NewUser(losingEmail, out Guid userId),
-            NewGoogleCredential(userId, "google-1"));
+            NewGoogleCredential(userId, "google-1"),
+            NewDefaultBudget(userId));
 
         // Assert — the surviving-row check is the whole point, not a second opinion on the boolean,
-        // and it is the only assertion in this class that carries it. The two rows go in one save so
-        // that a refusal leaves neither behind: a users row persisted without its credential would
-        // hold "loser@example.com" under the unique email index forever while no credential resolved
-        // to it, so every later sign-in with that address would be refused with a 409 and no way to
-        // heal. Splitting the save would keep this method returning false and break only this line.
+        // and it is the oldest property in this class. All three rows go in one save so that a
+        // refusal leaves none behind: a users row persisted without its credential would hold
+        // "loser@example.com" under the unique email index forever while no credential resolved to
+        // it, so every later sign-in with that address would be refused with a 409 and no way to
+        // heal. Splitting the save would keep this method returning false and break only these lines.
         // The losing email by name rather than a row count: a count of one is also satisfied by a
         // seed that never landed or by the winner being deleted, so it would let this test fail for
         // reasons that are not the orphan it exists to catch.
@@ -450,6 +458,65 @@ public sealed class UserRepositoryTests
         await using BudgetoidDbContext verify = CreateDb(host);
         Email orphanEmail = Email.Create(losingEmail);
         await Assert.That(await verify.Users.AnyAsync(user => user.Email == orphanEmail)).IsFalse();
+
+        // The budget joined the same save, so it is refused with the rest. Named by its owner for the
+        // same reason the user is named by its email — the winner's budget is still there, so a bare
+        // count would be measuring the seed as much as the refusal.
+        await Assert.That(await verify.Budgets.AnyAsync(budget => budget.UserId == userId)).IsFalse();
+    }
+
+    /// <summary>
+    /// The other refusal, from the other side: an email another account holds leaves no row of any
+    /// kind either.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The budget half of this test cannot fail today, and that is deliberate — it is a regression
+    /// pin, not the thing that drove the change.</b> The refusal aborts the whole save, so there is no
+    /// arrangement in which the budget lands while the user does not. It is written down because that
+    /// is a property of the save being single, and the only way to break it is to split the save back
+    /// apart, at which point a budget insert issued after a refused user insert would leave a tenant
+    /// row owned by nobody. Nothing else in the suite would notice.
+    /// </para>
+    /// <para>
+    /// It sits beside the credential-collision test rather than folded into it because the two
+    /// refusals are genuinely different arrangements: there the loser's email is free and its subject
+    /// is taken, here its subject is free and its email is taken. A single test could only assert one
+    /// of them.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task TryAddAsync_WhenTheEmailCollides_LeavesNoUserCredentialOrBudgetRow()
+    {
+        // Arrange — a complete winning account, whose address the loser arrives holding. The loser's
+        // subject is fresh, so only the email index can refuse this.
+        const string takenEmail = "shared@example.com";
+        await using RepositoryTestHost host = await StartHostAsync();
+        (Guid winnerId, Guid winnerBudgetId) = await host.SeedOwnerAsync("google-1", takenEmail);
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new UserRepository(db);
+
+        // Act
+        bool added = await repository.TryAddAsync(
+            NewUser(takenEmail, out Guid userId),
+            NewGoogleCredential(userId, "google-2"),
+            NewDefaultBudget(userId));
+
+        // Assert — refused, and nothing of the loser's survives anywhere. Each row is looked for by
+        // the loser's own handle rather than by a count, because the winner's three rows are still
+        // there and a count would be answering a question about the seed.
+        await Assert.That(added).IsFalse();
+        await using BudgetoidDbContext verify = CreateDb(host);
+        await Assert.That(await verify.Users.AnyAsync(user => user.Id == userId)).IsFalse();
+        await Assert.That(await verify.Credentials.AnyAsync(credential => credential.Subject == "google-2"))
+            .IsFalse();
+        await Assert.That(await verify.Budgets.AnyAsync(budget => budget.UserId == userId)).IsFalse();
+
+        // And the winner is exactly as it was. A "no loser rows" assertion is also satisfied by a
+        // refusal that took the winner's account down with it.
+        await Assert.That(await verify.Users.CountAsync()).IsEqualTo(1);
+        await Assert.That((await verify.Users.SingleAsync()).Id).IsEqualTo(winnerId);
+        await Assert.That((await verify.Budgets.SingleAsync()).Id).IsEqualTo(winnerBudgetId);
     }
 
     /// <summary>
@@ -587,6 +654,12 @@ public sealed class UserRepositoryTests
 
     private static Credential NewGoogleCredential(Guid userId, string subject) =>
         Credential.CreateFederated(userId, Credential.GoogleProvider, subject, SeedInstant);
+
+    /// <summary>
+    /// The nameless budget the account is provisioned with, which now travels into the same save as
+    /// the user and the credential.
+    /// </summary>
+    private static Budget NewDefaultBudget(Guid userId) => Budget.CreateDefault(userId, SeedInstant);
 
     /// <summary>
     /// Builds a syntactically plausible address of exactly <paramref name="length"/> characters by

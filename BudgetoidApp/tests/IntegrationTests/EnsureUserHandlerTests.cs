@@ -145,7 +145,7 @@ public sealed class EnsureUserHandlerTests
             budgets,
             writer,
             TimeProvider.System,
-            new ResolveUserHandler(users, budgets, writer, TimeProvider.System));
+            new ResolveUserHandler(users, budgets, writer));
     }
 
     /// <summary>

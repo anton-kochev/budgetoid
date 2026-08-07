@@ -248,10 +248,10 @@ erDiagram
   request reaches a handler. It carries no name because nobody named it: naming a budget is an
   explicit act, and inventing a name on the user's behalf would both put a display decision in
   storage and make a budget they never touched look deliberately named.
-- **Enforced in**: `EnsureUserHandler.HandleAsync` resolves the user, then find-or-creates the
-  budget via `IBudgetRepository.FindFirstForUserAsync` / `TryAddAsync`, returning
-  `ProvisionedUser(UserId, BudgetId)`. `Budget.CreateDefault` is the only path that produces a budget
-  without a name.
+- **Enforced in**: `IUserRepository.TryAddAsync` writes the user, its first credential and this budget
+  in one save; `ResolveUserHandler` reads it back through `IBudgetRepository.FindFirstForUserAsync`
+  for an account that already existed. Both return `ProvisionedUser(UserId, BudgetId)`.
+  `Budget.CreateDefault` is the only path that produces a budget without a name.
 - **Example**: A brand-new Google subject's first authenticated request ends with exactly one row in
   `budgets`, owned by the new user, with `name` and `base_currency_code` both null. Three more
   requests add nothing.
@@ -296,16 +296,30 @@ erDiagram
 
 ---
 
-- **Rule**: The find-or-create budget step runs on **every** authenticated request, not only for new
-  users.
-- **Why**: It is the heal path. Provisioning writes the user and the budget in two separate saves, so
-  a state where a user row exists with no budget is reachable; running the step unconditionally means
-  the next sign-in repairs it instead of the user being stuck. The lookup costs one indexed read on
-  the leading column of an index that already exists.
-- **Enforced in**: `EnsureUserHandler.HandleAsync` calls the budget step after both the existing-user
-  and new-user paths converge, not inside either branch.
-- **Example**: A user whose budget row was removed directly in the database signs in again and gets a
-  fresh default budget; no error surfaces.
+- **Rule**: A user and its default budget are created in **one** `SaveChanges`, together with the
+  user's first credential. There is no heal: a request that resolves an account and finds no budget
+  **throws** rather than repairing anything.
+- **Why**: the budget used to go in a second save, which made "a user row with no budget" reachable
+  and bought a find-or-create on every authenticated request to repair it. One save removes the state
+  instead of tolerating it, and the atomicity argument is the one
+  [users-and-ownership.md](users-and-ownership.md) already makes for the credential, applied verbatim.
+  What that buys beyond the round-trip: nothing on an unmarked route writes at all, and there is no
+  unconditional repair a future reader can delete as apparent duplication.
+- **Unreachable from the only path that creates a user — not unreachable outright.** Nothing in the
+  schema forbids the state, so a direct `DELETE FROM budgets` still produces it, and the account is
+  then **dead rather than healed**: every resolve throws and the person cannot even erase. That is a
+  deliberate trade, bounded by production holding no data. The stronger guarantee — a participation
+  constraint, `users.default_budget_id` `NOT NULL DEFERRABLE INITIALLY DEFERRED` — was considered and
+  deferred; see the decision log for what it would buy and what it costs.
+- **Enforced in**: `IUserRepository.TryAddAsync(User, Credential, Budget, …)`, one save, one `catch`;
+  `ResolveUserHandler` reads and throws `InvalidOperationException` — not a 404, because the invariant
+  broke rather than the account being absent.
+  `ResolveUserHandlerTests.ResolveUser_ForAnAccountWhoseBudgetRowIsMissing_FailsLoudlyAndHealsNothing`
+  asserts both the throw and that `budgets` stays empty.
+- **Example**: two concurrent first requests from one person. The loser's insert is refused, and it
+  adopts the winner's budget — which is **guaranteed to exist**, because a reported unique violation
+  means the winner's transaction committed and that transaction contained its budget row. Under the
+  split save it did not.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -406,26 +420,26 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| UserResolved → BudgetLookup | Always, on both the new-user and existing-user paths | — |
-| BudgetLookup → BudgetResolved | The user already owns a budget | First budget by `CreatedAtUtc`, then `Id` |
-| BudgetLookup → BudgetCreating | The user owns no budget (new user, or the heal path) | `Budget.CreateDefault` validates the owner; there is no name to validate |
-| BudgetCreating → BudgetResolved | Insert succeeded | Unique `(user_id, name)` accepted the row — no other unnamed budget for this owner |
-| BudgetCreating → BudgetRaceReread → BudgetResolved | Unique-insert race lost | Re-read by owner; throws if still absent |
+| UserCreating → BudgetResolved | A new account: the budget is written in the same save as the user and its credential | `Budget.CreateDefault` validates the owner; there is no name to validate |
+| UserResolved → BudgetLookup | An account that already existed | — |
+| BudgetLookup → BudgetResolved | The user owns a budget | First budget by `CreatedAtUtc`, then `Id` |
+| BudgetLookup → Broken | The user owns none | `InvalidOperationException`. Unreachable from any path that creates a user; nothing repairs it |
+| UserCreating → CredentialRaceLost → BudgetResolved | The insert lost to a concurrent first request | Publish the winner, **then** read its budget — `budgets` is policed by `user_isolation`, so a read under the loser's phantom id matches nothing |
 
 ## Decision Trees
 
-Resolving the ambient budget (`EnsureUserHandler.EnsureDefaultBudgetIdAsync`), which runs after the
-user has been resolved, on every authenticated request:
+Resolving the ambient budget, after the user has been resolved:
 
 ```
-IF the user already owns a budget
-  THEN use the first one by CreatedAtUtc, then Id        ← the heal path found nothing to repair
-ELSE                                                     ← a new user, or one whose budget insert was lost
-  build Budget.CreateDefault(userId) and try to insert it
-  IF the insert succeeded
-    THEN use the new budget
-  ELSE                                                   ← a concurrent request won the unique (user_id, name) index
-    re-read the user's first budget and adopt it
+IF the account already existed
+  THEN read its first budget by CreatedAtUtc, then Id
+  IF none                                                ← unreachable from any path that creates a user
+    THEN InvalidOperationException                       ← the invariant broke; nothing repairs it
+ELSE                                                     ← a new account
+  the budget was written in the same save as the user    ← no lookup, no insert, no race
+  IF that save lost the credential race
+    publish the winner FIRST                             ← budgets is policed by user_isolation
+    re-read the winner's first budget and adopt it       ← guaranteed present: the winner's commit held it
     IF it is still absent
       THEN InvalidOperationException                     ← a unique violation with nothing behind it
 ```
@@ -468,18 +482,25 @@ The user branch that runs before this is in
   *unnamed* budgets at one and leaves named ones unlimited, which is why it survives multi-budget
   untouched.
 
-- **Provisioning is two `SaveChanges` calls, not one transaction.** Between the user save and the
-  budget save, a concurrent request for the same principal can see a user with no budget and try to
-  create one too. That is safe because the budget provisioning creates has no name, so both racers
-  insert `(user_id, NULL)` and collide on the unique `(user_id, name)` index — which refuses the
-  second row **only because it is declared `NULLS NOT DISTINCT`**; under PostgreSQL's default both
-  NULLs would be distinct and both rows would land. The loser's `TryAddAsync` returns `false`, and
-  the re-read adopts the winner's row
-  (`tests/UnitTests/EnsureUserHandlerTests.EnsureUser_WhenBudgetInsertLosesTheRace_ReturnsTheConcurrentlyCreatedBudget`
-  — a same-named class also exists under `tests/IntegrationTests`).
-  If a budget insert is lost entirely, the unconditional find-or-create heals it on the next sign-in.
-  Do not wrap the two saves in a transaction port added for this one call site, and do not remove the
-  re-read.
+- **Provisioning is one `SaveChanges`, and deliberately not a transaction port.** The user, its first
+  credential and this budget are written together, so a concurrent request can no longer observe a
+  user with no budget and there is no budget-insert race left to lose: each racer's `user_id` is a
+  `Guid.CreateVersion7()` minted in its own call, so `IX_budgets_user_id_name` cannot be contended on
+  this path at all. What races is the **credential**, and the loser adopts the winner's budget.
+  **Do not wrap it in `ITransactionalExecutor`.** Beyond the reasons
+  [users-and-ownership.md](users-and-ownership.md) already gives, there is a correctness one:
+  `BeginTransactionAsync` is what opens the connection, and opening the connection is when
+  `SessionContextInterceptor` writes `app.current_user_id`. Inside a transaction the interceptor runs
+  **once**, at the begin — so a wrap whose delegate contains the identity publication configures the
+  connection while the setting is still empty, and the `users` INSERT meets `''::uuid` in its
+  `WITH CHECK` and fails `22P02`. That is the trap `CLAUDE.md` names for the passkey assertion path,
+  reintroduced here. It is fixable by publishing outside the wrap, but the fix is a new ordering rule
+  someone must not re-break; one save has no such rule.
+- **The `NULLS NOT DISTINCT` declaration on `IX_budgets_user_id_name` is still load-bearing**, even
+  though provisioning no longer contends it. It is what makes "one unnamed budget per owner" true of
+  *any* writer, and `BudgetRepositoryTests.Budgets_WithNoNameForOneUser_AreRejectedAfterTheFirst` holds
+  it through `IBudgetRepository.TryAddAsync` — a seam that now has no production caller and keeps its
+  pins for that reason, exactly as `HasTransactionsAsync` does. Do not delete it as dead code.
 
 - **`FindFirstForUserAsync`'s `CreatedAtUtc`-then-`Id` ordering is a contract, not an implementation
   detail.** Ordering by `Id` alone would make an in-memory implementation and the database-backed one
