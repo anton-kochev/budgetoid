@@ -151,8 +151,13 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 - **A request must resolve to a real internal user and an ambient budget before it can touch data.**
   - **Why**: Handlers stamp and filter by `IBudgetContext.BudgetId`; without a resolved budget there
     is no tenant to scope to, and a default value would silently point at nothing.
-  - **Enforced in**: `BudgetoidApp/Api/Infrastructure/UserProvisioningMiddleware.cs` populates both
-    `CurrentUser.UserId` and `CurrentUser.BudgetId`; `HttpContextBudgetContext` surfaces the second as
+  - **Enforced in**: `BudgetoidApp/Api/Infrastructure/UserProvisioningMiddleware.cs` publishes both,
+    through `IUserContextWriter` and never by assigning `CurrentUser` itself — `ResolveUser` then
+    `ResolveBudget`, in that order, because `ResolveUser` **clears** any budget resolved for a previous
+    identity. `CurrentUserWriter` is the only type that assigns `CurrentUser`, which is what makes
+    that clearing rule impossible to skip; nothing but its XML doc enforces the call order, and
+    `UserProvisioningWriterTests.Provisioning_PublishesTheBudgetThroughTheUserContextWriter` is the
+    only thing that pins it. `HttpContextBudgetContext` surfaces the second as
     `IBudgetContext.ResolvedBudgetId`, and the strict `IBudgetContext.BudgetId` derived from it throws
     `"The ambient budget for the current request has not been resolved."` if the budget id is still
     null. The nullable accessor is for the paths that legitimately have none — provisioning itself,

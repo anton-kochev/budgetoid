@@ -74,10 +74,14 @@ builder.Services.AddInfrastructure();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<IBudgetContext, HttpContextBudgetContext>();
-// Reader and writer are two registrations over the one scoped CurrentUser on purpose: everything
-// that needs to know who is signed in takes IUserContext, and only user provisioning takes
-// IUserContextWriter, so the capability to name the request's identity is visible in one constructor
-// rather than travelling with every read.
+// Readers and writer are three registrations over the one scoped CurrentUser on purpose: everything
+// that needs to know who is signed in takes IUserContext, everything that needs the tenant takes
+// IBudgetContext, and only what may *change* either takes IUserContextWriter. So the capability to
+// name the request's identity and its budget is declared in the constructors that use it rather than
+// travelling with every read. The three adapters registered here are also the only types that take
+// CurrentUser itself, and that is what the claim rests on: injecting the scoped state anywhere else —
+// provisioning middleware included — gives that collaborator both fields with neither interface, and
+// the clearing rule CurrentUserWriter.ResolveUser carries stops applying to whatever it publishes.
 builder.Services.AddScoped<IUserContext, HttpContextUserContext>();
 builder.Services.AddScoped<IUserContextWriter, CurrentUserWriter>();
 // Singleton, unlike the two contexts above: the relying party and the origin allow-list are

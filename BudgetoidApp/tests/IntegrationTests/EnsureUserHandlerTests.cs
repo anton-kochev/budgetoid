@@ -181,6 +181,12 @@ public sealed class EnsureUserHandlerTests
         {
             // Intentionally empty — see the type's remarks.
         }
+
+        public void ResolveBudget(Guid budgetId)
+        {
+            // Intentionally empty, and never reached: no handler publishes a budget, the middleware
+            // does. Here to satisfy the interface — see the type's remarks.
+        }
     }
 
     private static BudgetoidDbContext CreateDb(string connectionString) => new(

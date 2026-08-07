@@ -88,16 +88,23 @@ public sealed class EnsureUserHandler(
             // The id published before the insert is still in request scope, and it names a row that was
             // never written. That is left standing on purpose. Nothing reads it — the request ends in a
             // 409 — and anything that later did would fail closed rather than wrong: under an identity
-            // with no row, every policed statement reachable from here returns zero rows or 42501.
-            // Wrong rows is the only failure mode that would matter, and the ''::uuid policy shape does
-            // not produce it. Clearing the id is what costs something: it means adding ClearUser()
-            // beside ResolveUser on IUserContextWriter, and that interface exists narrowed to a single
-            // identity-mutating capability, visible in exactly one constructor, so that no collaborator
-            // can reassign the request's identity. Widening it to two buys less than the state it
-            // removes. The ruling rests on nothing running after this throw. Add post-provisioning
-            // middleware, an audit logger, anything that reads the ambient identity late in the
-            // request, and it runs as a user that does not exist — reconsider this then rather than
-            // inherit it.
+            // with no row, every policed statement reachable from here returns zero rows or 42501, and
+            // the ambient budget is unresolved besides, because ResolveUser cleared it and nothing on
+            // this path ever called ResolveBudget. So a budget-scoped read added below refuses outright
+            // rather than scoping to a stranger. Wrong rows is the only failure mode that would matter,
+            // and neither the ''::uuid policy shape nor an unresolved budget produces it.
+            //
+            // What clearing the id would cost is no longer "widening a single-capability interface":
+            // IUserContextWriter already carries two members and already mutates two pieces of request
+            // state, so a third would not change its character. It is declined on its own merits — a
+            // ClearUser() with one caller, guarding a state nothing in the request can observe, is a
+            // capability to unname a request bought to fix nothing, and the suite would have no way to
+            // hold it honest.
+            //
+            // The ruling rests on nothing running after this throw. Add post-provisioning middleware, an
+            // audit logger, anything that reads the ambient identity late in the request, and it runs as
+            // a user that does not exist — reconsider this then rather than inherit it, and note the
+            // price has dropped since it was last weighed.
             throw new ConflictException("This email address is already linked to a different Google account.");
         }
 

@@ -76,7 +76,7 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
         HttpContext httpContext,
         EnsureUserHandler ensureUserHandler,
         ResolveUserHandler resolveUserHandler,
-        CurrentUser currentUser)
+        IUserContextWriter userContextWriter)
     {
         ClaimsPrincipal principal = httpContext.User;
         if (principal.Identity?.IsAuthenticated != true)
@@ -132,7 +132,7 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
                 new EnsureUserCommand(googleSubject, email),
                 httpContext.RequestAborted);
 
-            Publish(currentUser, provisioned);
+            Publish(userContextWriter, provisioned);
             await next(httpContext);
             return;
         }
@@ -154,14 +154,26 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
             return;
         }
 
-        Publish(currentUser, resolved);
+        Publish(userContextWriter, resolved);
         await next(httpContext);
     }
 
-    private static void Publish(CurrentUser currentUser, ProvisionedUser provisioned)
+    /// <summary>
+    /// Names the account and its budget through <see cref="IUserContextWriter" /> rather than by
+    /// assigning the request-scoped state directly.
+    /// </summary>
+    /// <remarks>
+    /// Going through the writer is the point, not a detail of style. <c>ResolveUser</c> carries the rule
+    /// that publishing an identity clears the ambient budget, and a middleware that assigned both fields
+    /// itself held that rule only by its own construction — leaving the next edit here free to publish an
+    /// identity with a stranger's budget still standing beside it, with the whole suite green.
+    /// <c>ResolveBudget</c> comes second because the first call clears it; nothing enforces that order,
+    /// so <c>UserProvisioningWriterTests</c> pins it.
+    /// </remarks>
+    private static void Publish(IUserContextWriter userContextWriter, ProvisionedUser provisioned)
     {
-        currentUser.UserId = provisioned.UserId;
-        currentUser.BudgetId = provisioned.BudgetId;
+        userContextWriter.ResolveUser(provisioned.UserId);
+        userContextWriter.ResolveBudget(provisioned.BudgetId);
     }
 
     private static bool TryGetRequiredClaim(ClaimsPrincipal principal, string claimType, out string value)

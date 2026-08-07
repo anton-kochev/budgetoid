@@ -16,9 +16,23 @@ namespace UnitTests.Fakes;
 public sealed class RecordingUserContextWriter : IUserContextWriter
 {
     private readonly List<Guid> _published = [];
+    private readonly List<Guid> _publishedBudgets = [];
 
     /// <summary>Every id published, oldest first. The last entry is what the session ends up with.</summary>
     public IReadOnlyList<Guid> Published => _published;
 
+    /// <summary>
+    /// Every budget published, oldest first.
+    /// </summary>
+    /// <remarks>
+    /// Nothing in this project reads it yet — no handler publishes a budget, the middleware does, and the
+    /// middleware is not unit-testable here. Kept anyway rather than dropping the value on the floor: the
+    /// type's whole claim is that it keeps what it was handed, and a fake that silently discards half of
+    /// it is a fake that reads as green the first time a handler starts publishing budgets.
+    /// </remarks>
+    public IReadOnlyList<Guid> PublishedBudgets => _publishedBudgets;
+
     public void ResolveUser(Guid userId) => _published.Add(userId);
+
+    public void ResolveBudget(Guid budgetId) => _publishedBudgets.Add(budgetId);
 }

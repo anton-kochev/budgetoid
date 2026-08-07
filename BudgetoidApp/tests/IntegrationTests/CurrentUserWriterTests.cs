@@ -2,10 +2,11 @@ using Api.Infrastructure;
 using Application.Abstractions;
 using Application.Users.EnsureUser;
 
-namespace UnitTests;
+namespace IntegrationTests;
 
 /// <summary>
-/// What republishing a request's identity mid-flight does to the ambient budget beside it.
+/// What publishing a request's identity does to the ambient budget beside it, and how the budget gets
+/// there afterwards.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -33,10 +34,21 @@ namespace UnitTests;
 /// rule the next handler to publish an identity has to remember.
 /// </para>
 /// <para>
-/// A unit test over the real <see cref="CurrentUser" /> and the real
+/// Written over the real <see cref="CurrentUser" /> and the real
 /// <see cref="HttpContextBudgetContext" /> rather than a fake of either. Both are the request-scoped
 /// state itself, not a boundary — there is nothing to stub, and a stub would be asserting about the
 /// stub.
+/// </para>
+/// <para>
+/// <b>Why these live in the integration project although they need no container.</b> The subject is
+/// three field assignments, so it would run happily in <c>UnitTests</c> — but only if that project
+/// referenced <c>Api</c>, and referencing <c>Api</c> drags the whole web composition root (JwtBearer,
+/// OpenTelemetry, Npgsql, the Aspire service defaults, CORS) into the one project whose value is being
+/// free of them. Nothing in this repository enforces that boundary: there is no architecture-test
+/// framework here, so a comment in the csproj is a convention with nothing behind it, and the next
+/// person needing "just one Api type" in a unit test finds the reference already paid for. Here the
+/// reference already exists for reasons of its own, and a test that opens no connection costs this
+/// project nothing measurable.
 /// </para>
 /// </remarks>
 public sealed class CurrentUserWriterTests
@@ -115,5 +127,50 @@ public sealed class CurrentUserWriterTests
         // Assert
         await Assert.That(currentUser.UserId).IsEqualTo(bobsUserId);
         await Assert.That(userContext.ResolvedUserId).IsEqualTo(bobsUserId);
+    }
+
+    /// <summary>
+    /// The other half of the pair: naming the budget the request runs against.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The budget has to be publishable through this interface, because <c>ResolveUser</c> above clears
+    /// it — a writer that can only clear the budget leaves no way to set one, so provisioning is forced
+    /// to reach past the writer and assign <see cref="CurrentUser" /> itself. That is what
+    /// <c>UserProvisioningMiddleware</c> does today, and it is why this type's own summary ("only what
+    /// is injected this interface can name the request's identity") is false as written: there are two
+    /// writers, and only one of them is this one.
+    /// </para>
+    /// <para>
+    /// Called <b>after</b> <c>ResolveUser</c> and never before, for the reason stated above: the user
+    /// publication clears whatever budget is standing, so a budget named first is a budget the rest of
+    /// the request does not have. The order is a property of the caller, so it is pinned where the
+    /// caller can be seen — see <c>UserProvisioningWriterTests</c>.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task ResolveBudget_PublishesTheBudgetItWasHanded()
+    {
+        // Arrange — a request whose identity is published and whose budget is not: exactly the state
+        // ResolveUser leaves behind, which is the only state this call is ever made in.
+        Guid userId = Guid.CreateVersion7();
+        Guid budgetId = Guid.CreateVersion7();
+        CurrentUser currentUser = new() { UserId = userId };
+        IBudgetContext budgetContext = new HttpContextBudgetContext(currentUser);
+        IUserContextWriter writer = new CurrentUserWriter(currentUser);
+
+        // Act
+        writer.ResolveBudget(budgetId);
+
+        // Assert — the field and what the query filters read off it, because the field alone would be
+        // satisfied by a budget the rest of the application never sees.
+        await Assert.That(currentUser.BudgetId).IsEqualTo(budgetId);
+        await Assert.That(budgetContext.BudgetId).IsEqualTo(budgetId);
+
+        // And the identity is left exactly as it was found. Without this, a ResolveBudget that
+        // republished or cleared the user would satisfy everything above while making the very pairing
+        // this file exists to prevent — one account's id beside another's tenant — reachable again, this
+        // time from the other side.
+        await Assert.That(currentUser.UserId).IsEqualTo(userId);
     }
 }
