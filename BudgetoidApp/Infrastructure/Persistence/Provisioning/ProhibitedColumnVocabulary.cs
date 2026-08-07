@@ -332,7 +332,7 @@ public static class ProhibitedColumnVocabulary
     /// structure could not answer a contiguous-run question anyway.
     /// </remarks>
     private static readonly (string[] Tokens, ProhibitedColumnCategory Category)[] CompiledRules =
-        Rules.Select(rule => (Tokenize(rule.Pattern), rule.Category)).ToArray();
+        Rules.Select(rule => (IdentifierTokens.Tokenize(rule.Pattern), rule.Category)).ToArray();
 
     /// <summary>
     /// Says which refusal a column or relation name is an instance of, or <see langword="null" />
@@ -361,130 +361,16 @@ public static class ProhibitedColumnVocabulary
             return null;
         }
 
-        string[] tokens = Tokenize(identifier);
+        string[] tokens = IdentifierTokens.Tokenize(identifier);
 
         foreach ((string[] patternTokens, ProhibitedColumnCategory category) in CompiledRules)
         {
-            if (ContainsRun(tokens, patternTokens))
+            if (IdentifierTokens.ContainsRun(tokens, patternTokens))
             {
                 return category;
             }
         }
 
         return null;
-    }
-
-    /// <summary>
-    /// Splits an identifier into lower-cased word tokens, on separators and on case boundaries.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The case boundaries are what let this read a quoted identifier EF may have mapped verbatim —
-    /// <c>userAgent</c> and <c>IPAddress</c> both reach the same tokens their snake-cased spellings
-    /// would. Two boundaries are needed for that: lower-to-upper splits <c>userAgent</c>, and an
-    /// upper run followed by a lower letter splits <c>IPAddress</c> into <c>IP</c> and
-    /// <c>Address</c>. Only the first would leave <c>IPAddress</c> as one token and miss it.
-    /// </para>
-    /// <para>
-    /// Digits stay attached to the token they sit in, so <c>ga4_client_id</c> tokenizes as
-    /// <c>ga4</c> rather than as <c>ga</c> and <c>4</c>. That is a miss for the <c>ga_client_id</c>
-    /// phrase and it is the accepted direction: separating them would make <c>id</c>-adjacent
-    /// patterns start matching numbered columns, which is the false-positive failure this whole
-    /// design is arranged to avoid.
-    /// </para>
-    /// </remarks>
-    private static string[] Tokenize(string identifier)
-    {
-        List<string> tokens = [];
-        int start = -1;
-
-        for (int index = 0; index <= identifier.Length; index++)
-        {
-            bool isWordCharacter = index < identifier.Length
-                && char.IsLetterOrDigit(identifier[index]);
-
-            if (!isWordCharacter)
-            {
-                AddToken(tokens, identifier, start, index);
-                start = -1;
-                continue;
-            }
-
-            if (start >= 0 && IsCaseBoundary(identifier, index))
-            {
-                AddToken(tokens, identifier, start, index);
-                start = index;
-                continue;
-            }
-
-            if (start < 0)
-            {
-                start = index;
-            }
-        }
-
-        return [.. tokens];
-    }
-
-    /// <summary>Appends <c>[start, end)</c> as a lower-cased token when it is a real span.</summary>
-    private static void AddToken(List<string> tokens, string identifier, int start, int end)
-    {
-        if (start >= 0 && end > start)
-        {
-            tokens.Add(identifier[start..end].ToLowerInvariant());
-        }
-    }
-
-    /// <summary>
-    /// Whether a new word starts at <paramref name="index" /> because of a change of case.
-    /// </summary>
-    private static bool IsCaseBoundary(string identifier, int index)
-    {
-        if (!char.IsUpper(identifier[index]))
-        {
-            return false;
-        }
-
-        // userAgent: an upper letter directly after a lower one or a digit starts a word.
-        if (!char.IsUpper(identifier[index - 1]))
-        {
-            return true;
-        }
-
-        // IPAddress: the last upper letter of a run starts a word when a lower one follows it.
-        return index + 1 < identifier.Length && char.IsLower(identifier[index + 1]);
-    }
-
-    /// <summary>
-    /// Whether <paramref name="pattern" /> appears as a contiguous run inside
-    /// <paramref name="tokens" />.
-    /// </summary>
-    /// <remarks>
-    /// Contiguous rather than merely present, because a phrase pattern is a claim about a name and
-    /// not about a bag of words. <c>user_id</c> beside an <c>agent_code</c> column is two ordinary
-    /// names; <c>user_agent</c> is one forbidden one, and only adjacency tells them apart.
-    /// </remarks>
-    private static bool ContainsRun(string[] tokens, string[] pattern)
-    {
-        for (int offset = 0; offset + pattern.Length <= tokens.Length; offset++)
-        {
-            bool matched = true;
-
-            for (int index = 0; index < pattern.Length; index++)
-            {
-                if (!string.Equals(tokens[offset + index], pattern[index], StringComparison.Ordinal))
-                {
-                    matched = false;
-                    break;
-                }
-            }
-
-            if (matched)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

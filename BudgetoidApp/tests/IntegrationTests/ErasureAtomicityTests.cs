@@ -403,7 +403,8 @@ public sealed class ErasureAtomicityTests
     private const string RegistrationPath = "/api/passkeys/registration";
 
     /// <summary>
-    /// Counts every ordinary table in the database, discovered rather than listed.
+    /// Counts every relation in the database that can hold rows of its own, discovered rather than
+    /// listed, minus the two kinds that would only count rows already counted elsewhere.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -413,11 +414,34 @@ public sealed class ErasureAtomicityTests
     /// counted tomorrow, with nothing here to remember to update.
     /// </para>
     /// <para>
-    /// Filtered to <see cref="RelationKind.OrdinaryTable" /> because ordinary tables are the only
-    /// relations whose rows an erasure can move. A <see cref="RelationKind.PartitionedTable" /> parent
-    /// and a <see cref="RelationKind.View" /> would each report rows already counted underneath them,
-    /// and a <see cref="RelationKind.MaterializedView" /> holds a snapshot nothing in a request writes
-    /// to.
+    /// The two exclusions are <b>double-counting</b> and nothing else, which is why they are written as
+    /// a refusal of two kinds rather than as a filter to one. A <see cref="RelationKind.View" /> reports
+    /// rows that live in the tables underneath it, and a <see cref="RelationKind.PartitionedTable" />
+    /// parent reports the rows of its partitions — each of which is a
+    /// <see cref="RelationKind.OrdinaryTable" /> counted in its own right. Counting either would say a
+    /// row moved twice, or that a table nobody wrote to drifted. Written this way round, a relation kind
+    /// added to <see cref="RelationKind" /> later is counted rather than silently skipped.
+    /// </para>
+    /// <para>
+    /// <b>A <see cref="RelationKind.MaterializedView" /> is counted, and "nothing in a request writes to
+    /// it" is not a reason to leave it out — it is the reason to put it in.</b> Its rows are stored, so
+    /// an erasure does not reach them: a reporting matview over <c>transactions</c> keeps an erased
+    /// budget's money movement until somebody refreshes it. Left uncounted it clears every gate at once
+    /// — this file's counts skipped it, <c>ErasureRemnantVocabulary</c> reads only its <i>name</i>, and
+    /// the one red it does raise is <c>RowLevelSecurityCoverage.Classify</c> putting it in
+    /// <see cref="SchemaClassification.Unpoliceable" />, whose exemption conversation is about
+    /// isolation and never about erasure. An exemption written there for the right isolation reason
+    /// would leave the remnant standing.
+    /// </para>
+    /// <para>
+    /// A <see cref="RelationKind.ForeignTable" /> is counted by the same <c>select count(*)</c>, and the
+    /// honest limit is that <b>no test here exercises one</b>: a foreign table needs a foreign-data
+    /// wrapper and a server, and this database has neither. Measured against <c>postgres:17</c> outside
+    /// this suite, the count returns a number over a wrapper with a handler and a reachable source
+    /// (<c>file_fdw</c>), and fails outright with <c>foreign-data wrapper … has no handler</c> over one
+    /// declared without a handler. Both directions are acceptable here and neither is silent: a number
+    /// is compared like any other, and a failure stops the test rather than reporting a relation as
+    /// having moved no rows.
     /// </para>
     /// </remarks>
     private static async Task<IReadOnlyDictionary<string, long>> CountEveryTableAsync(
@@ -430,7 +454,7 @@ public sealed class ErasureAtomicityTests
 
         foreach (DiscoveredTable table in discovered)
         {
-            if (table.Kind is not RelationKind.OrdinaryTable
+            if (table.Kind is RelationKind.View or RelationKind.PartitionedTable
                 || TablesOutsideTheTransactionBoundary.Contains(table.Name, StringComparer.Ordinal))
             {
                 continue;

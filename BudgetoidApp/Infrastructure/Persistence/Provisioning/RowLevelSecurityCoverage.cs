@@ -374,6 +374,38 @@ public static class RowLevelSecurityCoverage
     private const string UsersTableName = "users";
 
     /// <summary>
+    /// The <c>where</c> predicate selecting every relation in <c>public</c> that can hold rows of its
+    /// own, written over the aliases <c>c</c> for <c>pg_class</c> and <c>n</c> for
+    /// <c>pg_namespace</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Public because it had readers outside this type before it had a name. The same two conditions
+    /// were hand-copied into <c>DataMinimizationSchemaTests</c> and twice into
+    /// <c>ErasureRemnantSchemaTests</c> — four spellings of one decision. The relation-kind half has
+    /// already been widened once, from <c>'r'</c> alone to the five kinds named below, and the copies
+    /// had to be found by hand. A copy that misses the next widening reports green over exactly the
+    /// relation kinds the widening was for.
+    /// </para>
+    /// <para>
+    /// The schema confinement travels with the relation kinds rather than being left at each call
+    /// site because both halves were copied and either can drift. What keeps the confinement itself
+    /// from being the blind spot is not this constant but a separate assertion in
+    /// <c>ErasureRemnantSchemaTests</c>, which demands that <c>public</c> is the only non-system
+    /// schema in the database — one refusal covering every scan at once, instead of every scan
+    /// widening to look outside it.
+    /// </para>
+    /// <para>
+    /// The cost is a contract on those two alias names, which every call site already satisfies.
+    /// Breaking it fails loudly rather than silently: a query binding neither alias cannot run at all
+    /// (<c>42P01</c>, no <c>FROM</c>-clause entry for the name), and one binding <c>c</c> to a
+    /// relation without a <c>relkind</c> column is <c>42703</c>.
+    /// </para>
+    /// </remarks>
+    public const string RowBearingRelationInPublicPredicate =
+        "n.nspname = 'public' and c.relkind = any (array['r', 'p', 'v', 'm', 'f'])";
+
+    /// <summary>
     /// Every relation in <c>public</c> that can hold rows of its own, with its kind,
     /// <c>relrowsecurity</c>, both ownership facts, which ownership columns are nullable, and every
     /// policy attached to it in full.
@@ -412,8 +444,11 @@ public static class RowLevelSecurityCoverage
     /// on the text a claim about the rule rather than about spelling.
     /// </para>
     /// </remarks>
+    // $$""" and not $""": the polroles arm below contains the literal '{0}'::oid[], which a
+    // single-dollar raw string would read as an interpolation hole and render as '0'::oid[] — valid
+    // C#, silently the wrong SQL. Two dollars means only {{ }} interpolates and a lone { is text.
     private const string SchemaCoverageSql =
-        """
+        $$"""
         select c.relname,
                c.relkind::text,
                c.relrowsecurity,
@@ -456,8 +491,7 @@ public static class RowLevelSecurityCoverage
         from pg_class c
         join pg_namespace n on n.oid = c.relnamespace
         left join pg_policy p on p.polrelid = c.oid
-        where n.nspname = 'public'
-          and c.relkind = any (array['r', 'p', 'v', 'm', 'f'])
+        where {{RowBearingRelationInPublicPredicate}}
         order by c.relname, p.polname
         """;
 

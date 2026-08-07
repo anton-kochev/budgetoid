@@ -85,6 +85,16 @@ Load-bearing rules, each explained there or in the linked decision:
   `budget_id`, `user_isolation` if it carries `user_id`. Grants fail closed (`42501`),
   RLS fails open. `RlsCoverageTests` and the deploy-time verifier read one shared classifier
   (`RowLevelSecurityCoverage`); a table carrying neither column fails both.
+- **The schema carries no remnant of an erasure and the route table offers no way back** — no
+  soft-delete flag, tombstone, deletion record, anonymized remnant or archived copy, and no route
+  that restores, undeletes or reactivates an account. Three gates, and each holds a different half:
+  `ErasureRemnantVocabulary` refuses the column and relation *names it recognises*,
+  `ErasureAtomicityTests` counts the rows of every relation that stores any, and
+  `ErasureIrreversibilityTests` pins the `/api/me/erasure` resource to the one destructive route.
+  A remnant with no name — an overwritten column, a message payload, a materialized view — is caught
+  by the row count alone; a log line is caught by nothing but `ErasureLoggingTests`. All of them
+  carry arguments for their deliberate omissions — read
+  [erasure.md](docs/business-logic/erasure.md) before widening any.
 - `SessionContextInterceptor` must stay a **connection-opened** interceptor, and
   `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string —
   now for two settings, `app.current_user_id` and `app.current_budget_id`, which raises the

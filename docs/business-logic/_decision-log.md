@@ -8,6 +8,84 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-08 — The refusal to leave a remnant is its own vocabulary, and irreversibility is pinned on the route table
+
+**Context:** "erasure leaves no remnant and offers no way back" was, until now, a rule the docs cited
+as settled without ever stating it — two separate files referred to "the rule against tombstones" as
+though it were written down somewhere, and it was not. Nothing stopped a `deleted_at` column or a
+`POST /api/me/erasure/restore` route from being added, and both would have been read as ordinary
+engineering by anyone who had not been in the room. There was already a schema-wide classifier
+refusing column names — the one that keeps analytics and device identifiers out — and the obvious
+move was to add a fifth category to it.
+
+**Decision:** a **separate** vocabulary, sharing only the matcher, plus two route pins of different
+shapes. The existing classifier's categories are documented as naming *what the schema is keeping
+about a person*, and a `deleted_at` says nothing about a person — it says the row is still there. The
+remedy differs too, and so does the file that owns the rule. What the two genuinely share is the
+matching mechanism, which is now written once: two lists are two rules, but two tokenizers would be
+one rule spelled twice, and the copy that quietly missed a fix would start disagreeing with the
+original about names nobody was watching.
+
+**The route pins are a corollary, not a second promise.** A restore path needs something to restore
+from, so the schema rule is what makes irreversibility true; the pins only stop somebody building the
+front half of a path whose back half cannot exist.
+
+**Alternatives considered:**
+
+- *A fifth category on the existing classifier* — fewer files, and it makes that classifier's own
+  summary false. A tombstone red would also be reported under a heading named for data minimization,
+  which tells the reader the wrong thing at the moment they most need the right one.
+- *Copying the tokenizer into the new vocabulary* — rejected for the reason above: the drift is
+  silent and shows up as one scanner catching a name the other misses.
+- *Refusing the word `cancel` on the route table* — rejected. Cancelling something before it takes
+  effect brings nothing back, so a pin refusing the word claims more than the rule does; and a pin
+  that has to be fought in order to build a capability the requirements describe is a pin that gets
+  deleted instead of extended.
+- *Refusing `archived` alongside `archive`* — rejected. Hiding a closed account is a plausible
+  live-row product state, and a rule that cannot tell it from a copy-aside would refuse the feature.
+  What that costs is accepted rather than waved away: the pinned column sets reach three of the
+  thirteen mapped tables, so a `transactions.is_archived` is refused by neither the pins nor the
+  vocabulary. The account row is closed; the other ten are open on this axis by choice.
+- *Documentation alone, with no test* — the requirement's own stated verification method is
+  inspection, and inspection is a person remembering. Prose describing an absence rots quietly,
+  because nothing goes red when it stops being true.
+- *A second behavioural test proving no remnant row is written during an erasure* — already covered:
+  the atomicity suite enumerates every relation that stores rows and asserts each is empty
+  afterwards. A list-based duplicate would be strictly weaker than the discovery-based one that
+  exists.
+- *Leaving the vocabulary in the production assembly* — rejected. It is a test-only deny-list with
+  two readers, both of them test projects, and `TestSupport` is where shared test-only code with more
+  than one reader already lives. On the production side it was public API on the assembly the API
+  container ships, sitting beside four files that genuinely run at deploy time. The token matcher
+  stays behind because its own reader is production-side.
+- *Refusing `discarded` was itself rejected at first, and that was wrong.* The argument was that
+  *discard* is this product's word for an intentional hard delete, so a rule on it would red the
+  correct behaviour and the wrong one alike. It does not hold: the classifier reads catalog and model
+  *names*, and a hard delete leaves no column behind, so the behaviour the word describes correctly
+  can never reach the classifier at all. Every `discarded_at` that does reach it is a soft delete
+  wearing the product's own hard-delete word — the spelling a reviewer waves through.
+- *Hand-written plural twins for each pattern* — rejected in favour of expanding the plural when the
+  rules are compiled. Fourteen patterns become twenty-eight by hand and the fifteenth gets forgotten,
+  which is exactly how `tombstones`, `archives` and `users_archives` passed a list that refused their
+  singulars.
+- *Refusing `recover` on the route table* — rejected on the same ground as `cancel`, from the
+  opposite direction. In a passkey product *account recovery* means regaining access to a live
+  account; a pin that cannot separate that from resurrecting an erased one reds a path this product
+  needs, on every pass, and teaches the reader to ignore it.
+- *Freezing the whole `/api/me` surface* — rejected once it was clear `/api/me` is the
+  current-principal namespace rather than erasure's. The pin is scoped to the `/api/me/erasure`
+  resource instead: a rule that argues with `GET /api/me` or an export route is a rule that gets
+  widened by whoever meets it next, and a widened pin catches nothing.
+- *Promising "no trace that it happened"* — withdrawn as written. What is held is a name scan and a
+  row count, which between them reach the database and nothing else. Logs, traces and metrics are
+  named as their own rule with their own narrow test, and the two nouns no name can catch — an
+  anonymized remnant and a message payload — are credited to the row count rather than to the
+  vocabulary. A promise wider than its gates is the failure mode this whole entry exists to avoid.
+
+**Affected areas:** `erasure.md`.
+
+---
+
 ## 2026-08-07 — "Every row unchanged" means the erasure's rows, not the request's
 
 **Context:** a failed erasure must leave every row unchanged. Read as covering the whole request that

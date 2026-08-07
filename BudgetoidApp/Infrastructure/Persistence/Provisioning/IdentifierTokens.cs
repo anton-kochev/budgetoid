@@ -1,0 +1,154 @@
+namespace Infrastructure.Persistence.Provisioning;
+
+/// <summary>
+/// The one way this codebase splits a database identifier into words, and the one way it asks
+/// whether a pattern's words appear inside it.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Three readers ask it: <see cref="ProhibitedColumnVocabulary" />, which says what a name tells us
+/// the schema is keeping <i>about a person</i>; <c>ErasureRemnantVocabulary</c>, which says what a
+/// name tells us survived an erasure; and <c>ErasureIrreversibilityTests</c>, which asks the same
+/// of route patterns rather than of column names. <b>Their lists stay apart and only the matching is
+/// shared</b>, because the lists are different rules — different categories, different remedies,
+/// different owning documents — while "what are this name's words, and does this phrase appear among
+/// them" is one question with one right answer.
+/// </para>
+/// <para>
+/// One spelling rather than a copy each, because the readers run over the same identifiers in
+/// neighbouring checks. Two copies drift silently in exactly the way that matters here: a case
+/// boundary fixed in one of them makes <c>isDeleted</c> start matching in one scanner and not in the
+/// other, and the pair of verdicts a reviewer is handed then has no explanation. Two written-down
+/// copies of one rule have no adjudicator when they disagree.
+/// </para>
+/// <para>
+/// It sits here because its production-side reader does. It could not follow the erasure-remnant
+/// vocabulary into <c>TestSupport</c>: that project references Infrastructure, so a reference back
+/// would be a cycle.
+/// </para>
+/// </remarks>
+public static class IdentifierTokens
+{
+    /// <summary>
+    /// Splits an identifier into lower-cased word tokens, on separators and on case boundaries.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The case boundaries are what let this read a quoted identifier EF may have mapped verbatim —
+    /// <c>userAgent</c> and <c>IPAddress</c> both reach the same tokens their snake-cased spellings
+    /// would, as does <c>isDeleted</c>. Two boundaries are needed for that: lower-to-upper splits
+    /// <c>userAgent</c>, and an upper run followed by a lower letter splits <c>IPAddress</c> into
+    /// <c>IP</c> and <c>Address</c>. Only the first would leave <c>IPAddress</c> as one token and
+    /// miss it.
+    /// </para>
+    /// <para>
+    /// Digits stay attached to the token they sit in, so <c>ga4_client_id</c> tokenizes as
+    /// <c>ga4</c> rather than as <c>ga</c> and <c>4</c>. That is a miss for the <c>ga_client_id</c>
+    /// phrase and it is the accepted direction: separating them would make <c>id</c>-adjacent
+    /// patterns start matching numbered columns, which is the false-positive failure this whole
+    /// design is arranged to avoid.
+    /// </para>
+    /// </remarks>
+    /// <param name="identifier">A column or relation name, in any casing and from any source.</param>
+    /// <returns>The identifier's words, lower-cased, in the order they appear.</returns>
+    public static string[] Tokenize(string identifier)
+    {
+        List<string> tokens = [];
+        int start = -1;
+
+        for (int index = 0; index <= identifier.Length; index++)
+        {
+            bool isWordCharacter = index < identifier.Length
+                && char.IsLetterOrDigit(identifier[index]);
+
+            if (!isWordCharacter)
+            {
+                AddToken(tokens, identifier, start, index);
+                start = -1;
+                continue;
+            }
+
+            if (start >= 0 && IsCaseBoundary(identifier, index))
+            {
+                AddToken(tokens, identifier, start, index);
+                start = index;
+                continue;
+            }
+
+            if (start < 0)
+            {
+                start = index;
+            }
+        }
+
+        return [.. tokens];
+    }
+
+    /// <summary>
+    /// Whether <paramref name="pattern" /> appears as a contiguous run inside
+    /// <paramref name="tokens" />.
+    /// </summary>
+    /// <remarks>
+    /// Contiguous rather than merely present, because a phrase pattern is a claim about a name and
+    /// not about a bag of words. <c>user_id</c> beside an <c>agent_code</c> column is two ordinary
+    /// names; <c>user_agent</c> is one forbidden one. A <c>soft</c> currency rounding column beside a
+    /// <c>delete_reason</c> is two ordinary names; <c>soft_delete</c> is one refused name. In both
+    /// cases only adjacency tells them apart, which is why both vocabularies ask the question this
+    /// way.
+    /// </remarks>
+    /// <param name="tokens">An identifier's tokens, as returned by <see cref="Tokenize" />.</param>
+    /// <param name="pattern">A pattern's tokens, tokenized the same way.</param>
+    /// <returns>Whether the pattern's tokens appear consecutively and in order.</returns>
+    public static bool ContainsRun(string[] tokens, string[] pattern)
+    {
+        for (int offset = 0; offset + pattern.Length <= tokens.Length; offset++)
+        {
+            bool matched = true;
+
+            for (int index = 0; index < pattern.Length; index++)
+            {
+                if (!string.Equals(tokens[offset + index], pattern[index], StringComparison.Ordinal))
+                {
+                    matched = false;
+                    break;
+                }
+            }
+
+            if (matched)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Appends <c>[start, end)</c> as a lower-cased token when it is a real span.</summary>
+    private static void AddToken(List<string> tokens, string identifier, int start, int end)
+    {
+        if (start >= 0 && end > start)
+        {
+            tokens.Add(identifier[start..end].ToLowerInvariant());
+        }
+    }
+
+    /// <summary>
+    /// Whether a new word starts at <paramref name="index" /> because of a change of case.
+    /// </summary>
+    private static bool IsCaseBoundary(string identifier, int index)
+    {
+        if (!char.IsUpper(identifier[index]))
+        {
+            return false;
+        }
+
+        // userAgent: an upper letter directly after a lower one or a digit starts a word.
+        if (!char.IsUpper(identifier[index - 1]))
+        {
+            return true;
+        }
+
+        // IPAddress: the last upper letter of a run starts a word when a lower one follows it.
+        return index + 1 < identifier.Length && char.IsLower(identifier[index + 1]);
+    }
+}

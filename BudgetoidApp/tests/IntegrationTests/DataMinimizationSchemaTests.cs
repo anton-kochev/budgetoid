@@ -207,12 +207,13 @@ public sealed class DataMinimizationSchemaTests
     /// query would prove that query can fail and say nothing about the one that ships.
     /// </para>
     /// <para>
-    /// The relation kinds are the widened set <c>RowLevelSecurityCoverage</c> discovers over —
-    /// ordinary table, partitioned parent, view, materialized view, foreign table — and for the same
-    /// reason: each one of them is a place a column can hide. Narrowing to <c>'r'</c> would leave a
-    /// view exposing a tracking column entirely unexamined. The scan is confined to the <c>public</c>
-    /// schema, mirroring <c>RowLevelSecurityCoverage</c>'s own discovery, so a relation created in
-    /// another schema is outside both.
+    /// The schema and the relation kinds are not spelled out here: both come from
+    /// <see cref="RowLevelSecurityCoverage.RowBearingRelationInPublicPredicate" />, so this scan
+    /// discovers over exactly what the coverage verifier discovers over. Sharing rather than copying
+    /// is the whole point of that constant — the relation-kind half has already been widened once,
+    /// from <c>'r'</c> alone, and the copies had to be found by hand. A copy that misses a widening
+    /// reports green over exactly the relation kinds the widening was for: here, the view exposing a
+    /// tracking column that <c>'r'</c> alone would leave entirely unexamined.
     /// </para>
     /// <para>
     /// A relation name is classified by the same call as a column name, because it is the same
@@ -231,13 +232,12 @@ public sealed class DataMinimizationSchemaTests
         NpgsqlConnection connection)
     {
         const string sql =
-            """
+            $"""
             select c.relname::text, a.attname::text
             from pg_attribute a
             join pg_class c on c.oid = a.attrelid
             join pg_namespace n on n.oid = c.relnamespace
-            where n.nspname = 'public'
-              and c.relkind = any (array['r', 'p', 'v', 'm', 'f'])
+            where {RowLevelSecurityCoverage.RowBearingRelationInPublicPredicate}
               and a.attnum > 0
               and not a.attisdropped
             order by c.relname, a.attname

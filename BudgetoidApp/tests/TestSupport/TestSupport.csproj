@@ -15,9 +15,18 @@
         <!-- Same CBOR reader/writer the Application layer parses with, so a key this project encodes
              and the verifier decodes are held to one library's idea of the encoding. -->
         <PackageReference Include="System.Formats.Cbor" Version="10.0.9"/>
+        <!-- Pinned to the version Infrastructure builds against, for the reason UnitTests.csproj
+             states it: referencing Infrastructure brings EF Core in transitively, and the PostgreSQL
+             provider's floor (10.0.4) otherwise wins here over Microsoft.EntityFrameworkCore 10.0.9.
+             That is a load-time version mismatch rather than a tidiness warning. -->
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.9"/>
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="..\..\Application\Application.csproj"/>
         <ProjectReference Include="..\..\Domain\Domain.csproj"/>
+        <!-- For the identifier matcher the erasure-remnant vocabulary is spelled against. The
+             matcher stays in Infrastructure because its other reader, the prohibited-column
+             vocabulary, is production-side; this reference is what lets one spelling serve both. -->
+        <ProjectReference Include="..\..\Infrastructure\Infrastructure.csproj"/>
     </ItemGroup>
 </Project>
