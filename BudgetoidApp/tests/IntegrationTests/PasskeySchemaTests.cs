@@ -269,7 +269,8 @@ public sealed class PasskeySchemaTests
         // Assert — ceremony is a varchar rather than a native enum, which makes this CHECK the only
         // thing standing between the vocabulary and any string a writer felt like storing. The column
         // is what binds a nonce to the ceremony that issued it, so a value outside the vocabulary is
-        // a challenge that matches neither leg and can therefore be spent by whichever one asks.
+        // a challenge that matches none of the three ceremonies — registration, authentication and
+        // re-authentication — and can therefore be spent by whichever one asks.
         await Assert.That(refusal.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
         await Assert.That(refusal.ConstraintName).IsEqualTo(ChallengeCeremonyCheckName);
     }

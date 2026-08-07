@@ -50,11 +50,20 @@ public static class AccountErasureEndpoints
     /// already uses.
     /// </summary>
     /// <remarks>
-    /// The members are not <c>required</c>, deliberately and identically to that leg: a body of
-    /// <c>{}</c> binds them all to <see langword="null" /> and reaches the gate's own decode, which
-    /// answers the same 401 every other refusal on this endpoint answers. Marking them required would
-    /// buy a framework 400 that tells a caller holding a stolen bearer token that its proof was the
-    /// thing found wanting.
+    /// <para>
+    /// The members are not <c>required</c>, deliberately and identically to that leg: every member
+    /// bound to <see langword="null" /> — a body of <c>{}</c>, or one naming only some of them —
+    /// reaches the gate's own decode, which answers the same 401 every other refusal on this endpoint
+    /// answers. Marking them required would buy a framework 400 that tells a caller holding a stolen
+    /// bearer token that its proof was the thing found wanting.
+    /// </para>
+    /// <para>
+    /// That envelope covers what binds, not what fails to. No body at all, a literal <c>null</c>, or a
+    /// member of the wrong JSON type is a framework 400 raised before this handler is entered, and the
+    /// gap is accepted: a deserialization failure is a fact about the caller's own request and says
+    /// nothing about what credentials exist. Closing it would mean a custom model binder on the one
+    /// endpoint that must never grow one.
+    /// </para>
     /// </remarks>
     private sealed record ErasureRequest(
         string CredentialId,

@@ -94,9 +94,10 @@ public sealed class CompleteAssertionHandler(
         WebAuthnCeremony? ceremony = await challengeStore.ConsumeAsync(clientData.Challenge, cancellationToken);
         if (ceremony is not WebAuthnCeremony.Authentication)
         {
-            // Required to be Authentication, not merely live: a registration nonce is issued to a
-            // signed-in person, and one spendable here would let a caller who obtained one assert an
-            // existing credential with it.
+            // Required to be Authentication, not merely live. The other two pools are minted for a
+            // signed-in person — a registration nonce to add a passkey, a re-authentication one to
+            // authorize destroying the account — and either spendable here would let a caller who
+            // obtained one assert an existing credential with it.
             throw new PasskeyVerificationException("The challenge is not a live authentication challenge.");
         }
 

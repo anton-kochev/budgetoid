@@ -50,14 +50,28 @@ public sealed class PasskeyReauthentication(
 {
     /// <summary>
     /// Runs the ceremony and returns only if it was proved. Every refusal is a
-    /// <see cref="PasskeyVerificationException"/>, and they are deliberately indistinguishable to a
-    /// caller: one able to tell "that passkey is not yours" from "that nonce was for another ceremony"
-    /// is one mapping which handles exist while holding a stolen bearer token.
+    /// <see cref="PasskeyVerificationException"/>, and they are deliberately indistinguishable in
+    /// <em>content</em>: a caller able to tell "that passkey is not yours" from "that nonce was for
+    /// another ceremony" is one mapping which handles exist while holding a stolen bearer token. The
+    /// response bodies are byte-identical, and <c>EveryReachableErasureRefusal_ProducesTheIdenticalResponse</c>
+    /// pins them that way.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// <b>Content, not time.</b> A credential id that resolves at step 4 is refused only after a full
+    /// signature verification and a counter read; one that resolves nothing is refused at step 4. The
+    /// difference is measurable and nothing here measures or masks it. It is an accepted residual
+    /// channel rather than an oversight: a WebAuthn credential id is 32 random bytes, so a timing
+    /// answer cannot be walked towards a real handle, and every probe costs an options call and burns
+    /// the nonce it spends. Do not reorder the ladder to flatten it — the lookup has to precede the
+    /// verification because it supplies the key verified against, and the user handle that might
+    /// otherwise identify the credential earlier is one a conforming authenticator may legally omit.
+    /// </para>
+    /// <para>
     /// Returns nothing, which is the shape difference from the sign-in handler. The account is already
     /// known, so there is no answer to hand back — the whole result is that the caller was not turned
     /// down.
+    /// </para>
     /// </remarks>
     /// <exception cref="PasskeyVerificationException">The assertion was not accepted.</exception>
     public async Task VerifyAsync(

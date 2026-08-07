@@ -17,8 +17,21 @@
         <PackageReference Include="TUnit" Version="1.56.0"/>
     </ItemGroup>
     <ItemGroup>
+        <!-- CurrentUserWriter and the two context readers beside it are request-scoped state with no
+             ASP.NET Core surface of their own, so they are unit-testable — but they live in Api,
+             because IUserContextWriter is deliberately declared next to its single consumer rather
+             than in a layer everything can reach. Referencing Api here is what lets the rule about
+             what publishing an identity does to the ambient budget be pinned as a unit test instead
+             of standing up a container to observe a two-field assignment. -->
+        <ProjectReference Include="..\..\Api\Api.csproj"/>
         <ProjectReference Include="..\..\Application\Application.csproj"/>
         <ProjectReference Include="..\..\Infrastructure\Infrastructure.csproj"/>
         <ProjectReference Include="..\TestSupport\TestSupport.csproj"/>
+    </ItemGroup>
+    <ItemGroup>
+        <!-- Api targets the Web SDK, so its assembly resolves against the ASP.NET Core shared
+             framework at run time. Nothing under test here touches it, but loading the assembly at
+             all needs it present, and this project is a plain console app. -->
+        <FrameworkReference Include="Microsoft.AspNetCore.App"/>
     </ItemGroup>
 </Project>

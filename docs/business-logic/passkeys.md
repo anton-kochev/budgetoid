@@ -146,6 +146,16 @@ erDiagram
 - **MUST NOT send `allowCredentials`.** It requires the client to name an account before
   authenticating, which turns the sign-in endpoint into an account-enumeration oracle. This is also
   why only discoverable credentials are accepted, and why `transports` is not stored.
+  - **The enumeration argument is about content, and there is a residual timing channel it does not
+    cover.** On every ceremony a credential id that resolves goes on to a full ECDSA or RSA
+    verification and a counter read; one that resolves to nothing returns as soon as the lookup
+    misses. The responses are byte-identical — that is what the two "every reachable refusal" tests
+    pin — but they do not take the same time. The gap is accepted rather than closed: a credential id
+    is 32 random bytes, so it cannot be walked towards a real one, and every probe costs an options
+    call and burns a nonce. Closing it would mean verifying against a decoy key, which spends real
+    cryptography on every miss and gives an attacker a way to make the server do it. **Do not reorder
+    a ceremony's ladder to flatten this** — the owner-scoped lookup has to precede the user-handle
+    check, or the legal absent-handle case loses its account binding entirely.
 
 - **MUST NOT accept an attestation format other than `none`.** Verifying `packed` or `tpm` means
   X.509 chain building against a metadata service and a trust policy — and attestation answers *which
@@ -404,6 +414,11 @@ environment, and a session lifetime that varies per environment is a difference 
   make the role insert a challenge row. Growth is bounded by a five-minute lifetime and an
   opportunistic capped sweep on each options call, **not** by rate limiting, which does not exist
   here. That is an accepted gap rather than a solved problem.
+- **`ConsumeAsync` deletes a matching row before its pool is checked, so every finish leg burns a
+  nonce from any of the three.** A `reauthentication` nonce presented to the sign-in leg is spent and
+  then refused. This is not reachable without already holding the 32 bytes, and the alternative is
+  worse: checking the pool first would turn a wrong-pool attempt into a *free retry* on a nonce that
+  survived, which is the grinding target consuming-before-verifying exists to remove.
 - **What an anonymous caller can make the server *spend* is bounded, and deliberately so.** Every
   caller-supplied member of a ceremony request carries a length ceiling checked **before** it is
   base64url-validated or decoded, so a request cannot make the server allocate megabytes ahead of the

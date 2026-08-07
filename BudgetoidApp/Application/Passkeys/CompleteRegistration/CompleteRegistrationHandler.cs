@@ -95,9 +95,11 @@ public sealed class CompleteRegistrationHandler(
         WebAuthnCeremony? ceremony = await challengeStore.ConsumeAsync(clientData.Challenge, cancellationToken);
         if (ceremony is not WebAuthnCeremony.Registration)
         {
-            // Covers three cases on purpose and does not separate them: never issued, already spent,
-            // and issued for the other ceremony. A registration challenge and an authentication one
-            // are not interchangeable, and the ceremony a nonce was issued for is what says so.
+            // Covers four cases on purpose and does not separate them: never issued, already spent,
+            // and issued for either of the other two ceremonies. No pool is interchangeable with
+            // another — an authentication nonce is minted anonymously, a re-authentication one
+            // authorizes destroying an account — and the ceremony a nonce was issued for is what
+            // says so.
             throw Refused("The challenge is not a live registration challenge.");
         }
 

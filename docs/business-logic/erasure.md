@@ -158,9 +158,9 @@ that is the one table erasure empties itself.
   schemas built with the two constraints created in either order, so that their OIDs — and with them
   the RI trigger names that decide firing order — were reversed: both leave the tables empty.
 - **Enforced in**: `EraseAccountHandler`, whose two saves are ordered by the method rather than by
-  EF. `AccountErasureEndpointTests.Delete_ForAFullyFurnishedAccount_ReturnsNoContent` seeds a
+  EF. `AccountErasureEndpointTests.Erase_ForAFullyFurnishedAccount_ReturnsNoContent` seeds a
   categorized transaction, which puts four of the five edges in the path;
-  `…Delete_ForAnAccountWithCategoriesAndNoTransaction_LeavesNoneOfEither` is the one that covers the
+  `…Erase_ForAnAccountWithCategoriesAndNoTransaction_LeavesNoneOfEither` is the one that covers the
   fifth in isolation, and is what goes red if the FIFO behaviour above ever stops holding.
   `EraseAccountHandlerTests.HandleAsync_DeletesTheTransactionsBeforeTheUser` pins the order itself,
   against a fake that models the real edge. `SchemaConstraintSnapshotTests.Schema_PinsEveryForeignKeyAndItsDeleteRule`
@@ -216,13 +216,13 @@ that is the one table erasure empties itself.
   and reports success**. There is no error to catch and no refusal to log; a handler that took an id
   from the request and got it wrong would answer `204` having erased nothing. Keeping the id out of
   the command makes that state unreachable by the type system rather than by a check.
-- **Enforced in**: `EraseAccountCommand` (no members), `EraseAccountHandler` (reads
+- **Enforced in**: `EraseAccountCommand` (no account-naming member), `EraseAccountHandler` (reads
   `IUserContext.UserId`), and the route, which carries no id segment.
-  `AccountErasureEndpointTests.Delete_LeavesAnotherAccountUntouched` is the counterweight: without
+  `AccountErasureEndpointTests.Erase_LeavesAnotherAccountUntouched` is the counterweight: without
   it, a handler that emptied every table in the database would satisfy every other assertion.
-- **Counterexample**: `DELETE /api/me/{userId}`. Even with an ownership check it would be a second
-  place the identity could come from, and the check would be the only thing between a typo and a
-  silent no-op.
+- **Counterexample**: `POST /api/me/{userId}/erasure`. Even with an ownership check it would be a
+  second place the identity could come from, and the check would be the only thing between a typo and
+  a silent no-op.
 - **Source**: `[SOURCE: user-story]`
 
 ---

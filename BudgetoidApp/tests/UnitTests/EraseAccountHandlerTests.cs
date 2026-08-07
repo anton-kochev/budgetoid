@@ -347,8 +347,13 @@ public sealed class EraseAccountHandlerTests
                 : RandomNumberGenerator.GetBytes(ChallengeBytes);
             StubWebAuthnChallengeStore challenges = new(storedChallenge, ceremony);
 
-            // No user handle. The handle check would refuse a stranger's passkey before the lookup
-            // was reached, and it is the lookup that carries the account binding.
+            // No user handle, and the reason is not that the handle check would get there first — it
+            // would not. PasskeyReauthentication runs the owner-scoped lookup at step 4 and the
+            // handle check at step 5, so a stranger's credential is already refused by the lookup
+            // whatever the handle says; a handle is tolerated when absent and only ever narrows.
+            // Omitting it is what keeps this refusal attributable to one thing: with the account's
+            // own handle present, a lookup that had lost its owner filter would still be turned down
+            // by the check below it, and this test would stay green over a gate with no binding left.
             AssertionResult assertion = device.Authenticate(signedChallenge, Origin, userHandle: null);
 
             StubUserContext userContext = new(user.Id);

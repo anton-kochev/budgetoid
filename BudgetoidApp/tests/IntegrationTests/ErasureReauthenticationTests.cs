@@ -6,6 +6,7 @@ using System.Text.Json.Nodes;
 using Api.Infrastructure;
 using Application.Passkeys;
 using Application.Passkeys.Reauthentication;
+using Application.Passkeys.Verification;
 using Npgsql;
 using TestSupport;
 
@@ -53,7 +54,22 @@ public sealed class ErasureReauthenticationTests
     /// drives. Named so that deleting one from the list is a failing test rather than a shorter and
     /// still perfectly green one.
     /// </summary>
-    private const int ReachableErasureRefusals = 8;
+    private const int ReachableErasureRefusals = 11;
+
+    /// <summary>
+    /// The counter a second device reports at <b>registration</b>, chosen higher than the one an
+    /// ordinary assertion reports — <see cref="SyntheticAuthenticator.Authenticate" /> signs at 1
+    /// unless told otherwise, and holds no state between calls.
+    /// </summary>
+    /// <remarks>
+    /// <c>CompleteRegistrationHandler</c> opens the counter at whatever the registration response
+    /// reported, so a device registered here at five and then asserting at one is a regression on its
+    /// very first assertion. That is what lets the counter entry in
+    /// <see cref="EveryReachableErasureRefusal_ProducesTheIdenticalResponse" /> reach step seven of
+    /// the gate without an accepted assertion having to happen first — and an accepted assertion on
+    /// this endpoint destroys the account, which would take every later entry down with it.
+    /// </remarks>
+    private const uint RegisteredCounterAboveAnyAssertion = 5;
 
     /// <summary>
     /// The single most valuable test in this area: an ordinary sign-in nonce, correctly signed by the
@@ -226,9 +242,13 @@ public sealed class ErasureReauthenticationTests
     /// refused, or only that Alice survived, misses half of that.
     /// </para>
     /// <para>
-    /// The response carries <b>no</b> user handle, and that is deliberate: with a handle present the
-    /// handle check could refuse it and the owner-scoped credential lookup would never be reached.
-    /// Absent, the lookup is the only thing left that can turn this request down.
+    /// The response carries <b>no</b> user handle, and the reason is not that the handle check would
+    /// otherwise get there first — it would not. <c>PasskeyReauthentication</c> runs the owner-scoped
+    /// lookup at step 4 and the handle check at step 5, so Bob's credential is already refused by the
+    /// lookup whatever the handle says; an absent handle is tolerated and a present one only ever
+    /// narrows further. Omitting it is what keeps this refusal attributable to a single cause: with
+    /// Alice's own handle present, a lookup that had lost its owner filter would still be turned down
+    /// by the check below it, and this test would stay green over a gate with no binding left.
     /// </para>
     /// </remarks>
     [Test]
@@ -511,7 +531,14 @@ public sealed class ErasureReauthenticationTests
         HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // A second device of this account's own, registered at a counter none of its own assertions
+        // will reach. Kept apart from the device above rather than registering that one high, so the
+        // entries that predate it are still driven by exactly the device they always were.
+        SyntheticAuthenticator regressedDevice =
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
+        await RegisterPasskeyAsync(client, regressedDevice, RegisteredCounterAboveAnyAssertion);
         await RegisterPasskeyAsync(bob, bobsDevice);
         Guid userId = await ResolveUserIdAsync(host, Subject);
         byte[] userHandle = PasskeyEncoding.ToUserHandle(userId);
@@ -559,6 +586,52 @@ public sealed class ErasureReauthenticationTests
         refusals.Add(("consumed challenge", await PostErasureAsync(client, answered)));
 
         refusals.Add(("no assertion members", await client.PostAsJsonAsync(ErasurePath, new { })));
+
+        // This account's own device, its own live nonce, a correct signature — and a handle naming an
+        // account that does not exist. The only entry that reaches step 5: every other one either
+        // omits the handle or is turned away before the lookup that step 5 stands behind.
+        byte[] handleChallenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
+        refusals.Add((
+            "user handle mismatch",
+            await PostErasureAsync(
+                client,
+                device.Authenticate(
+                    handleChallenge,
+                    ApiFactory.PasskeyOrigin,
+                    PasskeyEncoding.ToUserHandle(Guid.CreateVersion7())))));
+
+        // A webauthn.create ceremony type on the endpoint that verifies webauthn.get. The substituted
+        // type is signed for real, so the refusal comes from the type check inside the verifier rather
+        // than from a signature that never covered the value that was swapped.
+        byte[] createTypeChallenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
+        refusals.Add((
+            "webauthn.create client data type",
+            await PostErasureAsync(
+                client,
+                device.Authenticate(
+                    createTypeChallenge,
+                    ApiFactory.PasskeyOrigin,
+                    userHandle,
+                    clientDataTypeOverride: CollectedClientData.RegistrationType))));
+
+        // The counter regression, and the one entry here that is faultless in every respect the gate
+        // checks up to step 7: live re-authentication nonce, this account's own registered device, its
+        // own user handle, the allowed origin, a correct signature. Only the reported counter is wrong,
+        // and it is wrong because the device registered above the value it now reports.
+        //
+        // It is also the only refusal on this endpoint that the gate translates itself — a domain
+        // ValidationException about the counter turned into a PasskeyVerificationException — so
+        // without this entry nothing anywhere proves that a regression answers 401 rather than the 500
+        // an untranslated ValidationException would produce. And it is self-checking in a way the
+        // others are not: were the translation or the counter check to disappear, this erasure would
+        // SUCCEED, and the entries after it would then be refused by provisioning for an account that
+        // no longer exists — a different body, which the comparison below reports rather than misses.
+        byte[] counterChallenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
+        refusals.Add((
+            "counter regression",
+            await PostErasureAsync(
+                client,
+                regressedDevice.Authenticate(counterChallenge, ApiFactory.PasskeyOrigin, userHandle))));
 
         // Last, and the ordering is load-bearing: the store sweeps expired rows on every issue, so an
         // expired challenge inserted before any of the options calls above would be collected by one
@@ -771,12 +844,26 @@ public sealed class ErasureReauthenticationTests
     /// from an account that exists, which is what keeps them all the ceremony's own 401 rather than
     /// provisioning's.
     /// </remarks>
-    private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
+    /// <param name="client">The authenticated caller the passkey is filed under.</param>
+    /// <param name="device">The authenticator that registers.</param>
+    /// <param name="signCount">
+    /// The counter the registration response reports, which is the value the counter row opens at.
+    /// Zero for every ordinary registration; the parameter exists so one test can register a device
+    /// above the counter its own assertions report and reach the clone check on the first try.
+    /// </param>
+    private static async Task RegisterPasskeyAsync(
+        HttpClient client,
+        SyntheticAuthenticator device,
+        uint signCount = 0)
     {
         await ApiFactory.EstablishAccountAsync(client);
 
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
-        AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
+        AttestationResult attestation = device.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            signCount,
+            prfEnabled: true);
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,

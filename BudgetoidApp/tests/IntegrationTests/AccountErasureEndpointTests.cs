@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using Api.Infrastructure;
 using Application.Passkeys;
 using Domain.Sessions;
 using Domain.Users;
@@ -142,9 +143,14 @@ public sealed class AccountErasureEndpointTests
         });
 
         // Assert — the endpoint declares no authorization metadata of its own, so this is the test
-        // that would notice an AllowAnonymous added to it. The title separates this 401 from the one
-        // the re-authentication gate answers with: refused before the ceremony, not by it.
+        // that would notice an AllowAnonymous added to it. The title is what separates this 401 from
+        // the others: three distinct ones are reachable on this route — nothing authenticated, an
+        // authenticated token naming an account that no longer exists, and the gate's own refusal —
+        // and only the last carries PasskeyVerificationExceptionHandler.Title. Without the title
+        // asserted, a route that had lost its authorization entirely would still pass here on the 401
+        // the gate answers a well-formed body with, which is exactly the body this test sends.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(response)).IsNotEqualTo(PasskeyVerificationExceptionHandler.Title);
     }
 
     [Test]
@@ -481,6 +487,13 @@ public sealed class AccountErasureEndpointTests
 
         return Base64UrlText.Decode(options["challenge"]!.GetValue<string>());
     }
+
+    /// <summary>
+    /// The <c>title</c> of a problem-details body, which is the only member that says which of this
+    /// route's three 401s answered.
+    /// </summary>
+    private static async Task<string> ReadTitleAsync(HttpResponseMessage response) =>
+        (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!["title"]!.GetValue<string>();
 
     /// <summary>
     /// Writes one row into every table an account can own and returns the ids the assertions key on.

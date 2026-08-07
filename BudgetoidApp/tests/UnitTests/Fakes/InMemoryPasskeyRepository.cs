@@ -59,6 +59,13 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
     /// <see cref="FindByWebAuthnCredentialIdAsync"/> and ignored <paramref name="userId"/> would hand
     /// back another account's key and let every unit test of the account binding pass against a gate
     /// that had no binding at all — the exact defect the scoped finder exists to make unreachable.
+    /// <para>
+    /// Filtered on the <b>public key's</b> own owner, which is the column the real
+    /// <c>PasskeyRepository</c> names. The credential beside it carries the same id today, so the two
+    /// are interchangeable right up until they are not — and on that day a fake reading the credential
+    /// would keep answering as though nothing had changed, which is the one thing a fake standing in
+    /// for a policed table must never do.
+    /// </para>
     /// </remarks>
     public Task<PasskeyPublicKey?> FindByWebAuthnCredentialIdForUserAsync(
         Guid userId,
@@ -66,17 +73,23 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
         CancellationToken cancellationToken = default) =>
         Task.FromResult(_entries
             .FirstOrDefault(entry =>
-                entry.Credential.UserId == userId
+                entry.PublicKey.UserId == userId
                 && entry.PublicKey.WebAuthnCredentialId.Span.SequenceEqual(webAuthnCredentialId.Span))
             ?.PublicKey);
 
+    /// <summary>
+    /// The owner-scoped enumeration, filtered on the public key's own owner for the reason
+    /// <see cref="FindByWebAuthnCredentialIdForUserAsync" /> gives: that is the column the real
+    /// <c>PasskeyRepository</c> names, and the credential's copy of it is only identical until it
+    /// is not.
+    /// </summary>
     public Task<IReadOnlyList<ReadOnlyMemory<byte>>> ListWebAuthnCredentialIdsForUserAsync(
         Guid userId,
         CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<ReadOnlyMemory<byte>>>(
         [
             .. _entries
-                .Where(entry => entry.Credential.UserId == userId)
+                .Where(entry => entry.PublicKey.UserId == userId)
                 .Select(entry => entry.PublicKey.WebAuthnCredentialId),
         ]);
 
@@ -102,12 +115,24 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
         return Task.FromResult(true);
     }
 
+    /// <summary>
+    /// All three predicates the real repository carries, the type one included.
+    /// </summary>
+    /// <remarks>
+    /// <c>credentials</c> is exempt from row-level security, so the owner filter is the only thing
+    /// scoping this read; and the type filter is what stops a federated credential from being
+    /// resolved here and opening a session that claims a passkey established it. A fake that dropped
+    /// either would let a unit test pass over a query that had.
+    /// </remarks>
     public Task<Credential?> FindPasskeyCredentialAsync(
         Guid credentialId,
         Guid userId,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(_entries
-            .FirstOrDefault(entry => entry.Credential.Id == credentialId && entry.Credential.UserId == userId)
+            .FirstOrDefault(entry =>
+                entry.Credential.Id == credentialId
+                && entry.Credential.UserId == userId
+                && entry.Credential.Type == CredentialType.Passkey)
             ?.Credential);
 
     public Task<PasskeySignatureCounter?> FindCounterAsync(

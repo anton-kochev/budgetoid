@@ -21,10 +21,19 @@ namespace Application.Passkeys.Reauthentication;
 /// this relying party, exactly as at sign-in.
 /// </para>
 /// <para>
-/// The timeout is the shorter of the ceremony timeout and what is left of the challenge's life, and it
-/// is load-bearing here for a reason it does not carry elsewhere: the five-minute freshness window
-/// this ceremony enforces <b>is</b> the challenge's lifetime, so a client prompt allowed to outlive it
-/// would be a prompt whose answer is refused after the person has already touched their authenticator.
+/// The timeout is the shorter of the configured ceremony timeout and what is left of the challenge's
+/// life — the same call the sign-in and registration legs make, on the same policy value, against an
+/// expiry all three pools take from the store's one challenge lifetime. It carries no extra weight
+/// here, and trimming it from either of the other two would break the same rule it keeps on this one:
+/// never promise a prompt that outlives the nonce behind it, or a person completes a ceremony that was
+/// already refused before they touched their authenticator. How fresh <em>this</em> ceremony's proof
+/// is is enforced by <c>ConsumeAsync</c> refusing an expired nonce, never by what the client was told.
+/// </para>
+/// <para>
+/// The clamp binds only where the configured ceremony timeout is the longer of the two, which is to
+/// say only where <c>Authentication:Passkey:CeremonyTimeoutSeconds</c> is set above the challenge
+/// lifetime. The default ceremony timeout is already well under it, so on a default configuration this
+/// call returns that timeout unchanged on every leg.
 /// </para>
 /// </remarks>
 public sealed class BeginReauthenticationHandler(
