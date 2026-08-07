@@ -139,22 +139,45 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         return connection;
     }
 
+    /// <summary>
+    /// Starts the container, migrates the schema into it and provisions the application role.
+    /// </summary>
+    /// <remarks>
+    /// The failure path disposes the container here rather than leaving it to the caller, and that
+    /// is the whole reason for the try/catch. Every call site has the shape
+    /// <c>await using RepositoryTestHost host = await StartHostAsync();</c>, so the variable is
+    /// bound only <b>after</b> this method returns: when the start throws, nothing is ever disposed.
+    /// The container object is created in a field initializer, so Docker may already hold a
+    /// container by then, and one that never reported healthy would keep its memory and its port
+    /// binding for the rest of the run — making the next start more likely to time out in turn. The
+    /// whole body is covered and not just the container start, because migration and provisioning
+    /// run against a container that is already up and leak it just as completely when they throw.
+    /// Owning the cleanup here also means a call site added later cannot forget it.
+    /// </remarks>
     public async Task StartAsync()
     {
-        await _container.StartAsync();
-        await using var db = new BudgetoidDbContext(
-            new DbContextOptionsBuilder<BudgetoidDbContext>()
-                .UseNpgsql(ConnectionString)
-                .Options);
-        await db.Database.MigrateAsync();
+        try
+        {
+            await _container.StartAsync();
+            await using var db = new BudgetoidDbContext(
+                new DbContextOptionsBuilder<BudgetoidDbContext>()
+                    .UseNpgsql(ConnectionString)
+                    .Options);
+            await db.Database.MigrateAsync();
 
-        // Two calls, because provisioning no longer decides how the role authenticates. ApplyGrantsAsync
-        // creates the role credential-free and gives it its write surface and its isolation policies;
-        // attaching a credential is a separate step, and production attaches an Entra identity instead.
-        // Password auth is the local and test path, so the tests take the other branch here — which is
-        // also why the branch has to be a separate call rather than a parameter.
-        await DatabaseProvisioning.ApplyGrantsAsync(ConnectionString);
-        await DatabaseProvisioning.AttachAppRolePasswordAsync(ConnectionString, AppRolePassword);
+            // Two calls, because provisioning no longer decides how the role authenticates. ApplyGrantsAsync
+            // creates the role credential-free and gives it its write surface and its isolation policies;
+            // attaching a credential is a separate step, and production attaches an Entra identity instead.
+            // Password auth is the local and test path, so the tests take the other branch here — which is
+            // also why the branch has to be a separate call rather than a parameter.
+            await DatabaseProvisioning.ApplyGrantsAsync(ConnectionString);
+            await DatabaseProvisioning.AttachAppRolePasswordAsync(ConnectionString, AppRolePassword);
+        }
+        catch
+        {
+            await _container.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>

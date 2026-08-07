@@ -9,10 +9,23 @@ using TUnit.Core.Interfaces;
 // RepositoryTestHost, so the limit that matters is Docker's — image layers, memory, port bindings
 // and the daemon's own start-up serialisation — and a machine's core count says nothing about it.
 //
-// The symptom this closes is not a wrong result. Roughly one run in six lost a single test to a
+// The symptom this addresses is not a wrong result. Roughly one run in six lost a single test to a
 // container that never reported healthy inside its start-up timeout, and which test that was moved
 // from run to run: a failure that says nothing whatever about the code, and the most expensive kind
 // to read, because the first thing anyone does with a red test is look at the diff.
+//
+// This limiter was originally written as if flat resource pressure were the whole cause. That
+// attribution is now known to be incomplete: PostgresTestHost and RepositoryTestHost leaked their
+// container whenever start-up threw, because the caller binds the `await using` variable only after
+// StartAsync returns, so a container Docker had already created was never released. Each leak made
+// the next start likelier to time out, which is a feedback loop rather than a constant load — and
+// that is why capping concurrency reduced the rate without eliminating it. Both hosts now dispose
+// the container before rethrowing.
+//
+// The limiter stays for now anyway, deliberately. Removing it in the same change would confound the
+// measurement: a flake surviving both changes could be a leak fix that did not work or a concurrency
+// cap that was genuinely load-bearing, and nothing in the run output would tell those apart. Re-
+// measure over several clean runs, and if the suite stays green, remove this in a separate change.
 //
 // Halving the processor count rather than picking a number: the machines this runs on differ, and
 // the floor of two keeps a single-core CI agent from serialising the suite outright — Math.Max, not
