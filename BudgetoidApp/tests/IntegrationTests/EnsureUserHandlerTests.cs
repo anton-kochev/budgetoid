@@ -131,11 +131,22 @@ public sealed class EnsureUserHandlerTests
         throw new InvalidOperationException("Expected ConflictException.");
     }
 
-    private static EnsureUserHandler CreateHandler(BudgetoidDbContext db) => new(
-        new UserRepository(db),
-        new BudgetRepository(db),
-        new UnpolicedUserContextWriter(),
-        TimeProvider.System);
+    private static EnsureUserHandler CreateHandler(BudgetoidDbContext db)
+    {
+        // Built once and shared with the resolve half, because in the composition root they are the
+        // same request-scoped writer and the same clock. Handing the two halves separate instances
+        // would let a handler that published the identity only on its own writer still pass.
+        UserRepository users = new(db);
+        BudgetRepository budgets = new(db);
+        UnpolicedUserContextWriter writer = new();
+
+        return new EnsureUserHandler(
+            users,
+            budgets,
+            writer,
+            TimeProvider.System,
+            new ResolveUserHandler(users, budgets, writer, TimeProvider.System));
+    }
 
     /// <summary>
     /// Discards the published identity, because on this fixture nothing reads it.

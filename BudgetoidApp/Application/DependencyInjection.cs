@@ -65,6 +65,7 @@ public static class DependencyInjection
         services.AddScoped<DeleteTransactionHandler>();
         services.AddScoped<GetPayeesHandler>();
         services.AddScoped<RenamePayeeHandler>();
+        services.AddScoped<ResolveUserHandler>();
         services.AddScoped<EnsureUserHandler>();
         services.AddScoped<EraseAccountHandler>();
         services.AddScoped<RevokeSessionsForCredentialHandler>();

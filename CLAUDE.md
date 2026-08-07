@@ -52,8 +52,12 @@ until decorators are needed. The API is ASP.NET Core minimal API on Azure Contai
 Auth is live Google OAuth.
 
 **The budget is the unit of tenancy.** `UserProvisioningMiddleware` resolves the Google
-`sub` (via `EnsureUserHandler`) into a user id and default budget id on the scoped
-`CurrentUser`; `IBudgetContext` exposes the ambient budget. Read
+`sub` (via `ResolveUserHandler`) into a user id and default budget id on the scoped
+`CurrentUser`; `IBudgetContext` exposes the ambient budget. **Only a route carrying
+`ProvisionsUser` metadata may create an account** — every other authenticated route resolves
+or answers 401, so a token outliving an erasure cannot resurrect the row. The marker is
+opt-in on six route groups; adding it anywhere else needs the argument in
+[users-and-ownership.md](docs/business-logic/users-and-ownership.md). Read
 [data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries.
 Load-bearing rules, each explained there or in the linked decision:
 

@@ -19,9 +19,11 @@ public sealed class EnsureUserHandlerTests
         User user = User.Create("old@example.com", UtcNow());
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
+        var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, new RecordingUserContextWriter(),
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -44,9 +46,11 @@ public sealed class EnsureUserHandlerTests
         // Arrange
         var users = new InMemoryUserRepository();
         var budgets = new InMemoryBudgetRepository();
+        var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, new RecordingUserContextWriter(),
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -68,9 +72,11 @@ public sealed class EnsureUserHandlerTests
         // Arrange
         var users = new InMemoryUserRepository();
         var budgets = new InMemoryBudgetRepository();
+        var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, new RecordingUserContextWriter(),
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -95,9 +101,11 @@ public sealed class EnsureUserHandlerTests
         var budgets = new InMemoryBudgetRepository();
         Budget existingBudget = Budget.CreateDefault(user.Id, UtcNow());
         budgets.Seed(existingBudget);
+        var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, new RecordingUserContextWriter(),
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser first = await handler.HandleAsync(
@@ -119,9 +127,11 @@ public sealed class EnsureUserHandlerTests
         User user = User.Create("person@example.com", UtcNow());
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
+        var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, new RecordingUserContextWriter(),
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -145,9 +155,11 @@ public sealed class EnsureUserHandlerTests
         var budgets = new InMemoryBudgetRepository();
         Budget concurrentBudget = Budget.CreateDefault(user.Id, UtcNow());
         budgets.FailNextAdd(concurrentBudget);
+        var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, new RecordingUserContextWriter(),
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -170,9 +182,11 @@ public sealed class EnsureUserHandlerTests
         User concurrentUser = User.Create("person@example.com", UtcNow());
         users.FailNextAddWithCredentialRace(concurrentUser, GoogleCredentialFor(concurrentUser, "google-1"));
         var budgets = new InMemoryBudgetRepository();
+        var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, new RecordingUserContextWriter(),
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -190,9 +204,11 @@ public sealed class EnsureUserHandlerTests
         var users = new InMemoryUserRepository();
         users.FailNextAddWithEmailConflict();
         var budgets = new InMemoryBudgetRepository();
+        var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, new RecordingUserContextWriter(),
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act — anything other than ConflictException escapes this helper and fails the test. The
         // insert is refused and the re-read by credential finds nothing, so this is not a race that
@@ -215,9 +231,10 @@ public sealed class EnsureUserHandlerTests
         var users = new InMemoryUserRepository(user, GoogleCredentialFor(user, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, writer,
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -242,9 +259,10 @@ public sealed class EnsureUserHandlerTests
         var budgets = new InMemoryBudgetRepository();
         var writer = new RecordingUserContextWriter();
         users.ObservePublicationsDuring(writer);
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, writer,
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(
@@ -270,9 +288,10 @@ public sealed class EnsureUserHandlerTests
         users.FailNextAddWithCredentialRace(concurrentUser, GoogleCredentialFor(concurrentUser, "google-1"));
         var budgets = new InMemoryBudgetRepository();
         var writer = new RecordingUserContextWriter();
+        var time = new FakeTimeProvider(new DateTimeOffset(UtcNow()));
         var handler = new EnsureUserHandler(
-            users, budgets, writer,
-            new FakeTimeProvider(new DateTimeOffset(UtcNow())));
+            users, budgets, writer, time,
+            new ResolveUserHandler(users, budgets, writer, time));
 
         // Act
         ProvisionedUser provisioned = await handler.HandleAsync(

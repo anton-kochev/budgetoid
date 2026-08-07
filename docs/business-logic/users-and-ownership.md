@@ -14,8 +14,9 @@
 ## Purpose
 
 This area covers **who a user is** and how that identity comes to exist. Users are not registered
-through a form — they are provisioned transparently from their Google sign-in on their first
-authenticated request.
+through a form — they are provisioned transparently from their Google sign-in, on the first request
+they make **to a route that declares it may create an account**. Every other authenticated route
+resolves an existing account or refuses; it never mints one.
 
 A user owns **Budgets** and nothing else. Everything else — accounts, category groups, categories,
 payees, transactions — belongs to a budget, so **the budget, not the user, is the unit of tenancy.**
@@ -113,6 +114,39 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     asking, which is also why that lookup projects to `credentials.user_id` and never joins `users`.
     `tests/IntegrationTests/RlsIsolationTests.cs` proves the isolation on both axes and
     `RlsCoverageTests.cs` fails any new table that owes a policy and has none.
+
+- **Only a route that declares `ProvisionsUser` may bring an account into existence.** Every other
+  authenticated route resolves an existing account or answers `401` and writes nothing.
+  - **Why**: a Google ID token stays valid for up to an hour after the account it names is erased. A
+    middleware that minted on *any* authenticated request would let one in-flight poll, one second
+    tab, or one service-worker retry resurrect a `users` row carrying the person's email and a
+    `credentials` row carrying their Google subject — moments after they asked to be forgotten. And
+    that resurrection is unerasable: the fresh account holds no passkey, so the re-authentication gate
+    in front of erasure refuses it forever. "Leaving the product means actually leaving" is the claim
+    [erasure.md](erasure.md) opens with, and this is what keeps it true of the erasure path itself.
+  - **Opt-in, and the polarity is the whole rule.** Marking the routes that must *not* mint leaves the
+    mint set as "everything else", so the stale token resurrects the account through `GET
+    /api/transactions` and the fix buys nothing. It also fails **silently**: a new endpoint whose
+    author forgets the marker mints, and nothing says so. Under opt-in a forgotten marker gives
+    brand-new users a `401` on that group — loud, caught by any integration test, and it writes no row
+    on the way past.
+  - **Enforced in**: `Api/Infrastructure/ProvisionsUserAttribute.cs`, attached with
+    `.WithMetadata(...)` to the **route group** in six endpoint files — accounts, transactions,
+    categories, category groups, payees, currencies — so the whole minting surface is six greppable
+    lines, the same argument `PasskeyEndpoints.cs` makes for keeping the anonymous surface visible in
+    one place. `UserProvisioningRouteTests.ProvisionsUserMetadata_IsCarriedByExactlyTheDataRouteGroups`
+    pins the set in both directions, so a marker added to `/api/passkeys` "so registration works" fails
+    rather than quietly reopening the door.
+  - **What it does not fix, stated rather than implied**: a client that calls a *marked* route on app
+    boot still resurrects an erased account within the token's remaining life. That hole is older than
+    this rule and closes when account creation becomes a consented act and the six markers collapse to
+    one. What this rule buys today is that the erasure path and every identity-bearing route beside it
+    write nothing — so an account is not resurrected by the act of trying to erase it again.
+  - **Counterexample**: answering the unmarked-and-unresolved case with `204` on the erasure route, on
+    the grounds that "no account" satisfies erasure's post-condition. It reads well and it is wrong: it
+    creates a path through the erasure handler that reports success having verified nothing, which is
+    the one shape that path must never have.
+  - **Source**: `[SOURCE: user-story]`
 
 - **A request must resolve to a real internal user and an ambient budget before it can touch data.**
   - **Why**: Handlers stamp and filter by `IBudgetContext.BudgetId`; without a resolved budget there
@@ -227,13 +261,22 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   what the account holds — an address the user never asked to change is not an address they can be
   reached at, and silently adopting one would move the account's only human-readable identifier
   because a token said so.
-- **Enforced in**: `EnsureUserHandler` (`Application/Users/EnsureUser/EnsureUserHandler.cs`),
-  invoked by `UserProvisioningMiddleware`; it returns `ProvisionedUser(UserId, BudgetId)`. The
-  existing-user branch resolves the id and returns — there is no write on that path at all. The same
-  handler then find-or-creates the user's default budget, because "an account exists ⇒ it has its
-  budget" is one idea and splitting it would open a window where a user exists with no budget; that
-  half of the step is documented in
-  [budgets.md](budgets.md#business-rules--invariants) and not restated here.
+- **Enforced in**: two handlers, split along the line the rule above draws.
+  `ResolveUserHandler` (`Application/Users/EnsureUser/ResolveUserHandler.cs`) finds the account and
+  returns `ProvisionedUser(UserId, BudgetId)` or `null`; it never creates one, and
+  `ResolveUserCommand` carries **no email member**, because the resolve path never writes one — the
+  email claim is read on every request by the gate and reaches a handler only on the one route that
+  may create an account. `EnsureUserHandler` calls it first and mints only on `null`, so the
+  existing-user branch lives in one place rather than being copied. `UserProvisioningMiddleware`
+  invokes whichever the route's metadata calls for.
+  Both find-or-create the user's default budget through the shared `DefaultBudgetProvisioning`,
+  because "an account exists ⇒ it has its budget" is one idea and splitting it would open a window
+  where a user exists with no budget; that half of the step is documented in
+  [budgets.md](budgets.md#business-rules--invariants) and not restated here. **The budget heal stays
+  on the resolve path**, which is why that handler is an `ICommandHandler` rather than a query: the
+  insert needs a `user_id` that already resolved, so it cannot bring an erased account back, and
+  without it a user whose budget insert was lost could never erase — the erasure handler reads the
+  ambient budget, and the erasure route is unmarked.
 - **Example**: A returning user whose Google address changed from `old@example.com` to
   `new@example.com` signs in. The handler finds her by `(provider, subject)`, returns the same
   account, and the stored address stays `old@example.com`.
@@ -331,10 +374,12 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   which is the policy holding rather than the grant matrix.
   `AppRoleGrantMatrixTests.AppRoleGrants_MatchTheDeclaredMatrix` pins the whole privilege set in both
   directions, so a `DELETE` added to a seventh table fails as loudly as one removed from this one.
-- **Its caller is the erasure endpoint.** `DELETE /api/me` reaches this grant through
+- **Its caller is the erasure endpoint.** `POST /api/me/erasure` reaches this grant through
   `EraseAccountHandler` and `IUserRepository.DeleteAsync`, and the id it deletes is read from
-  `IUserContext` rather than from the route or the body — `EraseAccountCommand` is parameterless
-  precisely so there is no field a caller could name an account in. See [erasure.md](erasure.md).
+  `IUserContext` rather than from the route or the body. `EraseAccountCommand` carries the
+  re-authentication assertion and **no field naming an account** — its members name a credential
+  handle, which the owner-scoped lookup makes incapable of selecting one. The rule is "no account may
+  be named", not "no members". See [erasure.md](erasure.md).
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -450,7 +495,9 @@ stateDiagram-v2
     Authenticated --> Rejected : email not asserted as verified
     Authenticated --> Lookup : has sub + email + verified email
     Lookup --> Existing : user found by federated credential
-    Lookup --> Creating : no credential found
+    Lookup --> Refused : no credential, and the route does not declare ProvisionsUser
+    Lookup --> Creating : no credential, on a route that declares ProvisionsUser
+    Refused --> [*] : 401 ProblemDetails, no row written
     Existing --> Resolved : the stored account stands as registered (no write)
     Creating --> Resolved : TryAdd wrote the user and its credential
     Creating --> InsertRejected : unique violation on the credential, the email, or both
@@ -468,6 +515,7 @@ stateDiagram-v2
 | Authenticated → Rejected | Auth succeeds but claims missing | `sub` and `email` both required, else 401 "missing required claims" |
 | Authenticated → Rejected | Auth succeeds, claims present, `email_verified` does not assert verification | Absent, blank, `false` or unparseable, else 401 "email address is not asserted as verified". One state, two titles: the caller holds the token and can read the claim, so naming the reason leaks nothing |
 | Lookup → Existing | A federated credential holds this `(provider, subject)`; its user is the account | — |
+| Lookup → Refused | No credential holds it and the endpoint carries no `ProvisionsUser` metadata | 401 ProblemDetails. The request stops before routing dispatches, so no handler runs and no row is written. An endpoint marked `AllowAnonymous` takes neither arm — it continues with no identity, exactly as an unauthenticated request would, which is what lets a passkey sign-in complete while a stale bearer token is still attached |
 | Existing → Resolved | Always, once the credential resolves | None. The branch reads and returns; whatever the token now says about this person is not applied |
 | Creating → Resolved | New user and its first credential inserted in one save | `User.Create` validates email presence and both length bounds; `Credential.CreateFederated` validates provider and subject |
 | Creating → InsertRejected | A unique violation on the credential index, the email index, or both | `TryAddAsync` returns `false` without deciding which rule fired — the reported constraint name cannot say — and neither row is left behind |
@@ -477,7 +525,8 @@ stateDiagram-v2
 
 ## Decision Trees
 
-Resolving the internal user (`UserProvisioningMiddleware` → `EnsureUserHandler.EnsureUserIdAsync`):
+Resolving the internal user (`UserProvisioningMiddleware` → `ResolveUserHandler`, then
+`EnsureUserHandler.CreateUserIdAsync` only where the route allows it):
 
 ```
 IF the request is not authenticated
@@ -488,7 +537,9 @@ ELSE IF email_verified does not parse as true                ← absent, blank, 
   THEN 401 ProblemDetails "Authenticated principal's email address is not asserted as verified."
 ELSE IF a federated credential already holds that provider and sub
   THEN use its user                                      ← no write; the token's claims are not applied
-ELSE                                                     ← no credential for that sub yet
+ELSE IF the endpoint does not declare ProvisionsUser
+  THEN 401 ProblemDetails, and no row is written         ← a stale token must not resurrect an account
+ELSE                                                     ← no credential for that sub, on a minting route
   try to insert a user and its credential in one save    ← a refusal leaves neither row behind
   IF the insert succeeded
     THEN use it

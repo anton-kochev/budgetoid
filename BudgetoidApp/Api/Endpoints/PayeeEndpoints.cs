@@ -1,3 +1,4 @@
+using Api.Infrastructure;
 using Application.Payees;
 using Application.Payees.GetPayees;
 using Application.Payees.RenamePayee;
@@ -8,7 +9,10 @@ public static class PayeeEndpoints
 {
     public static IEndpointRouteBuilder MapPayeeEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        RouteGroupBuilder group = endpoints.MapGroup("/api/payees");
+        // One of the six groups allowed to bring an account into existence; the reason the marker is
+        // opt-in and sits on the group is written out in AccountEndpoints.
+        RouteGroupBuilder group = endpoints.MapGroup("/api/payees")
+            .WithMetadata(new ProvisionsUserAttribute());
 
         group.MapGet("/", async (GetPayeesHandler handler, CancellationToken cancellationToken) =>
         {

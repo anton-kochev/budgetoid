@@ -8,6 +8,54 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-07 — Provisioning mints an account only where a route declares it may
+
+**Context:** the entry below accepted that a second erasure request is refused, and weighed only the
+status code the caller sees. It never asked what the *row* costs. `UserProvisioningMiddleware` minted
+a full account — `users` with the email, `credentials` with the Google subject, a default `budgets` —
+on any authenticated request whose credential did not resolve, and a Google ID token stays valid for
+up to an hour after the account it names is erased. One in-flight poll or second tab therefore
+resurrected the account moments after the person asked to be forgotten. Worse, the re-authentication
+gate made that resurrection **unerasable**: the fresh account holds no passkey, so erasure refuses it
+forever. The product's flagship claim is that leaving means leaving.
+
+**Decision:** provisioning becomes create-on-demand, opt-in at the route group. A `ProvisionsUser`
+marker on six data route groups is the only thing that permits minting; every other authenticated
+route resolves an existing account or answers 401 and writes nothing. Chosen so the erasure path and
+the identity-bearing routes beside it cannot write a row on the way past, accepting that the six
+marked routes still resurrect an account while the token lives.
+
+**Opt-in rather than opt-out, and the polarity is the fix.** Marking the routes that must *not* mint
+leaves the mint set as "everything else", so a stale token resurrects the account through
+`GET /api/transactions` — the original scenario, unfixed — and a new endpoint whose author forgets the
+marker mints silently. Under opt-in a forgotten marker gives brand-new users a 401 on that group:
+loud, caught by any integration test, and it writes nothing.
+
+**Alternatives considered:**
+
+- *Opt-out on the three routes that must not mint.* Rejected for the reason above. It is also thrown
+  away rather than simplified the day registration becomes explicit.
+- *A single registration route as the only minting endpoint, now.* The correct end state, and it is
+  what a consented registration step will be. Rejected for today: it needs a frontend that has no
+  passkey or erasure flow at all, and doing it half — a route the client calls on boot — buys nothing
+  over the marker while pretending to.
+- *A tombstone keyed on the Google subject, so a returning erased identity is recognised.* Rejected
+  outright: retained personal data about a person who left is the regression restated.
+- *Letting the erasure route run identity-less and answer 204 for "no account".* Tempting, because it
+  restores idempotency and matches the endpoint's own post-condition philosophy. Rejected: it creates
+  a path through the erasure handler that reports success having verified nothing.
+- *Matching paths in the middleware instead of reading endpoint metadata.* Rejected: a route string in
+  middleware is the second definition of the routing surface that
+  [passkeys.md](passkeys.md) already argues against for the anonymous legs.
+
+**What this does not fix, recorded so nobody reads it as settled:** a client calling a marked route on
+app boot still resurrects an erased account within the token's remaining life. That is older than this
+decision and closes when account creation becomes a consented act and the six markers collapse to one.
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md), [erasure.md](erasure.md).
+
+---
+
 ## 2026-08-07 — Erasure is gated by an assertion carried in the request, not by a stored re-authentication instant
 
 **Context:** erasure had to stop being reachable on a bearer token alone. The requirement is stated in

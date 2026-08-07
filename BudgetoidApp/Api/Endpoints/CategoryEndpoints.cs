@@ -1,3 +1,4 @@
+using Api.Infrastructure;
 using Application.Categories;
 using Application.Categories.CreateCategory;
 using Application.Categories.DeleteCategory;
@@ -13,7 +14,10 @@ public static class CategoryEndpoints
 {
     public static IEndpointRouteBuilder MapCategoryEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        RouteGroupBuilder group = endpoints.MapGroup("/api/categories");
+        // One of the six groups allowed to bring an account into existence; the reason the marker is
+        // opt-in and sits on the group is written out in AccountEndpoints.
+        RouteGroupBuilder group = endpoints.MapGroup("/api/categories")
+            .WithMetadata(new ProvisionsUserAttribute());
 
         group.MapPost("/", async (
             CreateCategoryCommand command,

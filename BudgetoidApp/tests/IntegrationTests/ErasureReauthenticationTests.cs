@@ -191,9 +191,12 @@ public sealed class ErasureReauthenticationTests
     [Test]
     public async Task ReauthenticationOptions_ForAnAuthenticatedCaller_IssueAChallenge()
     {
-        // Arrange
+        // Arrange — the account is established on a route that may mint one, because this leg no longer
+        // does. Without that first request the challenge would be refused for having no account behind
+        // it, and the refusal above would look like it held for a caller who really was authenticated.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
 
         // Act
         HttpResponseMessage response = await client.PostAsync(ReauthenticationOptionsPath, content: null);
@@ -368,32 +371,85 @@ public sealed class ErasureReauthenticationTests
     }
 
     /// <summary>
-    /// One nonce, one erasure. Nothing about the second request differs from the first, down to the
-    /// bytes — so only single use can refuse it.
+    /// One nonce, one erasure — the successful spend, pinned on an account that is still there to be
+    /// counted afterwards.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The obvious shape — post the identical request twice for the same account — no longer measures
+    /// single use at all. The first post returns 204 and destroys the account, so the replay arrives
+    /// with a provider token that outlives the erasure by up to an hour, naming an account that no
+    /// longer exists, and <c>UserProvisioningMiddleware</c> turns it away one step <b>before</b> the
+    /// ceremony. That refusal is identical whether the nonce is single use or not, which makes it no
+    /// evidence.
+    /// </para>
+    /// <para>
+    /// So the spend and the replay are split across two accounts, which the nonce pool allows: a
+    /// re-authentication challenge is issued bound to no user — <see cref="BeginReauthenticationHandler" />
+    /// writes the pool and nothing else — and the gate only ever asks the store whether it is live.
+    /// Bob's replay is therefore faultless in every respect the gate checks except one: his own
+    /// registered device, his own user handle, the allowed origin, the re-authentication pool, a
+    /// correct signature, and a nonce Alice's successful erasure already spent. Bob survives it, so
+    /// "and erased nothing" is a countable claim here rather than an unobservable one.
+    /// </para>
+    /// <para>
+    /// Not covered by <see cref="Erasure_WhenVerificationFails_StillConsumesTheChallenge" />. That one
+    /// proves a <b>failed</b> attempt burns the nonce; this one proves a <b>successful</b> one does,
+    /// which is the path every real erasure takes and the only path on which the account disappears
+    /// underneath the evidence.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task Erasure_ReplayingAConsumedChallenge_IsRefused()
+    public async Task Erasure_ReplayingAChallengeASuccessfulErasureSpent_IsRefusedAndErasesNothing()
     {
-        // Arrange
+        // Arrange — Alice, who erases, and Bob, who replays her spent nonce and must come through it
+        // whole.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
-        byte[] challenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
-        AssertionResult assertion = device.Authenticate(
-            challenge,
-            ApiFactory.PasskeyOrigin,
-            PasskeyEncoding.ToUserHandle(userId));
+        HttpClient alice = host.Factory.CreateAuthenticatedClient(Subject);
+        HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        SyntheticAuthenticator alicesDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(alice, alicesDevice);
+        await RegisterPasskeyAsync(bob, bobsDevice);
+        Guid aliceId = await ResolveUserIdAsync(host, Subject);
+        Guid bobId = await ResolveUserIdAsync(host, OtherSubject);
 
-        // Act — the identical request twice.
-        HttpResponseMessage first = await PostErasureAsync(client, assertion);
-        HttpResponseMessage replay = await PostErasureAsync(client, assertion);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        IReadOnlyDictionary<string, long> bobBefore = await CountOwnedRowsAsync(admin, bobId);
+        await AssertEverythingIsSeededAsync(bobBefore);
+
+        // Act — one challenge, spent by an erasure that succeeds, then answered again by an account
+        // that erasure did not touch.
+        byte[] challenge = await BeginCeremonyAsync(alice, ReauthenticationOptionsPath);
+        HttpResponseMessage erasure = await PostErasureAsync(
+            alice,
+            alicesDevice.Authenticate(challenge, ApiFactory.PasskeyOrigin, PasskeyEncoding.ToUserHandle(aliceId)));
+        HttpResponseMessage replay = await PostErasureAsync(
+            bob,
+            bobsDevice.Authenticate(challenge, ApiFactory.PasskeyOrigin, PasskeyEncoding.ToUserHandle(bobId)));
+        IReadOnlyDictionary<string, long> bobAfterReplay = await CountOwnedRowsAsync(admin, bobId);
+
+        // The control, and it runs last so the counts above are read while Bob is still whole: the same
+        // device answering a nonce of Bob's own is accepted. Without it, a replay refused for anything
+        // whatever about Bob — his device, his handle, his account — reads exactly like a nonce
+        // refusal. His device may report the same counter it reported a moment ago because the replay
+        // was turned away at the challenge store, four steps before the counter is even read, so
+        // nothing recorded that attempt.
+        HttpResponseMessage withANonceOfHisOwn = await EraseAsync(bob, bobsDevice, bobId);
 
         // Assert
-        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(erasure.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
         await Assert.That(replay.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await ReadTitleAsync(replay)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That(withANonceOfHisOwn.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        // Compared table by table rather than to "still more than zero": a gate that took some of Bob's
+        // rows on the strength of Alice's nonce and left others would pass a non-zero check.
+        foreach (OwnedTable table in UserOwnedTables)
+        {
+            await Assert.That(bobAfterReplay[table.Name]).IsEqualTo(bobBefore[table.Name]);
+        }
     }
 
     /// <summary>
@@ -650,9 +706,12 @@ public sealed class ErasureReauthenticationTests
     [Test]
     public async Task Erasure_SendsNoTimestampAndReadsNone()
     {
-        // Arrange
+        // Arrange — the account is established on a route that may mint one. The options leg below no
+        // longer provisions, so without this the challenge request is refused for having no account
+        // behind it and the shape this test pins would never be issued.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         Type[] timeTypes =
         [
             typeof(DateTime), typeof(DateTime?),
@@ -705,8 +764,17 @@ public sealed class ErasureReauthenticationTests
     /// Runs both authenticated legs of a registration, so the account really holds a passkey the gate
     /// can verify against — rather than material seeded out of band that no signature answers to.
     /// </summary>
+    /// <remarks>
+    /// The account is established first, on a route that is allowed to mint one. Neither passkey leg
+    /// provisions any more — only the data route groups do — so a registration is the second
+    /// authenticated request an account makes, never the first. Every refusal this file drives comes
+    /// from an account that exists, which is what keeps them all the ceremony's own 401 rather than
+    /// provisioning's.
+    /// </remarks>
     private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
     {
+        await ApiFactory.EstablishAccountAsync(client);
+
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new

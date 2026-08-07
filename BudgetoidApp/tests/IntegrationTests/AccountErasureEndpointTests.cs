@@ -301,25 +301,29 @@ public sealed class AccountErasureEndpointTests
     }
 
     /// <summary>
-    /// Erasure is no longer idempotent to the caller, and the second call is refused rather than
-    /// answered.
+    /// Erasure is not idempotent to the caller — the second call is refused rather than answered — and
+    /// it leaves <b>no</b> account behind.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This replaces the old <c>Delete_CalledTwice_ReturnsNoContentBothTimes</c>, whose expectation
-    /// moved for a stated reason. <c>UserProvisioningMiddleware</c> runs on every authenticated
-    /// request, and the first erasure took the credential — so the second request authenticates as a
-    /// <b>brand-new</b> account, provisioned moments earlier, that holds no passkey at all. The gate
-    /// then finds nothing to verify against and refuses. Measured against the rule that erasure never
-    /// answers 404 for an account already gone: a 401 makes no claim about data. It says the request
-    /// did not prove who it was, which is true of a fresh account holding no credential.
+    /// This replaces <c>Erase_CalledASecondTime_IsRefusedAndLeavesTheNewAccountIntact</c>, and the
+    /// final assertion is inverted from that test's: it demanded exactly one <c>users</c> row after the
+    /// second call, and one row is the defect. A Google id token stays valid for up to an hour after
+    /// the account it names is gone, so the second request — a retry, a poll, a forgotten second tab —
+    /// arrived authenticated and provisioning minted a whole new account for it: a <c>users</c> row
+    /// carrying the address, a <c>credentials</c> row carrying the subject, and a default budget. That
+    /// account then held no passkey, so the erasure gate refused it forever. Leaving stopped meaning
+    /// leaving, and the wreckage was unerasable.
     /// </para>
     /// <para>
-    /// The final assertion is <b>flipped</b> from the old test's, and that flip is the control. The
-    /// old one asserted <c>users</c> came back empty, because the second request erased the account it
-    /// had just provisioned. Now that account must survive — so a handler that erased without ever
-    /// consulting the gate leaves zero here and goes red, which is the one outcome the rest of this
-    /// file cannot distinguish.
+    /// The refusal itself is unchanged and is not the subject here: a 401 makes no claim about data, it
+    /// says the request did not prove who it was, which is true of a token naming an account that no
+    /// longer exists. What changed is that the refusal now writes nothing.
+    /// </para>
+    /// <para>
+    /// The first call's 204 and the per-table zeros are kept deliberately, and they are the control: a
+    /// middleware that refused <b>every</b> erasure — before or after — would satisfy an empty
+    /// <c>users</c> table perfectly and would have destroyed the feature.
     /// </para>
     /// <para>
     /// The wart is real and is accepted rather than solved: a client retrying a lost 204 sees a
@@ -329,7 +333,7 @@ public sealed class AccountErasureEndpointTests
     /// </para>
     /// </remarks>
     [Test]
-    public async Task Erase_CalledASecondTime_IsRefusedAndLeavesTheNewAccountIntact()
+    public async Task Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount()
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
@@ -353,13 +357,23 @@ public sealed class AccountErasureEndpointTests
 
         await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsGreaterThan(0L);
 
-        // Act — the same device, the same subject, the whole ceremony run twice.
-        HttpResponseMessage first = await EraseAsync(client, device, firstUserId);
-        HttpResponseMessage second = await EraseAsync(client, device, firstUserId);
+        // Act — one ceremony, answered twice. The second call posts the same body directly instead of
+        // beginning another ceremony: the options leg is itself an authenticated request on a route
+        // that mints nothing, so for a caller whose account is gone it answers 401 too, and the
+        // EnsureSuccessStatusCode inside it would end this test before its own assertion.
+        AssertionResult assertion = await AuthenticateAsync(client, device, firstUserId);
+        HttpResponseMessage first = await PostErasureAsync(client, assertion);
+        HttpResponseMessage second = await PostErasureAsync(client, assertion);
+
+        // The same stale token knocking on the ceremony's own door, which is the request a retrying
+        // client actually makes first. Asserted separately because it is the one that used to provision.
+        HttpResponseMessage retriedOptions =
+            await client.PostAsync(ReauthenticationOptionsPath, content: null);
 
         // Assert
         await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
         await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(retriedOptions.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
 
         IReadOnlyDictionary<string, long> afterFirst =
             await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
@@ -368,12 +382,12 @@ public sealed class AccountErasureEndpointTests
             await Assert.That(afterFirst[table.Name]).IsEqualTo(0L);
         }
 
-        // Exactly one row, and the loop above already proved it is not the erased id — so what is left
-        // is the account the second request was provisioned as, still there. That is what "the gate
-        // refused it" looks like from the database, and it is the assertion a handler that erased
-        // without the gate fails.
-        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(1L);
-        await Assert.That(afterFirst["users"]).IsEqualTo(0L);
+        // No rows at all, not "none belonging to the erased id". The loop above is scoped to the ids
+        // the erasure took, so a resurrected account — a different id entirely — passes every one of
+        // those eleven assertions. This unscoped count is the only line that sees it.
+        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
+        await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);
+        await Assert.That(await ScalarAsync(admin, "select count(*) from budgets")).IsEqualTo(0L);
     }
 
     private const string ErasurePath = "/api/me/erasure";
@@ -386,13 +400,24 @@ public sealed class AccountErasureEndpointTests
     /// actually be verified against.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A real ceremony rather than seeded rows, and that is not preference. <see cref="SeedIdentityRowsAsync" />
     /// writes four bytes of stand-in key material that no private key answers to, so an assertion
     /// checked against it could never verify — the erasure would be refused and every test in this
     /// file would fail for a reason that has nothing to do with what it measures.
+    /// </para>
+    /// <para>
+    /// The account is established first, on a route that is allowed to mint one. Neither passkey leg
+    /// provisions any more — only the data route groups do — so a registration is the second
+    /// authenticated request an account makes, never the first. Placed here rather than at each call
+    /// site because every test in this file that needs a passkey needs an account under it, and the two
+    /// tests that furnish an account beforehand reach an idempotent read.
+    /// </para>
     /// </remarks>
     private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
     {
+        await ApiFactory.EstablishAccountAsync(client);
+
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
@@ -411,15 +436,34 @@ public sealed class AccountErasureEndpointTests
     private static async Task<HttpResponseMessage> EraseAsync(
         HttpClient client,
         SyntheticAuthenticator device,
+        Guid userId) =>
+        await PostErasureAsync(client, await AuthenticateAsync(client, device, userId));
+
+    /// <summary>
+    /// Runs the options leg and answers its challenge, stopping short of the erasure request.
+    /// </summary>
+    /// <remarks>
+    /// Split out of <see cref="EraseAsync" /> for the one test that has to post an erasure <b>without</b>
+    /// running another options leg first. That leg is an authenticated request on a route that no longer
+    /// mints an account, so for a caller whose account is already gone it answers 401 — and the
+    /// <c>EnsureSuccessStatusCode</c> inside <see cref="BeginCeremonyAsync" /> would end the test before
+    /// the assertion it exists for.
+    /// </remarks>
+    private static async Task<AssertionResult> AuthenticateAsync(
+        HttpClient client,
+        SyntheticAuthenticator device,
         Guid userId)
     {
         byte[] challenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
-        AssertionResult assertion = device.Authenticate(
+
+        return device.Authenticate(
             challenge,
             ApiFactory.PasskeyOrigin,
             PasskeyEncoding.ToUserHandle(userId));
+    }
 
-        return await client.PostAsJsonAsync(ErasurePath, new
+    private static Task<HttpResponseMessage> PostErasureAsync(HttpClient client, AssertionResult assertion) =>
+        client.PostAsJsonAsync(ErasurePath, new
         {
             credentialId = assertion.CredentialIdBase64Url,
             clientDataJson = assertion.ClientDataJsonBase64Url,
@@ -427,7 +471,6 @@ public sealed class AccountErasureEndpointTests
             signature = assertion.SignatureBase64Url,
             userHandle = assertion.UserHandleBase64Url,
         });
-    }
 
     /// <summary>Runs an options leg and returns the challenge bytes it issued.</summary>
     private static async Task<byte[]> BeginCeremonyAsync(HttpClient client, string path)

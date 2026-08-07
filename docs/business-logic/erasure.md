@@ -235,18 +235,21 @@ that is the one table erasure empties itself.
 - **Enforced in**: `UserRepository.DeleteAsync`, which removes whatever the id matched and saves; an
   absent row leaves an empty set and the save is a no-op rather than a branch. The handler never
   reads the user first.
-- **A second request from the same client is nonetheless refused, and that does not contradict the
-  rule.** It never reaches the handler: `UserProvisioningMiddleware` runs on every authenticated
-  request and mints a **brand-new** account, which holds no passkey, so the gate refuses with `401`.
-  That answer makes no claim about data at all — it says the request did not prove who it was, which
-  is true of a freshly-provisioned account. **Erasure is therefore no longer idempotent to the
-  caller**, and the cost is real: a client retrying after a lost `204` sees a failure over data that
-  is already destroyed. The remedy is client-side — do not re-run the ceremony on a presumed-lost
-  response — and it must not be answered by storing a marker that an erasure happened, which the rule
-  against tombstones forbids outright.
-  `AccountErasureEndpointTests.Erase_CalledASecondTime_IsRefusedAndLeavesTheNewAccountIntact` pins
-  both halves; its final assertion is that `users` holds exactly one row and it is **not** the erased
-  id, which a handler erasing without the gate would leave empty.
+- **A second request from the same client is refused, and — this is the part that matters — it
+  creates nothing.** It never reaches the handler. The erasure route declares no `ProvisionsUser`
+  metadata, so `UserProvisioningMiddleware` finds no credential for the still-valid token, answers
+  `401`, and writes no row: see [users-and-ownership.md](users-and-ownership.md). That answer makes no
+  claim about data — it says the request did not prove who it was, which is true, because the account
+  it names no longer exists.
+- **Erasure is therefore not idempotent to the caller**, and the cost is real: a client retrying after
+  a lost `204` sees a failure over data that is already destroyed. The remedy is client-side — do not
+  re-run the ceremony on a presumed-lost response. It must **not** be answered by storing a marker
+  that an erasure happened, which the rule against tombstones forbids outright, nor by answering `204`
+  without a valid assertion, which would put a path through this handler that reports success having
+  verified nothing.
+- **Enforced in**: `AccountErasureEndpointTests.Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount`
+  pins both halves — the second call is `401` **and** `select count(*) from users` comes back `0`.
+  That count is the whole assertion: a middleware that minted on the way past would leave `1`.
 - **This holds for a row that leaves between the read and the save, too.** Two erasures of the same
   account in flight at once — a double-click, or a client retrying a slow response — both load the
   rows; the loser blocks on the winner's locks, then finds nothing to delete and gets zero rows
@@ -345,12 +348,18 @@ that authorized it, which leaves as the deleted nonce.
   provisioning was still attached; the fix is `DiscardTrackedEntities()`, never a grant. This is the
   single most likely wrong turn in this area, because the error message points at exactly the wrong
   layer.
-- **Erasing twice creates an account in between, and no longer erases it.**
-  `UserProvisioningMiddleware` runs on every authenticated request, and the first erasure took the
-  credential, so the second request resolves nothing and provisions a **brand-new** user and default
-  budget before the handler is reached. That account holds no passkey, so the gate refuses and the
-  fresh account survives. A caller who wants it gone must register a passkey to it and run the
-  ceremony again.
+- **Erasing twice creates nothing, and that took a deliberate change to the provisioning rule.** A
+  Google ID token stays valid for up to an hour after the account it names is gone, and provisioning
+  used to mint an account on any authenticated request whose credential did not resolve — so a second
+  erasure attempt, an in-flight poll, or a second tab wrote a fresh `users` row carrying the person's
+  email moments after they asked to be forgotten. The erasure route now declares no `ProvisionsUser`
+  metadata, so those requests are refused before anything is written. See
+  [users-and-ownership.md](users-and-ownership.md).
+- **A request to a route that *does* mint still resurrects an erased account while the token lives.**
+  That hole is older than the re-authentication gate and is not closed here; it closes when account
+  creation becomes a consented act. Do not read the rule above as making erasure durable against a
+  live token — it makes the erasure path itself, and every identity-bearing route beside it, write
+  nothing.
 - **The request's own session row is deleted mid-request.** Nothing in the request path reads a
   `sessions` row today — the API authenticates with a bearer token from the identity provider — so
   the row cascades away and the response completes normally. The moment a session-bearing token

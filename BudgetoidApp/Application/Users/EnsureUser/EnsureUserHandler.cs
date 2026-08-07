@@ -5,21 +5,46 @@ using Domain.Users;
 
 namespace Application.Users.EnsureUser;
 
+/// <summary>
+/// The minting half of provisioning: find the account, or bring it into existence. Reachable only from
+/// a route group carrying <c>ProvisionsUserAttribute</c>.
+/// </summary>
+/// <remarks>
+/// Resolving is delegated to <see cref="ResolveUserHandler" /> rather than repeated here, so the
+/// returning-user branch — and with it the budget heal — is defined in exactly one place, and this
+/// class is only ever the part that creates.
+/// </remarks>
 public sealed class EnsureUserHandler(
     IUserRepository repository,
     IBudgetRepository budgetRepository,
     IUserContextWriter userContextWriter,
-    TimeProvider timeProvider) : ICommandHandler<EnsureUserCommand, ProvisionedUser>
+    TimeProvider timeProvider,
+    ResolveUserHandler resolveUserHandler) : ICommandHandler<EnsureUserCommand, ProvisionedUser>
 {
     public async Task<ProvisionedUser> HandleAsync(
         EnsureUserCommand command,
         CancellationToken cancellationToken = default)
     {
-        Guid userId = await EnsureUserIdAsync(command, cancellationToken);
+        // Resolve first, mint only when nothing resolved. Everything a returning request needs —
+        // publishing the identity, and healing a budget insert that was lost — already happened in
+        // there, so nothing below runs for an account that exists.
+        ProvisionedUser? resolved = await resolveUserHandler.HandleAsync(
+            new ResolveUserCommand(command.GoogleSubject),
+            cancellationToken);
+        if (resolved is not null)
+        {
+            return resolved;
+        }
 
-        // Runs on the existing-user path too: it heals a provisioning that inserted the user row but
-        // lost its budget insert, which would otherwise leave every budget-scoped query empty.
-        Guid budgetId = await EnsureDefaultBudgetIdAsync(userId, cancellationToken);
+        Guid userId = await CreateUserIdAsync(command, cancellationToken);
+
+        // Reached on the conflict path too, where the id adopted below belongs to an account that
+        // already existed and may already own a budget — hence find-or-create rather than a bare insert.
+        Guid budgetId = await DefaultBudgetProvisioning.EnsureDefaultBudgetIdAsync(
+            budgetRepository,
+            timeProvider,
+            userId,
+            cancellationToken);
 
         return new ProvisionedUser(userId, budgetId);
     }
@@ -27,25 +52,8 @@ public sealed class EnsureUserHandler(
     // Every publication below lands before the next statement that touches a policed table, which is
     // the whole ordering contract: app.current_user_id reaches the database on the next connection
     // open, so an id published afterwards is an id that statement ran without.
-    private async Task<Guid> EnsureUserIdAsync(EnsureUserCommand command, CancellationToken cancellationToken)
+    private async Task<Guid> CreateUserIdAsync(EnsureUserCommand command, CancellationToken cancellationToken)
     {
-        // Reads credentials alone — the one table still exempt from row-level security, because it
-        // is what answers "who is asking".
-        Guid? existingUserId = await repository.FindUserIdByFederatedCredentialAsync(
-            Credential.GoogleProvider,
-            command.GoogleSubject,
-            cancellationToken);
-        if (existingUserId is not null)
-        {
-            // Nothing about the stored profile is touched here, and the credential row was all this
-            // path read. The provider gates registration and is not consulted again, so what it now
-            // reports about this account is not authority to change anything: an email change is a
-            // separate exchange the user deliberately initiates. Refreshing here would apply one
-            // nobody asked for.
-            userContextWriter.ResolveUser(existingUserId.Value);
-            return existingUserId.Value;
-        }
-
         // One `now` for both rows: the user and the credential that resolves to it come into
         // existence in the same save, so they carry the same creation instant.
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
@@ -100,26 +108,5 @@ public sealed class EnsureUserHandler(
         userContextWriter.ResolveUser(concurrentUserId.Value);
 
         return concurrentUserId.Value;
-    }
-
-    private async Task<Guid> EnsureDefaultBudgetIdAsync(Guid userId, CancellationToken cancellationToken)
-    {
-        Budget? existing = await budgetRepository.FindFirstForUserAsync(userId, cancellationToken);
-        if (existing is not null)
-        {
-            return existing.Id;
-        }
-
-        Budget budget = Budget.CreateDefault(userId, timeProvider.GetUtcNow().UtcDateTime);
-        if (await budgetRepository.TryAddAsync(budget, cancellationToken))
-        {
-            return budget.Id;
-        }
-
-        // A concurrent request won the unique insert; re-read to adopt its row.
-        Budget? concurrentExisting = await budgetRepository.FindFirstForUserAsync(userId, cancellationToken);
-
-        return concurrentExisting?.Id
-               ?? throw new InvalidOperationException("Unique budget insert failed but budget could not be re-read.");
     }
 }

@@ -1,48 +1,160 @@
 using System.Security.Claims;
 using Application.Users.EnsureUser;
+using Microsoft.AspNetCore.Authorization;
 
 namespace Api.Infrastructure;
 
+/// <summary>
+/// Establishes who the request is, and — on the route groups that carry
+/// <see cref="ProvisionsUserAttribute" /> and only there — brings the account into existence when it
+/// does not exist yet.
+/// </summary>
+/// <remarks>
+/// <para>
+/// An authenticated request takes one of three ways below the claim gate:
+/// </para>
+/// <list type="bullet">
+/// <item>the endpoint declares <see cref="ProvisionsUserAttribute" /> — find or create, unchanged;</item>
+/// <item>it declares nothing and the credential resolves — publish the identity and the budget;</item>
+/// <item>it declares nothing and the credential resolves to no account — 401, and no row is written;</item>
+/// <item>
+/// it declares <see cref="IAllowAnonymous" /> and the credential resolves to no account — continue with
+/// no identity at all, exactly as an unauthenticated request would.
+/// </item>
+/// </list>
+/// <para>
+/// <b>Why the third way exists.</b> A provider id token stays valid for up to an hour after the account
+/// it names has been erased. Minting on any authenticated request whose credential does not resolve
+/// turns one in-flight poll or one forgotten second tab into a resurrected account — and the
+/// resurrected account holds no passkey, so <c>POST /api/me/erasure</c> refuses it forever. Leaving
+/// stopped meaning leaving.
+/// </para>
+/// <para>
+/// <b>Why the fourth exists.</b> A client whose interceptor attaches the provider bearer to every
+/// <c>/api/</c> call would otherwise be unable to complete a passkey sign-in while holding a stale
+/// token — refused for an account it is not trying to use. Reading
+/// <see cref="IAllowAnonymous" /> off the route is not a second definition of the anonymous surface: it
+/// is the marker the route already carries for the authorization pipeline, so no exclusion list is
+/// created here.
+/// </para>
+/// <para>
+/// <b>The claim gate stays above all of it, on every request.</b> The natural way to write this method
+/// is to read the endpoint's metadata first and branch, which puts the marked path back on find-or-create
+/// before anybody has asked whether the address is asserted verified. It runs on every request rather
+/// than only on the first for the reason recorded in the users-and-ownership documentation.
+/// </para>
+/// <para>
+/// <b>What this does not fix.</b> A client that calls a <em>marked</em> endpoint on app boot still
+/// resurrects an erased account for as long as the provider's id token lives. That hole is pre-existing;
+/// it closes when registration becomes a consented act and the six markers collapse into one.
+/// </para>
+/// <para>
+/// <b>The refused request needs nothing from <c>SessionContextInterceptor</c>, which stays as it is.</b>
+/// The interceptor writes <c>''</c> for an unresolved value rather than skipping the setting, so any
+/// policed statement on such a connection fails with <c>22P02</c> regardless. The <c>22P02</c> trap the
+/// row-level-security decisions describe is a transaction opened <em>before</em> an identity that will
+/// exist is published; here no identity will ever exist for this request, and it never reaches a
+/// handler. Do not "fix" the interceptor on account of this path.
+/// </para>
+/// </remarks>
 public sealed class UserProvisioningMiddleware(RequestDelegate next)
 {
-    public async Task InvokeAsync(HttpContext httpContext, EnsureUserHandler handler, CurrentUser currentUser)
+    /// <summary>
+    /// The one sentence a request that authenticated as an account this product does not have receives.
+    /// Public so a test can pin it: the caller's corrective action for this 401 is "sign in again", which
+    /// is different from both other refusals reachable on the same path — one says the token is
+    /// malformed, the other says a passkey was rejected — and a caller cannot act on a distinction the
+    /// response does not make.
+    /// </summary>
+    public const string NoAccountTitle = "No account exists for the authenticated principal.";
+
+    public async Task InvokeAsync(
+        HttpContext httpContext,
+        EnsureUserHandler ensureUserHandler,
+        ResolveUserHandler resolveUserHandler,
+        CurrentUser currentUser)
     {
         ClaimsPrincipal principal = httpContext.User;
-        if (principal.Identity?.IsAuthenticated == true)
+        if (principal.Identity?.IsAuthenticated != true)
         {
-            if (!TryGetRequiredClaim(principal, "sub", out string googleSubject) ||
-                !TryGetRequiredClaim(principal, "email", out string email))
-            {
-                await Results.Problem(
-                        title: "Authenticated principal is missing required claims.",
-                        statusCode: StatusCodes.Status401Unauthorized)
-                    .ExecuteAsync(httpContext);
-                return;
-            }
+            await next(httpContext);
+            return;
+        }
 
-            if (!HasVerifiedEmailClaim(principal))
-            {
-                await Results.Problem(
-                        title: "Authenticated principal's email address is not asserted as verified.",
-                        statusCode: StatusCodes.Status401Unauthorized)
-                    .ExecuteAsync(httpContext);
-                return;
-            }
+        if (!TryGetRequiredClaim(principal, "sub", out string googleSubject) ||
+            !TryGetRequiredClaim(principal, "email", out string email))
+        {
+            await Results.Problem(
+                    title: "Authenticated principal is missing required claims.",
+                    statusCode: StatusCodes.Status401Unauthorized)
+                .ExecuteAsync(httpContext);
+            return;
+        }
 
+        if (!HasVerifiedEmailClaim(principal))
+        {
+            await Results.Problem(
+                    title: "Authenticated principal's email address is not asserted as verified.",
+                    statusCode: StatusCodes.Status401Unauthorized)
+                .ExecuteAsync(httpContext);
+            return;
+        }
+
+        // Populated here because WebApplication puts UseRouting at the very front of the pipeline, ahead
+        // of every middleware registered in Program.cs — this one included, sitting between
+        // UseAuthentication and UseAuthorization. A request matching no route leaves this null, which
+        // reads as "unmarked": an authenticated caller with no account is then told 401 rather than 404,
+        // and a path that does not exist is the last place to start minting accounts.
+        Endpoint? endpoint = httpContext.GetEndpoint();
+
+        if (endpoint?.Metadata.GetMetadata<ProvisionsUserAttribute>() is not null)
+        {
             // Only the subject and the verified email are read off the principal. Every other claim
             // the provider offers is deliberately left on the token: an account stores what it needs
             // to be reached, and a claim nothing reads is data we would be holding for no one.
             // email_verified is read and not stored: it decides whether the address may be
             // registered at all, and answers nothing about the person worth keeping afterwards.
-            ProvisionedUser provisioned = await handler.HandleAsync(
+            //
+            // This is also the only branch the address reaches a handler on. The gate above reads it on
+            // every request; ResolveUserCommand below carries no address at all, because nothing on that
+            // path writes one.
+            ProvisionedUser provisioned = await ensureUserHandler.HandleAsync(
                 new EnsureUserCommand(googleSubject, email),
                 httpContext.RequestAborted);
 
-            currentUser.UserId = provisioned.UserId;
-            currentUser.BudgetId = provisioned.BudgetId;
+            Publish(currentUser, provisioned);
+            await next(httpContext);
+            return;
+        }
+
+        ProvisionedUser? resolved = await resolveUserHandler.HandleAsync(
+            new ResolveUserCommand(googleSubject),
+            httpContext.RequestAborted);
+
+        if (resolved is not null)
+        {
+            Publish(currentUser, resolved);
+        }
+        else if (endpoint?.Metadata.GetMetadata<IAllowAnonymous>() is null)
+        {
+            // The third refusal of the same shape this method produces, built the same way as the other
+            // two — which is why it lives here rather than in an authorization requirement: an
+            // authorization policy would answer a different question ("may this principal") than the one
+            // asked here ("is there anyone to be").
+            await Results.Problem(
+                    title: NoAccountTitle,
+                    statusCode: StatusCodes.Status401Unauthorized)
+                .ExecuteAsync(httpContext);
+            return;
         }
 
         await next(httpContext);
+    }
+
+    private static void Publish(CurrentUser currentUser, ProvisionedUser provisioned)
+    {
+        currentUser.UserId = provisioned.UserId;
+        currentUser.BudgetId = provisioned.BudgetId;
     }
 
     private static bool TryGetRequiredClaim(ClaimsPrincipal principal, string claimType, out string value)

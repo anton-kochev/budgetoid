@@ -1,3 +1,4 @@
+using Api.Infrastructure;
 using Application.Abstractions;
 using Application.Transactions;
 using Application.Transactions.CreateTransaction;
@@ -13,7 +14,10 @@ public static class TransactionEndpoints
 {
     public static IEndpointRouteBuilder MapTransactionEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        RouteGroupBuilder group = endpoints.MapGroup("/api/transactions");
+        // One of the six groups allowed to bring an account into existence; the reason the marker is
+        // opt-in and sits on the group is written out in AccountEndpoints.
+        RouteGroupBuilder group = endpoints.MapGroup("/api/transactions")
+            .WithMetadata(new ProvisionsUserAttribute());
 
         group.MapPost("/", async (
             CreateTransactionCommand command,
