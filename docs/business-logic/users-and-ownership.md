@@ -209,6 +209,17 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     entity's property surface, so a field reappearing in the domain fails before it can reach a
     migration. The schema test reads the catalog rather than the EF model on purpose: a pinned set
     checked against the same code that would have had to notice the column proves nothing.
+  - **One candidate column has already been argued and deferred: `default_budget_id`.** PostgreSQL
+    cannot express "a user owns at least one budget" without either a trigger — which
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out — or a
+    circular `users.default_budget_id → budgets(id)`, `NOT NULL DEFERRABLE INITIALLY DEFERRED`,
+    checked at commit. That would make "a user with no budget" *unstorable* rather than merely
+    unreached, which one save cannot do; see [budgets.md](budgets.md). It is the one column whose
+    case is already made, and it is deferred rather than refused, because unlike every claim this
+    rule exists to keep out it is a structural pointer rather than a fact about the person. Whoever
+    takes it up owns the erasure path — the cascade would then run against a cycle — and owes this
+    pin an argument rather than an edit. Read the decision-log entry first; do not treat the
+    deferral as permission.
 
 - **A column on any table MUST NOT store an analytics identifier, an advertising identifier, a
   device fingerprint, or a behavioural event record.**
