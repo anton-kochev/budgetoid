@@ -1,42 +1,108 @@
 // This assembly deliberately sets no ParallelLimiter. The absence is the point of this file.
 //
-// TUnit's default is one test in flight per processor, and that default is wrong for this assembly
-// on its face: what a test here costs is not a processor. Nearly every one of the 402 test methods
-// in this project stands up its own PostgreSQL container through PostgresTestHost or
-// RepositoryTestHost, so the limit that binds is Docker's — image layers, memory, port bindings and
-// the daemon's own start-up serialisation — and a machine's core count says nothing about it. That
-// reasoning once justified a ParallelLimiter here, capping concurrency at half the processor count.
+// TUnit's default is one test in flight per processor. That default was wrong for this assembly on
+// its face back when every test stood up its own PostgreSQL container: what a test cost was not a
+// processor, it was Docker — image layers, memory, port bindings and the daemon's own start-up
+// serialisation — and a machine's core count says nothing about that. It is no longer wrong in that
+// way, because the per-test containers are gone. The limiter is still absent, for a reason that
+// outlived the shape it was first argued against.
 //
-// The symptom it was written for was never a wrong result. Roughly one run in six lost a single
-// test to a container that never reported healthy inside its start-up timeout, and which test that
-// was moved from run to run: a failure that says nothing whatever about the code, and the most
-// expensive kind to read, because the first thing anyone does with a red test is look at the diff.
+// The shape in place
 //
-// The cap treated that as flat resource pressure. It was not. PostgresTestHost and
-// RepositoryTestHost leaked their container whenever start-up threw — the caller binds the
-// `await using` variable only after StartAsync returns, so a container Docker had already created
-// was never released, and each leak made the next start likelier to time out. A feedback loop, not
-// a constant load, which is why capping concurrency reduced the rate without ever eliminating it.
-// Both hosts now dispose the container before rethrowing; the remarks on PostgresTestHost.StartAsync
-// carry that reasoning, at the code which implements it.
+// One postgres:17 container serves the whole assembly. Migrations and the grants script are applied
+// once, to a template database; each test then takes a database of its own out of it with
+// CREATE DATABASE ... TEMPLATE and drops it WITH (FORCE) afterwards. SharedPostgresCluster, in
+// PostgresTestHost.cs, owns all of that, and the implementation detail belongs there rather than
+// here.
+//
+// Isolation is unchanged, and that was checked class by class rather than assumed. Grants, policies
+// and schema are per-DATABASE catalogs — pg_class.relacl, pg_policy, and the tables themselves — so
+// CREATE DATABASE ... TEMPLATE copies them whole, and a test that revokes a privilege or drops a
+// policy is as invisible to its neighbours as it was with a container to itself.
+//
+// What the shared cluster costs is not isolation but the concurrency-safety of the provisioning
+// script. Roles are cluster-level: budgetoid_app is a single pg_authid tuple that every host boot
+// writes, and concurrent writers of one tuple do not queue, they fail with
+// XX000 tuple concurrently updated. Measured, 3 of 4, 7 of 8 and 15 of 16 callers were lost at
+// those thread counts. One gate serialises them.
+//
+// That gate must exist in exactly one place. SemaphoreSlim is not reentrant, so a gate in
+// ApiFactory.CreateHost plus a second one on a host method deadlocks the whole suite — observed,
+// not theorised. It lives in ApiFactory.CreateHost, because PasskeyCeremonyTests builds an
+// ApiFactory straight over a RepositoryTestHost and so passes through no seam either host could
+// offer. Worth carrying away: the seam for this concern is ApiFactory, not the hosts.
+//
+// DeploymentProvisioningTests and NonSuperuserDeploymentProvisioningTests sit outside all of this,
+// deliberately, and build their own containers through PostgreSqlBuilder directly. What they assert
+// on is the creation of cluster-level roles that must not already exist, which a shared cluster
+// would break the instant they joined it.
+//
+// The template race — 55006, "source database is being accessed by other users" — is handled twice
+// over. The template is migrated over a Pooling=false connection so that no idle session lingers on
+// it, and the create retries on a bound on top of that. Measured at 4, 8 and 16 concurrent creates:
+// zero occurrences. PostgreSQL 17 clones with the WAL_LOG strategy and does not hold the source
+// exclusively.
+//
+// The numbers, measured on an 11-processor machine
+//
+// Container-per-test: five runs, median 107.4 s, peak 44 containers. Shared cluster with a database
+// per test: five runs plus two confirmations, median 68.8 s, peak 19 containers — the remainder
+// being the two deployment classes above and Testcontainers' reaper.
+//
+// The fixed cost a test pays before its first assertion went from ~3.4 s to ~31 ms. Container start
+// at 2696 ms, MigrateAsync at 701 ms and ApplyGrantsAsync at 11.3 ms are now paid once for the
+// assembly instead of once per test; what a test pays in their place is CREATE DATABASE ...
+// TEMPLATE at 30.8 ms.
+//
+// The cluster runs with -c max_connections=500. A connection budget that used to be per container
+// is now shared by every test in the assembly, so that is the number to raise if the suite grows —
+// not the default of 100, which the old shape could never reach and this one can.
+//
+// Why there is no ParallelLimiter
+//
+// There was one, capping concurrency at half the processor count. The symptom it was written for
+// was never a wrong result. Roughly one run in six lost a single test to a container that never
+// reported healthy inside its start-up timeout, and which test that was moved from run to run: a
+// failure that says nothing whatever about the code, and the most expensive kind to read, because
+// the first thing anyone does with a red test is look at the diff.
+//
+// The cap treated that as flat resource pressure. It was not. Both test hosts leaked their
+// container whenever start-up threw — the caller binds the `await using` variable only after
+// StartAsync returns, so a container Docker had already created was never released, and each leak
+// made the next start likelier to time out. A feedback loop, not a constant load, which is why
+// capping concurrency reduced the rate without ever eliminating it. The remarks on
+// PostgresTestHost.StartAsync carry that reasoning, at the code which implements it.
 //
 // The cap was kept in the same change as the leak fix on purpose — removing both at once would have
 // confounded the measurement, since a surviving flake could then be a failed leak fix or a genuinely
 // load-bearing cap and nothing in the run output separates those — and was then re-measured on its
-// own. Five consecutive `dotnet test` runs with no limiter, on an 11-processor machine where the cap
-// had been resolving to 5: 771 tests across both test projects, 0 failed, every run, at 109s / 106s
-// / 104s / 110s / 102s wall clock. Median 106s, against the ~2m15s the capped runs had been taking.
-// So the cap was costing roughly a fifth of the suite's wall clock to suppress a symptom whose cause
-// was somewhere else entirely. Hence no limiter.
+// own. Five consecutive runs with no limiter, on the machine above, where the cap had been resolving
+// to 5: 771 tests across both test projects, 0 failed, every run, at a median of 106 s against the
+// ~2m15s the capped runs had been taking. So the cap was costing roughly a fifth of the suite's wall
+// clock to suppress a symptom whose cause was somewhere else entirely.
 //
-// If an intermittently missing container ever comes back, re-adding a cap is the wrong first move:
-// that is what hid this bug for as long as it was hidden. Look for a second leak path first.
+// That argument survives the change of shape, and the pressure it was about has since dropped
+// further: peak containers are 19 rather than 44, and the per-test Docker work the cap was rationing
+// does not happen at all any more. If an intermittently missing container ever comes back, re-adding
+// a cap is still the wrong first move — it is what hid the leak for as long as it was hidden. Look
+// for a second leak path first, remembering that what is left to leak per test is now a database
+// rather than a container.
 //
-// Deliberately NOT container-per-class. Respawn 7.0.0 is already referenced and unused, and sharing
-// one container across a class with a reset between tests is the obvious next step — but
-// PostgresTestHost's isolation is per test today, several classes here provision roles and read the
-// grant matrix, and rewriting that is a far larger change than an intermittently missing container
-// justifies.
+// Why not container-per-class
+//
+// Still deliberate, and the arithmetic is worth restating against today rather than against the
+// container-per-test suite it was first written for. Container-per-class serialises the tests within
+// a class, so wall clock stops being total work divided by cores and becomes the longest single
+// class: PasskeyCeremonyTests alone is 36 tests. A database per test costs 30.8 ms and keeps every
+// one of them in flight, so there is nothing left for the trade to buy.
+//
+// Sharing one database across a class would also need a reset between tests, and Respawn —
+// referenced at 7.0.0, still unused — is not one. It deletes rows. It does not reset schema, roles
+// or grants, which is exactly what the schema and grant classes here assert on: they revoke
+// privileges, drop policies and read the grant matrix, and a row-level reset leaves every one of
+// those changes standing. The reference should be dropped. It is the last trace of an alternative
+// these measurements closed off, and a package referenced for an approach nobody will take reads as
+// an approach somebody might; removing it is a change of its own, and this file is comment only.
 //
 // Nothing but comment remains, and the file keeps its place on that basis: what it records is an
 // absence, which has nowhere else to live. Assembly attributes are what someone greps for when a

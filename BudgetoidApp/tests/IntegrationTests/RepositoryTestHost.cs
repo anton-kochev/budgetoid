@@ -4,25 +4,20 @@ using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
-using Testcontainers.PostgreSql;
 
 namespace IntegrationTests;
 
 public sealed class RepositoryTestHost : IAsyncDisposable
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17")
-        .WithDatabase("budgetoid")
-        .WithUsername("postgres")
-        .WithPassword("postgres")
-        .Build();
-
     /// <summary>
-    /// Password the grants script assigns to the application role inside this test container. A
-    /// constant is fine: the container lives for one test and is unreachable from outside it.
+    /// Superuser connection string for this host's own database inside the shared cluster, or
+    /// <see langword="null" /> until <see cref="StartAsync" /> has produced one.
     /// </summary>
-    private const string AppRolePassword = "app-test-password";
+    private string? _connectionString;
 
-    public string ConnectionString => _container.GetConnectionString();
+    public string ConnectionString => _connectionString
+        ?? throw new InvalidOperationException(
+            $"{nameof(RepositoryTestHost)} has no database until {nameof(StartAsync)} has run.");
 
     /// <summary>
     /// Connects as the least-privilege application role instead of the container account. This
@@ -35,7 +30,7 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     public string AppConnectionString => new NpgsqlConnectionStringBuilder(ConnectionString)
     {
         Username = DatabaseProvisioning.AppRoleName,
-        Password = AppRolePassword,
+        Password = SharedPostgresCluster.AppRolePassword,
     }.ConnectionString;
 
     /// <summary>
@@ -140,45 +135,30 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Starts the container, migrates the schema into it and provisions the application role.
+    /// Takes a database out of the shared cluster, already migrated and already provisioned.
     /// </summary>
     /// <remarks>
-    /// The failure path disposes the container here rather than leaving it to the caller, and that
-    /// is the whole reason for the try/catch. Every call site has the shape
-    /// <c>await using RepositoryTestHost host = await StartHostAsync();</c>, so the variable is
-    /// bound only <b>after</b> this method returns: when the start throws, nothing is ever disposed.
-    /// The container object is created in a field initializer, so Docker may already hold a
-    /// container by then, and one that never reported healthy would keep its memory and its port
-    /// binding for the rest of the run — making the next start more likely to time out in turn. The
-    /// whole body is covered and not just the container start, because migration and provisioning
-    /// run against a container that is already up and leak it just as completely when they throw.
-    /// Owning the cleanup here also means a call site added later cannot forget it.
+    /// <para>
+    /// The migration and the grants script used to run here, once per test, against a container of
+    /// this host's own. They now run once for the whole assembly, into the template every database
+    /// here is cloned from — and the clone inherits the result rather than reproducing it. That is
+    /// sound because the two halves of provisioning live in different places: the schema, the grant
+    /// matrix and the isolation policies are all per-<b>database</b> catalogs (<c>pg_class.relacl</c>,
+    /// <c>pg_policy</c>) and are copied by <c>CREATE DATABASE ... TEMPLATE</c>, while the role itself
+    /// is cluster-level and is therefore already in place. A test that revokes a grant or drops a
+    /// policy still affects nothing but its own database.
+    /// </para>
+    /// <para>
+    /// The failure path drops the database here rather than leaving it to the caller, and that is the
+    /// whole reason for the try/catch. Every call site has the shape
+    /// <c>await using RepositoryTestHost host = await StartHostAsync();</c>, so the variable is bound
+    /// only <b>after</b> this method returns: when the start throws, nothing is ever disposed, and a
+    /// database that was created and then abandoned keeps its files and its catalog entry for the
+    /// rest of the run. Owning the cleanup here also means a call site added later cannot forget it.
+    /// </para>
     /// </remarks>
-    public async Task StartAsync()
-    {
-        try
-        {
-            await _container.StartAsync();
-            await using var db = new BudgetoidDbContext(
-                new DbContextOptionsBuilder<BudgetoidDbContext>()
-                    .UseNpgsql(ConnectionString)
-                    .Options);
-            await db.Database.MigrateAsync();
-
-            // Two calls, because provisioning no longer decides how the role authenticates. ApplyGrantsAsync
-            // creates the role credential-free and gives it its write surface and its isolation policies;
-            // attaching a credential is a separate step, and production attaches an Entra identity instead.
-            // Password auth is the local and test path, so the tests take the other branch here — which is
-            // also why the branch has to be a separate call rather than a parameter.
-            await DatabaseProvisioning.ApplyGrantsAsync(ConnectionString);
-            await DatabaseProvisioning.AttachAppRolePasswordAsync(ConnectionString, AppRolePassword);
-        }
-        catch
-        {
-            await _container.DisposeAsync();
-            throw;
-        }
-    }
+    public async Task StartAsync() =>
+        _connectionString = await SharedPostgresCluster.CreateDatabaseAsync();
 
     /// <summary>
     /// The user and the default budget one call to <see cref="SeedOwnerAsync" /> created, paired
@@ -316,8 +296,14 @@ public sealed class RepositoryTestHost : IAsyncDisposable
             .UseNpgsql(ConnectionString)
             .Options);
 
+    /// <summary>
+    /// Drops this host's database, and is safe on a host that never started.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
-        await _container.DisposeAsync();
+        if (_connectionString is not null)
+        {
+            await SharedPostgresCluster.DropDatabaseAsync(_connectionString);
+        }
     }
 }

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace IntegrationTests;
 
@@ -48,6 +49,29 @@ public sealed class ApiFactory(
     /// typed its own copy would pass while the two agreed by accident.
     /// </summary>
     public const string PasskeyOrigin = "https://localhost";
+
+    /// <summary>
+    /// Boots the host one caller at a time.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Building this host runs the API's Development startup block, which runs
+    /// <c>app-role-grants.sql</c>, whose first statement writes the <c>pg_authid</c> tuple for
+    /// <c>budgetoid_app</c>. A role is a cluster-level object, so under the assembly's one shared
+    /// PostgreSQL cluster that is a single tuple every test in the suite writes. Two concurrent
+    /// writers of it do not queue; they fail with <c>XX000 tuple concurrently updated</c>, measured
+    /// at 4-, 8- and 16-way concurrency to lose all but one caller every time.
+    /// </para>
+    /// <para>
+    /// The gate is here, and not on either test host, because this is the only object every boot
+    /// passes through. <c>PostgresTestHost</c> builds one; <c>PasskeyCeremonyTests</c> builds one
+    /// straight over a <c>RepositoryTestHost</c>, through no host seam at all. A gate on the hosts
+    /// leaves that class racing, and a gate on both the host and here deadlocks — the semaphore is
+    /// not reentrant.
+    /// </para>
+    /// </remarks>
+    protected override IHost CreateHost(IHostBuilder builder) =>
+        SharedPostgresCluster.UnderRoleGate(() => base.CreateHost(builder));
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
