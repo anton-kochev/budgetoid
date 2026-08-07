@@ -1,4 +1,5 @@
 using Api.Infrastructure;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -98,6 +99,75 @@ public sealed class UserProvisioningRouteTests
         // "no offender" assertion above.
         await Assert.That(endpoints.Length).IsGreaterThan(0);
     }
+
+    /// <summary>
+    /// No route carries both markers, because the middleware can only honour one of them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The two markers answer questions that are compatible on paper — "this route may mint an account"
+    /// and "this route serves callers who have none" — and mutually exclusive in the middleware, because
+    /// the anonymous arm is read <b>first</b> and returns. A route carrying both takes the anonymous arm,
+    /// never reaches find-or-create, and quietly mints nothing for a group whose author asked it to. The
+    /// failure is silent: the endpoint answers normally for everyone who already has an account, and only
+    /// a brand-new subject ever sees it. Nothing else in this suite would catch that, and a route
+    /// declaring a permission the pipeline ignores is worse than one declaring nothing.
+    /// </para>
+    /// <para>
+    /// Ordering-specific, and it belongs to the ordering rather than to either marker. Before the
+    /// anonymous arm moved above the claim gate and credential resolution, a route carrying both would
+    /// have minted — the combination was merely redundant. It is the new order that makes it a
+    /// contradiction, which is why this is stated as its own test rather than folded into the group
+    /// membership assertion above.
+    /// </para>
+    /// <para>
+    /// The two counts below are the controls, and they are not decoration. This assertion is about an
+    /// <em>absence</em>, and a metadata lookup that came back null for every endpoint — a renamed
+    /// attribute, a group that stopped applying it, a route table read before it was populated — would
+    /// satisfy it perfectly while proving nothing. Each marker has to be found somewhere for the
+    /// "nowhere together" claim to mean anything.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AnonymousAndProvisioningMarkers_AreCarriedByDisjointRouteGroups()
+    {
+        // Arrange
+        await using ApiFactory factory = new(
+            "Host=localhost;Port=5432;Database=unused;Username=postgres;Password=postgres",
+            environment: "Production");
+        EndpointDataSource dataSource = factory.Services.GetRequiredService<EndpointDataSource>();
+
+        // Act
+        RouteEndpoint[] endpoints = dataSource.Endpoints.OfType<RouteEndpoint>().ToArray();
+        string[] anonymousPatterns = PatternsCarrying<IAllowAnonymous>(endpoints);
+        string[] markedPatterns = PatternsCarrying<ProvisionsUserAttribute>(endpoints);
+        string[] carryingBoth = endpoints
+            .Where(endpoint => endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null
+                && endpoint.Metadata.GetMetadata<ProvisionsUserAttribute>() is not null)
+            .Select(endpoint => endpoint.RoutePattern.RawText ?? string.Empty)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        // Assert — joined rather than compared as a collection so a failure names the offending route
+        // instead of only reporting that a set was not empty.
+        await Assert.That(string.Join(", ", carryingBoth)).IsEqualTo(string.Empty);
+
+        // The controls. Both markers exist on this route table; the claim above is that they never meet.
+        await Assert.That(anonymousPatterns.Length).IsGreaterThan(0);
+        await Assert.That(markedPatterns.Length).IsGreaterThan(0);
+    }
+
+    /// <summary>
+    /// The distinct route patterns whose endpoint metadata carries <typeparamref name="TMarker" />.
+    /// </summary>
+    private static string[] PatternsCarrying<TMarker>(IEnumerable<RouteEndpoint> endpoints)
+        where TMarker : class =>
+        endpoints
+            .Where(endpoint => endpoint.Metadata.GetMetadata<TMarker>() is not null)
+            .Select(endpoint => endpoint.RoutePattern.RawText ?? string.Empty)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 
     /// <summary>
     /// The group a route pattern belongs to — its first two segments, which is exactly the prefix each

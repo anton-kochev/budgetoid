@@ -231,6 +231,184 @@ public sealed class UserProvisioningTests
     }
 
     /// <summary>
+    /// The sign-in ceremony starts for a token that carries no <c>email_verified</c> claim.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The claim gate runs above the endpoint lookup, so it refuses before anything has asked whether
+    /// this route is anonymous at all. The consequence is not theoretical: a person revokes the email
+    /// grant in their provider account while leaving the application authorized, the client interceptor
+    /// keeps attaching the id token to every <c>/api/</c> call, and passkey sign-in — the one path whose
+    /// whole purpose is to work without the provider — is refused on a claim this ceremony never reads
+    /// and never stores.
+    /// </para>
+    /// <para>
+    /// Driven on the <b>options</b> leg alone, and paired with the finish leg below rather than folded
+    /// into it, because the two legs fail independently: a middleware that let the options leg through
+    /// and still refused the finish would issue a challenge nobody can spend, which reads to a caller as
+    /// a broken sign-in and to this test as a pass.
+    /// </para>
+    /// <para>
+    /// The account behind the subject is deliberately absent. Sign-in has to start for a caller the
+    /// application cannot identify yet — that is what "anonymous" means here — and seeding one would let
+    /// a fix that merely resolves earlier pass.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AssertionOptions_WithATokenMissingTheEmailVerifiedClaim_AreStillIssued()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client =
+            host.Factory.CreateAuthenticatedClientWithoutEmailVerifiedClaim("google-grant-revoked");
+
+        // Act
+        HttpResponseMessage response = await client.PostAsync(AssertionOptionsPath, content: null);
+
+        // Assert — the status first, so the refusal this test is about is what a failure names, rather
+        // than a missing member of a problem-details body.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        // And a spendable challenge really came back. A 200 carrying no challenge would be a route that
+        // answers without minting a nonce, which no client can sign against.
+        JsonNode options = await ReadJsonAsync(response);
+        byte[] challenge = Base64UrlText.Decode(options["challenge"]!.GetValue<string>());
+        await Assert.That(challenge.Length).IsGreaterThan(0);
+    }
+
+    /// <summary>
+    /// And the sign-in it starts finishes: a session is established for a token carrying no
+    /// <c>email_verified</c> claim.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Separate from the options leg above on purpose. Only the finish leg proves a person actually got
+    /// back in — the options leg proves a challenge was issued, which is a strictly weaker claim and one
+    /// a half-fixed middleware satisfies.
+    /// </para>
+    /// <para>
+    /// The passkey is registered by the <b>same</b> subject on a client whose token is complete, because
+    /// that is the sequence the defect describes: the grant is revoked after the passkey exists, not
+    /// before. Registration is authenticated and marked, so it needs the verified address; only the
+    /// sign-in that comes afterwards does not.
+    /// </para>
+    /// <para>
+    /// One accepted assertion, so the device's default counter of 1 is left alone —
+    /// <c>SyntheticAuthenticator</c> holds no counter state, and a second accepted ceremony at the same
+    /// value is what a cloned authenticator looks like.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Assertion_WithATokenMissingTheEmailVerifiedClaim_CompletesTheSignIn()
+    {
+        // Arrange — the account and its passkey, established while the address was still asserted
+        // verified.
+        const string subject = "google-grant-revoked-later";
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient beforeRevocation = host.Factory.CreateAuthenticatedClient(subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await ApiFactory.EstablishAccountAsync(beforeRevocation);
+        await RegisterPasskeyAsync(beforeRevocation, device);
+        Guid userId = await ResolveUserIdAsync(host, subject);
+
+        // Act — the same person, same device, and a token the provider now issues without the claim.
+        HttpClient afterRevocation =
+            host.Factory.CreateAuthenticatedClientWithoutEmailVerifiedClaim(subject);
+        HttpResponseMessage response = await SignInAsync(afterRevocation, device, userId, signCount: 1);
+
+        // Assert — signed in, and to the whole account rather than a locked session: a passkey is what
+        // the full kind is derived from, so a 200 carrying anything else would mean the ceremony was
+        // completed by something other than the passkey.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await ReadKindAsync(response)).IsEqualTo("full");
+    }
+
+    /// <summary>
+    /// A sign-in belongs to whoever the verified passkey belongs to, never to whoever the request
+    /// happened to be carrying a token for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This test passes before the change and after it, and has no control that can be made to fail
+    /// by reverting the fix. It is a pinning test, not a driver.</b>
+    /// <c>CompleteAssertionHandler</c> never reads <see cref="Application.Abstractions.IUserContext" />
+    /// for the account — it takes the account off the credential and publishes it over whatever
+    /// provisioning left — so the property holds today by that handler's own construction.
+    /// </para>
+    /// <para>
+    /// It is written anyway because the change underneath it moves the property from one kind of
+    /// guarantee to another. Today the middleware resolves the bearer token's account and publishes it
+    /// before the ceremony runs, and the handler <em>overwrites</em> that identity: the pairing is
+    /// defended against. Once the anonymous arm is read first, the sign-in legs resolve no identity at
+    /// all and there is nothing to overwrite: the pairing cannot arise. This is the test that fails if
+    /// someone later moves the anonymous arm back below credential resolution <b>and</b> the handler
+    /// starts trusting what provisioning published — the combination that would hand the passkey
+    /// owner's session to the token holder, and the one nothing else in this suite would notice.
+    /// </para>
+    /// <para>
+    /// Both accounts are live. The erased-account case is
+    /// <see cref="AssertionLegs_AcceptAStaleBearerTokenForAnErasedAccount" /> and asks a different
+    /// question — that one is about a token that resolves to nobody, this one about a token that
+    /// resolves to somebody else.
+    /// </para>
+    /// <para>
+    /// <c>PasskeyCeremonyTests.Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner</c>
+    /// states the same property from the ceremony's side, and states it as the handler's rule. The
+    /// difference is what produced the two accounts: that one seeds both rows directly and never runs
+    /// provisioning, so it says nothing about the middleware. Here both accounts and the passkey are
+    /// established through the real endpoints, which is what puts the middleware's ordering between the
+    /// token and the ceremony. If the two are ever collapsed, this is the one to keep and that is the
+    /// reason.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AssertionLegs_CarryingAnotherLiveAccountsToken_SignInAsThePasskeysOwner()
+    {
+        // Arrange — the account whose token rides along, signed in the ordinary way and holding no
+        // passkey of its own.
+        const string tokenHolderSubject = "google-token-holder";
+        const string passkeyOwnerSubject = "google-passkey-owner";
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient tokenHolder = host.Factory.CreateAuthenticatedClient(tokenHolderSubject);
+        await ApiFactory.EstablishAccountAsync(tokenHolder);
+        Guid tokenHolderUserId = await ResolveUserIdAsync(host, tokenHolderSubject);
+
+        // The account the sign-in is actually for, with a real passkey behind it.
+        HttpClient passkeyOwner = host.Factory.CreateAuthenticatedClient(passkeyOwnerSubject);
+        SyntheticAuthenticator ownerDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await ApiFactory.EstablishAccountAsync(passkeyOwner);
+        await RegisterPasskeyAsync(passkeyOwner, ownerDevice);
+        Guid passkeyOwnerUserId = await ResolveUserIdAsync(host, passkeyOwnerSubject);
+
+        // Two distinct accounts, asserted rather than assumed: if provisioning ever collapsed two
+        // subjects onto one row, every assertion below would hold for the wrong reason.
+        await Assert.That(tokenHolderUserId).IsNotEqualTo(passkeyOwnerUserId);
+
+        // Act — both legs on a client carrying the token holder's valid bearer, the owner's device
+        // signing. A fresh client rather than the one above so the header set is the only thing shared.
+        HttpResponseMessage response = await SignInAsync(
+            host.Factory.CreateAuthenticatedClient(tokenHolderSubject),
+            ownerDevice,
+            passkeyOwnerUserId,
+            signCount: 1);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        // Exactly one session, and it names the passkey's owner. Compared as the whole set rather than
+        // "contains the owner": a run that opened a session for each account would satisfy a contains
+        // check, and handing the token holder a session is the failure this test exists for. Joined into
+        // one string so a failure prints which account it went to.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(string.Join(", ", await ReadSessionOwnersAsync(admin)))
+            .IsEqualTo(passkeyOwnerUserId.ToString());
+
+        // And the token holder's account is otherwise as it was — nothing minted on top of the two.
+        await Assert.That(await CountUsersAsync(admin)).IsEqualTo(2L);
+    }
+
+    /// <summary>
     /// The refusal is the middleware's own, produced before anything downstream is asked for a budget.
     /// </summary>
     /// <remarks>
@@ -401,6 +579,28 @@ public sealed class UserProvisioningTests
 
     private static Task<long> CountUsersAsync(NpgsqlConnection connection) =>
         ScalarCountAsync(connection, "select count(*) from users");
+
+    /// <summary>
+    /// The account behind every <c>sessions</c> row, oldest first. Ordered so the result is comparable
+    /// as a string rather than as an unordered set, and read on the container superuser like every other
+    /// count here — <c>user_isolation</c> is <c>FOR ALL</c>, so a policed connection would report a
+    /// session belonging to the wrong account exactly as it reports no session at all.
+    /// </summary>
+    private static async Task<IReadOnlyList<Guid>> ReadSessionOwnersAsync(NpgsqlConnection connection)
+    {
+        await using NpgsqlCommand command = new(
+            "select user_id from sessions order by created_at_utc",
+            connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+
+        List<Guid> owners = [];
+        while (await reader.ReadAsync())
+        {
+            owners.Add(reader.GetGuid(0));
+        }
+
+        return owners;
+    }
 
     /// <summary>
     /// Counts the federated credentials only. <c>credentials</c> holds passkeys too, and a test asserting

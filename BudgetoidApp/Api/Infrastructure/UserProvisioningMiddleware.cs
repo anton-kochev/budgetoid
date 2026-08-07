@@ -11,17 +11,27 @@ namespace Api.Infrastructure;
 /// </summary>
 /// <remarks>
 /// <para>
-/// An authenticated request takes one of three ways below the claim gate:
+/// The route's own <see cref="IAllowAnonymous" /> marker is read first and ends the method: an endpoint
+/// that runs without a principal runs without an account, and those are the same statement. A route
+/// carrying both markers therefore mints nothing, which is why <c>UserProvisioningRouteTests</c> holds
+/// the two sets disjoint. Below that arm an authenticated request takes one of three ways:
 /// </para>
 /// <list type="bullet">
-/// <item>the endpoint declares <see cref="ProvisionsUserAttribute" /> — find or create, unchanged;</item>
+/// <item>the endpoint declares <see cref="ProvisionsUserAttribute" /> — find or create;</item>
 /// <item>it declares nothing and the credential resolves — publish the identity and the budget;</item>
-/// <item>it declares nothing and the credential resolves to no account — 401, and no row is written;</item>
-/// <item>
-/// it declares <see cref="IAllowAnonymous" /> and the credential resolves to no account — continue with
-/// no identity at all, exactly as an unauthenticated request would.
-/// </item>
+/// <item>it declares nothing and the credential resolves to no account — 401, and no row is written.</item>
 /// </list>
+/// <para>
+/// <b>Why the anonymous arm comes first.</b> The claim gate exists to decide whether an address may be
+/// <em>registered</em>; on a route that registers nothing it buys nothing and costs sign-in
+/// availability. A client whose interceptor attaches the provider bearer to every <c>/api/</c> call
+/// would otherwise have its passkey sign-in — the one exchange that must work without the provider —
+/// refused over <c>email_verified</c>, a claim that ceremony never reads and never stores. Revoking the
+/// email grant while leaving the application authorized would take away the way back in. Reading
+/// <see cref="IAllowAnonymous" /> off the route is not a second definition of the anonymous surface: it
+/// is the marker the route already carries for the authorization pipeline, so no exclusion list is
+/// created here.
+/// </para>
 /// <para>
 /// <b>Why the third way exists.</b> A provider id token stays valid for up to an hour after the account
 /// it names has been erased. Minting on any authenticated request whose credential does not resolve
@@ -30,18 +40,12 @@ namespace Api.Infrastructure;
 /// stopped meaning leaving.
 /// </para>
 /// <para>
-/// <b>Why the fourth exists.</b> A client whose interceptor attaches the provider bearer to every
-/// <c>/api/</c> call would otherwise be unable to complete a passkey sign-in while holding a stale
-/// token — refused for an account it is not trying to use. Reading
-/// <see cref="IAllowAnonymous" /> off the route is not a second definition of the anonymous surface: it
-/// is the marker the route already carries for the authorization pipeline, so no exclusion list is
-/// created here.
-/// </para>
-/// <para>
-/// <b>The claim gate stays above all of it, on every request.</b> The natural way to write this method
-/// is to read the endpoint's metadata first and branch, which puts the marked path back on find-or-create
-/// before anybody has asked whether the address is asserted verified. It runs on every request rather
-/// than only on the first for the reason recorded in the users-and-ownership documentation.
+/// <b>The claim gate stays above everything that can resolve or create an account.</b> The natural way
+/// to write this method is to read the endpoint's metadata once and branch on both markers together,
+/// which puts the marked path back on find-or-create before anybody has asked whether the address is
+/// asserted verified. Only the anonymous arm may pass above the gate, and only because it reaches
+/// neither resolution nor creation. The gate runs on every request rather than only on the first for the
+/// reason recorded in the users-and-ownership documentation.
 /// </para>
 /// <para>
 /// <b>What this does not fix.</b> A client that calls a <em>marked</em> endpoint on app boot still
@@ -81,6 +85,19 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
             return;
         }
 
+        // Populated here because WebApplication puts UseRouting at the very front of the pipeline, ahead
+        // of every middleware registered in Program.cs — this one included, sitting between
+        // UseAuthentication and UseAuthorization. A request matching no route leaves this null, which
+        // reads as carrying neither marker: an authenticated caller with no account is then told 401
+        // rather than 404, and a path that does not exist is the last place to start minting accounts.
+        Endpoint? endpoint = httpContext.GetEndpoint();
+
+        if (endpoint?.Metadata.GetMetadata<IAllowAnonymous>() is not null)
+        {
+            await next(httpContext);
+            return;
+        }
+
         if (!TryGetRequiredClaim(principal, "sub", out string googleSubject) ||
             !TryGetRequiredClaim(principal, "email", out string email))
         {
@@ -99,13 +116,6 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
                 .ExecuteAsync(httpContext);
             return;
         }
-
-        // Populated here because WebApplication puts UseRouting at the very front of the pipeline, ahead
-        // of every middleware registered in Program.cs — this one included, sitting between
-        // UseAuthentication and UseAuthorization. A request matching no route leaves this null, which
-        // reads as "unmarked": an authenticated caller with no account is then told 401 rather than 404,
-        // and a path that does not exist is the last place to start minting accounts.
-        Endpoint? endpoint = httpContext.GetEndpoint();
 
         if (endpoint?.Metadata.GetMetadata<ProvisionsUserAttribute>() is not null)
         {
@@ -131,11 +141,7 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
             new ResolveUserCommand(googleSubject),
             httpContext.RequestAborted);
 
-        if (resolved is not null)
-        {
-            Publish(currentUser, resolved);
-        }
-        else if (endpoint?.Metadata.GetMetadata<IAllowAnonymous>() is null)
+        if (resolved is null)
         {
             // The third refusal of the same shape this method produces, built the same way as the other
             // two — which is why it lives here rather than in an authorization requirement: an
@@ -148,6 +154,7 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
             return;
         }
 
+        Publish(currentUser, resolved);
         await next(httpContext);
     }
 

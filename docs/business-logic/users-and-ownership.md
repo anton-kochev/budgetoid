@@ -493,6 +493,8 @@ stateDiagram-v2
     [*] --> Authenticated : request passes authentication
     Authenticated --> Rejected : missing sub or email claim
     Authenticated --> Rejected : email not asserted as verified
+    Authenticated --> Anonymous : the endpoint carries IAllowAnonymous
+    Anonymous --> [*] : continues with no identity, before the claim gate
     Authenticated --> Lookup : has sub + email + verified email
     Lookup --> Existing : user found by federated credential
     Lookup --> Refused : no credential, and the route does not declare ProvisionsUser
@@ -515,7 +517,8 @@ stateDiagram-v2
 | Authenticated → Rejected | Auth succeeds but claims missing | `sub` and `email` both required, else 401 "missing required claims" |
 | Authenticated → Rejected | Auth succeeds, claims present, `email_verified` does not assert verification | Absent, blank, `false` or unparseable, else 401 "email address is not asserted as verified". One state, two titles: the caller holds the token and can read the claim, so naming the reason leaks nothing |
 | Lookup → Existing | A federated credential holds this `(provider, subject)`; its user is the account | — |
-| Lookup → Refused | No credential holds it and the endpoint carries no `ProvisionsUser` metadata | 401 ProblemDetails. The request stops before routing dispatches, so no handler runs and no row is written. An endpoint marked `AllowAnonymous` takes neither arm — it continues with no identity, exactly as an unauthenticated request would, which is what lets a passkey sign-in complete while a stale bearer token is still attached |
+| Lookup → Refused | No credential holds it and the endpoint carries no `ProvisionsUser` metadata | 401 ProblemDetails. The request stops before routing dispatches, so no handler runs and no row is written |
+| Authenticated → Anonymous | The endpoint carries `IAllowAnonymous` | None. The marker is read **before** the claim gate and the request continues with no identity at all, exactly as an unauthenticated one would. It never reaches the lookup, so a token attached by a client interceptor changes nothing about those routes — which is what lets a passkey sign-in complete on a token the claim gate would refuse |
 | Existing → Resolved | Always, once the credential resolves | None. The branch reads and returns; whatever the token now says about this person is not applied |
 | Creating → Resolved | New user and its first credential inserted in one save | `User.Create` validates email presence and both length bounds; `Credential.CreateFederated` validates provider and subject |
 | Creating → InsertRejected | A unique violation on the credential index, the email index, or both | `TryAddAsync` returns `false` without deciding which rule fired — the reported constraint name cannot say — and neither row is left behind |
@@ -531,6 +534,11 @@ Resolving the internal user (`UserProvisioningMiddleware` → `ResolveUserHandle
 ```
 IF the request is not authenticated
   THEN skip provisioning and continue                    ← public endpoints reach no budget-scoped data
+ELSE IF the endpoint carries IAllowAnonymous
+  THEN continue with no identity                         ← a route that runs without a principal runs
+                                                           without an account; the gate below decides
+                                                           whether an address may be REGISTERED, and
+                                                           these routes register nothing
 ELSE IF the sub or email claim is missing or blank
   THEN 401 ProblemDetails "Authenticated principal is missing required claims."
 ELSE IF email_verified does not parse as true                ← absent, blank, "false" and "1" all fail

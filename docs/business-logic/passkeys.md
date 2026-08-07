@@ -392,9 +392,15 @@ environment, and a session lifetime that varies per environment is a difference 
   only thing that establishes a `Full` one.
 - **[Users & Ownership](users-and-ownership.md)** — the credential row and the account it belongs to.
 - **[Data isolation](../engineering/data-isolation.md)** — the two exempt tables and the policed one.
-- **`UserProvisioningMiddleware`** — unchanged, and deliberately so. It no-ops on an unauthenticated
-  principal, which is exactly the state the discovery read needs, so no route exclusion list exists;
-  an exclusion list would be a second place the anonymous surface is defined.
+- **`UserProvisioningMiddleware`** — it reads the route's own `IAllowAnonymous` metadata **first**,
+  before its claim gate and before resolving anything, and returns. So the two anonymous legs run with
+  no identity whatever token accompanies them, which is exactly the state the discovery read needs.
+  The marker is read off the route rather than matched by path, so no exclusion list exists — one
+  would be a second place the anonymous surface is defined.
+  - **The four authenticated passkey routes carry no `ProvisionsUser` marker**, so a caller whose
+    account does not exist is refused there before the ceremony is entered. A brand-new identity must
+    therefore reach one of the six data route groups before it can register a passkey; see
+    [users-and-ownership.md](users-and-ownership.md).
 
 ## Edge Cases & Known Gotchas
 
@@ -441,11 +447,19 @@ environment, and a session lifetime that varies per environment is a difference 
   database blinked — and re-inserts a `Session` left in `Added` state, writing two rows for one
   sign-in. The discard must be **inside** the delegate; hoisted above the executor it would not
   survive the rollback, and a unit test pins the placement rather than only the call.
-- **A valid Google token may accompany an anonymous assertion.** Provisioning will then have set the
-  current user before the handler runs. The handler must take the account from the verified passkey
-  and publish it, overwriting whatever provisioning left — otherwise a token holder signs into their
-  own account using somebody else's passkey.
-  `Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner` pins it.
+- **A valid Google token may accompany an anonymous assertion, and provisioning now ignores it.** The
+  middleware returns on the route's `IAllowAnonymous` marker before it resolves anything, so nothing
+  is published and the handler's own publication is the only one. The rule the handler enforces is
+  unchanged — **the account comes from the verified passkey, never from the request** — but it now
+  outlives its original reason: it was written because provisioning had already put a *different*
+  account on the request, and today it would hold even if that could never happen. Keep it. A token
+  holder signing into their own account with somebody else's passkey is the failure, and the handler
+  is the layer that refuses it whatever the middleware does.
+  `Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner` pins the
+  rule with both accounts seeded directly, so the middleware is not in its picture at all;
+  `UserProvisioningTests.AssertionLegs_CarryingAnotherLiveAccountsToken_SignInAsThePasskeysOwner`
+  drives the same pair through the real endpoints, so the middleware ordering *is* in its picture —
+  it is what fails if the anonymous arm is ever moved back below resolution.
 - **A ceremony prompt can outlive its nonce.** The timeout sent to the client is
   `min(configured, challenge remaining)`, so the configured value can shorten the prompt and never
   extend the window. Two independent numbers would produce a ceremony a person completes and the

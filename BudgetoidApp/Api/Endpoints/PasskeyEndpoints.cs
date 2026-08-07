@@ -66,9 +66,9 @@ public static class PasskeyEndpoints
 
         // The sign-in legs. Anonymous on the group, because sign-in is the one exchange that by
         // definition runs before anyone is signed in. UserProvisioningMiddleware needs no exclusion
-        // list for this — it no-ops on an unauthenticated principal, which is exactly the state the
-        // discovery read needs, and an exclusion list would be a second place the anonymous surface is
-        // defined.
+        // list for this — it reads this very marker off the route and returns above its claim gate, so a
+        // provider bearer a client interceptor attached changes nothing about these two legs, and an
+        // exclusion list would be a second place the anonymous surface is defined.
         RouteGroupBuilder anonymous = endpoints.MapGroup("/api/passkeys").AllowAnonymous();
 
         anonymous.MapPost("/assertion/options", async (

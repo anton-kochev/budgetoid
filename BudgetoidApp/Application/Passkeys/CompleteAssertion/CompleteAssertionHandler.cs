@@ -17,11 +17,12 @@ namespace Application.Passkeys.CompleteAssertion;
 /// carries the reason it sits where it does. ADR 0012 records the same sequence.
 /// </para>
 /// <para>
-/// This handler never reads <see cref="IUserContext"/> for the account. A caller may present a valid
-/// provider bearer token <i>and</i> call this endpoint, in which case user provisioning has already
-/// put that provider account on the request — and the account this ceremony signs in to is whichever
-/// one the verified passkey belongs to, which need not be the same one. The account is taken from the
-/// credential and published over whatever provisioning left.
+/// This handler never reads <see cref="IUserContext"/> for the account, and the rule survives its own
+/// reason. A caller may present a valid provider bearer token <i>and</i> call this endpoint; the account
+/// this ceremony signs in to is whichever one the verified passkey belongs to, which need not be the one
+/// that token names. The endpoint is anonymous, so user provisioning returns on the route's marker and
+/// publishes nobody — but the account is still taken from the credential rather than from the request,
+/// which is what keeps the property from depending on where the middleware's anonymous arm sits.
 /// </para>
 /// </remarks>
 public sealed class CompleteAssertionHandler(
@@ -102,9 +103,12 @@ public sealed class CompleteAssertionHandler(
         }
 
         // 2. The discovery read — the one statement in the system that runs with no identity on the
-        //    connection. app.current_user_id is still '', so this may touch no policed table, and
-        //    that is precisely why passkey_public_keys is exempt from row-level security (ADR 0012).
-        //    The handle is all the caller supplied; the answer is what will establish who is asking.
+        //    connection. Both legs of this ceremony are anonymous routes, and user provisioning returns
+        //    on that marker before it resolves anyone, so app.current_user_id is still '' whatever token
+        //    accompanied the request. This may therefore touch no policed table, and making this read
+        //    safe is what passkey_public_keys is exempt from row-level security for (ADR 0012) — the
+        //    exemption answers the read, not the route, and holds however the request arrived. The
+        //    handle is all the caller supplied; the answer is what will establish who is asking.
         PasskeyPublicKey? publicKey = await passkeyRepository.FindByWebAuthnCredentialIdAsync(
             webAuthnCredentialId,
             cancellationToken);
