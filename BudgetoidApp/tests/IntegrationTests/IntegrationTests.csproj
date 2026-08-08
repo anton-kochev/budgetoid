@@ -10,6 +10,10 @@
     </PropertyGroup>
     <ItemGroup>
         <PackageReference Include="TUnit" Version="1.56.0"/>
+        <!-- Pinned to the version UnitTests.csproj already carries, so one FakeTimeProvider serves
+             both suites. The filename an export carries is formatted from TimeProvider inside the
+             Api, and a test that could not fix the instant would be asserting a moving value. -->
+        <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.1.0"/>
         <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.9"/>
         <PackageReference Include="Testcontainers.PostgreSql" Version="4.12.0"/>
         <PackageReference Include="Npgsql" Version="10.0.3"/>

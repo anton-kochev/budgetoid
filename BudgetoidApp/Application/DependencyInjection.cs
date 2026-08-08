@@ -31,6 +31,7 @@ using Application.Transactions.GetTransactions;
 using Application.Transactions.UpdateTransaction;
 using Application.Users.EnsureUser;
 using Application.Users.EraseAccount;
+using Application.Users.ExportData;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Application;
@@ -68,6 +69,7 @@ public static class DependencyInjection
         services.AddScoped<ResolveUserHandler>();
         services.AddScoped<EnsureUserHandler>();
         services.AddScoped<EraseAccountHandler>();
+        services.AddScoped<ExportDataHandler>();
         services.AddScoped<RevokeSessionsForCredentialHandler>();
         services.AddScoped<BeginRegistrationHandler>();
         services.AddScoped<CompleteRegistrationHandler>();

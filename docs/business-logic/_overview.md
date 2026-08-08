@@ -55,6 +55,8 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | **Full session** | A session established from a passkey — the only credential type whose authenticator can hold the account's keys, and so the only one that opens a session reaching budget content. |
 | **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
 | **Erasure** | Destroying an account and everything owned beneath it, so that no row in any table references the erased user or any budget it owned. Not a status and not a soft delete: nothing is marked, and no row survives to record that it happened — see [erasure.md](erasure.md). |
+| **Export document** | The single JSON object an export answers with: a schema version, the user record, and every budget the user owns, each carrying its accounts, category groups, categories, payees and transactions as nested arrays. Nothing in it is summarized, sampled or paged, and assembling it writes no row — see [export.md](export.md). |
+| **Schema version** | The integer identifying the shape of an export document. A saved file outlives the deployment that wrote it, so the version is the only thing telling a reader which shape they are holding. |
 | **Provisioning** | The step that turns an authenticated Google principal into an internal user and an ambient budget, run on every authenticated request. |
 | **Unnamed budget** | The budget provisioning creates when a user owns none. It has no name — `name` is null — and a client shows its own localized label in place of one. A user has at most one of these; named budgets are unconstrained in number. The invariant keys on the *absence of a name* rather than on a "default" flag or a well-known name, which is what makes provisioning race-safe — see [budgets.md](budgets.md#business-rules--invariants). "Default budget" names the same row from the provisioning side (`Budget.CreateDefault`, "find-or-create the user's default budget"); prefer "unnamed budget" when the rule turns on the missing name. |
 | **Ambient budget** | The one budget a request is scoped to, resolved server-side at provisioning and read through `IBudgetContext`. Never supplied by the client. |
@@ -76,8 +78,10 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 There is exactly **one role: the authenticated owner.** Within their ambient budget a user manages
 Accounts, Category Groups, and Categories; records, lists, edits and deletes Transactions; lists
 Payees, creates them implicitly by naming one on a transaction, and renames them; and reads global
-Currencies. The budget itself is not manageable — it is provisioned, never configured.
-Unauthenticated visitors can only reach public login/welcome behavior.
+Currencies. The budget itself is not manageable — it is provisioned, never configured. The same
+owner can download a complete copy of everything the server holds about them, and can destroy the
+account outright; neither is behind a support request. Unauthenticated visitors can only reach public
+login/welcome behavior.
 
 ## Domain area map
 
@@ -121,5 +125,7 @@ references are additionally constrained by composite foreign keys to a row in th
 - [Currencies](currencies.md) — global ISO-4217 reference data.
 - [Erasure](erasure.md) — the one action that destroys an account and everything under it, and the
   order it has to delete in.
+- [Export](export.md) — the complete copy of a person's own data, and why it refuses rather than
+  hands back the part it can reach.
 
 Non-obvious decisions are recorded in [_decision-log.md](_decision-log.md).

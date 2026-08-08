@@ -99,8 +99,9 @@ Enforced today:
 - **None of the user-owned entities carries a query filter** — `Budget`, `User`, `Credential`,
   `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`, and the challenge row. The provisioning
   lookup runs before a budget id exists, so every query over `Budgets` must scope by owner explicitly
-  (`FindFirstForUserAsync`); a session and a passkey name no budget at all, so there is none to
-  filter them by. That is a statement about the *read-side filter* only, and it no longer travels
+  — `BudgetRepository.FindFirstForUserAsync` and `ExportReadService.ListOwnedBudgetsAsync`, which are
+  the two that exist today and which a third must join rather than assume it is covered; a session and
+  a passkey name no budget at all, so there is none to filter them by. That is a statement about the *read-side filter* only, and it no longer travels
   with the coverage exemption: `users`, `budgets`, `sessions` and `passkey_signature_counters` are
   policed on the user, while `credentials`, `passkey_public_keys` and `webauthn_challenges` are
   exempt. The first two have to be — reading them is how a request discovers who is asking and
@@ -160,7 +161,9 @@ unclassifiable table, a policy narrowed to `FOR SELECT`, one with a trivial `USI
 the wrong session setting, one on `users` naming no ownership column, one whose `WITH CHECK` is
 wider than its `USING`, a restrictive one, and a granted view over a policed table),
 `tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level two-budgets-same-process +
-endpoint-level two-factory) and the `BudgetId` immutability unit test in
-`tests/UnitTests/TransactionTests.cs`. Removing a `HasQueryFilter` line must make the
+endpoint-level two-factory), the `BudgetId` immutability unit test in
+`tests/UnitTests/TransactionTests.cs`, and `tests/IntegrationTests/DataExportRefusalTests.cs` (the
+owner-scoped `Budgets` read: a user owning a budget the request is not inside is refused rather than
+answered with the part the filters can reach — see [export.md](../business-logic/export.md)). Removing a `HasQueryFilter` line must make the
 DbContext-level test fail; removing — or renaming — a policy must make the RLS ones fail, and must
 also refuse the next deploy.

@@ -95,6 +95,12 @@ Load-bearing rules, each explained there or in the linked decision:
   by the row count alone; a log line is caught by nothing but `ErasureLoggingTests`. All of them
   carry arguments for their deliberate omissions — read
   [erasure.md](docs/business-logic/erasure.md) before widening any.
+- **The export refuses rather than truncates.** `GET /api/me/export` reads `budgets` scoped by
+  `user_id` and the five owned collections through the ambient-budget filters, and **throws** if the
+  user owns any budget other than the ambient one — a silent single-budget export is exactly the
+  truncation the requirement forbids, and the throw is what a future reader will be tempted to
+  "fix" into a quiet success. It writes no row, logs no identifier, and carries no `ProvisionsUser`.
+  See [export.md](docs/business-logic/export.md).
 - `SessionContextInterceptor` must stay a **connection-opened** interceptor, and
   `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string —
   now for two settings, `app.current_user_id` and `app.current_budget_id`, which raises the

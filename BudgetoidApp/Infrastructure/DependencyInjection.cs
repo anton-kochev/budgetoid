@@ -6,6 +6,7 @@ using Application.Currencies;
 using Application.Payees;
 using Application.Transactions;
 using Application.Users;
+using Application.Users.ExportData;
 using Domain.Accounts;
 using Domain.Budgets;
 using Domain.Categories;
@@ -46,6 +47,7 @@ public static class DependencyInjection
         services.AddScoped<ICategoryGroupReadService, CategoryGroupReadService>();
         services.AddScoped<ICategoryReadService, CategoryReadService>();
         services.AddScoped<IUserAccountReadService, UserAccountReadService>();
+        services.AddScoped<IExportReadService, ExportReadService>();
         services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();
 
         // Scoped for the reason every writer over the context is: it holds the scoped

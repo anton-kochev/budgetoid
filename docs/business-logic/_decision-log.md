@@ -8,6 +8,77 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-08 — The export refuses rather than truncates when it cannot reach every budget the user owns
+
+**Context:** the export has to hand back every budget a user owns. Both isolation layers beneath it —
+the `BudgetIsolation` query filter and the `budget_isolation` policy — are scoped to the *ambient*
+budget, and neither takes an argument. Today the question never arises: only provisioning creates
+budgets, so a user owns exactly one and it is always the ambient one. The two sets coincide by
+accident of what the product does not yet do, and nothing anywhere said what should happen when they
+stop coinciding.
+
+**Decision:** read the owned budgets scoped by `user_id`, and **throw** unless that set is exactly
+the ambient budget — set equality, both directions. The export answers everything or it answers
+nothing. The failure is a plain `500` from the catch-all handler, with no exception handler of its
+own, so the only way to soften the answer is to change the throw.
+
+**The set-equality direction that looks redundant is not.** A count-only guard passes the case where
+the ambient budget is one the user does not own, and that case files one budget's rows under
+another's id — a wrong document rather than a short one.
+
+**Alternatives considered:**
+
+- *Silently export the ambient budget* — this is the truncation the requirement forbids, and it would
+  ship as a green feature. Every test would pass, the file would look complete, and the data loss
+  would begin on the day a second budget becomes creatable, in a code path nobody would revisit
+  because it had been working for a year.
+- *Loop the ambient budget over each owned budget* — there is no mechanism. `IBudgetContext` is
+  resolved once per request by the provisioning middleware, and `SessionContextInterceptor` writes
+  `app.current_budget_id` at **connection open**, so re-pointing the ambient budget part-way through a
+  request would need a fresh connection per budget. That is precisely the thing
+  [ADR 0008](../decisions/0008-read-the-ambient-budget-inside-the-policy.md) and the
+  connection-opened interceptor rule exist to prevent, and it would also make a single consistent
+  read impossible.
+- *`IgnoreQueryFilters`* — a compile error by `BannedSymbols.txt`, and the RLS policy underneath would
+  return nothing anyway. Worth naming only because it is the first thing that comes to mind.
+- *A dedicated `IExceptionHandler` mapping the refusal to a friendlier status* — rejected. `404` says
+  the export does not exist, `400` blames a request with no field to correct, and `409` implies a
+  resolution the client cannot perform. A named mapping is also the seam through which someone later
+  turns the refusal into "return what we have, with a warning".
+
+**Affected areas:** [export.md](export.md), [budgets.md](budgets.md).
+
+---
+
+## 2026-08-08 — The export document carries its own records rather than the ones the list endpoints return
+
+**Context:** every entity the export names already has a DTO and a read service behind the list
+endpoints. Reusing them is the obvious move, and the reviewer who finds two nearly-identical record
+sets will reach for it.
+
+**Decision:** the export gets its own records and its own read path. The display shapes are lossy for
+an archive and are free to change with the screens that consume them.
+
+**The losses are concrete, not theoretical.** `TransactionDto` coerces a null description to the
+empty string, so "the person wrote nothing" becomes "the person wrote an empty string" and cannot be
+told apart afterwards. `PayeeDto` carries neither `CreatedAtUtc` nor `BudgetId`. `AccountDto` adds
+currency name and symbol, which no column holds. The read services also order for display — payees by
+name — and a rename would then reshuffle the whole file, so two exports of unchanged data would diff.
+
+**Alternatives considered:**
+
+- *Reuse the DTOs and widen them* — every added field is one the list screens serialize on every
+  request for no reader, and the coercion in `TransactionDto` cannot be removed without changing what
+  those screens receive.
+- *Project straight from the entities with no records at all* — the wire shape would then be whatever
+  the domain classes happen to expose, and the schema version would stop meaning anything: a private
+  setter added to an entity would silently change a documented file format.
+
+**Affected areas:** [export.md](export.md), [transactions.md](transactions.md),
+[payees.md](payees.md), [accounts.md](accounts.md).
+
+---
+
 ## 2026-08-08 — The refusal to leave a remnant is its own vocabulary, and irreversibility is pinned on the route table
 
 **Context:** "erasure leaves no remnant and offers no way back" was, until now, a rule the docs cited
