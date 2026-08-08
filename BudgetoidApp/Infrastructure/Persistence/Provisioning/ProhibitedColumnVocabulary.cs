@@ -60,7 +60,10 @@ public sealed record ProhibitedColumnRule(
 /// that can be satisfied by putting the column on another. The same list is read against relation
 /// names for the same reason one level up: a table named for what it holds is the identical
 /// refusal, and it is the level a behavioural feature is actually modelled at — <c>user_analytics</c>
-/// and <c>device_fingerprints</c> arrive as tables far more often than as columns.
+/// and <c>device_fingerprints</c> arrive as tables far more often than as columns. Both of that pair
+/// are caught, and the second only because <see cref="CompiledRules" /> matches every pattern in the
+/// plural as well: <c>fingerprints</c> is a different token from <c>fingerprint</c> and reaches
+/// nothing on its own. Back that expansion out and this sentence stops being true.
 /// </para>
 /// <para>
 /// <b>The mechanism is token matching, not substring matching.</b> A column name is split into
@@ -90,10 +93,18 @@ public sealed record ProhibitedColumnRule(
 /// phrases naming the analytics idea rather than the token every outbox row carries.
 /// </para>
 /// <para>
-/// The first matching rule wins, but no name can reach a second one: the patterns are chosen to be
-/// disjoint, so the ordering of <see cref="Rules" /> carries no meaning and reordering the list
-/// cannot change a verdict. A future pattern that overlaps an existing one has to say in its reason
-/// which category it means to win, because at that point the order stops being incidental.
+/// <b>The first matching rule wins, and the order of <see cref="Rules" /> is what decides it.</b> No
+/// pattern shadows another — none of the token runs <see cref="CompiledRules" /> executes is a
+/// contiguous run inside any other, checked pairwise across all 66 of them — but that only rules out
+/// one pattern swallowing another wholesale. A single name can still carry two patterns side by side,
+/// and then the order is the whole answer: <c>analytics_event_log</c> reaches <c>analytics</c> and
+/// <c>event_log</c>, so reordering the list would turn an
+/// <see cref="ProhibitedColumnCategory.AnalyticsIdentifier" /> verdict into a
+/// <see cref="ProhibitedColumnCategory.BehaviouralEvent" /> one.
+/// <c>user_event_log</c> is the sharper case, reaching <c>user_event</c> and <c>event_log</c> inside
+/// one category, where what the order decides is which <i>reason</i> the reviewer is handed rather
+/// than which bucket — which is why <see cref="Classify" /> answers with the whole rule. A future
+/// pattern that overlaps an existing one has to say in its reason which category it means to win.
 /// </para>
 /// <para>
 /// This lives in the production assembly rather than in a test for the same reason
@@ -324,25 +335,83 @@ public static class ProhibitedColumnVocabulary
             + "to be called a click is not caught by a rule aimed at a metric"),
     ];
 
-    /// <summary>The patterns above, pre-split into the tokens a column's tokens are matched against.</summary>
-    /// <remarks>
-    /// Built once from <see cref="Rules" /> rather than written twice, so the list a reviewer reads
-    /// and the list <see cref="Classify" /> executes cannot come apart. At this size a plain array
-    /// beats a frozen collection: the work is a short scan of short token runs, and a hash-based
-    /// structure could not answer a contiguous-run question anyway.
-    /// </remarks>
-    private static readonly (string[] Tokens, ProhibitedColumnCategory Category)[] CompiledRules =
-        Rules.Select(rule => (IdentifierTokens.Tokenize(rule.Pattern), rule.Category)).ToArray();
-
     /// <summary>
-    /// Says which refusal a column or relation name is an instance of, or <see langword="null" />
-    /// when the name is one the product is happy to carry.
+    /// The patterns above, pre-split into the tokens a name's tokens are matched against — each of
+    /// them twice, in the form it is written and in the plural.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// Built from <see cref="Rules" /> rather than written twice, so the list a reviewer reads and the
+    /// list <see cref="Classify" /> executes cannot come apart.
+    /// </para>
+    /// <para>
+    /// <b>The executed list is twice the length of the written one, and this is where the two
+    /// differ.</b> Every rule contributes two entries pointing at the same rule object: its pattern as
+    /// written, and the same pattern through <see cref="IdentifierTokens.PluralOf" />.
+    /// <see cref="IdentifierTokens.ContainsRun" /> compares whole tokens ordinally and does not stem,
+    /// so <c>fingerprints</c> reaches no rule <c>fingerprint</c> reaches — and the plural is the shape
+    /// a tracking <i>relation</i> arrives in, every table this schema maps being named in the plural.
+    /// <c>device_fingerprints</c>, <c>page_views</c>, <c>impressions</c>, <c>event_logs</c>,
+    /// <c>user_agents</c>, <c>cookie_ids</c> and <c>mac_addresses</c> are all names this list was read
+    /// as covering and did not. Both entries carry the rule itself rather than a copy of its category,
+    /// so a plural red hands the reader the singular's argument and the two forms cannot disagree with
+    /// each other.
+    /// </para>
+    /// <para>
+    /// The expansion runs in the same safe direction the written list does: it only ever adds
+    /// refusals. A plural nobody wanted leaves a name refused that a reviewer can argue about against
+    /// the singular's own reason, while a missing plural leaves a tracking table allowed by a list that
+    /// reports covering it. It costs nothing on the names that must stay legal either — no expanded
+    /// form reaches an outbox column, a first-party security record's columns, or any table or column
+    /// the shipped model maps, each of which has a test standing on it.
+    /// </para>
+    /// <para>
+    /// Order survives the expansion: a rule's two forms sit together and before the next rule's, so a
+    /// verdict is decided by a rule's position in <see cref="Rules" /> and never by which of its two
+    /// spellings a name happened to carry.
+    /// </para>
+    /// <para>
+    /// At this size a plain array beats a frozen collection: the work is a short scan of short token
+    /// runs, and a hash-based structure could not answer a contiguous-run question anyway.
+    /// </para>
+    /// </remarks>
+    private static readonly (string[] Tokens, ProhibitedColumnRule Rule)[] CompiledRules =
+        Rules
+            .SelectMany(rule => new[]
+            {
+                (Tokens: IdentifierTokens.Tokenize(rule.Pattern), Rule: rule),
+                (Tokens: IdentifierTokens.Tokenize(IdentifierTokens.PluralOf(rule.Pattern)), Rule: rule),
+            })
+            .ToArray();
+
+    /// <summary>
+    /// Says which rule a column or relation name trips, or <see langword="null" /> when the name is
+    /// one the product is happy to carry.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The rule rather than its category</b>, because the category alone is a bucket name and
+    /// <see cref="ProhibitedColumnRule.Reason" /> is the member that makes this list arguable. Handing
+    /// the whole rule back lets a caller print the argument for the refusal on the same line as the
+    /// name it refused, instead of leaving the reason in a file the reader has to know to open — and it
+    /// is the only way a caller can see <i>which</i> rule won when a name reaches two inside one
+    /// category. A caller wanting only the bucket reads <see cref="ProhibitedColumnRule.Category" />
+    /// off the answer.
+    /// </para>
     /// <para>
     /// Null on a null or blank input rather than an exception. This is a classifier reading names
     /// out of a catalog or a model, not a validator of its caller's arguments, and a scan that threw
     /// partway through would report fewer offenders than exist — the fail-open direction.
+    /// </para>
+    /// <para>
+    /// <b>The parameter is nullable because its callers' inputs are.</b>
+    /// <c>IEntityType.GetTableName()</c> and <c>IProperty.GetColumnName()</c> both answer
+    /// <see langword="null" /> for an entity or a property the model maps to no table or column, so a
+    /// non-null parameter would leave every model-reading caller either reaching for <c>!</c> —
+    /// asserting something the model does not promise — or dropping the name before the classifier
+    /// ever sees it. Either way the blank guard below could not fire, which would make the fail-open
+    /// argument for it a claim about unreachable code. Taking the null the callers actually hold is
+    /// what leaves that argument true.
     /// </para>
     /// <para>
     /// Comparison is ordinal on invariantly lower-cased tokens. PostgreSQL folds unquoted
@@ -352,9 +421,15 @@ public static class ProhibitedColumnVocabulary
     /// machine the build ran on.
     /// </para>
     /// </remarks>
-    /// <param name="identifier">A column or relation name, in any casing and from any source.</param>
-    /// <returns>The category the name falls into, or <see langword="null" /> when it falls into none.</returns>
-    public static ProhibitedColumnCategory? Classify(string identifier)
+    /// <param name="identifier">
+    /// A column or relation name, in any casing and from any source, or <see langword="null" /> when
+    /// the model or catalog the caller read it from had none.
+    /// </param>
+    /// <returns>
+    /// The rule the name trips — its pattern, the category it names and the argument for refusing it —
+    /// or <see langword="null" /> when the name trips none.
+    /// </returns>
+    public static ProhibitedColumnRule? Classify(string? identifier)
     {
         if (string.IsNullOrWhiteSpace(identifier))
         {
@@ -363,11 +438,11 @@ public static class ProhibitedColumnVocabulary
 
         string[] tokens = IdentifierTokens.Tokenize(identifier);
 
-        foreach ((string[] patternTokens, ProhibitedColumnCategory category) in CompiledRules)
+        foreach ((string[] patternTokens, ProhibitedColumnRule rule) in CompiledRules)
         {
             if (IdentifierTokens.ContainsRun(tokens, patternTokens))
             {
-                return category;
+                return rule;
             }
         }
 

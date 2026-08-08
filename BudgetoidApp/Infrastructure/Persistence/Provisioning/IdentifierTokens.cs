@@ -9,10 +9,15 @@ namespace Infrastructure.Persistence.Provisioning;
 /// Three readers ask it: <see cref="ProhibitedColumnVocabulary" />, which says what a name tells us
 /// the schema is keeping <i>about a person</i>; <c>ErasureRemnantVocabulary</c>, which says what a
 /// name tells us survived an erasure; and <c>ErasureIrreversibilityTests</c>, which asks the same
-/// of route patterns rather than of column names. <b>Their lists stay apart and only the matching is
-/// shared</b>, because the lists are different rules — different categories, different remedies,
-/// different owning documents — while "what are this name's words, and does this phrase appear among
-/// them" is one question with one right answer.
+/// of route patterns rather than of column names. <b>Their lists stay apart and only the reading of a
+/// name is shared</b>, because the lists are different rules — different categories, different
+/// remedies, different owning documents — while "what are this name's words, and does this phrase
+/// appear among them" is one question with one right answer.
+/// </para>
+/// <para>
+/// Two of the three also share <see cref="PluralOf" />, which the third does not ask for. It is a
+/// separate, opt-in member rather than a stemming step inside the matching for exactly the reason
+/// above: a reader that never asks for it sees the tokens and the verdicts it saw before.
 /// </para>
 /// <para>
 /// One spelling rather than a copy each, because the readers run over the same identifiers in
@@ -121,6 +126,63 @@ public static class IdentifierTokens
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The plural of a pattern, formed on its last token, for a vocabulary that wants a relation name
+    /// to reach the rule its column-shaped spelling reaches.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Opt-in, and it changes no matcher behaviour.</b> <see cref="Tokenize" /> and
+    /// <see cref="ContainsRun" /> are untouched, so a reader that never calls this sees exactly the
+    /// tokens and exactly the verdicts it saw before. That separation is the point: the remarks above
+    /// argue that reading a name is one question with one right answer for all three readers, and a
+    /// stemming step folded into the answer would change what every one of them means without anybody
+    /// touching a list. A vocabulary opts in by compiling each pattern twice, in the form it is
+    /// written and in the form returned here; <see cref="ProhibitedColumnVocabulary" /> and
+    /// <c>ErasureRemnantVocabulary</c> both do, and the route-pattern reader does not. It is spelled
+    /// once here rather than once in each of those two, because a pluralisation rule written down
+    /// twice is two rules with no adjudicator when they disagree.
+    /// </para>
+    /// <para>
+    /// The <b>last</b> token, because an English composite pluralises its head noun and the head noun
+    /// sits last: <c>event_log</c> becomes <c>event_logs</c> and never <c>events_log</c>. That token
+    /// ends where the pattern ends, so its ending is read off the whole string and the pattern never
+    /// has to be split apart and rejoined.
+    /// </para>
+    /// <para>
+    /// <c>+es</c> after a sibilant — <c>s</c>, <c>x</c>, <c>z</c>, <c>ch</c> or <c>sh</c> — and
+    /// <c>+s</c> otherwise. The sibilant branch is not tidiness: under a bare <c>+s</c>,
+    /// <c>mac_address</c> expands to <c>mac_addresss</c> and a table named <c>mac_addresses</c> walks
+    /// straight past the rule written for it, which is a gap rather than a curiosity.
+    /// </para>
+    /// <para>
+    /// <b>The endings English inflects some other way are not handled.</b> A <c>y</c> becomes
+    /// <c>ys</c> rather than <c>ies</c>, and no irregular is attempted. Nothing on either list needs
+    /// them today: the only <c>y</c> ending across the two is the mass noun <c>telemetry</c>, which
+    /// does not arrive in the plural, and no other pattern inflects irregularly. Where the ending is
+    /// wrong the result is a non-word — <c>telemetrys</c>, <c>seens</c>, <c>deleteds</c>, and
+    /// <c>analyticses</c> for a noun that was already plural — which matches nothing rather than
+    /// something wrong, so the expansion stays in the direction that only ever adds refusals. A
+    /// pattern that genuinely needs an irregular plural should be written down as its own rule
+    /// carrying its own argument, which is cheaper to read than an inflection engine sitting between
+    /// a list and its verdict.
+    /// </para>
+    /// </remarks>
+    /// <param name="pattern">A pattern as its vocabulary writes it down.</param>
+    /// <returns>The same pattern with its last token pluralised.</returns>
+    public static string PluralOf(string pattern)
+    {
+        // Case-insensitive, so a pattern written in another casing pluralises the same way, and
+        // ordinal rather than cultural, which is the comparison every other member here makes.
+        bool endsInSibilant = pattern.EndsWith("s", StringComparison.OrdinalIgnoreCase)
+            || pattern.EndsWith("x", StringComparison.OrdinalIgnoreCase)
+            || pattern.EndsWith("z", StringComparison.OrdinalIgnoreCase)
+            || pattern.EndsWith("ch", StringComparison.OrdinalIgnoreCase)
+            || pattern.EndsWith("sh", StringComparison.OrdinalIgnoreCase);
+
+        return endsInSibilant ? pattern + "es" : pattern + "s";
     }
 
     /// <summary>Appends <c>[start, end)</c> as a lower-cased token when it is a real span.</summary>

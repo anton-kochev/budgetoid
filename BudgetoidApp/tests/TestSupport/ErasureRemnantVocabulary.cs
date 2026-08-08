@@ -301,12 +301,14 @@ public static class ErasureRemnantVocabulary
     /// same argument the singular does.
     /// </para>
     /// <para>
-    /// Folded here rather than into <see cref="IdentifierTokens" />, which two other readers share and
-    /// whose remarks argue the matching is one question with one answer — a stemming step hidden in
-    /// the matcher would change what those readers mean without touching their lists. Folded rather
-    /// than written out as plural twins, because doubling the entries doubles the number of arguments
-    /// a reviewer has to answer while adding none, and the fifteenth twin is the one nobody
-    /// remembers.
+    /// The pluralisation itself lives in <see cref="IdentifierTokens" />, but as a <b>separate,
+    /// opt-in member rather than a step inside the matching</b> those other readers share, whose
+    /// remarks argue that reading a name is one question with one answer — a stemming step hidden in
+    /// the matcher would change what those readers mean without anybody touching their lists. It is
+    /// applied here, by this list asking for it, so a reader that never asks for a plural sees the
+    /// tokens and the verdicts it saw before. Applied by expansion rather than written out as plural
+    /// twins, because doubling the entries doubles the number of arguments a reviewer has to answer
+    /// while adding none, and the fifteenth twin is the one nobody remembers.
     /// </para>
     /// <para>
     /// The expansion runs in the safe direction, the same one the written list runs in: it only ever
@@ -315,13 +317,17 @@ public static class ErasureRemnantVocabulary
     /// list that reports covering it.
     /// </para>
     /// <para>
-    /// <b>Only a bare <c>+s</c> is applied.</b> The <c>y</c>, <c>ch</c>, <c>s</c>, <c>sh</c> and
-    /// <c>x</c> endings English inflects differently are not handled, and no current pattern needs
-    /// them: the one pattern ending in <c>sh</c> is the mass noun <c>trash</c>, whose expansion
-    /// <c>trashs</c> is not a word and so matches nothing rather than matching something wrong. A
-    /// pattern that genuinely needs an irregular plural should be written below as its own rule
-    /// carrying its own argument, which is cheaper to read than an inflection engine sitting between
-    /// the list and its verdict.
+    /// <b>The plural is <see cref="IdentifierTokens.PluralOf" />'s</b>, the one place this codebase
+    /// spells a pluralisation rule: <c>+es</c> after a sibilant — <c>s</c>, <c>x</c>, <c>z</c>,
+    /// <c>ch</c> or <c>sh</c> — and <c>+s</c> otherwise. On this list the sibilant branch reaches
+    /// exactly one pattern, the mass noun <c>trash</c>, whose expansion <c>trashes</c> is the
+    /// spelling a relation holding trashed rows would carry. The <c>y</c> ending and the irregulars
+    /// English inflects some other way are not handled, and nothing here needs them: no pattern on
+    /// the list ends in <c>y</c> and none inflects irregularly. Where an ending is wrong the result
+    /// is a non-word — <c>deleteds</c> — which matches nothing rather than something wrong. A
+    /// pattern that genuinely needs an irregular plural should be written into <see cref="Rules" />
+    /// as its own entry carrying its own argument, which is cheaper to read than an inflection
+    /// engine sitting between the list and its verdict.
     /// </para>
     /// <para>
     /// At this size a plain array beats a frozen collection: the work is a short scan of short token
@@ -333,7 +339,7 @@ public static class ErasureRemnantVocabulary
             .SelectMany(rule => new[]
             {
                 (Tokens: IdentifierTokens.Tokenize(rule.Pattern), Rule: rule),
-                (Tokens: IdentifierTokens.Tokenize(rule.Pattern + "s"), Rule: rule),
+                (Tokens: IdentifierTokens.Tokenize(IdentifierTokens.PluralOf(rule.Pattern)), Rule: rule),
             })
             .ToArray();
 

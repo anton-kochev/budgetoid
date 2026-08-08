@@ -67,6 +67,12 @@ public sealed class ErasureRemnantVocabularyTests
     /// whether the rule generalised or not, so it proves nothing.
     /// </para>
     /// <para>
+    /// <c>trashes</c> is the one row that reaches the sibilant branch of
+    /// <see cref="IdentifierTokens.PluralOf" />, which is what the vocabulary forms its plurals with.
+    /// A bare <c>+s</c> produces the non-word <c>trashs</c> and leaves a relation actually named
+    /// <c>trashes</c> — the table form the <c>trash</c> rule exists for — reaching no rule at all.
+    /// </para>
+    /// <para>
     /// <b><c>discarded_at</c> is refused, and it is the row most likely to be argued about.</b>
     /// <i>Discard</i> is this repository's own word for an intentional hard delete — "Recorded money
     /// movement MUST NOT be discarded as a side effect of deleting something else. It is discarded
@@ -95,6 +101,7 @@ public sealed class ErasureRemnantVocabularyTests
     [Arguments("soft_deletes", ErasureRemnantCategory.SoftDeleteFlag)]
     [Arguments("trashed_at", ErasureRemnantCategory.SoftDeleteFlag)]
     [Arguments("trash", ErasureRemnantCategory.SoftDeleteFlag)]
+    [Arguments("trashes", ErasureRemnantCategory.SoftDeleteFlag)]
     [Arguments("trashed_items", ErasureRemnantCategory.SoftDeleteFlag)]
     [Arguments("restored_at", ErasureRemnantCategory.SoftDeleteFlag)]
     [Arguments("is_removed", ErasureRemnantCategory.SoftDeleteFlag)]

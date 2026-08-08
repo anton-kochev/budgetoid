@@ -235,8 +235,21 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     Two probes prove the scan can fail on each axis — `..._ReportsATableThatGrowsSuchAColumn` and
     `..._ReportsATableWhoseOwnNameIsOne` — each deliberately innocent on the axis it is not testing,
     so neither can pass for the wrong reason.
-    `Vocabulary_MatchesNoneOfTheColumnsTheSchemaCarries` is the opposite control: a pattern wide
-    enough to swallow a real column fails there rather than in a reviewer's inbox.
+    `Vocabulary_AndTheShippedSchemaShareNoName` reads the same list against every name the EF model
+    maps, tables as well as columns, and needs no container. It is symmetric on purpose and its
+    failure message says so: a red there is either a pattern wide enough to swallow an ordinary name,
+    which narrows — or a genuinely prohibited column somebody just added, in which case the pattern
+    is right and it is the **schema** that changes. Reading it only the first way is how a real
+    tracking column gets made green by weakening the rule that caught it.
+  - **Each pattern is matched in the plural as well as as written.** The matcher compares whole
+    tokens and does not stem, so `device_fingerprints`, `page_views` and `event_logs` walked past a
+    list that refused their singulars — and every table in this schema is named in the plural. The
+    plural comes from `IdentifierTokens.PluralOf`, shared with the erasure-remnant vocabulary so the
+    two cannot disagree about what a plural is.
+  - **A name can carry two patterns, and then the order of `Rules` decides.** No pattern's tokens sit
+    inside another's, so no rule shadows another — but `analytics_event_log` reaches `analytics` and
+    `event_log`, which are in different categories, and the first rule listed wins. A new pattern
+    overlapping an existing one has to say in its reason which category it means to win.
   - **What a first-party security record may still carry**: the session or credential's own
     identifier, when it began, when it expires or was revoked, and when it was last used — each of
     those is read in order to **end** access, and a record that cannot say which session to revoke
