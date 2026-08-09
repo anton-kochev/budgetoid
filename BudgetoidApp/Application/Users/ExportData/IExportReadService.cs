@@ -32,11 +32,12 @@ public interface IExportReadService
     /// Every budget <paramref name="userId" /> owns, ascending by creation.
     /// </summary>
     /// <remarks>
-    /// Ordered by <c>CreatedAtUtc</c> and then by <c>Id</c>, never by <c>Id</c> alone: UUID v7 sorts by
-    /// creation time under PostgreSQL's <c>uuid</c> byte order but not under .NET's
-    /// <see cref="Guid.CompareTo(Guid)" />, so an id-only order agrees with itself in only one of the
-    /// two places it is read. <c>IBudgetRepository.FindFirstForUserAsync</c> states the same rule as
-    /// contract.
+    /// <c>CreatedAtUtc</c> ascending is the contract — that is what a caller may rely on. <c>Id</c> is a
+    /// deterministic tiebreaker and is not part of it: <c>uuid</c> collation is provider-defined, so two
+    /// budgets sharing an instant may order one way here and another way under a second implementation,
+    /// with neither being wrong. Never <c>Id</c> alone, though: UUID v7 sorts by creation time under
+    /// PostgreSQL's <c>uuid</c> byte order but not under .NET's <see cref="Guid.CompareTo(Guid)" />.
+    /// <c>IBudgetRepository.FindFirstForUserAsync</c> states the same rule as contract.
     /// </remarks>
     Task<IReadOnlyList<ExportedBudget>> ListOwnedBudgetsAsync(
         Guid userId,
@@ -46,13 +47,15 @@ public interface IExportReadService
     /// Everything filed under the ambient budget.
     /// </summary>
     /// <remarks>
-    /// Every collection ascends by <c>CreatedAtUtc</c> and then by <c>Id</c>, for the reason
-    /// <see cref="ListOwnedBudgetsAsync" /> gives: an id-only order agrees with itself under
-    /// PostgreSQL's <c>uuid</c> byte order and not under <see cref="Guid.CompareTo(Guid)" />, so a
-    /// second implementation reading ids alone would disagree with this one without either being
-    /// wrong on its own terms. It is stated here rather than left to the implementation because the
-    /// order rows come back in is what a caller restoring from a saved file has to reconstruct
-    /// creation sequence from — nothing else in the document records it.
+    /// Every collection ascends by <c>CreatedAtUtc</c>, and that ascent is the contract. <c>Id</c> breaks
+    /// ties deterministically but is not part of it: <c>uuid</c> collation is provider-defined, so two
+    /// rows sharing an instant may order one way here and another way under a second implementation,
+    /// with neither being wrong. Never <c>Id</c> alone, for the reason
+    /// <see cref="ListOwnedBudgetsAsync" /> gives — UUID v7 sorts by creation time under PostgreSQL's
+    /// <c>uuid</c> byte order and not under <see cref="Guid.CompareTo(Guid)" />. It is stated here rather
+    /// than left to the implementation because the order rows come back in is what a caller restoring
+    /// from a saved file has to reconstruct creation sequence from — nothing else in the document
+    /// records it.
     /// </remarks>
     Task<ExportedBudgetContents> ReadAmbientBudgetContentsAsync(
         CancellationToken cancellationToken = default);

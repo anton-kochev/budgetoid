@@ -249,16 +249,42 @@ public sealed class DataExportEndpointTests
     /// the job in one line and would have reached every other test running beside this one, in a suite
     /// with no parallelism cap. An <c>AsyncLocal</c> assignment is confined to this test's own flow.
     /// </para>
+    /// <para>
+    /// <b>The fake clock's local zone is moved off UTC, and that is what makes the second half of the
+    /// filename claim measurable at all.</b> <see cref="FakeTimeProvider" /> reports UTC as its local
+    /// zone unless told otherwise, and <c>GetUtcNow()</c> always carries offset zero — so with the
+    /// default zone <c>UtcDateTime</c> and <c>DateTime</c> are the same value, and an endpoint reading
+    /// the local clock, or formatting without projecting to UTC, would leave both filename tests green.
+    /// <c>Pacific/Kiritimati</c> is UTC+14, the largest offset in the database, and against the instant
+    /// below it lands in the next day <em>and</em> the next year: an endpoint that read local time and
+    /// formatted it without the UTC projection would name the file <c>20270101T135959Z</c> — a
+    /// timestamp that looks entirely plausible and is a year wrong.
+    /// </para>
+    /// <para>
+    /// <b>The conjunction in that sentence is exact, and it was measured.</b> Swapping the endpoint's
+    /// <c>GetUtcNow()</c> for <c>GetLocalNow()</c> on its own changes no filename anywhere, in this zone
+    /// or any other: the two name the same instant, and the formatter projects with
+    /// <c>DateTimeOffset.UtcDateTime</c> before rendering, which undoes the offset. What this test
+    /// catches is the pair — a local read <em>and</em> a formatter that renders the offset it was handed
+    /// — and under the default UTC zone that pair is invisible too, which is the whole reason the zone
+    /// is set. Both halves were checked by modelling each mutation in the value the endpoint reads.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Export_UnderANonGregorianCultureIsStillNamedInTheGregorianCalendar()
     {
         // Arrange — the same substitution, a different instant, and the execution context allowed to
-        // flow so the culture set below reaches the endpoint at all.
+        // flow so the culture set below reaches the endpoint at all. The clock's local zone is UTC+14,
+        // which puts local time a day and a year ahead of the instant it reports: without that, local
+        // and UTC are the same value on a FakeTimeProvider and the "in UTC" half of the claim is
+        // unmeasurable.
         await using PostgresTestHost host = await StartHostAsync();
+        FakeTimeProvider clock = new(NewYearsEveInstant);
+        clock.SetLocalTimeZone(TimeZoneInfo.FindSystemTimeZoneById(FurthestAheadTimeZoneId));
+
         await using ApiFactory factory = host.CreateFactory(
             configureServices: services => services.Replace(
-                ServiceDescriptor.Singleton<TimeProvider>(new FakeTimeProvider(NewYearsEveInstant))));
+                ServiceDescriptor.Singleton<TimeProvider>(clock)));
         factory.Server.PreserveExecutionContext = true;
         HttpClient client = factory.CreateAuthenticatedClient();
         await ApiFactory.EstablishAccountAsync(client);
@@ -290,11 +316,24 @@ public sealed class DataExportEndpointTests
 
     /// <summary>
     /// A second instant, deliberately the last second of a year: the value the Buddhist calendar
-    /// renders furthest from the Gregorian one, and the one that would also expose a formatter reading
-    /// a local time zone rather than UTC.
+    /// renders furthest from the Gregorian one, and — paired with
+    /// <see cref="FurthestAheadTimeZoneId" /> as the clock's local zone — the one that puts local time
+    /// in a different day and a different year from the instant itself.
     /// </summary>
     private static readonly DateTimeOffset NewYearsEveInstant =
         new(new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc));
+
+    /// <summary>
+    /// UTC+14, the largest standard offset in the time-zone database, used as the fake clock's local
+    /// zone so that "local" and "UTC" cannot be the same value.
+    /// </summary>
+    /// <remarks>
+    /// An IANA id rather than a Windows one: the suite runs on Linux and macOS, and .NET resolves IANA
+    /// ids on Windows too. Kiritimati keeps no daylight saving, so the offset is the same whatever the
+    /// date — a zone that shifted would make the expected filename depend on which half of the year the
+    /// instant fell in.
+    /// </remarks>
+    private const string FurthestAheadTimeZoneId = "Pacific/Kiritimati";
 
     /// <summary>
     /// The one <c>Content-Disposition</c> the response carries, refusing zero and refusing more than

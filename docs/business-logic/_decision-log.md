@@ -8,6 +8,44 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-08 — The export's row order promises `CreatedAtUtc` and deliberately stops short of the tiebreaker
+
+**Context:** the export orders every array by `CreatedAtUtc` then `Id`, and that pair was written down
+as the read port's contract — the stated reason being that an id-only order would put a
+database-backed implementation and an in-memory one into silent disagreement. Two independent reviews
+pointed out the same thing: the tiebreaker reintroduces the very disagreement the contract claims to
+remove. `uuid` collation is provider-defined — PostgreSQL compares sixteen bytes big-endian,
+`Guid.CompareTo` compares fields — so two rows sharing an instant order differently through the read
+service and through the in-memory fake, and neither is wrong.
+
+**Decision:** narrow the contract to what is true. `CreatedAtUtc` ascending is promised. `Id` breaks
+ties deterministically within one implementation and is explicitly outside the contract; two rows
+sharing an instant may order either way across implementations. No behaviour changed — `.ThenBy(Id)`
+stays on all six queries and in the fake.
+
+**Why not make the tiebreaker provider-independent instead** (`.ThenBy(x => x.Id.ToString())`, or
+comparing big-endian bytes): it would buy a guarantee for a state the product cannot currently
+produce — nothing writes two rows of one collection from a single clock reading — at the price of a
+sort that no longer uses the index and a rule whose reason nobody could reconstruct later. The honest
+narrowing costs nothing and stops the doc from promising what no test holds.
+
+**The gap it exposes is real and stays open:** the ordering test seeds instants minutes apart, so the
+tiebreaker is never exercised. `.ThenBy(Id)` could be deleted from all six queries today without a
+single test going red. That is acceptable precisely because it is outside the contract now — but
+anyone tempted to promote it back into one owes the suite a test that seeds two rows sharing an
+instant.
+
+**Alternatives considered:**
+
+- *Leave the contract as written* — it would keep claiming a cross-implementation agreement that no
+  code delivers, and the first person to write a second implementation would find it out the hard way.
+- *Drop the tiebreaker entirely* — determinism within one implementation is worth keeping; without it
+  two exports of unchanged data could diff on a tie.
+
+**Affected areas:** [export.md](export.md).
+
+---
+
 ## 2026-08-08 — The export refuses rather than truncates when it cannot reach every budget the user owns
 
 **Context:** the export has to hand back every budget a user owns. Both isolation layers beneath it —

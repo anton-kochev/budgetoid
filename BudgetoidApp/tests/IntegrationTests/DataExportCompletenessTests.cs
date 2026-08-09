@@ -60,6 +60,20 @@ namespace IntegrationTests;
 /// so a property renamed on both sides at once — or one the serializer silently omitted — would
 /// agree with itself. What a caller saving this file actually holds is the wire text.
 /// </para>
+/// <para>
+/// <b>The <c>Count</c> assertion on each collection's row is half a pin, and the missing half is
+/// named rather than left to be discovered.</b> The one on the user row works because it has a
+/// partner: <c>DataMinimizationSchemaTests.Schema_PinsTheColumnsOfTheUserRow</c> pins the
+/// <c>users</c> table to three columns while the assertion here pins the document to three
+/// properties, so a column added on either side reds the test on the other and neither can be
+/// silenced by editing its partner. No such schema pin exists for the five budget-owned tables —
+/// <c>DataMinimizationSchemaTests</c> covers <c>users</c> alone. So each count below catches a
+/// property added to the document with no column behind it, and catches <b>nothing</b> in the other
+/// direction: a column added to <c>accounts</c> and never projected leaves every test in this file
+/// green while somebody's saved copy quietly stops being a copy. Closing that direction is Story
+/// 7.4's inventory check, which compares the document's shape against the schema itself rather than
+/// against a number written here.
+/// </para>
 /// </remarks>
 public sealed class DataExportCompletenessTests
 {
@@ -124,6 +138,23 @@ public sealed class DataExportCompletenessTests
         // same through JsonNode's indexer, and a column dropped from the projection would pass.
         await AssertJsonNullAsync(budget, "name");
         await AssertJsonNullAsync(budget, "baseCurrencyCode");
+
+        // Two claims, deliberately not folded into one count. A budget object carries two unrelated
+        // kinds of member — the columns the row persists and the collections filed under it — and a
+        // single "Count == 10" would go red for either reason while naming neither. So: it carries
+        // exactly these five nested collections, by name…
+        string[] nested =
+        [
+            .. budget.Select(member => member.Key)
+                .Intersect(NestedCollectionNames, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+        await Assert.That(string.Join(", ", nested))
+            .IsEqualTo(string.Join(", ", NestedCollectionNames.Order(StringComparer.Ordinal)));
+
+        // …and exactly five columns of its own beside them — id, userId, name, baseCurrencyCode,
+        // createdAtUtc.
+        await Assert.That(budget.Count - nested.Length).IsEqualTo(5);
     }
 
     [Test]
@@ -157,6 +188,12 @@ public sealed class DataExportCompletenessTests
         await Assert.That(checking["currencyCode"]!.GetValue<string>()).IsEqualTo("USD");
         await Assert.That(checking["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.CheckingAccountId]);
+
+        // And exactly seven properties — id, budgetId, name, type, openingBalance, currencyCode,
+        // createdAtUtc. On one row rather than both: the set equality above already says both rows came
+        // out of one projection, so a second count would restate it. Half a pin, and the class remarks
+        // say which half.
+        await Assert.That(checking.Count).IsEqualTo(7);
 
         JsonObject savings = RowFor(accounts, seeded.SavingsAccountId);
         await Assert.That(savings["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
@@ -203,6 +240,9 @@ public sealed class DataExportCompletenessTests
         await Assert.That(essentials["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.EssentialsGroupId]);
 
+        // And exactly six — id, budgetId, name, description, position, createdAtUtc.
+        await Assert.That(essentials.Count).IsEqualTo(6);
+
         JsonObject lifestyle = RowFor(groups, seeded.LifestyleGroupId);
         await Assert.That(lifestyle["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
         await Assert.That(lifestyle["name"]!.GetValue<string>()).IsEqualTo(LifestyleGroupName);
@@ -216,9 +256,11 @@ public sealed class DataExportCompletenessTests
     [Test]
     public async Task Export_CarriesEveryCategoryOfTheBudget()
     {
-        // Arrange — both categories under the same group, so their positions are 0 and 1 rather than
-        // 0 and 0. Two rows carrying the same value for a column say nothing about whether the column
-        // was read per row or filled in once.
+        // Arrange — three rows, and the shape of the three is the claim. Two sit under the same group
+        // so their positions are 0 and 1 rather than 0 and 0; the third sits under the other group so
+        // categoryGroupId is not the same value on every row. Two rows carrying the same value for a
+        // column say nothing about whether the column was read per row or filled in once, and with
+        // only the first two seeded a projection taking categoryGroupId off the first row would pass.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
         await ApiFactory.EstablishAccountAsync(client);
@@ -233,8 +275,13 @@ public sealed class DataExportCompletenessTests
         JsonArray categories = OnlyBudget(document)["categories"]!.AsArray();
 
         // Assert
-        Guid[] expected = [seeded.GroceriesCategoryId, seeded.TransportCategoryId];
-        await Assert.That(expected.Distinct().Count()).IsEqualTo(2);
+        Guid[] expected =
+        [
+            seeded.GroceriesCategoryId,
+            seeded.TransportCategoryId,
+            seeded.LeisureCategoryId,
+        ];
+        await Assert.That(expected.Distinct().Count()).IsEqualTo(3);
         await Assert.That(SortedIds(categories)).IsEqualTo(Sorted(expected));
 
         JsonObject groceries = RowFor(categories, seeded.GroceriesCategoryId);
@@ -248,6 +295,10 @@ public sealed class DataExportCompletenessTests
         await Assert.That(groceries["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.GroceriesCategoryId]);
 
+        // And exactly seven — id, budgetId, categoryGroupId, name, description, position,
+        // createdAtUtc.
+        await Assert.That(groceries.Count).IsEqualTo(7);
+
         JsonObject transport = RowFor(categories, seeded.TransportCategoryId);
         await Assert.That(transport["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
         await Assert.That(transport["categoryGroupId"]!.GetValue<Guid>())
@@ -258,6 +309,21 @@ public sealed class DataExportCompletenessTests
         await Assert.That(transport["position"]!.GetValue<int>()).IsEqualTo(1);
         await Assert.That(transport["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.TransportCategoryId]);
+
+        // The third row is the one that makes categoryGroupId a per-row read: it names the other group,
+        // so a projection that took the parent id once and stamped it on every row fails here. Its
+        // position is 0 rather than 2 because the create handler appends within the group it is given,
+        // and that is the second half of the same claim — position is read per row too.
+        JsonObject leisure = RowFor(categories, seeded.LeisureCategoryId);
+        await Assert.That(leisure["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
+        await Assert.That(leisure["categoryGroupId"]!.GetValue<Guid>())
+            .IsEqualTo(seeded.LifestyleGroupId);
+        await Assert.That(leisure["name"]!.GetValue<string>()).IsEqualTo(LeisureCategoryName);
+        await Assert.That(leisure["description"]!.GetValue<string>())
+            .IsEqualTo(LeisureCategoryDescription);
+        await Assert.That(leisure["position"]!.GetValue<int>()).IsEqualTo(0);
+        await Assert.That(leisure["createdAtUtc"]!.GetValue<DateTime>())
+            .IsEqualTo(created[seeded.LeisureCategoryId]);
     }
 
     [Test]
@@ -290,6 +356,9 @@ public sealed class DataExportCompletenessTests
         await Assert.That(coffeeShop["name"]!.GetValue<string>()).IsEqualTo(CoffeeShopPayeeName);
         await Assert.That(coffeeShop["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[payeeIds[CoffeeShopPayeeName]]);
+
+        // And exactly four — id, budgetId, name, createdAtUtc.
+        await Assert.That(coffeeShop.Count).IsEqualTo(4);
 
         JsonObject transit = RowFor(payees, payeeIds[TransitPayeeName]);
         await Assert.That(transit["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
@@ -342,6 +411,10 @@ public sealed class DataExportCompletenessTests
             .IsEqualTo(seeded.GroceriesCategoryId);
         await Assert.That(coffee["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.CoffeeTransactionId]);
+
+        // And exactly nine — id, budgetId, accountId, amount, date, description, payeeId, categoryId,
+        // createdAtUtc.
+        await Assert.That(coffee.Count).IsEqualTo(9);
 
         JsonObject busPass = RowFor(transactions, seeded.BusPassTransactionId);
         await Assert.That(busPass["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
@@ -817,8 +890,21 @@ public sealed class DataExportCompletenessTests
         Guid LifestyleGroupId,
         Guid GroceriesCategoryId,
         Guid TransportCategoryId,
+        Guid LeisureCategoryId,
         Guid CoffeeTransactionId,
         Guid BusPassTransactionId);
+
+    /// <summary>
+    /// The wire names of the five collections a budget carries.
+    /// </summary>
+    /// <remarks>
+    /// Written down here rather than read from a constant in <c>Application</c>, deliberately. These
+    /// are camelCase because <c>ConfigureHttpJsonOptions</c> in <c>Api</c> says so, and a wire-name
+    /// array living in <c>Application</c> would be a claim about the wire made in a layer that does not
+    /// own it — and one this test could then no longer disagree with.
+    /// </remarks>
+    private static readonly string[] NestedCollectionNames =
+        ["accounts", "categoryGroups", "categories", "payees", "transactions"];
 
     private const string CheckingName = "Checking";
     private const string SavingsName = "Savings";
@@ -830,6 +916,8 @@ public sealed class DataExportCompletenessTests
     private const string GroceriesCategoryDescription = "The weekly shop";
     private const string TransportCategoryName = "Transport";
     private const string TransportCategoryDescription = "Buses, trains and fuel";
+    private const string LeisureCategoryName = "Leisure";
+    private const string LeisureCategoryDescription = "Concerts and the cinema";
     private const string CoffeeShopPayeeName = "Kaffeine";
     private const string TransitPayeeName = "City Transit";
     private const string CoffeeDescription = "Flat white";
@@ -850,8 +938,16 @@ public sealed class DataExportCompletenessTests
     /// <para>
     /// The money data goes in through the real endpoints, so every row is one the application itself
     /// could have written — same validation, same repositories, same least-privilege role. Both
-    /// categories are created under the first group so that their positions differ; both transactions
-    /// name a payee, because naming one is the only thing in the product that writes that table.
+    /// transactions name a payee, because naming one is the only thing in the product that writes that
+    /// table.
+    /// </para>
+    /// <para>
+    /// <b>Categories are the one collection seeded three deep rather than two</b>, and the third row is
+    /// not a spare. Two categories under one group differ in position but carry the same
+    /// <c>categoryGroupId</c>, and a projection that read the parent id once and stamped it on every
+    /// row would satisfy both — the same argument this file makes about position, applied to the column
+    /// beside it. The third sits under the other group, so the two claims hold at once: positions 0 and
+    /// 1 under the first group, and a group id that is not constant down the collection.
     /// </para>
     /// <para>
     /// Duplicated from <c>ErasureAtomicityTests.FurnishAccountAsync</c> rather than extracted, which
@@ -900,6 +996,12 @@ public sealed class DataExportCompletenessTests
             description = TransportCategoryDescription,
             categoryGroupId = essentialsGroupId,
         });
+        Guid leisureCategoryId = await CreateAsync(client, "/api/categories", new
+        {
+            name = LeisureCategoryName,
+            description = LeisureCategoryDescription,
+            categoryGroupId = lifestyleGroupId,
+        });
 
         Guid coffeeTransactionId = await CreateAsync(client, "/api/transactions", new
         {
@@ -927,6 +1029,7 @@ public sealed class DataExportCompletenessTests
             lifestyleGroupId,
             groceriesCategoryId,
             transportCategoryId,
+            leisureCategoryId,
             coffeeTransactionId,
             busPassTransactionId);
     }

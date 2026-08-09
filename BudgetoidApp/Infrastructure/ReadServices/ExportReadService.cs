@@ -143,6 +143,17 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
                 transaction.CreatedAtUtc))
             .ToListAsync(cancellationToken);
 
-        return new ExportedBudgetContents(accounts, categoryGroups, categories, payees, transactions);
+        // Wrapped rather than handed over as they were materialized. ToListAsync returns a List, and a
+        // List behind ExportedBudgetContents' IReadOnlyList is castable back to one by anything holding
+        // the value — a copy of somebody's data would be clearable through the interface that says it is
+        // read-only. AsReadOnly is a wrapper per collection rather than a second materialization of five
+        // collections that may run to thousands of rows, which is why it is preferred here to rebuilding
+        // each one through a collection expression.
+        return new ExportedBudgetContents(
+            accounts.AsReadOnly(),
+            categoryGroups.AsReadOnly(),
+            categories.AsReadOnly(),
+            payees.AsReadOnly(),
+            transactions.AsReadOnly());
     }
 }

@@ -5,18 +5,27 @@ namespace UnitTests.Fakes;
 /// <summary>
 /// In-memory <see cref="IExportReadService" /> that reproduces the three behaviours the handler
 /// above it depends on: a user lookup that answers <see langword="null" /> for an id no row carries,
-/// an owned-budget list scoped to the owner and ordered the way the port documents, and a contents
-/// read that answers whatever the test said the ambient budget holds.
+/// an owned-budget list scoped to the owner and ordered by creation instant, and a contents read that
+/// answers whatever the test said the ambient budget holds.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Hand-written rather than generated, which is the local convention — every fake in this folder is
 /// a real type with real behaviour, and <c>InMemoryBudgetRepositoryTests</c> exists because a fake
 /// that models a rule can get the rule wrong. What is modelled here is only what a handler test can
-/// go red on: the <c>userId</c> predicate on both owner-scoped reads, and the
-/// <c>(CreatedAtUtc, Id)</c> order <see cref="IExportReadService.ListOwnedBudgetsAsync" /> states as
+/// go red on: the <c>userId</c> predicate on both owner-scoped reads, and the ascending
+/// <c>CreatedAtUtc</c> order <see cref="IExportReadService.ListOwnedBudgetsAsync" /> states as
 /// contract. Without the predicate, a handler that passed the ambient budget's owner — or nothing at
 /// all — where the signed-in user belongs would pass every test in this file.
+/// </para>
+/// <para>
+/// <b>Ascending <c>CreatedAtUtc</c> is the contract; the <c>Id</c> beside it is a deterministic
+/// tiebreaker whose collation is provider-defined and is <em>not</em> part of it.</b> This fake breaks
+/// a tie through <see cref="Guid" />'s own comparison, which orders field-wise, while PostgreSQL
+/// orders a <c>uuid</c> by its bytes — so two budgets sharing an instant may come back in different
+/// orders here and in production, and no test may rest on which. Nothing in the product creates two
+/// budgets in one instant today; the tiebreaker exists so that a fake and a query cannot each pick
+/// their own arbitrary order within a run, not so a caller can predict one.
 /// </para>
 /// <para>
 /// <b>The contents are returned whole and unfiltered, and that asymmetry is the tenancy model rather
@@ -53,9 +62,14 @@ public sealed class InMemoryExportReadService(
         Task.FromResult(user?.Id == userId ? user : null);
 
     /// <summary>
-    /// Every seeded budget <paramref name="userId" /> owns, ascending by
-    /// <c>(CreatedAtUtc, Id)</c> — the order the port documents and the real read service issues.
+    /// Every seeded budget <paramref name="userId" /> owns, ascending by <c>CreatedAtUtc</c> — the
+    /// order the port documents — with <c>Id</c> as a deterministic tiebreaker.
     /// </summary>
+    /// <remarks>
+    /// The tiebreaker is not the contract and does not match the real read service's for rows sharing
+    /// an instant: this compares a <see cref="Guid" /> field-wise, PostgreSQL compares a <c>uuid</c> by
+    /// its bytes. What both promise is only that a given set comes back the same way twice.
+    /// </remarks>
     public Task<IReadOnlyList<ExportedBudget>> ListOwnedBudgetsAsync(
         Guid userId,
         CancellationToken cancellationToken = default)

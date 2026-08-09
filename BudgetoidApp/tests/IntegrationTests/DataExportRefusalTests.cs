@@ -42,6 +42,17 @@ namespace IntegrationTests;
 /// is one the application itself could have produced.
 /// </para>
 /// <para>
+/// <b>Its instant is derived from the provisioned budget's own <c>created_at_utc</c> and shifted
+/// forward, never written here as a constant.</b> The property that has to hold is a relative one —
+/// seeded later than provisioned — because <c>IBudgetRepository.FindFirstForUserAsync</c> returns the
+/// <b>earliest</b> budget an owner holds, and an instant in the past would quietly make the empty
+/// seeded row the ambient one. Every furnished id would then live in a budget the export never reads,
+/// and the eight-id body search below could not find one even against an implementation that
+/// truncates. Deriving it makes that true by construction rather than by an unstated assumption about
+/// where the system clock happens to be, and it keeps the seeded row one the application itself could
+/// have produced.
+/// </para>
+/// <para>
 /// <see cref="Export_ForAnOwnerOfTheProvisionedBudgetAlone_IsAnswered" /> is the control, and it is
 /// the seeding that it controls for. Every step of the refusal's Arrange block except the second
 /// budget runs there too, so a furnishing call that silently stopped creating rows, or an owner lookup
@@ -78,8 +89,12 @@ public sealed class DataExportRefusalTests
         await ApiFactory.EstablishAccountAsync(client);
 
         FurnishedIds furnished = await FurnishAccountAsync(host, client);
-        (Guid userId, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
-        Guid secondBudgetId = await SeedSecondBudgetAsync(host, userId);
+        (Guid userId, Guid budgetId, DateTime provisionedBudgetCreatedAtUtc) =
+            await ResolveOwnerAsync(host, Subject);
+        Guid secondBudgetId = await SeedSecondBudgetAsync(
+            host,
+            userId,
+            provisionedBudgetCreatedAtUtc.AddMinutes(1));
 
         // Act
         HttpResponseMessage response = await client.GetAsync(ExportPath);
@@ -95,6 +110,12 @@ public sealed class DataExportRefusalTests
         JsonNode problem = JsonNode.Parse(body)
             ?? throw new InvalidOperationException("The refusal answered an empty body.");
         await Assert.That(problem["title"]!.GetValue<string>()).IsEqualTo(CatchAllTitle);
+
+        // And no export filename. The endpoint sets the disposition after the handler returns, so a
+        // refusal carries none today — but that ordering is one line, and moving it above the call
+        // would have a browser save an application/problem+json body under a name that says it is
+        // somebody's finances. Nothing else in the suite would notice.
+        await Assert.That(response.Content.Headers.Contains("Content-Disposition")).IsFalse();
 
         // No document, whole or partial. A refusal that answered the ambient budget's contents under an
         // error status would satisfy the status assertion above and be the very truncation this refusal
@@ -150,7 +171,7 @@ public sealed class DataExportRefusalTests
         await ApiFactory.EstablishAccountAsync(client);
 
         FurnishedIds furnished = await FurnishAccountAsync(host, client);
-        (Guid userId, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
+        (Guid userId, Guid budgetId, _) = await ResolveOwnerAsync(host, Subject);
 
         // Act
         HttpResponseMessage response = await client.GetAsync(ExportPath);
@@ -168,19 +189,24 @@ public sealed class DataExportRefusalTests
         await Assert.That(document["user"]!["id"]!.GetValue<Guid>()).IsEqualTo(userId);
         await Assert.That(body).Contains(budgetId.ToString());
 
-        // Non-vacuity for the furnishing, matching the refusal's guard: the same five rows were written
-        // here, so the two Arrange blocks differ by the second budget and nothing else.
-        await Assert.That(
-                new[]
-                {
-                    furnished.AccountId,
-                    furnished.CategoryGroupId,
-                    furnished.CategoryId,
-                    furnished.PayeeId,
-                    furnished.TransactionId,
-                }.Distinct()
-                .Count())
-            .IsEqualTo(5);
+        // Every furnished id, in the body, by the same search the refusal runs. This is what makes the
+        // pair measure what its prose claims: the refusal asserts that eight ids are absent, and only a
+        // success carrying those same ids says the search can find one at all. A distinctness guard over
+        // five ids returned by five separate creations is true by construction and no production change
+        // can break it — this is not.
+        Guid[] furnishedIds =
+        [
+            furnished.AccountId,
+            furnished.CategoryGroupId,
+            furnished.CategoryId,
+            furnished.PayeeId,
+            furnished.TransactionId,
+        ];
+
+        foreach (Guid furnishedId in furnishedIds)
+        {
+            await Assert.That(body).Contains(furnishedId.ToString());
+        }
     }
 
     /// <summary>
@@ -252,7 +278,18 @@ public sealed class DataExportRefusalTests
     /// domain would have applied — a hand-written row that violated one would fail this test for a
     /// reason that has nothing to do with the export.
     /// </remarks>
-    private static async Task<Guid> SeedSecondBudgetAsync(PostgresTestHost host, Guid userId)
+    /// <param name="host">The running host, for its superuser connection string.</param>
+    /// <param name="userId">The owner the second budget is filed under.</param>
+    /// <param name="createdAtUtc">
+    /// The instant the row claims, which the caller derives from the provisioned budget rather than
+    /// choosing. It must be <see cref="DateTimeKind.Utc" /> — PostgreSQL's <c>timestamptz</c> rejects
+    /// any other kind outright — and it must be later than the provisioned budget's, for the reason
+    /// the comment inside spells out.
+    /// </param>
+    private static async Task<Guid> SeedSecondBudgetAsync(
+        PostgresTestHost host,
+        Guid userId,
+        DateTime createdAtUtc)
     {
         await using BudgetoidDbContext db = new(
             new DbContextOptionsBuilder<BudgetoidDbContext>()
@@ -261,9 +298,15 @@ public sealed class DataExportRefusalTests
 
         // Named, and it must be: IX_budgets_user_id_name is UNIQUE … NULLS NOT DISTINCT, so a second
         // nameless budget collides with the one provisioning wrote and this seeding would be testing
-        // the index. Created after the default budget, so the ambient budget stays the provisioned one
-        // and the refusal is reached rather than an unresolved-budget failure earlier in the request.
-        Budget second = Budget.Create(userId, "Holiday", SeedInstant);
+        // the index.
+        //
+        // The instant is the provisioned budget's own, shifted a minute forward — a minute rather than
+        // a tick because timestamptz resolves microseconds and a minute reads as deliberate in a
+        // failure message. It is load-bearing, not tidy: FindFirstForUserAsync returns the EARLIEST
+        // budget an owner holds, so any instant in the past would make this empty row the ambient one,
+        // move every furnished id into a budget the export never reads, and leave the caller's eight-id
+        // body search unable to find anything even against an implementation that truncates.
+        Budget second = Budget.Create(userId, "Holiday", createdAtUtc);
         db.Budgets.Add(second);
         await db.SaveChangesAsync();
 
@@ -271,11 +314,17 @@ public sealed class DataExportRefusalTests
     }
 
     /// <summary>
-    /// Reads back the user and default budget provisioning minted for <paramref name="subject" />.
-    /// Nothing the API returns names either id, so the lookup goes through the credential the
-    /// middleware resolved the request on.
+    /// Reads back the user and default budget provisioning minted for <paramref name="subject" />,
+    /// with the instant that budget claims. Nothing the API returns names either id, so the lookup goes
+    /// through the credential the middleware resolved the request on.
     /// </summary>
-    private static async Task<(Guid UserId, Guid BudgetId)> ResolveOwnerAsync(
+    /// <remarks>
+    /// The creation instant comes back because the second budget's has to be derived from it rather
+    /// than written down: see <see cref="SeedSecondBudgetAsync" />. Reading it here also means a
+    /// provisioning step that wrote no budget fails loudly on the guards below instead of silently
+    /// handing the seeding a default instant.
+    /// </remarks>
+    private static async Task<(Guid UserId, Guid BudgetId, DateTime BudgetCreatedAtUtc)> ResolveOwnerAsync(
         PostgresTestHost host,
         string subject)
     {
@@ -283,7 +332,7 @@ public sealed class DataExportRefusalTests
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
             """
-            select credentials.user_id, budgets.id
+            select credentials.user_id, budgets.id, budgets.created_at_utc
             from credentials
             join budgets on budgets.user_id = credentials.user_id
             where credentials.provider = 'google' and credentials.subject = @subject
@@ -298,7 +347,8 @@ public sealed class DataExportRefusalTests
                 $"Provisioning wrote no account for subject '{subject}'.");
         }
 
-        (Guid userId, Guid budgetId) = (reader.GetGuid(0), reader.GetGuid(1));
+        (Guid userId, Guid budgetId, DateTime budgetCreatedAtUtc) =
+            (reader.GetGuid(0), reader.GetGuid(1), reader.GetDateTime(2));
 
         // A second row here would mean the seeding already ran, which would silently scope the caller
         // to whichever budget came back first.
@@ -308,7 +358,7 @@ public sealed class DataExportRefusalTests
                 $"Subject '{subject}' owns more than one budget; this lookup assumes exactly one.");
         }
 
-        return (userId, budgetId);
+        return (userId, budgetId, budgetCreatedAtUtc);
     }
 
     /// <summary>
@@ -342,12 +392,6 @@ public sealed class DataExportRefusalTests
         JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
         return json["id"]!.GetValue<Guid>();
     }
-
-    /// <summary>
-    /// Fixed UTC instant for the out-of-band budget. PostgreSQL <c>timestamptz</c> rejects a non-UTC
-    /// <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
-    /// </summary>
-    private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
     private static async Task<PostgresTestHost> StartHostAsync()
     {

@@ -62,7 +62,7 @@ tenant.
   restoring from that file would find the rows there and the data gone.
 - The document **MUST** carry a schema version identifier. A saved file outlives the deployment that
   wrote it, and the version is the only thing telling a reader which shape they are holding.
-- Every array **MUST** be ordered by `(CreatedAtUtc, Id)` ascending. Without an `ORDER BY`,
+- Every array **MUST** ascend by `CreatedAtUtc`, with `Id` as a tiebreaker. Without an `ORDER BY`,
   PostgreSQL row order is unspecified and shifts on any update, vacuum or plan change.
 - The export **MUST** be delivered in the same request-response exchange, with no queue, no
   notification and no waiting period.
@@ -145,15 +145,21 @@ tenant.
 
 ---
 
-- **Rule**: Every array is ordered by `(CreatedAtUtc, Id)` ascending, and that ordering is part of the
-  read port's contract rather than an implementation detail.
+- **Rule**: Every array ascends by `CreatedAtUtc`, and that ascent is the read port's contract rather
+  than an implementation detail. `Id` breaks ties deterministically but is **not** part of the
+  contract.
 - **Why**: creation order is the meaningful order for an archive and it survives a rename, so two
   exports a week apart diff only where the data changed. `CreatedAtUtc` alone is not a total order —
   provisioning writes the user and the budget from one `TimeProvider` read — so a tiebreaker is
-  needed. It is **not** `Id` alone: `IBudgetRepository.FindFirstForUserAsync` already states as
+  needed, and it is **not** `Id` alone: `IBudgetRepository.FindFirstForUserAsync` already states as
   contract that UUID v7 sorts by creation time under PostgreSQL's `uuid` byte order but **not** under
-  .NET's `Guid.CompareTo`, so ordering by id would put a database-backed implementation and an
-  in-memory one into silent disagreement.
+  .NET's `Guid.CompareTo`.
+- **The tiebreaker is deliberately outside the contract**, because it cannot be inside one. `uuid`
+  collation is provider-defined: PostgreSQL compares the sixteen bytes big-endian, `Guid.CompareTo`
+  compares fields. Two rows sharing an instant may therefore order one way through the read service
+  and another through an in-memory implementation, with neither being wrong. Promising
+  `(CreatedAtUtc, Id)` as a whole would be promising an agreement across implementations that no code
+  here delivers.
 - **Enforced in**: `ExportReadService`, with the contract stated on `IExportReadService`.
   `DataExportCompletenessTests.Export_OrdersEachCollectionByCreationRatherThanByInsertionOrder` seeds
   out of band with `created_at_utc` **inverted** against insertion order — without that inversion the
@@ -199,6 +205,12 @@ tenant.
   load-bearing, not decoration: the same format string under a non-Gregorian culture renders the
   Buddhist year and produces a filename 543 years wrong, and a server whose culture comes from its
   host image is not an exotic deployment.
+- **This is a transport decision with a known expiry, and the rule says so rather than letting a
+  future reader discover it.** It is correct while the server assembles the file a person keeps. The
+  day the client decrypts the document before it reaches the user, the saved artifact is created by
+  the browser and a server-sent `attachment` is at best dead weight — at worst it means navigating to
+  the URL saves ciphertext under a name that looks like a finished export. The gotcha below about
+  `Access-Control-Expose-Headers` is the same boundary seen from the other side.
 - **Enforced in**: `DataExportEndpoints.DispositionFor`, pinned **exactly** — not by a `Contains` — by
   `DataExportEndpointTests.Export_NamesTheFileWithTheRequestInstantInUtc`, because the two halves that
   break silently are the `attachment` token and the quoting. Its control,
@@ -206,7 +218,9 @@ tenant.
   `th-TH` and needs `factory.Server.PreserveExecutionContext = true` set **before** the client is
   built: `CultureInfo.CurrentCulture` is an `AsyncLocal` and `TestServer` suppresses execution-context
   flow, so without that line the control sets a culture the endpoint never sees and passes however the
-  filename is formatted.
+  filename is formatted. The same control also fixes the fake clock's local zone away from UTC —
+  without that, `GetUtcNow()` and `GetLocalNow()` name the same moment and the UTC half of the claim
+  has no mechanism behind it.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -275,14 +289,26 @@ a round trip over their own transactions.
   something the file does not contain. A completeness check measured against a full column inventory
   must not read this as a hole.
 - **The document is fully materialized, not streamed, and nothing bounds its size.** It is built as
-  in-memory lists and then serialized, so peak memory is roughly twice the document. One person's
-  budget is small enough for that today and the feature carries no latency target; the ceiling is
-  stated here because nothing in the code states it.
-- **The five reads are not one snapshot.** They run at PostgreSQL's default READ COMMITTED across
-  five round trips, so a write landing mid-export can produce a document whose parts reflect different
-  states — a transaction naming a payee that the payee array does not carry. This is a known gap, not
-  a promise; nothing in the product writes concurrently with an export today because there is one
-  session per person.
+  in-memory lists and then serialized. `TypedResults.Ok` serializes through a `PipeWriter` in buffers
+  rather than into one string, so the peak is closer to one copy of the document than two — but one
+  copy is still unbounded. One person's budget is small enough for that today and the feature carries
+  no latency target; the ceiling is stated here because nothing in the code states it.
+- **The complete-or-nothing guarantee ends when the response starts.** The status and the
+  `Content-Disposition` are written before the body is serialized, so a serialization failure
+  mid-write leaves a truncated JSON document under a valid export filename with a `200` already sent,
+  and `GlobalExceptionHandler` cannot take it back. "Refuses rather than truncates" holds up to the
+  first byte and no further. Stated as a boundary rather than a defect: buffering the document to
+  close it would double the memory on a path that already materializes everything.
+- **The seven reads are not one snapshot.** `FindUserAsync`, `ListOwnedBudgetsAsync` and the five
+  collection reads each run at PostgreSQL's default READ COMMITTED, so a write landing mid-export can
+  produce a document whose parts reflect different states — a transaction naming a payee the payee
+  array does not carry. The `budgets` read is one of the seven, so even the refusal can decide on a
+  set that has changed by the time the contents are read. Two things a reader should not assume:
+  **one session per person does not mean one request at a time** — a bearer token authorizes as many
+  concurrent calls as a client cares to make, so this is reachable today, not only after multi-budget
+  ships; and **wrapping the reads in `ITransactionalExecutor` would not close it**, because that
+  opens at READ COMMITTED and PostgreSQL takes a fresh snapshot per statement. Closing it needs
+  `REPEATABLE READ` around all seven. A known gap, not a promise.
 - **`Content-Disposition` is unreadable to browser JavaScript.** `Api/Program.cs` sets no
   `Access-Control-Expose-Headers`, so a cross-origin `fetch` sees the body and not the filename. A
   client that wants to name the saved file will meet this and it will look like a bug in the endpoint.
@@ -292,6 +318,23 @@ a round trip over their own transactions.
   `NoAccountTitle`. A test asserting only the status cannot tell a route that lost its authorization
   from one that lost the middleware.
 - **A refusal in Development carries the stack trace.** `GlobalExceptionHandler` writes `detail`,
-  `exceptionType` and the full `stackTrace` outside Production, and the stack trace contains the
-  message. Anything put in `ExportCompletenessException`'s message is therefore in the response body
-  twice — which is why it names counts and never ids.
+  `exceptionType` and the full `stackTrace` when the environment is Development — Staging gets
+  neither — and the stack trace contains the message. Anything put in
+  `ExportCompletenessException`'s message is therefore in the response body twice, which is why it
+  names counts and never ids.
+- **Two 500s reach this route and, unlike the two 401s, they are indistinguishable.** The refusal has
+  no exception handler of its own, so it carries the catch-all's `"An unexpected error occurred."` —
+  the same title a `NullReferenceException` or an Npgsql timeout would carry. An integration test can
+  therefore assert *a* 500, never *this* 500; the refusal's type is pinned only by the unit tests in
+  `ExportDataHandlerTests`. That is the accepted price of leaving it on the catch-all, not an
+  oversight.
+- **Every refusal is logged at `LogError` with a stack trace**, by the catch-all handler. The
+  "logs no identifier" rule survives that only because the message names counts — it is held by the
+  wording, not by a mechanism. Read the consequence as the tripwire it is: on the day a second budget
+  becomes creatable, every export turns into an ERROR-level alert. That is the signal the refusal
+  exists to raise, not noise to silence.
+- **Money ships as JSON numbers.** `amount` and `openingBalance` are rendered unquoted at
+  `numeric(14,4)` scale, which is exact for a .NET reader. Any JavaScript reader parses them into an
+  IEEE-754 double, whose significand does not cover that column's full range. For a document that
+  refused `?? string.Empty` to avoid losing a null, this is the same class of loss at the other end
+  of the wire, and a reader of a saved file should know it.

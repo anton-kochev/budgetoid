@@ -101,8 +101,8 @@ Enforced today:
   lookup runs before a budget id exists, so every query over `Budgets` must scope by owner explicitly
   — `BudgetRepository.FindFirstForUserAsync` and `ExportReadService.ListOwnedBudgetsAsync`, which are
   the two that exist today and which a third must join rather than assume it is covered; a session and
-  a passkey name no budget at all, so there is none to filter them by. That is a statement about the *read-side filter* only, and it no longer travels
-  with the coverage exemption: `users`, `budgets`, `sessions` and `passkey_signature_counters` are
+  a passkey name no budget at all, so there is none to filter them by. That is a statement about the
+  *read-side filter* only, and it no longer travels with the coverage exemption: `users`, `budgets`, `sessions` and `passkey_signature_counters` are
   policed on the user, while `credentials`, `passkey_public_keys` and `webauthn_challenges` are
   exempt. The first two have to be — reading them is how a request discovers who is asking and
   whether it is really them, so they are the tables reached with no identity on the session at all
@@ -164,6 +164,6 @@ wider than its `USING`, a restrictive one, and a granted view over a policed tab
 endpoint-level two-factory), the `BudgetId` immutability unit test in
 `tests/UnitTests/TransactionTests.cs`, and `tests/IntegrationTests/DataExportRefusalTests.cs` (the
 owner-scoped `Budgets` read: a user owning a budget the request is not inside is refused rather than
-answered with the part the filters can reach — see [export.md](../business-logic/export.md)). Removing a `HasQueryFilter` line must make the
-DbContext-level test fail; removing — or renaming — a policy must make the RLS ones fail, and must
+answered with the part the filters can reach — see [export.md](../business-logic/export.md)).
+Removing a `HasQueryFilter` line must make the DbContext-level test fail; removing — or renaming — a policy must make the RLS ones fail, and must
 also refuse the next deploy.

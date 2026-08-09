@@ -96,10 +96,13 @@ Load-bearing rules, each explained there or in the linked decision:
   carry arguments for their deliberate omissions — read
   [erasure.md](docs/business-logic/erasure.md) before widening any.
 - **The export refuses rather than truncates.** `GET /api/me/export` reads `budgets` scoped by
-  `user_id` and the five owned collections through the ambient-budget filters, and **throws** if the
-  user owns any budget other than the ambient one — a silent single-budget export is exactly the
-  truncation the requirement forbids, and the throw is what a future reader will be tempted to
-  "fix" into a quiet success. It writes no row, logs no identifier, and carries no `ProvisionsUser`.
+  `user_id` and the five owned collections through the ambient-budget filters, and **throws** unless
+  the owned set is *exactly* the ambient budget — **set equality, both directions**: a budget owned
+  outside the ambient one means rows are missing, and an ambient budget the user does not own means
+  one budget's rows filed under another's id. Do not simplify it to `Count > 1`; that passes the
+  second direction, which has its own test. A silent single-budget export is exactly the truncation
+  the requirement forbids, and the throw is what a future reader will be tempted to "fix" into a
+  quiet success. It writes no row, logs no identifier, and carries no `ProvisionsUser`.
   See [export.md](docs/business-logic/export.md).
 - `SessionContextInterceptor` must stay a **connection-opened** interceptor, and
   `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string —

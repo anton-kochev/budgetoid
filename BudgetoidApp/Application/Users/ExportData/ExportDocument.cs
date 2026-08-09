@@ -17,8 +17,11 @@ namespace Application.Users.ExportData;
 /// </para>
 /// <para>
 /// The parent ids the nesting already implies — <c>userId</c> on a budget, <c>budgetId</c> on each of
-/// its rows — ship anyway, so that a completeness check over this document is a straight column-set
-/// comparison rather than one against a list of agreed omissions.
+/// its rows — ship anyway, so that a completeness check over this document compares a table's columns
+/// against a record's members with only the five nested collections on
+/// <see cref="ExportedBudget" /> set aside, rather than against a list of agreed omissions. Those five
+/// are the document's own nesting rather than anything the <c>budgets</c> row persists, and they are
+/// the only members such a check has to account for.
 /// </para>
 /// </remarks>
 public sealed record ExportDocument(
@@ -45,10 +48,21 @@ public sealed record ExportedUser(Guid Id, string Email, DateTime CreatedAtUtc);
 /// One budget and everything filed under it.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The five collections are <c>init</c> members rather than positional parameters because the budget's
 /// own columns and its contents are read by two different queries: the read service returns the row,
 /// and the handler attaches what was read from inside it. They default to empty so a budget is never
 /// half-constructed.
+/// </para>
+/// <para>
+/// <b>The value equality a record advertises does not reach those five.</b> The synthesized
+/// <see cref="object.Equals(object)" /> compares each member through
+/// <see cref="EqualityComparer{T}.Default" />, which for an <see cref="IReadOnlyList{T}" /> is
+/// reference equality — so two budgets holding equal rows in distinct list instances compare unequal
+/// and hash differently, and <see cref="ExportDocument" /> inherits the same gap through its
+/// <c>Budgets</c>. Compare the scalars, or the collections element-wise; comparing two of these values
+/// whole answers a question about instances rather than about contents.
+/// </para>
 /// </remarks>
 public sealed record ExportedBudget(
     Guid Id,
