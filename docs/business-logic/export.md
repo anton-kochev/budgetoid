@@ -312,6 +312,10 @@ a round trip over their own transactions.
 - **`Content-Disposition` is unreadable to browser JavaScript.** `Api/Program.cs` sets no
   `Access-Control-Expose-Headers`, so a cross-origin `fetch` sees the body and not the filename. A
   client that wants to name the saved file will meet this and it will look like a bug in the endpoint.
+  The web client therefore names the file itself, from the **browser's** clock, in the same
+  `budgetoid-export-{yyyyMMdd}T{HHmmss}Z.json` shape (`settings/export-filename.ts`) — so the saved
+  name and the disposition are minted by two clocks and can differ by seconds, and **neither is
+  authoritative**.
 - **Two 401s reach this route and they are not the same refusal.** No token at all is answered by the
   fallback policy through `UseStatusCodePages`, titled `"Unauthorized"` from the status map alone. A
   valid token naming no account is answered by `UserProvisioningMiddleware` with its own
@@ -337,4 +341,9 @@ a round trip over their own transactions.
   `numeric(14,4)` scale, which is exact for a .NET reader. Any JavaScript reader parses them into an
   IEEE-754 double, whose significand does not cover that column's full range. For a document that
   refused `?? string.Empty` to avoid losing a null, this is the same class of loss at the other end
-  of the wire, and a reader of a saved file should know it.
+  of the wire, and a reader of a saved file should know it. **The web client is a pipe and never
+  parses the document** — `MeApiService.getExport` requests `responseType: 'blob'` and the bytes go
+  to disk unread — precisely so a `JSON.parse` → `JSON.stringify` round-trip on the way to the file
+  cannot replace exact amounts with doubles. `me-api.service.spec.ts` pins the response type, with
+  the `GET /api/me` call beside it resolving as `json` so the pair proves it is a per-call decision;
+  do not "simplify" the export call into `get<ExportDocument>()`.

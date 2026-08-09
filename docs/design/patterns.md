@@ -83,11 +83,11 @@ when the person asks.
 
 ## Theme
 
-Both themes are first-class. Default follows the OS (`color-scheme`); a manual
-override (System / Light / Dark) lives in future Settings, persisted to
-`localStorage['budgetoid-theme']` and applied before first paint (the shipped
-`ThemeService` + `index.html` bootstrap). Every new surface is designed and reviewed
-in both themes before shipping.
+Both themes are first-class. Default follows the OS (`color-scheme`). `ThemeService`
+already resolves, applies and persists a chosen mode to `localStorage['budgetoid-theme']`,
+and `index.html` applies it before first paint — but **no UI calls it**: the Settings
+screen carries no theme control, so the override exists in code and nowhere on screen.
+Every new surface is designed and reviewed in both themes before shipping.
 
 ## Data ownership
 
@@ -97,9 +97,20 @@ The product publicly promises: the user only and always owns their data.
   Settings, one screen deep, always — never buried, never gated on contact/support.
 - Erase is the one place the UI is deliberately slow: a dialog states plainly what
   will be deleted, requires typing a confirmation word, and its commit button is the
-  Destructive variant. Export sits adjacent as the offered alternative.
+  Destructive variant. Export sits adjacent as the offered alternative. (The dialog and
+  its confirmation word are not built; today's control is disabled — see below.)
 - Deleting lesser things (an account with transactions, a category in use) follows the
   same shape at smaller scale: state the consequence in plain words, then confirm.
   Blocked deletes (domain guards) explain what to do instead, and "instead" is the
   smallest act that clears the block — remove the transactions holding the account, not
   everything the user owns: "This account has transactions. Delete them first."
+
+**Today's Settings screen** is `/app/settings`. It has no entry in the bottom bar or the
+rail and is reached by typing the URL — a later epic gives it one. It renders the account's
+email address, a working Export that saves the server's response bytes unread, and an Erase
+control that is present and **disabled**, because erasure has to be confirmed with a passkey
+the client cannot yet register. It states in plain words what the operator can read, and
+that erased rows survive in point-in-time backups for up to seven days. The credential list,
+recovery codes, key rotation, the email-change action and the erasure confirmation dialog
+are not built. The three bullets above stay as written because they are the target, not a
+description of what shipped.

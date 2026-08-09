@@ -485,9 +485,17 @@ that is the one table erasure empties itself.
   literal to `35` reds nothing in this repository, and neither does an operator changing retention on
   the server directly. This is the one rule on this page held by a value in a file rather than by a
   gate, and it is written down here so the gap is a known one rather than an assumption.
-- **Nothing in the product tells a person about this window.** The claim erasure makes to a user is
-  made nowhere yet, so there is no copy to keep honest; the fact belongs here so that the next reader
-  who finds the retention setting does not mistake it for a contradiction.
+- **The product now tells a person about this window, and the number in the copy is held by
+  nothing.** The account settings screen states the seven-day limit in words —
+  `settings.component.spec.ts` pins the sentence, so the copy cannot drift on its own — which makes
+  `BackupRetentionDays = 7` no longer merely a provisioning value: it is the number a user was told.
+  Nothing ties the two together, and they live in different projects and different languages, so
+  editing the literal to `35` reds nothing and leaves the screen quietly lying about a privacy
+  guarantee. **Whoever changes retention changes the copy in the same commit**; until a gate holds
+  that pairing, this sentence is the only thing that says so. A gate is possible — a test reading
+  `AppHost/Program.cs` as text — and was deliberately not written here, because no test in this
+  repository reads a source file, and inventing that pattern for one literal is a larger
+  decision than this rule warrants. It is on the hardening backlog rather than in this commit.
 - **Source**: `[SOURCE: user-story]`
 
 ## Workflows & State Transitions

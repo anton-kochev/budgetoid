@@ -1,0 +1,91 @@
+// The app shell adds no padding, so the route owns its own inset.
+:host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-7);
+  align-content: start;
+  box-sizing: border-box;
+  padding: var(--bud-space-6) var(--bud-gutter) var(--bud-space-9);
+  background: var(--mat-sys-background);
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+}
+
+// `title` role.
+.s-title {
+  margin: 0;
+  font-family: var(--bud-font-display);
+  font-weight: 500;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+.s-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-4);
+  justify-items: start;
+}
+
+// `eyebrow` role: the uppercase is a type style, so the copy stays sentence
+// case and a screen reader still hears a sentence rather than an initialism.
+.s-eyebrow {
+  margin: 0;
+  color: var(--bud-text-muted);
+  font-family: var(--bud-font-display);
+  font-weight: 600;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+// `body`, capped at the reading measure.
+.s-prose {
+  margin: 0;
+  max-width: 65ch;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Colour is never the message here: each failure line reads as a sentence with
+// the colour removed.
+.s-error {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--bud-over);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.s-facts {
+  display: grid;
+  gap: var(--bud-space-1);
+  margin: 0;
+}
+
+.s-facts dt {
+  color: var(--bud-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.s-facts dd {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  // Holds the row open while the address is still in flight, so the page does
+  // not shift under the reader when it arrives.
+  min-height: 1lh;
+}
+
+.s-outcome {
+  display: grid;
+  gap: var(--bud-space-2);
+  justify-items: start;
+}
+
+// Material's M3 height is below the system's touch minimum.
+.s-button {
+  min-height: var(--bud-touch-target);
+}

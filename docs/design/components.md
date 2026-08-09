@@ -27,6 +27,10 @@ state needs no second file. See
 
 Destinations: **Home, Transactions, Accounts, Categories**, plus the **Add** action.
 
+**Settings is not a destination.** The Settings screen ships at `/app/settings` with no entry
+in the bar and none in the rail; it is reached by typing the URL. Nothing in the shell links
+to it yet, and adding it is a decision about the destination list rather than a tidy-up.
+
 ### Bottom bar (compact, < 960px)
 
 - Paper background (`--bud-bg`), top hairline, no elevation, no blur. Height 64px +
@@ -68,6 +72,25 @@ label style `label` (Inter 600 15), icon 20 with 8px gap.
 One primary button per view. Hover on Outline may invert to primary fill (the shipped
 sign-in hover); Ghost and icon buttons use state layers. Icon-only buttons: 40px
 visual, 48px target, always `aria-label`.
+
+A destructive action whose confirmation UI does not exist yet renders as **Outline,
+disabled** — never Destructive. The Destructive fill is a promise that a confirmation
+follows, and a control that cannot be activated should not make it. Disabled is not
+self-explanatory either: a `[disabled]` button leaves the tab order and screen readers skip
+it, so the sentence saying what it waits on is **visible prose beside the button**, never a
+`title`, a tooltip, or an `aria-describedby` on the disabled element.
+
+## Settings section and label/value row
+
+- A settings section is a `<section aria-labelledby>` with an `eyebrow` heading,
+  `--bud-space-4` between heading and content, `--bud-space-7` between sections, body text
+  capped at 65ch. Sections are flat: nothing on the screen has to be opened before a control
+  can be reached.
+- A label/value row is a `<dl>`, label stacked above value: label `caption`
+  `--bud-text-muted`, value `body` `--bud-text`, `--bud-space-1` between them. No border and
+  no card — a card groups, and one row is not a group. The value reserves one line box
+  (`min-height: 1lh`) so the page does not shift when a value arrives from the network.
+- A non-interactive row is not a 48px target. The rule applies to controls, not to text.
 
 ## Text fields and selects
 

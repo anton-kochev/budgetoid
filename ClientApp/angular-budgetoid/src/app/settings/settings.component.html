@@ -1,0 +1,105 @@
+<h1 class="s-title">Settings</h1>
+
+<section class="s-section" aria-labelledby="account-heading">
+  <h2 class="s-eyebrow" id="account-heading">Account</h2>
+
+  <dl class="s-facts">
+    <dt>Email address</dt>
+    <dd>{{ settings.email() }}</dd>
+  </dl>
+
+  <!-- An address that never arrived and an account with no address look the
+       same in an empty value, so the failure says which one this is. -->
+  @if (settings.emailFailed()) {
+    <p class="s-error">
+      Couldn&rsquo;t load your email address. Reload the page.
+    </p>
+  }
+</section>
+
+<section class="s-section" aria-labelledby="export-heading">
+  <h2 class="s-eyebrow" id="export-heading">Export</h2>
+
+  <p class="s-prose">
+    Download everything Budgetoid holds about you as one JSON file &mdash; your
+    account, your budget, and every account, category group, category, payee and
+    transaction in it.
+  </p>
+  <p class="s-prose">
+    The file is built and sent in the same request. There&rsquo;s no queue, no
+    email, and nothing to ask anyone for.
+  </p>
+
+  <button
+    class="s-button"
+    mat-flat-button
+    type="button"
+    (click)="settings.export()"
+  >
+    Export
+  </button>
+
+  <!-- The browser saves the file with no visible act of its own, so the outcome
+       has to be said here. The region stays in the DOM while empty; a live
+       region inserted together with its text is announced by nothing. -->
+  <div class="s-outcome" role="status">
+    @if (settings.exporting()) {
+      <p class="s-prose">Preparing your file&hellip;</p>
+    } @else if (settings.exported()) {
+      <p class="s-prose">Exported.</p>
+    }
+
+    @switch (settings.exportFailure()) {
+      @case ('failed') {
+        <p class="s-error">
+          The export couldn&rsquo;t be built, so nothing was saved &mdash;
+          Budgetoid sends the whole file or none of it. Try again in a few
+          minutes.
+        </p>
+      }
+      @case ('unauthenticated') {
+        <p class="s-error">
+          Your session has ended. Reload the page to sign in again.
+        </p>
+      }
+    }
+  </div>
+</section>
+
+<section class="s-section" aria-labelledby="erase-heading">
+  <h2 class="s-eyebrow" id="erase-heading">Erase everything</h2>
+
+  <p class="s-prose">
+    Erasing removes your account and everything in it &mdash; every budget,
+    account, category, payee and transaction. There is no undo, and Budgetoid
+    offers no way to bring an account back.
+  </p>
+  <p class="s-prose">
+    Erased data stays in point-in-time database backups for up to 7 days, and in
+    no other place.
+  </p>
+
+  <!-- Visible prose, immediately before the control, because the control is
+       disabled: it is out of the tab order and skipped by screen readers, so a
+       title or aria-describedby on it would be read to nobody. -->
+  <p class="s-prose">
+    Erasing has to be confirmed with a passkey, and Budgetoid can&rsquo;t
+    register passkeys yet. The button stays off until it can.
+  </p>
+
+  <button class="s-button" mat-stroked-button type="button" disabled>
+    Erase everything
+  </button>
+</section>
+
+<section class="s-section" aria-labelledby="readable-heading">
+  <h2 class="s-eyebrow" id="readable-heading">What we can read</h2>
+
+  <p class="s-prose">
+    Budgetoid&rsquo;s operators can read everything you record: amounts, dates,
+    currency codes, account types, the order you arrange things in, the
+    timestamps on every row, the identifiers behind them, and your email
+    address. Today that also includes the names and notes you type. Nothing is
+    encrypted with a key only you hold &mdash; not yet.
+  </p>
+</section>

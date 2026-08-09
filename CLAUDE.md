@@ -137,6 +137,14 @@ Load-bearing rules, each explained there or in the linked decision:
   in `src/app/devtools.providers.ts`, which the production `fileReplacements` in `angular.json`
   swaps for an empty module — a runtime `isDevMode()` branch leaves the code in the bundle.
   `src/no-devtools.spec.ts` reads the bundle and fails if it comes back.
+- **`/app/settings` ships with no navigation entry** — reachable by URL only, on purpose; a
+  later epic gives it one. It shows the email from `GET /api/me`, a working export that writes
+  the response bytes to disk **unread** (`responseType: 'blob'` — a JSON round-trip would turn
+  exact `numeric(14,4)` amounts into doubles), and an erasure control that is present and
+  **disabled** because the client cannot register a passkey yet. The credential list, recovery
+  codes, key rotation and email change render nothing today and are owned by later stories —
+  do not "complete" the screen. See [export.md](docs/business-logic/export.md) and
+  [erasure.md](docs/business-logic/erasure.md).
 
 ## Documentation
 

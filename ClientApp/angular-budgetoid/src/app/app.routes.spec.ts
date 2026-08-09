@@ -57,4 +57,32 @@ describe('app routes', () => {
     // Assert
     expect(router.url).toBe('/welcome');
   });
+
+  // NFR-021 counts the address bar too: the settings screen has to be reachable
+  // by one navigation, not by landing somewhere else and drilling in.
+  it('reaches the settings screen in one navigation', async () => {
+    // Arrange
+    const router = routerFor(true);
+
+    // Act
+    await router.navigateByUrl('/app/settings');
+
+    // Assert
+    expect(router.url).toBe('/app/settings');
+  });
+
+  it('sends an anonymous visitor from settings to the welcome screen', async () => {
+    // Arrange
+    const router = routerFor(false);
+
+    // Act
+    await router.navigateByUrl('/app/settings');
+
+    // Assert
+    // Control for the test above: a settings route registered without
+    // `canActivate: [authGuard]` passes "reaches the settings screen"
+    // perfectly, and hands the account, export and erasure controls to anyone
+    // who types the URL.
+    expect(router.url).toBe('/welcome');
+  });
 });

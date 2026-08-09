@@ -71,6 +71,11 @@ figures, not to copy that could just say the number).
   first."
 - **Errors**: what happened + what to do: "Couldn't save — you're offline. It will
   retry." Never blame the person; the subject of an error sentence is the system.
+- **Not built yet**: name the missing piece and what it waits on, in the same breath as
+  the control it disables: "Erasing has to be confirmed with a passkey, and Budgetoid
+  can't register passkeys yet. The button stays off until it can." A disabled control
+  with no sentence beside it reads as a bug, and the person cannot tell a limitation from
+  a failure.
 
 ## Marketing voice (Welcome and public surfaces)
 
