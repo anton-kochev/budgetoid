@@ -280,6 +280,7 @@ app.MapCategoryEndpoints();
 app.MapPasskeyEndpoints();
 app.MapAccountErasureEndpoints();
 app.MapDataExportEndpoints();
+app.MapSignedInUserEndpoints();
 
 await app.RunAsync();
 

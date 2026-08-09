@@ -8,6 +8,50 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-10 — `GET /api/me` returns the email address alone
+
+**Context:** the account settings surface has to show the address the account is registered under,
+and nothing in the product could tell it. The address is stored on `users`, but no endpoint returned
+it: the only two places it surfaced were the export document — which drags a person's entire budget
+along with it and refuses outright when the owned-budget set is not exactly the ambient one — and the
+passkey registration options, which is a ceremony that mints and burns a challenge. The client cannot
+read it out of the ID token either: `auth-service.spec.ts` pins that the client reads no claim, and
+the stored address is deliberately never refreshed from the provider, so the token and the account
+legitimately disagree.
+
+**Decision:** a new authenticated read, `GET /api/me`, answering `{"email":"…"}` — one member, and
+the response record carries no `Id` and no `CreatedAtUtc`. It reuses the existing
+`IUserAccountReadService.FindEmailAsync` rather than adding a port method, and it carries no
+`ProvisionsUser`, so it can refuse but never mint.
+
+**Why the id is the expensive member, and the whole reason the shape is this narrow:** the client has
+never seen an internal user id. Every tenancy value in this API is resolved server-side from the
+authenticated subject and none is ever addressed by the caller — `BudgetRouteConstructionTests` holds
+the route table to that, and `ExportDataQuery` and `EraseAccountCommand` each refuse a user-id member
+for the same reason. Publishing one for a field nothing renders is the first half of a
+client-supplied tenancy parameter: once a caller holds an id, the next request that accepts one has a
+value to carry. Widening the response later is additive and costs a story; narrowing it is breaking.
+
+**Alternatives considered:**
+
+- *Return the whole `users` row* — the natural shape, and it already exists as `ExportedUser`, whose
+  completeness is argued against the table's column inventory. A second shape of the same row on a
+  display path is one that drifts from it, and it publishes the id for nothing.
+- *Return `{id, email}`* — the id as a client-side cache key. Same cost as above for a benefit
+  nothing has asked for; a cache key can be minted client-side.
+- *Return a bare JSON string* — no room to add a second member without breaking every reader, on an
+  endpoint whose whole design bet is that widening stays cheap.
+- *Read the `email` claim from the ID token* — no backend work at all, and wrong: it shows what the
+  provider asserts today rather than the address the account can be reached at, and it would need two
+  shipped client pins relaxed to do it.
+
+**The pin that guards it was watched fail.** `Me_ResponseCarriesTheEmailAndNothingElse` enumerates
+the arriving members and joins them, so a widened record reports `"createdAtUtc, email"` rather than
+that a count moved. It is green the day it was written — nothing else in either suite goes red when a
+member is added — so it was proved against a deliberately widened record before being trusted.
+
+---
+
 ## 2026-08-08 — The export's row order promises `CreatedAtUtc` and deliberately stops short of the tiebreaker
 
 **Context:** the export orders every array by `CreatedAtUtc` then `Id`, and that pair was written down

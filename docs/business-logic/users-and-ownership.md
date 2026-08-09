@@ -330,6 +330,50 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ---
 
+- **Rule**: The signed-in account's own email address is readable at `GET /api/me`, by that account
+  and by nobody else. Nothing else about the account is returned.
+- **Why**: a settings surface has to show the address the account can actually be reached at, and
+  that is the **stored** one — deliberately never refreshed from the provider by the rule above. A
+  client that decoded the ID token instead would show whatever Google asserts today, which is a
+  different value the moment the person changes their Google address, and the account would still be
+  reachable only at the old one. So the disagreement between the two is not a defect this endpoint
+  papers over; it is the reason the endpoint exists rather than the claim being read client-side.
+- **Only the email, because only the email is displayed.** An internal user id handed to a client is
+  an identifier the client will eventually send back, and every tenancy value in this API is resolved
+  server-side from the authenticated subject and never addressed by the caller — the rule
+  `BudgetRouteConstructionTests` holds the route table to, and the one `ExportDataQuery` and
+  `EraseAccountCommand` state for their own inputs. Publishing one for a field nothing renders is the
+  first half of a client-supplied tenancy parameter. Widening the response later is additive and
+  cheap; narrowing it is breaking, which is why the narrow shape is the one that ships.
+- **Enforced in**: `GetSignedInUserHandler` reads `IUserContext.UserId` and never an id from the
+  request — `GetSignedInUserQuery` carries no member and may not gain one. It projects the single
+  column through the existing `IUserAccountReadService.FindEmailAsync`; `user_isolation` on `users`
+  is what makes another account's id answer nothing rather than answer theirs, so the id predicate is
+  an index seek rather than the thing doing the scoping. The route declares no authorization metadata
+  of its own — the application's fallback policy authenticates it — and **no `ProvisionsUser`**, so a
+  provider token outliving an erasure is refused rather than minting an empty shell;
+  `UserProvisioningRouteTests` already lists `/api/me` under the prefixes where minting is forbidden
+  and covers this route with no edit to that list. `SignedInUserEndpointTests` carries the pair that
+  makes the read meaningful — a second account established *after* the first, each asking for itself,
+  asserted in both directions, because with one account every wrong answer and the right one are the
+  same value.
+- **Counterexample**: a response carrying `id` or `createdAtUtc` is exactly the widening this rule
+  refuses. `SignedInUserEndpointTests.Me_ResponseCarriesTheEmailAndNothingElse` enumerates the
+  arriving members and joins them, so it reports `"createdAtUtc, email"` rather than that a count
+  moved — the member to delete is named in the failure. It is a pin, green the day it was written,
+  and it was watched fail against a deliberately widened record before it was trusted.
+- **Handing back null is a broken invariant, not a 404.** A resolved identity with no `users` row
+  cannot be constructed — the account, its first credential and its default budget land in one
+  `SaveChanges`, and `credentials` cascades from `users` on delete — so the handler throws and the
+  caller sees the 500 `GlobalExceptionHandler` writes. Answering "no such account" to a request the
+  pipeline has just authenticated *as that account* would file a broken invariant as an ordinary
+  missing resource, which is the one shape nobody investigates.
+- **The address change is not here.** `GET /api/me` is a read; nothing in the product writes
+  `users.email` after the insert, and the gap below still stands.
+- **Source**: `[SOURCE: user-story — 2026-08-10]`
+
+---
+
 - **Rule**: A credential's **identity columns** — `user_id`, `type`, `provider`, `subject`,
   `created_at_utc` — are immutable. On `users`, `Email` is the only column that can change.
 - **Why**: The credential is the identity anchor — repointing its subject would silently hand an
@@ -629,7 +673,19 @@ The budget branch that runs after this, on every path, is in
   `Authorization: Bearer` header on API calls (see the client `AuthInterceptor`) and reads no claim
   out of it at all; the authorization request asks for `openid email` and nothing more.
   `auth-service.spec.ts` pins the first half and `no-profile-scope.spec.ts`, which reads the built
-  bundle, pins the second.
+  bundle, pins the second. **The client reads no claim *because* it asks the API**: `GET /api/me` is
+  its only source for the address, and that is not a detour around the token — the token asserts what
+  the provider says today, while the account is reachable at what was stored when it was created. Do
+  not "optimize" the call away by decoding the token; the two values legitimately disagree, and the
+  stored one is the answer.
+- **`GET /api/me`**: an authenticated read of the caller's own address, and the settings surface's
+  only source for it. It needed no grant — the role already holds `SELECT` on `users`, so
+  `AppRoleGrantMatrixTests` staying green *untouched* is the proof, and a `42501` on this path would
+  be a query bug rather than a missing privilege. `user_isolation` is what scopes the read. The route
+  declares no authorization metadata of its own and never `AllowAnonymous`, and it carries no
+  `ProvisionsUser` — so a brand-new subject whose **first** authenticated request is this one is
+  refused with `NoAccountTitle` rather than provisioned. A client must reach one of the six
+  account-creating route groups before it reaches this one.
 - **[Budgets](budgets.md)**: provisioning resolves the identity *and* the ambient budget in one step.
   Everything a user can see hangs off that budget, so all tenancy rules — stamping, filtering, name
   uniqueness, the 404 behaviour — are documented there.

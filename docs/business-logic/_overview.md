@@ -79,9 +79,9 @@ There is exactly **one role: the authenticated owner.** Within their ambient bud
 Accounts, Category Groups, and Categories; records, lists, edits and deletes Transactions; lists
 Payees, creates them implicitly by naming one on a transaction, and renames them; and reads global
 Currencies. The budget itself is not manageable — it is provisioned, never configured. The same
-owner can download a complete copy of everything the server holds about them, and can destroy the
-account outright; neither is behind a support request. Unauthenticated visitors can only reach public
-login/welcome behavior.
+owner can download a complete copy of everything the server holds about them, can see the address
+the account is registered under, and can destroy the account outright; none of the three is behind a
+support request. Unauthenticated visitors can only reach public login/welcome behavior.
 
 ## Domain area map
 
