@@ -138,14 +138,68 @@ public sealed class ProjectReferenceGraphTests
         await Assert.That(ExpectedEdges).DoesNotContain("Application: package Microsoft.EntityFrameworkCore");
     }
 
+    [Test]
+    public async Task EdgesOf_RendersTheDependencyFormsThatCarryNoPackageAndNoProject()
+    {
+        // Arrange — four ways to hand a project code it did not write, none of which is a
+        // ProjectReference or a PackageReference. Each of these was a silent pass before a review
+        // went looking for them, and each is here so it cannot become one again.
+        XDocument document = XDocument.Parse(
+            """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <Sdk Name="Microsoft.NET.Sdk.Web" />
+              <Import Project="..\Shared.props" />
+              <ItemGroup>
+                <Reference Include="Microsoft.EntityFrameworkCore">
+                  <HintPath>..\packages\ef\lib\net10.0\Microsoft.EntityFrameworkCore.dll</HintPath>
+                </Reference>
+              </ItemGroup>
+            </Project>
+            """);
+
+        // Act
+        IReadOnlyList<string> edges = ProjectGraph.EdgesOf("Domain", document);
+
+        // Assert — the element form of Sdk resolves the same types as the attribute while leaving
+        // the attribute untouched; a raw Reference is a real dependency with no package to name;
+        // and an Import can carry any of them, so it is reported without being followed.
+        await Assert.That(edges).IsEquivalentTo(new[]
+        {
+            "Domain: sdk Microsoft.NET.Sdk",
+            "Domain: sdk Microsoft.NET.Sdk.Web",
+            "Domain: import ..\\Shared.props",
+            "Domain: assembly Microsoft.EntityFrameworkCore",
+        });
+    }
+
+    [Test]
+    public async Task ProjectGraph_ScansTheImportedBuildFilesAndNotOnlyTheProjects()
+    {
+        // Arrange
+        DirectoryInfo root = ProjectGraph.SolutionRootFrom(AppContext.BaseDirectory);
+
+        // Act — Directory.Build.props is imported into every project in the tree, Domain included.
+        // A single PackageReference there compiled Domain against EF Core with every csproj in the
+        // solution untouched, and a scan of "*.csproj" reported nothing at all.
+        string[] scanned = ProjectGraph.BuildFileNamesUnder(root);
+
+        // Assert — the file is read whether or not it declares anything today, because the point is
+        // that it *would* be read on the day someone adds a line to it.
+        await Assert.That(scanned).Contains("Directory.Build.props");
+        await Assert.That(scanned.Count(name => name.EndsWith(".csproj", StringComparison.Ordinal)))
+            .IsGreaterThan(0);
+    }
+
     /// <summary>
     /// The whole declared dependency graph of the solution, one row per edge.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Rows, not a per-project block, and compared with <c>IsEquivalentTo</c>: that is the idiom
-    /// <c>SchemaConstraintSnapshotTests</c> already uses, and it is what makes a failure name the
-    /// one line that moved instead of dumping a re-rendered graph for a human to diff by eye.
+    /// Rows rather than a per-project block, following the flat snapshot idiom of
+    /// <c>SchemaConstraintSnapshotTests</c> — but compared as two one-way set differences rather
+    /// than with <c>IsEquivalentTo</c>, which reports "collection has 60 items but expected 59"
+    /// after dumping all fifty-nine rows and names nothing. A failure has to name the line that
+    /// moved, or the reader diffs two screenfuls by eye and "fixes" the wrong one.
     /// </para>
     /// <para>
     /// <b>Package versions are deliberately absent.</b> The subject here is which project may know
@@ -257,6 +311,28 @@ public sealed class ProjectReferenceGraphTests
         private const string SolutionFileName = "BudgetoidApp.sln";
 
         /// <summary>
+        /// The item types that hand a project code it did not write, and the word each renders as.
+        /// </summary>
+        /// <remarks>
+        /// <c>Reference</c> is here because a raw assembly path with a <c>HintPath</c> is a real
+        /// dependency that carries no package and no project, and a switch that knew only the three
+        /// common item types let it through in silence. The rest are the forms NuGet and MSBuild
+        /// accept for the same job; listing them is cheaper than discovering one at a time which
+        /// spelling the next person reached for.
+        /// </remarks>
+        private static readonly Dictionary<string, string> DependencyKinds = new(StringComparer.Ordinal)
+        {
+            ["ProjectReference"] = "project",
+            ["PackageReference"] = "package",
+            ["FrameworkReference"] = "framework",
+            ["Reference"] = "assembly",
+            ["PackageDownload"] = "package",
+            ["GlobalPackageReference"] = "package",
+            ["COMReference"] = "com",
+            ["NativeReference"] = "native",
+        };
+
+        /// <summary>
         /// Walks up from <paramref name="startDirectory" /> to the directory holding
         /// <c>BudgetoidApp.sln</c>, and throws rather than returning nothing when no ancestor does.
         /// </summary>
@@ -279,24 +355,46 @@ public sealed class ProjectReferenceGraphTests
         }
 
         /// <summary>
-        /// Renders every project file under <paramref name="root" /> as dependency edges.
+        /// The MSBuild files that can give a project a dependency.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <b>A csproj is not the only one, and scanning only csproj was a real hole.</b>
+        /// <c>Directory.Build.props</c> is imported into every project in the tree, Domain included,
+        /// so a single <c>PackageReference</c> added there compiles Domain against EF Core while
+        /// every csproj in the solution stays untouched. That was verified, not theorised: with the
+        /// package declared there and nothing else changed, <c>Domain</c> compiled against
+        /// <c>Microsoft.EntityFrameworkCore.DbContext</c> and this test was green.
+        /// </para>
+        /// <para>
+        /// <c>Directory.Packages.props</c> exists in none of these directories today and is scanned
+        /// anyway, because the file that does not exist yet is exactly the one nobody thinks to add
+        /// to a scan.
+        /// </para>
+        /// </remarks>
+        private static readonly string[] BuildFilePatterns =
+        [
+            "*.csproj",
+            "Directory.Build.props",
+            "Directory.Build.targets",
+            "Directory.Packages.props",
+        ];
+
+        /// <summary>
+        /// Renders every MSBuild file under <paramref name="root" /> as dependency edges.
         /// </summary>
         /// <remarks>
         /// Discovery is a bare recursive glob on purpose. <c>bin</c> and <c>obj</c> are skipped
         /// because they are build output rather than source — no project file lives there today,
         /// and if one appears it is a copy of one already scanned. That is the only exclusion, and
-        /// no other may be added: any filter narrowing which *projects* are examined would let the
+        /// no other may be added: any filter narrowing which *files* are examined would let the
         /// next one in unnoticed, which is the whole failure this test exists to prevent.
         /// </remarks>
         internal static IReadOnlyList<string> EdgesOfEveryProjectUnder(DirectoryInfo root)
         {
             List<string> edges = [];
 
-            IEnumerable<string> projectFiles = Directory
-                .EnumerateFiles(root.FullName, "*.csproj", SearchOption.AllDirectories)
-                .Where(path => !IsBuildOutput(path, root));
-
-            foreach (string path in projectFiles)
+            foreach (string path in BuildFilesUnder(root))
             {
                 edges.AddRange(
                     EdgesOf(Path.GetFileNameWithoutExtension(path), XDocument.Load(path)));
@@ -304,6 +402,18 @@ public sealed class ProjectReferenceGraphTests
 
             return edges;
         }
+
+        /// <summary>Names the build files the scan reads, for the test that asserts it reads them.</summary>
+        internal static string[] BuildFileNamesUnder(DirectoryInfo root) =>
+            [.. BuildFilesUnder(root).Select(Path.GetFileName).OfType<string>().Distinct()];
+
+        private static IEnumerable<string> BuildFilesUnder(DirectoryInfo root) =>
+            BuildFilePatterns
+                .SelectMany(pattern =>
+                    Directory.EnumerateFiles(root.FullName, pattern, SearchOption.AllDirectories))
+                .Where(path => !IsBuildOutput(path, root))
+                .Distinct()
+                .Order(StringComparer.Ordinal);
 
         private static bool IsBuildOutput(string path, DirectoryInfo root) =>
             Path.GetRelativePath(root.FullName, path)
@@ -335,29 +445,47 @@ public sealed class ProjectReferenceGraphTests
                 edges.Add($"{projectName}: sdk {sdk.Split('/')[0]}");
             }
 
+            // MSBuild accepts the same import as a child element, and a project carrying
+            // <Sdk Name="Microsoft.NET.Sdk.Web" /> beneath an unchanged Sdk attribute resolves the
+            // ASP.NET Core types while the attribute row above says nothing changed.
+            foreach (XElement element in root.Elements().Where(e => e.Name.LocalName == "Sdk"))
+            {
+                if (element.Attribute("Name")?.Value is { } named)
+                {
+                    edges.Add($"{projectName}: sdk {named.Split('/')[0]}");
+                }
+            }
+
             // Filtered on LocalName rather than matched by name: SDK-style projects carry no XML
-            // namespace today, but a project that grew one would silently render zero item edges
-            // and leave the guard green while reporting only its Sdk row.
+            // namespace today, and a project that grew one would otherwise render no item edges at
+            // all. That fails loudly rather than quietly — every missing row is reported — but it
+            // fails for a reason that has nothing to do with the graph, which is its own cost.
             foreach (XElement element in root.Descendants())
             {
-                string? include = element.Attribute("Include")?.Value;
+                // An Import names its target in Project rather than Include, and it is rendered as
+                // an edge without being followed: an imported file can carry any of the items
+                // below, so the honest report is that the project pulled in something the scan does
+                // not read, and a human has to say what is in it.
+                if (element.Name.LocalName == "Import")
+                {
+                    if (element.Attribute("Project")?.Value is { } imported)
+                    {
+                        edges.Add($"{projectName}: import {imported}");
+                    }
 
-                if (include is null)
+                    continue;
+                }
+
+                if (element.Attribute("Include")?.Value is not { } include)
                 {
                     continue;
                 }
 
-                switch (element.Name.LocalName)
+                if (DependencyKinds.TryGetValue(element.Name.LocalName, out string? kind))
                 {
-                    case "ProjectReference":
-                        edges.Add($"{projectName}: project {FileStemOf(include)}");
-                        break;
-                    case "PackageReference":
-                        edges.Add($"{projectName}: package {include}");
-                        break;
-                    case "FrameworkReference":
-                        edges.Add($"{projectName}: framework {include}");
-                        break;
+                    edges.Add(kind == "project"
+                        ? $"{projectName}: project {FileStemOf(include)}"
+                        : $"{projectName}: {kind} {include}");
                 }
             }
 

@@ -2,7 +2,9 @@ using System.Reflection;
 using Application.Abstractions;
 using Application.Users.ExportData;
 using Domain.Accounts;
+using Infrastructure.Persistence;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace IntegrationTests;
@@ -33,13 +35,22 @@ namespace IntegrationTests;
 /// and stops meaning anything.
 /// </para>
 /// <para>
-/// The forbidden set is <b>derived</b> from the assemblies rather than listed here, so a repository
-/// interface written next month is covered the day it is written rather than the day someone
-/// remembers this file.
+/// The two families that have a naming convention are <b>derived</b> from the assemblies, so a
+/// repository interface written next month is covered the day it is written. The rest are named
+/// individually, <c>BudgetoidDbContext</c> above all: a review pointed out that an
+/// interfaces-only set forbids the shapes nobody reaches for and permits the one a shortcut
+/// actually uses.
 /// </para>
 /// <para>
-/// Sabotaged before it was believed: an <c>IAccountRepository</c> parameter added to one endpoint
-/// delegate, which the failure named along with its route.
+/// <b>This is a tripwire, not a proof.</b> It reads declared parameter types, so three things walk
+/// past it: a port resolved from <c>HttpContext.RequestServices</c> inside the body, a port reached
+/// through an <c>[AsParameters]</c> struct's members, and a port captured in a closure. The first is
+/// the realistic one. Each is a deliberate limitation of reading signatures rather than bodies, and
+/// <c>docs/engineering/dependency-direction.md</c> lists them where a reader will look.
+/// </para>
+/// <para>
+/// Sabotaged twice before it was believed: an <c>IAccountRepository</c> parameter and a
+/// <c>BudgetoidDbContext</c> parameter, each named by the failure along with its route.
 /// </para>
 /// </remarks>
 public sealed class CompositionBoundaryTests
@@ -54,9 +65,11 @@ public sealed class CompositionBoundaryTests
         EndpointDataSource dataSource = factory.Services.GetRequiredService<EndpointDataSource>();
         HashSet<Type> forbidden = PersistencePorts();
 
-        // Act — the delegate's MethodInfo is the first metadata item ASP.NET Core records for a
-        // minimal-API route. Endpoints that are not minimal-API delegates (the health check) carry
-        // none, which is why the count of inspected delegates is asserted below rather than assumed.
+        // Act — ASP.NET Core records the delegate's MethodInfo in the endpoint's metadata, and
+        // exactly one, so GetMetadata's last-match semantics and a first-match read agree here.
+        // Endpoints that are not minimal-API delegates — the health check, anything mapped as a raw
+        // RequestDelegate — carry none at all, which is why the count of delegates actually
+        // inspected is asserted below rather than assumed.
         RouteEndpoint[] endpoints = [.. dataSource.Endpoints.OfType<RouteEndpoint>()];
         int inspectedDelegates = endpoints.Count(
             endpoint => endpoint.Metadata.GetMetadata<MethodInfo>() is not null);
@@ -94,17 +107,20 @@ public sealed class CompositionBoundaryTests
         await Assert.That(forbidden).Contains(typeof(IAccountRepository));
         await Assert.That(forbidden).Contains(typeof(IExportReadService));
         await Assert.That(forbidden).Contains(typeof(ITransactionalExecutor));
+
+        // Named separately because it is the one a shortcut actually reaches for, and because it is
+        // the one no naming sweep can produce.
+        await Assert.That(forbidden).Contains(typeof(BudgetoidDbContext));
     }
 
     /// <summary>
-    /// Every interface an endpoint must reach a use case to get to.
+    /// Everything an endpoint must reach a use case to get to.
     /// </summary>
     /// <remarks>
-    /// The naming sweeps carry the rule for the two families that have one. The three named
-    /// individually are the ports whose names follow no pattern; they are listed rather than
-    /// matched because inventing a suffix rule for three types would be a rule about spelling, and
-    /// the next port added without the suffix would slip through it silently. A port added here
-    /// with a fourth shape needs a line, and that is the intended cost.
+    /// The two naming sweeps carry the rule for the families that have a convention. The five named
+    /// individually do not, and are listed rather than matched: inventing a suffix rule for them
+    /// would be a rule about spelling, and the next one added without the suffix would slip through
+    /// it silently. A sixth needs a line here, and that is the intended cost.
     /// </remarks>
     private static HashSet<Type> PersistencePorts()
     {
@@ -123,6 +139,16 @@ public sealed class CompositionBoundaryTests
             typeof(IPersistenceState),
             typeof(ITransactionalExecutor),
             typeof(IWebAuthnChallengeStore),
+
+            // The concrete ones, and the reason this set is not interfaces-only. A review pointed
+            // out that the abstractions above are the shapes nobody actually reaches for: someone
+            // cutting a corner injects the DbContext, which AddDbContext registers scoped, so
+            // minimal API binds it as a service and every naming sweep above ignores it — it is a
+            // class, and it ends in neither Repository nor ReadService. Forbidding twenty ports
+            // while allowing the one thing a shortcut would use inverts the risk this test exists
+            // for.
+            typeof(BudgetoidDbContext),
+            typeof(DbContextOptions<BudgetoidDbContext>),
         ];
     }
 }

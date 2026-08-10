@@ -51,6 +51,13 @@ and that nothing else notices:
 - **An `Sdk` attribute.** Flipping `Application` to `Microsoft.NET.Sdk.Web` adds no item at all.
 - **A test project's reach.** Nothing references `UnitTests`, so `UnitTests → Api` is not a cycle and
   only the pin refuses it.
+- **A `ProjectReference` to a project outside the rings.** `Domain → ServiceDefaults` closes no loop
+  — `ServiceDefaults` references nothing — and hands Domain the whole ASP.NET Core shared framework
+  transitively. Cycle detection covers the rings, not everything shaped like a project reference.
+- **A dependency declared outside a csproj.** `Directory.Build.props` is imported into every project
+  in the tree; one `PackageReference` there compiles Domain against EF Core with no csproj touched
+  at all. The scan reads it, `Directory.Build.targets` and `Directory.Packages.props` for that
+  reason, and renders an `Import` as its own row rather than following it.
 - **A whole new project**, which arrives with no rule attached to it by construction.
 
 Claiming the guard stops `Domain` from referencing `Application` would be taking credit for the
@@ -61,13 +68,17 @@ mechanism. They are not.
 
 ### The graph is pinned, not described
 
-`ProjectReferenceGraphTests` reads every `*.csproj` under the directory holding `BudgetoidApp.sln`
-and renders each declaration as one row — `"<Project>: <kind> <id>"` — against a written-down set of
-fifty-nine. The subject is **discovered** and the allowance is **written down**, never the reverse:
+`ProjectReferenceGraphTests` reads every `*.csproj`, `Directory.Build.props`,
+`Directory.Build.targets` and `Directory.Packages.props` under the directory holding
+`BudgetoidApp.sln` — skipping `bin` and `obj` — and renders each declaration as one row —
+`"<File>: <kind> <id>"` — against a written-down set of fifty-nine. The subject is **discovered** and the allowance is **written down**, never the reverse:
 a new project fails the test by existing. That asymmetry is the same one `RlsCoverageTests` argues,
 and for the same reason — a filter over the subject is how a guard silently stops covering things.
 
-**Four kinds of edge, not two.** `ProjectReference` and `PackageReference` do not close the graph:
+**Many kinds of edge, not two.** `ProjectReference` and `PackageReference` do not close the graph.
+A raw `<Reference>` with a `HintPath` is a real dependency carrying neither; `PackageDownload`,
+`GlobalPackageReference`, `COMReference` and `NativeReference` are further spellings of the same
+job; and two more hide in plain sight:
 
 - `ServiceDefaults.csproj` carries `<FrameworkReference Include="Microsoft.AspNetCore.App" />`. That
   one line pulls the entire ASP.NET Core shared framework with **no package to notice**. Copied onto
@@ -75,7 +86,9 @@ and for the same reason — a filter over the subject is how a guard silently st
   the two item types stayed green.
 - The root `Sdk` attribute is an edge too. `Api.csproj` is `Microsoft.NET.Sdk.Web`, which *implies*
   that same framework reference and adds no item anywhere. Changing a project's `Sdk` is a
-  one-attribute route to the same outcome.
+  one-attribute route to the same outcome — and MSBuild also accepts `<Sdk Name="…" />` as a child
+  element, which resolves the same types while leaving the attribute untouched, so both forms are
+  read.
 
 So both are pinned, and every project emits an `sdk` row even when it declares nothing else — which
 is what makes *Domain depends on nothing* a single line that must stay alone, rather than an absence
@@ -145,6 +158,14 @@ query filter sitting over the same row.
   takes the right handler and then does the wrong thing in its body is invisible to it. "No business
   logic in Api" has no reflective signature, and the one crisp part of it — which routes may mint an
   account — is already held by `UserProvisioningRouteTests`.
+- **A port an endpoint reaches without declaring.** Reading signatures means three routes walk past
+  the composition guard: `HttpContext.RequestServices.GetRequiredService<IAccountRepository>()` in
+  the body, a port among the members of an `[AsParameters]` struct, and a port captured in a closure.
+  The first is the realistic one. **The guard is a tripwire, not a proof**, and widening it to read
+  method bodies is a different kind of tool than the rest of this document describes.
+- **A file the scan does not name.** An arbitrary `<Import Project="…" />` is reported as a row, so
+  adding one forces a human to look — but the scan does not open the imported file. Anything it
+  declares is invisible until someone reads it.
 - **Whether every handler is actually registered.** A handler nobody wired into
   `Application/DependencyInjection.cs` is a 500 on first request, not a red test. That list is
   hand-maintained and nothing checks it; it is a known gap, deliberately left rather than missed.
