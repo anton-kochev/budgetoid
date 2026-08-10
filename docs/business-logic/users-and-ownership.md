@@ -372,6 +372,15 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   which is also how `ResolveUserHandler` answers the same race one step earlier. Answering "no such
   account" to a request the pipeline has just authenticated *as that account* would file it as an
   ordinary missing resource, which is the one shape nobody investigates.
+- **Example**: a person registered as `old@example.com` changes their Google address to
+  `new@example.com` and signs in again. The token now asserts `new@example.com`; `GET /api/me`
+  answers `{"email":"old@example.com"}`, because that is the address the account is reachable at
+  until an email change is built. `SignedInUserEndpointTests.`
+  `Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress` drives exactly that
+  sequence — two clients on one subject carrying different claims — and asserts both that the stored
+  address is returned and that the claim's address appears nowhere in the body. Without the second
+  half, an endpoint echoing the claim passes: in every other test the claim and the stored row hold
+  the same string, so nothing there could tell them apart.
 - **The address change is not here.** `GET /api/me` is a read; nothing in the product writes
   `users.email` after the insert, and the gap below still stands.
 - **Source**: `[SOURCE: user-story — 2026-08-10]`

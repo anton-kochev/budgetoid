@@ -50,6 +50,8 @@ the arriving members and joins them, so a widened record reports `"createdAtUtc,
 that a count moved. It is green the day it was written — nothing else in either suite goes red when a
 member is added — so it was proved against a deliberately widened record before being trusted.
 
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md).
+
 ---
 
 ## 2026-08-08 — The export's row order promises `CreatedAtUtc` and deliberately stops short of the tiebreaker

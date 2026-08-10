@@ -585,11 +585,13 @@ that authorized it, which leaves as the deleted nonce.
   Two rules meet here and neither one alone is the whole answer, so somebody reading only the
   vocabulary sees a gap and widens the pattern — which takes a plausible product feature down with
   it. The remnant rule above states the division; read it before touching either side.
-- **The confirmation copy is not here, and it is not in the code either.** No client surface asks
-  anyone to confirm an erasure — there is no settings screen, no dialog, and no client-side WebAuthn
-  ceremony, so `POST /api/me/erasure` is reachable only by a caller that builds the assertion itself.
-  The wording a confirmation would use is owned by [voice.md](../design/voice.md), not by this file.
-  Nothing documented here waits on it.
+- **A client surface describes an erasure; none can start one.** The account settings screen carries
+  an erasure section — what will be destroyed, that there is no undo, and the backup window above —
+  but its control is **disabled**, because confirming an erasure needs a fresh WebAuthn assertion
+  and the client cannot register a passkey yet. There is no dialog, no typed confirmation word and
+  no client-side ceremony, so `POST /api/me/erasure` remains reachable only by a caller that builds
+  the assertion itself. The wording of that copy is owned by [voice.md](../design/voice.md) rather
+  than by this file; what this file owns is the gate, and the gate is why the control is off.
 - **A failed erasure still spends the assertion, and still advances the signature counter.** Both are
   the gate's writes, both were committed before the transaction opened, and neither returns with the
   rollback — so the person has to run the ceremony again to try once more. That is correct rather
