@@ -102,7 +102,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidIssuers = ["https://accounts.google.com", "accounts.google.com"],
             ValidateAudience = true,
             ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
+            ValidateIssuerSigningKey = true
         };
     });
 builder.Services.AddAuthorizationBuilder()
@@ -233,10 +233,10 @@ if (app.Environment.IsDevelopment())
     // Fail fast on the elevated connection string, for the same reason as the Google client id
     // above: absent, it would surface much later as an opaque Npgsql error from a null connection.
     string adminConnectionString = app.Configuration.GetConnectionString("budgetoid-admin")
-        ?? throw new InvalidOperationException(
-            "ConnectionStrings:budgetoid-admin is required in Development: startup migrates the "
-            + "schema and provisions the application role, and neither can run on the "
-            + "least-privilege connection the application serves requests with.");
+                                   ?? throw new InvalidOperationException(
+                                       "ConnectionStrings:budgetoid-admin is required in Development: startup migrates the "
+                                       + "schema and provisions the application role, and neither can run on the "
+                                       + "least-privilege connection the application serves requests with.");
 
     // The application role's password is read out of the application connection string rather than
     // from a configuration key of its own: startup sets the role's password to whatever the
@@ -254,9 +254,9 @@ if (app.Environment.IsDevelopment())
     // denied CREATE on the schema and so cannot run MigrateAsync even as a no-op. See the
     // __EFMigrationsHistory note in app-role-grants.sql.
     await using (BudgetoidDbContext db = new(
-        new DbContextOptionsBuilder<BudgetoidDbContext>()
-            .UseNpgsql(adminConnectionString)
-            .Options))
+                     new DbContextOptionsBuilder<BudgetoidDbContext>()
+                         .UseNpgsql(adminConnectionString)
+                         .Options))
     {
         await db.Database.MigrateAsync();
     }
@@ -283,6 +283,8 @@ app.MapDataExportEndpoints();
 app.MapSignedInUserEndpoints();
 
 await app.RunAsync();
+
+return;
 
 // Refuse one configured passkey origin whose form or whose host cannot produce an accepted ceremony.
 //
@@ -375,10 +377,7 @@ static string? BuildConnectionString(string? connectionString, bool isDevelopmen
         return connectionString;
     }
 
-    NpgsqlConnectionStringBuilder connectionStringBuilder = new(connectionString)
-    {
-        SslMode = SslMode.Require,
-    };
+    NpgsqlConnectionStringBuilder connectionStringBuilder = new(connectionString) { SslMode = SslMode.Require };
 
     return connectionStringBuilder.ConnectionString;
 }
