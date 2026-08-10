@@ -88,6 +88,26 @@ move on — is precisely what would wave a genuinely new package id through in t
 this test's job, and `dotnet list package --vulnerable` plus the comment on that line are where it
 lives.
 
+### Api composes Infrastructure; it does not consume it
+
+**The pinned graph provably cannot express this one.** `Api → Infrastructure` is a legitimate
+reference — `Program.cs` has to call `AddInfrastructure()`, register `SessionContextInterceptor` and
+configure the `DbContext` — so no arrangement of csproj rows distinguishes composing Infrastructure
+from consuming it. That is why there is a second guard rather than a wider first one.
+
+`CompositionBoundaryTests` builds the application, walks its route table, and asserts that no route
+delegate declares a parameter whose type is a persistence port. What is lost when one does: the
+handler's validation, its budget scoping, and — on the passkey routes — the ordering the assertion
+path depends on, where the identity is published only after the signature verifies and the
+transaction opens only after that. None of that lives in the repository being injected.
+
+Two things keep it honest. The scope is **route delegate parameters**, never the Api assembly at
+large: `Api/Infrastructure/HttpContextUserContext.cs` legitimately implements an Application port,
+and a rule that fires on correct code earns an exemption list and then means nothing. And the
+forbidden set is **derived** — every Domain interface ending `Repository`, every Application
+interface ending `ReadService`, plus the three ports whose names follow no pattern — so a repository
+written next month is covered the day it is written.
+
 ### A tenancy key is fixed at construction
 
 Every `UserId` and `BudgetId` the Domain declares is written once and by nothing afterwards.
@@ -121,8 +141,13 @@ query filter sitting over the same row.
 - **Transitive packages.** A direct id is pinned; what it drags in is not.
   `Directory.Build.props` sets `ManagePackageVersionsCentrally=false`, so there is no central
   version list or lock file to lean on either.
-- **What the code does with an allowed reference.** `Api → Infrastructure` is legitimate — `Program.cs`
-  has to compose it — so the graph can never distinguish composing Infrastructure from consuming it.
+- **Business logic in an endpoint.** The composition guard reads parameter *types*; an endpoint that
+  takes the right handler and then does the wrong thing in its body is invisible to it. "No business
+  logic in Api" has no reflective signature, and the one crisp part of it — which routes may mint an
+  account — is already held by `UserProvisioningRouteTests`.
+- **Whether every handler is actually registered.** A handler nobody wired into
+  `Application/DependencyInjection.cs` is a 500 on first request, not a red test. That list is
+  hand-maintained and nothing checks it; it is a known gap, deliberately left rather than missed.
 - **A method that reassigns a tenancy key.** The key guard reads properties; a `Reassign(Guid)`
   method beside one is invisible to it.
 - **A tenancy key under another name.** Rename `UserId` and the mutability check finds nothing to
@@ -132,11 +157,13 @@ query filter sitting over the same row.
 
 Tests that lock this: `tests/UnitTests/ProjectReferenceGraphTests.cs` — adding a `PackageReference`,
 a `ProjectReference`, a `FrameworkReference`, or a whole project must move a line in its pinned set,
-and so must changing an `Sdk` attribute; and `tests/UnitTests/OwnershipKeyImmutabilityTests.cs` —
+and so must changing an `Sdk` attribute; `tests/UnitTests/OwnershipKeyImmutabilityTests.cs` —
 the discovered set of `UserId`/`BudgetId` properties, and the absence of an externally reachable
-setter on any of them.
+setter on any of them; and `tests/IntegrationTests/CompositionBoundaryTests.cs` — no route delegate
+takes a persistence port.
 
-Neither is allowed to be green merely by having nothing to find. Each ships permanent negative
-controls on synthetic input — an EF Core package rendered onto `Application`, a public setter, an
-`init` setter, a renamed key — so a detector that quietly stopped detecting fails its own tests
-before it passes the real ones.
+None of them is allowed to be green merely by having nothing to find. Each ships permanent controls
+on synthetic or derived input — an EF Core package rendered onto `Application`, a public setter, an
+`init` setter, a renamed key, a forbidden set asserted to be non-empty, a count of route delegates
+actually inspected — so a detector that quietly stopped detecting fails its own tests before it
+passes the real ones.
