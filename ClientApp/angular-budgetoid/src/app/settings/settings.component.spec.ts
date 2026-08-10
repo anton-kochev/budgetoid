@@ -2,10 +2,14 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
-import { MeApiService } from '@app-core/api/me-api.service';
+import {
+  MeApiService,
+  type CredentialSummary,
+} from '@app-core/api/me-api.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import { of, throwError, type Observable } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { credentialRegistrationDate } from './credential-registration-date';
 import { SettingsComponent } from './settings.component';
 import { SettingsService, type ExportFailure } from './settings.service';
 
@@ -29,6 +33,43 @@ const EXPORT_CONFIRMED = 'Exported.';
 const EMAIL_FAILURE = 'Couldn’t load your email address. Reload the page.';
 const OPERATOR_READABLE =
   'Budgetoid’s operators can read everything you record: amounts, dates, currency codes, account types, the order you arrange things in, the timestamps on every row, the identifiers behind them, and your email address. Today that also includes the names and notes you type. Nothing is encrypted with a key only you hold — not yet.';
+const CREDENTIALS_HEADING = 'Ways to sign in';
+const REGISTER_BUTTON = 'Register a passkey';
+const REVOKE_BUTTON = 'Revoke';
+const CEREMONY_EXPLANATION =
+  'Registering and revoking both have to be confirmed with a passkey, and Budgetoid can’t run a passkey check in the browser yet. The buttons stay off until it can.';
+const CREDENTIALS_LOADING = 'Loading your ways to sign in…';
+const CREDENTIALS_FAILURE =
+  'Couldn’t load your ways to sign in. Reload the page.';
+const CREDENTIALS_EMPTY = 'Nothing is attached to your account yet.';
+const PASSKEY_TYPE = 'Passkey';
+const FEDERATED_TYPE = 'Google';
+
+// Two entries far enough apart to be told apart on screen, which the section's
+// own rules make a requirement rather than a convenience: the row shows the
+// type and the date and nothing else, so two entries of the same type on the
+// same local day are genuinely indistinguishable — the design chapter calls
+// that the honest maximum — and any test about *which* row it is has to give
+// them different days.
+//
+// The dates are the ones a reader at the pinned zone sees, not the UTC days in
+// the wire values: 22:00Z on the 11th is already the 12th at UTC+14.
+const PASSKEY: CredentialSummary = {
+  id: '019f4c0a-0000-7000-8000-0000000000a1',
+  type: 'passkey',
+  createdAtUtc: '2026-03-11T22:00:00Z',
+};
+const FEDERATED: CredentialSummary = {
+  id: '019f4c0a-0000-7000-8000-0000000000b2',
+  type: 'federated',
+  createdAtUtc: '2026-01-12T08:30:00Z',
+};
+const PASSKEY_DATE = 'March 12, 2026';
+const FEDERATED_DATE = 'January 12, 2026';
+// The visible label first, so voice control still reaches the control by what
+// it can see; the rest is what tells two buttons named "Revoke" apart.
+const REVOKE_PASSKEY = 'Revoke Passkey, registered March 12, 2026';
+const REVOKE_FEDERATED = 'Revoke Google, registered January 12, 2026';
 
 // Real signals, not readonly wrappers: each test drives one state by setting
 // them, so the component is exercised through its inputs rather than through
@@ -39,7 +80,15 @@ class SettingsServiceStub {
   public readonly exporting = signal(false);
   public readonly exported = signal(false);
   public readonly exportFailure = signal<ExportFailure | null>(null);
+  // Starts `null`, like the real service: "not asked yet" is a third state
+  // beside "here they are" and "you have none", and a stub seeded with `[]`
+  // would put the screen's first paint in a state the real one never reaches.
+  public readonly credentials = signal<readonly CredentialSummary[] | null>(
+    null,
+  );
+  public readonly credentialsFailed = signal(false);
   public loadEmail = vi.fn();
+  public loadCredentials = vi.fn();
   public export = vi.fn();
 }
 
@@ -457,6 +506,478 @@ describe('SettingsComponent', () => {
     // scattered through the page.
     expect(normalize(section)).toContain(OPERATOR_READABLE);
   });
+
+  // The section renders the reader's own calendar day, computed from the stored
+  // instant in the reader's zone, and production passes no locale — it asks the
+  // runtime for the reader's own, because pinning one would be the `DatePipe`
+  // defect (`LOCALE_ID` is provided nowhere, so every reader would get `en-US`)
+  // written by hand. The literals below are therefore statements about the
+  // runner's locale as much as about the component.
+  it('runs in the locale the dates below are written in', () => {
+    // Act
+    const rendered = credentialRegistrationDate(PASSKEY.createdAtUtc);
+
+    // Assert
+    // Not a test of the component. It turns a locale difference on some future
+    // machine into one failure that says so, instead of a dozen assertions
+    // that look like the section stopped rendering dates. The format itself is
+    // pinned by `credential-registration-date.spec.ts`.
+    expect(rendered).toBe(PASSKEY_DATE);
+  });
+
+  it('offers a section for the ways to sign in', () => {
+    // Act
+    const section = sectionFor(host, 'credentials-heading');
+
+    // Assert
+    expect(section).not.toBeNull();
+    expect(
+      normalize(section?.querySelector('#credentials-heading') ?? null),
+    ).toBe(CREDENTIALS_HEADING);
+  });
+
+  it('keeps one top-level heading on the screen', () => {
+    // Assert
+    // Control for the test above: a section introduced with a second `h1`
+    // renders the same words and passes it, while leaving the document with
+    // two competing titles for a reader navigating by heading level.
+    expect(host.querySelectorAll('h1').length).toBe(1);
+    expect(normalize(host.querySelector('h1'))).toBe('Settings');
+  });
+
+  it('loads the ways to sign in on initialization', () => {
+    // Assert
+    // The list is the section's whole content; without the call it renders its
+    // loading line forever and every state test below still passes, because
+    // each one sets the signals itself.
+    expect(service.loadCredentials).toHaveBeenCalledOnce();
+  });
+
+  it('does not load them again when the screen re-renders', () => {
+    // Act
+    fixture.detectChanges();
+    fixture.detectChanges();
+
+    // Assert
+    // Control for the test above. `toHaveBeenCalledOnce` after a single render
+    // is equally satisfied by a load started from a template expression, which
+    // re-fires on every change detection pass — a request per keystroke
+    // elsewhere on the page, and a list that flickers back to loading.
+    expect(service.loadCredentials).toHaveBeenCalledOnce();
+  });
+
+  it('lists one row per credential', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // `ul[role="list"] > li` rather than "some elements exist": the explicit
+    // role is what keeps Safari announcing "list, 2 items" once the bullets are
+    // removed, and without it the rows are read as loose paragraphs.
+    expect(credentialRows().length).toBe(2);
+  });
+
+  it('names a passkey in words', () => {
+    // Arrange
+    service.credentials.set([PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const row = normalize(credentialRows()[0] ?? null);
+
+    // Assert
+    // Paired with the provider case below: each is the other's control,
+    // because a template printing one constant word satisfies exactly one of
+    // them, and a template printing the raw `type` value renders `passkey` and
+    // `federated` — the second of which is a word no reader of this screen has
+    // any way to connect to the button they signed in with.
+    expect(row).toContain(PASSKEY_TYPE);
+    expect(row).not.toContain(FEDERATED_TYPE);
+  });
+
+  it('names a provider sign-in for the provider', () => {
+    // Arrange
+    service.credentials.set([FEDERATED]);
+
+    // Act
+    fixture.detectChanges();
+    const row = normalize(credentialRows()[0] ?? null);
+
+    // Assert
+    expect(row).toContain(FEDERATED_TYPE);
+    expect(row).not.toContain(PASSKEY_TYPE);
+  });
+
+  it('states when each credential was registered', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const rows = credentialRows();
+
+    // Assert
+    expect(normalize(rows[0] ?? null)).toContain(FEDERATED_DATE);
+    expect(normalize(rows[1] ?? null)).toContain(PASSKEY_DATE);
+  });
+
+  it('states the date in words rather than as a stamp', () => {
+    // Arrange
+    service.credentials.set([PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const row = normalize(credentialRows()[0] ?? null);
+
+    // Assert
+    // Control for the test above: `{{ credential.createdAtUtc }}` renders the
+    // stored value straight into the row and passes any assertion that only
+    // asks whether a date is present. The machine-readable form belongs in the
+    // `datetime` attribute, which the next test reads.
+    expect(row).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(row).not.toContain(PASSKEY.createdAtUtc);
+  });
+
+  it('carries the stored instant on the date it renders', () => {
+    // Arrange
+    service.credentials.set([PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const time = credentialRows()[0]?.querySelector('time');
+
+    // Assert
+    // The rendered day is the reader's; the attribute is the record. A `<time>`
+    // wrapping a value with no `datetime` on it says nothing a plain span
+    // would not.
+    expect(time?.getAttribute('datetime')).toBe(PASSKEY.createdAtUtc);
+    expect(normalize(time ?? null)).toBe(PASSKEY_DATE);
+  });
+
+  it('dates two entries by the day the reader had, not the UTC day', () => {
+    // Arrange
+    // One UTC day — the 11th — but two local days at the pinned zone: 23:00 on
+    // the 11th and 01:00 on the 12th.
+    service.credentials.set([
+      { ...PASSKEY, id: 'a', createdAtUtc: '2026-03-11T09:00:00Z' },
+      { ...PASSKEY, id: 'b', createdAtUtc: '2026-03-11T11:00:00Z' },
+    ]);
+
+    // Act
+    fixture.detectChanges();
+    const rows = credentialRows();
+
+    // Assert
+    // An implementation formatting in UTC — `slice(0, 10)`, `getUTCDate`,
+    // `toISOString` — renders these two as the same day and merges two
+    // registrations the reader made on either side of their own midnight.
+    expect(normalize(rows[0] ?? null)).toContain('March 11, 2026');
+    expect(normalize(rows[1] ?? null)).toContain('March 12, 2026');
+  });
+
+  it('dates two entries from either side of UTC midnight as one day', () => {
+    // Arrange
+    // The mirror: two UTC days, one local day at the pinned zone — 12:00 and
+    // 16:00 on the 12th.
+    service.credentials.set([
+      { ...PASSKEY, id: 'a', createdAtUtc: '2026-03-11T22:00:00Z' },
+      { ...PASSKEY, id: 'b', createdAtUtc: '2026-03-12T02:00:00Z' },
+    ]);
+
+    // Act
+    fixture.detectChanges();
+    const rows = credentialRows();
+
+    // Assert
+    // Without this half the test above is satisfied by any implementation that
+    // renders two different strings for two different instants, including one
+    // that prints the raw stamp.
+    expect(normalize(rows[0] ?? null)).toContain('March 12, 2026');
+    expect(normalize(rows[1] ?? null)).toContain('March 12, 2026');
+  });
+
+  it('tells two credentials of one type apart', () => {
+    // Arrange
+    service.credentials.set([
+      { ...PASSKEY, id: 'a', createdAtUtc: '2026-01-12T08:30:00Z' },
+      PASSKEY,
+    ]);
+
+    // Act
+    fixture.detectChanges();
+    const rows = credentialRows();
+
+    // Assert
+    // Two passkeys carry the same word, so the date is the only thing on the
+    // row that distinguishes them — which is why the section shows one at all,
+    // and why a row that dropped it would leave a person revoking blind.
+    expect(normalize(rows[0] ?? null)).toContain(FEDERATED_DATE);
+    expect(normalize(rows[1] ?? null)).toContain(PASSKEY_DATE);
+    expect(normalize(rows[0] ?? null)).not.toBe(normalize(rows[1] ?? null));
+  });
+
+  it('shows no identifier for any credential', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const section = normalize(sectionFor(host, 'credentials-heading'));
+
+    // Assert
+    // The row shows what the server holds *and* what tells one entry from
+    // another; an identifier is neither, and putting one on screen invites it
+    // into a screenshot or a support message where it is a handle on the
+    // account. The whole section is read, not only the rows, because the id is
+    // just as exposed in a heading or a caption.
+    expect(section).not.toContain(PASSKEY.id);
+    expect(section).not.toContain(FEDERATED.id);
+  });
+
+  it('says the list is loading before it arrives', () => {
+    // Act
+    const region = credentialsRegion();
+
+    // Assert
+    // The section's first paint *is* this state — nothing has been set — so
+    // unlike the account and export regions this one is legitimately occupied
+    // here, and the emptiness assertion the other two make at first paint moves
+    // to the resolved state below.
+    expect(normalize(region)).toContain(CREDENTIALS_LOADING);
+    expect(credentialRows().length).toBe(0);
+  });
+
+  it('claims nothing about the account while the list is loading', () => {
+    // Assert
+    // Control for the test above: a template treating "no rows" as "no
+    // credentials" tells a user mid-load that nothing can sign them in, on a
+    // page they are signed in to.
+    expect(normalize(sectionFor(host, 'credentials-heading'))).not.toContain(
+      CREDENTIALS_EMPTY,
+    );
+  });
+
+  it('says nothing once the list has arrived', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const region = credentialsRegion();
+
+    // Assert
+    // Both halves, as on the other two regions: presence alone is satisfied by
+    // a region that always holds a line — a screen still saying it is loading
+    // over a list it has already drawn — and emptiness alone by no region at
+    // all, which is a failure sentence announced to nobody.
+    expect(region).not.toBeNull();
+    expect(normalize(region)).toBe('');
+  });
+
+  it('explains a list it could not load', () => {
+    // Arrange
+    service.credentialsFailed.set(true);
+    service.credentials.set(null);
+
+    // Act
+    fixture.detectChanges();
+    const region = normalize(credentialsRegion());
+
+    // Assert
+    // Inside the region, not merely inside the section: the sentence arrives
+    // after the first paint, and a live region the assistive technology was not
+    // already watching announces nothing.
+    expect(region).toContain(CREDENTIALS_FAILURE);
+    // A failed load is not an account with nothing attached, and it is not
+    // still loading. Rendering either would answer a question the screen does
+    // not have the answer to.
+    expect(region).not.toContain(CREDENTIALS_LOADING);
+    expect(normalize(sectionFor(host, 'credentials-heading'))).not.toContain(
+      CREDENTIALS_EMPTY,
+    );
+  });
+
+  it('explains nothing while the list is merely absent', () => {
+    // Assert
+    // Control for the test above: a failure sentence rendered unconditionally
+    // accuses the network on every first paint, before a request has had time
+    // to answer.
+    expect(normalize(sectionFor(host, 'credentials-heading'))).not.toContain(
+      CREDENTIALS_FAILURE,
+    );
+  });
+
+  it('states plainly when nothing is attached to the account', () => {
+    // Arrange
+    service.credentials.set([]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // The empty case is content, not an event: it states a fact about the
+    // account rather than reporting something that just happened, so it sits
+    // outside the live region — which stays present and empty beside it.
+    expect(normalize(sectionFor(host, 'credentials-heading'))).toContain(
+      CREDENTIALS_EMPTY,
+    );
+    expect(normalize(credentialsRegion())).toBe('');
+    expect(credentialRows().length).toBe(0);
+  });
+
+  it('does not call an empty list a loading one', () => {
+    // Arrange
+    service.credentials.set([]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // Control for the test above, and the reason `null` and `[]` are kept
+    // apart all the way from the service: a template testing `credentials()?.
+    // length` collapses them and leaves an account with nothing attached
+    // waiting on a request that already answered.
+    expect(normalize(credentialsRegion())).not.toContain(CREDENTIALS_LOADING);
+  });
+
+  it('keeps the registration control inert', () => {
+    // Act
+    const registerButton = buttonNamed(host, REGISTER_BUTTON);
+    const section = sectionFor(host, 'credentials-heading');
+
+    // Assert
+    // Present, so the section is honest about what it will eventually do, and
+    // disabled, because registering a passkey needs a ceremony this client
+    // cannot run. The sentence is visible prose in the section rather than a
+    // `title` or an `aria-describedby` on the button: a disabled control is out
+    // of the tab order and skipped by screen readers, so anything hung on it is
+    // read to nobody.
+    expect(registerButton).not.toBeNull();
+    expect(registerButton?.disabled).toBe(true);
+    expect(normalize(section)).toContain(CEREMONY_EXPLANATION);
+  });
+
+  it('hangs no description on the disabled controls', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const controls = [buttonNamed(host, REGISTER_BUTTON), ...revokeButtons()];
+
+    // Assert
+    // Control for the test above: the explanation satisfies "the state is
+    // legible" only while it is somewhere a reader can reach. A `title` or an
+    // `aria-describedby` on a disabled button reads as an equivalent fix and
+    // is announced to no one.
+    for (const control of controls) {
+      expect(control?.getAttribute('title')).toBeNull();
+      expect(control?.getAttribute('aria-describedby')).toBeNull();
+    }
+  });
+
+  it('keeps every revoke control inert', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const buttons = revokeButtons();
+
+    // Assert
+    expect(buttons.length).toBe(2);
+    for (const button of buttons) {
+      expect(button.disabled).toBe(true);
+    }
+  });
+
+  it('names each revoke control for its own row', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // Two buttons whose accessible name is "Revoke" cannot be told apart by
+    // anyone driving the screen by voice or by screen reader, and this is a
+    // destructive action — the one place where reaching the wrong control is
+    // unrecoverable. `buttonNamed` matches the accessible name, so a shared
+    // visible label with no `aria-label` fails here.
+    expect(buttonNamed(host, REVOKE_PASSKEY)).not.toBeNull();
+    expect(buttonNamed(host, REVOKE_FEDERATED)).not.toBeNull();
+  });
+
+  it('keeps the visible label on every revoke control', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const buttons = revokeButtons();
+
+    // Assert
+    // Control for the test above: an accessible name that does not begin with
+    // what is printed on the button — or a button printing the whole composed
+    // name — breaks voice control, which matches what it can see. `Revoke` is
+    // read off the DOM text here precisely because the other test reads the
+    // accessible name.
+    expect(buttons.length).toBe(2);
+    expect(buttonNamed(host, REVOKE_PASSKEY)?.getAttribute('aria-label')).toBe(
+      REVOKE_PASSKEY,
+    );
+  });
+
+  it('offers no revoke control when nothing is attached', () => {
+    // Arrange
+    service.credentials.set([]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // Control for the tests above: a revoke button rendered outside the list —
+    // or a row rendered for an empty list — leaves a destructive control on a
+    // screen with nothing for it to act on.
+    expect(revokeButtons().length).toBe(0);
+  });
+
+  // Reads the rows the way the design chapter specifies them, so a list that
+  // lost its `role` or its `<li>` structure stops being found rather than
+  // quietly passing every content assertion above.
+  function credentialRows(): readonly HTMLElement[] {
+    return Array.from(
+      sectionFor(host, 'credentials-heading')?.querySelectorAll<HTMLElement>(
+        'ul[role="list"] > li',
+      ) ?? [],
+    );
+  }
+
+  // Matched on the *visible* label, unlike `buttonNamed`: these buttons carry
+  // an `aria-label` that differs per row, and the point here is to find them
+  // all regardless of it.
+  function revokeButtons(): readonly HTMLButtonElement[] {
+    const buttons =
+      sectionFor(
+        host,
+        'credentials-heading',
+      )?.querySelectorAll<HTMLButtonElement>('button') ?? [];
+
+    return Array.from(buttons).filter(
+      (button) => normalize(button) === REVOKE_BUTTON,
+    );
+  }
+
+  function credentialsRegion(): Element | null {
+    return (
+      sectionFor(host, 'credentials-heading')?.querySelector(
+        '[role="status"]',
+      ) ?? null
+    );
+  }
 });
 
 // A visit is not the same thing as a page load. The user exports, walks off to
@@ -474,11 +995,19 @@ describe('SettingsComponent on a second visit', () => {
   async function configureWith(
     getExport: () => Observable<Blob>,
   ): Promise<void> {
-    // Only the two edges are replaced — the HTTP call and the disk write. The
+    // Only the edges are replaced — the HTTP calls and the disk write. The
     // service under test is the shipped one.
-    const api: Pick<MeApiService, 'getMe' | 'getExport'> = {
+    //
+    // `getCredentials` is in the `Pick` because the screen loads it on init and
+    // the real service is the one running here: a stub missing the method fails
+    // every test in this block with `getCredentials is not a function` before a
+    // single assertion about the export is reached. The `Pick` is over the real
+    // `MeApiService`, so this list is also what stops it from drifting into a
+    // shape the service no longer has.
+    const api: Pick<MeApiService, 'getMe' | 'getExport' | 'getCredentials'> = {
       getMe: () => of({ email: 'owner@budgetoid.test' }),
       getExport,
+      getCredentials: () => of([FEDERATED, PASSKEY]),
     };
     const downloads: Pick<FileDownloadService, 'save'> = { save: vi.fn() };
 

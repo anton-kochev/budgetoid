@@ -1,10 +1,25 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
-import { MeApiService, type MeDto } from '@app-core/api/me-api.service';
+import {
+  MeApiService,
+  type CredentialSummary,
+  type MeDto,
+} from '@app-core/api/me-api.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsService } from './settings.service';
+
+const PASSKEY: CredentialSummary = {
+  id: '019f0000-0000-7000-8000-000000000001',
+  type: 'passkey',
+  createdAtUtc: '2026-03-11T22:00:00Z',
+};
+const FEDERATED: CredentialSummary = {
+  id: '019f0000-0000-7000-8000-000000000002',
+  type: 'federated',
+  createdAtUtc: '2026-01-12T08:30:00Z',
+};
 
 class MeApiStub {
   public getMe = vi.fn(
@@ -12,6 +27,9 @@ class MeApiStub {
   );
   public getExport = vi.fn(
     (): Observable<Blob> => of(new Blob(['{"schemaVersion":1}'])),
+  );
+  public getCredentials = vi.fn(
+    (): Observable<readonly CredentialSummary[]> => of([FEDERATED, PASSKEY]),
   );
 }
 
@@ -193,5 +211,80 @@ describe('SettingsService', () => {
     // be able to tell "no email yet" from "here is your email".
     expect(service.emailFailed()).toBe(true);
     expect(service.email()).toBeNull();
+  });
+
+  it('publishes the credentials in the order the server sent them', () => {
+    // Arrange
+    api.getCredentials.mockReturnValue(of([FEDERATED, PASSKEY]));
+
+    // Act
+    service.loadCredentials();
+
+    // Assert
+    // The server orders ascending by registration instant and the screen shows
+    // that order. Sorting again here would be a second opinion about a fact the
+    // server already settled, and would diverge from it the moment either side
+    // changed its mind.
+    expect(service.credentials()).toEqual([FEDERATED, PASSKEY]);
+  });
+
+  it('holds no credentials before the load is asked for', () => {
+    // Assert
+    // `null` is load-bearing and is not `[]`. "Not asked yet" and "you have no
+    // way of signing in" are different facts and the screen renders them
+    // differently; a service seeding an empty array tells a user mid-load that
+    // nothing is attached to their account.
+    expect(service.credentials()).toBeNull();
+    expect(service.credentialsFailed()).toBe(false);
+  });
+
+  it('publishes an account with no credentials as an empty list', () => {
+    // Arrange
+    api.getCredentials.mockReturnValue(of([]));
+
+    // Act
+    service.loadCredentials();
+
+    // Assert
+    // Control for the test above, in the other direction: a service that left
+    // the signal `null` on an empty response is indistinguishable from one that
+    // never answered, and the screen would sit on its loading line forever.
+    expect(service.credentials()).toEqual([]);
+  });
+
+  it('reports credentials it could not load', () => {
+    // Arrange
+    api.getCredentials.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+
+    // Act
+    service.loadCredentials();
+
+    // Assert
+    // Both halves. Without the second, a service that swallowed the error into
+    // an empty array would pass the flag assertion while the screen told the
+    // user, in plain words, that they have no way of signing in — on a page
+    // they are signed in to.
+    expect(service.credentialsFailed()).toBe(true);
+    expect(service.credentials()).toBeNull();
+  });
+
+  it('clears a previous failure when the load is asked for again', () => {
+    // Arrange
+    api.getCredentials.mockReturnValueOnce(
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+    service.loadCredentials();
+    expect(service.credentialsFailed()).toBe(true);
+
+    // Act
+    service.loadCredentials();
+
+    // Assert
+    // The failure describes the last attempt, not the screen. Left latched, a
+    // reload that succeeded would still be accused of failing.
+    expect(service.credentialsFailed()).toBe(false);
+    expect(service.credentials()).toEqual([FEDERATED, PASSKEY]);
   });
 });

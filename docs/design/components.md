@@ -103,6 +103,48 @@ action is the secondary variant and disabled, never Destructive.
   (`min-height: 1lh`) so the page does not shift when a value arrives from the network.
 - A non-interactive row is not a 48px target. The rule applies to controls, not to text.
 
+## Credential list and row
+
+M3 base: **none** — a plain semantic list, `<ul role="list">` with one `<li>` per entry, for the
+reason the transaction row has none. `MatList` makes a 48px interactive row out of content that is
+not interactive, and the rule above already says a non-interactive row is not a target. The `role`
+is written explicitly because the list carries no bullets, and under `list-style: none` Safari drops
+list semantics — without it nobody hears "list, 2 items".
+
+- **Row anatomy.** CSS Grid, mobile-first: one column at phone width, facts then action below at
+  `justify-self: start`; from `min-width: 600px`, `[facts 1fr] [action auto]` with the action centred
+  on the cross axis. `--bud-space-3` gap and vertical padding, `1px solid var(--bud-hairline)` on
+  every row after the first. No card and no border box — the section already groups them, and a card
+  never wraps a single list.
+- **Facts**, stacked with `--bud-space-1`: the type in words — **Passkey** or **Google** — as `body`
+  `--bud-text`; then `Registered <date>` as `caption` `--bud-text-muted`, wrapped in a `<time>` whose
+  `datetime` carries the stored instant.
+- **The date is absolute, in the reader's locale, and is the reader's own calendar day** computed
+  from the stored instant in their zone — never the UTC day. Relative words ("Today") belong to
+  transaction lists; a record of what is attached to an account states a date. `DatePipe` is not
+  available for this: nothing provides `LOCALE_ID`, so it would silently pin every date to `en-US`.
+- **Nothing else is shown.** No device name, no nickname, no last-used instant, no identifier, no
+  provider subject. The row shows what the server holds and what tells one entry from another;
+  anything more is a device fingerprint or an identifier with no reason to be on screen. Two passkeys
+  registered on the same day are told apart by nothing better, and that is the honest maximum — the
+  ceremony requests `attestation: "none"` precisely so registration collects no device identity.
+- **Action.** One Revoke button per row, Outline, 48px target. Visible label `Revoke`; accessible
+  name `Revoke <type>, registered <date>`, beginning with the visible label so voice control still
+  reaches it, and composed because two buttons named "Revoke" cannot be told apart.
+- **Loading** is one line in the section's `role="status"` region. **No skeleton** — that spec is for
+  a screen's own subject, and a skeleton for two rows inside one settings section costs more than it
+  explains.
+- **Failure** is one sentence in the same region, in `--bud-over`. Colour is never the message.
+- **Empty** replaces the list with one plain line, `body` `--bud-text` — not the centred empty-state
+  block, which is for a screen's subject, and the section's own action already sits beneath.
+
+**What ships today.** The list renders. **Register a passkey** (below the list) and **Revoke** (on
+each row) are both Outline and **disabled**, because both need a WebAuthn ceremony the client cannot
+run yet. One sentence covers both and sits **above** the list rather than beside each button: per
+row, a screen reader would read the same explanation once per entry. When the ceremony lands, the
+sentence goes and the controls become live — Revoke keeps its Outline until a confirmation exists
+for it, per the destructive-action rule above.
+
 ## Text fields and selects
 
 M3 base: `MatFormField` (outlined appearance), `MatInput`, `MatSelect`,

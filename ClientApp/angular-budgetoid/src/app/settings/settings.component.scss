@@ -85,6 +85,64 @@
   justify-items: start;
 }
 
+// The list has no card and no border box around it: the section already groups
+// the rows, and a card never wraps a single list. It takes the full column so
+// the row's two-column form below has something to spread across — the section
+// sets `justify-items: start`, which would otherwise shrink it to its content.
+.s-credentials {
+  display: grid;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+// Mobile-first: one column, facts then action beneath it. The action sits at
+// the start of the row rather than stretched, because a full-width button at
+// phone width reads as the section's own action rather than as one row's.
+.s-credential {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-3);
+  justify-items: start;
+  padding-block: var(--bud-space-3);
+}
+
+// Every row after the first, so the list is separated without being boxed.
+.s-credential + .s-credential {
+  border-top: 1px solid var(--bud-hairline);
+}
+
+@media (min-width: 600px) {
+  .s-credential {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+}
+
+.s-credential-facts {
+  display: grid;
+  gap: var(--bud-space-1);
+}
+
+// `body`. The size and line height are literals for the same reason
+// `.s-prose` and `.s-facts dt` carry theirs: the book names no type-scale
+// token, so there is nothing to reference here yet.
+.s-credential-type {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// `caption`, muted: the date is what tells two entries of one type apart, not
+// the headline of the row.
+.s-credential-date {
+  margin: 0;
+  color: var(--bud-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 // Material's M3 height is below the system's touch minimum.
 .s-button {
   min-height: var(--bud-touch-target);

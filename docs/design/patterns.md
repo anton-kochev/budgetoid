@@ -110,7 +110,14 @@ rail and is reached by typing the URL — a later epic gives it one. It renders 
 email address, a working Export that saves the server's response bytes unread, and an Erase
 control that is present and **disabled**, because erasure has to be confirmed with a passkey
 the client cannot yet register. It states in plain words what the operator can read, and
-that erased rows survive in point-in-time backups for up to seven days. The credential list,
-recovery codes, key rotation, the email-change action and the erasure confirmation dialog
-are not built. The three bullets above stay as written because they are the target, not a
+that erased rows survive in point-in-time backups for up to seven days.
+
+It also lists **every way of signing in** — each entry its type, "Passkey" or "Google", and
+the day it was registered, and nothing more. Registering and revoking are both present and
+**disabled**, for the same reason Erase is: both need a passkey ceremony the client cannot
+run. One sentence above the list explains it, rather than one beside each row, so a screen
+reader hears it once instead of once per entry.
+
+Recovery codes, key rotation, the email-change action and the erasure confirmation dialog are
+not built. The three bullets above stay as written because they are the target, not a
 description of what shipped.

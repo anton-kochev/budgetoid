@@ -154,10 +154,16 @@ Load-bearing rules, each explained there or in the linked decision:
   later epic gives it one. It shows the email from `GET /api/me`, a working export that writes
   the response bytes to disk **unread** (`responseType: 'blob'` — a JSON round-trip would turn
   exact `numeric(14,4)` amounts into doubles), and an erasure control that is present and
-  **disabled** because the client cannot register a passkey yet. The credential list, recovery
-  codes, key rotation and email change render nothing today and are owned by later stories —
-  do not "complete" the screen. See [export.md](docs/business-logic/export.md) and
-  [erasure.md](docs/business-logic/erasure.md).
+  **disabled** because the client cannot register a passkey yet. It also lists every credential
+  from `GET /api/me/credentials` — **type and registration day only**, never an id or a provider
+  subject — with registration and revocation present and **disabled** for the same reason. The
+  date is formatted in the reader's own zone by `credential-registration-date.ts`, never by
+  `DatePipe`: nothing provides `LOCALE_ID`, so `DatePipe` would silently pin every date to
+  `en-US`, and a UTC-formatted day is wrong for fourteen hours of every day under the
+  `Pacific/Kiritimati` test pin. Recovery codes, key rotation and email change render nothing
+  today and are owned by later stories — do not "complete" the screen. See
+  [export.md](docs/business-logic/export.md), [erasure.md](docs/business-logic/erasure.md) and
+  the credential-list chapter in [components.md](docs/design/components.md).
 
 ## Documentation
 

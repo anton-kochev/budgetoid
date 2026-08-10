@@ -24,6 +24,121 @@
   </div>
 </section>
 
+<section class="s-section" aria-labelledby="credentials-heading">
+  <h2 class="s-eyebrow" id="credentials-heading">Ways to sign in</h2>
+
+  <!-- Read once into a local rather than called at each site. The computed is
+       cheap, but the three places below all have to be looking at the *same*
+       answer: `null` is "the request has not come back", `[]` is "nothing is
+       attached", and a template that re-read the signal between them could
+       render a loading line above a list that had arrived in between. -->
+  @let credentials = credentialRows();
+
+  <!-- Above the list, not beside either control, and as visible prose rather
+       than a title or aria-describedby. Both controls this explains are
+       disabled, so they are out of the tab order and skipped by screen readers
+       — anything hung on them is read to nobody. Per row it would also be read
+       once per entry, which is the same sentence three times on an account with
+       three credentials. -->
+  <p class="s-prose">
+    Registering and revoking both have to be confirmed with a passkey, and
+    Budgetoid can&rsquo;t run a passkey check in the browser yet. The buttons
+    stay off until it can.
+  </p>
+
+  <!-- Both lines arrive after the first paint, so they land inside a region
+       that was already being watched; the region stays in the DOM while empty,
+       because one inserted together with its text is announced by nothing.
+
+       The two states are exclusive by structure, not by coincidence: a load
+       that failed is not still loading, and saying both would ask the reader to
+       keep waiting on a request that already gave up. The empty case is not
+       here at all — "nothing is attached to your account" is a fact about the
+       account rather than something that just happened, so it is content, and
+       it sits outside beside the list it replaces. -->
+  <div class="s-outcome" role="status">
+    @if (settings.credentialsFailed()) {
+      <p class="s-error">
+        Couldn&rsquo;t load your ways to sign in. Reload the page.
+      </p>
+    } @else if (credentials === null) {
+      <p class="s-prose">Loading your ways to sign in&hellip;</p>
+    }
+  </div>
+
+  @if (credentials !== null) {
+    @if (credentials.length === 0) {
+      <p class="s-prose">Nothing is attached to your account yet.</p>
+    } @else {
+      <!-- `role="list"` written out even though `ul` carries it implicitly:
+           `list-style: none` makes Safari drop list semantics, and without the
+           explicit role nobody hears "list, 2 items" — the rows are announced
+           as loose paragraphs. -->
+      <ul class="s-credentials" role="list">
+        @for (credential of credentials; track credential.id) {
+          <li class="s-credential">
+            <div class="s-credential-facts">
+              <!-- The type in the words the person recognises: the button they
+                   pressed, not the value the server stores. `federated` is a
+                   word no reader of this screen can connect to anything. -->
+              <p class="s-credential-type">{{ credential.type }}</p>
+              <!-- The rendered day is the reader's own, computed from the
+                   stored instant in their zone; the `datetime` attribute is the
+                   record. A `<time>` with no `datetime` says nothing a span
+                   would not, and a row printing the stored stamp instead would
+                   show a UTC day that is not the day the reader had.
+
+                   Nothing else goes on the row — no device name, no nickname,
+                   no last-used instant, no identifier. Two passkeys registered
+                   on the same day are told apart by nothing better, and that is
+                   the honest maximum: registration deliberately collects no
+                   device identity to show. -->
+              <p class="s-credential-date">
+                Registered
+                <time [attr.datetime]="credential.storedInstant">{{
+                  credential.registeredOn
+                }}</time>
+              </p>
+            </div>
+
+            <!-- Outline, not Destructive: revoking is destructive, but the
+                 destructive treatment is spent on the control that commits the
+                 act, and there is no confirmation behind this one yet.
+
+                 Plain `disabled`, unlike the export button's
+                 `disabledInteractive`: that carve-out exists to hold focus on a
+                 control that is *busy* and will come back within the second.
+                 This one is unavailable for the whole life of the screen, so
+                 keeping it focusable would only offer the keyboard a stop that
+                 answers every press with silence.
+
+                 The accessible name begins with the visible label so voice
+                 control still reaches it by what it can see, and carries the
+                 row's own facts because two buttons named "Revoke" cannot be
+                 told apart by anyone not looking at the screen — on the one
+                 action where reaching the wrong control is unrecoverable. -->
+            <button
+              class="s-button"
+              mat-stroked-button
+              type="button"
+              disabled
+              [attr.aria-label]="credential.revokeLabel"
+            >
+              Revoke
+            </button>
+          </li>
+        }
+      </ul>
+    }
+  }
+
+  <!-- Present even though it does nothing, so the section is honest about what
+       it will eventually do rather than hiding the capability until it works. -->
+  <button class="s-button" mat-stroked-button type="button" disabled>
+    Register a passkey
+  </button>
+</section>
+
 <section class="s-section" aria-labelledby="export-heading">
   <h2 class="s-eyebrow" id="export-heading">Export</h2>
 

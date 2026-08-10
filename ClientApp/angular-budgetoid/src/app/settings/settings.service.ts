@@ -1,6 +1,9 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, Signal, inject, signal } from '@angular/core';
-import { MeApiService } from '@app-core/api/me-api.service';
+import {
+  MeApiService,
+  type CredentialSummary,
+} from '@app-core/api/me-api.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import { EMPTY, catchError, finalize } from 'rxjs';
 import { exportFilename } from './export-filename';
@@ -28,6 +31,13 @@ export class SettingsService {
   private readonly exportingSignal = signal(false);
   private readonly exportedSignal = signal(false);
   private readonly exportFailureSignal = signal<ExportFailure | null>(null);
+  // `null` is not an empty list and the two are never collapsed: it means the
+  // answer has not arrived, and the screen renders that as a loading line
+  // instead of as the sentence saying nothing is attached to this account.
+  private readonly credentialsSignal = signal<
+    readonly CredentialSummary[] | null
+  >(null);
+  private readonly credentialsFailedSignal = signal(false);
 
   public readonly email: Signal<string | null> = this.emailSignal.asReadonly();
   public readonly emailFailed: Signal<boolean> =
@@ -37,6 +47,10 @@ export class SettingsService {
   public readonly exported: Signal<boolean> = this.exportedSignal.asReadonly();
   public readonly exportFailure: Signal<ExportFailure | null> =
     this.exportFailureSignal.asReadonly();
+  public readonly credentials: Signal<readonly CredentialSummary[] | null> =
+    this.credentialsSignal.asReadonly();
+  public readonly credentialsFailed: Signal<boolean> =
+    this.credentialsFailedSignal.asReadonly();
 
   public loadEmail(): void {
     this.emailFailedSignal.set(false);
@@ -49,6 +63,32 @@ export class SettingsService {
         }),
       )
       .subscribe((me) => this.emailSignal.set(me.email));
+  }
+
+  // Shaped after `loadEmail` rather than after `export`: this is a read the
+  // screen starts on its own, not an act the user asks for, so it needs no
+  // in-flight guard and no confirmation.
+  //
+  // One boolean, not an `ExportFailure`-style union. The distinction there earns
+  // its keep because a lapsed session sends the user somewhere and a refused
+  // build does not; here every way this can fail — 401, 500, offline — ends in
+  // the same next step, which is to load the page again. A discriminant nothing
+  // discriminates on is a second thing to keep in step with the template.
+  public loadCredentials(): void {
+    this.credentialsFailedSignal.set(false);
+    this.api
+      .getCredentials()
+      .pipe(
+        catchError(() => {
+          this.credentialsFailedSignal.set(true);
+          return EMPTY;
+        }),
+      )
+      // On failure nothing is published, so the list stays `null`. That is
+      // deliberate: an empty array here would render the sentence saying this
+      // account has no way of signing in, which is a claim about the account
+      // rather than about the request.
+      .subscribe((credentials) => this.credentialsSignal.set(credentials));
   }
 
   public export(): void {
