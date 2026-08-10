@@ -44,11 +44,11 @@ namespace IntegrationTests;
 /// three field assignments, so it would run happily in <c>UnitTests</c> — but only if that project
 /// referenced <c>Api</c>, and referencing <c>Api</c> drags the whole web composition root (JwtBearer,
 /// OpenTelemetry, Npgsql, the Aspire service defaults, CORS) into the one project whose value is being
-/// free of them. Nothing in this repository enforces that boundary: there is no architecture-test
-/// framework here, so a comment in the csproj is a convention with nothing behind it, and the next
-/// person needing "just one Api type" in a unit test finds the reference already paid for. Here the
-/// reference already exists for reasons of its own, and a test that opens no connection costs this
-/// project nothing measurable.
+/// free of them. <c>ProjectReferenceGraphTests</c> now enforces that boundary — the absent reference
+/// is a pinned row in its expected set, so adding it fails a test rather than merely contradicting a
+/// comment — but the guard only refuses the reference; it cannot suggest where the test should have
+/// gone instead. That is this paragraph's job. Here the reference already exists for reasons of its
+/// own, and a test that opens no connection costs this project nothing measurable.
 /// </para>
 /// </remarks>
 public sealed class CurrentUserWriterTests

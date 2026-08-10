@@ -85,6 +85,18 @@ Load-bearing rules, each explained there or in the linked decision:
   `app.current_user_id` is still empty, so every policed statement inside it fails with `22P02`.
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
   `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
+- **The dependency direction is pinned, not described.** Between rings MSBuild's cycle detection
+  already refuses the outward `ProjectReference`; what nothing caught until now is the outward edge
+  that closes no loop — a package on `Application`, a `FrameworkReference` or `Sdk` attribute on
+  `Domain`, `UnitTests` reaching `Api`, a whole new project. `ProjectReferenceGraphTests` renders
+  every csproj declaration as one of fifty-nine rows and pins the set, dropping package *versions*
+  so a routine bump never reddens it. Two guards sit beside it for rules the graph provably cannot
+  express: `CompositionBoundaryTests` (Api may **compose** Infrastructure, never **consume** it — no
+  route delegate takes a persistence port) and `OwnershipKeyImmutabilityTests` (every `UserId` and
+  `BudgetId` the Domain declares is written once, `init` included). Each ships permanent negative
+  controls, so none can pass by having nothing to find. Read
+  [dependency direction](docs/engineering/dependency-direction.md) before adding a project or a
+  reference of any kind.
 - A new tenant-owned table needs a grant **and** a policy — `budget_isolation` if it carries
   `budget_id`, `user_isolation` if it carries `user_id`. Grants fail closed (`42501`),
   RLS fails open. `RlsCoverageTests` and the deploy-time verifier read one shared classifier
