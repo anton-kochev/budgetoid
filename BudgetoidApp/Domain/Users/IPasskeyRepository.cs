@@ -87,7 +87,7 @@ public interface IPasskeyRepository
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>On the repository rather than on <c>Application.Users.IUserAccountReadService</c>, which is
+    /// <b>On the repository rather than on <c>Application.Users.ICredentialReadService</c>, which is
     /// where the credential list is projected from.</b> That interface says what it is for: reads that
     /// are for showing, not for deciding. This number decides, and a rule keyed on a value chosen for
     /// display is precisely what the split exists to prevent — the list is free to grow a page, an
@@ -110,13 +110,25 @@ public interface IPasskeyRepository
     /// <remarks>
     /// <para>
     /// <b>It takes the loaded entity and never an id, and that signature is the design's main
-    /// defence.</b> <see cref="Credential"/> has a private constructor and no setters, so the only way
-    /// to hold one is <see cref="FindPasskeyCredentialAsync"/> — id, owner and type in one predicate.
-    /// An unscoped delete is therefore <em>unavailable</em> rather than discouraged, which is what has
-    /// to stand in for a policy: <c>credentials</c> is exempt from row-level security, so nothing
-    /// beneath this call narrows the statement to the person asking. The same idiom
-    /// <see cref="FindByWebAuthnCredentialIdForUserAsync"/> uses, and the argument for it is
-    /// <c>docs/decisions/0014-scope-the-credential-delete-in-the-application.md</c>.
+    /// defence — but read its strength precisely, because the shorthand a reader reaches for is
+    /// false.</b> <see cref="Credential"/> keeps its constructor private, yet
+    /// <see cref="Credential.CreateFederated"/> and <see cref="Credential.CreatePasskey"/> are both
+    /// public, so this is <em>not</em> a type only a scoped read can produce. What is true is narrower:
+    /// each factory mints a fresh <c>Guid.CreateVersion7()</c>, so a fabricated credential names no
+    /// stored row — a delete of it matches nothing and raises, rather than taking somebody else's — and
+    /// <see cref="FindPasskeyCredentialAsync"/>, the one query that materialises a
+    /// <see cref="Credential"/> out of the table, carries id, owner and type in a single predicate.
+    /// </para>
+    /// <para>
+    /// So the guarantee is a rule over one class, not a property of the type: <b>to hold a
+    /// <see cref="Credential"/> naming an existing row of the caller's choosing, someone has to add a
+    /// new query to <c>PasskeyRepository</c></b> — and this is the port that query would be declared
+    /// on. A <c>FindCredentialByIdAsync(Guid)</c> added below, or any read here that returns a
+    /// <see cref="Credential"/> without naming its owner, hands the delete an arbitrary row and leaves
+    /// the statement scoped by nothing: <c>credentials</c> is exempt from row-level security, so no
+    /// policy and no query filter narrows it to the person asking, and review is the only thing that
+    /// catches it. The same idiom <see cref="FindByWebAuthnCredentialIdForUserAsync"/> uses, and the
+    /// argument for it is <c>docs/decisions/0014-scope-the-credential-delete-in-the-application.md</c>.
     /// </para>
     /// <para>
     /// What makes a delete by primary key sound once the read has scoped it is that

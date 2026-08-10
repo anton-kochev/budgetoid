@@ -17,11 +17,17 @@ import { SettingsService } from './settings.service';
 // than in the template so the date is formatted once per credential instead of
 // once per change detection pass, and so the revoke button's accessible name
 // and the visible date cannot drift apart — they are the same string.
+//
+// `registeredOn` is empty and `storedInstant` is null for an entry whose stored
+// date cannot be read — see `toRow` — so the two always move together. The
+// template does not yet skip the caption for that case, which leaves the word
+// `Registered` with an empty `<time>` after it; `components.md` records the gap
+// and the `@if` that closes it.
 interface CredentialRow {
   readonly id: string;
   readonly type: string;
   readonly registeredOn: string;
-  readonly storedInstant: string;
+  readonly storedInstant: string | null;
   readonly revokeLabel: string;
 }
 
@@ -42,18 +48,31 @@ const TYPE_LABELS = {
 function toRow(credential: CredentialSummary): CredentialRow {
   const type = TYPE_LABELS[credential.type];
   // No locale argument: production asks the runtime for the reader's own.
+  // Empty when the stored value cannot be read — the formatter is total on
+  // purpose, because this call sits inside a computed the template reads and a
+  // throw here would abandon the change detection pass rather than spoil a row.
   const registeredOn = credentialRegistrationDate(credential.createdAtUtc);
 
   return {
     id: credential.id,
     type,
     registeredOn,
-    storedInstant: credential.createdAtUtc,
+    // Withheld together with the visible date rather than passed through raw. A
+    // `datetime` attribute exists to be parsed; one carrying a value no parser
+    // accepts is a worse answer than an absent element, and it would also put
+    // the unreadable stored value on screen for anyone reading the markup.
+    storedInstant: registeredOn === '' ? null : credential.createdAtUtc,
     // Begins with the visible label so voice control still reaches the control
     // by what it can see, and carries the row's own facts because two buttons
     // named "Revoke" cannot be told apart by anyone who is not looking at the
-    // screen.
-    revokeLabel: `Revoke ${type}, registered ${registeredOn}`,
+    // screen. With no date to name, the clause is dropped rather than left
+    // empty: `Revoke Passkey, registered ` is read out exactly as written, and
+    // two entries that cannot be told apart is the state the row is already
+    // honest about for two passkeys registered on one day.
+    revokeLabel:
+      registeredOn === ''
+        ? `Revoke ${type}`
+        : `Revoke ${type}, registered ${registeredOn}`,
   };
 }
 

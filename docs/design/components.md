@@ -128,6 +128,14 @@ list semantics — without it nobody hears "list, 2 items".
   anything more is a device fingerprint or an identifier with no reason to be on screen. Two passkeys
   registered on the same day are told apart by nothing better, and that is the honest maximum — the
   ceremony requests `attestation: "none"` precisely so registration collects no device identity.
+- **A date the client cannot read is not shown at all.** The row states the type and drops the
+  `Registered <date>` line entirely — no placeholder, no raw stored value, no `Invalid Date`, and no
+  `<time>` element, since that element's whole contract is a machine-readable instant. The accessible
+  name of Revoke drops the clause with it (`Revoke Passkey`), rather than ending mid-sentence at
+  `registered `. Two entries that cannot be told apart is a state the row is already honest about for
+  two passkeys registered on one day. This is not a hypothetical: the date is formatted inside a
+  `computed` the template reads, so formatting that throws abandons the change detection pass and
+  takes every section below this one off the screen for the rest of the visit.
 - **Action.** One Revoke button per row, Outline, 48px target. Visible label `Revoke`; accessible
   name `Revoke <type>, registered <date>`, beginning with the visible label so voice control still
   reaches it, and composed because two buttons named "Revoke" cannot be told apart.

@@ -39,10 +39,21 @@ public sealed class PasskeyRepositoryTests
     [Test]
     public async Task DeletePasskeyAsync_WhenTheRowIsAlreadyGone_ThrowsNotFound()
     {
-        // Arrange — a real passkey, read back through the owner-and-type-scoped lookup that is the
-        // only way to obtain a Credential at all, and then removed out of band on a separate
-        // connection. What that leaves is a tracked entity naming a row that no longer exists, which
-        // is precisely the state a lost delete race leaves behind: both requests resolve the
+        // Arrange — a real passkey, read back through FindPasskeyCredentialAsync, the one query that
+        // materialises a Credential the table actually holds and which names the owner and the type in
+        // its predicate, and then removed out of band on a separate connection. That lookup is not the
+        // only way to obtain a Credential: CreateFederated and CreatePasskey are both public. Each of
+        // them mints its own Guid.CreateVersion7() though, so a fabricated instance names no existing
+        // row — which leaves the guarantee at "naming an existing row of the caller's choosing takes a
+        // new query on PasskeyRepository", a rule review enforces over one class rather than something
+        // the type prevents. It has to be enforced, because credentials is exempt from row-level
+        // security and this predicate is the entire scope of the delete below.
+        //
+        // The arrangement here is that distinction made concrete, and worth reading as one: the scoped
+        // lookup yields a credential naming a real row, the out-of-band delete takes the row away, and
+        // what is left is a tracked entity naming a row that no longer exists — the state an unscoped
+        // source would hand the delete for free. It is also precisely what a lost delete race leaves
+        // behind: both requests resolve the
         // credential, both clear the last-passkey floor, and the loser's DELETE matches zero rows
         // where EF expected one. No race is arranged and none should be — interleaving two
         // transactions at a chosen statement buys a timing-dependent test for a branch whose entire

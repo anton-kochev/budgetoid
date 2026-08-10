@@ -112,9 +112,14 @@ GRANT UPDATE (email) ON users TO budgetoid_app;
 -- What this grant is NOT bounded by is a policy. credentials is exempt from row-level security, so
 -- unlike every other DELETE in this file its blast radius is the whole table and the application is
 -- the only thing narrowing it. Three things carry that weight, and all three have to stay true:
--- the delete takes a LOADED ENTITY rather than an id, and the only way to obtain one is an
--- owner-and-type-scoped read; credentials.user_id is immutable, so an id cannot change owner
--- between that read and the write; and the two share one transaction. See docs/decisions/0014,
+-- the delete takes a LOADED ENTITY rather than an id, and every read that can produce one naming a
+-- row of this table is owner-and-type-scoped (today that is exactly one, FindPasskeyCredentialAsync;
+-- a Credential built by hand gets a fresh id from its factory, so it names no row here and its
+-- delete matches nothing); credentials.user_id is immutable, so an id cannot change owner between
+-- that read and the write; and the two share one transaction. Note the first leg is a REVIEW rule
+-- over PasskeyRepository rather than something the type system holds — an unscoped query added there
+-- returning a Credential widens this grant back to the whole table, and no test below the
+-- application would say so. See docs/decisions/0014,
 -- which also records why policing this table instead is not available — RLS is enabled per table
 -- and not per command, so a FOR DELETE policy alone would refuse the discovery SELECT that the
 -- exemption exists for.

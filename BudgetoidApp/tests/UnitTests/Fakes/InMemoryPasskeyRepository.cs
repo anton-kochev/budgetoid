@@ -199,10 +199,25 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
     /// </para>
     /// <para>
     /// It takes the loaded entity and never an id, exactly as
-    /// <see cref="IPasskeyRepository.DeletePasskeyAsync" /> declares. <see cref="Credential" /> has a
-    /// private constructor and no setters, so the only way a test can reach this call is through the
-    /// owner-and-type-scoped <see cref="FindPasskeyCredentialAsync" /> — which is what keeps an
-    /// unscoped delete unavailable here too, rather than merely discouraged.
+    /// <see cref="IPasskeyRepository.DeletePasskeyAsync" /> declares. Be precise about what that buys,
+    /// because the appealing shorthand — that a <see cref="Credential" /> can only come from a lookup —
+    /// is false: <c>Credential.CreateFederated</c> and <c>Credential.CreatePasskey</c> are both public,
+    /// and the tests around this fake call them. What actually holds is narrower. Each factory mints its
+    /// own <c>Guid.CreateVersion7()</c>, so a fabricated credential names no seeded entry at all: the
+    /// <c>_entries.RemoveAll</c> below matches nothing rather than dropping another owner's row, and the
+    /// real repository raises on that zero-row DELETE instead of removing a stranger's. The one lookup
+    /// that hands back a credential this fake actually holds,
+    /// <see cref="FindPasskeyCredentialAsync" />, carries the owner and the type in its filter.
+    /// </para>
+    /// <para>
+    /// So the guarantee is only this: to reach this call with a credential naming a stored row of the
+    /// caller's choosing, someone has to add a new lookup — here and on
+    /// <c>Infrastructure.Repositories.PasskeyRepository</c>. That is a rule review enforces over two
+    /// small classes, not a property of the type, and it is load-bearing because <c>credentials</c> is
+    /// exempt from row-level security: the application's predicate is the only thing scoping a
+    /// destructive statement against that table. A reader who believes the delete is unscoped-by-
+    /// construction is the reader who waves through the query that removes the scope. See
+    /// <c>docs/decisions/0014-scope-the-credential-delete-in-the-application.md</c>.
     /// </para>
     /// <para>
     /// It models only the case where the row is still there, and there is no hook to make it fail. The

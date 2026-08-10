@@ -41,6 +41,13 @@ namespace IntegrationTests;
 /// the two against each other would be refusing a correct request.
 /// </para>
 /// <para>
+/// <b>What the response says is pinned in two places, and neither covers the other.</b>
+/// <see cref="Revocation_EndsEverySessionTheCredentialEstablishedAndReportsHowMany" /> asks whether
+/// <c>sessionsEnded</c> is right; <see cref="Revocation_ResponseCarriesTheSessionCountAndNothingElse" />
+/// asks whether anything <em>else</em> arrived beside it. A widened record — an echoed credential id
+/// being the obvious one — leaves the first test green.
+/// </para>
+/// <para>
 /// Every row is counted on <see cref="PostgresTestHost.ConnectionString" /> — the container
 /// superuser — and never on the application role. <c>passkey_signature_counters</c> carries
 /// <c>user_isolation</c>, which is <c>FOR ALL</c>, so a policed connection reports zero rows for a
@@ -87,7 +94,15 @@ public sealed class CredentialRevocationTests
     /// drives. Named so that deleting one from the list is a failing test rather than a shorter and
     /// still perfectly green one.
     /// </summary>
-    private const int ReachableRevocationRefusals = 7;
+    private const int ReachableRevocationRefusals = 8;
+
+    /// <summary>
+    /// The one member of the revocation response, joined exactly as
+    /// <see cref="Revocation_ResponseCarriesTheSessionCountAndNothingElse" /> builds it. It is
+    /// <see cref="SessionsEndedMember" /> today because the record has one member; the constant exists
+    /// so that a second member arriving is a comparison of two strings rather than of two numbers.
+    /// </summary>
+    private const string RevocationMembers = SessionsEndedMember;
 
     /// <summary>
     /// The happy path, and the account holds <b>two</b> passkeys rather than one on purpose.
@@ -539,6 +554,71 @@ public sealed class CredentialRevocationTests
     }
 
     /// <summary>
+    /// That the revocation response carries exactly <c>sessionsEnded</c>, and no second member.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Its own test rather than another assertion on the one above, because the two fail for
+    /// unrelated reasons.</b> That test is about the <em>number</em> and pays for it with two real
+    /// sign-ins; this one is about the <em>shape</em> and needs no session at all — a revocation that
+    /// ended nothing reports zero and carries the same members. Folding them together would give one
+    /// test two names and make a widened record read as a failure of the session count.
+    /// </para>
+    /// <para>
+    /// <b>Green the day it is written, and that is the point rather than an apology</b> — the same
+    /// argument <c>CredentialListEndpointTests.Credentials_EntryCarriesTheIdTheTypeAndTheDateAndNothingElse</c>
+    /// makes for the GET. Nothing else in either suite goes red when a second member starts arriving
+    /// here: every other test on this route reads the status, the rows behind it, or
+    /// <c>sessionsEnded</c> alone, and all of them keep passing beside a <c>credentialId</c>. The defect
+    /// this exists to catch is one a later reader adds — <c>PasskeyRevocation(int SessionsEnded, Guid
+    /// CredentialId)</c> is the natural next step the day a client wants to refresh its list from the
+    /// response — and <c>PasskeyRevocation</c>'s own remarks say why it must not be: the caller
+    /// supplied the id it asked about, so echoing one back adds nothing, and an id in a response body is
+    /// an id in a client log.
+    /// </para>
+    /// <para>
+    /// <b>Never <c>ContainsKey</c>, and that is the whole shape of the assertion.</b> A containment
+    /// check over member names can never fail: every widening leaves <c>sessionsEnded</c> present and
+    /// the check green — which is exactly what the test above does, deliberately, because it is asking a
+    /// different question. The members are joined and compared whole, joined rather than counted for the
+    /// reason the GET's version gives: a count says "1 != 2" and leaves the reader to work out which
+    /// member arrived, while the joined string names it in the failure message.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Revocation_ResponseCarriesTheSessionCountAndNothingElse()
+    {
+        // Arrange — two passkeys, so the "never the last one" floor cannot turn this into a refusal
+        // whose problem-details body would satisfy no member comparison at all.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        SyntheticAuthenticator revoked = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, proving);
+        await RegisterPasskeyAsync(client, revoked);
+        Guid userId = await ResolveUserIdAsync(host, Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid revokedCredentialId = await ResolveCredentialIdAsync(admin, revoked);
+
+        // Act
+        HttpResponseMessage response = await RevokeAsync(client, proving, userId, revokedCredentialId);
+
+        // Assert — the status first, so a body that is missing because the request was refused reads as
+        // the refusal it is rather than as a member list nobody would recognise as a 401.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        // Ordered before joining, so a second member produces the same message whichever order the
+        // serializer emitted it in — a red that reads differently between runs is a red people stop
+        // trusting.
+        JsonObject body = await ReadJsonObjectAsync(response);
+        string members = string.Join(", ", body.Select(member => member.Key).Order(StringComparer.Ordinal));
+
+        await Assert.That(members).IsEqualTo(RevocationMembers);
+    }
+
+    /// <summary>
     /// Two passkeys, a live session on each, one revoked — and the other account's-own session is
     /// still <b>unrevoked</b>, not merely still present.
     /// </summary>
@@ -668,13 +748,24 @@ public sealed class CredentialRevocationTests
     /// made permanent.
     /// </para>
     /// <para>
-    /// <b>Why this catches that mutation, stated as the failure.</b> Every entry below names a
+    /// <b>Why this catches that mutation, stated as the failure.</b> Every entry below but one names a
     /// credential this account really owns and could really revoke. With the gate absent the first
     /// entry — an empty body, no proof whatsoever — succeeds with a 200 carrying
     /// <c>sessionsEnded</c>, and every entry after it is answered 404 for a row that is now gone. The
     /// comparison reports that as several distinct responses; the two assertions naming a 401 and the
     /// verification title report it as the wrong response even if some future refactor made them agree
     /// with each other again.
+    /// </para>
+    /// <para>
+    /// <b>The one entry that names no row is what makes the gate's <em>position</em> measurable, and
+    /// that is a separate mutation from the gate's absence.</b> Every other entry is a real, revocable
+    /// credential, so a handler that ran its owner-scoped lookup <em>before</em> the gate would still
+    /// find every one of those rows, still be refused by the gate afterwards, and still answer seven
+    /// identical 401s — the reordering is invisible to a list where every lookup succeeds. Against an id
+    /// no row carries, lookup-first answers 404 while the seven real ones answer 401, and the body
+    /// comparison breaks. The order matters because the 409 this route can raise — "this is the
+    /// account's only passkey" — is the one answer here that is not byte-identical to the 401, and an
+    /// unproven request must do no work against the database before it earns that sentence.
     /// </para>
     /// <para>
     /// <b>Compared to each other rather than to a literal, because the property is
@@ -739,6 +830,17 @@ public sealed class CredentialRevocationTests
         refusals.Add((
             "no assertion members",
             await client.PostAsJsonAsync(RevocationPath(targetCredentialId), new { })));
+
+        // The same empty body over an id no row carries, and the only entry here whose route names
+        // nothing. It is what pins the ORDER of the gate and the lookup rather than the presence of the
+        // gate: under the shipped order both this entry and the seven around it are the gate's 401,
+        // because an unproven request reaches no query at all. Move the owner-scoped lookup above the
+        // gate and this entry alone becomes a 404 — the row genuinely is not there — while the seven
+        // real credentials still answer 401, and the whole-body comparison below names this line as the
+        // one that drifted. See the remarks for why the order is a rule and not a preference.
+        refusals.Add((
+            "unknown credential id",
+            await client.PostAsJsonAsync(RevocationPath(Guid.CreateVersion7()), new { })));
 
         // The sign-in pool, minted from an ANONYMOUS endpoint: anyone who can walk a person through one
         // WebAuthn prompt for this relying party holds a valid response over a nonce they chose the

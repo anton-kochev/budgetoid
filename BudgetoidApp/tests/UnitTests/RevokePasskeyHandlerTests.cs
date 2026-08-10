@@ -48,6 +48,13 @@ public sealed class RevokePasskeyHandlerTests
     private const string Origin = "https://localhost:4200";
     private const int ChallengeBytes = 32;
 
+    /// <summary>
+    /// How many times the executor runs the unit of work in
+    /// <see cref="HandleAsync_WhenTheUnitOfWorkIsReplayed_RevokesAndDeletesExactlyOnce" />. Two is the
+    /// smallest number that is a replay at all, and nothing that test measures gets sharper with more.
+    /// </summary>
+    private const int ReplayedAttempts = 2;
+
     /// <summary>Fixed instant for every seeded row, so nothing here depends on the wall clock.</summary>
     private static readonly DateTime UtcNow = new(2026, 8, 10, 13, 14, 15, DateTimeKind.Utc);
 
@@ -279,17 +286,128 @@ public sealed class RevokePasskeyHandlerTests
     }
 
     /// <summary>
+    /// The gate runs to completion <b>before</b> the transactional delegate, and this is the test that
+    /// goes red the instant it is moved inside one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The placement carries two arguments, and this test holds the second one only.</b> Measured
+    /// rather than supposed. Moving <c>reauthentication.VerifyAsync</c> inside the delegate does redden
+    /// one other test —
+    /// <c>CredentialRevocationTests.EveryReachableRevocationRefusal_ProducesTheIdenticalResponse</c>,
+    /// whose <em>consumed challenge</em> entry starts answering 200 — but for the <b>first</b>
+    /// argument: <c>ConsumeAsync</c> joins the ambient transaction, so a refused attempt rolls back,
+    /// puts the spent nonce back on the table, and the same assertion is replayable. A <em>refusal</em>
+    /// is what makes that visible, and one has to be driven to see it.
+    /// </para>
+    /// <para>
+    /// <b>The second argument is a valid revocation being refused, and nothing covered it.</b> The
+    /// delegate is replayed under a retrying execution strategy, so a gate inside it consumes a second
+    /// time on attempt two, finds the nonce already spent, and turns a correct request into the same
+    /// 401 an attacker gets — because the database blinked. Every other test in either suite runs the
+    /// delegate exactly once, and a gate called once is a gate called correctly, so none of them can
+    /// see it: under the mutation the act below throws <c>PasskeyVerificationException</c> and every
+    /// assertion here is unreachable. <see cref="EraseAccountHandlerTests" /> holds the same pin for
+    /// erasure and does not cover this one: it drives a different handler, and this story made the
+    /// re-authentication pool have two spenders rather than one.
+    /// </para>
+    /// <para>
+    /// <b>Written as an outcome pin with the consume count beside it</b>, in this file's philosophy: the
+    /// revocation completed and the nonce was spent exactly once. A call-order assertion would pass for
+    /// a handler that got the order right by accident.
+    /// </para>
+    /// <para>
+    /// <b>The executor is handed a rollback, unlike erasure's, and that is not this test being kinder to
+    /// the handler.</b> An erasure's delegate empties tables and deletes a row that is allowed to be
+    /// absent already, so it survives its own leftovers; a revocation's second attempt would look up a
+    /// credential the first attempt really removed from a list that has no rollback, and answer 404 for
+    /// a row production would have put back. That 404 would be the fake's, not the handler's. The
+    /// rollback restores exactly what a real <c>ROLLBACK</c> restores — the credential row, and the
+    /// session rows unstamped — and touches nothing in the change tracker, which is where the leftovers
+    /// a replay must genuinely survive live.
+    /// </para>
+    /// <para>
+    /// The discard placement is asserted alongside, because the replay is what makes it observable at
+    /// all and the arrangement is already here. Both calls belong inside every attempt: one hoisted
+    /// above the executor would run once, on attempt zero, and would be undone by nothing — the
+    /// rollback it exists to clean up after happens later. The attempt number each discard lands on is
+    /// what tells the two placements apart; a plain call count cannot.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheUnitOfWorkIsReplayed_RevokesAndDeletesExactlyOnce()
+    {
+        // Arrange
+        TwoPasskeyAccount account = ArrangeAccountWithTwoPasskeys();
+        StubUserContext userContext = new(account.UserId);
+
+        // One live session on the passkey that goes, so the number the surviving attempt reports is a
+        // number it had to count rather than the zero an empty arrangement produces either way.
+        InMemorySessionRepository sessions = new();
+        await sessions.AddAsync(Session.Establish(account.Revoked, UtcNow, UtcNow.AddHours(1)));
+
+        // A replaying executor, told what a ROLLBACK puts back: the credential row the abandoned
+        // attempt deleted, and the credential's sessions as unstamped rows read again rather than the
+        // revoked copies that attempt left in memory. Session.Revoke is idempotent and keeps the first
+        // instant, so without the second half the replayed sweep would match one row, end nothing, and
+        // report zero — a number produced by the fake and not by the handler.
+        RetryingTransactionalExecutor executor = new(
+            ReplayedAttempts,
+            () =>
+            {
+                account.RestoreTheRevokedPasskey();
+                sessions.DiscardTrackedEntities();
+
+                return sessions.AddAsync(Session.Establish(account.Revoked, UtcNow, UtcNow.AddHours(1)));
+            });
+
+        // The attempt number rather than a constant, which is what gives the discard assertion below
+        // something to tell attempt zero apart from attempts one and two by.
+        RecordingPersistenceState persistenceState = new(
+            () => executor.Attempts,
+            account.Passkeys.DiscardTrackedEntities);
+
+        RevokePasskeyHandler handler = BuildHandler(account, userContext, sessions, executor, persistenceState);
+
+        // Act
+        PasskeyRevocation revocation = await handler.HandleAsync(account.CommandRevokingTheOtherPasskey());
+
+        // Assert — the nonce was spent once, whatever the provider did to the transaction around it.
+        await Assert.That(account.Challenges.ConsumeCallCount).IsEqualTo(1);
+
+        // And the replay left the outcome of a single revocation: the named passkey gone, read back
+        // through the same owner-and-type scoped lookup the handler resolves it with, the account's
+        // other passkey untouched, and the sessions of the one that went reported as ended.
+        await Assert.That(await account.Passkeys.FindPasskeyCredentialAsync(account.Revoked.Id, account.UserId))
+            .IsNull();
+        await Assert.That(await account.Passkeys.FindPasskeyCredentialAsync(account.Proving.Id, account.UserId))
+            .IsNotNull();
+        await Assert.That(await account.Passkeys.CountPasskeysForUserAsync(account.UserId)).IsEqualTo(1);
+        await Assert.That(revocation.SessionsEnded).IsEqualTo(1);
+
+        // Two discards per attempt, and never on attempt zero — which is what a call made before the
+        // executor was entered would record.
+        await Assert.That(persistenceState.DiscardedOnAttempt).IsEquivalentTo(new[] { 1, 1, 2, 2 });
+    }
+
+    /// <summary>
     /// An account holding two passkeys, with a genuine fresh proof from the one that stays.
     /// </summary>
     /// <param name="Proving">The passkey that signs the re-authentication and is not removed.</param>
     /// <param name="Revoked">The passkey the command names.</param>
+    /// <param name="RestoreTheRevokedPasskey">
+    /// Files <see cref="Revoked" /> again, with the key material and counter value it was registered
+    /// with — what a <c>ROLLBACK</c> does to the row a deleted attempt removed. It lives here because
+    /// the public key it needs is built in the arrangement and is otherwise not kept.
+    /// </param>
     private sealed record TwoPasskeyAccount(
         Guid UserId,
         InMemoryPasskeyRepository Passkeys,
         Credential Proving,
         Credential Revoked,
         StubWebAuthnChallengeStore Challenges,
-        AssertionResult Assertion)
+        AssertionResult Assertion,
+        Action RestoreTheRevokedPasskey)
     {
         /// <summary>The revocation of <see cref="Revoked" />, proved by <see cref="Proving" />.</summary>
         public RevokePasskeyCommand CommandRevokingTheOtherPasskey() =>
@@ -321,10 +439,12 @@ public sealed class RevokePasskeyHandlerTests
 
         SyntheticAuthenticator revokedDevice = SyntheticAuthenticator.CreateEs256(RelyingPartyId);
         Credential revoked = Credential.CreatePasskey(userId, UtcNow);
-        passkeys.Register(
+        PasskeyPublicKey revokedKey = PasskeyPublicKey.Register(
             revoked,
-            PasskeyPublicKey.Register(revoked, revokedDevice.CredentialId, revokedDevice.CoseKey, revokedDevice.Algorithm),
-            signatureCounter: 0);
+            revokedDevice.CredentialId,
+            revokedDevice.CoseKey,
+            revokedDevice.Algorithm);
+        passkeys.Register(revoked, revokedKey, signatureCounter: 0);
 
         // The stored nonce and the signed nonce are the same bytes, so the gate has no reason to
         // refuse: a 401-shaped failure would make these tests green about something other than what
@@ -338,7 +458,8 @@ public sealed class RevokePasskeyHandlerTests
             proving,
             revoked,
             challenges,
-            provingDevice.Authenticate(challenge, Origin, userHandle: null));
+            provingDevice.Authenticate(challenge, Origin, userHandle: null),
+            () => passkeys.Register(revoked, revokedKey, signatureCounter: 0));
     }
 
     /// <summary>
@@ -349,18 +470,21 @@ public sealed class RevokePasskeyHandlerTests
     /// <remarks>
     /// The persistence state forwards only to the passkey fake. Wiring the session fake's discard in
     /// too would clear the very rows this arrangement is about, and where the discards land is pinned
-    /// by <see cref="EraseAccountHandlerTests" /> and by the revocation's own endpoint tests rather
-    /// than here.
+    /// by <see cref="HandleAsync_WhenTheUnitOfWorkIsReplayed_RevokesAndDeletesExactlyOnce" /> — which
+    /// is also the one test here that passes its own two arguments, because a constant attempt number
+    /// and a delegate run once cannot express a replay.
     /// </remarks>
     private static RevokePasskeyHandler BuildHandler(
         TwoPasskeyAccount account,
         StubUserContext userContext,
-        InMemorySessionRepository sessions) =>
+        InMemorySessionRepository sessions,
+        ITransactionalExecutor? executor = null,
+        IPersistenceState? persistenceState = null) =>
         new(
             account.Passkeys,
             userContext,
-            new RecordingPersistenceState(() => 1, account.Passkeys.DiscardTrackedEntities),
-            new InMemoryTransactionalExecutor(),
+            persistenceState ?? new RecordingPersistenceState(() => 1, account.Passkeys.DiscardTrackedEntities),
+            executor ?? new InMemoryTransactionalExecutor(),
             new PasskeyReauthentication(
                 account.Challenges,
                 account.Passkeys,

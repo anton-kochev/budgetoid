@@ -165,10 +165,17 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         // would put the scope where a reader expects it while bypassing the tracker the calling
         // handler depends on having emptied.
         //
-        // No owner predicate here either, and none is missing. The entity was resolved by
-        // FindPasskeyCredentialAsync, whose predicate named the owner and the type, and a Credential
-        // cannot be constructed any other way — so the scope arrived with the argument. Restating it
-        // would be a second source of tenancy that could disagree with the first.
+        // No owner predicate here either, and none is missing: the scope arrived with the argument.
+        // The entity was resolved by FindPasskeyCredentialAsync, whose predicate named the owner and
+        // the type — and that is the only read in this class returning a Credential the table actually
+        // holds. Credential.CreateFederated and CreatePasskey are public, so an instance can certainly
+        // be made elsewhere; each mints its own Guid.CreateVersion7(), so the row it names does not
+        // exist and Remove raises on a zero-row DELETE instead of removing a stranger's. Restating the
+        // owner here would be a second source of tenancy that could disagree with the first.
+        //
+        // What that leaves standing is this file: add a query above that returns a Credential without
+        // an owner filter and this delete is scoped by nothing at all, with no policy beneath it to
+        // notice — docs/decisions/0014 names that as the one thing review has to catch.
         //
         // Remove on the one row, never on its children: passkey_public_keys,
         // passkey_signature_counters and sessions leave by the database's own cascade from this row,

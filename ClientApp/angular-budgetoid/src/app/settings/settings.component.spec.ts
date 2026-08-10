@@ -38,6 +38,19 @@ const REGISTER_BUTTON = 'Register a passkey';
 const REVOKE_BUTTON = 'Revoke';
 const CEREMONY_EXPLANATION =
   'Registering and revoking both have to be confirmed with a passkey, and Budgetoid can’t run a passkey check in the browser yet. The buttons stay off until it can.';
+// The class the screen's own stylesheet hangs `min-height:
+// var(--bud-touch-target)` on, because Material's M3 button is shorter than the
+// 48px minimum `accessibility.md` sets and `components.md` restates. jsdom
+// applies no stylesheet, so a spec here cannot measure the rendered height; the
+// class is the seam between the two halves, and it is the half that goes missing
+// — a control written without it looks correct in every screenshot and is under
+// the minimum on every phone.
+const TOUCH_TARGET_CLASS = 's-button';
+// What Material's `mat-stroked-button` and `mat-flat-button` render as. The
+// class rather than the attribute selector, because the class is what carries
+// the treatment into the DOM and what the theme styles.
+const OUTLINE_CLASS = 'mat-mdc-outlined-button';
+const FILLED_CLASS = 'mat-mdc-unelevated-button';
 const CREDENTIALS_LOADING = 'Loading your ways to sign in…';
 const CREDENTIALS_FAILURE =
   'Couldn’t load your ways to sign in. Reload the page.';
@@ -64,12 +77,33 @@ const FEDERATED: CredentialSummary = {
   type: 'federated',
   createdAtUtc: '2026-01-12T08:30:00Z',
 };
+// A 200 carrying one field the screen cannot read. Every *network* failure on
+// this screen is caught and rendered as a sentence; a successful response with a
+// bad value in it is the one path with nothing between it and the template — and
+// the formatting happens inside a `computed` the template reads, so what would
+// otherwise be one wrong row is a throw during change detection that stops the
+// pass on the spot.
+const UNREADABLE: CredentialSummary = {
+  id: '019f4c0a-0000-7000-8000-0000000000c3',
+  type: 'passkey',
+  createdAtUtc: 'the twelfth of March',
+};
 const PASSKEY_DATE = 'March 12, 2026';
 const FEDERATED_DATE = 'January 12, 2026';
+// The one word that introduces the date on a row. Pinned as a fragment rather
+// than as a whole sentence — the exception the rest of this list is the rule for
+// — because the defect it catches *is* the fragment: a row that kept the caption
+// after dropping the date it introduces renders exactly this word and nothing
+// after it.
+const REGISTERED_CAPTION = 'Registered';
 // The visible label first, so voice control still reaches the control by what
 // it can see; the rest is what tells two buttons named "Revoke" apart.
 const REVOKE_PASSKEY = 'Revoke Passkey, registered March 12, 2026';
 const REVOKE_FEDERATED = 'Revoke Google, registered January 12, 2026';
+// The same name with the clause the row cannot fill left off, rather than
+// `Revoke Passkey, registered ` — a sentence that stops mid-word is read out
+// loud exactly as written.
+const REVOKE_DATELESS = 'Revoke Passkey';
 
 // Real signals, not readonly wrappers: each test drives one state by setting
 // them, so the component is exercised through its inputs rather than through
@@ -719,13 +753,114 @@ describe('SettingsComponent', () => {
     expect(normalize(rows[0] ?? null)).not.toBe(normalize(rows[1] ?? null));
   });
 
+  // The date is formatted inside a `computed`, and the template reads that
+  // computed, so a throw in it is a throw *during change detection*. Angular
+  // abandons the pass where it fails: the credentials section is declared before
+  // Export, so one unreadable field leaves the list stuck on its loading line
+  // and Export silent for the rest of the visit — the button renders, the click
+  // is handled, and no status, confirmation or failure sentence ever appears
+  // beside it. Reloading does not help, because the same payload arrives.
+  it('keeps the whole screen rendering when a date cannot be read', () => {
+    // Arrange
+    service.credentials.set([UNREADABLE, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // The rest of the section survives the bad entry rather than being replaced
+    // by it: both rows are drawn and the readable one still states its date.
+    expect(credentialRows().length).toBe(2);
+    expect(normalize(credentialRows()[1] ?? null)).toContain(PASSKEY_DATE);
+    // The list has arrived, so the loading line is gone — the measured symptom
+    // was this line staying on screen forever.
+    expect(normalize(credentialsRegion())).toBe('');
+    // And the sections declared after this one still render. Asserted through
+    // the export control rather than through the heading because that is the
+    // half a user notices: a button that answers every press with silence.
+    expect(buttonNamed(host, EXPORT_BUTTON)).not.toBeNull();
+    expect(normalize(sectionFor(host, 'export-heading'))).toContain(
+      EXPORT_BUTTON,
+    );
+  });
+
+  it('states no date it could not read', () => {
+    // Arrange
+    // Two entries, the unreadable one first. Every assertion below names the row
+    // it is about, and the readable sibling is what makes the negative halves
+    // discriminate: on a list of one, `not.toContain('Registered')` and "no
+    // `<time>` here" are equally satisfied by a section that stopped rendering
+    // the date for every row on the screen.
+    service.credentials.set([UNREADABLE, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const rows = credentialRows();
+    const row = rows[0];
+    const readableRow = rows[1];
+
+    // Assert
+    // Both rows are drawn, so the `?.` below are reading rows that exist rather
+    // than passing on an absent one.
+    expect(rows.length).toBe(2);
+    // Control for the test above: surviving by printing whatever was to hand is
+    // not the same as surviving. The row states the type, which the server did
+    // send, and states nothing about a day nobody can work out — not the raw
+    // stored value, and not the `Invalid Date` a bare `String(new Date(…))`
+    // would put there.
+    expect(normalize(row ?? null)).toContain(PASSKEY_TYPE);
+    expect(normalize(row ?? null)).not.toContain(UNREADABLE.createdAtUtc);
+    expect(normalize(row ?? null)).not.toContain('Invalid Date');
+    // The caption goes with the date it introduces. `Registered` with nothing
+    // after it is a sentence that stops after one word — a screen reader says it
+    // exactly like that — and on screen it reads as a date that failed to arrive
+    // rather than one the row is deliberately silent about.
+    expect(normalize(row ?? null)).not.toContain(REGISTERED_CAPTION);
+    // And the element goes with it. `<time>`'s whole contract is a
+    // machine-readable instant: an empty one carrying no `datetime` is an
+    // element announcing a time it does not have, which is a worse answer than
+    // no element. This supersedes the narrower pair it replaces — `datetime`
+    // absent and the text empty — because an empty `<time>` satisfied both while
+    // still being the thing the rule forbids, and because withholding the
+    // attribute is also what keeps the unreadable stored value out of the markup
+    // that `shows no identifier for any credential` reads.
+    expect(row?.querySelector('time')).toBeNull();
+    // The sibling row proves the two negatives above are about *this* row: a
+    // template that dropped the caption or the element everywhere would pass
+    // them while taking the date off a list whose rows are told apart by nothing
+    // else.
+    expect(normalize(readableRow ?? null)).toContain(REGISTERED_CAPTION);
+    expect(readableRow?.querySelector('time')).not.toBeNull();
+  });
+
+  it('names the revoke control without the clause it cannot fill', () => {
+    // Arrange
+    service.credentials.set([UNREADABLE]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // The accessible name is composed from the same date, so it fails the same
+    // way: `Revoke Passkey, registered ` is a sentence that stops mid-word, and
+    // a screen reader reads it exactly as written.
+    expect(buttonNamed(host, REVOKE_DATELESS)).not.toBeNull();
+    expect(revokeButtons().length).toBe(1);
+  });
+
   it('shows no identifier for any credential', () => {
     // Arrange
     service.credentials.set([FEDERATED, PASSKEY]);
 
     // Act
     fixture.detectChanges();
-    const section = normalize(sectionFor(host, 'credentials-heading'));
+    // `outerHTML`, not `textContent`. Text is where an id is *least* likely to
+    // arrive: the plausible route is an attribute — a `data-testid` someone adds
+    // to make a test easier to write, a `title`, an `aria-label` composed from
+    // the wrong field — and none of those move the section's text by a
+    // character. Reading the markup covers both, and covers the `datetime`
+    // attribute and the `track` expression while it is there.
+    const section = sectionFor(host, 'credentials-heading')?.outerHTML ?? '';
 
     // Assert
     // The row shows what the server holds *and* what tells one entry from
@@ -733,6 +868,7 @@ describe('SettingsComponent', () => {
     // into a screenshot or a support message where it is a handle on the
     // account. The whole section is read, not only the rows, because the id is
     // just as exposed in a heading or a caption.
+    expect(section).not.toBe('');
     expect(section).not.toContain(PASSKEY.id);
     expect(section).not.toContain(FEDERATED.id);
   });
@@ -851,13 +987,52 @@ describe('SettingsComponent', () => {
     // Assert
     // Present, so the section is honest about what it will eventually do, and
     // disabled, because registering a passkey needs a ceremony this client
-    // cannot run. The sentence is visible prose in the section rather than a
-    // `title` or an `aria-describedby` on the button: a disabled control is out
-    // of the tab order and skipped by screen readers, so anything hung on it is
-    // read to nobody.
+    // cannot run. The sentence is what makes that state legible; the two tests
+    // below hold the parts of it that this assertion cannot — how many times it
+    // is said, and where.
     expect(registerButton).not.toBeNull();
     expect(registerButton?.disabled).toBe(true);
     expect(normalize(section)).toContain(CEREMONY_EXPLANATION);
+  });
+
+  it('says the ceremony explanation once, not once per row', () => {
+    // Arrange
+    // Two rows, because the mutation this catches is the tempting one: moving
+    // the sentence beside each control it explains. With the list empty there
+    // is nothing to duplicate it into and the count cannot discriminate.
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const section = normalize(sectionFor(host, 'credentials-heading'));
+
+    // Assert
+    // Exactly one, not "at least one". A sentence repeated per row is read
+    // once per entry by a screen reader in browse mode and is three paragraphs
+    // of the same words on an account with three credentials — which is the
+    // reason it sits above the list, and which a `toContain` cannot see.
+    expect(occurrencesOf(section, CEREMONY_EXPLANATION)).toBe(1);
+  });
+
+  it('says it before the controls it explains', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const section = sectionFor(host, 'credentials-heading');
+    const explanation = elementSaying(section, CEREMONY_EXPLANATION);
+    const firstInert = firstInertControl(section);
+
+    // Assert
+    // Order is the other half a `toContain` cannot see, and it is load-bearing
+    // in both reading orders: someone moving linearly through the section meets
+    // the explanation before the dead control rather than after it, and someone
+    // who reaches the control first has already been told why it is off. Below
+    // the buttons the sentence is an apology; above them it is an instruction.
+    expect(explanation).not.toBeNull();
+    expect(firstInert).not.toBeNull();
+    expect(precedes(explanation, firstInert)).toBe(true);
   });
 
   it('hangs no description on the disabled controls', () => {
@@ -869,10 +1044,14 @@ describe('SettingsComponent', () => {
     const controls = [buttonNamed(host, REGISTER_BUTTON), ...revokeButtons()];
 
     // Assert
-    // Control for the test above: the explanation satisfies "the state is
-    // legible" only while it is somewhere a reader can reach. A `title` or an
-    // `aria-describedby` on a disabled button reads as an equivalent fix and
-    // is announced to no one.
+    // Control for the tests above: the explanation is legible only while it is
+    // somewhere every reader meets, and a description hung on the control is
+    // not that. A disabled button *is* announced — it stays in the
+    // accessibility tree and browse mode reads it, with its
+    // `aria-describedby` — but only to someone who arrives at it, and a
+    // `title` reaches neither a keyboard nor a touch user at all. The sentence
+    // has to be visible prose because it is as much for the sighted reader
+    // looking at a dead button as for anyone else.
     for (const control of controls) {
       expect(control?.getAttribute('title')).toBeNull();
       expect(control?.getAttribute('aria-describedby')).toBeNull();
@@ -891,6 +1070,54 @@ describe('SettingsComponent', () => {
     expect(buttons.length).toBe(2);
     for (const button of buttons) {
       expect(button.disabled).toBe(true);
+    }
+  });
+
+  it('holds every control on the screen to the touch target', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const controls = [
+      buttonNamed(host, REGISTER_BUTTON),
+      buttonNamed(host, EXPORT_BUTTON),
+      buttonNamed(host, ERASE_BUTTON),
+      ...revokeButtons(),
+    ];
+
+    // Assert
+    // Every control, not only the ones this section added: the minimum is a
+    // rule about controls, and a screen that holds four of five to it has a
+    // control someone misses on a phone. The list is built by name so a missing
+    // control fails here rather than shrinking the loop to nothing.
+    expect(controls.length).toBe(5);
+    for (const control of controls) {
+      expect(control?.classList.contains(TOUCH_TARGET_CLASS)).toBe(true);
+    }
+  });
+
+  it('gives the credential controls the outline treatment', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const controls = [buttonNamed(host, REGISTER_BUTTON), ...revokeButtons()];
+
+    // Assert
+    // Outline, and specifically *not* filled. Revoking is destructive, but the
+    // destructive treatment is spent on the control that commits the act and
+    // there is no confirmation behind this one yet — the book's rule for a
+    // destructive action without its confirmation is Outline and disabled,
+    // never Destructive. The negative half is not redundant: a control can
+    // carry both classes, and it is the filled treatment arriving that makes a
+    // dead button read as the section's primary action. Export is deliberately
+    // filled and is deliberately not in this list.
+    expect(controls.length).toBe(3);
+    for (const control of controls) {
+      expect(control?.classList.contains(OUTLINE_CLASS)).toBe(true);
+      expect(control?.classList.contains(FILLED_CLASS)).toBe(false);
     }
   });
 
@@ -1106,6 +1333,48 @@ function buttonNamed(
         (label ?? button.textContent ?? '').replace(/\s+/g, ' ').trim() === name
       );
     }) ?? null
+  );
+}
+
+// How many times a sentence appears in already-normalized text. `toContain` is
+// satisfied by one occurrence and by fifty, and the difference between those is
+// the whole argument for where this screen puts its explanation.
+function occurrencesOf(text: string, sentence: string): number {
+  return text.split(sentence).length - 1;
+}
+
+// The element whose own text *is* the sentence — the paragraph carrying it,
+// rather than every ancestor that contains it. Document order, so a wrapper that
+// happened to hold nothing else would be found before its child; that is the
+// same position for the comparison below, which is all this is used for.
+function elementSaying(root: Element | null, sentence: string): Element | null {
+  const elements = Array.from(root?.querySelectorAll('*') ?? []);
+
+  return elements.find((element) => normalize(element) === sentence) ?? null;
+}
+
+// The first control in document order that a press will be refused by, however
+// the refusal is expressed: `disabled` on the row buttons, `aria-disabled` on
+// anything held with `disabledInteractive`.
+function firstInertControl(root: Element | null): Element | null {
+  return (
+    root?.querySelector('button[disabled], button[aria-disabled="true"]') ??
+    null
+  );
+}
+
+// Document order, which is the order a screen reader reads and the order the
+// page is laid out in — not source order in the template and not visual order
+// under CSS, but the one both of those have to agree with to mean anything.
+function precedes(first: Element | null, second: Element | null): boolean {
+  if (first === null || second === null) {
+    return false;
+  }
+
+  return (
+    (first.compareDocumentPosition(second) &
+      Node.DOCUMENT_POSITION_FOLLOWING) !==
+    0
   );
 }
 

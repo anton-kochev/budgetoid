@@ -99,6 +99,45 @@ describe('credentialRegistrationDate', () => {
     expect(rendered).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
+  it('renders nothing for a stored instant it cannot read', () => {
+    // Arrange
+    // What a 200 carrying one malformed field looks like from here. The field
+    // is typed `string`, so nothing upstream is going to catch this: the
+    // compiler is satisfied, the HTTP layer saw a successful response, and the
+    // value only becomes a problem at the moment it is formatted.
+    const storedInstant = 'the twelfth of March';
+
+    // Act
+    const rendered = credentialRegistrationDate(storedInstant, AMERICAN);
+
+    // Assert
+    // Total, not throwing. This function is called from a `computed` that the
+    // template reads, so a `RangeError` here escapes during change detection
+    // and takes down every section rendered after it — the caller has no
+    // `try` to put around a signal read, and a screen that answers a bad date
+    // with a blank one is telling the truth about what it knows.
+    expect(rendered).toBe('');
+  });
+
+  it('renders nothing for a stored instant that is not a string', () => {
+    // Arrange
+    // The other half of a response the type says cannot happen: a JSON `null`
+    // in the field. It is cast in because the declared parameter forbids it and
+    // the wire does not — nothing between the server and here validates the DTO.
+    const missing = null as unknown as string;
+
+    // Act
+    const rendered = credentialRegistrationDate(missing, AMERICAN);
+
+    // Assert
+    // `new Date(null)` is not an Invalid Date — it is the epoch — so the NaN
+    // check above does not cover this, and without its own guard the row states
+    // `December 31, 1969` as a fact the reader has no way to disbelieve. A
+    // legitimate epoch *string* still renders; the guard is on the type, not on
+    // the value.
+    expect(rendered).toBe('');
+  });
+
   it('renders the date in the locale it is given', () => {
     // Arrange
     const storedInstant = '2026-03-11T22:00:00Z';

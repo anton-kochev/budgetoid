@@ -215,17 +215,24 @@ describe('SettingsService', () => {
 
   it('publishes the credentials in the order the server sent them', () => {
     // Arrange
-    api.getCredentials.mockReturnValue(of([FEDERATED, PASSKEY]));
+    // **Descending**, and that is the whole test. The server orders ascending,
+    // so every other fixture in this suite is already in the order a client-side
+    // sort would produce — asserted against one of those, this test is green on
+    // a service that sorts, on one that reverses and sorts, and on one that
+    // passes the array through, which is to say it asserts nothing. Handed an
+    // order the client would never choose for itself, only the last of those
+    // three survives.
+    api.getCredentials.mockReturnValue(of([PASSKEY, FEDERATED]));
 
     // Act
     service.loadCredentials();
 
     // Assert
-    // The server orders ascending by registration instant and the screen shows
-    // that order. Sorting again here would be a second opinion about a fact the
+    // The server orders by registration instant and the screen shows that
+    // order. Sorting again here would be a second opinion about a fact the
     // server already settled, and would diverge from it the moment either side
     // changed its mind.
-    expect(service.credentials()).toEqual([FEDERATED, PASSKEY]);
+    expect(service.credentials()).toEqual([PASSKEY, FEDERATED]);
   });
 
   it('holds no credentials before the load is asked for', () => {

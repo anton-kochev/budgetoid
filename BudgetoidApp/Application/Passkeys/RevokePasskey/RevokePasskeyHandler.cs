@@ -95,9 +95,15 @@ public sealed class RevokePasskeyHandler(
                 // account signs in with cannot be selected here, so this route cannot be turned into
                 // one that strips an account of its provider identity.
                 //
-                // The entity, not the id, travels on to the delete — Credential has a private
-                // constructor and no setters, so holding one is proof this scoped lookup produced it,
-                // which is what makes an unscoped delete unavailable rather than discouraged.
+                // The entity, not the id, travels on to the delete, and that carries the scope
+                // downstream — though not because a Credential can only come from here. Both of its
+                // factories are public, and either would hand the delete an instance; what they hand it
+                // is one carrying a freshly minted id, which names no row the database has, so that
+                // delete matches nothing and raises instead of taking a stranger's passkey. This lookup
+                // is therefore the only thing on this path producing a credential the table actually
+                // holds — with the owner already in the predicate that found it. Adding a second such
+                // producer to PasskeyRepository is what would break the chain, and review is what
+                // catches that.
                 Credential credential = await passkeys.FindPasskeyCredentialAsync(
                         command.CredentialId,
                         userContext.UserId,

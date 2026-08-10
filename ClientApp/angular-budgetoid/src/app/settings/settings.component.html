@@ -93,12 +93,26 @@
                    on the same day are told apart by nothing better, and that is
                    the honest maximum: registration deliberately collects no
                    device identity to show. -->
-              <p class="s-credential-date">
-                Registered
-                <time [attr.datetime]="credential.storedInstant">{{
-                  credential.registeredOn
-                }}</time>
-              </p>
+              <!-- The whole paragraph goes, caption included, when the stored
+                   instant could not be read. Not the `<time>` alone: `Registered`
+                   with nothing after it is a sentence that stops after one word,
+                   and a screen reader says it exactly like that. Not a
+                   placeholder either — an em dash or the raw stored value would
+                   put a string nobody can work out on the screen and claim it is
+                   a date. And no empty element left behind: a `datetime`
+                   attribute exists to be parsed, so one carrying a value no
+                   parser accepts is a worse answer than an absent element. The
+                   row states the type and is deliberately silent about the day.
+                   `registeredOn` is empty exactly when `storedInstant` is null,
+                   so this one condition covers both. -->
+              @if (credential.registeredOn) {
+                <p class="s-credential-date">
+                  Registered
+                  <time [attr.datetime]="credential.storedInstant">{{
+                    credential.registeredOn
+                  }}</time>
+                </p>
+              }
             </div>
 
             <!-- Outline, not Destructive: revoking is destructive, but the
