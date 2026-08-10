@@ -20,9 +20,11 @@
         <!-- Deliberately no reference to Api. It targets the Web SDK, so pulling it in here would also
              pull the whole web composition root — JwtBearer, OpenTelemetry, Npgsql, the Aspire service
              defaults — plus a FrameworkReference on Microsoft.AspNetCore.App, into the one project whose
-             value is being free of them. Nothing in this repository enforces that boundary, so it has to
-             hold as a standing decision. A test that needs an Api type belongs in IntegrationTests, which
-             already references it; needing no container is not a reason to move the reference instead. -->
+             value is being free of them. ProjectReferenceGraphTests enforces that boundary — this absence
+             is a pinned row in its expected set, so adding the reference here fails a test rather than
+             merely contradicting a comment. A test that needs an Api type belongs in IntegrationTests,
+             which already references it; needing no container is not a reason to move the reference
+             instead. -->
         <ProjectReference Include="..\..\Application\Application.csproj"/>
         <ProjectReference Include="..\..\Infrastructure\Infrastructure.csproj"/>
         <ProjectReference Include="..\TestSupport\TestSupport.csproj"/>
