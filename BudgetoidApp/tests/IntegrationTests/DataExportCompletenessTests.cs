@@ -74,12 +74,43 @@ namespace IntegrationTests;
 /// 7.4's inventory check, which compares the document's shape against the schema itself rather than
 /// against a number written here.
 /// </para>
+/// <para>
+/// <b>Completeness is not correctness, and
+/// <see cref="Export_CarriesTheUserRecordWithEveryPersistedColumn" /> is only the first of the two.</b>
+/// Its address assertion re-derives the expected value exactly the way
+/// <c>ApiFactory.CreateAuthenticatedClient</c> derives the <c>email</c> claim it puts on the request, so
+/// it agrees with itself whichever value the export actually read — an implementation projecting that
+/// claim into <c>user.email</c> and never touching the <c>users</c> row passes it, and passes every
+/// other test in this file besides, because the stored address and the claim are the same string by
+/// construction everywhere here.
+/// <see cref="Export_ForASubjectWhoseProviderAddressChanged_CarriesTheStoredAddress" /> is the one
+/// arrangement in which the two differ, and it matters most on this route: the export is the only
+/// surface whose answer a person keeps as a file, so an address they cannot be reached at is wrong for
+/// as long as they keep it. The completeness assertion stays exactly as it is — it proves the member is
+/// present and populated, which is worth keeping, and it was never a claim about <em>which</em> value.
+/// </para>
 /// </remarks>
 public sealed class DataExportCompletenessTests
 {
     private const string ExportPath = "/api/me/export";
 
     private const string Subject = "export-completeness-subject";
+
+    /// <summary>
+    /// The address the account in
+    /// <see cref="Export_ForASubjectWhoseProviderAddressChanged_CarriesTheStoredAddress" /> is registered
+    /// under, and the only one its export may ever carry. Deliberately not the
+    /// <c>{subject}@example.com</c> shape the factory falls back to, so an export that rebuilt the
+    /// address out of the subject would be visible there rather than agreeing by construction.
+    /// </summary>
+    private const string RegisteredAddress = "registered@budgetoid.test";
+
+    /// <summary>
+    /// The address the provider reports <em>after</em> the change — carried in the claim, stored nowhere.
+    /// Deliberately neither a substring nor a superstring of <see cref="RegisteredAddress" />, so the
+    /// "appears nowhere in the document" half fails on an echo rather than on the correct answer.
+    /// </summary>
+    private const string ChangedProviderAddress = "changed-at-the-provider@budgetoid.test";
 
     [Test]
     public async Task Export_CarriesTheUserRecordWithEveryPersistedColumn()
@@ -99,6 +130,12 @@ public sealed class DataExportCompletenessTests
 
         // Assert — the three columns the row carries, each with the value the database holds.
         await Assert.That(user["id"]!.GetValue<Guid>()).IsEqualTo(userId);
+
+        // The address is re-derived here the way the factory derives the claim, so this line says the
+        // member is present and populated and nothing at all about which value was read — an export
+        // echoing the token's email claim satisfies it. Which value is
+        // Export_ForASubjectWhoseProviderAddressChanged_CarriesTheStoredAddress, and it is the only test
+        // in this file where the stored address and the claim are different strings.
         await Assert.That(user["email"]!.GetValue<string>()).IsEqualTo($"{Subject}@example.com");
         await Assert.That(user["createdAtUtc"]!.GetValue<DateTime>()).IsEqualTo(created[userId]);
 
@@ -109,6 +146,95 @@ public sealed class DataExportCompletenessTests
         // document and not to the table reds this one, and neither can be silenced by editing the
         // other — which is the only way an export can be checked for completeness by a count at all.
         await Assert.That(user.Count).IsEqualTo(3);
+    }
+
+    /// <summary>
+    /// That the address in the file is the one the account is <em>registered under</em>, and never the
+    /// one on the token that asked for the file.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The only test here where the stored address and the <c>email</c> claim are different strings,
+    /// which is the only arrangement that can tell an export reading the <c>users</c> row apart from one
+    /// projecting the claim off the request. Everywhere else the two are the same value by construction,
+    /// so a document assembled without ever touching that row satisfies every other assertion in this
+    /// file — the completeness test included, since it re-derives its expectation exactly the way the
+    /// factory derives the claim.
+    /// </para>
+    /// <para>
+    /// One subject and two clients, not two accounts. Two accounts would measure isolation, which
+    /// <c>DataExportRefusalTests</c> already covers; what is measured here is that a <em>later</em> token
+    /// has no authority over what registration wrote. That is the rule
+    /// <c>docs/business-logic/users-and-ownership.md</c> states — the stored address is deliberately
+    /// never refreshed from the provider — and this route is where it costs the most, because the export
+    /// is the one surface whose answer a person keeps. A person whose Google address changed must still
+    /// find, in the copy of their own data, the address their account can actually be reached at.
+    /// </para>
+    /// <para>
+    /// This is
+    /// <see cref="SignedInUserEndpointTests.Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress" />'s
+    /// shape and its argument, deliberately rather than a second one invented for this file:
+    /// <c>UnitTests.EnsureUserHandlerTests.EnsureUser_ReturningUserWhoseProviderEmailChanged_KeepsTheRegisteredEmail</c>
+    /// pins the rule at the row, that one pins it at the <c>/api/me</c> wire, and this one pins it in the
+    /// document — three places, one rule, and a reader who has met the argument once has met it here.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Export_ForASubjectWhoseProviderAddressChanged_CarriesTheStoredAddress()
+    {
+        // Arrange — the account is registered under address A, by a client carrying A in its claim. Both
+        // addresses are written down rather than left to the factory's {subject}@example.com fallback: an
+        // export that rebuilt the address out of the subject would otherwise agree with that fallback.
+        await using PostgresTestHost host = await StartHostAsync();
+
+        HttpClient beforeTheChange = host.Factory.CreateAuthenticatedClient(Subject, RegisteredAddress);
+        await ApiFactory.EstablishAccountAsync(beforeTheChange);
+
+        // The same person after a Google address change: the same subject — which is what the credential
+        // resolves on, and therefore what makes this one account rather than two — carrying address B.
+        HttpClient afterTheChange = host.Factory.CreateAuthenticatedClient(
+            Subject,
+            ChangedProviderAddress);
+
+        // Not needed to reach the export, which carries no ProvisionsUser and mints nothing, and verified
+        // rather than assumed: EnsureUserHandler asks ResolveUserHandler first, that resolves the existing
+        // credential on (provider, subject), and the handler returns before it reaches either the insert
+        // or the email uniqueness that would 409 — so this second call is a resolve on the same account.
+        // It is here because it is the real sequence a returning client performs, and because it is the
+        // one moment the stored address could be refreshed from the new token. Drop this line and a
+        // provisioning path that had started writing the claim over the row leaves this test green.
+        await ApiFactory.EstablishAccountAsync(afterTheChange);
+
+        // The control on the line above, not ceremony: this read throws unless exactly one credential row
+        // on this subject owns exactly one budget, so a second establish that had minted a second account
+        // fails here rather than letting the assertions run against whichever row came back first.
+        (Guid userId, _) = await ResolveOwnerAsync(host, Subject);
+
+        // Act — as the person whose token now says B. Read as text and parsed from that text rather than
+        // through GetExportAsync's stream: the negative assertion needs the payload exactly as it went
+        // over the wire, and an address hidden behind an escape sequence in a re-rendered document is a
+        // leak that a search over the re-rendered text would report as absent.
+        HttpResponseMessage response = await afterTheChange.GetAsync(ExportPath);
+        response.EnsureSuccessStatusCode();
+
+        string payload = await response.Content.ReadAsStringAsync();
+        JsonNode document = JsonNode.Parse(payload)
+            ?? throw new InvalidOperationException("The export answered an empty body.");
+        JsonObject user = document["user"]!.AsObject();
+
+        // Assert — the id first, so the address below is read off the row this subject actually owns
+        // rather than off a user object the handler assembled out of the request it was handed.
+        await Assert.That(user["id"]!.GetValue<Guid>()).IsEqualTo(userId);
+
+        // A is the answer. This half alone goes green against an export that shipped A beside a second
+        // member echoing the claim — the three-property count above guards the user object, but nothing
+        // guards a claim echoed anywhere else in the document…
+        await Assert.That(user["email"]!.GetValue<string>()).IsEqualTo(RegisteredAddress);
+
+        // …so B must appear nowhere in the body at all. This half alone is no better on its own: a
+        // document answering some third account's address entirely satisfies it. Together they say the
+        // file carries the registered address and no trace of the one the provider reports today.
+        await Assert.That(payload).DoesNotContain(ChangedProviderAddress);
     }
 
     [Test]

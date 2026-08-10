@@ -66,6 +66,22 @@ namespace IntegrationTests;
 /// a test that only went red once would have to be written after the id had already shipped to a
 /// client.
 /// </para>
+/// <para>
+/// <see cref="Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress" /> exists because
+/// none of the five above can see the difference between an address <em>read out of the account</em> and
+/// the <c>email</c> claim on the token that asked. Every one of them authenticates with the same string
+/// it then expects back, so a route delegate reading <c>httpContext.User.FindFirstValue("email")</c> and
+/// never calling <c>GetSignedInUserHandler</c> at all satisfies the lot — the two-account control
+/// included, because each client carries its own claim and echoing it answers both callers correctly.
+/// That was confirmed by mutation: with the handler left without a single production caller the five
+/// stayed green. The one arrangement that tells the two apart is a subject whose token address differs
+/// from its stored one, which is also the product rule itself — the registered address is deliberately
+/// never refreshed from the provider, so a person who changes their Google address must still be shown
+/// the address their account can actually be reached at.
+/// <c>UnitTests.EnsureUserHandlerTests.EnsureUser_ReturningUserWhoseProviderEmailChanged_KeepsTheRegisteredEmail</c>
+/// pins that at the row; this pins it at the wire, which is the only place a claim-reading endpoint is
+/// visible.
+/// </para>
 /// </remarks>
 public sealed class SignedInUserEndpointTests
 {
@@ -140,6 +156,63 @@ public sealed class SignedInUserEndpointTests
         // Assert — B first, since it is the caller the ordering above was arranged to trap.
         await AssertAnsweredWithAsync(secondResponse, SecondAddress, FirstAddress);
         await AssertAnsweredWithAsync(firstResponse, FirstAddress, SecondAddress);
+    }
+
+    /// <summary>
+    /// That a subject whose address at the provider has changed since it registered is answered the
+    /// address its account is <em>registered under</em>, and never the one on the token it arrived with.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The only test in the file where the stored address and the <c>email</c> claim are different
+    /// strings, which is the only arrangement in which the two can be told apart. Everywhere else they
+    /// are the same value by construction, so an endpoint that answered from the claim and an endpoint
+    /// that answered from the row are indistinguishable — including under the two-account control, since
+    /// each of those clients carries its own claim and an echo satisfies both of them.
+    /// </para>
+    /// <para>
+    /// One subject and two clients, not two accounts. Two accounts would measure isolation, which is
+    /// already covered; what is measured here is that a <em>later</em> token has no authority over what
+    /// registration wrote, which is the rule the users-and-ownership documentation states and the reason
+    /// the endpoint exists at all — the address a person is shown must be the one their account can be
+    /// reached at, not whatever the provider says today.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress()
+    {
+        // Arrange — the account is registered under address A, by a client carrying A in its claim.
+        await using PostgresTestHost host = await StartHostAsync();
+
+        HttpClient beforeTheChange = host.Factory.CreateAuthenticatedClient(
+            ChangedSubject,
+            RegisteredAddress);
+        await ApiFactory.EstablishAccountAsync(beforeTheChange);
+
+        // The same person after a Google address change: the same subject — which is what the credential
+        // resolves on and therefore what makes this one account rather than two — carrying address B.
+        HttpClient afterTheChange = host.Factory.CreateAuthenticatedClient(
+            ChangedSubject,
+            ChangedProviderAddress);
+
+        // Not needed to reach /api/me, which resolves rather than mints, and verified harmless rather
+        // than assumed: EnsureUser resolves the existing credential by subject and returns before it
+        // reaches either the insert or the email uniqueness that would 409. It is here because it is the
+        // real sequence — a returning client hits a provisioning route on boot — and because it is the
+        // one moment the stored address could be refreshed from the new token. Drop this line and a
+        // provisioning path that had started writing the claim over the row would go unseen.
+        await ApiFactory.EstablishAccountAsync(afterTheChange);
+
+        // Act — as the person whose token now says B.
+        HttpResponseMessage response = await afterTheChange.GetAsync(MePath);
+
+        // Assert — both halves, through the helper the two-account test uses, because the halves are the
+        // same two here: A is the answer, and B appears nowhere in the payload. The positive half alone
+        // would go green against a handler that returned A beside a second member echoing the claim, and
+        // the negative half alone would go green against a handler that answered a third account's
+        // address entirely. The helper also reads the body as the text that went over the wire, which is
+        // what keeps B from hiding behind an escape sequence.
+        await AssertAnsweredWithAsync(response, RegisteredAddress, ChangedProviderAddress);
     }
 
     [Test]
@@ -264,6 +337,25 @@ public sealed class SignedInUserEndpointTests
 
     /// <summary>The address of the account established second, which no unfiltered read reaches.</summary>
     private const string SecondAddress = "second-account@budgetoid.test";
+
+    /// <summary>
+    /// The one subject behind both clients in
+    /// <see cref="Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress" />. Named
+    /// rather than typed twice: the two clients being the <em>same</em> subject is the whole arrangement,
+    /// and a typo in the second literal would silently turn that test into a second, weaker copy of the
+    /// two-account control — green, and measuring nothing it was written for.
+    /// </summary>
+    private const string ChangedSubject = "google-owner";
+
+    /// <summary>The address the account was registered under, and the only one it may ever answer with.</summary>
+    private const string RegisteredAddress = "registered@budgetoid.test";
+
+    /// <summary>
+    /// The address the provider reports <em>after</em> the change — carried in the claim, stored nowhere.
+    /// Deliberately not a substring of <see cref="RegisteredAddress" /> and not a superstring of it, so
+    /// the "appears nowhere in the body" half fails on an echo rather than on the correct answer.
+    /// </summary>
+    private const string ChangedProviderAddress = "changed-at-the-provider@budgetoid.test";
 
     /// <summary>
     /// Asserts both directions of one caller's answer: that its own address is the value of

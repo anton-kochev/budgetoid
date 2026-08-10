@@ -362,12 +362,16 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   arriving members and joins them, so it reports `"createdAtUtc, email"` rather than that a count
   moved — the member to delete is named in the failure. It is a pin, green the day it was written,
   and it was watched fail against a deliberately widened record before it was trusted.
-- **Handing back null is a broken invariant, not a 404.** A resolved identity with no `users` row
-  cannot be constructed — the account, its first credential and its default budget land in one
-  `SaveChanges`, and `credentials` cascades from `users` on delete — so the handler throws and the
-  caller sees the 500 `GlobalExceptionHandler` writes. Answering "no such account" to a request the
-  pipeline has just authenticated *as that account* would file a broken invariant as an ordinary
-  missing resource, which is the one shape nobody investigates.
+- **Handing back null is a race, not a 404.** No *stored* state produces it: the account, its first
+  credential and its default budget land in one `SaveChanges`, and `credentials` cascades from
+  `users` on delete, so a live credential standing over a missing user row is not a shape the schema
+  holds. What produces one is **read skew** — the middleware resolves the identity out of
+  `credentials`, then reads `budgets`, and only then does the handler read `users`, three round trips
+  sharing no transaction, so an erasure committing inside that window leaves the earlier reads valid
+  and this one empty. The handler throws and the caller sees the 500 `GlobalExceptionHandler` writes,
+  which is also how `ResolveUserHandler` answers the same race one step earlier. Answering "no such
+  account" to a request the pipeline has just authenticated *as that account* would file it as an
+  ordinary missing resource, which is the one shape nobody investigates.
 - **The address change is not here.** `GET /api/me` is a read; nothing in the product writes
   `users.email` after the insert, and the gap below still stands.
 - **Source**: `[SOURCE: user-story — 2026-08-10]`
