@@ -279,6 +279,7 @@ app.MapCategoryGroupEndpoints();
 app.MapCategoryEndpoints();
 app.MapPasskeyEndpoints();
 app.MapAccountErasureEndpoints();
+app.MapCredentialEndpoints();
 app.MapDataExportEndpoints();
 app.MapSignedInUserEndpoints();
 

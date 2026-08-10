@@ -29,9 +29,16 @@ the only thing that does; see [passkeys.md](passkeys.md).
 What still does not exist is anything that *presents* one. No session token is issued — the assertion
 response deliberately carries no handle to the row it created — and the API still authenticates every
 other request from the Google ID token it is handed, exactly as
-[users-and-ownership.md](users-and-ownership.md) describes. So a `sessions` row is written and read
-back only by its own tests, and no code calls `RevokeSessionsForCredentialHandler`: there is still no
-path that removes a credential for it to be called from.
+[users-and-ownership.md](users-and-ownership.md) describes.
+
+**`RevokeSessionsForCredentialHandler` now has exactly one caller.** Revoking a passkey ends that
+passkey's sessions before deleting the credential row; see [passkeys.md](passkeys.md). Read that
+against the paragraph above before deciding what it is worth: because no session token is issued, a
+session is not what any request is authenticated by today, so ending one signs nobody out. The
+operation is correct and it is **anticipatory** — it makes the rule true of the rows now, so that the
+day a session token does authenticate a request, revocation is already the thing that ends it rather
+than a thing somebody has to remember to add. Saying otherwise — that revoking a passkey signs that
+device out — would be describing the session token as if it shipped.
 
 ## Key Entities
 
@@ -181,7 +188,9 @@ erDiagram
   `GRANT UPDATE (revoked_at_utc)` column list is unaffected.
 - **What the returned count means**: the number of sessions **this call** ended, excluding any a
   concurrent sweep ended first. Two simultaneous revocations of one credential therefore report a
-  total of the sessions ended, not that number twice.
+  total of the sessions ended, not that number twice. The count now reaches the wire, as
+  `sessionsEnded` on the passkey-revocation response — which makes it a published contract rather
+  than an internal return value, and narrowing it later is breaking.
 - **Note what this is not**: a tombstone. A session row exists only while its account does — the
   cascade below takes every one of them — so a revoked session leaves nothing behind an erasure.
 - **Source**: `[SOURCE: discussion — 2026-08-05]`
@@ -248,7 +257,7 @@ stateDiagram-v2
 | Transition | Triggered by | Validations |
 |---|---|---|
 | → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached today only from `CompleteAssertionHandler` after a passkey assertion verifies | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
-| Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached through `RevokeSessionsForCredentialHandler` | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
+| Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` calls before deleting the credential | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
 
 There is no transition back. Nothing un-revokes a session and nothing extends one.
@@ -272,14 +281,28 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   a credential row deletes its sessions, a path that removes a credential without revoking first
   passes a test asserting the sessions are gone — while leaving nothing to say when access ended. Any
   credential-removal path must revoke explicitly **and then** delete, or the fact is unobservable.
+  - **How the one path that exists resolves it.** `RevokePasskeyHandler` revokes and then deletes —
+    and because the delete removes the very rows the revocation just stamped, the schema afterwards
+    is identical either way. So the evidence leaves in the response instead: the revocation answers
+    with the count `RevokeForCredentialAsync` returned. That is what the returned count was for; see
+    the revocation rule above.
+  - **The test nobody should write** is "after revocation the credential has no active session". It
+    is green with the revocation call deleted, and therefore proves nothing.
+
+- **Between the revocation and the delete, the tracked sessions have to be discarded.** Revoking
+  loads every unrevoked `Session` into the change tracker. Remove the credential with those
+  dependents still tracked and EF cascades into the copies it can see and emits its own
+  `DELETE FROM sessions` — on a table granted `SELECT, INSERT, UPDATE (revoked_at_utc)` and
+  deliberately no `DELETE`, so the request dies with `42501`. **The failure names a permission and
+  the cause is the change tracker; do not answer it with a grant on `sessions`.** This is the same
+  mechanism `EraseAccountHandler` documents for `budgets`, on the same stack.
 - **Revoked and expired rows accumulate.** Nothing sweeps them, and the application role holds no
   `DELETE` grant to do it with. Not a defect at today's size; it becomes one before the product has
   many users, and the grant that a sweep needs is the one this file argues against adding.
-- **`RevokeSessionsForCredentialHandler` has no caller.** It is the application half of the rule,
-  and the path that would call it — removing a credential — does not exist. That is the same shape
-  as the standing `users.email` update grant recorded in
-  [users-and-ownership.md](users-and-ownership.md): if the credential-removal path does not arrive,
-  this handler should be deleted rather than left standing.
+- **`RevokeSessionsForCredentialHandler` has exactly one caller**, `RevokePasskeyHandler`, and the
+  `int` it returns is the only observable evidence the explicit revocation ran — see the cascade
+  gotcha above. Revoking the **federated** credential still has no caller and is not expected to
+  gain one: that credential is replaced rather than removed.
 - **The expiry is decided by the caller, and today there is exactly one.** `Session.Establish`
   validates only that the expiry is after the creation instant; the number itself —
   **14 days** — is a constant on `CompleteAssertionHandler`. It lives in Application rather than

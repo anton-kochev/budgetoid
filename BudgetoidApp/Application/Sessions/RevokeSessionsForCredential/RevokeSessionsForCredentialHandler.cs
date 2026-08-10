@@ -9,8 +9,10 @@ namespace Application.Sessions.RevokeSessionsForCredential;
 /// sweep is stamped with one instant, where a repository reading its own <c>now</c> per row would
 /// spread a single decision to end access across several instants nobody could later tell apart from
 /// sessions that genuinely ended at different times. This is the application half of "revoking a
-/// credential ends its sessions"; nothing calls it yet, because no path that removes a credential
-/// exists.
+/// credential ends its sessions", and it has exactly one caller: <c>RevokePasskeyHandler</c>, which
+/// calls it before deleting the credential row. The <see langword="int" /> it returns is the only
+/// observable evidence the explicit revocation ran at all, since the cascade from <c>credentials</c>
+/// removes the same rows either way.
 /// </remarks>
 public sealed class RevokeSessionsForCredentialHandler(
     ISessionRepository repository,

@@ -41,8 +41,10 @@ to a **user** rather than to a budget, and that rule has its canonical statement
   255 characters. A passkey credential carries neither. An account may hold more than one
   credential, but **at most one of type `federated`**. Every account is created with exactly one
   federated Google credential; a signed-in person may then register passkeys beside it, each carrying
-  its own verification material on its own tables — see [passkeys.md](passkeys.md). Nothing revokes a
-  credential of either type yet.
+  its own verification material on its own tables — see [passkeys.md](passkeys.md). A signed-in
+  person may **revoke a passkey**, proving presence with a fresh WebAuthn assertion, and an account's
+  **last** passkey is refused. The **federated** credential is not revocable at all: it is replaced
+  rather than removed, by an email change that is not built.
 - **Email** — a value object wrapping the email string; required, trimmed, and at most
   `Email.MaxLength` = 254 characters. Two `Email` values are equal iff their strings are equal.
   Uniqueness is a **wider** comparison than that equality: `users.email` carries a unique index on
@@ -405,14 +407,18 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
 - **Enforced in**: **database-owned, restated in the domain.** The application role has no `UPDATE`
   grant on `credentials` of any shape — not a column list with nothing on it, but no grant at all —
-  and no `DELETE` either, so every write except `INSERT` is refused with `42501` on the connection
-  every request is served by. On `users` the `UPDATE` grant names `email` alone, leaving
+  so every `UPDATE` is refused with `42501` on the connection every request is served by. The role
+  *does* hold `INSERT` and, since revocation, `DELETE`. **Removing a whole row is not an edit of an
+  identity**, so the `DELETE` leaves this rule untouched: no statement the role can run rewrites
+  which principal a credential names. What bounds the `DELETE` is the revocation rule below, and it
+  is bounded by the application alone. On `users` the `UPDATE` grant names `email` alone, leaving
   `created_at_utc` immutable by *omission* rather than by a `REVOKE`, which additive column
   privileges could not express. A one-column list is still a list, and must not be "simplified"
   into a table-wide grant; see
   [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
-  `AppRoleGrantsTests.Database_RefusesEveryUpdateOnACredentialsIdentity_WhileStillAllowingInsert`
-  pins the refusals column for column against a permitted insert, and
+  `AppRoleGrantsTests.`
+  `Database_RefusesEveryUpdateOnACredentialsIdentity_WhileStillAllowingInsertAndDelete`
+  pins the refusals column for column against a permitted insert and a permitted delete, and
   `Database_RefusesToChangeAUsersCreatedAt_WhileStillAllowingProfileEdits` pins that the users grant
   really is a list. Above them, neither `Domain/Users/User.cs` nor `Domain/Users/Credential.cs`
   exposes a mutator: both are written whole and never edited.
@@ -427,11 +433,50 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ---
 
+- **Rule**: A signed-in person may **list every credential** the account holds, and **revoke a
+  passkey** — but the account must keep at least one passkey, and the federated credential is out of
+  revocation's reach entirely. `GET /api/me/credentials` and
+  `POST /api/me/credentials/{credentialId}/revocation`; the revocation carries a fresh WebAuthn
+  assertion in its body, exactly as erasure does.
+- **Why**: an authenticator that is lost, sold, or compromised has to be removable without erasing
+  the account, which was the only remedy before. The floor of one passkey exists because a passkey is
+  the only credential type that opens a session reaching budget content: an account left holding only
+  its federated credential could still sign in, still could not reach its own money, and could not
+  even prove presence for an erasure.
+- **Enforced in**: `RevokePasskeyHandler`, and **nowhere below it.** The rule is a cross-row claim —
+  no `CHECK` sees another row, no unique index expresses "at least one" — and both mechanisms that
+  could reach it are refused: a trigger by
+  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md), a materialized counter
+  column by the pinned exemption column set. ADR 0002 requires the owning doc to say *why* whenever a
+  rule sits above its lowest capable layer, and this paragraph is that statement. The refusal answers
+  **409**: the request is well-formed and would succeed the moment a second passkey exists.
+- **How the target is scoped, and why a delete by primary key is sound**: the credential is loaded
+  through `FindPasskeyCredentialAsync(credentialId, userId)` — id, owner and type in one predicate —
+  and the loaded **entity** is handed to the delete, never an id. `credentials` is exempt from
+  row-level security, so that read is the only thing scoping the statement. What makes it sufficient
+  is the rule immediately above: `credentials.user_id` is immutable, so the binding between an id and
+  its owner cannot move between the read and the write. See
+  [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
+- **The federated credential is refused by construction rather than by a branch**: the `type`
+  predicate sits inside the same lookup, so revoking it answers the same **404** an unknown id
+  answers. A branch on `Type` would produce a better client message and is exactly the kind of
+  comparison a later refactor deletes.
+- **Counterexample**: counting the account's passkeys through the list projection instead of the
+  repository. A rule keyed on a value chosen for display is what the read-service/repository split
+  exists to prevent.
+- **Known gap**: the count and the delete are not serialized against each other, so two concurrent
+  revocations can leave an account with zero passkeys — see [passkeys.md](passkeys.md).
+- **Source**: `[SOURCE: user-story — 2026-08-10]`
+
+---
+
 - **Rule**: The application role may **delete a `users` row**, and that one statement removes the
-  account's whole structural graph. It holds `DELETE` on no other owned table — `budgets`,
-  `credentials`, `sessions`, `passkey_public_keys`, `passkey_signature_counters` (user-owned) and
-  `payees` (budget-owned) are emptied by the cascade descending from that row, not by a privilege of
-  their own.
+  account's whole structural graph. Of the other owned tables it holds `DELETE` on exactly one,
+  `credentials`, and that grant exists for revocation rather than for erasure — `budgets`,
+  `sessions`, `passkey_public_keys`, `passkey_signature_counters` (user-owned) and `payees`
+  (budget-owned) are emptied by the cascade descending from the `users` row, not by a privilege of
+  their own. The asymmetry is worth reading twice: erasure needs no `DELETE` on `credentials` and
+  would still work if the grant were revoked tomorrow.
 - **It is not sufficient on its own.** Five edges in the owned graph are `Restrict` rather than
   `Cascade`, and erasure empties the one table that is the child of four of them — `transactions` —
   before it deletes this row; see

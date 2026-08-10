@@ -21,6 +21,7 @@ using Application.Passkeys.BeginRegistration;
 using Application.Passkeys.CompleteAssertion;
 using Application.Passkeys.CompleteRegistration;
 using Application.Passkeys.Reauthentication;
+using Application.Passkeys.RevokePasskey;
 using Application.Payees.GetPayees;
 using Application.Payees.RenamePayee;
 using Application.Sessions.RevokeSessionsForCredential;
@@ -33,6 +34,7 @@ using Application.Users.EnsureUser;
 using Application.Users.EraseAccount;
 using Application.Users.ExportData;
 using Application.Users.GetSignedInUser;
+using Application.Users.ListCredentials;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Application;
@@ -72,12 +74,14 @@ public static class DependencyInjection
         services.AddScoped<EraseAccountHandler>();
         services.AddScoped<ExportDataHandler>();
         services.AddScoped<GetSignedInUserHandler>();
+        services.AddScoped<ListCredentialsHandler>();
         services.AddScoped<RevokeSessionsForCredentialHandler>();
         services.AddScoped<BeginRegistrationHandler>();
         services.AddScoped<CompleteRegistrationHandler>();
         services.AddScoped<BeginAssertionHandler>();
         services.AddScoped<CompleteAssertionHandler>();
         services.AddScoped<BeginReauthenticationHandler>();
+        services.AddScoped<RevokePasskeyHandler>();
 
         // Registered as the concrete type, because it has no interface and must not grow one: a
         // stubbable gate would let a test prove erasure works with the proof faked out.

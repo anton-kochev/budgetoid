@@ -26,8 +26,14 @@ establishes a `Full` session, and all of it is tested. What does **not** exist: 
 authenticates every other request from the Google ID token it is handed. **No session token is issued
 and none is presented** — the assertion response deliberately carries no handle to the session it
 created. Registration is also not yet gated: an account exists before any passkey does, so a passkey
-is something an already-signed-in person adds rather than something registration requires. Nothing
-lists, revokes, or replaces a passkey.
+is something an already-signed-in person adds rather than something registration requires.
+
+A signed-in person can now **list** every credential the account holds and **revoke** a passkey, the
+revocation gated by a fresh re-authentication exactly as erasure is. Nothing **replaces** a passkey,
+and nothing removes or replaces the **federated** credential — that is the email change, and it is
+not built. Read the revocation against [sessions.md](sessions.md) before deciding what it is worth:
+it ends the passkey's sessions, but no session authenticates a request today, so what revocation
+actually takes away is the ability to sign in again with that authenticator.
 
 ## Key Entities
 
@@ -132,14 +138,18 @@ erDiagram
     constraint, grant or policy carries any part of it.
 
 - **A challenge is single-use, and consuming one is deleting it.** `webauthn_challenges` is one of
-  the two identity tables holding `DELETE` — the budget-owned ones hold it too, for the ordinary
-  reason that people delete their own records. The paragraph beside the grant says why this one does:
+  the three identity tables holding `DELETE` — most of the budget-owned tables hold it too, for the
+  ordinary reason that people delete their own records, though `payees` deliberately does not.
+  The paragraph beside the grant says why this one does:
   these rows are nonces, and a row nobody can delete is a row swept by a path that does not exist.
   Contrast `sessions`, where revocation writes a column precisely so the row stays accountable. The
-  other is `users`, for a reason that has nothing to do with nonces: it is the root every owned row
-  cascades from. `credentials`, `passkey_public_keys` and `passkey_signature_counters` are emptied by
-  that cascade and hold no `DELETE` of their own — see
-  [users-and-ownership.md](users-and-ownership.md) for why granting them one would cost something.
+  other two are `users`, for a reason that has nothing to do with nonces — it is the root every owned
+  row cascades from — and `credentials`, which holds it for **revocation** rather than for erasure and
+  is the only one of the three whose delete is scoped by the application alone
+  ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)).
+  `passkey_public_keys` and `passkey_signature_counters` are emptied by the cascade and hold no
+  `DELETE` of their own — see [users-and-ownership.md](users-and-ownership.md) for why granting them
+  one would cost something.
 
 ### MUST NOT
 
@@ -404,17 +414,28 @@ environment, and a session lifetime that varies per environment is a difference 
 
 ## Edge Cases & Known Gotchas
 
-- **The exempt table scopes nothing, so the application is the only thing scoping reads of it.** The
+- **The exempt table scopes nothing, so the application is the only thing scoping access to it.** The
   discovery lookup is the one query allowed to read `passkey_public_keys` without naming an owner.
   Every other read must carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on
-  `budgets`. Two call sites carry that filter today: the `excludeCredentials` read, watched by
-  `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential`, and
+  `budgets`. Two call sites carry that filter on `passkey_public_keys`: the `excludeCredentials`
+  read, watched by `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential`, and
   `FindByWebAuthnCredentialIdForUserAsync` on the re-authentication gate, watched by
   `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount`.
   Those tests are the only thing that would notice either losing its filter — no layer below the
   application can.
-- **The re-authentication pool is one ceremony, not one per sensitive action.** Erasure is the only
-  thing that spends it today. If two sensitive actions ever need telling apart, the split is a new
+  - **`credentials` is now the sharper case, because one of its accesses is a `DELETE`.** Revocation
+    loads the target through `FindPasskeyCredentialAsync(credentialId, userId)` — id, owner and type
+    in one predicate — and hands the **loaded entity** to the delete, never an id. That signature is
+    the defence, but read its strength precisely: `Credential.CreateFederated` and
+    `Credential.CreatePasskey` are both public, so the lookup is not the only source of an instance.
+    What holds is that both factories mint their own id, so a fabricated `Credential` cannot name an
+    existing row — and that adding a source which *can* means adding a query to `PasskeyRepository`.
+    The full inventory of accesses is in [data isolation](../engineering/data-isolation.md).
+- **The re-authentication pool is one ceremony, not one per sensitive action.** Two things spend it:
+  erasure, and passkey revocation. Neither can tell which one a given nonce was requested for, and
+  that is the design rather than a gap — both actions are destructive, both are reachable only by the
+  account holder, and a proof of presence is a proof of presence. If two sensitive actions ever need
+  telling apart, the split is a new
   **ceremony value** — never a column on `webauthn_challenges`, which the pinned column set forbids.
 - **The assertion options leg is the first unauthenticated write path in the system.** Anyone can
   make the role insert a challenge row. Growth is bounded by a five-minute lifetime and an
@@ -467,9 +488,50 @@ environment, and a session lifetime that varies per environment is a difference 
 - **An expired challenge is not deleted on consumption.** `ConsumeAsync` leaves it for the sweep
   rather than doing work on behalf of a caller presenting bytes that are already worthless; the
   answer is identical either way.
-- **Nothing revokes a passkey.** The role holds no `DELETE` on `credentials`, so a lost authenticator
-  cannot be removed and `RevokeSessionsForCredentialHandler` still has no caller. Until that path
-  exists, the only remedy for a compromised passkey is erasing the account.
+- **Revoking a passkey removes its row; nothing marks it revoked.** The role now holds `DELETE` on
+  `credentials`, and the database's own cascade — running as the table owner, not as this role —
+  takes the public key, the signature counter and the sessions with it. There is deliberately no
+  `revoked_at_utc` on `credentials` and there must not be one: the table's pinned exemption column
+  set refuses a new column, and a revoked-but-present credential is a row a bug can bring back.
+  **The statement is scoped by the application alone**, because `credentials` keeps its
+  row-level-security exemption — see
+  [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
+
+- **An account's last passkey cannot be revoked, and that rule cannot live in the database.** It is a
+  cross-row claim — "this account keeps at least one passkey" — and no `CHECK` sees another row and
+  no unique index expresses "at least one". The two mechanisms that could are a trigger, which
+  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) refuses as procedural
+  logic pushed down purely to satisfy "lowest layer", and a materialized counter column on `users`,
+  which is a new column that has to be kept in step with the table it counts. So the rule sits in the
+  application deliberately, and this paragraph is the justification ADR 0002 requires whenever a rule
+  sits above its lowest capable layer. The **federated** credential does not count toward it: it
+  opens no session that reads budget content, so an account left holding only that one has no way
+  back to its own money.
+
+- **The last-passkey refusal has a concurrency window, and it is open.** Under `READ COMMITTED`, two
+  revocations of an account's last two passkeys running at once can each read a count of two and each
+  delete, leaving zero — an account that can never re-authenticate and therefore can never even erase
+  itself. Closing it needs a row lock held on `users` across the count and the delete, for which EF
+  Core offers no first-class API and whose raw-SQL spelling is a compile error under
+  `BannedSymbols.txt`. Reaching it takes two concurrent, separately-proven re-authentications holding
+  two distinct fresh nonces. Accepted and recorded, not solved.
+- **Two revocations racing on the same passkey: the loser answers 404, not 500.** Both requests
+  resolve the credential, both clear the floor, and both reach the delete; the second `SaveChanges`
+  matches zero rows and EF Core raises `DbUpdateConcurrencyException`. A person double-tapping the
+  button on a slow connection is enough. `PasskeyRepository.DeletePasskeyAsync` catches it and throws
+  the *same* `NotFoundException`, with the *same* message, that the lookup's own miss produces — so
+  the two orderings of one pair of requests are indistinguishable to the caller, which is what makes
+  a client's retry safe. Deliberately not a 409, which invites a retry at work already done, and not
+  an internal retry, which would re-run the lookup and reach this same 404 a round trip later. Not a
+  200 either: the response carries `sessionsEnded`, and this request's sweep matched rows the winner
+  had already stamped. Translated in Infrastructure and not in the handler, like the same catch in
+  `UserRepository.DeleteAsync` and `TransactionRepository.DeleteAllForAmbientBudgetAsync`: naming EF's
+  exception in `RevokePasskeyHandler` would put the EF assembly on `Application.csproj`, against a
+  dependency direction that runs Infrastructure → Application. `IPasskeyRepository` promises the
+  `NotFoundException` and nothing about what produced it. Driven from `PasskeyRepositoryTests`, which
+  deletes the row out of band on a second connection rather than interleaving two transactions at a
+  chosen statement — a timing-dependent test for a branch whose entire input is that state is worse
+  than none.
 - **The captured assertion in the golden vectors has user verification clear**, so it is checked
   against the parsing and signature layers rather than the full ladder, with a companion test
   asserting the ladder refuses it for exactly that. A reader finding a golden vector deliberately not

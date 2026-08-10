@@ -81,16 +81,22 @@ discoverable credential means — so there is nobody for a policy to key on, and
 column is refused at the gate anyway. `ExemptDespite = None`, with its column set pinned, because
 the pin is what keeps a person-identifying column from landing on it later.
 
-It is granted `DELETE`, which two of the six identity tables (`users`, `credentials`, `sessions`,
-`passkey_public_keys`, `passkey_signature_counters` and this one) hold and four do not — the
+It is granted `DELETE`, which three of the six identity tables (`users`, `credentials`, `sessions`,
+`passkey_public_keys`, `passkey_signature_counters` and this one) hold and three do not — most of the
 budget-owned tables hold it for the ordinary reason that people delete their own records. The grant
 paragraph says why this one does: its rows are nonces, consuming one *is* deleting it, and a row
-nobody can delete is a row swept by something that does not exist. `users` holds one for an unrelated
-reason — it is the root the whole owned graph cascades from, so deleting it is how an account is
-erased — and that grant reaches these two tables through the cascade rather than through a privilege
-of their own. That is what keeps them ungranted: a referential action runs as the referencing table's
-owner and descends from one row, whereas a `DELETE` privilege here would be unpoliced, because this
-table is exempt from row-level security.
+nobody can delete is a row swept by something that does not exist. The other two hold it for
+unrelated reasons. `users` is the root the whole owned graph cascades from, so deleting it is how an
+account is erased, and that grant reaches these two tables through the cascade rather than through a
+privilege of their own. `credentials` gained one later still, for **revocation** rather than for
+erasure — and it is the one grant in the matrix that no policy bounds, which is its own decision
+([ADR 0014](0014-scope-the-credential-delete-in-the-application.md)).
+
+What keeps `passkey_public_keys` and `passkey_signature_counters` ungranted is unchanged and is worth
+restating against that third grant: a referential action runs as the referencing table's owner and
+descends from one row, whereas a `DELETE` privilege on `passkey_public_keys` would be unpoliced,
+because that table is exempt from row-level security. `credentials` took exactly that cost knowingly;
+these two have no reason to.
 
 ### Both new rows reference the credential compositely
 

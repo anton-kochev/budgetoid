@@ -80,6 +80,65 @@ public interface IPasskeyRepository
         Guid userId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// How many credentials of type <see cref="CredentialType.Passkey"/> the account named by
+    /// <paramref name="userId"/> holds — the number the "an account's last passkey cannot be revoked"
+    /// floor is measured against.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>On the repository rather than on <c>Application.Users.IUserAccountReadService</c>, which is
+    /// where the credential list is projected from.</b> That interface says what it is for: reads that
+    /// are for showing, not for deciding. This number decides, and a rule keyed on a value chosen for
+    /// display is precisely what the split exists to prevent — the list is free to grow a page, an
+    /// ordering, or a projection that folds away rows a person need not see, and none of that may be
+    /// allowed to move the floor.
+    /// </para>
+    /// <para>
+    /// The type predicate is the rule itself rather than tidiness. Every account also holds the
+    /// federated Google credential provisioning minted for it, so a count with no type filter reads
+    /// <b>two</b> for an account standing on the floor and lets its last passkey go — leaving somebody
+    /// who can still sign in, still cannot reach any budget content, and cannot even prove presence
+    /// for an erasure.
+    /// </para>
+    /// </remarks>
+    Task<int> CountPasskeysForUserAsync(Guid userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes a passkey credential, and with it everything the database hangs off that row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It takes the loaded entity and never an id, and that signature is the design's main
+    /// defence.</b> <see cref="Credential"/> has a private constructor and no setters, so the only way
+    /// to hold one is <see cref="FindPasskeyCredentialAsync"/> — id, owner and type in one predicate.
+    /// An unscoped delete is therefore <em>unavailable</em> rather than discouraged, which is what has
+    /// to stand in for a policy: <c>credentials</c> is exempt from row-level security, so nothing
+    /// beneath this call narrows the statement to the person asking. The same idiom
+    /// <see cref="FindByWebAuthnCredentialIdForUserAsync"/> uses, and the argument for it is
+    /// <c>docs/decisions/0014-scope-the-credential-delete-in-the-application.md</c>.
+    /// </para>
+    /// <para>
+    /// What makes a delete by primary key sound once the read has scoped it is that
+    /// <c>credentials.user_id</c> is immutable — the role holds no <c>UPDATE</c> of any shape — so the
+    /// binding between an id and its owner cannot move between the read and the write.
+    /// </para>
+    /// <para>
+    /// Only the <c>credentials</c> row is deleted. The public key, the signature counter and the
+    /// sessions the credential opened leave by the database's own <c>ON DELETE CASCADE</c>, which runs
+    /// as the table owner and is not a statement this role has to be granted — the role holds no
+    /// <c>DELETE</c> on any of them, and <c>AppRoleGrantsTests</c> pins that absence deliberately.
+    /// </para>
+    /// <para>
+    /// A credential that is already gone raises <see cref="Domain.Common.NotFoundException"/>, with the
+    /// message <see cref="FindPasskeyCredentialAsync"/>'s caller uses for a miss. That is the whole of
+    /// what this port surfaces about a lost delete race: the persistence exception behind it is an
+    /// implementation's to translate, which keeps the storage assembly out of every caller and every
+    /// fake standing in for this interface.
+    /// </para>
+    /// </remarks>
+    Task DeletePasskeyAsync(Credential credential, CancellationToken cancellationToken = default);
+
     Task<PasskeySignatureCounter?> FindCounterAsync(
         Guid credentialId,
         CancellationToken cancellationToken = default);

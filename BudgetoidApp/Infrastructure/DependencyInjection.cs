@@ -47,6 +47,7 @@ public static class DependencyInjection
         services.AddScoped<ICategoryGroupReadService, CategoryGroupReadService>();
         services.AddScoped<ICategoryReadService, CategoryReadService>();
         services.AddScoped<IUserAccountReadService, UserAccountReadService>();
+        services.AddScoped<ICredentialReadService, CredentialReadService>();
         services.AddScoped<IExportReadService, ExportReadService>();
         services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();
 

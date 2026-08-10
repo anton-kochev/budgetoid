@@ -57,15 +57,58 @@ Enforced today:
   while being precisely what must not sit on a table every session reads in full. `currencies` and
   `__EFMigrationsHistory` pin nothing on purpose — the first belongs to no tenant whatever columns it
   grows, the second has its shape owned by EF.
-- **An exempt table scopes nothing, so the application is the only thing scoping reads of it.** The
-  discovery lookup is the one query allowed to read `passkey_public_keys` without naming an owner;
-  every other read must carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on
-  `budgets`. Two call sites carry that filter today: the `excludeCredentials` read in the
-  registration ceremony, watched by the endpoint test registering a passkey to two accounts, and
-  `FindByWebAuthnCredentialIdForUserAsync` on the re-authentication gate in front of erasure, watched
-  by `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount`.
-  Those tests are the only thing that would notice either read losing its filter — no layer below the
-  application can.
+- **An exempt table scopes nothing, so the application is the only thing scoping access to it — and
+  one of those accesses is now a write.** On the two exempt tables that carry an owner column, one
+  query is allowed to omit it — the one that discovers who is asking — and every other access must
+  carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on `budgets`.
+  `webauthn_challenges` is the exception to the sentence rather than to the rule: it has **no** owner
+  column at all, because a nonce belongs to a ceremony rather than to a person, so there is nothing
+  for an access to be scoped by and the pinned column set is what keeps it that way. The whole
+  inventory, because a list is the only way to see that it is complete:
+
+  | Table | Access | Scoped by |
+  |---|---|---|
+  | `passkey_public_keys` | the discovery lookup on sign-in | **nothing, deliberately** — it runs before there is an identity to key a filter on |
+  | `passkey_public_keys` | the `excludeCredentials` read in the registration ceremony | `where user_id`, watched by `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential` |
+  | `passkey_public_keys` | `FindByWebAuthnCredentialIdForUserAsync` on the re-authentication gate | `where user_id`, watched by `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount` |
+  | `passkey_public_keys` | `INSERT` at registration | the credential it hangs off, written in the same save |
+  | `credentials` | the provisioning lookup resolving a `sub` claim | provider and subject, which name a principal rather than an account |
+  | `credentials` | `FindPasskeyCredentialAsync`, on the **sign-in assertion** and on revocation | `where user_id`, watched by `Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows`; and `type`, watched by `Revocation_OfTheFederatedCredential_IsRefusedAndRemovesNothing` |
+  | `credentials` | `CountPasskeysForUserAsync`, behind the last-passkey rule | `where user_id` and `type`, watched by `Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing` |
+  | `credentials` | `ListForUserAsync`, behind `GET /api/me/credentials` | `where user_id`, watched by `Credentials_ForASecondAccount_ListThatAccountsCredentialsAndNotTheFirsts` |
+  | `credentials` | `INSERT` at provisioning, and again at passkey registration | the owner is a value the application supplies, not one it filters by |
+  | `credentials` | **`DELETE`**, revoking a passkey | the owner-scoped read above it, and nothing else |
+  | `webauthn_challenges` | issue, consume, sweep | **nothing, and there is nothing to scope by** — the row names no person |
+
+  Where a row names a test, that test is the **only** thing that would notice the access losing its
+  filter — no layer below the application can.
+
+  **Every named test on `credentials` has been watched fail**, under the deletion of the exact clause
+  it guards, rather than merely asserted to guard it. That is worth recording because three of them
+  were green the day they were written and a test that has only ever been green is not yet evidence.
+  What each mutation produces, so the next reader can repeat it: dropping the owner clause from
+  `FindPasskeyCredentialAsync` lets one account revoke another's passkey (`200` where `404` was
+  wanted); dropping its `type` clause lets an account revoke its **own federated** credential, after
+  which its `sub` resolves to nothing and every authenticated route answers `401` — the account is
+  permanently unreachable and cannot even erase itself; dropping the owner clause from
+  `CountPasskeysForUserAsync` measures the last-passkey floor against every account's passkeys at
+  once, so it never fires and the first person to revoke their only passkey locks themselves out.
+
+  The middle one is the reason a test seeding a single account proves less than it appears to: with
+  one account in the table, "this account's rows" and "every row" are the same set, and a predicate
+  that has stopped filtering looks identical to one that never needed to. Two of the three tests
+  above therefore seed a **bystander account** whose rows the operation must not touch, and that
+  arrangement is what makes them bite rather than an extra they could be tidied out of.
+
+  **The last row is the first destructive statement in this codebase with nothing beneath the
+  application scoping it**, and EF issues it by primary key alone. Two things make that sound, and
+  both have to stay true: `credentials.user_id` is immutable, so the binding between an id and its
+  owner cannot move between the read that scoped it and the write that used it; and the read and the
+  write share one transaction. The delete takes the loaded **entity**, never an id — which is worth
+  something only because no source of a `Credential` accepts a caller-chosen id: the two public
+  factories mint their own, and the one query that materializes an existing row carries the owner.
+  Adding a source that does not is what review has to catch. See
+  [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
 - **The column that decides tenancy must be `NOT NULL`.** Under `budget_id = current_budget` a row
   whose owner is NULL is invisible to every session — fail-closed, so not a leak, but a row that
   exists, that nobody can reach, and that nothing explains. The coverage gate refuses it.

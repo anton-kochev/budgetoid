@@ -25,8 +25,10 @@ namespace IntegrationTests;
 /// <see cref="RepositoryTestHost.AppConnectionString" />, because grants only bind connections
 /// opened as the role — the host's own connection is the container superuser and answers every
 /// privilege question with yes. What each test then puts on that session is not uniform and is
-/// never incidental: every test but one declares an identity so the row it aims at is reachable at
-/// all, and the <c>credentials</c> one declares nothing, which is the measurement rather than a gap.
+/// never incidental: a test aiming at a policed row declares an identity so the row is reachable at
+/// all, and a test aiming at a table row-level security exempts declares nothing — the two
+/// <c>credentials</c> tests, the two <c>passkey_public_keys</c> tests and the
+/// <c>webauthn_challenges</c> one — which is the measurement rather than a gap.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -341,7 +343,7 @@ public sealed class AppRoleGrantsTests
     }
 
     [Test]
-    public async Task Database_RefusesEveryUpdateOnACredentialsIdentity_WhileStillAllowingInsert()
+    public async Task Database_RefusesEveryUpdateOnACredentialsIdentity_WhileStillAllowingInsertAndDelete()
     {
         // Arrange — one user with the federated credential SeedUserAsync gives it, plus a second
         // real user for the user_id statement below to aim at: if the grant ever leaked user_id,
@@ -388,12 +390,6 @@ public sealed class AppRoleGrantsTests
             ForgedInstant,
             credentialId);
 
-        // No DELETE grant either, and that omission is the load-bearing half of this test.
-        // Revoking a credential is a later story; until it lands, the missing privilege is what
-        // stops a bug removing someone's only way back into their account.
-        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
-            app, "delete from credentials where id = @id", credentialId);
-
         // Assert
         await Assert.That(subjectRefusal.SqlState)
             .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
@@ -403,8 +399,6 @@ public sealed class AppRoleGrantsTests
         await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
         await Assert.That(createdAtRefusal.SqlState)
             .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
-        await Assert.That(deleteRefusal.SqlState)
-            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
 
         // The success half of the pair (see the class remarks) — an INSERT, because credentials is
         // the second table where no UPDATE column exists to pair with. One statement buys three
@@ -412,11 +406,12 @@ public sealed class AppRoleGrantsTests
         // credential, it is the passkey arm of CK_credentials_type_shape (no provider, no subject),
         // and it shows the unique index really is partial — two rows with NULL provider and NULL
         // subject coexist under it because its filter names only federated rows.
+        Guid passkeyCredentialId = Guid.CreateVersion7();
         await using NpgsqlCommand insert = new(
             "insert into credentials (id, user_id, type, provider, subject, created_at_utc) " +
             "values (@id, @user_id, 'passkey', null, null, @created_at_utc)",
             app);
-        insert.Parameters.AddWithValue("id", Guid.CreateVersion7());
+        insert.Parameters.AddWithValue("id", passkeyCredentialId);
         insert.Parameters.AddWithValue("user_id", userId);
         insert.Parameters.AddWithValue("created_at_utc", SeedInstant);
         await Assert.That(await insert.ExecuteNonQueryAsync()).IsEqualTo(1);
@@ -427,6 +422,85 @@ public sealed class AppRoleGrantsTests
         await Assert.That(await SelectScalarAsync(
                 admin, "select count(*) from credentials where user_id = @id", userId))
             .IsEqualTo(2L);
+
+        // The second success half, and it is the one grant on this table that has no policy behind
+        // it. The role now holds DELETE on credentials so a passkey can be revoked, and credentials
+        // stays exempt from row-level security, so nothing in the database narrows this statement to
+        // a row the caller owns — the owner-scoped read that precedes it in the application is the
+        // only thing that does. See ADR 0014. The row deleted is the passkey inserted above rather
+        // than the seeded federated one, so what leaves is a row this test created and the
+        // arrangement the refusals above aimed at survives to be read back.
+        //
+        // The affected count is the assertion, not the absence of an exception: a DELETE matching
+        // zero rows raises nothing at all, and on an unpoliced table there is no policy to blame for
+        // the miss — so without the count this passes on a statement that removed nothing.
+        int revoked = await ExecuteAsync(
+            app, "delete from credentials where id = @id", passkeyCredentialId);
+        await Assert.That(revoked).IsEqualTo(1);
+
+        // And the account's other credential is still there. That is the control on the count above:
+        // it says the statement removed the row it named rather than the table's contents, which is
+        // the shape a grant this wide fails in.
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from credentials where id = @id", credentialId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_LetsTheAppRoleDeleteAnyCredential_OnASessionNamingNobody()
+    {
+        // Arrange — two accounts, each with the federated credential SeedUserAsync gives it. The
+        // second one is the target: a delete of the session's own credential would be indistinguishable
+        // from a correctly scoped one, and there is no session here to own anything anyway.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid otherCredentialId = (Guid)(await SelectScalarAsync(
+            admin, "select id from credentials where user_id = @id", otherUserId))!;
+
+        // A bare app-role connection — no app.current_user_id, no app.current_budget_id, nothing on
+        // the session at all — and, as in the credentials test above, that is the measurement rather
+        // than a leftover. credentials is permanently exempt from row-level security because it is
+        // what the sign-in path reads to discover who is asking, so a policy keyed on the identity it
+        // resolves would refuse the query that resolves it. Do not "tidy" this into a configured
+        // connection: naming a user here would make the delete look scoped by something.
+        await using NpgsqlConnection app = new(host.AppConnectionString);
+        await app.OpenAsync();
+
+        // Act
+        int deleted = await ExecuteAsync(
+            app, "delete from credentials where id = @id", otherCredentialId);
+
+        // Assert — this test asserts a hole, and it is here so that nobody mistakes the hole for an
+        // accident. It is the executable form of ADR 0014's premise: DELETE on credentials is the one
+        // destructive privilege this role holds that the database scopes by nothing — the grant names
+        // the table and no policy names the rows — so a statement sent by a connection that has not
+        // said who it is removes any account's credential. Nothing below the application narrows it;
+        // what does is the owner-bearing read that produces the entity the delete is issued from, and
+        // Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows is what
+        // notices if that predicate ever leaves. Nothing here is desirable, and none of it is a
+        // regression: this test goes red the day somebody succeeds in policing credentials, and that
+        // is the day ADR 0014 needs rewriting rather than the day this test needs relaxing.
+        //
+        // The count of 1 is the assertion rather than the absence of an exception, for the reason it
+        // is one test up: a DELETE matching nothing raises nothing, and an unpoliced table offers no
+        // policy to blame for the miss. The read-back is what says the row is gone rather than merely
+        // reported as affected.
+        await Assert.That(deleted).IsEqualTo(1);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from credentials where id = @id", otherCredentialId))
+            .IsEqualTo(0L);
+
+        // The first account is untouched, which is not a second opinion on the count: it says the
+        // statement is scoped by its own predicate and by nothing else, so a delete naming one row
+        // takes one row. A grant this wide is only survivable because the statement that carries it
+        // is exact.
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from credentials where user_id = @id", userId))
+            .IsEqualTo(1L);
     }
 
     [Test]
@@ -721,9 +795,9 @@ public sealed class AppRoleGrantsTests
         // exempt from row-level security. A role that could remove a key could lock somebody out of
         // their own account with one statement, and because the table is unpoliced it could do it to
         // anybody's. Rows leave here only by the cascade from credentials, and through it from users,
-        // which is a deletion somebody asked for rather than one a bug can reach. Removing a passkey
-        // on request is a path that does not exist yet; when it lands, that removal deletes the
-        // credential and this grant still stays absent.
+        // which is a deletion somebody asked for rather than one a bug can reach. Revoking a passkey
+        // on request now exists, and it changes nothing here: that path deletes the credential and
+        // lets the cascade take the key, so this grant stays absent — see ADR 0014.
         await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
         await Assert.That(await SelectScalarAsync(
                 admin,

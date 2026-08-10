@@ -8,6 +8,69 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-10 — "The last credential" means the last passkey, and a revoked passkey's sessions are reported rather than recorded
+
+**Context:** a lost or compromised authenticator could only be dealt with by erasing the account. The
+requirement is that a request removing an account's *last credential* be rejected, that revoking a
+credential end every session it established, and that the account settings surface list every way of
+signing in.
+
+**Decision, and the reading that makes the rule mean anything:** "the last credential" is read as
+**the last passkey**. Every account holds exactly one federated Google credential — the schema
+enforces at most one, and provisioning creates it — so an account can never reach zero credentials of
+any type while it exists, and a rule written literally would be unreachable and its test vacuous. The
+floor that matters is the passkey: it is the only credential type that opens a session reaching budget
+content, so an account left holding only its federated credential could still sign in, still could not
+reach its own money, and could not even prove presence for an erasure. The **federated** credential is
+therefore not revocable through this path at all; it is replaced rather than removed, by an email
+change that is not built.
+
+**Why the refusal is a 409 and the wrong target is a 404:** the last-passkey request is well-formed
+and would succeed the moment a second passkey exists, which is a conflict with resource state rather
+than a malformed request. An unknown credential, another account's credential, and the federated
+credential all answer the same 404 **by construction** — one lookup carrying id, owner and type — and
+not by a branch on the type, because a branch is a comparison a later refactor deletes while a missing
+predicate changes what the database returns.
+
+**The deliberate absence, recorded because it is the thing a future reader will try to fix.** A list
+entry carries `id`, `type` and `createdAtUtc` and nothing else: no device name, no user-chosen label,
+no last-used instant, no AAGUID, no transports. Two passkeys are told apart by the day they were
+registered and by nothing better. That is not an oversight — a column on `credentials` breaks the
+pinned exemption column set, whose own doctrine is *move the column, never widen the pin*; the AAGUID
+arrives zeroed because the ceremony requests `attestation: "none"` precisely so registration collects
+no device fingerprint; and a "last used" timestamp is a usage record sitting next to the `last_login`
+that `ProhibitedColumnVocabulary` refuses, so it needs its own argument rather than a free ride on
+this one. It has its own story.
+
+**Why the response reports `sessionsEnded`.** Deleting a credential cascades its sessions away, so the
+explicit revocation that must precede the delete leaves no trace in the schema — a test asserting "no
+active session afterwards" is green with the revocation removed and therefore proves nothing. The
+count is the only place the fact can live, and the port already argued for returning it: *a caller
+that cannot say what a revocation did cannot report it.* That makes it a published contract; widening
+it later is cheap and narrowing it is breaking.
+
+**Alternatives considered:**
+
+- *Read "last credential" literally* — the rule survives as text and dies as a check.
+- *Refuse the federated credential with its own 409* — a better client message, bought by turning a
+  by-construction property into a branch.
+- *Answer 401 for the last passkey, matching every other refusal on the endpoint* — the uniform 401
+  exists so an **unproven** caller learns nothing. Past the gate the caller has proved possession of an
+  authenticator registered to this account, so there is nobody left to enumerate about, and a real
+  sentence costs nothing. This is the argument `CompleteRegistrationHandler` already makes for itself.
+- *A `revoked_at_utc` on `credentials` instead of a delete* — refused by the pinned column set, and it
+  leaves a row a bug can bring back. See
+  [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
+
+**Known gap, stated rather than hidden:** the passkey count and the delete are not serialized against
+each other, so two concurrent revocations of an account's last two passkeys can leave it with zero.
+Closing it needs a row lock whose raw-SQL spelling is a compile error here. Accepted, not solved.
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md), [passkeys.md](passkeys.md),
+[sessions.md](sessions.md).
+
+---
+
 ## 2026-08-10 — `GET /api/me` returns the email address alone
 
 **Context:** the account settings surface has to show the address the account is registered under,

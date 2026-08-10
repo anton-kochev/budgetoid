@@ -102,10 +102,27 @@ GRANT UPDATE (email) ON users TO budgetoid_app;
 -- See docs/decisions/0012. Anything proposed for this table from here on has to answer the same
 -- question that one did, and the answer is a table boundary rather than a column on this one.
 --
--- No DELETE either — no revocation path exists yet, and until one does the absent grant is what
--- stops a bug removing someone's only way in. Revoking a credential and replacing the federated
--- one on an email change are both specified, and both need this grant; when one lands, the reason
--- written here is what has to be re-argued rather than quietly deleted.
+-- DELETE, and this is the re-argument the paragraph that stood here asked for. Revoking a passkey
+-- is the path that landed, and it removes the credential row rather than marking it: the pinned
+-- column set below refuses a revoked_at_utc here, and a revoked-but-present credential is a row a
+-- bug can bring back. The child tables need no grant of their own — the cascade reaches
+-- passkey_public_keys, passkey_signature_counters and sessions as the table OWNER rather than as
+-- this role.
+--
+-- What this grant is NOT bounded by is a policy. credentials is exempt from row-level security, so
+-- unlike every other DELETE in this file its blast radius is the whole table and the application is
+-- the only thing narrowing it. Three things carry that weight, and all three have to stay true:
+-- the delete takes a LOADED ENTITY rather than an id, and the only way to obtain one is an
+-- owner-and-type-scoped read; credentials.user_id is immutable, so an id cannot change owner
+-- between that read and the write; and the two share one transaction. See docs/decisions/0014,
+-- which also records why policing this table instead is not available — RLS is enabled per table
+-- and not per command, so a FOR DELETE policy alone would refuse the discovery SELECT that the
+-- exemption exists for.
+--
+-- Database_LetsTheAppRoleDeleteAnyCredential_OnASessionNamingNobody states the unbounded half as an
+-- executable test, and Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows
+-- is the only thing that would notice the application's scoping going. Erasure does not use this
+-- grant and would still work without it: it empties this table through the cascade from users.
 --
 -- Note what a column added here would land on. The exemption was granted to one QUERY — the one
 -- that discovers who is asking — but PostgreSQL applies it to the whole TABLE, so anything added
@@ -120,7 +137,7 @@ GRANT UPDATE (email) ON users TO budgetoid_app;
 -- user_id, which the coverage rule polices by itself. See docs/decisions/0011, which also records
 -- the trap waiting for anyone who tries to fix this by policing credentials instead.
 REVOKE ALL ON credentials FROM budgetoid_app;
-GRANT SELECT, INSERT ON credentials TO budgetoid_app;
+GRANT SELECT, INSERT, DELETE ON credentials TO budgetoid_app;
 
 -- sessions: a session's identity — user_id, credential_id, kind, created_at_utc, expires_at_utc —
 -- is written whole when the session is established and has no edit that means anything. Changing

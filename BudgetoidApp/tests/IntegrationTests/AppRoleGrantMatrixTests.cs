@@ -124,7 +124,7 @@ public sealed class AppRoleGrantMatrixTests
     [
         ("currencies", ["SELECT"]),
         ("users", ["SELECT", "INSERT", "DELETE"]),
-        ("credentials", ["SELECT", "INSERT"]),
+        ("credentials", ["SELECT", "INSERT", "DELETE"]),
         ("sessions", ["SELECT", "INSERT"]),
         ("passkey_public_keys", ["SELECT", "INSERT"]),
         ("passkey_signature_counters", ["SELECT", "INSERT"]),
