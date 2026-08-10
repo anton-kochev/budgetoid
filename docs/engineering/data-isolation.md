@@ -205,7 +205,11 @@ the wrong session setting, one on `users` naming no ownership column, one whose 
 wider than its `USING`, a restrictive one, and a granted view over a policed table),
 `tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level two-budgets-same-process +
 endpoint-level two-factory), the `BudgetId` immutability unit test in
-`tests/UnitTests/TransactionTests.cs`, and `tests/IntegrationTests/DataExportRefusalTests.cs` (the
+`tests/UnitTests/TransactionTests.cs`, `tests/UnitTests/OwnershipKeyImmutabilityTests.cs` (the same
+rule generalised: every `UserId` and `BudgetId` the Domain declares, derived from the assembly and
+pinned, so `credentials.user_id` — the immutability the unscoped delete above rests on — is held by
+a test rather than by nobody, and a new entity carrying a tenancy key cannot arrive unchecked), and
+`tests/IntegrationTests/DataExportRefusalTests.cs` (the
 owner-scoped `Budgets` read: a user owning a budget the request is not inside is refused rather than
 answered with the part the filters can reach — see [export.md](../business-logic/export.md)).
 Removing a `HasQueryFilter` line must make the DbContext-level test fail; removing — or renaming — a policy must make the RLS ones fail, and must
