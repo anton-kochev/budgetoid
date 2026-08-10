@@ -137,6 +137,15 @@ Load-bearing rules, each explained there or in the linked decision:
   in `src/app/devtools.providers.ts`, which the production `fileReplacements` in `angular.json`
   swaps for an empty module — a runtime `isDevMode()` branch leaves the code in the bundle.
   `src/no-devtools.spec.ts` reads the bundle and fails if it comes back.
+- **No button shows a focus ring unless `src/styles.scss` puts one there.** Material sets
+  `outline: none` on `.mdc-button`, so the book's `2px solid var(--bud-focus-ring)` at
+  `outline-offset: 2px` lives in one global `:focus-visible` block — element selectors, not
+  `:where()`, because it has to out-specify Material. `src/focus-ring.spec.ts` reads the
+  emitted CSS; it proves the rule ships, not that it wins the cascade, and the keyboard
+  walkthrough in [accessibility.md](docs/design/accessibility.md) holds the rest.
+- **The test runner's time zone is pinned** to `Pacific/Kiritimati` in `src/test-setup.ts`,
+  because CI runs at UTC and a date test comparing UTC against local discriminates nothing
+  there. `export-filename.spec.ts` asserts the offset is non-zero, so deleting the pin fails.
 - **`/app/settings` ships with no navigation entry** — reachable by URL only, on purpose; a
   later epic gives it one. It shows the email from `GET /api/me`, a working export that writes
   the response bytes to disk **unread** (`responseType: 'blob'` — a JSON round-trip would turn
@@ -168,6 +177,13 @@ Load-bearing rules, each explained there or in the linked decision:
   rationale) and moves into `docs/` the day it ships. Never state an unbuilt capability in
   the present tense. The hardening backlog lives there too — a public list of unclosed
   weaknesses is a map.
+- **`docs/design/**` is the one carve-out: it is a specification, not a report.** The book
+  states what a surface *shall* look like — `components.md` says so itself ("if a component
+  isn't specified here, specify it here before building it") — so a chapter describing an
+  unbuilt control is doing its job, not going stale. What it may never do is describe the
+  built thing wrongly: where what ships departs from the book, the chapter says so in the
+  same commit and names the gap as work. Do not "clean up" the target out of the book to
+  make it match the code; correct the code, or record the departure.
 
 ## Rule Enforcement
 

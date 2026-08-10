@@ -8,8 +8,8 @@
 // differ by seconds and neither one is authoritative.
 //
 // The instant arrives as a parameter instead of being read from the clock in
-// here, so the format can be pinned by a test without pinning the runner's
-// `TZ`; `SettingsService` is what passes `new Date()`.
+// here, which is what makes the format testable at all; `SettingsService` is
+// what passes `new Date()`.
 export function exportFilename(instant: Date): string {
   // `toISOString` is preferred over assembling the parts from the six UTC
   // getters because it is UTC by specification and needs no zero-padding of

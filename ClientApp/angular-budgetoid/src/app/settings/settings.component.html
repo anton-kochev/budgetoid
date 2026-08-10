@@ -9,12 +9,19 @@
   </dl>
 
   <!-- An address that never arrived and an account with no address look the
-       same in an empty value, so the failure says which one this is. -->
-  @if (settings.emailFailed()) {
-    <p class="s-error">
-      Couldn&rsquo;t load your email address. Reload the page.
-    </p>
-  }
+       same in an empty value, so the failure says which one this is. The
+       address resolves after the first paint and so does this sentence, so it
+       has to land inside a region that was already being watched; the region
+       stays in the DOM while empty, because one inserted together with its text
+       is announced by nothing. Polite, not assertive: assertive is reserved for
+       a failure to save something the person typed. -->
+  <div class="s-outcome" role="status">
+    @if (settings.emailFailed()) {
+      <p class="s-error">
+        Couldn&rsquo;t load your email address. Reload the page.
+      </p>
+    }
+  </div>
 </section>
 
 <section class="s-section" aria-labelledby="export-heading">
@@ -30,10 +37,27 @@
     email, and nothing to ask anyone for.
   </p>
 
+  <!-- The service already refuses a second request while one is in flight, but
+       that refusal is invisible: an unmarked button looks pressable and answers
+       the press with nothing. These bindings are the visible half of the guard,
+       not a replacement for it.
+
+       `disabledInteractive` is load-bearing. It renders the disabled appearance
+       and sets `aria-disabled="true"` while leaving the DOM `disabled` property
+       false, so the control keeps its place in the tab order. A button that
+       goes truly disabled under the finger drops focus to <body>, and someone
+       who started the export from the keyboard loses their position in the
+       document just as the outcome is announced.
+
+       `aria-busy` resolves to null rather than 'false' so the attribute is
+       absent at rest instead of asserting that no work is happening. -->
   <button
     class="s-button"
     mat-flat-button
     type="button"
+    [disabled]="settings.exporting()"
+    [disabledInteractive]="true"
+    [attr.aria-busy]="settings.exporting() ? 'true' : null"
     (click)="settings.export()"
   >
     Export

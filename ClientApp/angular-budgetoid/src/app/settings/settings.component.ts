@@ -10,6 +10,10 @@ import { SettingsService } from './settings.service';
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [MatButtonModule],
+  // The service's lifetime is this screen's. Provided here rather than at the
+  // root so an export outcome cannot survive a navigation away and reappear as
+  // a claim about a visit that has exported nothing.
+  providers: [SettingsService],
   styleUrls: ['./settings.component.scss'],
   templateUrl: './settings.component.html',
 })

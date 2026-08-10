@@ -18,8 +18,13 @@ export class FileDownloadService {
     // it; without this attribute the browser saves the file under the URL.
     anchor.download = filename;
     anchor.click();
-    // After the click, never before: revoking first leaves the anchor pointing
-    // at a released URL and the download silently produces nothing.
-    URL.revokeObjectURL(url);
+    // The release has to be both after the click and outside the click's own
+    // task. Revoking before it leaves the anchor pointing at a released URL;
+    // revoking in the same task cancels the download outright in Firefox and
+    // Safari, which have not started reading the blob by the time the click
+    // handler returns, so the user is told the export succeeded and gets no
+    // file. A macrotask is the shortest delay that clears the click's task —
+    // the constant does not matter, being in a later task does.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 }

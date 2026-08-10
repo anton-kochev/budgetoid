@@ -1,6 +1,10 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
+import { MeApiService } from '@app-core/api/me-api.service';
+import { FileDownloadService } from '@app-core/services/file-download.service';
+import { of, throwError, type Observable } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsComponent } from './settings.component';
 import { SettingsService, type ExportFailure } from './settings.service';
@@ -46,13 +50,20 @@ describe('SettingsComponent', () => {
 
   beforeEach(async () => {
     service = new SettingsServiceStub();
-    await TestBed.configureTestingModule({
+    TestBed.configureTestingModule({
       imports: [SettingsComponent],
-      providers: [
-        provideNoopAnimations(),
-        { provide: SettingsService, useValue: service },
-      ],
-    }).compileComponents();
+      providers: [provideNoopAnimations()],
+    });
+    // The stub is installed on the component, not on the module. A module-level
+    // provider is shadowed the moment the component declares one of its own —
+    // which is how the screen stops carrying state between visits — and every
+    // test here would then instantiate the real service with no HttpClient
+    // behind it. `set` replaces the component's providers array, so this holds
+    // whether the component provides SettingsService or leaves it to the root.
+    TestBed.overrideComponent(SettingsComponent, {
+      set: { providers: [{ provide: SettingsService, useValue: service }] },
+    });
+    await TestBed.compileComponents();
     fixture = TestBed.createComponent(SettingsComponent);
     host = fixture.nativeElement as HTMLElement;
     // Exactly one — the NFR-021 test below depends on this being the whole of
@@ -172,6 +183,27 @@ describe('SettingsComponent', () => {
     );
   });
 
+  // A live region is only announced if the assistive technology was watching it
+  // before the text arrived; one inserted into the DOM together with its
+  // content is announced by nothing. The template says so in a comment and
+  // nothing else held it, so the obvious tidy-up — wrapping `.s-outcome` in an
+  // `@if` so an empty div does not render — keeps every other test on this
+  // screen green while silently ending every announcement the export makes.
+  it('carries the export outcome region before anything has happened', () => {
+    // Act
+    const region = sectionFor(host, 'export-heading')?.querySelector(
+      '[role="status"]',
+    );
+
+    // Assert
+    expect(region).not.toBeNull();
+    // Both halves are load-bearing. Presence alone is satisfied by a region
+    // that always renders a line of text, which is a screen telling a user who
+    // has done nothing that something happened; emptiness alone is satisfied
+    // by no region at all.
+    expect(normalize(region ?? null)).toBe('');
+  });
+
   it('keeps the erasure control inert', () => {
     // Act
     const eraseButton = buttonNamed(host, ERASE_BUTTON);
@@ -184,12 +216,79 @@ describe('SettingsComponent', () => {
     expect(normalize(section)).toContain(PASSKEY_EXPLANATION);
   });
 
-  it('leaves the export control enabled', () => {
+  it('leaves the export control available before an export starts', () => {
+    // Act
+    const exportButton = buttonNamed(host, EXPORT_BUTTON);
+
     // Assert
     // Control for the test above: a template that disabled every button — or a
     // component that guarded the whole page behind a loading flag — passes
     // "erase is disabled" and takes export down with it.
-    expect(buttonNamed(host, EXPORT_BUTTON)?.disabled).toBe(false);
+    //
+    // The accessible state is asserted alongside the DOM property because the
+    // DOM property alone stops being able to fail. A button held with
+    // `[disabled]` plus `[disabledInteractive]` never sets the `disabled`
+    // property at all — it stays focusable and says so through
+    // `aria-disabled` — so `.disabled === false` would be green on a control
+    // that is unavailable for the whole life of the screen.
+    expect(exportButton?.disabled).toBe(false);
+    expect(exportButton?.getAttribute('aria-disabled')).not.toBe('true');
+    expect(exportButton?.getAttribute('aria-busy')).not.toBe('true');
+  });
+
+  // A second click during an export is already refused by the service, but the
+  // refusal is invisible: the click is swallowed and the screen answers with
+  // nothing. These three pin the states that make the guard legible, and they
+  // are separate tests because they can regress independently — a control can
+  // announce that it is busy while still accepting the press, and one that is
+  // marked unavailable can lose focus doing it.
+  it('marks the export control busy while an export runs', () => {
+    // Arrange
+    service.exporting.set(true);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(buttonNamed(host, EXPORT_BUTTON)?.getAttribute('aria-busy')).toBe(
+      'true',
+    );
+  });
+
+  it('marks the export control unavailable while an export runs', () => {
+    // Arrange
+    service.exporting.set(true);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // Busy alone says work is happening; it does not say the control will
+    // refuse a press. Without this a screen reader announces a button that
+    // reads as pressable and answers a press with silence.
+    expect(
+      buttonNamed(host, EXPORT_BUTTON)?.getAttribute('aria-disabled'),
+    ).toBe('true');
+  });
+
+  it('keeps the export control focusable while an export runs', () => {
+    // Arrange
+    service.exporting.set(true);
+
+    // Act
+    fixture.detectChanges();
+    const exportButton = buttonNamed(host, EXPORT_BUTTON);
+
+    // Assert
+    // A button that takes the DOM `disabled` property under the finger drops
+    // focus to <body>, so someone who started the export from the keyboard
+    // loses their place and has to tab the page from the top to hear the
+    // outcome. The control has to stay in the tab order and refuse the press
+    // through `aria-disabled` instead — which is what `disabledInteractive`
+    // renders, and what the two tests above would otherwise be satisfied by a
+    // plain `disabled` binding.
+    expect(exportButton?.disabled).toBe(false);
+    expect(exportButton?.getAttribute('tabindex')).not.toBe('-1');
   });
 
   // FR-023.
@@ -256,6 +355,42 @@ describe('SettingsComponent', () => {
     );
   });
 
+  // The email arrives after the first paint, and so does the sentence that says
+  // it did not. Rendered outside a live region that was already being watched,
+  // that sentence is announced to nobody: a screen reader user hears an empty
+  // value where their address should be and is never told why.
+  it('carries the account outcome region before the email resolves', () => {
+    // Act
+    const region = sectionFor(host, 'account-heading')?.querySelector(
+      '[role="status"]',
+    );
+
+    // Assert
+    expect(region).not.toBeNull();
+    // Same pairing as the export region: a region that always renders text
+    // satisfies presence, and no region at all satisfies emptiness.
+    expect(normalize(region ?? null)).toBe('');
+  });
+
+  it('announces an email it could not load', () => {
+    // Arrange
+    service.emailFailed.set(true);
+    service.email.set(null);
+
+    // Act
+    fixture.detectChanges();
+    const region = sectionFor(host, 'account-heading')?.querySelector(
+      '[role="status"]',
+    );
+
+    // Assert
+    // The sentence has to land *inside* the watched region, not merely
+    // somewhere in the section. `explains an email it could not load` above
+    // pins the copy and passes wherever the paragraph sits; this pins where it
+    // sits and would go red if the region were rendered empty beside it.
+    expect(normalize(region ?? null)).toContain(EMAIL_FAILURE);
+  });
+
   it('explains nothing while the email is merely absent', () => {
     // Arrange
     service.emailFailed.set(false);
@@ -280,7 +415,11 @@ describe('SettingsComponent', () => {
 
     // Act
     fixture.detectChanges();
-    const text = normalize(host);
+    // Scoped to the section the name claims: "in place" means beside the
+    // control that failed. Read off the whole page, both of these stay green
+    // when the outcome block drifts under Account or to the bottom of the
+    // screen, which is the one thing their names promise.
+    const text = normalize(sectionFor(host, 'export-heading'));
 
     // Assert
     // Paired with the unauthenticated case below: each is the other's control,
@@ -297,7 +436,8 @@ describe('SettingsComponent', () => {
 
     // Act
     fixture.detectChanges();
-    const text = normalize(host);
+    // Same scope as the case above, for the same reason.
+    const text = normalize(sectionFor(host, 'export-heading'));
 
     // Assert
     expect(text).toContain(EXPORT_SESSION_FAILURE);
@@ -316,6 +456,96 @@ describe('SettingsComponent', () => {
     // because the admission belongs under its own heading rather than
     // scattered through the page.
     expect(normalize(section)).toContain(OPERATOR_READABLE);
+  });
+});
+
+// A visit is not the same thing as a page load. The user exports, walks off to
+// the transactions screen, and comes back: nothing about that second arrival is
+// an export, and the screen must not claim one — neither a confirmation nor a
+// failure the previous visit hit.
+//
+// These run against the **real** SettingsService with only its edges stubbed,
+// because the defect is a lifetime mismatch and a stub cannot have one: the
+// signal stub above is built fresh in every `beforeEach`, which is exactly the
+// bug's absence. The assertions say what the second screen shows, not how the
+// state is scoped, so they hold whether the fix narrows the service's lifetime
+// to the component or clears the outcome when the screen initializes.
+describe('SettingsComponent on a second visit', () => {
+  async function configureWith(
+    getExport: () => Observable<Blob>,
+  ): Promise<void> {
+    // Only the two edges are replaced — the HTTP call and the disk write. The
+    // service under test is the shipped one.
+    const api: Pick<MeApiService, 'getMe' | 'getExport'> = {
+      getMe: () => of({ email: 'owner@budgetoid.test' }),
+      getExport,
+    };
+    const downloads: Pick<FileDownloadService, 'save'> = { save: vi.fn() };
+
+    await TestBed.configureTestingModule({
+      imports: [SettingsComponent],
+      providers: [
+        provideNoopAnimations(),
+        { provide: MeApiService, useValue: api },
+        { provide: FileDownloadService, useValue: downloads },
+      ],
+    }).compileComponents();
+  }
+
+  // One arrival at the screen. The TestBed is not reset between calls, so
+  // anything the application keeps outside the component survives from one to
+  // the next — which is the whole point.
+  function visit(): ComponentFixture<SettingsComponent> {
+    const fixture = TestBed.createComponent(SettingsComponent);
+    fixture.detectChanges();
+
+    return fixture;
+  }
+
+  function exportSection(fixture: ComponentFixture<SettingsComponent>): string {
+    const element = fixture.nativeElement as HTMLElement;
+
+    return normalize(sectionFor(element, 'export-heading'));
+  }
+
+  it('does not confirm an export the previous visit finished', async () => {
+    // Arrange
+    await configureWith(() =>
+      of(new Blob(['{"schemaVersion":1}'], { type: 'application/json' })),
+    );
+    const first = visit();
+    buttonNamed(first.nativeElement as HTMLElement, EXPORT_BUTTON)?.click();
+    first.detectChanges();
+    // The first visit really did confirm. Without this line the test is green
+    // on a screen that confirms nothing at all, ever.
+    expect(exportSection(first)).toContain(EXPORT_CONFIRMED);
+    first.destroy();
+
+    // Act
+    const second = visit();
+
+    // Assert
+    expect(exportSection(second)).not.toContain(EXPORT_CONFIRMED);
+  });
+
+  it('does not explain a failure the previous visit hit', async () => {
+    // Arrange
+    await configureWith(() =>
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+    const first = visit();
+    buttonNamed(first.nativeElement as HTMLElement, EXPORT_BUTTON)?.click();
+    first.detectChanges();
+    // Same control as above, in the failing direction: a screen that never
+    // renders the failure sentence would otherwise pass this test by default.
+    expect(exportSection(first)).toContain(EXPORT_BUILD_FAILURE);
+    first.destroy();
+
+    // Act
+    const second = visit();
+
+    // Assert
+    expect(exportSection(second)).not.toContain(EXPORT_BUILD_FAILURE);
   });
 });
 

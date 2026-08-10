@@ -32,6 +32,10 @@ describe('FileDownloadService', () => {
   }
 
   beforeEach(() => {
+    // Installed before anything else in this file runs, because the release of
+    // the object URL is deferred out of the click's task and the tests below
+    // drive that timer rather than waiting on a wall clock.
+    vi.useFakeTimers();
     clicked = [];
     callOrder = [];
     createObjectUrl = vi.fn((obj: Blob | MediaSource): string => 'blob:test');
@@ -62,6 +66,7 @@ describe('FileDownloadService', () => {
     Reflect.deleteProperty(URL, 'createObjectURL');
     Reflect.deleteProperty(URL, 'revokeObjectURL');
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('hands the blob to the browser under the given name', () => {
@@ -108,12 +113,16 @@ describe('FileDownloadService', () => {
 
     // Act
     service.save(blob, 'budgetoid-export-20260809T233015Z.json');
+    // The release is deferred, so the assertion has to let the deferred work
+    // run. The subject of the assertion is unchanged: the URL that was handed
+    // to the anchor is the URL that gets released.
+    vi.runAllTimers();
 
     // Assert
     expect(revokeObjectUrl).toHaveBeenCalledWith('blob:test');
   });
 
-  it('releases the object URL only after the click', () => {
+  it('releases the object URL after the click, in a later task', () => {
     // Arrange
     const blob = new Blob(['{"schemaVersion":1}'], {
       type: 'application/json',
@@ -123,9 +132,19 @@ describe('FileDownloadService', () => {
     service.save(blob, 'budgetoid-export-20260809T233015Z.json');
 
     // Assert
-    // Control for the test above. Revoking before the click leaves a dead
-    // href that downloads nothing, and `toHaveBeenCalledWith` cannot tell
-    // that apart from a correct release — only the order can.
+    // Revoking in the same task as the click cancels the download outright in
+    // Firefox and Safari — the browser has not yet started reading the blob
+    // when the URL it was pointed at stops resolving. So the release has to be
+    // both *after* the click and *outside its task*, and only the two halves
+    // together say that: the first refuses a same-task revoke, the second
+    // refuses a revoke that never happens.
+    expect(callOrder).toEqual(['click']);
+
+    vi.runAllTimers();
+
+    // Still a control against a revoke-first implementation, which lands here
+    // as ['revoke', 'click'] whether or not it defers — order is the only
+    // thing that separates a correct release from a dead href.
     expect(callOrder).toEqual(['click', 'revoke']);
   });
 });

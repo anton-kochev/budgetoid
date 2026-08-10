@@ -7,7 +7,18 @@ import { exportFilename } from './export-filename';
 
 export type ExportFailure = 'unauthenticated' | 'failed';
 
-@Injectable({ providedIn: 'root' })
+// Deliberately not `providedIn: 'root'`: every signal below is the state of one
+// visit to the settings screen, not of the application, so `SettingsComponent`
+// provides it and the state is discarded with the screen. Held at the root, an
+// outcome outlives its screen — export, navigate away, come back, and the
+// second visit renders the first one's `Exported.` or its failure.
+//
+// Rejected: clearing the outcome from `ngOnInit`. That needs a public method
+// whose only job is to compensate for a lifetime mismatch, and it heals only
+// the signals someone remembered to list. `exporting` has no right answer —
+// clearing it reopens the guard against a duplicate request, leaving it set
+// strands `Preparing your file…` on screen forever after navigating mid-export.
+@Injectable()
 export class SettingsService {
   private readonly api = inject(MeApiService);
   private readonly download = inject(FileDownloadService);
@@ -60,6 +71,12 @@ export class SettingsService {
         }),
         finalize(() => this.exportingSignal.set(false)),
       )
+      // Not torn down with the screen, and that is the point: navigating away
+      // mid-export drops this service, but `FileDownloadService` is root-scoped
+      // and this subscription runs to completion, so the file the user asked
+      // for still lands on disk. Adding `takeUntilDestroyed` here for tidiness
+      // would silently cancel that download — the request the user already paid
+      // the server's whole-document build for.
       .subscribe((blob) => {
         // The blob is handed on untouched — not read, not parsed, not rebuilt.
         this.download.save(blob, exportFilename(new Date()));

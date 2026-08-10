@@ -73,12 +73,23 @@ One primary button per view. Hover on Outline may invert to primary fill (the sh
 sign-in hover); Ghost and icon buttons use state layers. Icon-only buttons: 40px
 visual, 48px target, always `aria-label`.
 
-A destructive action whose confirmation UI does not exist yet renders as **Outline,
+A destructive action whose confirmation UI does not exist yet is specified as **Outline,
 disabled** — never Destructive. The Destructive fill is a promise that a confirmation
 follows, and a control that cannot be activated should not make it. Disabled is not
 self-explanatory either: a `[disabled]` button leaves the tab order and screen readers skip
 it, so the sentence saying what it waits on is **visible prose beside the button**, never a
-`title`, a tooltip, or an `aria-describedby` on the disabled element.
+`title`, a tooltip, or an `aria-describedby` on the disabled element. A control that is
+merely *busy* is a different case: it keeps its place in the tab order — Material's
+`disabledInteractive` renders the disabled appearance while leaving the element focusable —
+because a button that goes truly `disabled` under the finger drops focus to `<body>`.
+
+**What renders today is not the table above.** No `MatButton` on any screen yet matches its
+radius, min-height, label style or surface: Material's M3 defaults are what ships, so
+`outlined` draws a pill with a `--mat-sys-primary` label rather than this book's Outline
+(`--bud-surface`, 1px `--bud-hairline`, `--bud-text`). The table is the target and bringing
+the buttons onto it is its own change, made once in `styles.scss` rather than per component.
+The rule is unaffected: whatever the fill turns out to be, an unconfirmable destructive
+action is the secondary variant and disabled, never Destructive.
 
 ## Settings section and label/value row
 

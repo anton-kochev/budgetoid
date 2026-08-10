@@ -51,6 +51,31 @@ body {
   color: var(--mat-sys-on-surface);
 }
 
+// The book's focus ring, put back for every interactive element. Material sets
+// `outline: none` on `.mdc-button`, and `mat.strong-focus-indicators()` is not
+// included — it draws an inset border on a pseudo-element and has no offset
+// option, so it cannot express the `outline-offset: 2px` the book specifies.
+// Until this landed no button in the application showed a ring at all, and only
+// the hand-rolled Google button had one of its own.
+//
+// Element selectors rather than `:where()`: this has to out-specify
+// `.mdc-button { outline: none }` (0,1,0), and `:where()` scores zero. Written
+// here rather than in a component so it reaches Material's buttons, the
+// hand-rolled ones, and anything a later screen adds.
+//
+// Fields are absent on purpose. `accessibility.md` gives them their 2px primary
+// border instead of an outer ring, and calls that the only exception — so the
+// list below stops at controls that have no focus treatment of their own.
+// See docs/design/accessibility.md, "Focus".
+button:focus-visible,
+a[href]:focus-visible,
+summary:focus-visible,
+[role='button']:focus-visible,
+[role='link']:focus-visible {
+  outline: 2px solid var(--bud-focus-ring);
+  outline-offset: 2px;
+}
+
 // Neutral full-height canvas. The shell adds no padding — every route owns its
 // own spacing (Welcome fills edge-to-edge; the authenticated pages pad in their
 // own :host).
