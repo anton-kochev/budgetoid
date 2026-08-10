@@ -88,6 +88,29 @@ move on — is precisely what would wave a genuinely new package id through in t
 this test's job, and `dotnet list package --vulnerable` plus the comment on that line are where it
 lives.
 
+### A tenancy key is fixed at construction
+
+Every `UserId` and `BudgetId` the Domain declares is written once and by nothing afterwards.
+`OwnershipKeyImmutabilityTests` derives the ten of them from the assembly, pins that set, and refuses
+any setter reachable from outside the declaring type — `public`, `protected`, `internal` and `init`
+alike, the last because `with { UserId = someoneElse }` produces an ordinary object filed under
+another user and looks immutable while doing it.
+
+`credentials.user_id` carries this twice over. The table is exempt from row-level security — it is
+read before the request has an identity a policy could key on — so nothing beneath the application
+re-checks the owner, and
+[ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md) scopes the credential
+delete by the loaded entity for that reason. A settable `Credential.UserId` makes that delete
+forgeable with no policy underneath to notice. See also
+[ADR 0011](../decisions/0011-police-the-user-owned-tables.md) and
+[data isolation](data-isolation.md).
+
+Two of the ten are also covered by `DomainImmutabilityTests` and `TransactionTests`. **That overlap
+is deliberate and must not be de-duplicated**: those tests hold a business rule about what a budget
+and an account are, this one holds an isolation invariant, and collapsing them would leave whichever
+reason survives carrying both weights. The arrangement is the same as the RLS policy and the EF
+query filter sitting over the same row.
+
 ## What these tests cannot see
 
 - **Declaration, not usage.** The graph says what a project *may* reference, never what it *does*. A
@@ -100,10 +123,20 @@ lives.
   version list or lock file to lean on either.
 - **What the code does with an allowed reference.** `Api → Infrastructure` is legitimate — `Program.cs`
   has to compose it — so the graph can never distinguish composing Infrastructure from consuming it.
+- **A method that reassigns a tenancy key.** The key guard reads properties; a `Reassign(Guid)`
+  method beside one is invisible to it.
+- **A tenancy key under another name.** Rename `UserId` and the mutability check finds nothing to
+  check — which is why the *set* is pinned as well, and why widening the name list would only move
+  the blind spot rather than close it.
 - **`ClientApp/`.** The scan root is the directory holding `BudgetoidApp.sln`.
 
-Tests that lock this: `tests/UnitTests/ProjectReferenceGraphTests.cs`. Adding a `PackageReference`,
-a `ProjectReference`, a `FrameworkReference`, or a whole project must move a line in its pinned set;
-so must changing an `Sdk` attribute. It ships with a negative control that renders an EF Core
-package onto `Application` and asserts the pinned set refuses it, so the guard is never merely green
-by having nothing to find.
+Tests that lock this: `tests/UnitTests/ProjectReferenceGraphTests.cs` — adding a `PackageReference`,
+a `ProjectReference`, a `FrameworkReference`, or a whole project must move a line in its pinned set,
+and so must changing an `Sdk` attribute; and `tests/UnitTests/OwnershipKeyImmutabilityTests.cs` —
+the discovered set of `UserId`/`BudgetId` properties, and the absence of an externally reachable
+setter on any of them.
+
+Neither is allowed to be green merely by having nothing to find. Each ships permanent negative
+controls on synthetic input — an EF Core package rendered onto `Application`, a public setter, an
+`init` setter, a renamed key — so a detector that quietly stopped detecting fails its own tests
+before it passes the real ones.
