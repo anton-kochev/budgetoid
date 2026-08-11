@@ -44,11 +44,16 @@ namespace IntegrationTests;
 /// know unless it is written down here.
 /// </para>
 /// <para>
-/// <b><see cref="Redemption_WithTheSameCodeTwice_IsRefusedTheSecondTime" /> is the centrepiece.</b> The
-/// code is consumed before the session is established, and the asymmetry is the reason: a consumed code
-/// with no session is a retryable inconvenience — the person uses the next code on the card — while a
-/// session opened over a code that was not consumed is a replay window, because the same code opens a
-/// second one. Swap those two and that test is the thing that reddens.
+/// <b><see cref="Redemption_WithTheSameCodeTwice_IsRefusedTheSecondTime" /> holds one redemption per
+/// code, and it holds that by assertion rather than by ordering.</b> What it shows is that the
+/// <c>DELETE</c> really committed, that the replay is turned away, and that the account is left with one
+/// session and the nine codes it should still have. It is <em>not</em> what holds FR-054's ordering:
+/// consume-before-establish and establish-before-consume both leave the same committed state behind
+/// here, because the two writes share one transaction and the second request arrives after it commits.
+/// The ordering is held by
+/// <c>RedeemRecoveryCodeHandlerTests.HandleAsync_WhenTheCodeIsSpentByAConcurrentRedemption_RefusesAndOpensNoSession</c>,
+/// which is the only arrangement in either suite where the consume can fail with the session write
+/// already behind it — see the remarks on that test for why the asymmetry is worth a rule.
 /// </para>
 /// <para>
 /// <b>Every row is counted on <see cref="PostgresTestHost.ConnectionString" /></b> — the container
@@ -162,7 +167,26 @@ public sealed class RecoveryCodeRedemptionTests
     /// drives. Named so that deleting one from the list is a failing test rather than a shorter and still
     /// perfectly green one.
     /// </summary>
-    private const int ReachableRedemptionRefusals = 6;
+    private const int ReachableRedemptionRefusals = 7;
+
+    /// <summary>
+    /// The response headers whose value is a new one on every <b>request</b> rather than on every
+    /// <b>cause</b>, and which a comparison of two refusals must therefore not compare.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The names are still compared — <see cref="ComparableHeadersOf" /> replaces the value and keeps the
+    /// header — so one of these appearing on one refusal and not on another still fails.
+    /// </para>
+    /// <para>
+    /// Nothing in the in-memory pipeline emits most of them today. They are listed because a header that
+    /// starts being emitted later would otherwise turn a true assertion into a permanently red one, and
+    /// the cure a hurried reader reaches for is deleting the header comparison rather than adding a name
+    /// here.
+    /// </para>
+    /// </remarks>
+    private static readonly HashSet<string> PerRequestHeaders =
+        new(StringComparer.OrdinalIgnoreCase) { "Date", "Server", "traceparent", "tracestate", "Request-Id" };
 
     /// <summary>
     /// A valid code opens a full session, says how many are left, and leaves the row behind.
@@ -259,13 +283,24 @@ public sealed class RecoveryCodeRedemptionTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>This is the test that holds FR-054, and it holds it by ordering rather than by assertion.</b>
-    /// The handler consumes the code and then establishes the session. Reverse those two steps and every
-    /// other test in this file still passes: the happy path still opens a session, the refusals are still
-    /// identical, the count still drops. What breaks is only visible from here — a replayed request finds
-    /// the row still present, verifies against it again, and opens a second session over a code that was
-    /// supposed to be spent. A recovery code is a full-session credential, so that is an unbounded number
-    /// of sign-ins from one intercepted value.
+    /// <b>What this holds is that a code is spent once: the <c>DELETE</c> committed, the replay is turned
+    /// away, and the account keeps exactly the nine codes it should.</b> A handler that verified against
+    /// the row and left it in place — or removed it on a save this transaction later rolled back — opens a
+    /// second session here, and a recovery code is a full-session credential, so that is an unbounded
+    /// number of sign-ins from one intercepted value.
+    /// </para>
+    /// <para>
+    /// <b>It is deliberately not the test that holds FR-054's ordering, and the docstring that said so was
+    /// wrong.</b> The handler consumes the code and then establishes the session; reverse those two lines
+    /// and this test stays green. Both writes live in one transaction, so the first request commits the
+    /// same rows under either ordering, and the second request — sequential, on a fresh client, arriving
+    /// long after that commit — dies at the discovery read, which is the line before either of them. The
+    /// arrangement that can tell the orderings apart is one where the consume fails with the session write
+    /// already behind it, which needs two redemptions in flight at once over a store that is not unwinding
+    /// them for us:
+    /// <c>RedeemRecoveryCodeHandlerTests.HandleAsync_WhenTheCodeIsSpentByAConcurrentRedemption_RefusesAndOpensNoSession</c>.
+    /// A reader who believes a false claim about which line a test defends is a reader who deletes the
+    /// line.
     /// </para>
     /// <para>
     /// <b>Both halves are asserted, and the session count is the half that carries the weight.</b> The
@@ -315,8 +350,8 @@ public sealed class RecoveryCodeRedemptionTests
     }
 
     /// <summary>
-    /// Every refusal this route can produce, driven end to end and compared whole — status and body
-    /// together, and all of them against each other.
+    /// Every refusal this route can produce, driven end to end and compared whole — status, headers and
+    /// body together, and all of them against each other.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -325,7 +360,36 @@ public sealed class RecoveryCodeRedemptionTests
     /// presented was once real, which is exactly what somebody working through a partially-observed
     /// recovery card wants to know; told apart from "that was not base64url" it says the same thing about
     /// the encoding, and told apart from "too long" it hands out the width of a verifier for free. They
-    /// all leave as one status and one body.
+    /// all leave as one status, one set of headers and one body.
+    /// </para>
+    /// <para>
+    /// <b>The headers are compared because a difference does not have to be in the body to be read.</b>
+    /// A <c>WWW-Authenticate</c> challenge added to one arm, a <c>Content-Length</c> that moves with a
+    /// sentence somebody lengthened, a caching or correlation header attached by one branch and not
+    /// another: each is a distinguisher a status-and-body comparison waves through, and each is
+    /// scriptable. <see cref="PerRequestHeaders" /> holds the names whose <em>values</em> vary per
+    /// request; their names are still compared.
+    /// </para>
+    /// <para>
+    /// <b>Two of these entries are the same line of the handler, and the list says so rather than
+    /// implying otherwise.</b> "Unknown verifier" and "already redeemed" both fall out of the discovery
+    /// read returning nothing — a spent code was deleted, so there is no second branch for it to take, and
+    /// no assertion here could tell the two apart even if there were. The entry is kept because the
+    /// <em>caller's</em> two cases are genuinely different — one value was never real, the other was real
+    /// a moment ago — and it is that difference the response may not carry; it is not kept because it
+    /// covers a distinct step.
+    /// </para>
+    /// <para>
+    /// <b>The one entry that can reach further is the loser of a real race</b>, and it is the only refusal
+    /// this route offers that is reachable over HTTP past the discovery read. Two redemptions of one code
+    /// in flight together: the loser either finds the row gone on the re-read inside its transaction, or
+    /// finds it, blocks on the winner's lock and meets a <c>DELETE</c> that matches nothing — which is
+    /// EF's <c>DbUpdateConcurrencyException</c>, and which <c>RecoveryCodeRepository.ConsumeAsync</c>
+    /// translates into this same refusal. Which of the two it lands on is the scheduler's to decide, so
+    /// this entry does not <em>guarantee</em> it exercised the deeper arm; what it does guarantee is that
+    /// every arm it can land on answers identically. Left untranslated, that path is a 500 with a stack
+    /// trace — an oracle saying the value presented was real — which is what this entry would then report
+    /// as a difference.
     /// </para>
     /// <para>
     /// <b>Compared to each other rather than to a literal</b>, because the property is
@@ -384,10 +448,20 @@ public sealed class RecoveryCodeRedemptionTests
         HttpClient anonymous = host.Factory.CreateClient();
         await Assert.That((await RedeemAsync(anonymous, verifiers[0])).StatusCode).IsEqualTo(HttpStatusCode.OK);
 
+        // A second code, spent by two requests racing for it. Exactly one can win: the row is removed
+        // inside a transaction, so the other either reads it gone or blocks on the lock and deletes
+        // nothing. The loser's response is one of the refusals compared below.
+        HttpResponseMessage[] racing = await Task.WhenAll(
+            RedeemAsync(host.Factory.CreateClient(), verifiers[1]),
+            RedeemAsync(host.Factory.CreateClient(), verifiers[1]));
+
+        await Assert.That(racing.Count(response => response.StatusCode == HttpStatusCode.OK)).IsEqualTo(1);
+        HttpResponseMessage lostTheRace = racing.Single(response => response.StatusCode != HttpStatusCode.OK);
+
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         string[] survivingHashes = await StoredHashesAsync(admin, userId);
-        await Assert.That(survivingHashes.Length).IsEqualTo(RequiredCodeCount - 1);
+        await Assert.That(survivingHashes.Length).IsEqualTo(RequiredCodeCount - 2);
 
         // Act
         List<(string Reason, HttpResponseMessage Response)> refusals = [];
@@ -400,9 +474,14 @@ public sealed class RecoveryCodeRedemptionTests
         // on, and the one an enumeration attempt would be built out of.
         refusals.Add(("unknown verifier", await RedeemAsync(anonymous, Verifiers(1)[0])));
 
-        // The code spent above: once real, now gone. Told apart from the entry above, this is the answer
-        // that says "you nearly had it".
+        // The code spent above: once real, now gone. The SAME LINE of the handler as the entry above —
+        // a spent code was deleted, so the discovery read finds nothing for either — and it is here
+        // because the two are different facts about the CALLER, not because they are different steps.
         refusals.Add(("already redeemed", await RedeemAsync(anonymous, verifiers[0])));
+
+        // The loser of the race arranged above: the one refusal reachable from outside that gets past the
+        // discovery read at all, on whichever of the two deeper arms the scheduler handed it.
+        refusals.Add(("lost the race", lostTheRace));
 
         // Standard base64's two extra characters, which base64url replaces with '-' and '_', in a value
         // that is otherwise a perfectly good encoding of the right width — so this is refused for its
@@ -421,10 +500,13 @@ public sealed class RecoveryCodeRedemptionTests
             "oversized verifier",
             await RedeemAsync(anonymous, Base64UrlText.Encode(RandomNumberGenerator.GetBytes(4096)))));
 
+        // Status, headers and body as one string per refusal, so a difference anywhere in the response is
+        // a difference in the comparison rather than in a part of it nobody compared.
         List<(string Reason, string Response)> observed = [];
         foreach ((string reason, HttpResponseMessage response) in refusals)
         {
-            observed.Add((reason, $"{(int)response.StatusCode} {await ReadComparableBodyAsync(response)}"));
+            string headers = ComparableHeadersOf(response);
+            observed.Add((reason, $"{(int)response.StatusCode} [{headers}] {await ReadComparableBodyAsync(response)}"));
         }
 
         // Assert — each refusal against the first, with its own name on both sides of the comparison so a
@@ -437,6 +519,11 @@ public sealed class RecoveryCodeRedemptionTests
 
         await Assert.That(observed.Count).IsEqualTo(ReachableRedemptionRefusals);
         await Assert.That(observed.Select(entry => entry.Response).Distinct().Count()).IsEqualTo(1);
+
+        // The headers really were part of that comparison. Without this the header half is satisfied by a
+        // pipeline that emits none at all, or by a helper that quietly reads an empty collection — and a
+        // comparison of two empty strings agrees about nothing.
+        await Assert.That(ComparableHeadersOf(refusals[0].Response)).Contains("Content-Type: ");
 
         // The one value they collapse to, and the two sentences it may not be: the passkey handler's,
         // and the one the pipeline writes when no handler chose the status at all.
@@ -888,6 +975,34 @@ public sealed class RecoveryCodeRedemptionTests
     /// </summary>
     private static async Task<string> ReadComparableBodyAsync(HttpResponseMessage response) =>
         ComparableBodyOf(await ReadJsonObjectAsync(response));
+
+    /// <summary>
+    /// Every header of a response — the message's and the content's — as one ordered string, with the
+    /// values that vary per request replaced by a fixed placeholder.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both collections, because <c>Content-Type</c> and <c>Content-Length</c> live on the content and
+    /// are exactly the two a refusal is likeliest to differ in.</b> Ordered by name, so a comparison never
+    /// fails on the order a server happened to emit them in.
+    /// </para>
+    /// <para>
+    /// The values in <see cref="PerRequestHeaders" /> are replaced rather than dropped, for the reason
+    /// <see cref="ComparableBodyOf" /> replaces <c>traceId</c>: a header that stopped being emitted on one
+    /// arm must still fail.
+    /// </para>
+    /// </remarks>
+    private static string ComparableHeadersOf(HttpResponseMessage response) =>
+        string.Join(
+            "; ",
+            response.Headers
+                .Concat(response.Content.Headers)
+                .Select(header => $"{header.Key}: {ComparableHeaderValue(header.Key, header.Value)}")
+                .Order(StringComparer.Ordinal));
+
+    /// <summary>One header's value, or a placeholder when the value is a new one on every request.</summary>
+    private static string ComparableHeaderValue(string name, IEnumerable<string> values) =>
+        PerRequestHeaders.Contains(name) ? "<one per request>" : string.Join(",", values);
 
     /// <summary>
     /// The <c>title</c> of a problem-details body, which is the only member that says which of this

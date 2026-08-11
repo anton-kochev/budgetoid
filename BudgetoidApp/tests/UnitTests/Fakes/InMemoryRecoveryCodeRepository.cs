@@ -64,6 +64,7 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
 {
     private readonly List<Set> _committed = [];
     private readonly List<Set> _pending = [];
+    private readonly List<Guid> _ownerScopedLookups = [];
 
     /// <summary>
     /// Every set the database would hold if this unit of work committed now — the rows already there
@@ -75,6 +76,54 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
     /// <summary>Every unredeemed code the database would hold if this unit of work committed now.</summary>
     public IReadOnlyList<RecoveryCodeHash> Hashes =>
         [.. _committed.Concat(_pending).SelectMany(set => set.Hashes)];
+
+    /// <summary>
+    /// How many times the unscoped discovery lookup ran.
+    /// </summary>
+    /// <remarks>
+    /// Recorded because the discovery read's <em>placement</em> is a rule and no row count can express
+    /// it. It runs once, before the transaction opens, because the account it establishes has to be
+    /// published before a connection is configured; a handler that moved it inside a replayed unit of
+    /// work would read once per attempt, and one that refused a malformed verifier by looking it up
+    /// anyway would read on a request that should have cost the database nothing.
+    /// </remarks>
+    public int DiscoveryLookupCallCount { get; private set; }
+
+    /// <summary>
+    /// Every account <see cref="FindOwnedByVerifierHashAsync" /> was asked to scope by, oldest first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The values rather than a count, and the list rather than the last one.</b> The claim this
+    /// supports is that the row a redemption spends is read a second time, inside the transaction, by
+    /// the account the discovery read resolved — three facts, and a call counter states none of them.
+    /// An empty list is a handler that spent the entity the unscoped read produced, which is ADR 0014's
+    /// third leg deleted; a list naming another account is the failure that leg exists to refuse; and
+    /// one entry per attempt is what says the read sits inside the delegate rather than above it.
+    /// </para>
+    /// <para>
+    /// It cannot see the <em>repository's</em> own predicate — a production lookup that dropped its
+    /// <c>where user_id = …</c> would still be called with the right argument, and this would still
+    /// record it. That half is unobservable from any fake and unobservable from the route as well,
+    /// because the owner is read off the very row being matched; it is held by review and by the
+    /// predicate being written down in <see cref="IRecoveryCodeRepository" />.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<Guid> OwnerScopedLookups => _ownerScopedLookups;
+
+    /// <summary>
+    /// Run once by <see cref="FindOwnedByVerifierHashAsync" />, after the row has been chosen and
+    /// before it is handed back — the window a concurrent redemption lands in.
+    /// </summary>
+    /// <remarks>
+    /// The only place this fake can express the race <see cref="ConsumeAsync" />'s refusal exists for:
+    /// two requests carrying one verifier both find the row, and the loser's <c>DELETE</c> matches
+    /// nothing. Production reaches it as a zero-row delete EF raises
+    /// <c>DbUpdateConcurrencyException</c> on, which <c>RecoveryCodeRepository</c> translates into the
+    /// sentence below; a test spends the contested code from here and the loser meets the same refusal.
+    /// Left unset it is a no-op, which is what every test not about the race wants.
+    /// </remarks>
+    public Func<Task>? OnOwnerScopedLookup { get; set; }
 
     /// <summary>How many times a set was asked to be deleted.</summary>
     /// <remarks>
@@ -173,10 +222,14 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
     /// </remarks>
     public Task<RecoveryCodeHash?> FindByVerifierHashAsync(
         ReadOnlyMemory<byte> verifierHash,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(_committed
+        CancellationToken cancellationToken = default)
+    {
+        DiscoveryLookupCallCount++;
+
+        return Task.FromResult(_committed
             .SelectMany(set => set.Hashes)
             .SingleOrDefault(hash => Matches(hash, verifierHash)));
+    }
 
     /// <summary>
     /// The one unredeemed code stored under <paramref name="verifierHash" /> <em>and</em> owned by
@@ -207,13 +260,27 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
     /// <see cref="FindByVerifierHashAsync" /> writes out.
     /// </para>
     /// </remarks>
-    public Task<RecoveryCodeHash?> FindOwnedByVerifierHashAsync(
+    public async Task<RecoveryCodeHash?> FindOwnedByVerifierHashAsync(
         Guid userId,
         ReadOnlyMemory<byte> verifierHash,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(_committed
+        CancellationToken cancellationToken = default)
+    {
+        _ownerScopedLookups.Add(userId);
+
+        RecoveryCodeHash? found = _committed
             .SelectMany(set => set.Hashes)
-            .SingleOrDefault(hash => hash.UserId == userId && Matches(hash, verifierHash)));
+            .SingleOrDefault(hash => hash.UserId == userId && Matches(hash, verifierHash));
+
+        // After the row is chosen and before the caller has it: see OnOwnerScopedLookup. A concurrent
+        // redemption spending the same code from here leaves this caller holding an entity whose row is
+        // gone, which is exactly the state ConsumeAsync's refusal is about.
+        if (OnOwnerScopedLookup is not null)
+        {
+            await OnOwnerScopedLookup();
+        }
+
+        return found;
+    }
 
     /// <summary>
     /// Spends one code by removing its row, leaving the set's credential — and every code still on the

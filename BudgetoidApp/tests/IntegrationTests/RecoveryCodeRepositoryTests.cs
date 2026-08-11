@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Application.RecoveryCodes;
 using Domain.Common;
 using Domain.Users;
 using Infrastructure.Persistence;
@@ -81,6 +82,23 @@ namespace IntegrationTests;
 /// <see cref="IRecoveryCodeRepository" /> could only raise that type by modelling something the port
 /// never surfaces. <see cref="PasskeyRepositoryTests" /> is the same file for the passkey delete, and
 /// this is written to its shape rather than to a second one.
+/// </para>
+/// <para>
+/// <b>There is a third race on this repository, and it is not a generation's.</b> Two redemptions
+/// carrying one verifier both find the row, and the loser's <c>DELETE</c> matches nothing — the same
+/// <see cref="DbUpdateConcurrencyException" />, on
+/// <see cref="RecoveryCodeRepository.ConsumeAsync" />, translated into a different answer for a reason
+/// that is worth stating: the redemption route is <b>anonymous</b>, and every refusal on it is
+/// byte-identical on purpose. A 409 here — or an untranslated 500 — would be a second answer telling a
+/// caller that the value they presented was real, which is exactly what somebody working through a
+/// partially-observed recovery card wants to know. So it becomes
+/// <see cref="RecoveryCodeRedemptionException" />, the one type that route refuses with, and the loser is
+/// answered as though the code had been spent a second earlier.
+/// <see cref="ConsumeAsync_WhenTheCodeIsAlreadyGone_RefusesTheRedemption" /> and
+/// <see cref="ConsumeAsync_WhenAnUnrelatedEntityConflicts_LetsTheConflictEscape" /> are the two halves of
+/// that, and they are the only tests in either suite that can see the catch at all:
+/// <c>RedeemRecoveryCodeHandlerTests</c> drives the refusal through a fake, which raises the sentence
+/// directly because no in-memory store produces EF's exception.
 /// </para>
 /// <para>
 /// Every row is written and removed on <see cref="RepositoryTestHost.ConnectionString" /> — the container
@@ -443,6 +461,137 @@ public sealed class RecoveryCodeRepositoryTests
     }
 
     /// <summary>
+    /// A code that went while this request was asking is refused as a redemption refusal, and the other
+    /// nine stay where they are.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The race two redemptions of one verifier really run.</b> Both find the row — the discovery read
+    /// runs outside any transaction, and the owner-scoped re-read can still see it before the winner
+    /// commits — and the loser's <c>DELETE</c> then matches zero rows where EF expected one. Untranslated
+    /// that is a <see cref="DbUpdateConcurrencyException" />, which reaches the caller as a 500 with a
+    /// stack trace on an anonymous route whose every other refusal is a byte-identical 401. The 500 is
+    /// not merely untidy: it is an <em>oracle</em>, and the only thing it discriminates is a verifier that
+    /// named a real row.
+    /// </para>
+    /// <para>
+    /// <b>It must be <see cref="RecoveryCodeRedemptionException" /> and not
+    /// <see cref="ConflictException" />, which is what the two generation halves above answer.</b> A
+    /// generation is made by a caller who has proved possession of an authenticator and is entitled to a
+    /// real sentence; a redemption is made by somebody who has proved nothing yet, and the whole design of
+    /// that route is that they learn nothing from being refused. Two different exception types for one
+    /// EF failure on one repository is therefore a decision, and this is where it is written down.
+    /// </para>
+    /// <para>
+    /// <b>The sentence is asserted, not only the type.</b> <c>InMemoryRecoveryCodeRepository.ConsumeAsync</c>
+    /// restates it word for word so the unit suite can pin what a loser is told; the two can only be kept
+    /// honest by one of them being compared against the real thing.
+    /// </para>
+    /// <para>
+    /// <b>The winner's delete is issued on its own connection</b>, for the reason
+    /// <see cref="DeleteCredentialAsync" /> gives: through the context under test it would travel inside
+    /// the same unit of work, where the delete under test could not fail to see it, and the conflict would
+    /// be EF's rather than the database's. The remaining count is asserted because a loser that took a
+    /// second row with it would raise exactly as this test demands, and would leave a person one code
+    /// poorer for a request that failed.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task ConsumeAsync_WhenTheCodeIsAlreadyGone_RefusesTheRedemption()
+    {
+        // Arrange — a real set, and the entity a redemption would be holding when the winner commits.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        byte[][] verifiers = await SeedRecoveryCodeSetAsync(host, userId);
+
+        await using BudgetoidDbContext db = CreateDb(host);
+        RecoveryCodeRepository repository = new(db);
+        RecoveryCodeHash contested =
+            await repository.FindOwnedByVerifierHashAsync(userId, RecoveryCodeHash.HashOf(verifiers[0]))
+            ?? throw new InvalidOperationException(
+                "The seeded code was not readable through the repository before the act.");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        int removedByTheWinner = await DeleteCodeAsync(admin, verifiers[0]);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.ConsumeAsync(contested));
+
+        // Assert — the premise first: the row really did go out from under the loaded entity.
+        await Assert.That(removedByTheWinner).IsEqualTo(1);
+
+        await Assert.That(escaped).IsTypeOf<RecoveryCodeRedemptionException>();
+        await Assert.That(escaped!.Message)
+            .IsEqualTo("The presented code was consumed by a concurrent redemption.");
+
+        // And the loser took nothing with it: the nine the person still holds are still there.
+        await Assert.That(await CountCodesOfUserAsync(admin, userId))
+            .IsEqualTo((long)(SeededCodeCount - 1));
+    }
+
+    /// <summary>
+    /// A conflict over somebody else's entity is not dressed up as a spent code.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The narrowing half, and the reason the catch carries a <c>when</c> at all.</b>
+    /// <c>SaveChangesAsync</c> flushes everything the context is tracking, not only the entity the
+    /// repository was handed — so this test tracks one unrelated row as <c>Deleted</c> after removing it
+    /// out of band, then asks the repository to spend a code that is perfectly present. Remove the
+    /// <c>when</c> and the stranger's conflict is reported as "the presented code was consumed by a
+    /// concurrent redemption": a confident, specific and false refusal handed to somebody whose code was
+    /// never touched, and a 401 where the real answer is that the request failed.
+    /// </para>
+    /// <para>
+    /// <b>The expected behaviour is that an unattributable conflict propagates</b>, which is the reasoning
+    /// <c>RepositoryConstraintAttributionTests</c> writes down for every repository that translates
+    /// anything: a 500 naming the real failure beats a refusal that lies. A concurrency conflict carries
+    /// no SQLSTATE and no constraint name, so the entries are the only thing there is to narrow on.
+    /// </para>
+    /// <para>
+    /// <b>The code itself is deliberately still present</b>, so exactly one entry can be in the exception
+    /// and the test cannot pass or fail on how EF happened to batch two failures.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task ConsumeAsync_WhenAnUnrelatedEntityConflicts_LetsTheConflictEscape()
+    {
+        // Arrange — a healthy set, and a signature counter that is not.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        byte[][] verifiers = await SeedRecoveryCodeSetAsync(host, userId);
+        Guid passkeyId = await host.SeedPasskeyAsync(userId, WebAuthnCredentialId);
+
+        await using BudgetoidDbContext db = CreateDb(host);
+        RecoveryCodeRepository repository = new(db);
+        RecoveryCodeHash present =
+            await repository.FindOwnedByVerifierHashAsync(userId, RecoveryCodeHash.HashOf(verifiers[0]))
+            ?? throw new InvalidOperationException(
+                "The seeded code was not readable through the repository before the act.");
+
+        // The intruder: loaded first, removed out of band second, and marked Deleted third — so the
+        // context is tracking a delete the database will match no row for.
+        PasskeySignatureCounter counter = await db.PasskeySignatureCounters
+            .SingleAsync(tracked => tracked.CredentialId == passkeyId);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        int removedOutOfBand = await DeleteSignatureCounterAsync(admin, passkeyId);
+        db.PasskeySignatureCounters.Remove(counter);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.ConsumeAsync(present));
+
+        // Assert — the premise first, or the exception below was raised by something this test did not
+        // arrange.
+        await Assert.That(removedOutOfBand).IsEqualTo(1);
+
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateConcurrencyException>();
+    }
+
+    /// <summary>
     /// Both halves of the race refuse with the <b>same sentence</b>, and the sameness is the assertion.
     /// </summary>
     /// <remarks>
@@ -603,6 +752,25 @@ public sealed class RecoveryCodeRepositoryTests
     {
         await using NpgsqlCommand command = new("delete from credentials where id = @id", admin);
         command.Parameters.AddWithValue("id", credentialId);
+
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Removes one <c>recovery_code_hashes</c> row out of band, standing in for the redemption that won
+    /// the race for it.
+    /// </summary>
+    /// <remarks>
+    /// On its own connection for the reason <see cref="DeleteCredentialAsync" /> gives, and by the value
+    /// the row is stored under rather than by any id: <c>SHA-256</c> of the verifier is the primary key,
+    /// which is the only thing an anonymous redemption ever knows about a code.
+    /// </remarks>
+    private static async Task<int> DeleteCodeAsync(NpgsqlConnection admin, byte[] verifier)
+    {
+        await using NpgsqlCommand command = new(
+            "delete from recovery_code_hashes where verifier_hash = @hash",
+            admin);
+        command.Parameters.AddWithValue("hash", SHA256.HashData(verifier));
 
         return await command.ExecuteNonQueryAsync();
     }
