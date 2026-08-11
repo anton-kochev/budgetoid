@@ -49,11 +49,15 @@ export class SettingsService {
   // In flight, published rather than inferred from `recoveryRemaining === null`
   // — the third member the neighbouring reads do without, and the book's
   // recovery-codes chapter is why: its six states are "no two of them
-  // interchangeable", and its `role="status"` region is "empty **at rest**".
-  // Inferred loading collapses at rest into loading, because both are a count
-  // that has not arrived, and the region would then hold a line from first
-  // paint instead of gaining one. This is `exporting`'s shape, on the section
-  // whose specification asks for it.
+  // interchangeable". The count is absent at rest, absent while the read runs
+  // **and** absent after the read has failed, so a section inferring its
+  // loading line from that absence has one predicate covering three states —
+  // and it would go on saying *loading* to somebody whose request has already
+  // given up. Published, the flag is set when the read starts and cleared
+  // however the read ends, which makes the exclusivity structural rather than
+  // dependent on the order the template's branches happen to be written in.
+  // This is `exporting`'s shape, on the section whose specification asks for
+  // it.
   private readonly recoveryLoadingSignal = signal(false);
 
   public readonly email: Signal<string | null> = this.emailSignal.asReadonly();

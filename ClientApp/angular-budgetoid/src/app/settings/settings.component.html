@@ -183,15 +183,16 @@
        `null` is a state of its own rather than a zero. -->
   @let remaining = settings.recoveryRemaining();
 
-  <!-- Loading and failure only. Both arrive after the first paint, so they land
-       inside a region that was already being watched; one created at the moment
-       it gains content is announced by nothing. `status`, never `alert`: polite
-       is right for the result of a read the screen started on its own, and
-       assertive is reserved for a failure to save something the person typed.
+  <!-- Loading, failure and the answer. All three arrive after the first paint,
+       so they land inside a region that was already being watched; one created
+       at the moment it gains content is announced by nothing. `status`, never
+       `alert`: polite is right for the result of a read the screen started on
+       its own, and assertive is reserved for a failure to save something the
+       person typed.
 
-       The two are exclusive by structure, not by coincidence — a load that
-       failed is not still loading, and rendering both would ask the reader to
-       keep waiting on a request that has already given up. -->
+       Loading and failure are exclusive by structure, not by coincidence — a
+       load that failed is not still loading, and rendering both would ask the
+       reader to keep waiting on a request that has already given up. -->
   <div class="s-outcome" role="status">
     @if (settings.recoveryFailed()) {
       <p class="s-error">
@@ -200,34 +201,40 @@
     } @else if (settings.recoveryLoading()) {
       <p class="s-prose">Loading your recovery codes&hellip;</p>
     }
+
+    <!-- Inside the region, and last: this is the answer to what the loading
+         line announced as pending. `ngOnInit` sets loading synchronously,
+         before the first update pass, so this region has held "Loading your
+         recovery codes…" since first paint — and text being *removed* from a
+         live region is announced by nothing. With the count outside, a
+         screen-reader user present during the request hears that something
+         started and never learns how it ended, on the one section whose only
+         job is saying whether there is a way back into the account. A reader
+         arriving after the response loses nothing: the count is still in normal
+         reading order, in the same place on the page.
+
+         The paragraph is unconditional and holds one line box, so the page does
+         not shift when the number arrives — the label/value rule, applied to a
+         value whose label is the section heading. At rest it is blank, and
+         blank is not zero: a blank line says the answer has not arrived, and
+         "You have no recovery codes." is a fact about the account.
+
+         Three branches and no pipe. `I18nPluralPipe` would silently pin every
+         count to `en-US` plural rules, because nothing in this app provides
+         `LOCALE_ID` — the same trap `credential-registration-date.ts` exists to
+         avoid for dates. The zero branch drops the word the other two carry:
+         *left* presupposes a set that once existed, and `0` is equally the
+         answer for an account that has never generated one. -->
+    <p class="s-prose s-count">
+      @if (remaining === 0) {
+        You have no recovery codes.
+      } @else if (remaining === 1) {
+        You have 1 recovery code left.
+      } @else if (remaining !== null) {
+        You have {{ remaining }} recovery codes left.
+      }
+    </p>
   </div>
-
-  <!-- Outside the region on purpose: the count is a fact about the account, not
-       the outcome of something the reader just did. Announcing a standing fact
-       as an event is how a screen reader ends up narrating the page's own
-       furniture.
-
-       The paragraph is unconditional and holds one line box, so the page does
-       not shift when the number arrives — the label/value rule, applied to a
-       value whose label is the section heading. At rest it is blank, and blank
-       is not zero: a blank line says the answer has not arrived, and "You have
-       no recovery codes." is a fact about the account.
-
-       Three branches and no pipe. `I18nPluralPipe` would silently pin every
-       count to `en-US` plural rules, because nothing in this app provides
-       `LOCALE_ID` — the same trap `credential-registration-date.ts` exists to
-       avoid for dates. The zero branch drops the word the other two carry:
-       *left* presupposes a set that once existed, and `0` is equally the answer
-       for an account that has never generated one. -->
-  <p class="s-prose s-count">
-    @if (remaining === 0) {
-      You have no recovery codes.
-    } @else if (remaining === 1) {
-      You have 1 recovery code left.
-    } @else if (remaining !== null) {
-      You have {{ remaining }} recovery codes left.
-    }
-  </p>
 
   <!-- Visible prose above the control, never a title, a tooltip or an
        aria-describedby: the button is disabled, so it is out of the tab order

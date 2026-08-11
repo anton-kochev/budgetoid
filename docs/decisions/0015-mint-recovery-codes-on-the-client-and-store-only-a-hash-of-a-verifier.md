@@ -25,8 +25,14 @@ getting the second wrong buys nothing.
 ## Decision
 
 **The client mints each recovery code. The code never leaves the browser. The client derives a
-verifier `V = HKDF(code, …)` and sends only `V`; the server stores `SHA-256(V)` and holds `V` no
-longer than the request that presented it.**
+verifier `V = HKDF(canonical(code), …)` and sends only `V`; the server stores `SHA-256(V)` and holds
+`V` no longer than the request that presented it.**
+
+`canonical` sits inside that definition rather than in front of it: a derivation is not specified
+until it says what text goes in. It upper-cases the code, strips the whitespace and hyphens it was
+grouped with when it was written down, and folds the letters the alphabet excluded onto the digits a
+reader resolves them as. The fold, and what bounds it, are in
+[recovery-codes.md](../business-logic/recovery-codes.md).
 
 The key-encryption key is derived from the same code on an **independent HKDF branch**. That
 independence is the whole mechanism: a database reader holding `SHA-256(V)` can neither redeem — there
@@ -35,8 +41,8 @@ is no preimage — nor derive the key, because the hash is on the wrong branch a
 Three properties fall out, and each is enforced by shape rather than by a check:
 
 1. **No member exists for a code to travel in.** `GenerateRecoveryCodesCommand` declares
-   `IReadOnlyList<string> Verifiers` and nothing else that carries bytes. There is no type for a code
-   anywhere in the backend.
+   `IReadOnlyList<string> Verifiers` beside the assertion that authorizes the issue, and no member a
+   code could travel in. There is no type for a code anywhere in the backend.
 2. **The hashing happens inside the entity.** `RecoveryCodeHash.From` takes the verifier and calls
    `RecoveryCodeHash.HashOf` itself. A factory taking a hash the caller computed would mean a raw
    verifier could be assigned to an object something can persist, and every call site would be a place
@@ -45,7 +51,7 @@ Three properties fall out, and each is enforced by shape rather than by a check:
    will be matched against cannot drift. If they ever did, the symptom would be silent: every code the
    account was ever issued simply stops matching.
 
-### The entropy rule has no enforcer, and that is recorded rather than papered over
+### The entropy rule has no enforcer below the client, and none can exist
 
 A code carries at least 128 bits of entropy. **The server cannot enforce this and no layer at or below
 the API can.** It receives fixed-length opaque bytes; a set of ten identical zero-filled verifiers is
@@ -61,8 +67,14 @@ that is not what it claims — but it is a symptom check and not the rule.
 why it sits above its lowest capable layer. Here the answer is stronger than "it sits higher": the
 rule is **not observable** below the client, in the same sense the WebAuthn `prf` extension result is
 a claim the server cannot verify. So the entropy rule belongs to the browser that mints the code, and
-that browser is not built yet — which means the rule currently has no enforcer at all, and the first
-client to generate a set owns making it true and owns the test that says so. See
+it is held there and nowhere else: the generator draws every character from `crypto.getRandomValues`
+over an alphabet whose size divides the byte space, so each byte yields one uniform symbol and no
+modulo silently costs a fraction of a bit. Its spec asserts the alphabet and the draw rather than a
+string's length — a code of the right length drawn from `Math.random`, or through a biased mapping,
+passes every length check there is — and recomputes the bits from the shipped alphabet and length
+rather than restating a number, so the length is pinned from both sides: one character shorter misses
+the bound and reddens the suite. Deleting that spec deletes the requirement's only enforcer, because
+nothing beneath it can restate the rule. See
 [recovery-codes.md](../business-logic/recovery-codes.md).
 
 ## Alternatives considered
@@ -77,9 +89,9 @@ plaintext secrets in a response body, which is a category of value this API othe
 
 The counterargument is real and worth naming: a browser's `crypto.getRandomValues` is a weaker thing
 to trust than a server's CSPRNG, and moving generation to the client moves the entropy rule to the one
-layer that has no gate above it. That cost is accepted and written down as an unheld rule rather than
-hidden, because the alternative trades a rule nobody can check for a secret the operator provably
-holds.
+layer that has no gate above it. That cost is accepted and written down rather than hidden: the rule
+is stated where it lives and held by the generator's own spec, with nothing underneath it able to
+check the claim. The alternative would buy that check with a secret the operator provably holds.
 
 **Store `SHA-256(code)` rather than `SHA-256(V)`.** This is the subtle one, and it is the reason the
 wording throughout this area is pedantic. It looks identical: the widths match, redemption still
@@ -126,13 +138,25 @@ call from a person who has just lost their device.
   Refused rather than truncated: truncating would store the hash of a prefix, and no code would ever
   redeem.
 - **The width of the verifier and the width of the digest are numerically equal and are not the same
-  bound.** The HKDF output the client is specified to produce is chosen independently of SHA-256's
-  output length. `RecoveryCodeHashConfiguration` keeps its own constant for the column for that reason,
+  bound.** The HKDF output width the client derives is chosen independently of SHA-256's output
+  length. `RecoveryCodeHashConfiguration` keeps its own constant for the column for that reason,
   and the two must not be folded together.
 - **The server can never answer "was this code ever valid?"** It holds no preimage and, once a code is
   redeemed or replaced, no row either. That is a support question the product cannot answer, and it is
   the same trade [ADR 0017](0017-consume-a-recovery-code-by-deleting-its-row.md) makes explicitly.
+- **Two rules of this design sit on the client and can sit nowhere else**, and the second is the one a
+  reader will not expect. The **entropy** of a code is one. The **canonical form** the derivation runs
+  over is the other: only derived bytes cross the wire, so there is no text below the client to
+  normalise, and a screen that skipped the fold would derive a well-formed verifier matching no row —
+  refused with the `401` that is deliberately indistinguishable from a wrong code, so the only way
+  back into the account looks broken and says nothing about why. What bounds the fold is that no rule
+  may bring two mintable codes together: each one is the inverse of an exclusion the alphabet already
+  made, which keeps the function the identity on everything the generator produces, so no verifier
+  already derived can move. Both rules are held by `recovery-codes.ts` and its spec, and by nothing
+  else in the repository.
 - **This ADR is the reason the next epic can wrap keys at all.** The key-encryption key derivation is
-  not built; what this decision buys is that when it lands, the branch it derives from has never been
-  observable by the deployment. Reversing this ADR later is not a refactor — it retroactively
-  invalidates that property for every code issued before the reversal.
+  not built; what exists of it is that branch's `info` string, declared beside the verifier's and
+  pinned distinct by the client's spec, so the collision that would quietly fold the two branches into
+  one fails a test instead of shipping. What this decision buys is that when the derivation lands, the
+  branch it derives from has never been observable by the deployment. Reversing this ADR later is not
+  a refactor — it retroactively invalidates that property for every code issued before the reversal.

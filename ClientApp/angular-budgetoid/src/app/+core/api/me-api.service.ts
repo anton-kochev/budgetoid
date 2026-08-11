@@ -14,6 +14,35 @@ interface RecoveryCodeCountDto {
   remaining: number;
 }
 
+// A declared response type is an assertion about JSON, not a check of it.
+// Nothing between the socket and the signal validates a body, so a 200 of the
+// wrong shape is published as though the server had said it — and the two
+// shapes that arrive from a version skew are the two the screen renders worst.
+// A missing member puts `undefined` into a signal typed `number | null`, which
+// the template's `remaining !== null` branch accepts and interpolates as
+// nothing: "You have  recovery codes left." A `null` member is worse, because
+// `null` is a value this whole path already means *no answer yet* by, and
+// publishing one gives the section a state the design book does not have.
+//
+// So this is a boundary check and deliberately not a repair. Every consumer of
+// these methods already has a `catchError` that publishes nothing and says an
+// honest sentence; a refusal lands there. A coercion — `?? 0`, `Number(…)`,
+// `[]` for a body that is not a list — lands on the screen as a fact about the
+// account, indistinguishable from an answer.
+function isRecoveryCodeCount(body: unknown): body is RecoveryCodeCountDto {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    'remaining' in body &&
+    typeof body.remaining === 'number' &&
+    // Whole and not negative, because that is what a count of codes is.
+    // `Number.isInteger` also refuses `NaN` and both infinities, each of which
+    // is a JSON number to a parser and none of which is a number of codes.
+    Number.isInteger(body.remaining) &&
+    body.remaining >= 0
+  );
+}
+
 // The three kinds of thing that can sign this account in, and the union is
 // closed on purpose: a fourth kind is a change to what the screen must render,
 // not a string that arrives one day and falls through a template. `federated`
@@ -65,7 +94,28 @@ export class MeApiService extends BaseApiService {
   // saying so keeps a caller from reordering a list whose order is the server's
   // statement rather than the screen's preference.
   public getCredentials(): Observable<readonly CredentialSummary[]> {
-    return this.get<readonly CredentialSummary[]>('api/me/credentials');
+    return this.get<unknown>('api/me/credentials').pipe(
+      map((body) => {
+        // The consumer calls `.map` on this inside a `computed` the template
+        // reads, so a body that is not a list throws during change detection
+        // and Angular abandons the pass — the list stays on its loading line
+        // and every section below it stops updating for the rest of the visit.
+        // Refused here, it is the sentence the section already has for a list
+        // it could not load.
+        //
+        // Only the shape of the collection is checked, not of each entry. The
+        // row is total in what it renders — an unrecognised kind and an
+        // unreadable instant each have an answer — so a malformed *entry*
+        // spoils one row, while a malformed *body* takes the screen.
+        if (!Array.isArray(body)) {
+          throw new Error(
+            'The credential list did not arrive as a list of credentials.',
+          );
+        }
+
+        return body as readonly CredentialSummary[];
+      }),
+    );
   }
 
   // How many codes are left, and nothing else. An account that has never
@@ -81,8 +131,16 @@ export class MeApiService extends BaseApiService {
   // surface no test could execute — a signature that compiles, is called by
   // nothing, and is wrong in a way nothing on the screen would show.
   public getRecoveryCodes(): Observable<number> {
-    return this.get<RecoveryCodeCountDto>('api/me/recovery-codes').pipe(
-      map((count) => count.remaining),
+    return this.get<unknown>('api/me/recovery-codes').pipe(
+      map((body) => {
+        if (!isRecoveryCodeCount(body)) {
+          throw new Error(
+            'The recovery-code response carried no usable count of codes.',
+          );
+        }
+
+        return body.remaining;
+      }),
     );
   }
 }

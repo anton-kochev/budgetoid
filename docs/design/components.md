@@ -117,11 +117,12 @@ list semantics — without it nobody hears "list, 2 items".
   every row after the first. No card and no border box — the section already groups them, and a card
   never wraps a single list.
 - **Facts**, stacked with `--bud-space-1`: the type in words as `body` `--bud-text` — every kind the
-  union carries has a word of its own, and none of them is the token the wire uses; then the dated
-  caption as `caption` `--bud-text-muted`, wrapped in a `<time>` whose `datetime` carries the stored
-  instant. The caption's leading word belongs to the kind too — `Registered` for a thing that was
-  attached, `Generated` for a set that was issued (below) — and everything after that word is one
-  shared formatter.
+  union carries has a word of its own, none of them is the token the wire uses, and a kind the union
+  does **not** carry has a word of its own as well (below); then the dated caption as `caption`
+  `--bud-text-muted`, wrapped in a `<time>` whose `datetime` carries the stored instant. The
+  caption's leading word belongs to the kind too — `Registered` for a thing that was attached,
+  `Generated` for a set that was issued, `Added` for a kind this bundle cannot name — and everything
+  after that word is one shared formatter.
 - **The date is absolute, in the reader's locale, and is the reader's own calendar day** computed
   from the stored instant in their zone — never the UTC day. Relative words ("Today") belong to
   transaction lists; a record of what is attached to an account states a date. `DatePipe` is not
@@ -137,22 +138,34 @@ list semantics — without it nobody hears "list, 2 items".
   `<time>` element, since that element's whole contract is a machine-readable instant. The accessible
   name of Revoke drops the clause with it (`Revoke Passkey`), rather than ending mid-sentence at
   `registered `. Two entries that cannot be told apart is a state the row is already honest about for
-  two passkeys registered on one day. This is not a hypothetical: the date is formatted inside a
-  `computed` the template reads, so formatting that throws abandons the change detection pass and
-  takes every section below this one off the screen for the rest of the visit.
+  two passkeys registered on one day. This is not a hypothetical, and it is the position the kind is
+  in as well: a row is composed inside a `computed` the template reads, so anything that throws while
+  composing one abandons the change detection pass, and Angular caches that failure on the signal and
+  rethrows it on every later read — the list stays on its loading line and every section below this
+  one stops updating for the rest of the visit. No `try` can be placed around a signal read. So every
+  fact a row is composed from is **total over what a 200 can carry**: an instant the client cannot
+  read has an answer, and so does a type it has never heard of.
 - **Action.** One Revoke button per **revocable** row — a passkey — Outline, 48px target. Visible
-  label `Revoke`; accessible name `Revoke <type>, registered <date>`, beginning with the visible
-  label so voice control still reaches it, and composed because two buttons named "Revoke" cannot be
-  told apart.
+  label `Revoke`; accessible name `Revoke <type>, <the row's own caption word, lower-cased> <date>`,
+  which on the one revocable kind there is today reads `Revoke Passkey, registered 2 February 2026`
+  for a reader whose locale renders the day that way.
+  It begins with the visible label so voice control still reaches it, and it is composed because two
+  buttons named "Revoke" cannot be told apart. The clause word comes from the row rather than being
+  written into the name: a hard-coded `registered` reads correctly only while every revocable kind
+  happens to be captioned `Registered`, and the day one is not, a screen reader would describe the
+  control by a word the sighted reader is not looking at.
 - **A row nothing can ever revoke carries no Revoke, not even a disabled one.** Every other disabled
   control on this screen is a promise: the ceremony lands, the sentence above the list goes, and the
   button starts working. A control that will never be enabled makes the same promise and cannot keep
   it, which is the worse of the two lies — the reader waits for a release that is not coming. A
   recovery-code set is unrevocable by construction (below), and the **Google** row is unrevocable
   because the federated credential is replaced by an email change rather than removed; neither row
-  draws the button. Revocability is a property carried **per kind**, beside that kind's word and
-  caption, so a kind added without one fails to compile rather than inheriting an action by
-  default — the half of a new kind that cannot be taken back once it is on screen.
+  draws the button. A row whose kind this bundle does not recognise draws none either, on a different
+  argument: unknown is undecided, revocation is the one unrecoverable act on this screen, and the
+  undecided answer to an unrecoverable act is no control at all. Revocability is a property carried
+  **per kind**, beside that kind's word and caption, so a kind added without one fails to compile
+  rather than inheriting an action by default — the half of a new kind that cannot be taken back once
+  it is on screen.
 - **A recovery-code set is a row of this list**, with the type in words as **Recovery codes**. The
   list is documented as every way into the account, and redeeming a code opens a full session, so a
   set belongs here on the same argument a passkey does. It carries **no action**: pointing a
@@ -170,21 +183,52 @@ list semantics — without it nobody hears "list, 2 items".
 - **The wire value for the type is `recovery_codes`**, the schema's own token, and the response
   spells it that way rather than camel-casing a property name: `recoveryCodes` is what a naming
   policy would produce and it agrees with nothing. `CredentialKind` is a **closed** union for this
-  reason — a member added to it is a change to what this list renders, caught at compile time, not a
-  string that arrives one day and falls through a template. What catches it is that the word, the
-  caption and the revocability are held together in one map declared exhaustive over the union: a new
-  kind fails the build until someone decides all three. A `switch` with a fallback would render the
-  new kind as whatever the fallback said and hand it an action nobody chose for it.
+  reason — a member added to it is a change to what this list renders, caught at compile time. What
+  catches it is that the word, the caption and the revocability are held together in one map declared
+  exhaustive over the union: a new kind fails the build until someone decides all three. A `switch`
+  with a fallback would render the new kind as whatever the fallback said and hand it an action
+  nobody chose for it.
+- **That closure is a guarantee about this source, and it says nothing about the value that
+  arrives.** A declared response type is an assertion about JSON, not a check of it, and the ordinary
+  way a type nobody here has named reaches this list is a browser holding yesterday's bundle against
+  today's API — which is exactly the string arriving one day and falling through a template. So the
+  list needs both halves and neither substitutes for the other: the union holds the source, and the
+  lookup from a wire value to its word, caption and revocability is **total over every string**.
+- **A kind this bundle does not recognise is a row like any other, and it is dated.** It reads
+  **Sign-in method** as its type, its caption is **Added**, and it carries **no action**. Dropping
+  such a row is the worse lie: this list is documented as *every* way into the account, so filtering
+  one out tells somebody auditing their credentials that a way in they cannot see does not exist, and
+  leaves them nothing to act on. `Registered` and `Generated` are precisely the two claims the row
+  cannot make — one says the thing was attached, the other says it was issued — so the caption says
+  only that it is there, and the date beside it is the one fact the server sent that needs no
+  vocabulary to read.
+- **The lookup is a `Map`, never the map object indexed by the wire string.** An object literal
+  inherits from `Object.prototype`, so `constructor`, `toString` and `valueOf` are keys that *hit*: a
+  `?? fallback` written over the literal never fires for them, the row is handed an object with no
+  word in it, and the type renders **blank** with no error raised anywhere. A `Map` built from the
+  literal's entries holds its own keys and nothing else, so a miss is a miss for every string that is
+  not one of them. The defect is in the lookup, not in the fallback — a `??` cannot fix it.
 - **Loading** is one line in the section's `role="status"` region. **No skeleton** — that spec is for
   a screen's own subject, and a skeleton for a list this short inside one settings section costs more
   than it explains.
 - **Failure** is one sentence in the same region, in `--bud-over`. Colour is never the message.
 - **Empty** replaces the list with one plain line, `body` `--bud-text` — not the centred empty-state
   block, which is for a screen's subject, and the section's own action already sits beneath.
+- **The empty line renders outside the region, with the list it replaces**, and the recovery-codes
+  section below makes the opposite call about its own count deliberately. The two answers this
+  section can give are *a list* and *that line*, and a list cannot go in a live region — a
+  `role="status"` that gained a `role="list"` and n rows would narrate every entry as an event. Put
+  the empty half in on its own and the region speaks only when the answer is *nothing*, which is the
+  one answer a reader would then be sure they had heard. Both answers stay in content, in reading
+  order. The cost is stated rather than hidden: somebody present while the list loads hears that it
+  started and is not told how it ended. Where the whole answer is one sentence, as it is for the
+  count next door, that cost is not worth paying and the sentence goes inside.
 
-**What ships today.** The list renders every kind, the recovery-code set's row included. **Register a
-passkey** (below the list) and **Revoke** (on the revocable rows, which is the passkeys) are both
-Outline and **disabled**, because both need a WebAuthn ceremony the client cannot run yet. One sentence covers both and sits **above** the list rather than beside each button: per
+**What ships today.** The list renders every kind the union carries, the recovery-code set's row
+included, and renders one it does not as **Sign-in method**, captioned **Added** and carrying no
+action. **Register a passkey** (below the list) and **Revoke** (on the revocable rows, which is the
+passkeys) are both Outline and **disabled**, because both need a WebAuthn ceremony the client cannot
+run yet. One sentence covers both and sits **above** the list rather than beside each button: per
 row, a screen reader would read the same explanation once per entry. When the ceremony lands, the
 sentence goes and the controls become live — Revoke keeps its Outline until a confirmation exists
 for it, per the destructive-action rule above.
@@ -207,9 +251,15 @@ between them.
   rows, so there is nothing for a second column to carry and no breakpoint changes it; the row's
   600px split in the credential list exists because a row has facts *and* an action, and this
   section's control belongs to the section rather than to any line above it.
-- **The count is one line of `body` `--bud-text`**, reserving one line box (`min-height: 1lh`) so the
-  page does not shift when the number arrives from the network — the label/value rule above, applied
-  to a value whose label is the section heading.
+- **`--bud-space-4` is the gap between the section's own children** — heading, region, prose,
+  button. The count is not one of them: it sits inside the `role="status"` region, and that region
+  carries the screen's outcome gap, `--bud-space-2`. So a sentence and the count beneath it are set
+  closer to each other than to anything else in the section, which is what makes them read as one
+  outcome rather than as two things the section listed. Token to token, both of them; neither is a
+  literal.
+- **The count is one line of `body` `--bud-text`**, the last child of the region, reserving one line
+  box (`min-height: 1lh`) so the page does not shift when the number arrives from the network — the
+  label/value rule above, applied to a value whose label is the section heading.
 - **The section shows no code and no part of one.** Not a code, not a verifier, not a hash, not the
   set's identifier, and not the day it was generated. The count is the whole of what this section
   says; the generation day is on the set's row in Ways to sign in, and a second copy of it here is a
@@ -222,12 +272,12 @@ of it.
 
 | State | Copy | Where it renders |
 | --- | --- | --- |
-| At rest | *nothing* | The `role="status"` region is present and empty; the count line is blank and holds its box |
+| At rest | *nothing* | The `role="status"` region carries no sentence; the count line inside it is blank and holds its box |
 | Loading | "Loading your recovery codes…" | Inside the region, `body` `--bud-text` |
 | Failed | "Couldn't load your recovery codes. Reload the page." | Inside the region, `--bud-over` |
-| `0` remaining | "You have no recovery codes." | Outside the region |
-| `1` remaining | "You have 1 recovery code left." | Outside the region |
-| `n` remaining | "You have 5 recovery codes left." | Outside the region |
+| `0` remaining | "You have no recovery codes." | Inside the region, as its last child |
+| `1` remaining | "You have 1 recovery code left." | Inside the region, as its last child |
+| `n` remaining | "You have 5 recovery codes left." | Inside the region, as its last child |
 
 **At rest and `0` are different states and must never collapse into one.** A blank line box says the
 answer has not arrived; "You have no recovery codes." is a fact about the account. Flattening the
@@ -235,28 +285,45 @@ unanswered case to a zero is the defect this row exists to name — the count is
 yet* until one arrives, exactly as the credential list holds `null` apart from `[]`.
 
 **At rest and loading are also different states, so loading is published rather than inferred from the
-missing count.** Both are *no number yet* — a section that derived its loading line from the absent
-count would render the two identically, and since the count is absent from first paint the region
-would hold that line as furniture instead of gaining it when the request starts. A state of its own is
-what keeps the region empty at rest, and it is the shape the Export outcome on this screen already
-uses.
+missing count.** Both are *no number yet*, and so is a load that **failed**: the count is absent in
+all three, so a section deriving its loading line from that absence has one predicate for three
+states, and it would go on saying *loading* to somebody whose request has already given up. Published,
+the in-flight state is set when the read starts and cleared however the read ends, which is what makes
+the exclusivity below a matter of structure rather than of which template branch happens to be written
+first. It is the shape the Export outcome on this screen already uses. At rest is the section before
+any read has begun; the read begins as the screen initialises, so on a visit the region is already
+carrying its loading line at the first paint.
 
 **Loading and failure are exclusive by structure**, not by coincidence: a load that failed is not
 still loading, and rendering both would ask the reader to keep waiting on a request that has already
 given up. Colour is never the message — the failure sentence reads the same with `--bud-over`
 removed.
 
-**Loading and failure live in an unconditional `role="status"` region that is empty at rest.** The
-region is in the DOM from first paint and gains its text later; a live region created at the moment
-it gains content is announced unreliably, because assistive technology has to have been watching the
-node before the text landed. It is `status` rather than `alert` for the reason the export outcome is:
-polite is right for the result of a read the screen started on its own, and assertive is reserved for
-a failure to save something the person typed.
+**Every state but at rest lives in one unconditional `role="status"` region** — loading, failure and
+the count alike. The region is in the DOM from first paint and gains its text later; a live region
+created at the moment it gains content is announced unreliably, because assistive technology has to
+have been watching the node before the text landed. It is `status` rather than `alert` for the reason
+the export outcome is: polite is right for the result of a read the screen started on its own, and
+assertive is reserved for a failure to save something the person typed.
 
-**The count renders outside that region.** It is a fact about the account, not the outcome of
-something the reader just did — the same call the credential list makes when it puts *"Nothing is
-attached to your account yet."* outside the region and the loading line inside it. Announcing a
-standing fact as an event is how a screen reader ends up narrating the page's own furniture.
+**The count is inside that region, as its last child.** The read starts as the screen initialises, in
+the same turn and before the first update pass, so the region is holding *"Loading your recovery
+codes…"* from first paint rather than gaining it — and a live region that already has text when
+assistive technology registers it is announced unreliably, while text **removed** from one is
+announced by nothing at all. With the count outside, a reader who was present while the section
+loaded therefore heard that something had started and never learned how it ended, on the one section
+whose whole job is saying whether there is a way back into the account. Announcing a beginning with no
+end is worse than either half. Inside, the count is the last thing the region says in every outcome —
+the answer to what was announced as pending — and a reader arriving after the response meets it
+unchanged, in normal reading order and in the same place on the page.
+
+**The credential list keeps its own standing fact outside its region, and the difference is
+deliberate rather than an inconsistency.** That section can answer with *a list* or with *"Nothing is
+attached to your account yet."*, and a list cannot go in a live region — a `role="status"` that gained
+a `role="list"` and n rows would narrate every entry as an event — so putting only the empty half in
+would leave a region that speaks when the answer is *nothing* and stays silent when it is not. Here
+the whole answer is one sentence, every outcome is announced the same way, and the section pays no
+such price for it.
 
 ### The `0` sentence is true both ways
 
@@ -333,10 +400,10 @@ written.
 **Generate recovery codes** is present and disabled with its sentence above it. That is the specified
 state, not an unfinished one, and *What replaces this when generation lands* above is the whole of what
 arrives with the button — nothing here asks for it to be made live on its own. The client holds the
-generator that mints a
-code and derives its verifier, covered by its own spec and called by nothing; the API service has no
-member that posts a set, because that route takes a fresh WebAuthn assertion this client cannot
-produce. Redeeming a code has no surface in the app at all.
+generator that mints a code and derives its verifier from that code's canonical form, covered by its
+own spec and called by nothing; the API service has no member that posts a set, because that route
+takes a fresh WebAuthn assertion this client cannot produce. Redeeming a code has no surface in the
+app at all.
 
 ## Text fields and selects
 

@@ -1,7 +1,10 @@
 // Recovery codes are minted here and **only** here, because here is the only
 // place they are ever allowed to exist. The browser generates a code, derives a
-// verifier `V = HKDF(code, …)` from it, and the client sends only `V`; the
-// server stores `SHA-256(V)` and has no member a code could travel in. The
+// verifier `V = HKDF(canonical(code), …)` from it, and the client sends only
+// `V`; the server stores `SHA-256(V)` and has no member a code could travel in.
+// `canonical` is part of that definition rather than a step in front of it —
+// the derivation is not specified until it says what text goes in, and the rule
+// lives on `canonicalRecoveryCode` below. The
 // reason is not tidiness about secrets: the account's key-encryption key is
 // derived from the same code on an independent HKDF branch, so a code reaching
 // the server would hand the operator that key for an account whose content it
@@ -194,30 +197,72 @@ export function mintRecoveryCode(): RecoveryCode {
   return code as RecoveryCode;
 }
 
+// The decoding half of the alphabet's own decision, and it lives here because
+// here is the only place a code is ever turned into anything.
+//
+// Excluding `I`, `L` and `O` from the *draw* protects nobody on its own: it
+// means no code contains them, not that nobody types them. The exclusion is a
+// statement that a reader resolves those glyphs as `1`, `1` and `0` — so the
+// derivation has to resolve them the same way, or the confusion the alphabet
+// was chosen to avoid comes back on the only path that matters. Leaving this to
+// a future caller is worse than leaving it out: a redemption screen would have
+// to rediscover which characters fold into which, and the symptom of getting it
+// wrong is a `401` that is deliberately indistinguishable from a wrong code —
+// the only way back into the account, looking broken, saying nothing.
+//
+// Each rule is the inverse of an exclusion the alphabet already made, so none
+// of them can fold two *codes* together: no minted code contains a lowercase
+// letter, an `I`, an `L`, an `O`, a space or a hyphen, which is exactly why
+// this is the identity on everything the generator produces and why no verifier
+// already derived can move. `U` is excluded too and is deliberately **not**
+// mapped — it is excluded so a draw cannot spell an obscenity, not because it
+// is read back as something else, and a rule generous enough to rescue every
+// typo would quietly shrink the code's 130 bits.
+//
+// `toUpperCase`, never `toLocaleUpperCase`: the latter maps `i` to `İ` under a
+// Turkish locale, which would make the same typed code derive different
+// verifiers on two phones.
+function canonicalRecoveryCode(code: string): string {
+  return code
+    .toUpperCase()
+    .replace(/[\s-]/g, '')
+    .replace(/[IL]/g, '1')
+    .replace(/O/g, '0');
+}
+
 /**
- * Derives the verifier for a code: `V = HKDF-SHA-256(code, …)`, 32 bytes,
- * rendered as unpadded base64url.
+ * Derives the verifier for a code: `V = HKDF-SHA-256(canonical(code), …)`, 32
+ * bytes, rendered as unpadded base64url.
  *
  * Takes a plain `string` rather than a {@link RecoveryCode} because the other
  * caller this will have is a redemption screen, where the code is whatever a
- * person typed. A mistyped code derives a verifier that matches no row, which
- * is the refusal the server is specified to give and is indistinguishable from
- * every other refusal on that route.
+ * person typed. The input is canonicalised first — upper-cased, stripped of the
+ * spaces and hyphens it was grouped with, and with the confusable letters
+ * resolved to the digits the alphabet excluded them in favour of. A code that
+ * is genuinely wrong after that is left alone to match no row, which is the
+ * refusal the server is specified to give and is indistinguishable from every
+ * other refusal on that route.
  */
 export async function recoveryCodeVerifier(
   code: string,
 ): Promise<RecoveryCodeVerifier> {
+  const canonical = canonicalRecoveryCode(code);
+
   // An empty code is a programming error — an unbound form control, a field
   // read before it was set — and it derives a perfectly well-formed verifier
   // that would be filed against the account as if it were a secret. Everything
   // else is left to match or not match, but this one cannot be told from a real
   // code by anything downstream.
-  if (code.length === 0) {
+  //
+  // Checked *after* canonicalisation, so a field holding only the grouping the
+  // person was shown is the same error rather than a well-formed verifier for
+  // the empty string.
+  if (canonical.length === 0) {
     throw new Error('A recovery code verifier cannot be derived from nothing.');
   }
 
   const bytes = await deriveBranch(
-    code,
+    canonical,
     RECOVERY_CODE_VERIFIER_INFO,
     RECOVERY_CODE_VERIFIER_BYTES,
   );
@@ -247,7 +292,7 @@ export async function mintRecoveryCodeSet(): Promise<RecoveryCodeSet> {
 
 // One derivation, parameterised by the branch and nothing else. The `info`
 // parameter is typed to the declared branches, so a caller cannot introduce a
-// thirteenth branch by passing a string literal at a call site.
+// third branch by passing a string literal at a call site.
 async function deriveBranch(
   code: string,
   info: RecoveryCodeBranchInfo,

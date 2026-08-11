@@ -29,8 +29,11 @@ import {
 
 const REQUIRED_ENTROPY_BITS = 128;
 
-// Characters excluded from the alphabet, each because a person reading a code
-// off paper resolves it as another character in the set.
+// Characters excluded from the alphabet. `I`, `L` and `O` because a person
+// reading a code off paper resolves each as another character in the set; `U`
+// for an unrelated reason — so that a draw cannot spell an obscenity — which is
+// why it is absent from the draw here and still deliberately unfolded by the
+// canonical form at the bottom of this file.
 const CONFUSABLE_CHARACTERS = ['I', 'L', 'O', 'U'];
 
 function decodeBase64Url(value: string): Uint8Array {
@@ -250,8 +253,11 @@ describe('the verifier derivation', () => {
   it('names the info string the server-side documentation names', () => {
     // Arrange, Act, Assert
     // Exported so this vector and `docs/business-logic/recovery-codes.md` can
-    // be compared by eye. `HKDF(code, …)` is written with an ellipsis there
-    // because the parameters live on the client; this is what fills it in.
+    // be compared by eye. `V = HKDF(canonical(code), …)` is written with an
+    // ellipsis there because the parameters live on the client; this is what
+    // fills it in. `canonical` is *not* part of the ellipsis — the doc names it
+    // because the derivation is not specified until it says what text goes in,
+    // and the group at the bottom of this file is where that half is pinned.
     expect(RECOVERY_CODE_VERIFIER_INFO).toBe(
       'budgetoid/recovery-code/verifier/v1',
     );
@@ -334,7 +340,177 @@ describe('the verifier derivation', () => {
     // left alone to simply not match; this one cannot be told apart downstream.
     await expect(derivation).rejects.toThrow(/cannot be derived from nothing/);
   });
+
+  it('refuses a code that is nothing once the separators come off', async () => {
+    // Arrange
+    // Whitespace and hyphens are stripped before the emptiness check, so a
+    // field holding only the grouping a person was shown is the same
+    // programming error as an unbound one and has to fail the same way. Were
+    // the check made on the raw input, this would derive a well-formed verifier
+    // from the empty string — the exact value the test above exists to forbid,
+    // reachable again through a field nobody typed a character into.
+    const separatorsOnly = ' - - ';
+
+    // Act
+    const derivation = recoveryCodeVerifier(separatorsOnly);
+
+    // Assert
+    await expect(derivation).rejects.toThrow(/cannot be derived from nothing/);
+  });
 });
+
+// The alphabet excludes `I`, `L` and `O` precisely because a person reads them
+// back as `1`, `1` and `0`. Excluding them from the *draw* is only half of that
+// decision: the other half is a decoding rule, and without one the exclusion
+// protects nobody — it means no code contains those glyphs, not that nobody
+// types them. Somebody typing their code back on a phone gets lowercase by
+// default, writes `O` where the paper says `0`, and keeps the grouping spaces
+// they were shown — and every one of those derives a different verifier and is
+// refused with the 401 that is deliberately indistinguishable from a wrong
+// code. The only way back into the account looks broken, and nothing anywhere
+// says why.
+//
+// Like the entropy rule above, this one is client-owned and this file is its
+// only enforcement: the server is sent derived bytes, so there is no text down
+// there to normalise and no layer at or below the API can hold the rule.
+//
+// What bounds the list of folds is that none of them may fold two *codes*
+// together. Each fold is the inverse of an exclusion the alphabet already made,
+// which is exactly what makes the function the identity on every code the
+// generator can mint — no verifier already derived can move, and no two
+// mintable codes can be brought onto one another. `U` is the deliberate
+// omission and has its own control below.
+//
+// One clause of the rule is not observable here: `toUpperCase` and never
+// `toLocaleUpperCase`, which maps `i` to `İ` under a Turkish locale and would
+// make one typed code derive different verifiers on two phones. It is stated on
+// the function itself; no assertion below reaches it.
+//
+// Every case below is asserted against the verifier the *canonical* code
+// derives, not against a frozen string, so these say "the same account" rather
+// than restating the golden vector five times.
+describe('the canonical form of a typed-back code', () => {
+  const TYPED_BACK = '0123456789ABCDEFGHJKMNPQRS';
+
+  it('is what a freshly minted code already is, so no verifier moves', async () => {
+    // Arrange
+    // The load-bearing test of this group. Every fold is the inverse of an
+    // exclusion the alphabet already made, and that is what makes normalisation
+    // safe to add at all: it is the identity on everything the generator can
+    // produce, because the alphabet holds no lowercase, no `I`, no `L`, no `O`,
+    // no space and no hyphen — so no verifier already derived can move. Were
+    // that not so, this change would silently invalidate every code every
+    // account already holds — the failure ADR 0015 describes, with a 401 nobody
+    // can tell from a typo.
+    const minted = Array.from({ length: 32 }, mintRecoveryCode);
+
+    // Act
+    const derived = await Promise.all(minted.map(recoveryCodeVerifier));
+
+    // Assert
+    for (const [index, code] of minted.entries()) {
+      expect(canonicalisationOf(code)).toBe(code);
+      expect(derived[index]).toBe(await recoveryCodeVerifier(code));
+    }
+  });
+
+  it('reads a code typed in lowercase as the code that was printed', async () => {
+    // Arrange
+    const printed = TYPED_BACK;
+
+    // Act
+    const [fromPrinted, fromTyped] = await Promise.all([
+      recoveryCodeVerifier(printed),
+      recoveryCodeVerifier(printed.toLowerCase()),
+    ]);
+
+    // Assert
+    // A phone keyboard opens in lowercase, and the alphabet is uppercase-only —
+    // so this is the *default* way a code is typed back, not an edge case.
+    expect(fromTyped).toBe(fromPrinted);
+  });
+
+  it('reads the confusable letters as the digits they are read back as', async () => {
+    // Arrange
+    // `I` and `L` for `1`, `O` for `0`, in both cases. These characters cannot
+    // occur in a minted code, so mapping them costs nothing: there is no code
+    // they could be the correct reading of.
+    const misread = '0123456789ABCDEFGHJKMNPQRS'
+      .replace('1', 'I')
+      .replace('0', 'O');
+    const alsoMisread = '0123456789ABCDEFGHJKMNPQRS'
+      .replace('1', 'l')
+      .replace('0', 'o');
+
+    // Act
+    const [expected, first, second] = await Promise.all([
+      recoveryCodeVerifier(TYPED_BACK),
+      recoveryCodeVerifier(misread),
+      recoveryCodeVerifier(alsoMisread),
+    ]);
+
+    // Assert
+    // Without this the alphabet's own reason for excluding them is undone: the
+    // draw avoids the confusion and the derivation walks straight into it.
+    expect(misread).not.toBe(TYPED_BACK);
+    expect(first).toBe(expected);
+    expect(second).toBe(expected);
+  });
+
+  it('reads a code through the grouping it was written down in', async () => {
+    // Arrange
+    // Twenty-six characters get written down in groups and typed back with
+    // whatever separated them. Spaces and hyphens are the two that appear, and
+    // neither is in the alphabet, so neither can be part of a code.
+    const grouped = ' 01234-56789-ABCDE-FGHJK-MNPQRS ';
+
+    // Act
+    const [expected, actual] = await Promise.all([
+      recoveryCodeVerifier(TYPED_BACK),
+      recoveryCodeVerifier(grouped),
+    ]);
+
+    // Assert
+    expect(actual).toBe(expected);
+  });
+
+  it('still refuses a code that only looks like the right one', async () => {
+    // Arrange
+    // Control for the whole group. Normalisation folds together the readings of
+    // one code; it must not fold together two codes, and that is what bounds
+    // the list of folds. `U` is excluded from the alphabet and deliberately
+    // left unmapped: it is excluded so that a draw cannot spell an obscenity,
+    // not because anybody reads it back as something else, so there is no
+    // exclusion here for a fold to be the inverse of. A rule generous enough to
+    // rescue every typo would quietly shrink the 130 bits the code above is
+    // measured to carry.
+    const wrong = '0123456789ABCDEFGHJKMNPQRU';
+
+    // Act
+    const [expected, actual] = await Promise.all([
+      recoveryCodeVerifier(TYPED_BACK),
+      recoveryCodeVerifier(wrong),
+    ]);
+
+    // Assert
+    expect(actual).not.toBe(expected);
+  });
+});
+
+// The canonical form is not exported — it is an internal rule of the
+// derivation, and a second caller applying it separately is a second place for
+// it to drift. It is observed here through the only thing that can observe it:
+// two codes derive one verifier exactly when they canonicalise alike. This
+// spells the expected rule out independently of the implementation, so the
+// identity claim above is checked against a stated rule rather than against
+// whatever the module happens to do.
+function canonicalisationOf(code: string): string {
+  return code
+    .toUpperCase()
+    .replace(/[\s-]/g, '')
+    .replace(/[IL]/g, '1')
+    .replace(/O/g, '0');
+}
 
 describe('a minted set', () => {
   it('holds the ten codes the server requires, index-aligned with verifiers', async () => {

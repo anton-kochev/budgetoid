@@ -19,8 +19,8 @@ There is no operator override and no escrow, so the only remedy that can exist i
 account holder already holds.
 
 The shape of that secret is the whole of this area: **the client mints each code and the server never
-sees one.** The browser generates a code, derives a verifier `V = HKDF(code, …)` from it, and sends
-only `V`; the server stores `SHA-256(V)`. Identity — who a person is, and which credentials prove it
+sees one.** The browser generates a code, derives a verifier `V = HKDF(canonical(code), …)` from it,
+and sends only `V`; the server stores `SHA-256(V)`. Identity — who a person is, and which credentials prove it
 — lives in [users-and-ownership.md](users-and-ownership.md); what a credential opens once it has
 answered that lives in [sessions.md](sessions.md). This file covers the codes themselves.
 
@@ -52,8 +52,12 @@ through is not.
   code and nothing else, so the hash is the only handle it has.
 - **Code** — the string a person writes down. It is minted in the browser, never transmitted, and
   appears in no column, no log and no response body. There is no type for it in this codebase.
-- **Verifier** — `V = HKDF(code, …)`, exactly 32 bytes, derived on the client and sent as base64url
-  text. It is what the server receives and the only thing it can judge.
+- **Verifier** — `V = HKDF(canonical(code), …)`, exactly 32 bytes, derived on the client and sent as
+  base64url text. It is what the server receives and the only thing it can judge. `canonical` is the
+  canonicalisation rule below — the code upper-cased, its whitespace and hyphens stripped, and the
+  letters the alphabet excluded folded onto the digits they are read as — and it is part of the
+  definition rather than a step in front of it: the derivation is not specified until it says what
+  text goes in.
 - **`RecoveryCodesGeneration`** — what a completed issue answers with:
   `{"sessionsEnded": n, "session": {"kind": "full", "expiresAtUtc": …} | null}`, and nothing else. No
   code, no verifier, no stored hash, no credential id and no account id. `session` is the sign-in a
@@ -129,6 +133,12 @@ erDiagram
     draw rather than about a string's length, because a code of the right length drawn from
     `Math.random` or through a modulo-biased mapping passes every length check there is. Nothing
     below the client can restate it, so deleting that spec removes the requirement's only enforcer.
+
+- **A code MUST be canonicalised before a verifier is derived from it**, by the one function every
+  path shares, and that rule is client-owned for the same reason the entropy rule is: the server sees
+  the derived bytes and has no text to normalise. A redemption that skips it derives a well-formed
+  verifier matching no row, and the person holding a valid card is refused with the `401` every other
+  refusal answers. The fold, its bounds and where it lives are the rule below.
 
 - **A verifier MUST decode to exactly 32 bytes, and both directions of that bound are refused.**
   - **Why**: short is a shorter secret than the design claims, and it would hash to a well-formed
@@ -332,6 +342,40 @@ erDiagram
   two spellings must agree or **no recovery code in the system ever redeems**, and the symptom is
   silent. Nothing on the path from `RecoveryCodeEndpoints` to the row takes a parameter a code could be
   passed as.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The code is **canonicalised before anything is derived from it**, on every path and by one
+  function: upper-cased, stripped of whitespace and hyphens, with `I` and `L` folded to `1` and `O` to
+  `0`. That is the `canonical` in `V = HKDF(canonical(code), …)`, and the minting path and a redemption
+  screen apply the same one.
+- **Why**: this is the half of the alphabet's decision that a person can actually feel. The draw
+  excludes `I`, `L` and `O` because a reader resolves them as `1`, `1` and `0` — but excluding a glyph
+  from the *draw* protects nobody on its own: it means no code contains it, not that nobody types it.
+  Without the fold the exclusion buys nothing on the only path that matters, and the same physical code
+  typed in lowercase on a phone, or with the grouping it was printed in left in, derives a different
+  verifier and matches no row. With it, one card is one secret however it is transcribed.
+- **Why it is client-owned, exactly as the entropy rule is**: the server receives derived bytes, so
+  there is no text here for it to normalise and no layer at or below the API can hold this rule either.
+  A redemption screen that skipped canonicalisation would produce a perfectly well-formed verifier that
+  simply matches nothing, refused with the `401` that is deliberately indistinguishable from every
+  other refusal — the only way back into the account, looking broken and saying nothing about why.
+  That symptom is the reason the rule is written down here rather than left for a redemption screen to
+  rediscover.
+- **No rule may fold two codes together, and that is what bounds the list.** Each fold is the inverse
+  of an exclusion the alphabet already made, so the function is the identity on everything the
+  generator produces: no verifier already derived can move, and no two codes the generator can mint
+  can be folded onto one another.
+  `U` is excluded from the draw and deliberately **not** folded — it is excluded so that a draw cannot
+  spell an obscenity, not because it is read back as something else — and a rule generous enough to
+  rescue every typo would quietly shrink the code's 130 bits.
+- **Enforced in**: `canonicalRecoveryCode` in the client's `recovery-codes.ts`, applied by
+  `recoveryCodeVerifier` before any derivation and covered by that module's spec. It uses
+  `toUpperCase` and never `toLocaleUpperCase`, which maps `i` to `İ` under a Turkish locale and would
+  make one typed code derive different verifiers on two phones. The refusal to derive from nothing runs
+  *after* canonicalisation, so a field holding only the grouping the person was shown is the same
+  programming error as an empty one rather than a well-formed verifier for the empty string.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -646,7 +690,7 @@ sequenceDiagram
     participant G as PasskeyReauthentication
     participant D as PostgreSQL
 
-    Note over C: ten codes minted, V = HKDF(code, …) derived for each
+    Note over C: ten codes minted, V = HKDF(canonical(code), …) derived for each
     C->>O: authenticated
     O->>D: issue a reauthentication challenge (lives 5 minutes)
     O-->>C: challenge
@@ -681,7 +725,7 @@ sequenceDiagram
     participant H as RedeemRecoveryCodeHandler
     participant D as PostgreSQL
 
-    Note over C: the person types a code, the client derives V = HKDF(code, …)
+    Note over C: the person types a code, the client canonicalises it and derives V = HKDF(canonical(code), …)
     C->>R: anonymous, one member — V as base64url
     R->>H: RedeemRecoveryCodeCommand
     H->>H: decode against an exact 32-byte ceiling, then SHA-256(V)

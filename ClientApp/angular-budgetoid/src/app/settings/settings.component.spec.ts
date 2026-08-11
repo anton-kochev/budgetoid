@@ -58,6 +58,15 @@ const CREDENTIALS_EMPTY = 'Nothing is attached to your account yet.';
 const PASSKEY_TYPE = 'Passkey';
 const FEDERATED_TYPE = 'Google';
 const RECOVERY_SET_TYPE = 'Recovery codes';
+// What a row says about a kind this bundle has never heard of. Neutral, and
+// deliberately not an apology: the server has told us something can sign this
+// account in, which is the fact the list exists to state. What it is called is
+// the only part we do not know, and "Sign-in method" is true of every kind the
+// union does carry as well as of every kind it might gain.
+const UNKNOWN_KIND_TYPE = 'Sign-in method';
+// And the caption word, which cannot be `Registered` or `Generated` because
+// those are the two things it might be. `Added` is true either way.
+const ADDED_CAPTION = 'Added';
 const RECOVERY_HEADING = 'Recovery codes';
 const GENERATE_BUTTON = 'Generate recovery codes';
 const RECOVERY_LOADING = 'Loading your recovery codes…';
@@ -113,6 +122,30 @@ const UNREADABLE: CredentialSummary = {
   type: 'passkey',
   createdAtUtc: 'the twelfth of March',
 };
+// A kind the union does not carry. **The assertion is the point, not a
+// workaround for one**: `CredentialKind` is a closed union over what *this
+// source* knows, which is a compile-time guarantee about our code and says
+// nothing about what a deployed bundle is sent. A browser holding yesterday's
+// bundle against today's API is the ordinary way this arrives, and no amount of
+// closing the union at compile time reaches it — so a fixture that could be
+// written without an assertion would not be this defect.
+const UNKNOWN_KIND = {
+  id: '019f4c0a-0000-7000-8000-0000000000f6',
+  type: 'sms_one_time_code',
+  createdAtUtc: '2026-05-04T22:00:00Z',
+} as unknown as CredentialSummary;
+// The same hole reached through a name every plain object already answers to.
+// A lookup written as `MAP[type]` does not merely miss on this — it *hits*, on
+// `Object.prototype.constructor`, and hands the row a function whose `.label`
+// is undefined. A fallback written as `?? UNKNOWN` never runs, so the row
+// renders blank rather than neutrally, and the guard the fix installs looks
+// like it works everywhere it is tested.
+const INHERITED_KIND = {
+  id: '019f4c0a-0000-7000-8000-000000000f07',
+  type: 'constructor',
+  createdAtUtc: '2026-05-04T22:00:00Z',
+} as unknown as CredentialSummary;
+const UNKNOWN_KIND_DATE = 'May 5, 2026';
 const PASSKEY_DATE = 'March 12, 2026';
 const FEDERATED_DATE = 'January 12, 2026';
 const RECOVERY_SET_DATE = 'February 2, 2026';
@@ -687,6 +720,115 @@ describe('SettingsComponent', () => {
     // Assert
     expect(row).toContain(FEDERATED_TYPE);
     expect(row).not.toContain(PASSKEY_TYPE);
+  });
+
+  // The kind is looked up in a map keyed by the union, inside the same
+  // `computed` the date is formatted in — so a kind the map has no entry for
+  // reads `undefined`, the next property access throws, and the throw happens
+  // during change detection. Angular caches the failure on the signal and
+  // rethrows it on every subsequent read, so this is not one bad pass: the list
+  // is stuck on "Loading your ways to sign in…" for the rest of the visit and
+  // every section declared after it — recovery codes, export, erasure — stops
+  // updating with it. A section is killed by a defect in its neighbour.
+  //
+  // Commit 2b50ec6 made the *date* total for exactly this reason. The kind was
+  // left partial.
+  it('keeps the whole screen rendering when a kind is not recognised', () => {
+    // Arrange
+    service.credentials.set([UNKNOWN_KIND, PASSKEY]);
+    service.recoveryRemaining.set(5);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // The rest of the list survives the unknown entry rather than being
+    // replaced by it, and the loading line is gone — the measured symptom was
+    // that line staying on screen forever.
+    expect(credentialRows().length).toBe(2);
+    expect(normalize(credentialRows()[1] ?? null)).toContain(PASSKEY_DATE);
+    expect(normalize(credentialsRegion())).toBe('');
+    // And the two sections below it still render. The recovery count is the
+    // section this defect actually took down — it is declared immediately
+    // after the list, so a reader met a blank line where the count belongs and
+    // an Export button that answered every press with silence.
+    expect(recoveryCount()).toBe(RECOVERY_MANY);
+    expect(buttonNamed(host, EXPORT_BUTTON)).not.toBeNull();
+  });
+
+  it('survives a kind that names something every object inherits', () => {
+    // Arrange
+    // Control for the test above, and the one it does not imply. A fallback
+    // written over a plain object — `KINDS[type] ?? UNKNOWN` — is green on
+    // `sms_one_time_code` and still throws here, because `constructor` is
+    // *found* on the prototype chain and the `??` never fires. The lookup has
+    // to miss on every string that is not a key, not merely on the ones nobody
+    // thought of.
+    service.credentials.set([INHERITED_KIND, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(credentialRows().length).toBe(2);
+    expect(normalize(credentialRows()[0] ?? null)).toContain(UNKNOWN_KIND_TYPE);
+    expect(normalize(credentialsRegion())).toBe('');
+  });
+
+  it('lists an unrecognised kind in neutral words rather than dropping it', () => {
+    // Arrange
+    service.credentials.set([UNKNOWN_KIND, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const row = normalize(credentialRows()[0] ?? null);
+
+    // Assert
+    // Listed, not skipped. This list is documented as *every* way into the
+    // account, and a filter that quietly dropped what it could not name would
+    // tell somebody auditing their account that a credential they cannot see
+    // does not exist — the worse of the two lies, and the one that leaves them
+    // nothing to act on.
+    expect(credentialRows().length).toBe(2);
+    // In words, and specifically not the wire token: a template falling back to
+    // the raw `type` renders `sms_one_time_code`, a schema identifier on a
+    // screen — the same defect the recovery-code row is pinned against.
+    expect(row).toContain(UNKNOWN_KIND_TYPE);
+    expect(row).not.toContain('sms_one_time_code');
+    // The date is still the reader's own day, through the one shared formatter:
+    // not knowing what a credential is called says nothing about when it
+    // arrived, and the day is what tells two rows apart.
+    expect(row).toContain(UNKNOWN_KIND_DATE);
+    // But not the caption word of a kind we cannot identify. `Registered` and
+    // `Generated` are claims about which of two things happened, and this row
+    // is exactly the row that does not know.
+    expect(row).toContain(ADDED_CAPTION);
+    expect(row).not.toContain(REGISTERED_CAPTION);
+    expect(row).not.toContain(GENERATED_CAPTION);
+    // The sibling proves the negatives are about *this* row rather than about a
+    // template that renamed the caption everywhere.
+    expect(normalize(credentialRows()[1] ?? null)).toContain(
+      REGISTERED_CAPTION,
+    );
+  });
+
+  it('offers no revoke on a kind it cannot recognise', () => {
+    // Arrange
+    service.credentials.set([UNKNOWN_KIND, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // Unknown means not revocable, and the direction of that default is the
+    // half that cannot be taken back. Revocation is the one act on this screen
+    // that is unrecoverable, so a row nobody has decided about carries no
+    // control — the same rule the book already applies to a row nothing can
+    // ever revoke. The passkey's control is the discriminating half: a template
+    // that dropped the button everywhere would pass the first assertion while
+    // taking the action off the one row that is meant to get it.
+    expect(revokeButtons().length).toBe(1);
+    expect(buttonNamed(host, REVOKE_PASSKEY)).not.toBeNull();
   });
 
   it('states when each credential was registered', () => {
@@ -1534,7 +1676,11 @@ describe('SettingsComponent', () => {
     // count for truthiness leaves an account with no codes waiting on a request
     // that already answered.
     expect(normalize(recoveryRegion())).not.toContain(RECOVERY_LOADING);
-    expect(normalize(recoveryRegion())).toBe('');
+    // The region now holds the answer rather than nothing, because the count
+    // renders inside it. What this test is about is unchanged — the loading
+    // line is gone — and the emptiness half moved to the at-rest test, which is
+    // the only state where this region is empty.
+    expect(normalize(recoveryRegion())).toBe(RECOVERY_NONE);
   });
 
   it('counts a single remaining code in the singular', () => {
@@ -1564,7 +1710,7 @@ describe('SettingsComponent', () => {
     expect(recoveryCount()).toBe(RECOVERY_MANY);
   });
 
-  it('says nothing in the region once the count has arrived', () => {
+  it('says only the count in the region once the count has arrived', () => {
     // Arrange
     service.recoveryRemaining.set(5);
 
@@ -1573,32 +1719,108 @@ describe('SettingsComponent', () => {
     const region = recoveryRegion();
 
     // Assert
-    // Presence and emptiness together, as on the other three regions: presence
-    // alone is satisfied by a region that always holds a line, emptiness alone
-    // by no region at all.
+    // The region is where the answer lands, so once the answer is in it holds
+    // the count and nothing else — not the line saying a request is running,
+    // and not the sentence saying one failed.
+    //
+    // This replaces an assertion that the region is *empty* here. That was
+    // right while the count rendered outside it and is wrong now: an empty
+    // region at this point is a screen that announced a beginning and never an
+    // end. Emptiness is still pinned, at rest, which is the one state it
+    // belongs to.
     expect(region).not.toBeNull();
-    expect(normalize(region)).toBe('');
+    expect(normalize(region)).toBe(RECOVERY_MANY);
   });
 
-  it('states the count outside the live region', () => {
+  // The count renders **inside** the `role="status"` region, and this is a
+  // deliberate departure from the design book's "the count renders outside that
+  // region" — recorded here because the argument is not obvious and a reader
+  // will otherwise "fix" it back.
+  //
+  // The book's reasoning is right in isolation: a standing fact is not an
+  // event, and announcing one is how a screen reader ends up narrating
+  // furniture. It is wrong beside a loading line. `ngOnInit` sets loading
+  // synchronously, before the component's first update pass, so this region has
+  // held "Loading your recovery codes…" since first paint — and a live region
+  // that already has text when assistive technology registers it is announced
+  // unreliably, while text being *removed* is not announced at all. With the
+  // count outside, a screen-reader user present during the request hears that
+  // something started and never learns how it ended. Announcing a beginning
+  // with no end is worse than either half of the rule.
+  //
+  // What the reader outside the request loses is nothing: the count is still in
+  // normal reading order, in the same place on the page, and someone arriving
+  // after the response meets it by reading.
+  it('announces the count in the region that said it was loading', () => {
+    // Arrange
+    service.recoveryLoading.set(true);
+    fixture.detectChanges();
+    const announcing = recoveryRegion();
+    // The region really did say it was loading. Without this the test passes on
+    // a screen that never announces a beginning either.
+    expect(normalize(announcing)).toContain(RECOVERY_LOADING);
+
+    // Act
+    service.recoveryLoading.set(false);
+    service.recoveryRemaining.set(5);
+    fixture.detectChanges();
+
+    // Assert
+    // The *same node*, not merely a region matching the same selector. A count
+    // announced from a second region created when the answer arrived is
+    // announced by nothing — the node has to have been watched before the text
+    // landed, which is the entire reason this screen keeps its regions in the
+    // DOM while empty.
+    expect(recoveryRegion()).toBe(announcing);
+    expect(normalize(announcing)).toBe(RECOVERY_MANY);
+  });
+
+  it('keeps the count line itself inside the region', () => {
     // Arrange
     service.recoveryRemaining.set(5);
 
     // Act
     fixture.detectChanges();
+    const region = recoveryRegion();
+    const line = sectionFor(host, 'recovery-heading')?.querySelector(
+      '.s-count',
+    );
 
     // Assert
-    // The count is a fact about the account, not the outcome of something the
-    // reader just did. Announcing a standing fact as an event is how a screen
-    // reader ends up narrating the page's own furniture — and the same call the
-    // credential list makes when it puts its empty sentence outside the region.
-    expect(normalize(recoveryRegion())).not.toContain(RECOVERY_MANY);
-    expect(normalize(sectionFor(host, 'recovery-heading'))).toContain(
-      RECOVERY_MANY,
-    );
+    // Structure, not text. The test above is satisfied by a second copy of the
+    // sentence rendered inside the region beside the original outside it, which
+    // is a count said twice to anyone reading the page and a value with two
+    // places to go wrong. There is one count line and it lives in the region.
+    expect(line).not.toBeNull();
+    expect(region?.contains(line ?? null)).toBe(true);
+    expect(
+      sectionFor(host, 'recovery-heading')?.querySelectorAll('.s-count').length,
+    ).toBe(1);
   });
 
-  it('shows no code, hash or identifier in the recovery section', () => {
+  // Renamed to what it can actually pin.
+  //
+  // It was called `shows no code, hash or identifier in the recovery section`,
+  // and two thirds of that title had no assertion under it and could not have
+  // one: **no client signal holds a code, a verifier or a hash**, and none ever
+  // will — the count is the only thing `GET /api/me/recovery-codes` returns and
+  // the derivation that produces a verifier is called by nothing on this
+  // screen. A negative over values that do not exist in this process is
+  // vacuously true, and it reads as coverage of the rule that matters most.
+  // That rule is the server's, and it is checked where the payload is built:
+  // `RemainingCount_NeverCarriesAVerifierAHashOrAnId` in
+  // `BudgetoidApp/tests/IntegrationTests/RecoveryCodeCountEndpointTests.cs`.
+  //
+  // What remains is a real client rule and is now stated so it can fail: the
+  // generation day belongs to the set's row in Ways to sign in and is not
+  // copied into this section, where it would be a second thing to keep in step.
+  // The old form could not fail either — with both `Arrange` lines deleted the
+  // whole suite stayed green, because a section that renders no credential data
+  // satisfies every "does not contain" about a credential. The positive halves
+  // below are what tie the negatives to a screen that is actually showing the
+  // set: they say *not here*, rather than *nowhere, because nothing was
+  // loaded*.
+  it('keeps the set’s day on its row and out of the recovery section', () => {
     // Arrange
     service.recoveryRemaining.set(5);
     service.credentials.set([RECOVERY_SET]);
@@ -1608,15 +1830,20 @@ describe('SettingsComponent', () => {
     // `outerHTML`, not `textContent`: the plausible route for an identifier is
     // an attribute, which moves the section's text by not one character.
     const section = sectionFor(host, 'recovery-heading')?.outerHTML ?? '';
+    const row = normalize(credentialRows()[0] ?? null);
 
     // Assert
-    // The count is the whole of what this section says. Not a code, not a
-    // verifier, not a hash, not the set's identifier, and not the day it was
-    // generated — that day is on the set's row in Ways to sign in, and a second
-    // copy here is a second thing to keep in step.
-    expect(section).not.toBe('');
-    expect(section).not.toContain(RECOVERY_SET.id);
+    // The fixture really is on the screen: the set has a row, that row carries
+    // the day, and the recovery section is rendering its count. Without these
+    // three the negatives below hold on an empty page.
+    expect(row).toContain(RECOVERY_SET_TYPE);
+    expect(row).toContain(RECOVERY_SET_DATE);
+    expect(normalize(sectionFor(host, 'recovery-heading'))).toContain(
+      RECOVERY_MANY,
+    );
+    // And the count is the whole of what the section says about the set.
     expect(section).not.toContain(RECOVERY_SET_DATE);
+    expect(section).not.toContain(RECOVERY_SET.id);
   });
 
   it('keeps the generate control inert', () => {
