@@ -479,7 +479,7 @@ erDiagram
   credential: that is an unbounded number of sign-ins from one intercepted verifier.
 - **Swap the two and every other assertion about this route still passes.** The happy path still opens
   a session, the refusals are still identical, the remaining count still drops.
-  `Redemption_WithTheSameCodeTwice_IsRefusedTheSecondTime` is the only thing that reddens, and it
+  `Redemption_WithTheSameCodeTwice_IsRefusedTheSecondTime` is what reddens, and it
   reddens on the *session count* rather than on the status: the `401` alone is also what a handler
   answers when it consumed nothing and happens to refuse replays some other way.
 - **Enforced in**: the statement order in `RedeemRecoveryCodeHandler`, with
@@ -629,26 +629,26 @@ and a short verifier is a shorter secret than the design claims.
   is the **third** spender of that nonce pool, beside erasure and passkey revocation, and it needs no
   new ceremony value: all three are destructive acts reachable only by the account holder, and a proof
   of presence is a proof of presence.
-- **[Sessions](sessions.md)** — a redemption is the **second** path that establishes a session, and
-  the first that is not a passkey ceremony; the session it opens is `Full` and lasts the same 14 days.
-  Replacing a set revokes the sessions the replaced one opened, which is why
-  `RevokeSessionsForCredentialHandler` has **two** callers — the redemption is not one of them, and
-  must not become one: it revokes nothing, because spending one code says nothing about the sessions
-  the others opened.
+- **[Sessions](sessions.md)** — a redemption establishes a session, and it is the establishing path
+  that runs no passkey ceremony; `CompleteAssertionHandler`, which does, is the other. The session
+  opened here is `Full` and lasts the same 14 days. Replacing a set revokes the sessions the replaced
+  one opened, which is why `GenerateRecoveryCodesHandler` calls `RevokeSessionsForCredentialHandler`
+  as `RevokePasskeyHandler` does — the redemption is not among its callers, and must not become one:
+  it revokes nothing, because spending one code says nothing about the sessions the others opened.
 - **[Users & ownership](users-and-ownership.md)** — the set is a `credentials` row, so it inherits that
   table's exemption, its immutability, and the `DELETE` that revocation introduced.
-- **[Data isolation](../engineering/data-isolation.md)** — `recovery_code_hashes` is the **sixth**
-  exempt table and the third whose exemption rests on *"this is read before the request has an
-  identity"*.
+- **[Data isolation](../engineering/data-isolation.md)** — `recovery_code_hashes` is exempt from
+  row-level security, on the *"this is read before the request has an identity"* argument
+  `credentials` and `passkey_public_keys` already carry.
 - **[Erasure](erasure.md)** — a set and its codes cascade from `credentials`, which cascades from
   `users`, so erasure needed no new statement and no new grant. Structural coverage, not enumerated.
 - **[Export](export.md)** — the export carries **no** recovery-code material of any kind, and that is
   argued there rather than here.
 - **The grant matrix** — `GRANT SELECT, INSERT, DELETE ON recovery_code_hashes`, and no `UPDATE` of any
-  shape. This is the **third** `DELETE` on an identity table, after `users` and `webauthn_challenges`
-  (`credentials` making a fourth since revocation), and the sentence that earns it is the
-  `webauthn_challenges` sentence word for word: these rows are single-use secrets, so consuming one *is*
-  deleting it.
+  shape. An identity table holds `DELETE` only where removing the row *is* the operation, and the
+  `GRANT` lines in `app-role-grants.sql` are the list of which ones do. The sentence that earns it here
+  is the `webauthn_challenges` sentence word for word: these rows are single-use secrets, so consuming
+  one *is* deleting it.
 
 ## Edge Cases & Known Gotchas
 

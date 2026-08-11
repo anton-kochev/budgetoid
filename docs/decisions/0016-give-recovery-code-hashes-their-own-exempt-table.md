@@ -74,7 +74,7 @@ well and *also* refuses an account a second passkey, which is expressly allowed.
 
 The entry in `RowLevelSecurityCoverage.Exemptions` declares `ExemptDespite = UserOwned`, because the
 table genuinely carries `user_id` and the classifier would otherwise demand `user_isolation` of it with
-no rule added. `Exemptions_PinTheColumnsTheirReasonCovers` turns a sixth column red until somebody
+no rule added. `Exemptions_PinTheColumnsTheirReasonCovers` turns any new column red until somebody
 answers for it, and the answer is the one ADR 0011 wrote: **move the column**.
 
 The line the move follows is already drawn by the reason. The exempt table holds what the lookup needs
@@ -98,8 +98,9 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 worth having because it is checkable in one statement: with no `UPDATE`, the delete is the only way a
 row can stop counting, so that decision cannot be quietly reversed into a stamp.
 
-This is the third `DELETE` on an identity table bounded by no policy at all — `users`' is scoped by
-`user_isolation`, this one and `credentials`' are scoped by the application or by nothing. ADR 0014's
+This `DELETE` is bounded by no policy at all — the property `credentials`' and `webauthn_challenges`'
+also have, and `users`' does not: that one is scoped by `user_isolation`, while these are scoped by
+the application or by nothing. ADR 0014's
 three legs are what hold it and all three must keep holding: the delete takes the **loaded entity**
 and never a hash a caller supplied; the read producing that entity names the **owner** as well as the
 hash, so the owner-less lookup the exemption exists for is not on the path to any write; and the read
@@ -157,8 +158,9 @@ this table grows quietly.
 
 ## Consequences
 
-- **`RowLevelSecurityCoverage.Exemptions` has six entries**, four of which pin a column set. The two
-  that do not — `currencies` and `__EFMigrationsHistory` — do not because neither reason turns on the
+- **`recovery_code_hashes` joins `RowLevelSecurityCoverage.Exemptions` carrying a pinned column set**,
+  as every entry whose reason is an argument about what its columns hold does. The entries that pin
+  nothing — `currencies` and `__EFMigrationsHistory` — do not because neither reason turns on the
   table's shape.
 - **The hypothetical in ADRs 0011 and 0012 stays where it is.** Both name "a recovery-code hash" as the
   write-once secret that must not join an exempt column set. It has now happened, on its own table, and

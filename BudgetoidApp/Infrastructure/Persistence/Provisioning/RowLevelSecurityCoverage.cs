@@ -501,9 +501,9 @@ public static class RowLevelSecurityCoverage
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Six entries, and each one is a decision somebody made rather than a shape that fell out of a
-    /// query. Adding a seventh is deliberately as visible as adding a policy: the point of the list is
-    /// that a table can only leave the policed set through it.
+    /// Every entry is a decision somebody made rather than a shape that fell out of a query. Adding
+    /// one is deliberately as visible as adding a policy: the point of the list is that a table can
+    /// only leave the policed set through it.
     /// </para>
     /// <para>
     /// <c>credentials</c> is the entry that forced <see cref="TableExemption.ExemptDespite" /> to
@@ -511,13 +511,13 @@ public static class RowLevelSecurityCoverage
     /// may carry an ownership column" would be wrong rather than strict.
     /// </para>
     /// <para>
-    /// Four entries pin a <see cref="TableExemption.ColumnsTheReasonCovers" /> and two deliberately
-    /// do not. <c>credentials</c>, <c>passkey_public_keys</c>, <c>webauthn_challenges</c> and
-    /// <c>recovery_code_hashes</c> pin, because each of their reasons is an argument about what the
-    /// listed columns hold, so one more column is a reason nobody has made yet. <c>currencies</c> and
-    /// <c>__EFMigrationsHistory</c> do not, because neither reason turns on the table's shape: the
-    /// first belongs to no tenant whatever columns it grows, and EF owns the second's shape, so
-    /// pinning it would turn an EF upgrade into a red with nothing to decide.
+    /// An entry pins a <see cref="TableExemption.ColumnsTheReasonCovers" /> when its reason is an
+    /// argument about what the listed columns hold, because then one more column is a reason nobody
+    /// has made yet: <c>credentials</c>, <c>passkey_public_keys</c>, <c>webauthn_challenges</c> and
+    /// <c>recovery_code_hashes</c> are of that kind. It pins nothing when its reason does not turn on
+    /// the table's shape: <c>currencies</c> belongs to no tenant whatever columns it grows, and EF
+    /// owns <c>__EFMigrationsHistory</c>'s shape, so pinning that one would turn an EF upgrade into a
+    /// red with nothing to decide.
     /// </para>
     /// <para>
     /// The pin on <c>credentials</c> is the whole of what keeps its exemption honest: the six
@@ -529,8 +529,8 @@ public static class RowLevelSecurityCoverage
     /// list is the wrong fix.
     /// </para>
     /// <para>
-    /// <c>passkey_public_keys</c> is the second exemption resting on the same "the request has no
-    /// identity yet" argument: an assertion arrives naming a WebAuthn credential handle and nothing
+    /// <c>passkey_public_keys</c> rests on the same "the request has no identity yet" argument
+    /// <c>credentials</c> does: an assertion arrives naming a WebAuthn credential handle and nothing
     /// else, so the read deciding whose account it is cannot itself be filtered by whose account it
     /// is. What holds that exemption to its reason is the pin, together with the coverage suite's
     /// <c>Exemptions_PinTheColumnsTheirReasonCovers</c> — not the grant matrix. The hazard
@@ -563,9 +563,9 @@ public static class RowLevelSecurityCoverage
     /// before identity", not at "sensitive".
     /// </para>
     /// <para>
-    /// <c>recovery_code_hashes</c> is the third exemption resting on the same "the request has no
-    /// identity yet" argument, and it is the one that arrived as a prediction the two above had
-    /// already written down. A recovery code is redeemed by an <b>anonymous</b> request: the row is
+    /// <c>recovery_code_hashes</c> rests on that same "the request has no identity yet" argument, and
+    /// it is the one that arrived as a prediction <c>credentials</c> and <c>passkey_public_keys</c>
+    /// had already written down. A recovery code is redeemed by an <b>anonymous</b> request: the row is
     /// found by the SHA-256 of the verifier the person typed, before anybody has said who they are,
     /// so a policy keyed on <c>app.current_user_id</c> would refuse the very query that establishes
     /// the identity — and refuse it <i>loudly</i>, because an unset setting reaches the policy as
@@ -573,8 +573,8 @@ public static class RowLevelSecurityCoverage
     /// <see cref="TableOwnership.UserOwned" /> from its columns and would demand
     /// <see cref="UserIsolationPolicyName" /> of it with no rule added; the exemption is what stops a
     /// green suite being bought with a redemption endpoint that fails on every request in production.
-    /// The pin is the five columns that lookup needs before any identity exists — the hash it is found
-    /// by, and the credential, user and type the redemption then adopts. Anything read <i>after</i>
+    /// The pin is what that lookup needs before any identity exists — the hash the row is found by,
+    /// and the credential, user and type the redemption then adopts. Anything read <i>after</i>
     /// redemption has answered who is asking — a wrapped key above all, and equally a redemption
     /// timestamp or an attempt counter — belongs on a table carrying <c>user_id</c>, which the
     /// classifier polices by itself with no new rule at all. When the pin goes red the fix is to move

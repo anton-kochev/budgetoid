@@ -158,8 +158,10 @@ public sealed class CompleteAssertionHandler(
         //    transaction opens a connection, and opening a connection is when SessionContextInterceptor
         //    runs its set_config. Open it before ResolveUser above and app.current_user_id reaches the
         //    database as '', so every policed statement inside the transaction fails with 22P02.
-        //    ADR 0011 states that precondition in the abstract; this is the first code path that can
-        //    violate it.
+        //    ADR 0011 states that precondition in the abstract, and it is a rule about any path of this
+        //    shape: wherever an identity is published and a transaction is opened, the publish comes
+        //    first. This handler is one such path; RedeemRecoveryCodeHandler is another and orders the
+        //    same two steps the same way, for this reason and not by imitation.
         return await transactionalExecutor.ExecuteAsync(
             async token =>
             {

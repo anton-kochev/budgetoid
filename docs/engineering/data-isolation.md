@@ -47,13 +47,14 @@ Enforced today:
   said who they are, so there is nobody for a policy to key on), `currencies` (reference data owned
   by no tenant), and `__EFMigrationsHistory`. The same list and the same classification are what the
   deploy-time verifier reads, so the gate and the test cannot drift apart.
-  **The third exemption is exercised by the query it was written for**: `POST
+  **The `recovery_code_hashes` exemption is exercised by the query it was written for**: `POST
   /api/recovery-codes/redemption` matches a row by the `SHA-256` of the verifier it was handed, on a
   connection naming nobody, and publishes the account that row carries before it opens a transaction.
   The classifier reaches its verdict from the table's own columns either way, so it demanded a decision
   the moment the table existed whether or not anything read it.
-  `passkey_signature_counters` is the counterexample that keeps the second of those honest: it is the
-  *same ceremony* one step later, reached only after the signature has verified, so it carries
+  `passkey_signature_counters` is the counterexample that keeps the `passkey_public_keys` exemption
+  honest: it is the *same ceremony* one step later, reached only after the signature has verified, so
+  it carries
   `user_id` and is policed with no rule added
   ([ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)).
 - **An exemption records the columns its reason was argued over, and `credentials` growing one goes
@@ -70,7 +71,7 @@ Enforced today:
   while being precisely what must not sit on a table every session reads in full. **That
   recovery-code hash has since stopped being hypothetical, and it landed on a table of its own** —
   which is the pin working rather than a reason to retire the example, so the example stays and the
-  wrapped key beside it is still ahead of us. `recovery_code_hashes` pins the five columns its own
+  wrapped key beside it is still ahead of us. `recovery_code_hashes` pins the columns its own
   anonymous lookup needs before an identity exists — the hash it is found by, and the credential, user
   and type the redemption then adopts — and a wrapped key is the column it will be offered first, read
   *after* redemption has answered who is asking and therefore belonging on a table carrying `user_id`.
@@ -114,8 +115,8 @@ Enforced today:
   | `recovery_code_hashes` | `INSERT` at generation | the credential it hangs off, written in the same save |
   | `webauthn_challenges` | issue, consume, sweep | **nothing, and there is nothing to scope by** — the row names no person |
 
-  Where a row names a test, that test is the **only** thing that would notice the access losing its
-  filter — no layer below the application can.
+  Where a row names a test, that test is what would notice the access losing its filter — no layer
+  below the application can.
 
   **Every named test on `credentials` has been watched fail**, under the deletion of the exact clause
   it guards, rather than merely asserted to guard it. That is worth recording because three of them
@@ -134,15 +135,14 @@ Enforced today:
   above therefore seed a **bystander account** whose rows the operation must not touch, and that
   arrangement is what makes them bite rather than an extra they could be tidied out of.
 
-  **The `credentials` `DELETE` is the first destructive statement in this codebase with nothing
-  beneath the
-  application scoping it**, and EF issues it by primary key alone. Two things make that sound, and
+  **The `credentials` `DELETE` is a destructive statement with nothing beneath the application
+  scoping it**, and EF issues it by primary key alone. Two things make that sound, and
   both have to stay true: `credentials.user_id` is immutable, so the binding between an id and its
   owner cannot move between the read that scoped it and the write that used it; and the read and the
   write share one transaction. The delete takes the loaded **entity**, never an id — which is worth
-  something only because no source of a `Credential` accepts a caller-chosen id: the three public
-  factories mint their own, and the **two** queries that materialize an existing row each carry the
-  owner and the type. Adding a source that does not is what review has to catch. See
+  something only because no source of a `Credential` accepts a caller-chosen id: every public factory
+  mints its own, and every query that materializes an existing row carries the owner and the type.
+  Adding a source that does not is what review has to catch. See
   [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
 
   **`recovery_code_hashes` holds an unpoliced `DELETE` too, and it has one caller.**

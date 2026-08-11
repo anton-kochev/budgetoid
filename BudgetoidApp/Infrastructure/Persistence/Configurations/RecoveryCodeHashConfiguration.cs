@@ -142,8 +142,8 @@ public sealed class RecoveryCodeHashConfiguration : IEntityTypeConfiguration<Rec
         // passkey_public_keys: all three columns must agree with the credential row. Referencing
         // credentials(id, user_id, type) through the AK_credentials_id_user_id_type alternate key
         // makes one person's code attached to another person's credential, and a code attached to a
-        // passkey or a federated credential, both unstorable rather than merely unlikely. The first
-        // matters more here than anywhere else on this schema: an anonymous redemption adopts the
+        // passkey or a federated credential, both unstorable rather than merely unlikely. The owner
+        // half matters more here than anywhere else on this schema: an anonymous redemption adopts the
         // user_id it finds on this row, so a row whose user_id disagreed with its credential's would
         // hand the redeemer somebody else's account, and no policy is watching — this table has none.
         //

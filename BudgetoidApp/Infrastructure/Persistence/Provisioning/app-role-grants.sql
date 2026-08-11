@@ -119,20 +119,24 @@ GRANT UPDATE (email) ON users TO budgetoid_app;
 -- unlike every other DELETE in this file its blast radius is the whole table and the application is
 -- the only thing narrowing it. Three things carry that weight, and all three have to stay true:
 -- the delete takes a LOADED ENTITY rather than an id, and every read that can produce one naming a
--- row of this table is owner-and-type-scoped (today that is exactly one, FindPasskeyCredentialAsync;
--- a Credential built by hand gets a fresh id from its factory, so it names no row here and its
--- delete matches nothing); credentials.user_id is immutable, so an id cannot change owner between
--- that read and the write; and the two share one transaction. Note the first leg is a REVIEW rule
--- over PasskeyRepository rather than something the type system holds — an unscoped query added there
--- returning a Credential widens this grant back to the whole table, and no test below the
--- application would say so. See docs/decisions/0014,
+-- row of this table is owner-and-type-scoped (FindPasskeyCredentialAsync and
+-- FindRecoveryCodeCredentialAsync are reads of that shape; a Credential built by hand gets a fresh
+-- id from its factory, so it names no row here and its delete matches nothing);
+-- credentials.user_id is immutable, so an id cannot change owner between that read and the write;
+-- and the two share one transaction. Note the first leg is a REVIEW rule over every repository that
+-- can return a Credential, rather than something the type system holds — an unscoped query added to
+-- any of them widens this grant back to the whole table, and no test below the application would
+-- say so. See docs/decisions/0014,
 -- which also records why policing this table instead is not available — RLS is enabled per table
 -- and not per command, so a FOR DELETE policy alone would refuse the discovery SELECT that the
 -- exemption exists for.
 --
 -- Database_LetsTheAppRoleDeleteAnyCredential_OnASessionNamingNobody states the unbounded half as an
--- executable test, and Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows
--- is the only thing that would notice the application's scoping going. Erasure does not use this
+-- executable test. What notices the application's scoping going is any test that acts for one
+-- account and then looks at another's rows —
+-- Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows and
+-- Generation_ForOneAccount_LeavesAnotherAccountsSetWhereItWas are written that way, and every path
+-- reaching this grant owes one. Erasure does not use this
 -- grant and would still work without it: it empties this table through the cascade from users.
 --
 -- Note what a column added here would land on. The exemption was granted to one QUERY — the one
@@ -228,22 +232,23 @@ GRANT UPDATE (signature_counter) ON passkey_signature_counters TO budgetoid_app;
 -- with that written reason, and its column set pinned, because the pin is what stops a
 -- person-identifying column landing here later.
 --
--- Of the seven identity tables — users, credentials, sessions, passkey_public_keys,
--- passkey_signature_counters, recovery_code_hashes and this one — exactly four are granted DELETE,
--- and each for a reason the other three do not have. This one, because these rows are nonces:
+-- Among the identity tables — users, credentials, sessions, passkey_public_keys,
+-- passkey_signature_counters, recovery_code_hashes and this one — DELETE is granted only where
+-- removing the row IS the operation, and each grant below says which operation that is. This one,
+-- because these rows are nonces:
 -- consuming one IS deleting it, which is the property that makes a challenge single-use, and a row
 -- nobody can delete is a row swept by a path that does not exist. recovery_code_hashes, because that
 -- same sentence is true of a recovery code word for word — see its block. credentials, because
 -- revoking a passkey removes the row rather than marking it, scoped by the application and by
 -- nothing beneath it — see ADR 0014. users, because it is the root every other owned row cascades
 -- from, so deleting it is how an account is erased — see that block for why the cascade means the
--- three in between need no grant of their own. Contrast the sessions block, where revocation writes
+-- tables in between need no grant of their own. Contrast the sessions block, where revocation writes
 -- a column precisely so the row stays accountable — opposite decisions, because the rows mean
 -- opposite things.
 --
--- (A count in prose is a claim nothing executes, so it drifts silently while every sentence around
--- it still reads as current — this one has been wrong twice. Read the GRANT lines rather than
--- trusting the number, and correct it when you notice.)
+-- (Read the GRANT lines rather than this paragraph for which tables hold DELETE: prose here executes
+-- nothing, so it can only ever be a restatement of them, and a count of them was wrong twice before
+-- it was dropped.)
 -- (The budget-owned tables further down hold DELETE too, for the ordinary reason that a person may
 -- delete their own accounts, categories and transactions.)
 --
@@ -258,14 +263,14 @@ GRANT SELECT, INSERT, DELETE ON webauthn_challenges TO budgetoid_app;
 -- of a verifier the client derives from the code. The code itself never reaches this deployment at
 -- all, so nothing here can be turned back into one.
 --
--- Exempt from row-level security, and it is the third table resting on the same argument credentials
--- and passkey_public_keys rest on: the row is found before the request has an identity a policy could
--- be keyed on. A recovery code is redeemed ANONYMOUSLY — somebody redeeming one has lost the
+-- Exempt from row-level security, resting on the same argument credentials and passkey_public_keys
+-- rest on: the row is found before the request has an identity a policy could be keyed on. A
+-- recovery code is redeemed ANONYMOUSLY — somebody redeeming one has lost the
 -- authenticator that would have proved who they are — so the lookup by hash is what establishes the
 -- identity, and a policy keyed on app.current_user_id would refuse the very query that produces the
 -- value it wants to compare against. It would refuse it loudly rather than quietly: an unset setting
 -- reaches the policy as ''::uuid and raises 22P02 on every redemption. That is the trap ADR 0012
--- records, and this is the third table to walk up to it.
+-- records, and this table walks up to it exactly as the other two do.
 --
 -- DELETE, and the sentence that earns it is the webauthn_challenges sentence word for word: these
 -- rows are single-use secrets, so consuming one IS deleting it. FR-054 says a redeemed code is
@@ -524,11 +529,13 @@ CREATE POLICY budget_isolation ON transactions FOR ALL TO budgetoid_app
 -- like everything else, and material attached to a session belongs there rather than on the exempt
 -- table.
 --
--- passkey_public_keys is the second table with that reason, and the pair below it — the counter,
--- policed — is that same before/after line drawn once more inside a single ceremony. Read the two
--- together before proposing a third exemption: the question is never "is this sensitive" but "is
--- this reachable before the request has an identity", and if the answer is no, a policy costs
--- nothing.
+-- passkey_public_keys and recovery_code_hashes carry that same reason, each read before its request
+-- has an identity: an assertion names a credential handle and nothing else, a redemption names a
+-- verifier and nothing else. passkey_public_keys has the sharper illustration beside it — the
+-- counter, policed — because that is the same before/after line drawn once more inside a single
+-- ceremony. Read them together before proposing another exemption: the question is never "is this
+-- sensitive" but "is this reachable before the request has an identity", and if the answer is no, a
+-- policy costs nothing.
 
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON users;

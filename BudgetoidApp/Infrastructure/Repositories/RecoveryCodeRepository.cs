@@ -14,7 +14,7 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
     // requests issuing codes for one account — a double-clicked button, a client retry, two open tabs —
     // lose in one of two places depending on whether the account already held a set, and the caller's
     // situation is identical either way: this attempt wrote nothing, somebody else's set is the
-    // account's, and the ten codes this client has already shown a person will never redeem. Two
+    // account's, and the codes this client has already shown a person will never redeem. Two
     // sentences would let a caller tell "you had a set" from "you had none", which is a fact about the
     // account's prior state that a losing request has no business learning and no use for.
     //
@@ -181,7 +181,7 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
         // generations for one account — the double-clicked button on a fresh account — both find no
         // previous set, so neither reaches DeleteSetAsync at all: both insert, and the loser collides on
         // IX_credentials_user_id_recovery_codes with a 23505 that nothing above translates, so the
-        // person is answered 500 having just been shown ten codes that will never redeem.
+        // person is answered 500 having just been shown a set of codes that will never redeem.
         //
         // 409, exactly as the delete's own conflict, and for the reasons written out on that catch.
         //
@@ -236,13 +236,13 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
         // The set went out from under this request between the caller's lookup and this save: another
         // generation for the same account committed first, so the DELETE matched zero rows where EF
         // expected one. Left alone it surfaces as a 500 logged as a fault, describing a removal that in
-        // fact succeeded — on the request of somebody who is at that moment looking at ten codes that
-        // will never work.
+        // fact succeeded — on the request of somebody who is at that moment looking at a set of codes
+        // that will never work.
         //
         // 409, and not the four answers a reader will reach for instead:
         //
-        // - Not a 200. This request wrote no set: the winner's ten codes are the account's, and this
-        //   caller's client is holding ten it has already shown a person. A success here is the one
+        // - Not a 200. This request wrote no set: the winner's codes are the account's, and this
+        //   caller's client is holding a set it has already shown a person. A success here is the one
         //   outcome that leaves somebody with a printed card that unlocks nothing and no way to find out.
         // - Not a 404, which is what the sibling path answers — PasskeyRepository.DeletePasskeyAsync
         //   turns this identical exception into NotFoundException. That is right there and wrong here,

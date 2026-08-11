@@ -13,8 +13,9 @@ public static class RecoveryCodeEndpoints
         // Another group over "/api/me", beside erasure, the export, the credential list and the signed-in
         // user, which is the shape PasskeyEndpoints already uses for one prefix and two groups. "/api/me"
         // is the current principal's namespace, and a set of recovery codes is something the principal
-        // holds. It is deliberately not under "/api/passkeys": that prefix is the two WebAuthn ceremonies,
-        // and neither route here runs one — the POST *consumes* a re-authentication somebody else minted.
+        // holds. It is deliberately not under "/api/passkeys": that prefix is where the WebAuthn
+        // ceremonies are run, and neither route here runs one — the POST *consumes* a re-authentication
+        // somebody else minted.
         RouteGroupBuilder group = endpoints.MapGroup("/api/me");
 
         // NEITHER ROUTE BELOW DECLARES ANY METADATA, and that is two separate rules.
@@ -69,7 +70,7 @@ public static class RecoveryCodeEndpoints
             // TypedResults.Ok rather than hand-serialized JSON, so camelCase comes from
             // ConfigureHttpJsonOptions like every other response instead of from this call site. The
             // record carries one member and no code, no verifier and no id: the server never held a code,
-            // and the client already has the ten it derived its verifiers from.
+            // and the client already has the codes it derived its verifiers from.
             return TypedResults.Ok(generation);
         });
 
@@ -97,7 +98,7 @@ public static class RecoveryCodeEndpoints
             return TypedResults.Ok(count);
         });
 
-        // A SECOND GROUP OVER A SECOND PREFIX, AND IT IS ANONYMOUS. The shape PasskeyEndpoints uses for
+        // ITS OWN GROUP OVER ITS OWN PREFIX, AND IT IS ANONYMOUS. The shape PasskeyEndpoints uses for
         // its sign-in legs, and for the same reason: a redemption by definition runs before anyone is
         // signed in, because somebody redeeming a code has lost the authenticator that would have
         // proved who they are. What makes the permission reviewable is not this line —
@@ -106,7 +107,7 @@ public static class RecoveryCodeEndpoints
         //
         // NOT UNDER "/api/me", which is the current principal's namespace and this request has no
         // principal: it names nobody, and the account it lands on is discovered from the code. And not
-        // under "/api/passkeys", which is the two WebAuthn ceremonies and this is neither.
+        // under "/api/passkeys", which is where the WebAuthn ceremonies are run and this is not one.
         //
         // NO ProvisionsUser, AND IT MAY NEVER GAIN ONE — a likelier accident here than on "/api/me",
         // because this is the route people reach for when they cannot get in, which reads a great deal
@@ -151,41 +152,6 @@ public static class RecoveryCodeEndpoints
     }
 
     /// <summary>
-    /// The set being presented, and the assertion the issue is authorized by — the latter in the shape
-    /// the erasure and revocation legs' own request records already use.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The five assertion members are byte-identical to <c>ErasureRequest</c>'s and
-    /// <c>RevocationRequest</c>'s on purpose, so a caller comparing the three gates learns nothing from
-    /// the difference between them.
-    /// </para>
-    /// <para>
-    /// <b>No member is <c>required</c></b>, deliberately and identically to those two. Every member bound
-    /// to <see langword="null" /> — a body of <c>{}</c>, or one naming only some of them — reaches the
-    /// gate's own decode, which answers the same 401 every other refusal on this endpoint answers.
-    /// Marking them required would buy a framework 400 that tells a caller holding a stolen bearer token
-    /// that its proof was the thing found wanting. It bites harder on <see cref="Verifiers" /> than on
-    /// the five: a framework 400 there would tell an unproven caller that the server has an opinion about
-    /// the set, which is the disclosure the handler's gate-before-validation ordering exists to prevent.
-    /// So an absent set arrives here as <see langword="null" /> despite the non-nullable declaration and
-    /// is refused past the gate as a set of the wrong size, which is what it is.
-    /// </para>
-    /// <para>
-    /// That envelope covers what binds, not what fails to. No body at all, a literal <c>null</c>, or a
-    /// member of the wrong JSON type is a framework 400 raised before this handler is entered, and the
-    /// gap is accepted for the reason the erasure states — a deserialization failure is a fact about the
-    /// caller's own request and says nothing about what this account holds.
-    /// </para>
-    /// <para>
-    /// The verifiers are base64url <b>text</b>, which is how every binary member of this exchange crosses
-    /// JSON, and they travel beside the assertion rather than nested because they are members of the same
-    /// command. <see cref="CredentialId" /> is the WebAuthn <em>handle</em> of the authenticator that
-    /// signed the assertion — this route addresses no credential of its own, so unlike the revocation
-    /// there is no second id space for it to be confused with.
-    /// </para>
-    /// </remarks>
-    /// <summary>
     /// The verifier being presented, and nothing else.
     /// </summary>
     /// <remarks>
@@ -222,6 +188,42 @@ public static class RecoveryCodeEndpoints
     /// </remarks>
     private sealed record RedemptionResponse(string Kind, DateTime ExpiresAtUtc, int Remaining);
 
+    /// <summary>
+    /// The set being presented, and the assertion the issue is authorized by — the latter in the shape
+    /// the erasure and revocation legs' own request records already use.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The five assertion members are byte-identical to <c>ErasureRequest</c>'s and
+    /// <c>RevocationRequest</c>'s on purpose, so a caller comparing the erasure, revocation and
+    /// generation gates learns nothing from the difference between them.
+    /// </para>
+    /// <para>
+    /// <b>No member is <c>required</c></b>, deliberately and identically to those two. Every member bound
+    /// to <see langword="null" /> — a body of <c>{}</c>, or one naming only some of them — reaches the
+    /// gate's own decode, which answers the same 401 every other refusal on this endpoint answers.
+    /// Marking them required would buy a framework 400 that tells a caller holding a stolen bearer token
+    /// that its proof was the thing found wanting. It bites harder on <see cref="Verifiers" /> than on
+    /// the assertion members: a framework 400 there would tell an unproven caller that the server has an
+    /// opinion about the set, which is the disclosure the handler's gate-before-validation ordering
+    /// exists to prevent. So an absent set arrives here as <see langword="null" /> despite the
+    /// non-nullable declaration and is refused past the gate as a set of the wrong size, which is what
+    /// it is.
+    /// </para>
+    /// <para>
+    /// That envelope covers what binds, not what fails to. No body at all, a literal <c>null</c>, or a
+    /// member of the wrong JSON type is a framework 400 raised before this handler is entered, and the
+    /// gap is accepted for the reason the erasure states — a deserialization failure is a fact about the
+    /// caller's own request and says nothing about what this account holds.
+    /// </para>
+    /// <para>
+    /// The verifiers are base64url <b>text</b>, which is how every binary member of this exchange crosses
+    /// JSON, and they travel beside the assertion rather than nested because they are members of the same
+    /// command. <see cref="CredentialId" /> is the WebAuthn <em>handle</em> of the authenticator that
+    /// signed the assertion — this route addresses no credential of its own, so unlike the revocation
+    /// there is no second id space for it to be confused with.
+    /// </para>
+    /// </remarks>
     private sealed record RecoveryCodeGenerationRequest(
         IReadOnlyList<string> Verifiers,
         string CredentialId,

@@ -14,9 +14,10 @@ public sealed class RecoveryCodeReadService(BudgetoidDbContext dbContext) : IRec
         // row-level security — a redemption arrives anonymous and adopts the user_id it finds on the
         // row, so a policy keyed on an identity the request has not established yet could not run — so
         // no policy narrows it, no query filter narrows it, and the grant is on the whole table.
-        // Without it every caller is told how many unredeemed codes the whole installation holds, and
-        // RemainingCount_ForASecondAccount_CountsThatAccountsCodesAndNotTheFirsts is the only thing in
-        // the codebase that would notice.
+        // Without it every caller is told how many unredeemed codes the whole installation holds —
+        // which nothing notices unless a test seeds a second account and then reads the first's count.
+        // RemainingCount_ForASecondAccount_CountsThatAccountsCodesAndNotTheFirsts is written that way,
+        // and a suite that counts only one account's codes stays green with the predicate deleted.
         //
         // The set's credential is deliberately not read first and not joined to. Rows are what is
         // counted, so an account holding no set counts zero rather than having no set to count the

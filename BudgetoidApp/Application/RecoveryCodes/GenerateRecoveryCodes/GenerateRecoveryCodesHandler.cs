@@ -93,7 +93,8 @@ public sealed class GenerateRecoveryCodesHandler(
                 // body against a database that rolled the abandoned attempt back and a change tracker
                 // that did not. Rows the abandoned attempt queued for insert are the tracker's, not
                 // the database's — a ROLLBACK never saw them — so without this the surviving attempt
-                // commits two credentials and twenty codes against an index that permits one set.
+                // commits two credentials and both attempts' codes against an index that permits one
+                // set.
                 persistenceState.DiscardTrackedEntities();
 
                 // Scoped by owner AND type. credentials is exempt from row-level security (ADR 0011),
@@ -218,11 +219,12 @@ public sealed class GenerateRecoveryCodesHandler(
             verifiers[index] = verifier;
         }
 
-        // The rule the count check cannot express: a set of ten members that is nine codes deep. Left
+        // The rule the count check cannot express: a set of the required size that is one code short
+        // of it, because two of its members repeat. Left
         // to the database it becomes a primary-key collision on verifier_hash — a 500 for a caller
         // whose request was merely wrong, arriving after the previous set has already been deleted
-        // inside the same transaction. Left to nothing at all it is a person holding a card that says
-        // ten and an account that will accept nine.
+        // inside the same transaction. Left to nothing at all it is a person holding a card whose
+        // entries outnumber the codes their account will accept.
         //
         // It is also the closest this layer gets to the entropy it cannot measure: a client repeating
         // a verifier inside one set has randomness that is not what it claims. Compared decoded, since
