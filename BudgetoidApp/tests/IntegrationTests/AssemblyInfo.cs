@@ -84,9 +84,34 @@
 // That argument survives the change of shape, and the pressure it was about has since dropped
 // further: peak containers are 19 rather than 44, and the per-test Docker work the cap was rationing
 // does not happen at all any more. If an intermittently missing container ever comes back, re-adding
-// a cap is still the wrong first move — it is what hid the leak for as long as it was hidden. Look
-// for a second leak path first, remembering that what is left to leak per test is now a database
-// rather than a container.
+// a cap is still the wrong first move — it is what hid the leak for as long as it was hidden.
+//
+// The second leak path this file used to send the next reader looking for
+//
+// It was looked for, and it was there. The two classes above — DeploymentProvisioningTests and
+// NonSuperuserDeploymentProvisioningTests — hold the only container starts left outside
+// SharedPostgresCluster, and both StartBareContainerAsync helpers carried the unguarded shape
+// verbatim: build, await StartAsync, return, with the caller's `await using` variable bound only
+// afterwards. Both now wrap the start in try/catch and dispose before rethrowing, which is what
+// SharedPostgresCluster.StartClusterAsync already did. The remarks on the first of the two carry the
+// reasoning, at the code that implements it.
+//
+// What the mechanism is was checked rather than assumed, against Testcontainers 4.12.0: a readiness
+// check that can never pass throws only after Docker has created and started the container, which is
+// then Up at the moment StartAsync raises, and stays Up until DisposeAsync stops it. So an abandoned
+// start holds memory and a port binding for the rest of the run — not a container that failed to
+// exist, which is how the symptom reads from the test output.
+//
+// What was NOT established is that this is the cause of any particular red run. The evidence was the
+// shape plus a leaked postgres:17 container, Testcontainers-labelled and days old, found sitting on a
+// developer machine. One test in DeploymentProvisioningTests was lost once under load and did not
+// reproduce over three full suite runs, which is what a one-in-six flake looks like when it does not
+// fire. A closed leak path, then; not a diagnosed and cured flake, and the next reader should not
+// treat the question as retired.
+//
+// If it comes back again: what is left to leak per test is now a database rather than a container,
+// and both test hosts already drop theirs on the failure path (PostgresTestHost.StartAsync,
+// RepositoryTestHost.DisposeAsync). A cap is still the wrong first move.
 //
 // Why not container-per-class
 //

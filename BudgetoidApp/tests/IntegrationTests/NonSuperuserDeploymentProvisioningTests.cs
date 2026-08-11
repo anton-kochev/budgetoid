@@ -125,6 +125,15 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// Starts an empty PostgreSQL container. Same builder as the test hosts, so this runs against the
     /// same server version as the rest of the suite; what is missing is everything they do afterwards.
     /// </summary>
+    /// <remarks>
+    /// The try/catch is a leak guard, and the reasoning behind it is written out once on
+    /// <c>DeploymentProvisioningTests.StartBareContainerAsync</c> — the same helper, the same shape,
+    /// in the other class that deliberately keeps a container of its own. In short: the call site
+    /// binds its <c>await using</c> variable only after this method returns, so a throw here leaves a
+    /// container Docker has already started with nothing left to dispose it, and each such leak makes
+    /// the next start likelier to time out. Guarded by shape-match to that documented failure mode,
+    /// not because a failure was captured here.
+    /// </remarks>
     private static async Task<PostgreSqlContainer> StartBareContainerAsync()
     {
         PostgreSqlContainer container = new PostgreSqlBuilder("postgres:17")
@@ -132,8 +141,17 @@ public sealed class NonSuperuserDeploymentProvisioningTests
             .WithUsername("postgres")
             .WithPassword("postgres")
             .Build();
-        await container.StartAsync();
-        return container;
+
+        try
+        {
+            await container.StartAsync();
+            return container;
+        }
+        catch
+        {
+            await container.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>

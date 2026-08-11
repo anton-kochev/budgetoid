@@ -1381,6 +1381,27 @@ public sealed class DeploymentProvisioningTests
     /// these tests and the rest of the integration suite run against the same server version; what
     /// is deliberately missing is everything the hosts do afterwards.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The try/catch is a leak guard, not tidiness. Every call site has the shape
+    /// <c>await using PostgreSqlContainer container = await StartBareContainerAsync();</c>, so the
+    /// variable is bound only <b>after</b> this method returns: when the start throws, nothing is
+    /// ever disposed. Docker has created and started the container long before a readiness check
+    /// gives up — that was checked directly against Testcontainers 4.12.0, where the container is
+    /// <c>Up</c> at the moment <c>StartAsync</c> raises its <see cref="TimeoutException" /> and stays
+    /// that way until <c>DisposeAsync</c> stops it. An abandoned one keeps its memory and its port
+    /// binding for the rest of the run, which makes the next start likelier to time out in turn:
+    /// the feedback loop <c>AssemblyInfo.cs</c> describes.
+    /// <c>SharedPostgresCluster.StartClusterAsync</c> already guards the same call the same way, and
+    /// this class is one of the two that deliberately stay outside it.
+    /// </para>
+    /// <para>
+    /// This guard was written by matching that shape, not by capturing a failure. One test in this
+    /// class was lost once under load and never reproduced over three full suite runs — which is what
+    /// a one-in-six flake looks like when it does not fire. Read it as a closed leak path, not as a
+    /// diagnosed and cured flake.
+    /// </para>
+    /// </remarks>
     private static async Task<PostgreSqlContainer> StartBareContainerAsync()
     {
         PostgreSqlContainer container = new PostgreSqlBuilder("postgres:17")
@@ -1388,8 +1409,17 @@ public sealed class DeploymentProvisioningTests
             .WithUsername("postgres")
             .WithPassword("postgres")
             .Build();
-        await container.StartAsync();
-        return container;
+
+        try
+        {
+            await container.StartAsync();
+            return container;
+        }
+        catch
+        {
+            await container.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>
