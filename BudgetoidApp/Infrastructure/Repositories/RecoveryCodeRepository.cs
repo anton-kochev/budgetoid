@@ -1,0 +1,186 @@
+using Domain.Common;
+using Domain.Users;
+using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
+
+namespace Infrastructure.Repositories;
+
+public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IRecoveryCodeRepository
+{
+    // ONE MESSAGE FOR BOTH HALVES OF ONE RACE, and the sameness is the point rather than reuse. Two
+    // requests issuing codes for one account — a double-clicked button, a client retry, two open tabs —
+    // lose in one of two places depending on whether the account already held a set, and the caller's
+    // situation is identical either way: this attempt wrote nothing, somebody else's set is the
+    // account's, and the ten codes this client has already shown a person will never redeem. Two
+    // sentences would let a caller tell "you had a set" from "you had none", which is a fact about the
+    // account's prior state that a losing request has no business learning and no use for.
+    //
+    // It says what to do next, because a 409 with no detail tells a client nothing about whether to
+    // retry. The fresh assertion is not a formality: this attempt's nonce was consumed by the gate
+    // before the transaction opened, so a retry replaying it is refused with the gate's 401.
+    private const string LostTheRaceMessage =
+        "Another request replaced this account's recovery codes. Present a fresh re-authentication and "
+        + "generate them again.";
+
+    /// <inheritdoc />
+    public Task<Credential?> FindRecoveryCodeCredentialAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default) =>
+        // BOTH predicates are the scope, and neither is belt-and-braces. credentials is exempt from
+        // row-level security (ADR 0011) — it is the table read to answer who is asking — so no policy
+        // and no query filter narrows this statement to the person asking.
+        //
+        // This is the SECOND read in the codebase producing a Credential naming a row the table
+        // actually holds, after PasskeyRepository.FindPasskeyCredentialAsync, and ADR 0014 names
+        // exactly that as the thing review has to catch: the entity travels on to DeleteSetAsync, so
+        // whatever scopes this read is what scopes that delete. It holds here because the owner is in
+        // the predicate. Adding a lookup to this class that returns a Credential without naming its
+        // owner is what would break it.
+        //
+        // The type predicate is a rule of its own: the account's federated Google credential is a row
+        // in this table too, and so is every passkey it has registered, so an untyped lookup would hand
+        // the caller one of those and offer it to a delete.
+        //
+        // SingleOrDefault rather than FirstOrDefault: IX_credentials_user_id_recovery_codes is what
+        // makes an account hold at most one set, and a second row would mean that rule has been lost —
+        // leaving this read with two sets and nothing to choose between them, which is a broken
+        // database rather than a question it can answer honestly.
+        dbContext.Credentials
+            .SingleOrDefaultAsync(
+                credential => credential.UserId == userId
+                              && credential.Type == CredentialType.RecoveryCodes,
+                cancellationToken);
+
+    /// <inheritdoc />
+    public async Task AddSetAsync(
+        Credential credential,
+        IReadOnlyList<RecoveryCodeHash> hashes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+        ArgumentNullException.ThrowIfNull(hashes);
+
+        dbContext.Credentials.Add(credential);
+        dbContext.RecoveryCodeHashes.AddRange(hashes);
+
+        try
+        {
+            // One save, so the credential and its codes land together or not at all. EF orders the
+            // statements from the foreign key between the two entity types, so the credential is
+            // inserted before the rows whose composite key references it.
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        // THE LIKELIER HALF OF THE RACE, and the one no delete is involved in. Two concurrent FIRST
+        // generations for one account — the double-clicked button on a fresh account — both find no
+        // previous set, so neither reaches DeleteSetAsync at all: both insert, and the loser collides on
+        // IX_credentials_user_id_recovery_codes with a 23505 that nothing above translates, so the
+        // person is answered 500 having just been shown ten codes that will never redeem.
+        //
+        // 409, exactly as the delete's own conflict, and for the reasons written out on that catch.
+        //
+        // NARROWED ON THE CONSTRAINT NAME, never on the SQLSTATE alone: SaveChangesAsync flushes
+        // everything the scoped context is tracking, and this call alone adds the credential plus one row
+        // per code, each carrying unique rules of its own. recovery_code_hashes is keyed on the verifier
+        // hash, so a 23505 could just as well be two codes hashing alike, which is a different broken
+        // rule with a different answer. A bare catch (PostgresException) would report any of them as a
+        // lost race: a confident, specific, false 409. This is the filter
+        // RepositoryConstraintAttributionTests requires of every repository in this folder that
+        // translates anything, and PasskeyRepository.TryAddAsync's catch is its shape.
+        //
+        // No detach on the way out, unlike that one: it swallows and lets the caller carry on with the
+        // same context, while this throws. The unit of work unwinds, and ITransactionalExecutor does not
+        // replay a ConflictException.
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: CredentialConfiguration.RecoveryCodesPerUserIndexName,
+        })
+        {
+            throw new ConflictException(LostTheRaceMessage);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task DeleteSetAsync(Credential credential, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+
+        // Through the change tracker, and there is no alternative to weigh: ExecuteDelete is a compile
+        // error under BannedSymbols.txt.
+        //
+        // No owner predicate here, and none is missing: the scope arrived with the argument. The entity
+        // was resolved by FindRecoveryCodeCredentialAsync, whose predicate named the owner and the
+        // type. Credential.CreateRecoveryCodes is public, so an instance can be made elsewhere; it
+        // mints its own Guid.CreateVersion7(), so the row it names does not exist and Remove raises on
+        // a zero-row DELETE instead of removing a stranger's set. Restating the owner here would be a
+        // second source of tenancy that could disagree with the first.
+        //
+        // Remove on the one row, never on its codes: recovery_code_hashes rows leave by the database's
+        // own cascade from this row, which runs with the referencing table owner's privileges. Nothing
+        // on this path loads them, and it must stay that way — the role IS granted DELETE on that
+        // table, so an EF cascade into tracked copies would silently succeed and take the rows by the
+        // application instead, with no SQLSTATE to say so. See IRecoveryCodeRepository.DeleteSetAsync.
+        dbContext.Credentials.Remove(credential);
+
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        // The set went out from under this request between the caller's lookup and this save: another
+        // generation for the same account committed first, so the DELETE matched zero rows where EF
+        // expected one. Left alone it surfaces as a 500 logged as a fault, describing a removal that in
+        // fact succeeded — on the request of somebody who is at that moment looking at ten codes that
+        // will never work.
+        //
+        // 409, and not the four answers a reader will reach for instead:
+        //
+        // - Not a 200. This request wrote no set: the winner's ten codes are the account's, and this
+        //   caller's client is holding ten it has already shown a person. A success here is the one
+        //   outcome that leaves somebody with a printed card that unlocks nothing and no way to find out.
+        // - Not a 404, which is what the sibling path answers — PasskeyRepository.DeletePasskeyAsync
+        //   turns this identical exception into NotFoundException. That is right there and wrong here,
+        //   and the difference is what the caller named. A revocation names a credential in its route, so
+        //   "that row is gone" is an answer about the thing asked for, and it makes the two orderings of
+        //   the pair indistinguishable, which is what makes a client's retry safe. A generation names
+        //   nothing: the resource it addresses — /api/me/recovery-codes — exists, so a 404 would be a
+        //   false statement about the caller's own account.
+        // - Not the gate's 401. The caller proved possession of an authenticator registered to this
+        //   account; reporting a lost race as a failed proof sends a person to debug an authenticator
+        //   that is working perfectly.
+        // - Not swallowed and continued, in the shape UserRepository.DeleteAsync uses. The row is already
+        //   gone, so carrying on means inserting this request's set beside the winner's —
+        //   IX_credentials_user_id_recovery_codes permits one per account, so AddSetAsync's insert is
+        //   refused with 23505 and the same conflict arrives one statement later and harder to read.
+        //
+        // So: 409 with a real sentence. The request conflicts with the state of the resource, it would
+        // succeed unchanged if made again, and a retry is exactly what the client should do — with a
+        // fresh assertion, since the nonce this attempt spent is spent. The sentence is legitimate for
+        // the reason the whole validation family is: this is past the gate.
+        //
+        // Narrowed by the ENTRIES, the same way PasskeyRepository.DeletePasskeyAsync and
+        // UserRepository.DeleteAsync narrow theirs: a concurrency conflict carries no SQLSTATE and no
+        // constraint name, so "every conflicting row is a credentials row this call itself marked
+        // Deleted" is this method's equivalent of the constraint-name filter above. SaveChangesAsync
+        // flushes everything the scoped context is tracking, so a stranger's entity conflicting on the
+        // same save must propagate — a 500 naming the real failure beats a confident, specific, false
+        // "your recovery codes were replaced".
+        //
+        // No detach on the way out, for the reason the insert's catch gives.
+        catch (DbUpdateConcurrencyException exception) when (IsAlreadyDeleted(exception))
+        {
+            throw new ConflictException(LostTheRaceMessage);
+        }
+    }
+
+    /// <summary>
+    /// True when the conflict is only about <see cref="Credential"/> rows this call removed. The count
+    /// test is not redundant: an exception EF could not attribute to any entry would otherwise satisfy
+    /// the predicate vacuously.
+    /// </summary>
+    private static bool IsAlreadyDeleted(DbUpdateConcurrencyException exception) =>
+        exception.Entries.Count > 0
+        && exception.Entries.All(entry =>
+            entry.Entity is Credential && entry.State == EntityState.Deleted);
+}

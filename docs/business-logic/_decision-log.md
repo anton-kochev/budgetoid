@@ -8,6 +8,90 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-11 — The client mints every recovery code, and the hashes live on a table of their own
+
+**Context:** an account had exactly one thing that could open its budget — a passkey — so losing the
+authenticator meant losing the account, with no operator override and no escrow to fall back on. A
+recovery code is the second secret the account holder already possesses. Two questions had to be
+answered together, because answering one well and the other badly buys nothing: **where the secret is
+created**, and **where its trace is stored**. They are one question here and not two, because a
+recovery code is not a password. The account's key-encryption key is derived from the same code, so a
+code that reaches the server is not a credential the server was going to check — it is the key.
+
+**Decision:** the **browser mints each code and the server never sees one**. The client derives a
+verifier `V = HKDF(code, …)` and sends only `V`; the server stores `SHA-256(V)`, unsalted, from the
+BCL. The key-encryption key comes off the same code on an **independent HKDF branch**, so a database
+reader holding the stored value can neither redeem — there is no preimage — nor derive a key. Those
+hashes go on a table of their own, `recovery_code_hashes`, **exempt** from row-level security and
+carrying a pinned column set, because a code is redeemed by an *anonymous* request: somebody redeeming
+one has lost the authenticator that would have proved who they are, so the lookup by hash is what
+establishes the identity, and a policy keyed on `app.current_user_id` would refuse the very query that
+produces the value it wants to compare against — loudly, with `22P02`, on every redemption. One
+`credentials` row stands for a whole **set**, never one per code, so redeeming one code deletes a row
+while the set survives and replacing the set is a single delete the cascade carries the codes away
+with.
+
+**The consequence that has to be stated because nothing enforces it:** the server **cannot** enforce
+the 128-bit entropy rule. It receives fixed-length opaque bytes, and ten identical zero-filled
+verifiers are byte-indistinguishable here from a set a good generator produced. What it pins instead is
+the whole list — the verifier's exact decoded width, the set size of ten, and distinctness within the
+set. ADR 0002 requires the owning doc to say why a rule sits above its lowest capable layer; here the
+answer is stronger, that **no layer at or below the API is capable of it at all**, in the same sense
+the WebAuthn `prf` result is a claim the server cannot verify. The rule belongs to the browser that
+mints the code, and that browser is not built — so today it has no enforcer anywhere.
+
+**Alternatives considered:**
+
+- *Mint the codes on the server and return them in the response* — the design every tutorial
+  describes. The server would hold, for one request, the input to the key-encryption key's own
+  derivation for an account whose keys it is otherwise structurally unable to read; one request log,
+  crash dump or breakpoint makes the product's central promise false for that account, and false in a
+  way nobody can detect afterwards.
+- *Store `SHA-256(code)` rather than `SHA-256(V)`* — indistinguishable in the schema, in the width, and
+  in every test that passes. It is not a storage choice at all: the code must cross the wire for the
+  server to hash it, so it is the alternative above wearing a different hat.
+- *Run Argon2 or PBKDF2 over the verifier* — the hardening a future reader reaches for first. A work
+  factor makes a **guessable** input expensive to enumerate; the input here is a uniform 256-bit value,
+  so there is no dictionary to slow down. It buys latency on a request that already holds the account,
+  plus a package that would move a pinned row in the dependency-graph test and put a third-party
+  dependency on `Domain`, which declares none.
+- *Salt each row* — it makes the only lookup that matters impossible. A redemption arrives with no
+  identity at all, so the row must be findable by its hash alone, and a per-row salt is a value the
+  lookup cannot know before it has found the row it needs the salt to find.
+- *Put the hashes on `credentials`* — refused by that table's pinned exemption column set, and it would
+  make a credential row mean *one code* rather than *one way of signing in*, dissolving the
+  one-set-per-account rule into something no partial unique index can express.
+- *Put the hashes on `passkey_public_keys`* — the trap that exemption's own written reason names by
+  name, having predicted "a recovery-code hash" as exactly the write-once secret that must not join it.
+  Attractive precisely because the table already holds key material, is already exempt, and already
+  holds no `UPDATE`, so an append-only argument passes without a murmur.
+- *Police the new table and run the discovery read on an elevated connection* — the worst option on the
+  list. It puts an elevated connection into the request path at the exact moment the request has proved
+  nothing, and the elevated role is not subject to row-level security, so the policy it was added to
+  satisfy would not apply to the only statement that reads the table. Coverage would report it policed
+  and the protection would be zero.
+- *Stamp a `redeemed_at_utc` instead of deleting the row* — it needs `UPDATE` on a table nothing
+  beneath the application bounds, it makes every read carry a predicate the first forgetful one drops,
+  and the stamp is a behavioural record about a person in a schema that keeps none.
+
+**Known gap, stated rather than hidden:** three of them, and the first is the largest thing in the
+story. **Generating a set requires a fresh passkey assertion, so somebody who has already lost their
+authenticator can never generate one** — the feature protects only people who generated a set
+beforehand. The gate is nevertheless right: with a stolen bearer token, an ungated regeneration would
+mint a *persistent* factor that survives token rotation entirely. The consequence is a sequencing
+requirement on the client — push generation at or near passkey registration — and that work belongs to
+a later story. Second, **a redeemed code leaves no trace**, so *"was this code used, or never issued?"*
+is unanswerable by anyone, which is the same trade erasure already makes against a deletion record.
+Third, **nothing redeems a code yet**: the anonymous read the exemption was written for is not routed,
+the `DELETE` grant on the new table has no caller, and the `Full` session a recovery-codes credential
+derives is never established by anything.
+
+**Affected areas:** [recovery-codes.md](recovery-codes.md), [passkeys.md](passkeys.md),
+[sessions.md](sessions.md), [users-and-ownership.md](users-and-ownership.md),
+[erasure.md](erasure.md), [export.md](export.md).
+
+---
+
 ## 2026-08-10 — "The last credential" means the last passkey, and a revoked passkey's sessions are reported rather than recorded
 
 **Context:** a lost or compromised authenticator could only be dealt with by erasing the account. The

@@ -295,14 +295,30 @@ public sealed class BudgetoidDbContextConstructionTests
             // column nor UserRepository's lookup folds case, so without this 'Google' and 'google'
             // are two accounts for one person.
             "CK_credentials_provider: credentials provider is null or provider in ('google')",
-            "CK_credentials_type: credentials type in ('passkey', 'federated')",
+            // Three spellings, not two, since a set of recovery codes became a credential in its own
+            // right. Widening a bounded vocabulary is the edit this pin exists to make somebody argue
+            // for, so the argument is here: the set is one credential row the whole issued set hangs
+            // off, which is what makes revoking the set one delete and redeeming one code a delete of
+            // a child row. The alternative — a fourth table with no credentials row — would have put
+            // recovery material outside the one cascade an erasure runs through.
+            "CK_credentials_type: credentials type in ('passkey', 'federated', 'recovery_codes')",
             // The shape check is what makes "a credential is exactly one type" a database rule: a
             // federated row with no issuer, or a passkey row carrying one, is rejected rather than
             // stored. The length test sits alongside the null test rather than replacing it —
             // length(null) is null and a check evaluating to null is satisfied.
+            //
+            // The recovery_codes arm's predicate is identical to the passkey arm's, and that is
+            // recorded rather than tidied away: this constraint no longer discriminates between those
+            // two types, because both are self-contained credentials with no issuer and no provider
+            // subject. What still tells them apart is the line above bounding the vocabulary, and each
+            // child table's composite foreign key comparing its own credential_type copy against this
+            // column — so a recovery-code row cannot hang off a passkey credential or the reverse.
+            // Collapsing the two arms into one would say the same thing in less space and lose the
+            // record of which types the schema has considered.
             "CK_credentials_type_shape: credentials (type = 'federated' and provider is not null and "
             + "subject is not null and length(subject) > 0) or (type = 'passkey' and provider is null "
-            + "and subject is null)",
+            + "and subject is null) or (type = 'recovery_codes' and provider is null and subject is "
+            + "null)",
             // The two COSE algorithms the verifier accepts. Anything else is a key no verification
             // path can read back, so the row would be a credential that authenticates nobody.
             "CK_passkey_public_keys_cose_algorithm: passkey_public_keys cose_algorithm in (-7, -257)",
@@ -317,6 +333,20 @@ public sealed class BudgetoidDbContextConstructionTests
             // comparisons rather than between because the upper bound exceeds int.
             "CK_passkey_signature_counters_value: passkey_signature_counters signature_counter >= 0 "
             + "and signature_counter <= 4294967295",
+            // The third table carrying a copy of its credential's type, and it owes its own pin for
+            // the reason the two above do: the copy is what the composite foreign key ties back to
+            // the credential, and a copy free to say 'passkey' would be a recovery code hanging off
+            // an authenticator. The single value rather than a vocabulary is the stronger claim —
+            // this table exists only for recovery codes, so any other spelling is a row that should
+            // not exist rather than a row meaning something else.
+            "CK_recovery_code_hashes_credential_type: recovery_code_hashes credential_type = "
+            + "'recovery_codes'",
+            // Equality, not a range, and the difference is the claim. The value is a SHA-256 computed
+            // server-side, so it is 32 bytes or it is not a hash this table can have produced; a range
+            // would read as "some hashes are longer than others", which is a statement about input
+            // nobody makes here.
+            "CK_recovery_code_hashes_verifier_hash_length: recovery_code_hashes "
+            + "length(verifier_hash) = 32",
             // A nonce issued for one ceremony and spent on another is cross-ceremony replay, which
             // this vocabulary refuses at the column rather than in whichever handler reads it. Three
             // pools, not two: 'reauthentication' is minted only from an authenticated endpoint and is
@@ -338,7 +368,30 @@ public sealed class BudgetoidDbContextConstructionTests
             // The derivation Session.Establish performs, restated where it can be rejected rather
             // than merely performed: a rule deciding what a session may read is not one to leave to
             // a single factory while the column list stays reachable by any INSERT.
-            "CK_sessions_kind_matches_credential: sessions (kind = 'full') = (credential_type = 'passkey')",
+            //
+            // Two spellings on the full side, not one, and the second is not a widening of the kind
+            // CK_credentials_type's list is. A set of recovery codes is a key factor: the account's
+            // content and index keys are wrapped under the set, so the code the holder typed unwraps
+            // them, which is the property a passkey's authenticator has and a provider's claims do not.
+            // Federated stays alone on the locked side because it is the only type that cannot hold
+            // the account's keys.
+            //
+            // The full side is ENUMERATED and it stays enumerated. The inversion —
+            //   (kind = 'locked') = (credential_type = 'federated')
+            // says the same thing about every row this model can hold today and reads better as the
+            // list grows, which is why somebody will propose it. It fails OPEN: a fourth credential
+            // type is not federated, so it satisfies the right-hand side and gets a full session by
+            // default with nobody having chosen that. This form fails closed, which is the same
+            // decision Session.KindFor forces by writing out every arm rather than defaulting.
+            //
+            // This pin does turn red on that rewrite — the configured Sql string is what it compares,
+            // so a changed predicate moves the line. It moves as a literal to update, though, and no
+            // assertion here separates "the rule changed meaning" from "the wording changed": both
+            // spellings are true of every row the model can hold until a fourth credential type
+            // exists, so the catalog snapshot goes red the same way and neither failure argues
+            // anything. This paragraph is what stands between the red line and the paste.
+            "CK_sessions_kind_matches_credential: sessions (kind = 'full') = (credential_type in "
+            + "('passkey', 'recovery_codes'))",
             // A session whose expiry is at or before its creation was never live for an instant. A
             // separate constraint from the one above rather than an AND of both, because one defect
             // must report exactly one name.
@@ -358,7 +411,27 @@ public sealed class BudgetoidDbContextConstructionTests
         // unattended on every push to main, so a regenerated baseline arrives under a new id, the
         // next push finds nothing applied, and it re-creates every table against a populated
         // database. Having to edit this line is the checkpoint the retired manual deploy step was.
-        const string frozenBaselineId = "20260806233305_InitialCreate";
+        //
+        // This literal has now moved more than once, and every move is the checkpoint working rather
+        // than being waived — a second edit is not a precedent that makes the third free, because what
+        // the edit costs is unchanged: whoever makes it resets production's __EFMigrationsHistory in
+        // the same deploy or the deploy fails on the first CREATE TABLE.
+        // docs/engineering/migrations.md: the rebaseline window in the migrations-guard CI job
+        // is open, so regenerating the baseline is *permitted* — the production database holds no data
+        // and the schema changes still ahead are worth landing as one initial migration rather than a
+        // chain nothing will ever replay step by step. Permitted is not free, and the window covers
+        // that CI job and nothing else. This test still fails on a regenerated baseline by design: the
+        // id is edited by a person, in the same commit, who has read that whoever regenerates also
+        // resets production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3) or the
+        // deploy fails on the first CREATE TABLE.
+        //
+        // Two things the window does NOT change, spelled out because both look like the obvious
+        // follow-up edit. The window stays open — closing it is a decision about whether the database
+        // has started holding data anyone wants back, not a consequence of a rebaseline. And
+        // FROZEN_FROM in that job does not move with this literal: it is a lower bound every present
+        // file already sorts above, so advancing it while the window is open would be a second,
+        // silent change to what the guard covers. It moves once, together with the window closing.
+        const string frozenBaselineId = "20260811062119_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

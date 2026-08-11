@@ -24,6 +24,8 @@ using Application.Passkeys.Reauthentication;
 using Application.Passkeys.RevokePasskey;
 using Application.Payees.GetPayees;
 using Application.Payees.RenamePayee;
+using Application.RecoveryCodes.CountRecoveryCodes;
+using Application.RecoveryCodes.GenerateRecoveryCodes;
 using Application.Sessions.RevokeSessionsForCredential;
 using Application.Transactions.CreateTransaction;
 using Application.Transactions.DeleteTransaction;
@@ -82,6 +84,8 @@ public static class DependencyInjection
         services.AddScoped<CompleteAssertionHandler>();
         services.AddScoped<BeginReauthenticationHandler>();
         services.AddScoped<RevokePasskeyHandler>();
+        services.AddScoped<GenerateRecoveryCodesHandler>();
+        services.AddScoped<CountRecoveryCodesHandler>();
 
         // Registered as the concrete type, because it has no interface and must not grow one: a
         // stubbable gate would let a test prove erasure works with the proof faked out.

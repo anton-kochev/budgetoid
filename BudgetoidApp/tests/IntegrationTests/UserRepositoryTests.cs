@@ -129,6 +129,48 @@ public sealed class UserRepositoryTests
     }
 
     [Test]
+    public async Task Database_RejectsASecondRecoveryCodesCredentialForTheSameUser()
+    {
+        // Arrange — one account that already holds the credential standing for its issued set of
+        // codes. One credentials row per set, not per code, so this row is the whole set.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
+        await InsertCredentialAsync(
+            connection, userId, CredentialTypes.RecoveryCodes, provider: null, subject: null);
+
+        // Act — a second set for the same account. Nothing else on the row can refuse it: the
+        // provider-identity index names federated rows only, and both of these carry (NULL, NULL).
+        PostgresException exception = await ThrowsCredentialPostgresExceptionAsync(
+            connection, userId, CredentialTypes.RecoveryCodes, provider: null, subject: null);
+
+        // Assert — one set per account, owned by a partial unique index for exactly the reason
+        // IX_credentials_user_id_federated exists two tests above: nothing else was stopping an
+        // account growing a second set. Not a feature anyone is adding, but precisely what a bug on
+        // an issuing path would do — and an account holding two sets has two remaining-counts with no
+        // rule saying which one binds, so "you have three codes left" stops being answerable and
+        // "revoke the set" stops naming anything. Reissuing has to replace, and replacement is only
+        // meaningful while there is one thing to replace.
+        //
+        // The index must be partial, filtered to this type. Database_AcceptsTwoPasskeyCredentialsForTheSameUser
+        // below is the standing control on that: an unfiltered unique index over user_id satisfies
+        // this test just as well and refuses a second passkey, which FR-043 allows and which
+        // AppRoleGrantsTests relies on.
+        //
+        // The name is asserted rather than the SQLSTATE alone, because this row breaches exactly one
+        // index, so the attribution is deterministic rather than an artifact of creation order — the
+        // same reason the federated test above asserts one. Spelled as a literal rather than read off
+        // CredentialConfiguration, following the habit PasskeySchemaTests keeps for its pinned
+        // constraint names: a pinned name exists so one defect reports one name, and a test that read
+        // the same constant the schema was rendered from would agree with itself no matter what
+        // either said.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.UniqueViolation);
+        await Assert.That(exception.ConstraintName)
+            .IsEqualTo("IX_credentials_user_id_recovery_codes");
+    }
+
+    [Test]
     public async Task Database_RejectsAUserValueLongerThanItsColumn()
     {
         // Arrange
@@ -633,6 +675,12 @@ public sealed class UserRepositoryTests
     {
         public const string Federated = "federated";
         public const string Passkey = "passkey";
+
+        /// <summary>
+        /// One issued <b>set</b> of recovery codes, which is what a credentials row of this type
+        /// stands for — the codes themselves are rows on <c>recovery_code_hashes</c> hanging off it.
+        /// </summary>
+        public const string RecoveryCodes = "recovery_codes";
     }
 
     /// <summary>

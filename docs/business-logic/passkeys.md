@@ -14,8 +14,12 @@
 
 This area covers **the three WebAuthn ceremonies**: registering a passkey to an account, signing in
 with one, and re-proving possession of one before an action too destructive to take on a bearer token
-alone. It is the only path that opens a session reaching budget content, because it is the only
-credential type whose authenticator can hold the account's keys.
+alone. It is the only path that opens a session **today**, and a passkey is one of the two credential
+types that open a session reaching budget content — the other is a set of recovery codes, which is a
+secret the holder possesses for the same reason and which nothing redeems yet. `federated` is the only
+type that can never reach budget content, because an authorization exchange returns claims rather than
+a secret a client can turn into a key. See [recovery-codes.md](recovery-codes.md) and
+[sessions.md](sessions.md).
 
 Identity — who a person is, and which credentials prove it — lives in
 [users-and-ownership.md](users-and-ownership.md). What happens after a credential has answered that
@@ -111,6 +115,12 @@ erDiagram
   whoever it names. **A wrapped key or a recovery-code hash is written once and never updated** — it
   satisfies any append-only rule perfectly while being exactly what must not land here. A red on the
   pin means **move the column** to a table carrying `user_id`, never widen the pin.
+  - **The recovery-code hash has stopped being hypothetical, and it landed somewhere else** — on
+    `recovery_code_hashes`, with its own exemption and its own pin
+    ([ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md)). Keep the
+    example where it is. The hypothetical is what made this decision visible *before* there was
+    anything to decide about, so it is the evidence the mechanism worked rather than a line to retire
+    now that it has been used once, and the wrapped key beside it is still ahead of us.
 
 - **A passkey's key and counter belong to the same person as the credential, and to a credential of
   type `passkey`.**
@@ -138,15 +148,19 @@ erDiagram
     constraint, grant or policy carries any part of it.
 
 - **A challenge is single-use, and consuming one is deleting it.** `webauthn_challenges` is one of
-  the three identity tables holding `DELETE` — most of the budget-owned tables hold it too, for the
+  the four identity tables holding `DELETE` — most of the budget-owned tables hold it too, for the
   ordinary reason that people delete their own records, though `payees` deliberately does not.
   The paragraph beside the grant says why this one does:
   these rows are nonces, and a row nobody can delete is a row swept by a path that does not exist.
   Contrast `sessions`, where revocation writes a column precisely so the row stays accountable. The
-  other two are `users`, for a reason that has nothing to do with nonces — it is the root every owned
-  row cascades from — and `credentials`, which holds it for **revocation** rather than for erasure and
-  is the only one of the three whose delete is scoped by the application alone
-  ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)).
+  other three are `users`, for a reason that has nothing to do with nonces — it is the root every owned
+  row cascades from — `credentials`, which holds it for **revocation** rather than for erasure
+  ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)), and
+  `recovery_code_hashes`, whose grant rests on **this** table's sentence word for word: those rows are
+  single-use secrets too, so consuming one *is* deleting it
+  ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)). Two of the four —
+  `credentials` and `recovery_code_hashes` — have their delete scoped by the application alone,
+  because both tables are exempt from row-level security.
   `passkey_public_keys` and `passkey_signature_counters` are emptied by the cascade and hold no
   `DELETE` of their own — see [users-and-ownership.md](users-and-ownership.md) for why granting them
   one would cost something.
@@ -398,10 +412,15 @@ environment, and a session lifetime that varies per environment is a difference 
 
 ## Integration Points
 
-- **[Sessions](sessions.md)** — a verified assertion is the only thing that establishes one, and the
-  only thing that establishes a `Full` one.
+- **[Sessions](sessions.md)** — a verified assertion is the only thing that establishes one today. It
+  is no longer the only credential type that *would* establish a `Full` one: a recovery-codes
+  credential derives the same kind, and nothing redeems a code yet.
+- **[Recovery Codes](recovery-codes.md)** — the third spender of the `reauthentication` pool, and the
+  second full-session credential type. A passkey is what a person proves possession of in order to be
+  issued a set, which is why the last-passkey floor cannot be lifted by holding one.
 - **[Users & Ownership](users-and-ownership.md)** — the credential row and the account it belongs to.
-- **[Data isolation](../engineering/data-isolation.md)** — the two exempt tables and the policed one.
+- **[Data isolation](../engineering/data-isolation.md)** — this area's two exempt tables and its
+  policed one.
 - **`UserProvisioningMiddleware`** — it reads the route's own `IAllowAnonymous` metadata **first**,
   before its claim gate and before resolving anything, and returns. So the two anonymous legs run with
   no identity whatever token accompanies them, which is exactly the state the discovery read needs.
@@ -431,12 +450,16 @@ environment, and a session lifetime that varies per environment is a difference 
     What holds is that both factories mint their own id, so a fabricated `Credential` cannot name an
     existing row — and that adding a source which *can* means adding a query to `PasskeyRepository`.
     The full inventory of accesses is in [data isolation](../engineering/data-isolation.md).
-- **The re-authentication pool is one ceremony, not one per sensitive action.** Two things spend it:
-  erasure, and passkey revocation. Neither can tell which one a given nonce was requested for, and
-  that is the design rather than a gap — both actions are destructive, both are reachable only by the
+- **The re-authentication pool is one ceremony, not one per sensitive action.** Three things spend it:
+  erasure, passkey revocation, and generating a set of recovery codes. None can tell which one a given
+  nonce was requested for, and
+  that is the design rather than a gap — all three are destructive, all three are reachable only by the
   account holder, and a proof of presence is a proof of presence. If two sensitive actions ever need
   telling apart, the split is a new
   **ceremony value** — never a column on `webauthn_challenges`, which the pinned column set forbids.
+  The third spender is the one with most riding on the gate: a set of recovery codes is a full-session
+  credential, and issuing *replaces*, so an ungated generation would both mint a way in and destroy the
+  real set in one request.
 - **The assertion options leg is the first unauthenticated write path in the system.** Anyone can
   make the role insert a challenge row. Growth is bounded by a five-minute lifetime and an
   opportunistic capped sweep on each options call, **not** by rate limiting, which does not exist
@@ -507,6 +530,14 @@ environment, and a session lifetime that varies per environment is a difference 
   sits above its lowest capable layer. The **federated** credential does not count toward it: it
   opens no session that reads budget content, so an account left holding only that one has no way
   back to its own money.
+  - **A set of recovery codes does not count toward it either, and that is not the obvious answer.**
+    A recovery-codes credential *does* derive a full session, so it looks like exactly the thing that
+    should let the floor drop to zero passkeys. It cannot, and the reason is circular by construction:
+    **generating a set requires a fresh passkey assertion**, so an account holding codes and no passkey
+    can never regenerate them, and once those codes are spent or lost there is nothing left to
+    re-authenticate with. Lifting the floor would trade a state a person can recover from for one
+    nobody can. The floor stays "the last passkey" until some path can issue a recovery factor without
+    already holding one. See [recovery-codes.md](recovery-codes.md).
 
 - **The last-passkey refusal has a concurrency window, and it is open.** Under `READ COMMITTED`, two
   revocations of an account's last two passkeys running at once can each read a count of two and each

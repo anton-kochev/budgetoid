@@ -47,6 +47,15 @@ set is pinned, and `Exemptions_PinTheColumnsTheirReasonCovers` turns a new colum
 answers for it. The answer is to move the column to a table carrying `user_id`, never to widen the
 pin.
 
+**Half of that hypothetical has since happened, and it went where this paragraph said it should.** A
+recovery-code hash is now a real column on a real table — `recovery_code_hashes`, exempt for a reason
+of the same shape and carrying a pin of its own
+([ADR 0016](0016-give-recovery-code-hashes-their-own-exempt-table.md)) — and it was never proposed for
+this one. **Keep the hypothetical where it is.** It is what made the decision visible before there was
+anything to decide about, which is the whole argument for pinning a column set ahead of its first red;
+it is now also the evidence the mechanism worked. The wrapped key is still ahead of us, and it will be
+offered *both* exempt tables before it lands on the right one.
+
 The grant matrix is the corollary, and it is worth having because it is checkable in one line:
 
 ```sql
@@ -81,16 +90,20 @@ discoverable credential means — so there is nobody for a policy to key on, and
 column is refused at the gate anyway. `ExemptDespite = None`, with its column set pinned, because
 the pin is what keeps a person-identifying column from landing on it later.
 
-It is granted `DELETE`, which three of the six identity tables (`users`, `credentials`, `sessions`,
-`passkey_public_keys`, `passkey_signature_counters` and this one) hold and three do not — most of the
+It is granted `DELETE`, which four of the seven identity tables (`users`, `credentials`, `sessions`,
+`passkey_public_keys`, `passkey_signature_counters`, `recovery_code_hashes` and this one) hold and
+three do not — most of the
 budget-owned tables hold it for the ordinary reason that people delete their own records. The grant
 paragraph says why this one does: its rows are nonces, consuming one *is* deleting it, and a row
-nobody can delete is a row swept by something that does not exist. The other two hold it for
-unrelated reasons. `users` is the root the whole owned graph cascades from, so deleting it is how an
+nobody can delete is a row swept by something that does not exist. The other three hold it for
+reasons of their own. `users` is the root the whole owned graph cascades from, so deleting it is how an
 account is erased, and that grant reaches these two tables through the cascade rather than through a
 privilege of their own. `credentials` gained one later still, for **revocation** rather than for
-erasure — and it is the one grant in the matrix that no policy bounds, which is its own decision
-([ADR 0014](0014-scope-the-credential-delete-in-the-application.md)).
+erasure — and it was for a while the one grant in the matrix that no policy bounds, which is its own
+decision ([ADR 0014](0014-scope-the-credential-delete-in-the-application.md)).
+`recovery_code_hashes` is the second such grant, and its sentence is this table's own sentence word
+for word: a recovery code is a single-use secret, so consuming one *is* deleting it
+([ADR 0017](0017-consume-a-recovery-code-by-deleting-its-row.md)).
 
 What keeps `passkey_public_keys` and `passkey_signature_counters` ungranted is unchanged and is worth
 restating against that third grant: a referential action runs as the referencing table's owner and
@@ -168,6 +181,13 @@ and a second one would be a column nothing else reads.
 - A future recovery factor's wrapped keys land on a table carrying `user_id`, policed, with no
   further argument needed — the split this ADR draws is the one the requirements already draw
   between identity and key custody.
+  - **The first new recovery factor has arrived and it needed an exempt table anyway**, which is not a
+    counterexample to that sentence but the split working at a finer grain than it was written at. A
+    recovery code contributes **two** values: the hash its redemption is *found* by, read before
+    anybody has said who they are — exempt, on `recovery_code_hashes` — and, when it lands, the
+    wrapped key read *after* redemption has answered whose account this is, which still belongs on a
+    policed table. The line is "before or after the identity exists", not "which factor it belongs to".
+    See [ADR 0016](0016-give-recovery-code-hashes-their-own-exempt-table.md).
 - Erasure gains two more tables to cover. `passkey_public_keys` and `passkey_signature_counters`
   both cascade from `credentials`, which cascades from `users`, so the coverage is structural rather
   than enumerated. `webauthn_challenges` is not the third: it carries no foreign key at all, because

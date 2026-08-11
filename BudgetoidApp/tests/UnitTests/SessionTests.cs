@@ -25,6 +25,58 @@ public sealed class SessionTests
     }
 
     [Test]
+    public async Task Establish_FromAPasskey_ReturnsAFullSession()
+    {
+        // Arrange
+        Credential credential = PasskeyCredential();
+
+        // Act
+        Session session = Session.Establish(credential, CreatedAtUtc, ExpiresAtUtc);
+
+        // Assert — a passkey lives on an authenticator that holds the account's keys, so the assertion
+        // the holder just produced is proof of possession of the secret the content and index keys are
+        // wrapped under. That is the property the federated arm does not have, and it is the whole of
+        // why this arm answers Full.
+        //
+        // KindFor runs by enumeration rather than by "anything that is not federated", so every member
+        // owes a test here, and this one was the member reached only indirectly — through
+        // CompleteAssertionHandlerTests, which exercises a whole sign-in and would go red for a dozen
+        // reasons that have nothing to do with this rule. A rule covered only by a test that fails for
+        // other reasons is a rule whose failure nobody can read.
+        //
+        // The gap mattered more once recovery codes became a second Full member. With one Full arm the
+        // federated test constrained KindFor tightly; with two, the cheapest wrong implementation —
+        // a KindFor answering Full for everything — is caught by the federated test alone, and the two
+        // Full arms are then verified by nothing that names them.
+        await Assert.That(session.Kind).IsEqualTo(SessionKind.Full);
+        await Assert.That(session.ReadsBudgetContent).IsTrue();
+    }
+
+    [Test]
+    public async Task Establish_FromASetOfRecoveryCodes_ReturnsAFullSession()
+    {
+        // Arrange
+        Credential credential = RecoveryCodesCredential();
+
+        // Act
+        Session session = Session.Establish(credential, CreatedAtUtc, ExpiresAtUtc);
+
+        // Assert — a set of recovery codes is a key factor and not only a sign-in factor: the
+        // account's content and index keys are wrapped under the set, so the code the person typed is
+        // the secret that unwraps them. That is the property the passkey arm has and the federated
+        // arm does not, and it is the whole of why this arm answers Full. A locked session here would
+        // be the product declining to open what the holder just proved they can open, which turns
+        // recovery — the path taken when every other factor is gone — into a sign-in that reaches
+        // nothing the person was recovering.
+        //
+        // The federated test above is the standing control on this claim. Without it, the cheapest
+        // way to make this line green is a KindFor that answers Full for everything, and nothing else
+        // in the suite would notice.
+        await Assert.That(session.Kind).IsEqualTo(SessionKind.Full);
+        await Assert.That(session.ReadsBudgetContent).IsTrue();
+    }
+
+    [Test]
     public async Task Session_ExposesNoWayToChooseItsKind()
     {
         // Arrange — every public way into the type: constructors, methods including static ones,
@@ -203,6 +255,22 @@ public sealed class SessionTests
 
     private static Credential FederatedCredential() => Credential.CreateFederated(
         Guid.CreateVersion7(), Credential.GoogleProvider, "google-subject", CreatedAtUtc);
+
+    /// <summary>
+    /// The credential a registered passkey hangs its public key and signature counter off. None of
+    /// that material is needed here: <see cref="Session.Establish" /> reads only
+    /// <see cref="Credential.Type" />.
+    /// </summary>
+    private static Credential PasskeyCredential() =>
+        Credential.CreatePasskey(Guid.CreateVersion7(), CreatedAtUtc);
+
+    /// <summary>
+    /// The credential standing for one issued <i>set</i> of recovery codes — one row for the set, not
+    /// one per code. Nothing about the codes themselves is needed here: <see cref="Session.Establish" />
+    /// reads only <see cref="Credential.Type" />.
+    /// </summary>
+    private static Credential RecoveryCodesCredential() =>
+        Credential.CreateRecoveryCodes(Guid.CreateVersion7(), CreatedAtUtc);
 
     /// <summary>
     /// Keeps the methods the type declares for itself and drops the ones every object has. Property

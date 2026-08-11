@@ -129,6 +129,12 @@ public sealed class AppRoleGrantMatrixTests
         ("passkey_public_keys", ["SELECT", "INSERT"]),
         ("passkey_signature_counters", ["SELECT", "INSERT"]),
         ("webauthn_challenges", ["SELECT", "INSERT", "DELETE"]),
+        // DELETE is the redemption, not a cleanup: a recovery code is consumed by its row leaving,
+        // never by a column being stamped used. That is the whole reason this table appears on no
+        // line of ExpectedUpdateColumnGrants — see the remarks there, and
+        // AppRoleGrantsTests.Database_RefusesEveryUpdateOnARecoveryCodeHash_WhileStillAllowingInsertAndDelete
+        // for the statement-shaped half.
+        ("recovery_code_hashes", ["SELECT", "INSERT", "DELETE"]),
         ("budgets", ["SELECT", "INSERT"]),
         ("accounts", ["SELECT", "INSERT", "DELETE"]),
         ("category_groups", ["SELECT", "INSERT", "DELETE"]),
@@ -146,11 +152,32 @@ public sealed class AppRoleGrantMatrixTests
     /// <c>accounts.currency_code</c>, and every identity column of a session or a counter.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The tables absent from this array hold no <c>UPDATE</c> grant of any shape —
     /// <c>currencies</c>, <c>credentials</c>, <c>passkey_public_keys</c>,
-    /// <c>webauthn_challenges</c>, <c>budgets</c> and <c>__EFMigrationsHistory</c> — and their
-    /// absence is checked in the same direction as everything else: a column grant appearing on one
-    /// of them has no entry to match and is reported as unexpected.
+    /// <c>webauthn_challenges</c>, <c>budgets</c>, <c>recovery_code_hashes</c> and
+    /// <c>__EFMigrationsHistory</c> — and their absence is checked in the same direction as
+    /// everything else: a column grant appearing on one of them has no entry to match and is reported
+    /// as unexpected.
+    /// </para>
+    /// <para>
+    /// <c>recovery_code_hashes</c> is absent for a reason of its own, and it is the reason worth
+    /// writing down rather than filing under "nothing here happens to be updatable yet". A recovery
+    /// code is consumed by <b>deleting</b> its row. Every alternative design stamps something instead
+    /// — a <c>redeemed_at_utc</c>, a <c>used</c> flag, a decremented counter — and every one of them
+    /// leaves behind a row saying a particular code existed and was spent, which is per-code history
+    /// the product has no use for and an erasure would then have to reach. The absence of any
+    /// <c>UPDATE</c> is what makes that decision checkable in one statement: the day somebody adds a
+    /// stamped column they must add a grant for it, and the grant lands here as an unexpected entry
+    /// before the column ever ships.
+    /// </para>
+    /// <para>
+    /// So this is <b>not</b> a snapshot of what happens to be immutable today, the way
+    /// <c>credentials</c>' absence is described as being. It is closer to
+    /// <c>passkey_public_keys</c>: a property of the table. An updatable column arriving here is a
+    /// different table with a different consumption rule, and this paragraph is what has to be
+    /// re-argued rather than quietly extended.
+    /// </para>
     /// </remarks>
     private static readonly (string Table, string[] Columns)[] ExpectedUpdateColumnGrants =
     [

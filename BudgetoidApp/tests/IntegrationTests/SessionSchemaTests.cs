@@ -18,7 +18,13 @@ namespace IntegrationTests;
 /// be independent of.
 /// </summary>
 /// <remarks>
-/// The passkey credential is seeded with raw SQL because no domain factory mints one yet.
+/// The passkey credential is seeded with raw SQL for the same reason every negative below is, and not
+/// for want of a factory — <see cref="Credential.CreatePasskey" /> exists, and so does
+/// <see cref="Credential.CreateRecoveryCodes" />. These tests are about what the schema refuses, so
+/// the arrangement they refuse from has to be able to reach the table by a route the domain does not
+/// police; a factory-minted row would make each negative a statement about the factory's arithmetic
+/// as much as about the constraint, and a domain that stopped minting the shape would turn a schema
+/// test red for a reason that has nothing to do with the schema.
 /// <c>type = 'passkey'</c> with <c>provider</c> and <c>subject</c> both NULL is the shape
 /// <c>CK_credentials_type_shape</c> already permits, and <c>AppRoleGrantsTests</c> inserts the same
 /// row the same way.
@@ -195,6 +201,81 @@ public sealed class SessionSchemaTests
     }
 
     [Test]
+    public async Task Database_AcceptsAFullSessionOpenedByASetOfRecoveryCodes()
+    {
+        // Arrange — one account holding the credential that stands for its issued set of codes.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
+        Guid recoveryCodesId = await InsertRecoveryCodesCredentialAsync(connection, userId);
+
+        // Act — 'full' against that credential. Every other constraint on the row is satisfied, so
+        // whether it lands is a question about CK_sessions_kind_matches_credential and nothing else.
+        await InsertSessionAsync(
+            connection, userId, recoveryCodesId, "recovery_codes", "full", SeedInstant, ExpiryInstant);
+
+        // Assert — the codes wrap the account's content and index keys, so redeeming one hands back
+        // the material that decrypts the narrative. A session that could not then read it would be a
+        // recovery path that recovers nothing, which is why this pairing has to be storable and why
+        // the domain and the schema both have to agree it is. Session.Establish deriving Full from the
+        // credential is the other half and does not substitute for this one: GRANT INSERT on sessions
+        // covers the whole column list, so a row this check refuses is a row the application cannot
+        // write no matter what the factory decided.
+        //
+        // Its own control is the locked-session test below, and the two are owed separately: this one
+        // alone is satisfied by dropping the check outright, and that one alone is satisfied by a
+        // check that refuses a set of codes any session at all.
+        await Assert.That(
+                await CountRowsAsync(connection, "sessions", "credential_id", recoveryCodesId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_RefusesALockedSessionOpenedByASetOfRecoveryCodes()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        Guid userId = await InsertUserRowAsync(connection, "person@example.com");
+        Guid recoveryCodesId = await InsertRecoveryCodesCredentialAsync(connection, userId);
+
+        // Act — 'locked' against the same credential the test above pairs with 'full'. The two rows
+        // differ in one column, which is what makes this the mirror rather than a second arrangement.
+        PostgresException refusal = await ThrowsSessionInsertAsync(
+            connection,
+            userId,
+            recoveryCodesId,
+            "recovery_codes",
+            "locked",
+            SeedInstant,
+            ExpiryInstant);
+
+        // Assert — the check is an equality and must stay one, refusing both directions. There is a
+        // trap in how it gets rewritten, and it is worth naming because the prettier spelling is what
+        // a later reader will propose. Enumerating the full side —
+        //   (kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))
+        // refuses a fourth credential type a full session, so a member added to the vocabulary
+        // without a decision here defaults to reaching nothing. The equivalent-looking inversion —
+        //   (kind = 'locked') = (credential_type = 'federated')
+        // agrees with this constraint on every row the schema can hold today and PERMITS that fourth
+        // type a full session, because anything not federated satisfies the right-hand side. The
+        // enumerated-full form fails closed; the inverted one fails open, and no test in this suite
+        // could tell them apart until the fourth type exists. Do not simplify it that way.
+        //
+        // Nothing landed, because a refusal that had already written the row would leave the rule
+        // true only about the SQLSTATE. The name is asserted rather than the SQLSTATE alone: the row
+        // breaches exactly one constraint — 'locked' is in the vocabulary, the credential is this
+        // account's own so the composite foreign key holds, and the expiry is after the creation — so
+        // the attribution is deterministic rather than an artifact of evaluation order.
+        await Assert.That(refusal.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(refusal.ConstraintName).IsEqualTo("CK_sessions_kind_matches_credential");
+        await Assert.That(await CountRowsAsync(connection, "sessions", "user_id", userId))
+            .IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task Session_RoundTripsThroughTheApplicationRole()
     {
         // Arrange — the seeded account and the federated credential that resolves to it, then an
@@ -302,6 +383,37 @@ public sealed class SessionSchemaTests
             """
             insert into credentials (id, user_id, type, provider, subject, created_at_utc)
             values (@id, @user_id, 'passkey', null, null, @created_at_utc)
+            """,
+            connection);
+        command.Parameters.AddWithValue("id", credentialId);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        return await command.ExecuteNonQueryAsync() switch
+        {
+            1 => credentialId,
+            var rows => throw new InvalidOperationException($"Inserted {rows} credentials, wanted 1."),
+        };
+    }
+
+    /// <summary>
+    /// Writes the credential standing for one issued <b>set</b> of recovery codes onto an existing
+    /// account and returns its id. Raw SQL for the reason
+    /// <see cref="InsertPasskeyCredentialAsync" /> gives, and for one more: no code rows are written
+    /// beside it, which is the point — <c>sessions</c> references the credential and never the codes,
+    /// so a set with nothing hanging off it is exactly the arrangement these two tests need.
+    /// <c>(recovery_codes, null, null)</c> is the third shape <c>CK_credentials_type_shape</c>
+    /// permits, and the partial unique index on <c>(provider, subject)</c> names only federated rows,
+    /// so it does not collide with anything.
+    /// </summary>
+    private static async Task<Guid> InsertRecoveryCodesCredentialAsync(
+        NpgsqlConnection connection,
+        Guid userId)
+    {
+        Guid credentialId = Guid.CreateVersion7();
+        await using NpgsqlCommand command = new(
+            """
+            insert into credentials (id, user_id, type, provider, subject, created_at_utc)
+            values (@id, @user_id, 'recovery_codes', null, null, @created_at_utc)
             """,
             connection);
         command.Parameters.AddWithValue("id", credentialId);

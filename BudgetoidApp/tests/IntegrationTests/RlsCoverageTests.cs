@@ -155,6 +155,14 @@ public sealed class RlsCoverageTests
     private const string BudgetIsolationPredicate =
         "budget_id = COALESCE(current_setting('app.current_budget_id', true), '')::uuid";
 
+    /// <summary>
+    /// The table holding one row per unredeemed recovery code. Named here rather than spelled at
+    /// each assertion because the two tests below say different things about the same decision, and
+    /// two spellings of one table name drift into two tests about different tables — one of which
+    /// would then be asserting about nothing while reporting green.
+    /// </summary>
+    private const string RecoveryCodeHashTable = "recovery_code_hashes";
+
     [Test]
     public async Task Database_EnablesRowLevelSecurityOnEveryTableNeedingAPolicy()
     {
@@ -261,6 +269,54 @@ public sealed class RlsCoverageTests
         // discovery that found nothing.
         await Assert.That(schema.NeedingAPolicy).IsNotEmpty();
         await Assert.That(undecided).IsEmpty();
+    }
+
+    [Test]
+    public async Task Database_TreatsTheRecoveryCodeHashTable_AsExemptRatherThanPoliced()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // Act — recovery_code_hashes carries user_id, so the classifier reaches
+        // TableOwnership.UserOwned from its columns and would demand user_isolation of it with no
+        // rule added. That demand is the danger here, and it is worth being exact about which
+        // direction this test guards, because it is not the usual one. A recovery code is redeemed
+        // by an ANONYMOUS request: the row is found by SHA-256 of the verifier the person typed,
+        // before anybody has said who they are, so a policy keyed on app.current_user_id would
+        // refuse the very query that establishes the identity — and refuse it loudly, because an
+        // unset setting reaches the policy as ''::uuid and raises 22P02. That is the same argument
+        // credentials and passkey_public_keys already rest on, and it is why this table is written
+        // down as exempt rather than policed.
+        //
+        // So the failure this catches is the OPPOSITE of an unpoliced table. The two coverage tests
+        // above already go red on a recovery_code_hashes with no policy and no exemption — this
+        // table cannot slip through unnoticed the way a table owning neither column could. What
+        // nothing else in this file would notice is the fix a contributor reaches for when they do:
+        // add user_isolation, watch the suite go green, and ship a redemption endpoint that fails
+        // in production on every request. Recording "exempt" is a decision somebody made, and this
+        // is where the schema is held to it.
+        SchemaClassification schema = await ClassifySchemaAsync(
+            admin, RowLevelSecurityCoverage.Exemptions);
+        List<string> exempt = schema.Exempt.Select(entry => entry.Table.Name).ToList();
+        List<string> needingAPolicy = schema.NeedingAPolicy
+            .Select(classified => classified.Table.Name)
+            .ToList();
+        List<string> unclassifiable = schema.Unclassifiable.Select(table => table.Name).ToList();
+        List<string> unpoliceable = schema.Unpoliceable.Select(table => table.Name).ToList();
+
+        // Assert — the three negative assertions are not ceremony around the positive one; each
+        // wrong bucket is a different wrong outcome. NeedingAPolicy is the policy that breaks
+        // redemption. Unclassifiable would mean the table lost the user_id its ownership is read
+        // from, which is the column the erasure cascade and every scoped read of it depend on.
+        // Unpoliceable would mean this stopped being a table at all. A relation in two buckets has
+        // no verdict, which is why membership is asserted in all four rather than only the one.
+        await Assert.That(schema.NeedingAPolicy).IsNotEmpty();
+        await Assert.That(exempt).Contains(RecoveryCodeHashTable);
+        await Assert.That(needingAPolicy).DoesNotContain(RecoveryCodeHashTable);
+        await Assert.That(unclassifiable).DoesNotContain(RecoveryCodeHashTable);
+        await Assert.That(unpoliceable).DoesNotContain(RecoveryCodeHashTable);
     }
 
     [Test]
@@ -638,6 +694,53 @@ public sealed class RlsCoverageTests
         // longer exists in that shape, and both have to be reconsidered by a person.
         await Assert.That(pinned).IsNotEmpty();
         await Assert.That(live).IsEquivalentTo(argued);
+    }
+
+    [Test]
+    public async Task Exemptions_PinTheRecoveryCodeHashTable_ToTheFiveColumnsItsReasonCovers()
+    {
+        // Arrange — no host, no container, no connection, for the same reason
+        // Exemptions_NameEachTableAtMostOnce needs none: this is a statement about the written-down
+        // decision, and the decision is a static property.
+        //
+        // The pairing with Exemptions_PinTheColumnsTheirReasonCovers is the whole point, and the two
+        // are not the same claim said twice. That one compares the pin against the LIVE schema, so
+        // it answers "does the table hold what the pin says". It cannot answer "does the pin say
+        // what was argued for", because widening the pin to match a new column satisfies it
+        // perfectly — the two lists simply agree again, at their new length, and the run goes green.
+        // That edit is the exact drift the mechanism exists to refuse, and it is the fix that looks
+        // obvious at the moment it is least true, so it needs a second place to be caught in: here,
+        // where the five names are stated independently of the schema.
+        //
+        // WHEN THIS GOES RED, THE FIX IS TO MOVE THE COLUMN, NOT TO EDIT THE LIST BELOW. The line
+        // the split follows is already drawn by the reason. A recovery code is redeemed by an
+        // anonymous request that finds the row by SHA-256 of the verifier, so what may live here is
+        // what that lookup needs before any identity exists: the hash it is found by, and the
+        // credential, user and type the redemption then adopts. Anything read AFTER redemption has
+        // answered who is asking — a wrapped key, a redemption timestamp, an attempt counter —
+        // belongs on a table carrying user_id, which the classifier polices by itself with no new
+        // rule at all.
+        IReadOnlyList<string> argued =
+        [
+            "verifier_hash", "credential_id", "user_id", "credential_type", "created_at_utc",
+        ];
+
+        // Act
+        TableExemption? exemption = RowLevelSecurityCoverage.Exemptions.SingleOrDefault(
+            candidate => string.Equals(
+                candidate.Table, RecoveryCodeHashTable, StringComparison.Ordinal));
+
+        // Assert — the presence check first, and it is not the usual vacuity guard. A missing
+        // exemption is the state this test is red in today, and without naming it the failure would
+        // read as "expected five columns, found none" — which a reader would take for a table that
+        // lost its columns rather than for a decision nobody has written down yet.
+        //
+        // Then equality as SETS, order-insensitive and in both directions, matching the comparison
+        // above. A sixth name appearing is the leak; one of the five disappearing means the reason
+        // was argued about a table that no longer exists in that shape. Both have to be reconsidered
+        // by a person, and containment in either direction would wave one of them through.
+        await Assert.That(exemption).IsNotNull();
+        await Assert.That(exemption?.ColumnsTheReasonCovers ?? []).IsEquivalentTo(argued);
     }
 
     [Test]

@@ -81,6 +81,15 @@ public sealed class AccountErasureEndpointTests
     /// it is the one that says whose material this is, and it is what a stray row would still be
     /// naming after the account it belongs to is gone.
     /// </para>
+    /// <para>
+    /// <c>recovery_code_hashes</c> is in the list for that same reason and needs it more than either.
+    /// It is keyed on the verifier hash and carries <c>user_id</c> beside it, and unlike every other
+    /// name here it is <b>exempt from row-level security</b> — a redemption arrives anonymous and
+    /// adopts the <c>user_id</c> it finds on the row, so a code the erasure failed to take is not a
+    /// dormant remnant but a live credential naming a person who asked to be forgotten. Nothing
+    /// beneath the application is watching it, which is what makes this row of the list the one no
+    /// other layer would have caught.
+    /// </para>
     /// </remarks>
     private static readonly OwnedTable[] OwnedTables =
     [
@@ -89,6 +98,7 @@ public sealed class AccountErasureEndpointTests
         new("sessions", "user_id", OwnedBy.User),
         new("passkey_public_keys", "user_id", OwnedBy.User),
         new("passkey_signature_counters", "user_id", OwnedBy.User),
+        new("recovery_code_hashes", "user_id", OwnedBy.User),
         new("budgets", "user_id", OwnedBy.User),
         new("accounts", "budget_id", OwnedBy.Budget),
         new("category_groups", "budget_id", OwnedBy.Budget),
@@ -353,7 +363,7 @@ public sealed class AccountErasureEndpointTests
 
         // The seeding is proved before the act, table by table, on the same connection and with the
         // same predicates the assertions below use — the promise this class's remarks make about
-        // every count it asserts zero. Without it, eleven "count is zero" assertions are all satisfied
+        // every count it asserts zero. Without it, twelve "count is zero" assertions are all satisfied
         // by a database the furnishing never reached.
         IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
         foreach (OwnedTable table in OwnedTables)
@@ -390,7 +400,7 @@ public sealed class AccountErasureEndpointTests
 
         // No rows at all, not "none belonging to the erased id". The loop above is scoped to the ids
         // the erasure took, so a resurrected account — a different id entirely — passes every one of
-        // those eleven assertions. This unscoped count is the only line that sees it.
+        // those twelve assertions. This unscoped count is the only line that sees it.
         await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
         await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);
         await Assert.That(await ScalarAsync(admin, "select count(*) from budgets")).IsEqualTo(0L);
@@ -593,10 +603,22 @@ public sealed class AccountErasureEndpointTests
     }
 
     /// <summary>
-    /// Adds the passkey material and the session row no endpoint writes yet, so the FR-025
+    /// Adds the passkey material, the session row and the set of recovery codes, so the FR-025
     /// enumeration has something to find in every user-owned table rather than only in the two
     /// provisioning fills.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Written out of band on the container superuser, through the domain factories rather than
+    /// through the routes that will one day mint these rows — and that stays the right choice after
+    /// those routes exist. What this file measures is which tables an erasure empties, and what it
+    /// needs from an arrangement is a row in every one of them. Reaching them through an issuance
+    /// route would tie every test here to that route's request shape, its own authorization and its
+    /// own rules about how large a set is, so a change to any of them would redden an erasure test for
+    /// a reason that has nothing to do with erasure. The factories are what keep the seeded rows the
+    /// shape production writes.
+    /// </para>
+    /// </remarks>
     private static async Task SeedIdentityRowsAsync(PostgresTestHost host, Guid userId)
     {
         await using BudgetoidDbContext db = new(
@@ -614,7 +636,68 @@ public sealed class AccountErasureEndpointTests
         // CK_sessions_kind_matches_credential ties the two together; the seeded row is the full
         // session a passkey earns, which is the shape production writes.
         db.Sessions.Add(Session.Establish(passkey, SeedInstant, SeedInstant.AddDays(14)));
+
+        // One credential for the whole set — IX_credentials_user_id_recovery_codes admits no second
+        // one — carrying SeededRecoveryCodeCount codes rather than one. See that constant for why the
+        // count is what makes the erasure observable as a set going rather than as a row going.
+        Credential recoveryCodes = Credential.CreateRecoveryCodes(userId, SeedInstant);
+        db.Credentials.Add(recoveryCodes);
+
+        for (int ordinal = 0; ordinal < SeededRecoveryCodeCount; ordinal++)
+        {
+            db.RecoveryCodeHashes.Add(RecoveryCodeHash.From(
+                recoveryCodes, RecoveryCodeVerifierFor(userId, ordinal), SeedInstant));
+        }
+
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// How many unredeemed codes the seeded set holds, and it is deliberately more than one.
+    /// </summary>
+    /// <remarks>
+    /// A set of one cannot tell "the erasure took the set" from "the erasure took a row" — both leave
+    /// the count at zero. One <see cref="Credential" /> per set and one row per code is the whole
+    /// shape of <c>recovery_code_hashes</c>, and it is what the cascade from <c>credentials</c> has to
+    /// carry away wholesale.
+    /// </remarks>
+    private const int SeededRecoveryCodeCount = 3;
+
+    /// <summary>
+    /// One verifier of the seeded set: the owner's id, zero padding, and the code's ordinal in the
+    /// last byte.
+    /// </summary>
+    /// <remarks>
+    /// Distinct in both directions, and both are load-bearing here for the reason
+    /// <see cref="WebAuthnCredentialIdFor" /> is derived from the owner. <c>verifier_hash</c> is the
+    /// primary key, so two codes of one set derived from the same bytes would hash alike and be one
+    /// row — which is the ordinal — and the two accounts of
+    /// <see cref="Erase_LeavesAnotherAccountUntouched" /> seeded alike would make the second one
+    /// unstorable, which is the owner's id. The width is
+    /// <see cref="RecoveryCodeHash.VerifierLength" /> because <see cref="RecoveryCodeHash.From" />
+    /// refuses any other, from both sides.
+    /// </remarks>
+    private static byte[] RecoveryCodeVerifierFor(Guid userId, int ordinal)
+    {
+        byte[] verifier = new byte[RecoveryCodeHash.VerifierLength];
+
+        // Written straight into the buffer rather than through ToByteArray().CopyTo, so there is no
+        // intermediate array — and the bool is the one failure this call has: a VerifierLength
+        // shortened below the sixteen bytes of a Guid, which would otherwise leave a verifier with no
+        // owner in it and make the two accounts of Erase_LeavesAnotherAccountUntouched collide on the
+        // primary key.
+        if (!userId.TryWriteBytes(verifier))
+        {
+            throw new InvalidOperationException(
+                $"A verifier of {RecoveryCodeHash.VerifierLength} bytes has no room for an owner id.");
+        }
+
+        // checked, so a SeededRecoveryCodeCount raised past a byte overflows here rather than wrapping
+        // to an ordinal already used — a repeated ordinal is a repeated verifier, which is one row
+        // where the seeding meant two, and the before-count loop would still read greater than zero.
+        verifier[^1] = checked((byte)ordinal);
+
+        return verifier;
     }
 
     /// <summary>

@@ -38,6 +38,7 @@ erDiagram
     CREDENTIAL ||--o{ SESSION : "cascade"
     CREDENTIAL ||--o| PASSKEY_PUBLIC_KEY : "cascade"
     CREDENTIAL ||--o| PASSKEY_SIGNATURE_COUNTER : "cascade"
+    CREDENTIAL ||--o{ RECOVERY_CODE_HASH : "cascade"
     BUDGET ||--o{ ACCOUNT : "cascade"
     BUDGET ||--o{ PAYEE : "cascade"
     BUDGET ||--o{ CATEGORY_GROUP : "cascade"
@@ -540,6 +541,11 @@ that authorized it, which leaves as the deleted nonce.
 - **The grant matrix** — `app-role-grants.sql` gives the role `DELETE` on `users` and `transactions`,
   which is everything erasure needs. `AppRoleGrantMatrixTests` pins the set in both directions, so a
   grant added to make an erasure problem go away fails a test rather than shipping.
+  - **Two of the role's other `DELETE` grants look like they belong to erasure and do not.**
+    `credentials` holds one for passkey revocation and `recovery_code_hashes` holds one for redeeming a
+    code. Erasure uses neither: it empties both tables through the cascade from `users`, and would
+    still work if both grants were revoked tomorrow. Reading either as erasure's is how a future change
+    ends up "fixing" an erasure problem by widening a privilege that was never in this path.
 - **Row-level security** — `user_isolation` scopes the `users` delete, `budget_isolation` scopes the
   `transactions` delete. Both are `FOR ALL`, so they constrain a delete exactly as they constrain a
   read. See [data isolation](../engineering/data-isolation.md).
@@ -600,3 +606,13 @@ that authorized it, which leaves as the deleted nonce.
 - **`webauthn_challenges` is not in the verification query, and that is not an oversight.** A
   challenge belongs to a ceremony rather than to a person and carries neither `user_id` nor
   `budget_id`, so "no row references the erased user" holds vacuously.
+- **A recovery code leaves nothing behind an erasure, and it left nothing behind its own redemption
+  either.** `recovery_code_hashes` carries `user_id` and cascades from `credentials`, so erasure
+  reaches it structurally and it is inside the verification query like everything else. What is worth
+  reading here is that the table could never have held a remnant in the first place: consuming a code
+  is **deleting its row**, so there is no `redeemed_at_utc` for `ErasureRemnantVocabulary` to refuse
+  and no spent-code row for the count to find. The same argument this file makes against a deletion
+  record is the argument that decided the shape of that table — see
+  [ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md) and
+  [recovery-codes.md](recovery-codes.md). The cost is symmetrical too: *"was this code used, or never
+  issued?"* is as unanswerable as *"was this account erased?"*, and deliberately so.

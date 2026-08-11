@@ -36,6 +36,25 @@ public sealed class InMemorySessionRepository : ISessionRepository
     /// </remarks>
     public void DiscardTrackedEntities() => _sessions.Clear();
 
+    /// <summary>
+    /// Removes every session the credential established, which is what the database's own
+    /// <c>ON DELETE CASCADE</c> from <c>credentials</c> does when that row goes.
+    /// </summary>
+    /// <remarks>
+    /// Here rather than assumed away, because a test about <em>ordering</em> around that delete is
+    /// only honest if the cascade really happens. A handler that ended a credential's sessions
+    /// <em>after</em> removing the credential would, against a fake that ignored the cascade, still
+    /// find the rows and report a plausible number — the exact wrong implementation the ordering
+    /// exists to refuse. With the cascade modelled it matches nothing and reports zero, which is also
+    /// what deleting the revocation outright reports, so a test asserting the count reddens on both.
+    /// <para>
+    /// A caller wires this in; nothing here calls it. The credential row is not this repository's, and
+    /// a fake that removed sessions on its own initiative would be inventing a rule.
+    /// </para>
+    /// </remarks>
+    public void RemoveForCredential(Guid credentialId) =>
+        _sessions.RemoveAll(session => session.CredentialId == credentialId);
+
     public Task AddAsync(Session session, CancellationToken cancellationToken = default)
     {
         _sessions.Add(session);

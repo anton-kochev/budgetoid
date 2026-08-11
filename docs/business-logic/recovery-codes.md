@@ -1,0 +1,546 @@
+# Recovery Codes
+
+## Table of Contents
+
+- [Purpose](#purpose)
+- [Key Entities](#key-entities)
+- [Constraints](#constraints)
+- [Business Rules & Invariants](#business-rules--invariants)
+- [Workflows & State Transitions](#workflows--state-transitions)
+- [Integration Points](#integration-points)
+- [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
+
+## Purpose
+
+A recovery code is the account's **second** way back in. Until this area existed, exactly one thing
+could open a session reaching budget content — a passkey — so an account whose authenticator was
+lost, wiped or destroyed was an account nobody could reach again, including the person who owned it.
+There is no operator override and no escrow, so the only remedy that can exist is a second secret the
+account holder already holds.
+
+The shape of that secret is the whole of this area: **the client mints each code and the server never
+sees one.** The browser generates a code, derives a verifier `V = HKDF(code, …)` from it, and sends
+only `V`; the server stores `SHA-256(V)`. Identity — who a person is, and which credentials prove it
+— lives in [users-and-ownership.md](users-and-ownership.md); what a credential opens once it has
+answered that lives in [sessions.md](sessions.md). This file covers the codes themselves.
+
+**What is built today and what is not.** The schema exists: a third `CredentialType`, one
+`credentials` row per issued **set**, and a `recovery_code_hashes` table holding one row per
+unredeemed code. Two routes exist — `POST /api/me/recovery-codes` issues or replaces the account's
+set behind a fresh WebAuthn assertion, and `GET /api/me/recovery-codes` answers how many are left. All
+of it is tested.
+
+What does **not** exist: **nothing redeems a code.** There is no route, no handler and no client that
+turns a code back into a session, and the anonymous lookup this table's row-level-security exemption
+was written for is therefore not reachable from anywhere. Nothing generates codes in a browser either,
+so the only caller that can present a well-formed set today is a test. And no key is wrapped under a
+code — the account's key-encryption key is derived from the same code on an independent HKDF branch,
+and that derivation is a later story. Read every rule below against that: the codes are **filed**, and
+the path that spends them is the next commit's.
+
+## Key Entities
+
+- **Recovery-code set** — a `Credential` of type `RecoveryCodes`, minted by
+  `Credential.CreateRecoveryCodes`. **One credential row per set, never one per code.** It carries no
+  `Provider` and no `Subject`, for the reason a passkey carries neither: nobody issued it. An account
+  holds at most one, enforced by the partial unique index `IX_credentials_user_id_recovery_codes`.
+- **`RecoveryCodeHash`** — one code that has not been redeemed. Its columns are `verifier_hash`
+  (`bytea`, the primary key, exactly 32 bytes), `credential_id`, `user_id`, `credential_type` and
+  `created_at_utc`. The hash **is** the identity of the row, because a redemption arrives carrying a
+  code and nothing else, so the hash is the only handle it has.
+- **Code** — the string a person writes down. It is minted in the browser, never transmitted, and
+  appears in no column, no log and no response body. There is no type for it in this codebase.
+- **Verifier** — `V = HKDF(code, …)`, exactly 32 bytes, derived on the client and sent as base64url
+  text. It is what the server receives and the only thing it can judge.
+- **`RecoveryCodesGeneration`** — what a completed issue answers with: `{"sessionsEnded": n}`, and
+  nothing else. See the rule below for why that member is load-bearing rather than informational.
+- **`RecoveryCodeCount`** — `{"remaining": n}`. One member: no id, no issued instant, no total, and
+  above all no hash.
+
+Deliberately **absent** from `recovery_code_hashes`: a `redeemed_at_utc`, a `used` flag, an attempt
+counter, a label, a wrapped key, and any per-row salt. Each is argued where it would have landed —
+the first two by [ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md), the
+rest by the pinned column set in
+[ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md).
+
+```mermaid
+erDiagram
+    USER ||--o{ CREDENTIAL : "signs in with"
+    CREDENTIAL ||--o{ RECOVERY_CODE_HASH : "one row per unredeemed code"
+    CREDENTIAL ||--o{ SESSION : establishes
+    RECOVERY_CODE_HASH {
+        bytes VerifierHash
+        guid CredentialId
+        guid UserId
+        string CredentialType
+        datetime CreatedAtUtc
+    }
+```
+
+## Constraints
+
+### MUST
+
+- **A code MUST be minted by the client, and the server MUST never receive one.** What crosses the
+  wire is a verifier derived from the code by HKDF; what is stored is `SHA-256` of that verifier.
+  - **Why**: the account's key-encryption key is derived from the same code on an **independent**
+    HKDF branch. A code arriving here would therefore hand the operator that key, and the product's
+    central promise — that no party but a holder of one of the account's own recovery factors obtains
+    the keys — would be false for every account that ever generated a set. A database reader holding
+    `SHA-256(V)` can do neither thing: there is no preimage to redeem with, and the hash is on the
+    wrong branch to derive a key from.
+  - **Enforced in**: the type system, not a check. `GenerateRecoveryCodesCommand` declares
+    `IReadOnlyList<string> Verifiers` and no member a code could travel in;
+    `RecoveryCodeHash.From` takes a verifier and hashes it **internally**, so no shape of that call
+    stores an unhashed value and no call site is a place to get it wrong once. See
+    [ADR 0015](../decisions/0015-mint-recovery-codes-on-the-client-and-store-only-a-hash-of-a-verifier.md).
+
+- **A code MUST carry at least 128 bits of entropy, and no layer of this system enforces it.** This is
+  the one rule in the area whose enforcement is missing on purpose, so it is stated with its reason
+  rather than left to be discovered.
+  - **Why nothing below the client can hold it**: the server receives fixed-length opaque bytes. A set
+    of ten identical zero-filled verifiers is byte-indistinguishable here from a set a good generator
+    produced, and a hash of a weak code is a perfectly well-formed 32-byte row. There is no measurement
+    to make. [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) requires the
+    owning doc to say why a rule sits above its lowest capable layer; here the answer is stronger —
+    **no layer at or below the API is capable of it at all**, in the same sense the `prf` extension
+    result is a claim the server cannot verify (see [passkeys.md](passkeys.md)).
+  - **What the server pins instead, and it is the whole list**: the verifier's exact decoded width
+    (32 bytes), the set size (10), and that the ten are distinct from each other. Nothing else.
+  - **Enforced in**: nowhere in this repository today. The only layer that can hold it is the client
+    that mints the code, and that client is not built — so the rule currently has no enforcer at all,
+    and the first browser to generate a set owns making it true and owns the test that says so.
+
+- **A verifier MUST decode to exactly 32 bytes, and both directions of that bound are refused.**
+  - **Why**: short is a shorter secret than the design claims, and it would hash to a well-formed
+    32-byte row nothing downstream could tell from a real one —
+    `CK_recovery_code_hashes_verifier_hash_length` watches the *hash*, which is 32 bytes whatever went
+    into it, so the database cannot catch a short verifier. Long means the client and the server
+    disagree about what a verifier is, and since the same code also derives the key-encryption key, a
+    width quietly accepted here surfaces much later as a key that will not unwrap.
+  - **Refused, never truncated.** Truncating would store the hash of a prefix, and no code would ever
+    redeem.
+  - **Enforced in**: `RecoveryCodeHash.VerifierLength` and the equality test in `RecoveryCodeHash.From`,
+    restated on the decode in `GenerateRecoveryCodesHandler.DecodeAndValidate` so a malformed set is a
+    400 with a sentence rather than a domain throw. `CK_recovery_code_hashes_verifier_hash_length`
+    holds the *hash* width, which is a different claim about a different value and is not a second
+    spelling of this one.
+
+- **An issued set MUST hold exactly ten verifiers, all distinct.**
+  - **Why**: too few leaves a person with fewer ways back than the screen told them they had; too many
+    is a client the server no longer agrees with about what a set is; zero is the argument a handler is
+    most likely to read as "nothing to do" and answer `200` to, having just replaced a live set with
+    nothing. Distinctness is the rule the count cannot express — ten members that are nine codes deep —
+    and left to the database it becomes a primary-key collision on `verifier_hash`, which is a `500`
+    for a caller whose request was merely wrong, arriving *after* the previous set has already been
+    deleted inside the same transaction.
+  - **Enforced in**: `GenerateRecoveryCodesHandler.RequiredCodeCount` and `DecodeAndValidate`, each
+    refusal carrying a sentence of its own. Ten is **product policy** and lives in Application for the
+    reason `CompleteAssertionHandler.SessionLifetime` does: a set of nine is not a malformed set, it is
+    a smaller quantity of a thing somebody chose, and a `CHECK` counting sibling rows cannot be written
+    without a trigger, which ADR 0002 refuses.
+
+- **An account MUST hold at most one set.**
+  - **Why**: two sets are two remaining-counts with nothing saying which one binds. "You have three
+    codes left" stops being answerable, "revoke the set" stops naming anything, and reissuing can only
+    *replace* while there is one thing to replace.
+  - **Enforced in**: the partial unique index `IX_credentials_user_id_recovery_codes` on `(user_id)
+    WHERE type = 'recovery_codes'`, pinned as
+    `CredentialConfiguration.RecoveryCodesPerUserIndexName`. The filter is load-bearing rather than
+    tidy: an unfiltered unique index over `user_id` enforces this rule just as well and *also* refuses
+    an account a second passkey, which is expressly allowed.
+
+- **A code MUST belong to the same person as its set, and to a credential of type `recovery_codes`.**
+  - **Enforced in**: the composite foreign key
+    `(credential_id, user_id, credential_type) → credentials (id, user_id, type)` against
+    `AK_credentials_id_user_id_type`, `ON DELETE CASCADE`, plus `CK_recovery_code_hashes_credential_type`
+    pinning the column's own vocabulary. The same idiom `sessions` and `passkey_public_keys` use — but
+    it matters more here than on either of them, because a redemption arrives **anonymous** and adopts
+    the `user_id` it finds on the row, and this table is exempt from row-level security, so a row whose
+    owner disagreed with its credential's would hand a redeemer somebody else's account with nothing
+    beneath the application watching.
+
+- **Generating a set MUST be authorized by a fresh WebAuthn assertion**, exactly as erasure and passkey
+  revocation are, and the gate MUST run before the presented set is validated.
+  - **Why the gate**: a set of recovery codes is a **full-session** credential, so minting one on an
+    unproven request hands the account to whoever holds a stolen bearer token — and, because issuing
+    *replaces*, destroys the real set in the same breath. More rides on this gate than on any other
+    re-authenticated route.
+  - **Why the ordering**: validating first would answer an unproven caller with the required set size
+    and the required verifier width, which are the two facts a client needs to present a set at all.
+    Past the gate those sentences cost nothing, because the caller has proved possession of an
+    authenticator registered to this account and there is nobody left to enumerate about.
+  - **Enforced in**: `GenerateRecoveryCodesHandler`, which calls
+    `PasskeyReauthentication.VerifyAsync` as its first statement and `DecodeAndValidate` as its second.
+    The assertion is a **member of the command** rather than a separate call the endpoint makes, so
+    issuing without proof is unreachable rather than merely uncustomary.
+
+### MUST NOT
+
+- **The set MUST NOT be requested without a proof, and no account may be named.**
+  `GenerateRecoveryCodesCommand` carries the verifiers and the assertion and **no field naming an
+  account** — the identity comes from `IUserContext` and nowhere else. Issuing *replaces*, so a
+  chooseable account here would be a way to destroy a stranger's recovery codes.
+
+- **Neither route MUST carry `ProvisionsUser`, and neither may ever gain it.** A provider id token
+  stays valid for up to an hour after the account it names is erased, so a route that minted an account
+  in order to answer a generation would let that stale token bring the account back **as a shell
+  holding recovery codes** — strictly worse than the empty shell the erasure and export groups argue
+  about, because a set of codes is a full-session credential, and because the resurrected account holds
+  no passkey and can therefore never clear the re-authentication gate in front of erasure again. The
+  `GET` is the easier of the two to mark by mistake, because a read looks harmless.
+
+- **The application role MUST NOT hold `UPDATE` of any shape on `recovery_code_hashes`.** With no
+  `UPDATE`, the delete is the only way a row can stop counting, so "a redeemed code is invalidated"
+  cannot be quietly reversed into a stamp. See
+  [ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md).
+
+- **The generation path MUST NOT materialise the previous set's `recovery_code_hashes` rows.** See the
+  gotcha below; this is the highest-value trap in the area and nothing beneath the application would
+  notice it.
+
+- **`GET /api/me/recovery-codes` MUST NOT answer `404`.** An account with no set has zero codes left,
+  which is an answer.
+
+- **No response, log line or trace MUST carry a verifier, a hash, or the set's credential id.** A
+  stored hash is the value a redemption is matched against, so publishing one would turn the read every
+  settings screen makes into the whole secret; an id in a response body is an id in a client log.
+
+## Business Rules & Invariants
+
+- **Rule**: A code is consumed by **deleting its row**. Nothing stamps it used, and no column records
+  that it ever existed.
+- **Why**: "redeeming a code invalidates that code" is then literally true rather than a property some
+  filter has to keep remembering. It is why there is no `UPDATE` grant of any shape, it keeps a
+  behavioural timestamp off a schema whose data-minimization rule refuses one, and it makes the
+  remaining count a plain `count(*)` over the table rather than a count of rows a predicate calls live.
+  It also leaves nothing for the erasure remnant vocabulary to find.
+- **Counterexample, and it is the design a future reader will propose**: a `redeemed_at_utc` stamped
+  instead of a delete. Three things break at once. The role needs `UPDATE` on the table, which is the
+  one privilege that could rewrite a secret in place. Every read of the set has to carry
+  `where redeemed_at_utc is null`, and the first one that forgets it counts spent codes as live and
+  offers a person ten ways back in when they have two — or, worse, matches a spent hash on redemption
+  and lets one code work twice. And the stamp is a behavioural record: the row now says *when this
+  person used a recovery code*, which is a fact about a person kept in a schema that keeps none.
+- **The accepted cost, stated rather than hidden**: a redeemed code leaves no trace, so *"was this code
+  used, or was it never issued?"* is unanswerable — by support, by the account holder, and by the
+  product. That is the same trade the product makes everywhere else: it keeps no behavioural log by
+  design, and [erasure.md](erasure.md) refuses a deletion record for the identical reason.
+- **Enforced in**: the grant matrix in `app-role-grants.sql` — `SELECT, INSERT, DELETE` and no
+  `UPDATE` — with `Database_RefusesEveryUpdateOnARecoveryCodeHash_…` pinning the absence.
+  `RecoveryCodeHash` exposes no mutator, and `ErasureRemnantVocabulary` would refuse a `redeemed_at`
+  column by name if one were ever added. See
+  [ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md).
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The server stores `SHA-256(V)` where `V` is a verifier the client derived from the code.
+  It never holds the code, and it never holds `V` beyond the request that presented it.
+- **Why**: the code is the input to two independent HKDF branches — one produces the verifier this
+  table is keyed on, the other produces the account's key-encryption key. Keeping them independent is
+  what lets the server check a redemption without ever being able to unwrap anything.
+- **Counterexample, and it is the reason the wording in this file is pedantic**: a client that sent the
+  **code** and a server that stored `SHA-256(code)`. Every test in the suite still passes — the widths
+  match, the redemption still works, the column still holds a digest nobody can reverse. What changes
+  is that for the duration of one request the operator holds the input to the key-encryption key's own
+  derivation, for an account whose keys they are otherwise structurally unable to read. One request
+  log, one crash dump, one debugging breakpoint, and the product's central claim is false for that
+  account.
+- **Enforced in**: `RecoveryCodeHash.HashOf`, which `From` calls rather than repeating the digest — the
+  two spellings must agree or **no recovery code in the system ever redeems**, and the symptom is
+  silent. Nothing on the path from `RecoveryCodeEndpoints` to the row takes a parameter a code could be
+  passed as.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The hash is **unsalted `SHA-256` from the BCL**. No package, no per-row salt, no slow key
+  derivation function.
+- **Why no salt**: a redemption arrives carrying a verifier and no identity at all — no credential, no
+  account — so the row has to be findable by its hash alone. A per-row salt is a value the lookup
+  cannot know before it has found the row it needs the salt to find, and anything else per-call — a
+  nonce, a keyed MAC over a deployment secret — turns the single lookup into a query with no argument
+  to give it.
+- **Why no slow KDF**: Argon2 and PBKDF2 exist to make a **guessable** input expensive to enumerate.
+  The input here is a uniform 256-bit value the client derived, so there is no dictionary to slow down
+  and a work factor buys nothing but latency on a request that already holds the account. This is the
+  hardening a future reader will reach for first, which is why the argument is written down before
+  they arrive.
+- **Why no package**: `SHA256.HashData` is in the BCL. Adding a hashing library would move a pinned row
+  in `ProjectReferenceGraphTests` and put a third-party dependency on `Domain`, which declares none —
+  see [dependency direction](../engineering/dependency-direction.md).
+- **Enforced in**: `RecoveryCodeHash.HashOf`, with the argument on the member itself.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: Issuing **replaces**; it never adds. `POST /api/me/recovery-codes` answers `200 OK` on a
+  first issue and on a regeneration alike, with the same body.
+- **Why the same status**: the resource is *the account's recovery-code set*, singular — the partial
+  unique index is what makes it singular — and a `POST` replaces it. A `201` on the first and a `200`
+  on the second would make a client branch on which of two states its own account was in before it
+  asked, which is a fact it has no way to know and no use for. A `409` on the second would refuse the
+  request a person makes precisely when they need it most: the card is lost, and the codes printed on
+  it must stop working.
+- **Why replace rather than add**: a handler that only inserted would leave the codes on a card the
+  person has already thrown away still working, which is the one outcome regeneration exists to
+  prevent.
+- **Enforced in**: `GenerateRecoveryCodesHandler` deletes the previous set's credential before adding
+  the new one, inside one `ITransactionalExecutor` delegate;
+  `IX_credentials_user_id_recovery_codes` is what makes a second set unstorable if it ever tried.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: A regeneration **revokes the replaced set's sessions explicitly**, before deleting its
+  credential — and the returned `sessionsEnded` is the only place that fact can be observed.
+- **Why**: `recovery_code_hashes` and `sessions` both cascade from `credentials`, so deleting the
+  credential ends those sessions **by accident and invisibly**. The schema after the request is
+  byte-identical whether the revocation ran or not, which means the obvious test — *"no session of the
+  replaced set survives"* — is green with the explicit revocation deleted and therefore proves nothing.
+  The count is the only place the evidence can live.
+- **Two mutations produce the same wrong number**, which is what makes the assertion sharp: deleting
+  the revocation call reports `0`, and swapping it with the delete reports `0` as well, because the
+  cascade has already taken the session rows and the sweep matches nothing.
+- **`sessionsEnded` is therefore a published response contract**, not an internal return value.
+  Widening the response later is additive; narrowing it — or dropping this member because "the cascade
+  handles it" — is breaking, and it removes the only observation of the rule.
+- **Enforced in**: `GenerateRecoveryCodesHandler` calls `RevokeSessionsForCredentialHandler` and then
+  `IRecoveryCodeRepository.DeleteSetAsync`, in that order, through the command handler rather than
+  straight to `ISessionRepository` — the handler is where the clock is read, so one decision to end
+  access is stamped as one instant. The same mechanism is documented for passkey revocation in
+  [sessions.md](sessions.md), which owns the general form of this trap.
+- **Between the two calls the tracked sessions are discarded**, and that is a second reason rather than
+  the first restated: the sweep loads every unrevoked `Session` into the change tracker, and removing
+  the `Credential` with those dependents still tracked makes EF emit its own `DELETE FROM sessions` on
+  a table granted no `DELETE` at all — so the request dies with `42501` having removed nothing. **The
+  SQLSTATE names a privilege and the cause is the change tracker; do not answer it with a grant on
+  `sessions`.**
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: Two concurrent generations for one account: the loser answers **`409`**, and **both halves
+  of the race answer it with the same sentence**.
+- **Why there are two halves**: the loser fails in one of two places depending on whether the account
+  already held a set. If it did, both requests load the same credential and both reach the delete — the
+  second matches zero rows and EF raises `DbUpdateConcurrencyException`. If it did not, neither request
+  reaches a delete at all: both insert, and the loser collides on
+  `IX_credentials_user_id_recovery_codes` with a `23505`. The second is the likelier half — it is the
+  double-clicked button on a fresh account.
+- **Why the sentence is shared, and this is the deliberate part**: the caller's situation is identical
+  either way — this attempt wrote nothing, somebody else's set is the account's, and the ten codes this
+  client has already shown a person will never redeem. Two different messages would let the loser tell
+  *"you already had a set"* from *"you did not"*, which is a fact about the account's previous state
+  that a losing request has no business learning and no use for.
+- **Not the four answers a reader will reach for instead.** Not `200`: this request wrote no set, and a
+  success is the one outcome that leaves somebody holding a printed card that unlocks nothing with no
+  way to find out. Not `404` — which is what the sibling revocation path answers to the *identical* EF
+  exception, and rightly, because a revocation names a credential in its route so "that row is gone" is
+  an answer about the thing asked for; a generation **names nothing**, and the resource it addresses
+  exists, so a `404` would be a false statement about the caller's own account. Not the gate's `401`:
+  the caller proved possession of an authenticator registered to this account, and reporting a lost
+  race as a failed proof sends a person to debug an authenticator that is working perfectly. Not
+  swallowed-and-continued in the shape `UserRepository.DeleteAsync` uses: the row is already gone, so
+  carrying on means inserting this request's set beside the winner's, and the same conflict arrives one
+  statement later and harder to read.
+- **The sentence says what to do next**, because a `409` with no detail tells a client nothing about
+  whether to retry — and the "present a fresh re-authentication" half is not a formality: this
+  attempt's nonce was consumed by the gate *before* the transaction opened, so a retry replaying it is
+  refused with the gate's own `401`.
+- **Enforced in**: `RecoveryCodeRepository.LostTheRaceMessage`, thrown from both catches.
+  `AddSetAsync` filters on the **constraint name** and never on the SQLSTATE alone — one save flushes
+  the credential and ten hash rows, each carrying unique rules of its own, so a bare
+  `catch (PostgresException)` would report two codes hashing alike as a lost race: a confident,
+  specific, false `409`. `DeleteSetAsync` narrows by the **entries** instead, because a concurrency
+  conflict carries no SQLSTATE and no constraint name, and requires every conflicting entry to be a
+  `Credential` this call itself marked `Deleted`.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: `GET /api/me/recovery-codes` is **not** gated by re-authentication, and an account with no
+  set answers `{"remaining": 0}` rather than `404`.
+- **Why not gated**: a count is not destructive — it names no code and unlocks nothing — and the
+  settings screen has to read it before it can render at all. Gating it would mint a re-authentication
+  nonce on **every page view**: a live nonce for a ceremony nobody intends to complete, behind a
+  WebAuthn prompt the person did not ask for.
+- **Why zero and not `404`**: there really is no `credentials` row to read, so a handler written as
+  "find the set, then count its codes" reaches for a `404` naturally — which is exactly why the read
+  counts rows and never looks for the set. The client has no use for the distinction: *"you have no
+  codes"* and *"you have zero left"* are the same actionable fact — generate a set — the control that
+  offers it is the same control, and a `404` would force a settings screen whose whole job is to say
+  what to do next to carry a branch whose two arms render the same thing.
+- **Enforced in**: `CountRecoveryCodesHandler`, which reads `IUserContext.UserId` and calls
+  `CountRemainingForUserAsync`; `CountRecoveryCodesQuery` carries no member and may not gain one. The
+  handler takes no `ILogger` and must never take one — what it holds is a user id and a count of an
+  account's remaining ways back in, and an account down to its last code is an account worth attacking
+  now.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: A set of recovery codes derives a **Full** session, the same kind a passkey opens.
+- **Why**: `federated` is now the only credential type that cannot open a session reaching budget
+  content, and the reason is unchanged — an authorization exchange with an identity provider returns
+  claims, not a secret a client can turn into a key. A passkey's authenticator holds the account's
+  keys; a recovery code is the secret those keys are wrapped under, so the code the holder typed
+  unwraps them. Both are therefore secrets in the holder's possession, and both open the same kind of
+  session.
+- **Nothing establishes one yet.** `Session.KindFor` maps the type and
+  `CK_sessions_kind_matches_credential` permits the row, but no code path calls `Session.Establish`
+  with a recovery-codes credential, because nothing redeems a code. The derivation is filed ahead of
+  its caller deliberately: the rule deciding what a session may read is not one to add in the same
+  commit as the path that first exercises it.
+- **Enforced in**: `Session.KindFor`, with every arm written out and a throwing discard arm, and
+  `CK_sessions_kind_matches_credential` restating it in the layer that rejects. The spelling of that
+  constraint is itself a decision — see [sessions.md](sessions.md).
+- **Source**: `[SOURCE: user-story]`
+
+## Workflows & State Transitions
+
+The life of **one code**, from the moment its verifier is filed:
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Issued : the client mints a code, derives V, the server stores SHA-256(V)
+    Issued --> Redeemed : the code is presented — its row is DELETED
+    Issued --> Replaced : the account regenerates — the set's credential is deleted and this row cascades
+    Redeemed --> [*]
+    Replaced --> [*]
+```
+
+**Both exits are the row ceasing to exist, and there is no third state.** No `Used`, no `Expired`, no
+`Revoked` — the absence is the whole of the rule above, so a state added here is a column added to the
+table. A code has no lifetime of its own either: it is live until it is spent or replaced, and nothing
+sweeps it.
+
+Of the two exits, only **Replaced** is reachable from a route today. `Redeemed` is drawn because it is
+the transition the schema, the grant matrix and the row-level-security exemption were all designed
+around, and it is what the next commit routes.
+
+| Transition | Triggered by | Validations |
+|---|---|---|
+| → Issued | `POST /api/me/recovery-codes` | a fresh `reauthentication` assertion for a passkey registered to **this** account; then exactly ten verifiers, each decoding to exactly 32 bytes, all distinct |
+| Issued → Replaced | `POST /api/me/recovery-codes` on an account that already holds a set | the same gate and the same validation; the previous set's sessions are revoked, then its credential is deleted and these rows cascade away |
+| Issued → Redeemed | nothing today | — |
+
+The request that issues a set:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant O as POST /api/passkeys/reauthentication/options
+    participant A as POST /api/me/recovery-codes
+    participant H as GenerateRecoveryCodesHandler
+    participant G as PasskeyReauthentication
+    participant D as PostgreSQL
+
+    Note over C: ten codes minted, V = HKDF(code, …) derived for each
+    C->>O: authenticated
+    O->>D: issue a reauthentication challenge (lives 5 minutes)
+    O-->>C: challenge
+    Note over C: the authenticator signs it
+    C->>A: ten verifiers + the assertion
+    A->>H: GenerateRecoveryCodesCommand
+    H->>G: VerifyAsync — OUTSIDE the transaction
+    G->>D: consume the nonce, find the key by handle AND owner, verify, accept the counter
+    H->>H: decode and validate the ten verifiers
+    H->>D: BEGIN
+    H->>D: revoke the previous set's sessions (explicitly)
+    H->>D: delete the previous set's credential — hashes cascade away
+    H->>D: insert the new credential and its ten hashes in ONE save
+    H->>D: COMMIT
+    A-->>C: 200 {"sessionsEnded": n}
+```
+
+The gate runs to completion **outside** the transactional delegate, for the two reasons
+[erasure.md](erasure.md) states for its own: the nonce has to stay spent through a rollback, and the
+delegate is replayed under a retrying execution strategy, so a gate inside it would consume a second
+time and refuse a **valid** request with the same `401` an attacker gets because the database blinked.
+The `22P02` ordering that governs the sign-in path is **not** what is going on here — identity is
+published by `UserProvisioningMiddleware` long before the handler runs.
+
+## Integration Points
+
+- **[Passkeys](passkeys.md)** — the `reauthentication` ceremony is what authorizes a generation. This
+  is the **third** spender of that nonce pool, beside erasure and passkey revocation, and it needs no
+  new ceremony value: all three are destructive acts reachable only by the account holder, and a proof
+  of presence is a proof of presence.
+- **[Sessions](sessions.md)** — a recovery-codes credential derives a `Full` session, and replacing a
+  set revokes the sessions the replaced one opened. `RevokeSessionsForCredentialHandler` now has **two**
+  callers.
+- **[Users & ownership](users-and-ownership.md)** — the set is a `credentials` row, so it inherits that
+  table's exemption, its immutability, and the `DELETE` that revocation introduced.
+- **[Data isolation](../engineering/data-isolation.md)** — `recovery_code_hashes` is the **sixth**
+  exempt table and the third whose exemption rests on *"this is read before the request has an
+  identity"*.
+- **[Erasure](erasure.md)** — a set and its codes cascade from `credentials`, which cascades from
+  `users`, so erasure needed no new statement and no new grant. Structural coverage, not enumerated.
+- **[Export](export.md)** — the export carries **no** recovery-code material of any kind, and that is
+  argued there rather than here.
+- **The grant matrix** — `GRANT SELECT, INSERT, DELETE ON recovery_code_hashes`, and no `UPDATE` of any
+  shape. This is the **third** `DELETE` on an identity table, after `users` and `webauthn_challenges`
+  (`credentials` making a fourth since revocation), and the sentence that earns it is the
+  `webauthn_challenges` sentence word for word: these rows are single-use secrets, so consuming one *is*
+  deleting it.
+
+## Edge Cases & Known Gotchas
+
+- **The most dangerous line in this area is one nobody would notice: the generation path must never
+  materialise the old set's `recovery_code_hashes` rows.** If they were tracked, removing the
+  `Credential` would make EF cascade into the copies it can see and emit its own
+  `DELETE FROM recovery_code_hashes`. Unlike `sessions` — where the identical mistake dies loudly with
+  `42501`, because the role holds no `DELETE` there — the role **is** granted `DELETE` on this table,
+  so the statement would **silently succeed**. The rows would leave by the application instead of by
+  the database's cascade, the request would answer `200`, and **no SQLSTATE would say so**. What holds
+  it today is a comment on `IRecoveryCodeRepository.DeleteSetAsync` and its call site, and nothing
+  else: no test can distinguish the two paths, because the table is empty afterwards either way. The
+  way this breaks is a future reader adding a *"load the codes so we can count them"* read to the
+  handler.
+- **The largest limitation in the feature is a sequencing one, and it is not a defect of the gate.**
+  Generating a set needs a fresh passkey assertion, so somebody who has **already** lost their
+  authenticator can never generate one. Recovery codes protect only people who generated a set
+  *beforehand*. The gate is nevertheless right: with a stolen bearer token, an ungated regeneration
+  would mint a **persistent** factor that survives token rotation and password-style remediation
+  entirely, which is a worse position than the one the codes were meant to improve. The consequence is
+  a requirement on the client — it must push generation at or near passkey registration, when the
+  person still has the authenticator in their hand — and that work belongs to a later story. Until it
+  ships, an account can hold a passkey and no codes indefinitely and nothing tells the person so.
+- **`CK_credentials_type_shape`'s `recovery_codes` arm is byte-identical to its `passkey` arm**, so
+  that constraint **no longer discriminates between those two types**. That is deliberate: both are
+  self-contained credentials with no issuer and no provider subject, so from that constraint's point of
+  view they are the same shape. What tells them apart is carried where it can be: `CK_credentials_type`
+  bounds the vocabulary, and the child tables' composite foreign keys each compare their own
+  `credential_type` copy against `credentials.type`, so a recovery-code row cannot hang off a passkey
+  credential and a public key cannot hang off a set. Collapsing the two arms into one would say the
+  same thing in less space and lose the record of which types the schema has considered.
+- **The role's `DELETE` on `recovery_code_hashes` has no caller today.** Regeneration deletes the
+  *set's* `credentials` row and the hashes leave by the database's own cascade, which runs with the
+  referencing table owner's privileges rather than this role's. The only path that would use the grant
+  is redemption, which is not routed. It is a privilege the role holds and nothing exercises — the same
+  shape as the unexercised `GRANT UPDATE (email) ON users` — and it stays because the redemption path
+  is next. If that slips, it should be revoked rather than left standing.
+- **The exempt table scopes nothing, so the application is the only thing scoping access to it.** The
+  redemption lookup is the one query that will be allowed to read `recovery_code_hashes` without naming
+  an owner; every other read **or write** must carry its own `where user_id = …`. Today the only
+  application access at all is the count, which does. See
+  [data isolation](../engineering/data-isolation.md) for the full inventory.
+- **Two codes hashing alike are unstorable rather than a duplicate nobody notices**, because
+  `verifier_hash` is the primary key. That is a `23505` the repository deliberately does **not**
+  translate into the lost-race `409`: it is a different broken rule with a different answer, which is
+  why the catch filters on the constraint name.
+- **A verifier repeated across two different sets is invisible here, by design.** Distinctness is
+  checked within the presented set only, because the previous set's rows are never loaded — see the
+  gotcha above. A client that reused a code from a set it just replaced would produce a row the
+  database accepts, and nothing would say so.
+- **A failed generation still spends the assertion.** The gate commits its writes — the deleted nonce
+  and the advanced signature counter — before the transaction opens, and neither returns with a
+  rollback. So a caller who loses the race, or presents a malformed set, has to run the ceremony again.
+  That is correct rather than a defect, and it must **not** be answered by moving the gate inside the
+  transaction; [erasure.md](erasure.md) owns the argument.
+- **The client cannot generate a set yet, so the settings screen shows nothing about recovery codes.**
+  `GET /api/me/recovery-codes` is reachable and answers correctly; nothing calls it. Read that the same
+  way the disabled erasure control is read — the gate is built and the ceremony in front of it is not.

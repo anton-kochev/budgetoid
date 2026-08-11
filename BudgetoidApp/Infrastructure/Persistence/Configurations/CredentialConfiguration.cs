@@ -17,6 +17,12 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
     // does will have to tell the two apart.
     public const string FederatedPerUserIndexName = "IX_credentials_user_id_federated";
 
+    // Pinned for the same reason as the two above, and exposed for the same reason
+    // FederatedPerUserIndexName is: a 23505 from this index names a rule of its own — one issued set
+    // of recovery codes per account — and whatever comes to translate that collision into an answer
+    // has to tell it apart from the other two by name.
+    public const string RecoveryCodesPerUserIndexName = "IX_credentials_user_id_recovery_codes";
+
     private const string UserIdIndexName = "IX_credentials_user_id";
 
     // Pinned for the same reason as the index names above. This one names a unique constraint rather
@@ -32,7 +38,8 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
             // the member as text, so the check costs nothing extra, while a PG enum turns adding a
             // member into an ALTER TYPE dance. The price is that a new CredentialType member needs a
             // migration as well as a code change.
-            table.HasCheckConstraint("CK_credentials_type", "type in ('passkey', 'federated')");
+            table.HasCheckConstraint(
+                "CK_credentials_type", "type in ('passkey', 'federated', 'recovery_codes')");
 
             // The same dictionary idiom, bounding the issuer vocabulary the way the one above bounds
             // the type vocabulary: without it 'Google' and 'google' are two accounts for one person,
@@ -51,10 +58,22 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
             // is null and a check evaluating to null is satisfied, so the length test alone would let the
             // subject-less row through. Provider gets no length test — the dictionary above already
             // refuses an empty one, and one row breaching two checks makes the reported name an accident.
+            //
+            // The recovery_codes arm's predicate is IDENTICAL to the passkey arm's, and that is stated
+            // rather than left to be discovered: from this constraint's point of view the two types are
+            // now the same shape, so it no longer discriminates between them. That is acceptable and
+            // deliberate. Both are self-contained credentials with no issuer and no provider subject,
+            // and what tells them apart lives where it can: CK_credentials_type bounds the vocabulary,
+            // and the child tables' composite foreign keys — passkey_public_keys, then
+            // recovery_code_hashes — each compare their own credential_type copy against this column, so
+            // a recovery-code row cannot hang off a passkey credential or the reverse. Collapsing the
+            // two arms into one would say the same thing in less space and lose the record of which
+            // types the schema has considered.
             table.HasCheckConstraint(
                 "CK_credentials_type_shape",
                 "(type = 'federated' and provider is not null and subject is not null and length(subject) > 0) "
-                + "or (type = 'passkey' and provider is null and subject is null)");
+                + "or (type = 'passkey' and provider is null and subject is null) "
+                + "or (type = 'recovery_codes' and provider is null and subject is null)");
         });
         builder.HasKey(credential => credential.Id);
 
@@ -108,6 +127,24 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
             .HasFilter("type = 'federated'")
             .HasDatabaseName(FederatedPerUserIndexName);
 
+        // The same rule shape as the index above, over the other self-contained credential type: one
+        // issued set of recovery codes per account. Nothing else on the row refuses a second — the
+        // provider-identity index names federated rows only, and every recovery-codes row carries
+        // (NULL, NULL) — so without this an account can grow two sets, which is not a feature anyone
+        // is adding but exactly what a bug on an issuing path would do. Two sets are two
+        // remaining-counts with nothing saying which one binds: "you have three codes left" stops
+        // being answerable and "revoke the set" stops naming anything, and reissuing can only
+        // replace while there is one thing to replace. That is the argument
+        // Credential.CreateRecoveryCodes' own remarks make, owned here by the layer that rejects.
+        //
+        // Partial, filtered to this type, and the filter is load-bearing rather than tidy: an
+        // unfiltered unique index over user_id enforces this rule just as well and also refuses an
+        // account a second passkey, which FR-043 allows.
+        builder.HasIndex(credential => credential.UserId, RecoveryCodesPerUserIndexName)
+            .IsUnique()
+            .HasFilter("type = 'recovery_codes'")
+            .HasDatabaseName(RecoveryCodesPerUserIndexName);
+
         // EF's foreign-key convention creates the plain user_id index only while nothing else covers the
         // column, and the partial index above covers federated rows alone. Declared explicitly so the
         // cascade from users, and every read of an account's credentials, keeps a full index.
@@ -147,6 +184,7 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
     {
         CredentialType.Passkey => "passkey",
         CredentialType.Federated => "federated",
+        CredentialType.RecoveryCodes => "recovery_codes",
         _ => throw new ArgumentOutOfRangeException(
             nameof(type),
             type,
@@ -161,6 +199,7 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
     {
         "passkey" => CredentialType.Passkey,
         "federated" => CredentialType.Federated,
+        "recovery_codes" => CredentialType.RecoveryCodes,
         _ => throw new InvalidOperationException(
             $"The credentials.type column holds '{value}', a value CK_credentials_type should have refused."),
     };

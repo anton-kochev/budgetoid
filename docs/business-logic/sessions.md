@@ -31,8 +31,12 @@ response deliberately carries no handle to the row it created — and the API st
 other request from the Google ID token it is handed, exactly as
 [users-and-ownership.md](users-and-ownership.md) describes.
 
-**`RevokeSessionsForCredentialHandler` now has exactly one caller.** Revoking a passkey ends that
-passkey's sessions before deleting the credential row; see [passkeys.md](passkeys.md). Read that
+**`RevokeSessionsForCredentialHandler` now has two callers.** Revoking a passkey ends that passkey's
+sessions before deleting the credential row (see [passkeys.md](passkeys.md)), and regenerating an
+account's recovery codes ends the replaced set's sessions before deleting *its* credential row (see
+[recovery-codes.md](recovery-codes.md)). Both are the same shape and both are load-bearing for the
+same reason — the cascade would take those rows anyway, so the explicit revocation is the only thing
+that makes *when* access ended observable. Read that
 against the paragraph above before deciding what it is worth: because no session token is issued, a
 session is not what any request is authenticated by today, so ending one signs nobody out. The
 operation is correct and it is **anticipatory** — it makes the rule true of the rows now, so that the
@@ -48,10 +52,11 @@ device out — would be describing the session token as if it shipped.
   instant at which it was revoked. It holds no navigation properties: it names its user and its
   credential by id, exactly as **Credential** names its user by id.
 - **SessionKind** — `Locked` or `Full`, and it is **derived from the establishing credential's
-  type**, never supplied. A `Passkey` credential opens a `Full` session; a `Federated` one opens a
-  `Locked` session. `Session.ReadsBudgetContent` is the computed reading of that, and it is true only
-  for `Full`. `Locked` is declared first so that `default(SessionKind)` is the value reaching
-  nothing — the order is the fail-closed direction, not alphabetical accident.
+  type**, never supplied. A `Passkey` credential and a `RecoveryCodes` credential each open a `Full`
+  session; a `Federated` one opens a `Locked` session, and it is the **only** type that does.
+  `Session.ReadsBudgetContent` is the computed reading of that, and it is true only for `Full`.
+  `Locked` is declared first so that `default(SessionKind)` is the value reaching nothing — the order
+  is the fail-closed direction, not alphabetical accident.
 - **`Session.CredentialType`** — a copy of the establishing credential's type, carried on the row so
   the database can check the derivation. A `CHECK` sees only the row in front of it, so the fact
   `kind` is derived from has to be on that row for the derivation to be checkable at all.
@@ -143,16 +148,33 @@ erDiagram
 - **Why**: an authorization exchange with an identity provider returns claims, not a secret the
   client can turn into a key. So any account reachable by a provider sign-in would be an account the
   provider's holder could read — which is why a federated credential opens a session that reaches no
-  budget content at all. A passkey is the only credential type whose authenticator can hold the
-  account's keys.
-- **Enforced in**: `CK_sessions_kind_matches_credential`, `(kind = 'full') = (credential_type =
-  'passkey')`, which is the lowest layer that can state the rule declaratively. Without it the rule
+  budget content at all, and **`federated` is the only credential type that cannot**. The rule runs
+  that way round rather than the other: a passkey's authenticator holds the account's keys, and a set
+  of recovery codes is the secret those keys are wrapped under, so both are secrets in the holder's
+  own possession and both open a `Full` session. See
+  [recovery-codes.md](recovery-codes.md); nothing establishes a session from a recovery-codes
+  credential yet, because nothing redeems a code.
+- **Enforced in**: `CK_sessions_kind_matches_credential`,
+  `(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))`, which is the lowest layer
+  that can state the rule declaratively. Without it the rule
   lived only in the factory while `GRANT SELECT, INSERT ON sessions` stayed table-wide on `INSERT`
   — `(credential_id = <a federated credential>, kind = 'full')` was a fully storable row.
   `CK_sessions_kind` bounds only the vocabulary and the composite foreign key proves only whose the
   two rows are; neither refuses that pair.
   Above it, `Session.Establish` takes the `Credential` and no kind, and derives it through a switch
-  with both arms written out and a throwing discard arm.
+  with every arm written out and a throwing discard arm.
+- **The full side stays enumerated, and the spelling is a decision rather than a style.** The mirror
+  form — `(kind = 'locked') = (credential_type = 'federated')` — says the same thing about every row
+  this schema can hold today, reads better, and is what a later reader will propose. It fails **open**:
+  a fourth credential type added to the vocabulary is not `federated`, so it satisfies the right-hand
+  side and is granted a full session by default, with nobody having decided that. The shipped form
+  fails closed — an unenumerated type gets no full session until somebody adds it here, which is the
+  same decision `Session.KindFor` forces by writing out every arm.
+  **No test in the suite can tell the two spellings apart until that fourth type exists**, so no
+  assertion can separate "the rule changed meaning" from "the wording changed", and this paragraph and
+  the comment beside the constraint are the only things carrying the difference. That is also why
+  adding `recovery_codes` to the `in` list was the correct edit rather than the occasion to simplify:
+  the list growing by one member is exactly what the form is for.
   `SessionTests.Session_ExposesNoWayToChooseItsKind` reflects over the public surface and fails on
   any parameter or settable property of type `SessionKind`. That is what makes the rule
   **unrepresentable** rather than merely untested: without it, the obvious accommodation for a caller
@@ -257,7 +279,7 @@ stateDiagram-v2
 | Transition | Triggered by | Validations |
 |---|---|---|
 | → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached today only from `CompleteAssertionHandler` after a passkey assertion verifies | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
-| Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` calls before deleting the credential | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
+| Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` and `GenerateRecoveryCodesHandler` each call before deleting a credential | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
 
 There is no transition back. Nothing un-revokes a session and nothing extends one.
@@ -267,6 +289,9 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
 - **[Users & Ownership](users-and-ownership.md)** — the credential that establishes a session, and
   the account it belongs to. A session adds nothing to identity; it records what a credential already
   proved.
+- **[Recovery Codes](recovery-codes.md)** — the second credential type whose sessions are `Full`, and
+  the second caller of the revocation sweep. It is also where the `sessionsEnded` contract is argued
+  from the other side.
 - **`user_isolation`** — the same policy `users` and `budgets` carry, keyed on the same session
   setting. `sessions` is the third table policed on the person rather than on a budget.
 - **`SessionContextInterceptor`** — **not** about a session in this file's sense. It writes
@@ -281,13 +306,17 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   a credential row deletes its sessions, a path that removes a credential without revoking first
   passes a test asserting the sessions are gone — while leaving nothing to say when access ended. Any
   credential-removal path must revoke explicitly **and then** delete, or the fact is unobservable.
-  - **How the one path that exists resolves it.** `RevokePasskeyHandler` revokes and then deletes —
-    and because the delete removes the very rows the revocation just stamped, the schema afterwards
-    is identical either way. So the evidence leaves in the response instead: the revocation answers
-    with the count `RevokeForCredentialAsync` returned. That is what the returned count was for; see
-    the revocation rule above.
+  - **How the two paths that exist resolve it.** `RevokePasskeyHandler` and
+    `GenerateRecoveryCodesHandler` each revoke and then delete — and because the delete removes the
+    very rows the revocation just stamped, the schema afterwards
+    is identical either way. So the evidence leaves in the response instead: each answers
+    with the count `RevokeForCredentialAsync` returned, as `sessionsEnded`. That is what the returned
+    count was for; see the revocation rule above.
   - **The test nobody should write** is "after revocation the credential has no active session". It
     is green with the revocation call deleted, and therefore proves nothing.
+  - **On the recovery-code path a second mutation produces the same wrong number**: swapping the
+    revocation with the delete also reports `0`, because the cascade has already taken the session
+    rows and the sweep matches nothing. So the count discriminates ordering as well as presence.
 
 - **Between the revocation and the delete, the tracked sessions have to be discarded.** Revoking
   loads every unrevoked `Session` into the change tracker. Remove the credential with those
@@ -295,14 +324,24 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   `DELETE FROM sessions` — on a table granted `SELECT, INSERT, UPDATE (revoked_at_utc)` and
   deliberately no `DELETE`, so the request dies with `42501`. **The failure names a permission and
   the cause is the change tracker; do not answer it with a grant on `sessions`.** This is the same
-  mechanism `EraseAccountHandler` documents for `budgets`, on the same stack.
+  mechanism `EraseAccountHandler` documents for `budgets` and `GenerateRecoveryCodesHandler` documents
+  for the set it replaces, on the same stack.
+  - **The absent `DELETE` is what makes this loud, and one table beside it does not have that
+    protection.** `recovery_code_hashes` **is** granted `DELETE`, so the same change-tracker mistake
+    there succeeds silently instead of raising `42501` — see
+    [recovery-codes.md](recovery-codes.md). Read the two together: the `42501` on this table is a
+    diagnostic the grant matrix buys, not an inconvenience it imposes.
 - **Revoked and expired rows accumulate.** Nothing sweeps them, and the application role holds no
   `DELETE` grant to do it with. Not a defect at today's size; it becomes one before the product has
   many users, and the grant that a sweep needs is the one this file argues against adding.
-- **`RevokeSessionsForCredentialHandler` has exactly one caller**, `RevokePasskeyHandler`, and the
+- **`RevokeSessionsForCredentialHandler` has two callers**, `RevokePasskeyHandler` and
+  `GenerateRecoveryCodesHandler`, and the
   `int` it returns is the only observable evidence the explicit revocation ran — see the cascade
   gotcha above. Revoking the **federated** credential still has no caller and is not expected to
   gain one: that credential is replaced rather than removed.
+  - **Both callers reach it through the command handler rather than straight to `ISessionRepository`**,
+    and that is deliberate: the handler is where the clock is read, so one decision to end access is
+    stamped as one instant however many rows it touches.
 - **The expiry is decided by the caller, and today there is exactly one.** `Session.Establish`
   validates only that the expiry is after the creation instant; the number itself —
   **14 days** — is a constant on `CompleteAssertionHandler`. It lives in Application rather than

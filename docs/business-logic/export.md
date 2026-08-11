@@ -49,9 +49,9 @@ Every persisted column of every row it names ships, **including the parent ids t
 implies** — `budgets.userId` and each row's `budgetId`.
 
 `credentials`, `sessions`, `passkey_public_keys`, `passkey_signature_counters`,
-`webauthn_challenges` and `currencies` are **not** in the document. The first five are identity
-material rather than the person's own records; `currencies` is global reference data belonging to no
-tenant.
+`webauthn_challenges`, `recovery_code_hashes` and `currencies` are **not** in the document. The first
+six are identity material rather than the person's own records; `currencies` is global reference data
+belonging to no tenant. The sixth carries an argument of its own — see the rule below.
 
 ## Constraints
 
@@ -87,6 +87,8 @@ tenant.
 - The refusal message **MUST NOT** name a budget id. In Development `GlobalExceptionHandler` echoes
   the exception's message *and* its full stack trace into the response body, so an id in the message
   leaks twice.
+- The document **MUST NOT** carry recovery-code material of any kind — no verifier hash, no remaining
+  count, no issued instant, and no row for the set's credential. See the rule below.
 
 ## Business Rules & Invariants
 
@@ -183,6 +185,36 @@ tenant.
   back empty would satisfy "no logger" perfectly while measuring nothing. It covers **one type**: not
   `DataExportEndpoints`, which lives in `Api` and which `UnitTests.csproj` deliberately does not
   reference, and not the framework, which logs on its own.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The export carries **no recovery-code material**. Not the verifier hashes, not the count
+  of codes remaining, not the set's `credentials` row, not the day it was issued.
+- **Why**: the completeness rule this file opens with is about the person's **own records** — the
+  money picture they created — and identity material has always sat outside it. Recovery codes make
+  that boundary worth restating rather than inheriting, because they are the first excluded rows a
+  reader can argue are "about the person" in a way a signature counter is not.
+- **What a hash would give the person: nothing.** They cannot redeem with it — there is no preimage —
+  and they cannot regenerate a code from it. The one thing they might want, *"do I still have codes?"*,
+  is a live question about an account that may change tomorrow, and `GET /api/me/recovery-codes`
+  answers it exactly. A saved file answering it answers it as of the day it was written.
+- **What a hash would cost: a value in a downloaded file that something can be run against offline.**
+  An export lands in a downloads folder, a backup, a cloud sync and an email attachment, and it lives
+  there for years with none of the database's protections around it. Putting the digest a redemption is
+  matched against into that artifact turns "somebody read your export" into "somebody can grind for
+  your recovery codes at their leisure, and succeed silently if the client that minted them was ever
+  weak". That is precisely the attack the entropy rule the server **cannot enforce** is the only
+  defence against — see [recovery-codes.md](recovery-codes.md).
+- **The count is excluded for a smaller reason and it is still a reason.** *"This account has two
+  recovery codes left"* is a fact worth harvesting on its own: an account down to its last code is an
+  account worth attacking now. It is the same argument `CountRecoveryCodesHandler` makes for taking no
+  logger.
+- **Enforced in**: `ExportDocument` and `ExportReadService`, which name the `users` row, `budgets` and
+  the five budget-owned collections and nothing else. There is no member for any of it, so exclusion is
+  structural rather than a filter somebody has to remember — which is also why no test guards it
+  directly: the shape of the document is pinned by `DataExportCompletenessTests`, and a member added
+  here would have to be added deliberately.
 - **Source**: `[SOURCE: user-story]`
 
 ---

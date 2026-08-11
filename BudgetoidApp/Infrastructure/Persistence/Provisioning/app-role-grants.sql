@@ -133,7 +133,10 @@ GRANT UPDATE (email) ON users TO budgetoid_app;
 -- that discovers who is asking — but PostgreSQL applies it to the whole TABLE, so anything added
 -- here is readable by every application session regardless of who that session names. That mismatch
 -- is cheap while the columns are (id, user_id, type, provider, subject, created_at_utc) and stops
--- being cheap the moment a wrapped key or a recovery-code hash joins them.
+-- being cheap the moment a wrapped key or a recovery-code hash joins them. The recovery-code hash
+-- has since stopped being hypothetical and landed on recovery_code_hashes instead, which is this
+-- paragraph working rather than a reason to retire the example: the hypothetical is what made the
+-- decision visible before there was anything to decide about, so it stays.
 --
 -- So the exemption pins that column set, and adding a column here goes red. The red means MOVE THE
 -- COLUMN, not widen the pin: a WebAuthn assertion verifies its signature with the stored public key
@@ -219,14 +222,23 @@ GRANT UPDATE (signature_counter) ON passkey_signature_counters TO budgetoid_app;
 -- with that written reason, and its column set pinned, because the pin is what stops a
 -- person-identifying column landing here later.
 --
--- Of the identity tables — users, credentials, sessions, passkey_public_keys,
--- passkey_signature_counters and this one — exactly two are granted DELETE, and each for a reason the
--- other four do not have. This one, because these rows are nonces: consuming one IS deleting it,
--- which is the property that makes a challenge single-use, and a row nobody can delete is a row swept
--- by a path that does not exist. users, because it is the root every other owned row cascades from,
--- so deleting it is how an account is erased — see that block for why the cascade means the four in
--- between need no grant of their own. Contrast the sessions block, where revocation writes a column
--- precisely so the row stays accountable — opposite decisions, because the rows mean opposite things.
+-- Of the seven identity tables — users, credentials, sessions, passkey_public_keys,
+-- passkey_signature_counters, recovery_code_hashes and this one — exactly four are granted DELETE,
+-- and each for a reason the other three do not have. This one, because these rows are nonces:
+-- consuming one IS deleting it, which is the property that makes a challenge single-use, and a row
+-- nobody can delete is a row swept by a path that does not exist. recovery_code_hashes, because that
+-- same sentence is true of a recovery code word for word — see its block. credentials, because
+-- revoking a passkey removes the row rather than marking it, scoped by the application and by
+-- nothing beneath it — see ADR 0014. users, because it is the root every other owned row cascades
+-- from, so deleting it is how an account is erased — see that block for why the cascade means the
+-- three in between need no grant of their own. Contrast the sessions block, where revocation writes
+-- a column precisely so the row stays accountable — opposite decisions, because the rows mean
+-- opposite things.
+--
+-- (This paragraph said "two of six" before recovery_code_hashes existed, and it was already wrong
+-- then: credentials had held DELETE since ADR 0014 and the count never moved with it. A count in
+-- prose is a claim nothing executes, so it drifts silently — which is the argument for reading the
+-- GRANT lines rather than trusting this sentence, and for fixing it when you notice.)
 -- (The budget-owned tables further down hold DELETE too, for the ordinary reason that a person may
 -- delete their own accounts, categories and transactions.)
 --
@@ -236,6 +248,59 @@ GRANT UPDATE (signature_counter) ON passkey_signature_counters TO budgetoid_app;
 -- here.
 REVOKE ALL ON webauthn_challenges FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON webauthn_challenges TO budgetoid_app;
+
+-- recovery_code_hashes: one row per recovery code that has not been redeemed, holding the SHA-256
+-- of a verifier the client derives from the code. The code itself never reaches this deployment at
+-- all, so nothing here can be turned back into one.
+--
+-- Exempt from row-level security, and it is the third table resting on the same argument credentials
+-- and passkey_public_keys rest on: the row is found before the request has an identity a policy could
+-- be keyed on. A recovery code is redeemed ANONYMOUSLY — somebody redeeming one has lost the
+-- authenticator that would have proved who they are — so the lookup by hash is what establishes the
+-- identity, and a policy keyed on app.current_user_id would refuse the very query that produces the
+-- value it wants to compare against. It would refuse it loudly rather than quietly: an unset setting
+-- reaches the policy as ''::uuid and raises 22P02 on every redemption. That is the trap ADR 0012
+-- records, and this is the third table to walk up to it.
+--
+-- DELETE, and the sentence that earns it is the webauthn_challenges sentence word for word: these
+-- rows are single-use secrets, so consuming one IS deleting it. FR-054 says a redeemed code is
+-- invalidated, and a removed row is the only spelling of that which needs no second mechanism to be
+-- believed — no used flag a bug can clear, no timestamp a reader has to remember to filter on, and
+-- nothing left for the erasure remnant vocabulary to find. The remaining count is count(*).
+--
+-- No UPDATE of any shape, and that is the corollary worth having because it is checkable in one
+-- statement: with no UPDATE the delete is the only way a row can stop counting, so the decision
+-- above cannot be quietly reversed into a stamp. Database_RefusesEveryUpdateOnARecoveryCodeHash_...
+-- is that statement, and Database_LetsTheAppRoleDeleteAnyRecoveryCodeHash_OnASessionNamingNobody
+-- states the unbounded half — it goes red the day somebody polices this table.
+--
+-- The delete is unpoliced, like credentials' and unlike users'. ADR 0014's three legs are what hold
+-- it, and all three have to keep holding: the delete takes the LOADED ENTITY and never a hash a
+-- caller supplied, every read that produces one is either owner-and-type-scoped or IS the discovery
+-- lookup this exemption exists for, and the read and the write share one transaction. What makes the
+-- discovery-scoped delete sound rather than merely narrow is that the caller's own input names the
+-- row: it is found by SHA-256 of a 256-bit secret they must present in full, so selecting a row you
+-- cannot name is guessing it. That is not a new argument — ConsumeAsync already deletes a challenge
+-- by the nonce the caller presents, on the table directly above.
+--
+-- Nothing uses this grant yet, and that is worth saying plainly rather than letting the paragraph
+-- above read as a description of live traffic. Redemption is the one path that will, and it is not
+-- routed; regenerating a set deletes the SET's credentials row instead, and these rows leave by the
+-- cascade from it. So the role holds a privilege nothing exercises — the same shape as the
+-- GRANT UPDATE (email) ON users above — and when redemption lands it becomes the single caller. A
+-- reader looking for a second one will not find it, and should not add one.
+--
+-- Note what a column added here would land on, because it is the same mismatch as credentials': the
+-- exemption is granted to one QUERY and applied by PostgreSQL to the whole TABLE. The pinned column
+-- set in RowLevelSecurityCoverage is what holds it to its reason, and the columns it pins are what
+-- the lookup needs before an identity exists. A wrapped key is the one this table will be offered
+-- first — Story 12.1 wraps the account's keys under every recovery factor, and this is the obvious
+-- place to put the recovery-code copy. It is the wrong place, for the reason the pin exists: a
+-- wrapped key is read AFTER redemption has answered who is asking, so it belongs on a table carrying
+-- user_id, which the coverage rule polices by itself with no argument needed. When the pin goes red
+-- the fix is to MOVE THE COLUMN, never to widen the pin.
+REVOKE ALL ON recovery_code_hashes FROM budgetoid_app;
+GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 
 -- budgets: a budgets row is never updated at all (rule B2), so there is no UPDATE grant of
 -- any shape. No delete path exists either.

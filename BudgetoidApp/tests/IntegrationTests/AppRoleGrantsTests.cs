@@ -27,8 +27,9 @@ namespace IntegrationTests;
 /// privilege question with yes. What each test then puts on that session is not uniform and is
 /// never incidental: a test aiming at a policed row declares an identity so the row is reachable at
 /// all, and a test aiming at a table row-level security exempts declares nothing — the two
-/// <c>credentials</c> tests, the two <c>passkey_public_keys</c> tests and the
-/// <c>webauthn_challenges</c> one — which is the measurement rather than a gap.
+/// <c>credentials</c> tests, the two <c>passkey_public_keys</c> tests, the two
+/// <c>recovery_code_hashes</c> tests and the <c>webauthn_challenges</c> one — which is the
+/// measurement rather than a gap.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -912,6 +913,267 @@ public sealed class AppRoleGrantsTests
     }
 
     [Test]
+    public async Task Database_RefusesEveryUpdateOnARecoveryCodeHash_WhileStillAllowingInsertAndDelete()
+    {
+        // Arrange — two accounts, one recovery-codes credential each, and one unredeemed code hanging
+        // off the first account's. One credential per account and not two, because
+        // IX_credentials_user_id_recovery_codes now refuses the second: an account holds at most one
+        // issued set, since two sets are two remaining-counts with nothing saying which one binds.
+        //
+        // That index is what reshaped this arrangement, and the reshaping made it stronger in both
+        // places it touched. The permitted INSERT now hangs off the SAME credential the seeded code
+        // does, carrying a second, different verifier hash — which is the natural shape rather than a
+        // workaround, because a set is many hash rows on one credential. Same account, same type, same
+        // credential, so nothing but the grant stands between that statement and the row: a leaked
+        // INSERT grant lands it outright.
+        //
+        // The credential_id statement below aims at the second ACCOUNT's recovery-codes credential,
+        // which is the only recovery-codes credential left to aim at. An earlier note here worried
+        // that a cross-account target passes for the wrong reason — the composite foreign key over
+        // (credential_id, user_id, credential_type) refuses it whatever the grant says. It does, and
+        // that worry is already answered two paragraphs down in the Act block: what makes each of
+        // these statements a measurement is the SQLSTATE, not whether the statement could have
+        // succeeded. A leaked grant RUNS the statement and reports 23503; a refused grant never runs
+        // it and reports 42501. The same reasoning already covers user_id and credential_type, neither
+        // of which could land either.
+        //
+        // Both credentials and the code row are seeded with raw SQL on the superuser connection
+        // although Credential.CreateRecoveryCodes now exists, for the reason InsertPasskeyCredentialAsync
+        // predates: these tests measure the application role's write surface, and seeding through the
+        // domain would make the arrangement depend on a write path that is itself under test.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid credentialId = await InsertRecoveryCodesCredentialAsync(admin, userId);
+        Guid otherCredentialId = await InsertRecoveryCodesCredentialAsync(admin, otherUserId);
+        await InsertRecoveryCodeHashAsync(admin, credentialId, userId, SeededVerifierHash);
+
+        // A bare app-role connection — no user, no budget, nothing on the session at all — and, as in
+        // the credentials and passkey_public_keys tests above, that is the point rather than a
+        // leftover. recovery_code_hashes is the third table row-level security deliberately exempts: a
+        // code is redeemed by an anonymous request that finds the row by the SHA-256 of the verifier
+        // the person typed, before anybody has said who they are, so a policy keyed on
+        // app.current_user_id would refuse the very query that establishes the identity — and refuse
+        // it loudly, because an unset setting reaches the policy as ''::uuid and raises 22P02. Every
+        // statement below reaching its row on an anonymous session is the executable statement of that
+        // exemption. Do not "tidy" this into a configured connection.
+        await using NpgsqlConnection app = new(host.AppConnectionString);
+        await app.OpenAsync();
+
+        // Act — every column of recovery_code_hashes by name: verifier_hash, credential_id, user_id,
+        // credential_type, created_at_utc. The rule is "a recovery code is consumed by deleting its
+        // row, never by stamping it used", and the absence of an UPDATE grant of any shape is the one
+        // statement that holds it. Column-for-column, because that is the only shape the absence can
+        // be pinned in — a table-wide GRANT UPDATE would let every one of them through, and so would a
+        // column list quietly added for a redeemed_at_utc nobody argued for.
+        //
+        // The forged verifier hash is exactly 32 bytes and differs from the seeded one, for the reason
+        // the passkey test forges a well-formed handle: a value CK_recovery_code_hashes_verifier_hash_length
+        // would refuse anyway makes its refusal say nothing about the grant. The first three columns
+        // cannot all land even with a leak — the foreign key is composite over
+        // (credential_id, user_id, credential_type) so no value moves any one of them alone, and
+        // CK_recovery_code_hashes_credential_type refuses every spelling but its own. What still makes
+        // each a measurement is the SQLSTATE: a leaked grant lets the statement run and reports 23503
+        // or 23514, not 42501.
+        PostgresException hashRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update recovery_code_hashes set verifier_hash = @value where credential_id = @id",
+            ForgedVerifierHash,
+            credentialId);
+        PostgresException credentialRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update recovery_code_hashes set credential_id = @value where credential_id = @id",
+            otherCredentialId,
+            credentialId);
+        PostgresException userRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update recovery_code_hashes set user_id = @value where credential_id = @id",
+            otherUserId,
+            credentialId);
+        PostgresException credentialTypeRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update recovery_code_hashes set credential_type = @value where credential_id = @id",
+            "passkey",
+            credentialId);
+        PostgresException createdAtRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update recovery_code_hashes set created_at_utc = @value where credential_id = @id",
+            ForgedInstant,
+            credentialId);
+
+        // Assert — rewriting verifier_hash is the attack the missing grant closes from the front: the
+        // row is found by that column and by nothing else, so a role that could edit it could file a
+        // code of its own choosing under somebody's account and then redeem it. Repointing
+        // credential_id or user_id is the same door from the side — an anonymous redemption adopts the
+        // user_id it finds on the row, and no policy is watching this table, so a moved owner is a
+        // handover of an account rather than a misfiled row. And an editable created_at_utc would make
+        // the issue date of a set — the one fact that says which set is current — a thing the
+        // application could rewrite.
+        await Assert.That(hashRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(credentialRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(credentialTypeRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(createdAtRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+
+        // The success half of the pair (see the class remarks), and here it is an INSERT and a DELETE
+        // rather than an update of the one permitted column, because there is no permitted column and
+        // there is not meant to be one. Issuing a set writes rows and redeeming a code removes one, so
+        // both halves of the table's whole lifecycle have to work for a role holding no UPDATE at all
+        // — which is what rules out the other way every refusal above could pass, the role reaching
+        // nothing here whatsoever.
+        //
+        // Onto the same credential the seeded code hangs off, with a second, different verifier hash.
+        // That is the shape a set actually has — many hash rows on the one credential standing for the
+        // issued set — and it is the strongest arrangement available: same account, same type, same
+        // credential, so a leaked INSERT grant has nothing else to trip over on the way in.
+        await using NpgsqlCommand insert = new(
+            "insert into recovery_code_hashes " +
+            "(verifier_hash, credential_id, user_id, credential_type, created_at_utc) " +
+            "values (@verifier_hash, @credential_id, @user_id, 'recovery_codes', @created_at_utc)",
+            app);
+        insert.Parameters.AddWithValue("verifier_hash", IssuedVerifierHash);
+        insert.Parameters.AddWithValue("credential_id", credentialId);
+        insert.Parameters.AddWithValue("user_id", userId);
+        insert.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        await Assert.That(await insert.ExecuteNonQueryAsync()).IsEqualTo(1);
+
+        // Redemption, and the affected count is the assertion rather than the absence of an exception:
+        // a DELETE matching zero rows raises nothing at all, and on an unpoliced table there is no
+        // policy to blame for the miss — so without the count this passes on a statement that removed
+        // nothing.
+        //
+        // By verifier_hash rather than by credential_id, and that is not a workaround for the two rows
+        // now sharing a credential — it is the statement redemption actually sends. The row is found by
+        // the SHA-256 of the verifier the person typed and by nothing else, which is the whole of what
+        // narrows a DELETE grant this table scopes by nothing. A delete by credential_id here would
+        // take the entire set, which is revocation, not redemption; the count of exactly 1 against a
+        // credential holding two rows is what says this statement took one code and left the set
+        // standing, and it is the assertion the old single-row arrangement could not make.
+        await using NpgsqlCommand redeem = new(
+            "delete from recovery_code_hashes where verifier_hash = @verifier_hash", app);
+        redeem.Parameters.AddWithValue("verifier_hash", IssuedVerifierHash);
+        await Assert.That(await redeem.ExecuteNonQueryAsync()).IsEqualTo(1);
+
+        // And the seeded row is untouched, column for column. A SQLSTATE says each statement was
+        // rejected; only this says none of them rewrote the row on its way to failing, and that the
+        // delete above took the row it named rather than the table's contents. Reading verifier_hash
+        // back is what turns "one row survives" into "the RIGHT row survives": the two rows on this
+        // credential differ in that column alone, so a delete that took the wrong one leaves the same
+        // count and a different hash.
+        byte[] storedHash = await SelectBytesAsync(
+            admin,
+            "select verifier_hash from recovery_code_hashes where credential_id = @id",
+            credentialId);
+        await Assert.That(storedHash).IsEquivalentTo(SeededVerifierHash);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select user_id from recovery_code_hashes where credential_id = @id", credentialId))
+            .IsEqualTo(userId);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select credential_type from recovery_code_hashes where credential_id = @id",
+                credentialId))
+            .IsEqualTo("recovery_codes");
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select created_at_utc from recovery_code_hashes where credential_id = @id",
+                credentialId))
+            .IsEqualTo(SeedInstant);
+
+        // Exactly one row left on the credential, which is the other half of the redemption claim: the
+        // inserted code is gone and the set it belonged to is not. A count of 2 would mean the delete
+        // matched nothing despite reporting a row, and a count of 0 would mean it swept the credential
+        // rather than the code.
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select count(*) from recovery_code_hashes where credential_id = @id",
+                credentialId))
+            .IsEqualTo(1L);
+
+        // Nothing reached the second account. Every refused statement above named the first account's
+        // row, and the credential_id statement aimed at this credential, so a leaked UPDATE grant is
+        // the one way a row could have arrived under it — that is what this zero rules out, and it is
+        // not the same claim as the SQLSTATE, which says only what the server reported.
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select count(*) from recovery_code_hashes where credential_id = @id",
+                otherCredentialId))
+            .IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_LetsTheAppRoleDeleteAnyRecoveryCodeHash_OnASessionNamingNobody()
+    {
+        // Arrange — two accounts, each with a recovery-code credential and one unredeemed code. The
+        // second one is the target: deleting the session's own row would be indistinguishable from a
+        // correctly scoped delete, and there is no session here to own anything anyway.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid credentialId = await InsertRecoveryCodesCredentialAsync(admin, userId);
+        Guid otherCredentialId = await InsertRecoveryCodesCredentialAsync(admin, otherUserId);
+        await InsertRecoveryCodeHashAsync(admin, credentialId, userId, SeededVerifierHash);
+        await InsertRecoveryCodeHashAsync(
+            admin, otherCredentialId, otherUserId, OtherAccountVerifierHash);
+
+        // A bare app-role connection — no app.current_user_id, no app.current_budget_id, nothing on
+        // the session at all — and, as in Database_LetsTheAppRoleDeleteAnyCredential_OnASessionNamingNobody
+        // above, that is the measurement rather than a leftover. Naming a user here would make the
+        // delete look scoped by something.
+        await using NpgsqlConnection app = new(host.AppConnectionString);
+        await app.OpenAsync();
+
+        // Act
+        int deleted = await ExecuteAsync(
+            app, "delete from recovery_code_hashes where credential_id = @id", otherCredentialId);
+
+        // Assert — this test asserts a hole, and it is here so that nobody mistakes the hole for an
+        // accident. recovery_code_hashes is exempt from row-level security because the redemption read
+        // runs before anybody has said who they are, and the role holds DELETE on it because deleting
+        // the row IS the redemption. Put together, that is a destructive privilege the database scopes
+        // by nothing: the grant names the table, no policy names the rows, so a statement sent by a
+        // connection that has not said who it is removes any account's unredeemed code. What narrows
+        // it is the redemption lookup's own predicate — the verifier hash, which nobody can produce
+        // without the code — and the application's own owner filter on every read or write of this
+        // table that is not that lookup. Nothing beneath the application does.
+        //
+        // None of this is desirable and none of it is a regression: this test goes red the day
+        // somebody succeeds in policing recovery_code_hashes, and that is the day the exemption in
+        // RowLevelSecurityCoverage needs rewriting rather than the day this test needs relaxing. It is
+        // also the exact control that would go missing if the exemption were ever quietly justified by
+        // "the hash is unguessable" instead of by "the request has no identity yet".
+        //
+        // The count of 1 is the assertion rather than the absence of an exception, for the reason the
+        // credentials test gives: a DELETE matching nothing raises nothing, and an unpoliced table
+        // offers no policy to blame for the miss. The read-back is what says the row is gone rather
+        // than merely reported as affected.
+        await Assert.That(deleted).IsEqualTo(1);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select count(*) from recovery_code_hashes where credential_id = @id",
+                otherCredentialId))
+            .IsEqualTo(0L);
+
+        // The first account's code survives, which is not a second opinion on the count: it says the
+        // statement is scoped by its own predicate and by nothing else, so a delete naming one
+        // credential takes one credential's rows. A grant this wide is only survivable because the
+        // statement that carries it is exact.
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select count(*) from recovery_code_hashes where credential_id = @id",
+                credentialId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Database_AllowsInsertingAndDeletingAWebAuthnChallenge()
     {
         // Arrange — nothing to seed beside it. A challenge belongs to a ceremony rather than to a
@@ -989,6 +1251,23 @@ public sealed class AppRoleGrantsTests
     private static readonly byte[] ForgedCoseKey = [0xB6, 0x04, 0x05, 0x06];
 
     /// <summary>
+    /// The four recovery-code verifier hashes these tests write, read back and forge. Every one is
+    /// exactly 32 bytes, which is the whole content of
+    /// <c>CK_recovery_code_hashes_verifier_hash_length</c> — a value that check would refuse anyway
+    /// makes its refusal say nothing about the grant, for the same reason the passkey test forges a
+    /// well-formed handle. All four differ from each other, or the read-back asserting the seeded row
+    /// is unchanged, and the counts saying the right row left, would prove nothing.
+    /// </summary>
+    private static readonly byte[] SeededVerifierHash = [.. Enumerable.Repeat((byte)0xA7, 32)];
+
+    private static readonly byte[] ForgedVerifierHash = [.. Enumerable.Repeat((byte)0xB8, 32)];
+
+    private static readonly byte[] IssuedVerifierHash = [.. Enumerable.Repeat((byte)0x94, 32)];
+
+    private static readonly byte[] OtherAccountVerifierHash =
+        [.. Enumerable.Repeat((byte)0x6D, 32)];
+
+    /// <summary>
     /// The nonce the challenge test writes. Exactly 32 bytes, which is the whole content of
     /// <c>CK_webauthn_challenges_length</c>.
     /// </summary>
@@ -1035,9 +1314,13 @@ public sealed class AppRoleGrantsTests
 
     /// <summary>
     /// Writes a second credential onto an existing account, on the superuser connection. Raw SQL
-    /// because no domain factory mints a passkey yet; <c>(passkey, null, null)</c> is the shape
+    /// although <see cref="Credential.CreatePasskey" /> now exists, because these tests measure the
+    /// application role's write surface and seeding through the domain would make the arrangement
+    /// depend on a write path that is itself under test; <c>(passkey, null, null)</c> is the shape
     /// <c>CK_credentials_type_shape</c> permits, and the partial unique index on
-    /// <c>(provider, subject)</c> names only federated rows, so it does not collide.
+    /// <c>(provider, subject)</c> names only federated rows, so it does not collide. Unlike a
+    /// recovery-codes credential an account may hold several of these — FR-043 — which is why no
+    /// per-user index names them.
     /// </summary>
     private static async Task<Guid> InsertPasskeyCredentialAsync(
         NpgsqlConnection connection,
@@ -1053,6 +1336,67 @@ public sealed class AppRoleGrantsTests
         command.Parameters.AddWithValue("created_at_utc", SeedInstant);
         await command.ExecuteNonQueryAsync();
         return credentialId;
+    }
+
+    /// <summary>
+    /// Writes a recovery-codes credential onto an existing account, on the superuser connection, and
+    /// returns its id. One credential stands for the whole issued set, and an account holds
+    /// <b>at most one</b>: <c>IX_credentials_user_id_recovery_codes</c> is a partial unique index over
+    /// <c>user_id</c> filtered to this type, so a second call for the same account raises
+    /// <c>23505</c>. Callers needing two of these need two accounts.
+    /// </summary>
+    /// <remarks>
+    /// Raw SQL although <see cref="Credential.CreateRecoveryCodes" /> now exists, for the reason
+    /// <see cref="InsertPasskeyCredentialAsync" /> keeps its own: these tests measure the application
+    /// role's write surface, so seeding through the domain would make the arrangement depend on a
+    /// write path that is itself under test. <c>(recovery_codes, null, null)</c> is the shape
+    /// <c>CK_credentials_type_shape</c> permits — the same shape as a passkey row, which is deliberate
+    /// and recorded on that constraint — and the <c>(provider, subject)</c> index names only federated
+    /// rows, so the two NULLs never collide there.
+    /// </remarks>
+    private static async Task<Guid> InsertRecoveryCodesCredentialAsync(
+        NpgsqlConnection connection,
+        Guid userId)
+    {
+        Guid credentialId = Guid.CreateVersion7();
+        await using NpgsqlCommand command = new(
+            "insert into credentials (id, user_id, type, provider, subject, created_at_utc) " +
+            "values (@id, @user_id, 'recovery_codes', null, null, @created_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("id", credentialId);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        await command.ExecuteNonQueryAsync();
+        return credentialId;
+    }
+
+    /// <summary>
+    /// Writes one unredeemed recovery code onto an existing recovery-codes credential, on the
+    /// superuser connection.
+    /// </summary>
+    /// <remarks>
+    /// Raw SQL for a second reason on top of the one above: <c>RecoveryCodeHash</c> deliberately
+    /// carries no factory, no hashing helper and no validation method, because each of those is a rule
+    /// somebody has to argue for and arrives with the test that demands it. Seeding through the
+    /// superuser connection is what lets these tests measure the application role's write surface
+    /// without first depending on that role being able to write the arrangement.
+    /// </remarks>
+    private static async Task InsertRecoveryCodeHashAsync(
+        NpgsqlConnection connection,
+        Guid credentialId,
+        Guid userId,
+        byte[] verifierHash)
+    {
+        await using NpgsqlCommand command = new(
+            "insert into recovery_code_hashes " +
+            "(verifier_hash, credential_id, user_id, credential_type, created_at_utc) " +
+            "values (@verifier_hash, @credential_id, @user_id, 'recovery_codes', @created_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("verifier_hash", verifierHash);
+        command.Parameters.AddWithValue("credential_id", credentialId);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        await command.ExecuteNonQueryAsync();
     }
 
     /// <summary>

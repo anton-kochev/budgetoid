@@ -34,17 +34,31 @@ to a **user** rather than to a budget, and that rule has its canonical statement
   asserts, only the address is kept — a claim the product does not use is one it does not store,
   because what is never collected never leaks and never has to be erased.
 - **Credential** — one way of signing in to an account, carrying exactly one `CredentialType`:
-  `Federated` (an external provider vouches for the user) or `Passkey` (the authenticator holds it,
-  and no external party is involved). A federated credential names its `Provider` — drawn from a
+  `Federated` (an external provider vouches for the user), `Passkey` (the authenticator holds it, and
+  no external party is involved), or `RecoveryCodes` (one row standing for a whole **set** of codes
+  the person wrote down, never one row per code — see [recovery-codes.md](recovery-codes.md)). A
+  federated credential names its `Provider` — drawn from a
   dictionary the database enforces, of which `google` is the only member today — and the provider's
   `Subject`, the OAuth `sub` claim, stable, non-empty and at most `Credential.MaxSubjectLength` =
-  255 characters. A passkey credential carries neither. An account may hold more than one
-  credential, but **at most one of type `federated`**. Every account is created with exactly one
+  255 characters. The other two carry neither. An account may hold more than one
+  credential, but **at most one of type `federated`** and **at most one of type `recovery_codes`**.
+  Every account is created with exactly one
   federated Google credential; a signed-in person may then register passkeys beside it, each carrying
-  its own verification material on its own tables — see [passkeys.md](passkeys.md). A signed-in
+  its own verification material on its own tables — see [passkeys.md](passkeys.md) — and may issue
+  themselves one set of recovery codes. A signed-in
   person may **revoke a passkey**, proving presence with a fresh WebAuthn assertion, and an account's
   **last** passkey is refused. The **federated** credential is not revocable at all: it is replaced
-  rather than removed, by an email change that is not built.
+  rather than removed, by an email change that is not built. A recovery-code set has no revocation
+  route either; it is **replaced** by issuing again, which is a single `POST`.
+- **`CK_credentials_type_shape` no longer discriminates between `passkey` and `recovery_codes`.**
+  Its two arms are byte-identical — both require `provider is null and subject is null` — because both
+  are self-contained credentials with no issuer and no issuer-assigned identifier, so from that
+  constraint's point of view they are the same shape. What tells them apart lives where it can:
+  `CK_credentials_type` bounds the vocabulary, and the child tables' composite foreign keys each
+  compare their own `credential_type` copy against `credentials.type`, so a public key cannot hang off
+  a set of codes and a code cannot hang off a passkey. **Collapsing the two arms into one would say the
+  same thing in less space and lose the record of which types the schema has considered**, so they stay
+  written out.
 - **Email** — a value object wrapping the email string; required, trimmed, and at most
   `Email.MaxLength` = 254 characters. Two `Email` values are equal iff their strings are equal.
   Uniqueness is a **wider** comparison than that equality: `users.email` carries a unique index on
@@ -58,6 +72,7 @@ erDiagram
     CREDENTIAL ||--o{ SESSION : establishes
     CREDENTIAL ||--o| PASSKEY_PUBLIC_KEY : "is verified by"
     CREDENTIAL ||--o| PASSKEY_SIGNATURE_COUNTER : "is counted by"
+    CREDENTIAL ||--o{ RECOVERY_CODE_HASH : "one row per unredeemed code"
     USER ||--o{ BUDGET : owns
     BUDGET ||--o{ ACCOUNT : owns
     BUDGET ||--o{ CATEGORY_GROUP : owns
@@ -100,12 +115,18 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   it to application code would make the tables that name a person the only ones the database does not
   guard. See [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
 
-  Two tables that name a person are nonetheless **exempt**, and each for the same reason: `credentials`
-  and `passkey_public_keys` are read to work out *who is asking* and *whether it is really them*,
+  Three tables that name a person are nonetheless **exempt**, and each for the same reason:
+  `credentials`, `passkey_public_keys` and `recovery_code_hashes` are read to work out *who is asking*
+  and *whether it is really them*,
   before the request has an identity a policy could be keyed on. An exemption is granted to a query
   but applied to a whole table, so each pins the exact column set its reason was argued over, and a
   new column there goes red until someone moves it somewhere policed. See
-  [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
+  [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
+  and [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md). The third is
+  the sharpest of them: a recovery code is redeemed by an **anonymous** request, so the lookup by hash
+  is what establishes the identity, and a policy keyed on `app.current_user_id` would refuse the very
+  query that produces the value it wants to compare against — loudly, with `22P02`, on every
+  redemption. That redemption is not routed yet; the exemption is filed with the schema it belongs to.
   - **Enforced in**: the `user_isolation` policies live beside the grants in
     `BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration;
     `SessionContextInterceptor` puts `app.current_user_id` on every connection the context opens, so
@@ -439,10 +460,18 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   `POST /api/me/credentials/{credentialId}/revocation`; the revocation carries a fresh WebAuthn
   assertion in its body, exactly as erasure does.
 - **Why**: an authenticator that is lost, sold, or compromised has to be removable without erasing
-  the account, which was the only remedy before. The floor of one passkey exists because a passkey is
-  the only credential type that opens a session reaching budget content: an account left holding only
-  its federated credential could still sign in, still could not reach its own money, and could not
-  even prove presence for an erasure.
+  the account, which was the only remedy before. The floor of one passkey exists because `federated`
+  is the one credential type that can never open a session reaching budget content: an account left
+  holding only its federated credential could still sign in, still could not reach its own money, and
+  could not even prove presence for an erasure.
+- **The floor is "the last passkey" and a set of recovery codes does not lift it**, which is the
+  reading a later story will be tempted into. A recovery-codes credential derives a `Full` session, so
+  it looks like the second thing that should satisfy the floor. It cannot, and the reason is circular
+  by construction: **issuing a set requires a fresh passkey assertion**, so an account holding codes
+  and no passkey can never regenerate them, and once those codes are spent or lost there is nothing
+  left to re-authenticate with. Allowing the last passkey to be revoked because codes exist would trade
+  a state a person can recover from for one nobody can. The floor moves only when some path can issue a
+  recovery factor without already holding one. See [recovery-codes.md](recovery-codes.md).
 - **Enforced in**: `RevokePasskeyHandler`, and **nowhere below it.** The rule is a cross-row claim —
   no `CHECK` sees another row, no unique index expresses "at least one" — and both mechanisms that
   could reach it are refused: a trigger by
@@ -471,12 +500,14 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 ---
 
 - **Rule**: The application role may **delete a `users` row**, and that one statement removes the
-  account's whole structural graph. Of the other owned tables it holds `DELETE` on exactly one,
-  `credentials`, and that grant exists for revocation rather than for erasure — `budgets`,
+  account's whole structural graph. Of the other owned tables it holds `DELETE` on exactly two,
+  `credentials` and `recovery_code_hashes`, and **neither grant exists for erasure** — the first is
+  for passkey revocation, the second for redeeming a recovery code. `budgets`,
   `sessions`, `passkey_public_keys`, `passkey_signature_counters` (user-owned) and `payees`
   (budget-owned) are emptied by the cascade descending from the `users` row, not by a privilege of
-  their own. The asymmetry is worth reading twice: erasure needs no `DELETE` on `credentials` and
-  would still work if the grant were revoked tomorrow.
+  their own, and so is `recovery_code_hashes` — its own grant is beside the point for this path. The
+  asymmetry is worth reading twice: erasure needs neither of those two grants and
+  would still work if both were revoked tomorrow.
 - **It is not sufficient on its own.** Five edges in the owned graph are `Restrict` rather than
   `Cascade`, and erasure empties the one table that is the child of four of them — `transactions` —
   before it deletes this row; see
@@ -578,6 +609,15 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   column — uniqueness and filter irrelevant. It is therefore declared explicitly now. Removing that
   declaration would silently leave cascade delete and every read of an account's credentials with
   only a federated-rows-only index.
+- **The same rule shape now exists over the other self-contained type.**
+  `IX_credentials_user_id_recovery_codes`, partial on `type = 'recovery_codes'`, gives an account at
+  most **one issued set of
+  recovery codes**. Nothing else on the row refuses a second — the provider-identity index names
+  federated rows only, and every recovery-codes row carries `(NULL, NULL)`. Two sets are two
+  remaining-counts with nothing saying which one binds. The filter is load-bearing rather than tidy:
+  an **unfiltered** unique index over `user_id` enforces this rule just as well and also refuses an
+  account a second passkey, which is expressly allowed. Its `23505` is translated into a `409` naming
+  a lost race; see [recovery-codes.md](recovery-codes.md).
 - **Counterexample**: assuming the column *truncates* to fit. It does not — `varchar(n)` **rejects**
   an over-long value with SQLSTATE `22001`, which is what makes it enforcement in the sense
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) means. Contrast
@@ -744,6 +784,12 @@ The budget branch that runs after this, on every path, is in
   `ProvisionsUser` — so a brand-new subject whose **first** authenticated request is this one is
   refused with `NoAccountTitle` rather than provisioned. A client must reach one of the six
   account-creating route groups before it reaches this one.
+- **[Recovery Codes](recovery-codes.md)**: the third credential type, and the second family of rows
+  hanging off a `credentials` row. Its two routes — `POST` and `GET /api/me/recovery-codes` — carry no
+  `ProvisionsUser` and may never gain one: a stale provider token that minted an account there would
+  resurrect it **holding a full-session credential and no passkey**, which is strictly worse than the
+  empty shell the erasure and export routes argue about, because such an account can never clear the
+  re-authentication gate in front of erasure again.
 - **[Budgets](budgets.md)**: provisioning resolves the identity *and* the ambient budget in one step.
   Everything a user can see hangs off that budget, so all tenancy rules — stamping, filtering, name
   uniqueness, the 404 behaviour — are documented there.

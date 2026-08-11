@@ -225,7 +225,6 @@ public sealed class ErasureAtomicityTests
         // what an unseeded database looks like too.
         await Assert.That(before).IsNotEmpty();
         await Assert.That(NamesOf(before.Where(table => table.Value == 0))).IsEmpty();
-
         // Down to baseline, in both directions. Every owned table is empty…
         await Assert.That(NamesOf(after.Where(table =>
                 !TablesAnErasureDoesNotOwn.Contains(table.Key, StringComparer.Ordinal)
@@ -704,11 +703,24 @@ public sealed class ErasureAtomicityTests
     }
 
     /// <summary>
-    /// Adds the passkey material and the session row no endpoint writes yet, so the whole-database
-    /// enumeration has something to find in every user-owned table rather than only in the two
-    /// provisioning fills. Without it the non-vacuity guard fails on <c>sessions</c>, which is the
-    /// point of the guard.
+    /// Adds the passkey material, the session row and the set of recovery codes, so the
+    /// whole-database enumeration has something to find in every user-owned table rather than only in
+    /// the two provisioning fills. Without it the non-vacuity guard fails on <c>sessions</c> and on
+    /// <c>recovery_code_hashes</c>, which is the point of the guard.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Written out of band on the container superuser, through the domain factories rather than
+    /// through the routes that will one day mint these rows — and that stays the right choice after
+    /// those routes exist. What this file measures is erasure's transaction boundary, and what it
+    /// needs from an arrangement is a row in every counted table. Reaching them through an issuance
+    /// route would tie every test here to that route's request shape, its own authorization and its
+    /// own rules about how large a set is, so a change to any of them would redden an erasure test for
+    /// a reason that has nothing to do with erasure. The factories are what keep the seeded rows the
+    /// shape production writes; the superuser connection is what keeps the arrangement independent of
+    /// the application role's write surface, which <c>AppRoleGrantsTests</c> measures on its own.
+    /// </para>
+    /// </remarks>
     private static async Task SeedIdentityRowsAsync(PostgresTestHost host, Guid userId)
     {
         await using BudgetoidDbContext db = new(
@@ -725,7 +737,64 @@ public sealed class ErasureAtomicityTests
         // Established against the passkey rather than the federated credential because
         // CK_sessions_kind_matches_credential ties the two together.
         db.Sessions.Add(Session.Establish(passkey, SeedInstant, SeedInstant.AddDays(14)));
+
+        // One credential for the whole set — IX_credentials_user_id_recovery_codes admits no second
+        // one — carrying SeededRecoveryCodeCount codes rather than one. See that constant for why the
+        // count is what makes the erasure observable as a set going rather than as a row going.
+        Credential recoveryCodes = Credential.CreateRecoveryCodes(userId, SeedInstant);
+        db.Credentials.Add(recoveryCodes);
+
+        for (int ordinal = 0; ordinal < SeededRecoveryCodeCount; ordinal++)
+        {
+            db.RecoveryCodeHashes.Add(RecoveryCodeHash.From(
+                recoveryCodes, RecoveryCodeVerifierFor(userId, ordinal), SeedInstant));
+        }
+
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// How many unredeemed codes the seeded set holds, and it is deliberately more than one.
+    /// </summary>
+    /// <remarks>
+    /// A set of one cannot tell "the erasure took the set" from "the erasure took a row" — both leave
+    /// the table at zero. One <see cref="Credential" /> per set and one row per code is the whole
+    /// shape of <c>recovery_code_hashes</c>, and it is what the cascade from <c>credentials</c> has to
+    /// carry away wholesale.
+    /// </remarks>
+    private const int SeededRecoveryCodeCount = 3;
+
+    /// <summary>
+    /// One verifier of the seeded set: the owner's id, zero padding, and the code's ordinal in the
+    /// last byte.
+    /// </summary>
+    /// <remarks>
+    /// Distinct in both directions, and both are load-bearing. <c>verifier_hash</c> is the primary
+    /// key, so two codes of one set derived from the same bytes would hash alike and be one row —
+    /// which is the ordinal — and two accounts seeded alike would make the second one unstorable,
+    /// which is the owner's id. The width is <see cref="RecoveryCodeHash.VerifierLength" /> because
+    /// <see cref="RecoveryCodeHash.From" /> refuses any other, from both sides.
+    /// </remarks>
+    private static byte[] RecoveryCodeVerifierFor(Guid userId, int ordinal)
+    {
+        byte[] verifier = new byte[RecoveryCodeHash.VerifierLength];
+
+        // Written straight into the buffer rather than through ToByteArray().CopyTo, so there is no
+        // intermediate array — and the bool is the one failure this call has: a VerifierLength
+        // shortened below the sixteen bytes of a Guid, which would otherwise leave a verifier with no
+        // owner in it and make two accounts collide on the primary key.
+        if (!userId.TryWriteBytes(verifier))
+        {
+            throw new InvalidOperationException(
+                $"A verifier of {RecoveryCodeHash.VerifierLength} bytes has no room for an owner id.");
+        }
+
+        // checked, so a SeededRecoveryCodeCount raised past a byte overflows here rather than wrapping
+        // to an ordinal already used — a repeated ordinal is a repeated verifier, which is one row
+        // where the seeding meant two, and the guard this whole change exists for would still pass.
+        verifier[^1] = checked((byte)ordinal);
+
+        return verifier;
     }
 
     /// <summary>

@@ -96,16 +96,21 @@ public sealed class Session
 
     // An authorization exchange with an identity provider returns claims, not a secret the client
     // can turn into a key, so any account reachable by a provider sign-in would be an account the
-    // provider's holder could read. A passkey is the only credential type whose authenticator can
-    // hold the account's keys, which is why it is the only one that opens a session reaching budget
-    // content. Both arms are written out rather than folded into a default so that adding a
-    // CredentialType member is a decision someone has to make here. The derivation is restated in
-    // the schema by CK_sessions_kind_matches_credential: a rule deciding what a session may read is
-    // not one to leave to a single factory while the column list stays reachable by any INSERT.
+    // provider's holder could read. Federated is the only credential type that cannot hold the
+    // account's keys, which is why it is the only one whose session does not reach budget content:
+    // a passkey's authenticator holds them, and a set of recovery codes is the secret the content
+    // and index keys are wrapped under, so the code the holder typed unwraps them. That is FR-109,
+    // and the two-tier argument behind it lives in §8.C of the SRS. Every arm is written out rather
+    // than folded into a default so that adding a CredentialType member is a decision someone has to
+    // make here — the rule runs by enumeration, not by "anything that is not federated". The
+    // derivation is restated in the schema by CK_sessions_kind_matches_credential: a rule deciding
+    // what a session may read is not one to leave to a single factory while the column list stays
+    // reachable by any INSERT.
     private static SessionKind KindFor(CredentialType credentialType) => credentialType switch
     {
         CredentialType.Federated => SessionKind.Locked,
         CredentialType.Passkey => SessionKind.Full,
+        CredentialType.RecoveryCodes => SessionKind.Full,
         _ => throw new ArgumentOutOfRangeException(
             nameof(credentialType),
             credentialType,

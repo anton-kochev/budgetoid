@@ -130,6 +130,15 @@ public sealed class OwnershipKeyImmutabilityTests
             "PasskeyPublicKey.UserId",
             "PasskeySignatureCounter.UserId",
             "Payee.BudgetId",
+            // The eleventh key, and the one this rule is strictest about. recovery_code_hashes is
+            // exempt from row-level security — the row is found by the SHA-256 of the verifier on an
+            // anonymous redemption request, before anybody has said who they are — so nothing beneath
+            // the application re-checks whose row it is, exactly as on Credential.UserId. What is
+            // worse here is what the column is *for*: the redemption adopts the user_id it finds, so a
+            // settable one is not a row filed under the wrong owner, it is a handover of somebody
+            // else's account, and no policy underneath would notice. Read the mutability test beside
+            // this one as carrying that weight for this property.
+            "RecoveryCodeHash.UserId",
             "Session.UserId",
             "Transaction.BudgetId",
         ];

@@ -67,9 +67,11 @@ Load-bearing rules, each explained there or in the linked decision:
   EF `BudgetIsolation` query filters turn a foreign row into the API's 404/400. Neither is
   duplication — do not delete either. See [ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md).
 - `users`, `budgets`, `sessions` and `passkey_signature_counters` are policed on the **user** by
-  `user_isolation`, not on a budget. `credentials`, `passkey_public_keys` and `webauthn_challenges`
-  are exempt, each because it is read *before* the request has an identity a policy could be keyed
-  on — so the credential lookup must never join `users`. **An exempt table scopes nothing**: only the
+  `user_isolation`, not on a budget. `credentials`, `passkey_public_keys`, `webauthn_challenges` and
+  `recovery_code_hashes` are exempt, each because it is read *before* the request has an identity a
+  policy could be keyed on — so the credential lookup must never join `users`, and a recovery code is
+  found by the hash of the verifier on a request that has said nothing about who is asking. **An
+  exempt table scopes nothing**: only the
   discovery lookup may omit an owner filter, and every other read **or write** of one must carry its
   own `where user_id = …`. That now includes a `DELETE` — revoking a passkey removes a `credentials`
   row scoped by the application and by nothing beneath it, which is why the delete takes the loaded
@@ -101,6 +103,19 @@ Load-bearing rules, each explained there or in the linked decision:
   `budget_id`, `user_isolation` if it carries `user_id`. Grants fail closed (`42501`),
   RLS fails open. `RlsCoverageTests` and the deploy-time verifier read one shared classifier
   (`RowLevelSecurityCoverage`); a table carrying neither column fails both.
+- **A recovery code never reaches the server.** The client mints it, derives a verifier from it, and
+  sends only that; `recovery_code_hashes` stores `SHA-256(verifier)`. The code is what the next epic
+  derives a key-encryption key from, so a code on the wire would hand the operator the keys. Two
+  consequences a reader will try to "fix": the server **cannot** check the 128-bit entropy rule — it
+  sees fixed-width opaque bytes, and pins width, set size and distinctness only — and a code is
+  consumed by **deleting** its row, never by stamping it, which is why the table holds no `UPDATE`
+  grant of any shape. One `credentials` row per **set**, at most one set per account. The generation
+  path must never materialise the old set's hash rows: EF would then delete them itself instead of
+  the database's cascade, and unlike `sessions` the role *has* `DELETE` here, so it would succeed
+  silently. See [recovery-codes.md](docs/business-logic/recovery-codes.md) and
+  ADRs [0015](docs/decisions/0015-mint-recovery-codes-on-the-client-and-store-only-a-hash-of-a-verifier.md),
+  [0016](docs/decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md),
+  [0017](docs/decisions/0017-consume-a-recovery-code-by-deleting-its-row.md).
 - **The schema carries no remnant of an erasure and the route table offers no way back** — no
   soft-delete flag, tombstone, deletion record, anonymized remnant or archived copy, and no route
   that restores, undeletes or reactivates an account. Three gates, and each holds a different half:

@@ -32,14 +32,25 @@ Enforced today:
   policed at all. Index, sequence, composite type and TOAST table stay out because they expose no
   rows of their own, which is the test any future narrowing must pass. That direction is the whole
   point and must not be inverted — a list of *policed* relations fails open, because the one nobody
-  added to it keeps the suite green. Exempt today: `credentials` (read to discover *who is asking*,
-  so a policy keyed on the identity it resolves would refuse the query that resolves it),
+  added to it keeps the suite green. Exempt today, six of them: `credentials` (read to discover *who is
+  asking*, so a policy keyed on the identity it resolves would refuse the query that resolves it),
   `passkey_public_keys` (read to decide whether an assertion's signature is genuine, which a WebAuthn
-  ceremony must answer *before* it knows whose account it is), `webauthn_challenges` (a nonce
+  ceremony must answer *before* it knows whose account it is), `recovery_code_hashes` (found by the
+  `SHA-256` of the verifier on an **anonymous** redemption request — somebody redeeming a code has lost
+  the authenticator that would have proved who they are, so the lookup by hash is what establishes the
+  identity, and a policy keyed on `app.current_user_id` would refuse the very query that produces the
+  value it wants to compare against; it would refuse it *loudly*, because an unset setting reaches the
+  policy as `''::uuid` and raises `22P02` —
+  [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md)),
+  `webauthn_challenges` (a nonce
   belonging to a ceremony rather than to a person — the sign-in leg issues one before anybody has
   said who they are, so there is nobody for a policy to key on), `currencies` (reference data owned
   by no tenant), and `__EFMigrationsHistory`. The same list and the same classification are what the
   deploy-time verifier reads, so the gate and the test cannot drift apart.
+  **The third exemption is filed ahead of the query it exists for**: nothing redeems a recovery code
+  yet, so that anonymous read is not reachable from any route today. It is written with the schema
+  rather than with the route because it is the schema a later commit has to build against, and because
+  the classifier goes red the moment the table exists whether or not anything reads it.
   `passkey_signature_counters` is the counterexample that keeps the second of those honest: it is the
   *same ceremony* one step later, reached only after the signature has verified, so it carries
   `user_id` and is policed with no rule added
@@ -49,12 +60,20 @@ Enforced today:
   PostgreSQL applies it to a whole *table*, so without this a column read only after authentication
   could land beside the discovery columns and be readable by every session. Going red means **move
   the column** to a table carrying `user_id`, which the coverage rule then polices by itself; it
-  never means appending the name to the pinned list. `passkey_public_keys` and `webauthn_challenges`
+  never means appending the name to the pinned list. `passkey_public_keys`, `recovery_code_hashes` and
+  `webauthn_challenges`
   pin their columns for the same reason, and the pin — not the grant matrix — is what holds each
   exemption to its stated reason. The absent `UPDATE` and `DELETE` on `passkey_public_keys` stop
   *mutable* per-user state accumulating, which is real but is not the threat: a wrapped key or a
   recovery-code hash is written once and never updated, so it would satisfy any append-only rule
-  while being precisely what must not sit on a table every session reads in full. `currencies` and
+  while being precisely what must not sit on a table every session reads in full. **That
+  recovery-code hash has since stopped being hypothetical, and it landed on a table of its own** —
+  which is the pin working rather than a reason to retire the example, so the example stays and the
+  wrapped key beside it is still ahead of us. `recovery_code_hashes` pins the five columns its own
+  anonymous lookup needs before an identity exists — the hash it is found by, and the credential, user
+  and type the redemption then adopts — and a wrapped key is the column it will be offered first, read
+  *after* redemption has answered who is asking and therefore belonging on a table carrying `user_id`.
+  `currencies` and
   `__EFMigrationsHistory` pin nothing on purpose — the first belongs to no tenant whatever columns it
   grows, the second has its shape owned by EF.
 - **An exempt table scopes nothing, so the application is the only thing scoping access to it — and
@@ -77,7 +96,9 @@ Enforced today:
   | `credentials` | `CountPasskeysForUserAsync`, behind the last-passkey rule | `where user_id` and `type`, watched by `Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing` |
   | `credentials` | `ListForUserAsync`, behind `GET /api/me/credentials` | `where user_id`, watched by `Credentials_ForASecondAccount_ListThatAccountsCredentialsAndNotTheFirsts` |
   | `credentials` | `INSERT` at provisioning, and again at passkey registration | the owner is a value the application supplies, not one it filters by |
-  | `credentials` | **`DELETE`**, revoking a passkey | the owner-scoped read above it, and nothing else |
+  | `credentials` | **`DELETE`**, revoking a passkey, and again replacing a recovery-code set | the owner-scoped read above it, and nothing else — `FindPasskeyCredentialAsync` for the first, `FindRecoveryCodeCredentialAsync` for the second, each carrying owner **and** type |
+  | `recovery_code_hashes` | `CountRemainingForUserAsync`, behind `GET /api/me/recovery-codes` | `where user_id`, and it is the **only** application access to this table today |
+  | `recovery_code_hashes` | `INSERT` at generation | the credential it hangs off, written in the same save |
   | `webauthn_challenges` | issue, consume, sweep | **nothing, and there is nothing to scope by** — the row names no person |
 
   Where a row names a test, that test is the **only** thing that would notice the access losing its
@@ -100,15 +121,30 @@ Enforced today:
   above therefore seed a **bystander account** whose rows the operation must not touch, and that
   arrangement is what makes them bite rather than an extra they could be tidied out of.
 
-  **The last row is the first destructive statement in this codebase with nothing beneath the
+  **The `credentials` `DELETE` is the first destructive statement in this codebase with nothing
+  beneath the
   application scoping it**, and EF issues it by primary key alone. Two things make that sound, and
   both have to stay true: `credentials.user_id` is immutable, so the binding between an id and its
   owner cannot move between the read that scoped it and the write that used it; and the read and the
   write share one transaction. The delete takes the loaded **entity**, never an id — which is worth
-  something only because no source of a `Credential` accepts a caller-chosen id: the two public
-  factories mint their own, and the one query that materializes an existing row carries the owner.
-  Adding a source that does not is what review has to catch. See
+  something only because no source of a `Credential` accepts a caller-chosen id: the three public
+  factories mint their own, and the **two** queries that materialize an existing row each carry the
+  owner and the type. Adding a source that does not is what review has to catch. See
   [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
+
+  **`recovery_code_hashes` holds an unpoliced `DELETE` too, and it has no caller.** The grant exists
+  for redemption, which is not routed; replacing a set deletes the *set's* `credentials` row and these
+  rows leave by the database's own cascade, running with the referencing table owner's privileges
+  rather than this role's. Two consequences follow and both matter.
+  First, a reader looking for a second caller will not find one and should not add one.
+  Second — and this is the sharpest hazard on this page — **an EF cascade into tracked
+  `RecoveryCodeHash` copies would silently succeed here.** On `sessions` the identical change-tracker
+  mistake dies loudly with `42501`, because that table deliberately holds no `DELETE`; on this one the
+  rows would simply leave by the application instead of by the database, the request would answer
+  `200`, and **no SQLSTATE would say so**. So the generation path must never materialise the previous
+  set's rows, and nothing below the application can notice if it starts to. See
+  [recovery-codes.md](../business-logic/recovery-codes.md) and
+  [ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md).
 - **The column that decides tenancy must be `NOT NULL`.** Under `budget_id = current_budget` a row
   whose owner is NULL is invisible to every session — fail-closed, so not a leak, but a row that
   exists, that nobody can reach, and that nothing explains. The coverage gate refuses it.
@@ -140,17 +176,21 @@ Enforced today:
   wrote it. This proves internal consistency only; *which* budget a write lands in is still the
   filter's and `IBudgetContext`'s job alone.
 - **None of the user-owned entities carries a query filter** — `Budget`, `User`, `Credential`,
-  `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`, and the challenge row. The provisioning
+  `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`, `RecoveryCodeHash`, and the challenge row.
+  The provisioning
   lookup runs before a budget id exists, so every query over `Budgets` must scope by owner explicitly
   — `BudgetRepository.FindFirstForUserAsync` and `ExportReadService.ListOwnedBudgetsAsync`, which are
   the two that exist today and which a third must join rather than assume it is covered; a session and
   a passkey name no budget at all, so there is none to filter them by. That is a statement about the
   *read-side filter* only, and it no longer travels with the coverage exemption: `users`, `budgets`, `sessions` and `passkey_signature_counters` are
-  policed on the user, while `credentials`, `passkey_public_keys` and `webauthn_challenges` are
-  exempt. The first two have to be — reading them is how a request discovers who is asking and
+  policed on the user, while `credentials`, `passkey_public_keys`, `recovery_code_hashes` and
+  `webauthn_challenges` are
+  exempt. The first three have to be — reading them is how a request discovers who is asking and
   whether it is really them, so they are the tables reached with no identity on the session at all
   ([ADR 0011](../decisions/0011-police-the-user-owned-tables.md),
-  [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)).
+  [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md),
+  [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md) — the third for a
+  read that is not routed yet, since nothing redeems a recovery code).
   That is also why the credential lookup projects to `credentials.user_id` and never joins `users`:
   the join would touch the table policed on the very id being resolved.
 - **Immutable ownership.** `Transaction.BudgetId` has no public setter and is set only via the
@@ -188,8 +228,11 @@ RS0030 compile error.
 Tests that lock this: `tests/IntegrationTests/RlsIsolationTests.cs` (raw SQL on the application
 role, on both axes, every negative paired with the same statement against the session's own budget
 or own user — and, for each exemption resting on *"this is read before any identity exists"*
-(`credentials`, `passkey_public_keys`, `webauthn_challenges`), a **positive control** proving the table
-is still readable on a connection naming nobody. That direction needs its own test because coverage
+(`credentials`, `passkey_public_keys`, `recovery_code_hashes`, `webauthn_challenges`), a **positive
+control** proving the table
+is still readable on a connection naming nobody. On `recovery_code_hashes` that control is
+`Database_LetsTheAppRoleDeleteAnyRecoveryCodeHash_OnASessionNamingNobody`, which states the unbounded
+half of its `DELETE` grant as well: it goes red the day somebody succeeds in policing that table. That direction needs its own test because coverage
 cannot supply it: an exemption says a policy is *not required*, never that one is *forbidden*, so
 adding `user_isolation` to `credentials` leaves `RlsCoverageTests` entirely green and surfaces only as
 provisioning failing on every sign-in. `currencies` and `__EFMigrationsHistory` need no such control —

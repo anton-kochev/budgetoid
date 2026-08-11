@@ -44,13 +44,26 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
             // The rule itself, stated once in the layer that rejects rather than coerces: an
             // authorization exchange with an identity provider returns claims, not a secret a client
             // can turn into a key, so a session a federated credential opened can never unlock the
-            // account's narrative. CK_sessions_kind bounds only the vocabulary and the composite
-            // foreign key proves only whose the two rows are, so without this check
+            // account's narrative. A passkey's authenticator holds the account's keys and a set of
+            // recovery codes is what those keys are wrapped under, so both open a full session.
+            // CK_sessions_kind bounds only the vocabulary and the composite foreign key proves only
+            // whose the two rows are, so without this check
             // (credential_id = <a federated credential>, kind = 'full') is a row the application
             // role's table-wide INSERT can write.
+            //
+            // The full side is ENUMERATED, and it stays enumerated. The prettier inversion —
+            //   (kind = 'locked') = (credential_type = 'federated')
+            // says the same thing about every row this schema can hold today and is what a later
+            // reader will propose. It fails OPEN: a fourth credential type added to the vocabulary
+            // is not federated, so it satisfies the right-hand side and is granted a full session by
+            // default, with nobody having decided that. The form below fails closed — an
+            // unenumerated type gets no full session until someone adds it here, which is the same
+            // decision Session.KindFor forces by writing out every arm. No test in the suite can
+            // tell the two spellings apart until that fourth type exists, which is why this comment
+            // is the only thing carrying the difference.
             table.HasCheckConstraint(
                 "CK_sessions_kind_matches_credential",
-                "(kind = 'full') = (credential_type = 'passkey')");
+                "(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))");
         });
         builder.HasKey(session => session.Id);
 
@@ -204,6 +217,7 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
     {
         CredentialType.Passkey => "passkey",
         CredentialType.Federated => "federated",
+        CredentialType.RecoveryCodes => "recovery_codes",
         _ => throw new ArgumentOutOfRangeException(
             nameof(credentialType),
             credentialType,
@@ -214,6 +228,7 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
     {
         "passkey" => CredentialType.Passkey,
         "federated" => CredentialType.Federated,
+        "recovery_codes" => CredentialType.RecoveryCodes,
         _ => throw new InvalidOperationException(
             $"The sessions.credential_type column holds '{value}', a value the foreign key to "
             + "credentials should have refused."),

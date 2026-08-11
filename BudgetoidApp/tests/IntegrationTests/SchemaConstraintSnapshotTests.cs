@@ -78,6 +78,16 @@ public sealed class SchemaConstraintSnapshotTests
             "passkey_public_keys.FK_passkey_public_keys_credentials: FOREIGN KEY (credential_id, user_id, credential_type) REFERENCES credentials(id, user_id, type) ON DELETE CASCADE",
             "passkey_signature_counters.FK_passkey_signature_counters_credentials: FOREIGN KEY (credential_id, user_id, credential_type) REFERENCES credentials(id, user_id, type) ON DELETE CASCADE",
             "payees.FK_payees_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
+            // The third composite over the same three credential columns, and on this table the first
+            // of them carries more weight than anywhere else on the schema: a redemption request
+            // arrives anonymous and adopts the user_id it finds on the row, so a row whose user_id
+            // disagreed with its credential's would hand the redeemer somebody else's account — and
+            // recovery_code_hashes is exempt from row-level security, so no policy is watching. A
+            // shortened single-column reference is exactly that hole.
+            // Cascade, and deliberately not Restrict, for the reason the credentials -> users row
+            // above records: an unredeemed code must never hold up a credential's deletion, and
+            // through it an account erasure.
+            "recovery_code_hashes.FK_recovery_code_hashes_credentials: FOREIGN KEY (credential_id, user_id, credential_type) REFERENCES credentials(id, user_id, type) ON DELETE CASCADE",
             // Composite over three columns, and the composite is the rule: sessions carries user_id,
             // credential_id and credential_type, and all three must agree with the credential row.
             // Shortened to credential_id alone, the database would accept a session whose credential
@@ -160,6 +170,21 @@ public sealed class SchemaConstraintSnapshotTests
             // account. Its WHERE is what keeps passkey rows out — an account may hold several of
             // those, which AppRoleGrantsTests inserts and relies on.
             """CREATE UNIQUE INDEX "IX_credentials_user_id_federated" ON public.credentials USING btree (user_id) WHERE ((type)::text = 'federated'::text)""",
+            // The same rule shape as the line above over the other self-contained credential type: one
+            // issued set of recovery codes per account. Nothing else on the row refuses a second — the
+            // provider-identity index names federated rows only, and every recovery-codes row carries
+            // (NULL, NULL) — and two sets are two remaining-counts with nothing saying which one binds.
+            //
+            // The WHERE is the load-bearing half of this line, and it is the half that reads like
+            // rendering noise. Drop the filter and the index still enforces one set per account, so
+            // UserRepositoryTests' Database_RejectsASecondRecoveryCodesCredentialForTheSameUser stays
+            // green while an unfiltered unique index over user_id has quietly started refusing an
+            // account a SECOND PASSKEY, which FR-043 allows and which AppRoleGrantsTests seeds.
+            // Database_AcceptsTwoPasskeyCredentialsForTheSameUser is the only control in the suite that
+            // would notice, and this snapshot is the only place the filter itself is visible —
+            // pg_get_indexdef renders it, so removing it moves this line and nothing about the name
+            // changes. A green one-set-per-account test is therefore not evidence the filter survived.
+            """CREATE UNIQUE INDEX "IX_credentials_user_id_recovery_codes" ON public.credentials USING btree (user_id) WHERE ((type)::text = 'recovery_codes'::text)""",
             // One account per WebAuthn credential handle. Unlike the two credentials indexes above
             // this one carries no WHERE, and it must not grow one: the handle an assertion arrives
             // under is the whole of what the lookup has to go on, so a second row under the same
@@ -186,6 +211,13 @@ public sealed class SchemaConstraintSnapshotTests
             """CREATE UNIQUE INDEX "PK_passkey_public_keys" ON public.passkey_public_keys USING btree (credential_id)""",
             """CREATE UNIQUE INDEX "PK_passkey_signature_counters" ON public.passkey_signature_counters USING btree (credential_id)""",
             """CREATE UNIQUE INDEX "PK_payees" ON public.payees USING btree (id)""",
+            // The one primary key in this set that is not a surrogate id, and the difference is the
+            // rule. A redemption request arrives carrying a code and nothing else, so the SHA-256 of
+            // the verifier is the only handle the lookup has; making it the key is also what makes two
+            // codes hashing alike unstorable rather than a duplicate nothing would notice. A surrogate
+            // id added beside it would demote this to an ordinary unique index and quietly permit the
+            // second row, so this line moving is not a rename to wave through.
+            """CREATE UNIQUE INDEX "PK_recovery_code_hashes" ON public.recovery_code_hashes USING btree (verifier_hash)""",
             """CREATE UNIQUE INDEX "PK_sessions" ON public.sessions USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_transactions" ON public.transactions USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_users" ON public.users USING btree (id)""",
@@ -235,13 +267,26 @@ public sealed class SchemaConstraintSnapshotTests
             // configuration, different rendering in the catalog. "Fixing" it to look like a list is
             // how this test starts failing for no reason.
             """CK_credentials_provider: credentials CHECK (((provider IS NULL) OR ((provider)::text = 'google'::text)))""",
-            """CK_credentials_type: credentials CHECK (((type)::text = ANY ((ARRAY['passkey'::character varying, 'federated'::character varying])::text[])))""",
+            // Three spellings, not two, since a set of recovery codes became a credential in its own
+            // right: one credentials row stands for the whole issued set, which is what puts recovery
+            // material inside the cascade an erasure already runs through and makes revoking the set
+            // one delete. Widening a bounded vocabulary is the edit this snapshot exists to make
+            // somebody argue for, so the argument is written here rather than inferred from the fact
+            // that the line moved.
+            """CK_credentials_type: credentials CHECK (((type)::text = ANY ((ARRAY['passkey'::character varying, 'federated'::character varying, 'recovery_codes'::character varying])::text[])))""",
             // The shape check is the reason `type` can be a varchar with a CHECK instead of a native
             // enum: it is what makes "a credential is exactly one type" a rule the database holds
             // rather than a convention the application is trusted to keep. The length test on the
             // federated arm is not redundant with the null test beside it: length(null) is null and a
             // check evaluating to null is satisfied, so neither test covers the other.
-            """CK_credentials_type_shape: credentials CHECK (((((type)::text = 'federated'::text) AND (provider IS NOT NULL) AND (subject IS NOT NULL) AND (length((subject)::text) > 0)) OR (((type)::text = 'passkey'::text) AND (provider IS NULL) AND (subject IS NULL))))""",
+            // The recovery_codes arm's predicate is identical to the passkey arm's, and that is
+            // recorded rather than collapsed: this constraint no longer discriminates between those
+            // two types, because both are self-contained credentials with no issuer and no provider
+            // subject. What tells them apart is CK_credentials_type above bounding the vocabulary and
+            // each child table's composite foreign key comparing its own credential_type copy against
+            // this column. Folding the two arms into one would say the same thing in less space and
+            // lose the record of which types the schema has considered.
+            """CK_credentials_type_shape: credentials CHECK (((((type)::text = 'federated'::text) AND (provider IS NOT NULL) AND (subject IS NOT NULL) AND (length((subject)::text) > 0)) OR (((type)::text = 'passkey'::text) AND (provider IS NULL) AND (subject IS NULL)) OR (((type)::text = 'recovery_codes'::text) AND (provider IS NULL) AND (subject IS NULL))))""",
             """CK_currencies_code: currencies CHECK (((code)::text ~ '^[A-Z]{3}$'::text))""",
             """CK_currencies_minor_unit: currencies CHECK (((minor_unit >= 0) AND (minor_unit <= 4)))""",
             // The two COSE algorithms the verifier accepts, bounded here rather than trusted to the
@@ -263,17 +308,54 @@ public sealed class SchemaConstraintSnapshotTests
             // renders as a quoted ::bigint literal because the column is bigint and the value exceeds
             // integer — matching the lower bound's bare 0 would be the wrong rendering.
             """CK_passkey_signature_counters_value: passkey_signature_counters CHECK (((signature_counter >= 0) AND (signature_counter <= '4294967295'::bigint)))""",
+            // The third copy of a credential's type pinned to the one value its table may hold, owed
+            // separately for the reason the two above are owed separately: each table carries its own
+            // column, so one constraint cannot cover the others. Here the pin is a single value rather
+            // than a vocabulary, and that is the stronger claim — this table exists only for recovery
+            // codes, so 'passkey' is not a value with a different meaning, it is a row that should not
+            // exist.
+            """CK_recovery_code_hashes_credential_type: recovery_code_hashes CHECK (((credential_type)::text = 'recovery_codes'::text))""",
+            // Equality, not a range, and the same honesty CK_webauthn_challenges_length rests on: the
+            // value is a SHA-256 computed server-side, so it is 32 bytes or it is not a hash this table
+            // can have produced. A range would accept the bug rather than stop it, and the row it
+            // accepted would be a code nothing can ever redeem.
+            """CK_recovery_code_hashes_verifier_hash_length: recovery_code_hashes CHECK ((length(verifier_hash) = 32))""",
             // The kind vocabulary, and the lowercase spelling is the whole of it: the converter stores
             // these two strings, so a HasConversion<string>() writing PascalCase members would be
             // refused here rather than stored.
             """CK_sessions_kind: sessions CHECK (((kind)::text = ANY ((ARRAY['full'::character varying, 'locked'::character varying])::text[])))""",
-            // The rule that a full session is opened by a passkey and by nothing else, held where it
-            // rejects rather than where it is merely performed: Session.Establish derives kind from
-            // the credential, but GRANT INSERT on this table covers the whole column list, so without
-            // this line a federated credential paired with kind = 'full' is a row the application
-            // role can write. An equality rather than an implication, so it refuses both directions
-            // — a passkey opening a locked session moves this line too.
-            """CK_sessions_kind_matches_credential: sessions CHECK ((((kind)::text = 'full'::text) = ((credential_type)::text = 'passkey'::text)))""",
+            // The rule that a full session is opened by a passkey or by a set of recovery codes and by
+            // nothing else, held where it rejects rather than where it is merely performed:
+            // Session.Establish derives kind from the credential, but GRANT INSERT on this table covers
+            // the whole column list, so without this line a federated credential paired with
+            // kind = 'full' is a row the application role can write. An equality rather than an
+            // implication, so it refuses both directions — a passkey opening a locked session moves
+            // this line too.
+            //
+            // Two spellings on the full side, not one, because a set of recovery codes is a key factor:
+            // the account's content and index keys are wrapped under the set, so the code the holder
+            // typed unwraps them. Federated is the only type that cannot hold the account's keys, which
+            // is why it is the only one left on the locked side.
+            //
+            // The full side is ENUMERATED and it stays enumerated. The prettier inversion —
+            //   (kind = 'locked') = (credential_type = 'federated')
+            // says the same thing about every row this schema can hold today, renders shorter, and is
+            // what a later reader will propose against this line's growing IN list. It fails OPEN: a
+            // fourth credential type is not federated, so it satisfies the right-hand side and is
+            // granted a full session by default with nobody having decided that. This form fails
+            // closed — an unenumerated type gets no full session until somebody adds it here.
+            //
+            // What this pin does and does not do about that, stated precisely, because the difference
+            // is the whole reason the paragraph is this long. Rewriting the configuration to the
+            // inversion DOES turn this test red: the rendered text changes, so the line moves. But it
+            // moves the way a rendering change moves it, and no assertion here can tell "the rule now
+            // means something different" from "PostgreSQL spells it differently" — the two are the
+            // same event to a string comparison. So the failure arrives as a literal to update, the
+            // update is one paste, and both forms are green on every row the schema can hold until a
+            // fourth credential type exists. This paragraph and its twin on SessionConfiguration are
+            // what a person hits between the red line and the paste; they are the enforcement, and the
+            // string comparison is only what makes somebody read them.
+            """CK_sessions_kind_matches_credential: sessions CHECK ((((kind)::text = 'full'::text) = ((credential_type)::text = ANY ((ARRAY['passkey'::character varying, 'recovery_codes'::character varying])::text[]))))""",
             // Separate from the vocabulary check rather than ANDed with it, so a row that breaches one
             // reports exactly the name that describes what is wrong with it.
             """CK_sessions_lifetime: sessions CHECK ((expires_at_utc > created_at_utc))""",

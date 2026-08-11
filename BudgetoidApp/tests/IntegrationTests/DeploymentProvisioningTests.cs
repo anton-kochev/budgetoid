@@ -95,14 +95,26 @@ public sealed class DeploymentProvisioningTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Both carry <c>user_id</c>, so a query that asked only "does this table own rows" would demand
-    /// a policy neither may have. <c>credentials</c> is read to answer "who is asking", and a policy
-    /// keyed on that answer would refuse the question that produces it. <c>passkey_public_keys</c> is
-    /// read to decide whether the signature on an assertion is genuine, which a WebAuthn ceremony has
-    /// to settle before it knows whose account it is. Each is read before the request has an identity
-    /// a policy could be keyed on; both reasons are written down in
-    /// <c>RowLevelSecurityCoverage.Exemptions</c> and argued in docs/decisions/0011 and
-    /// docs/decisions/0012.
+    /// All three carry <c>user_id</c>, so a query that asked only "does this table own rows" would
+    /// demand a policy none of them may have. <c>credentials</c> is read to answer "who is asking",
+    /// and a policy keyed on that answer would refuse the question that produces it.
+    /// <c>passkey_public_keys</c> is read to decide whether the signature on an assertion is genuine,
+    /// which a WebAuthn ceremony has to settle before it knows whose account it is.
+    /// <c>recovery_code_hashes</c> is found by the SHA-256 of the verifier a person typed, on a
+    /// request that has said nothing about who they are, and a policy keyed on
+    /// <c>app.current_user_id</c> would refuse the very query that establishes the identity — refuse
+    /// it loudly, because an unset setting reaches the policy as <c>''::uuid</c> and raises
+    /// <c>22P02</c>, so the failure would be every redemption in production rather than a leak. Each
+    /// is read before the request has an identity a policy could be keyed on; all three reasons are
+    /// argued in docs/decisions/0011 and docs/decisions/0012.
+    /// </para>
+    /// <para>
+    /// The third name is written out above rather than cited, and the paragraph below is why that
+    /// matters more than it looks. <c>RowLevelSecurityCoverage.Exemptions</c> also carries a reason for
+    /// <c>recovery_code_hashes</c>; pointing at it — "excused because the shared list excuses it" —
+    /// would make this entry an assertion about the code under test, which is the one thing this
+    /// literal exists not to be. The reason has to stand on its own here, so that a wrong entry in
+    /// that list and a wrong entry here are two mistakes a person has to make separately.
     /// </para>
     /// <para>
     /// Spelled out here rather than read from that list, and this is the same argument the policy
@@ -121,15 +133,22 @@ public sealed class DeploymentProvisioningTests
     /// purpose. The failure asks for a decision rather than granting one.
     /// </para>
     /// <para>
-    /// Only tenant-owned exemptions belong in it, which is why there are two names here and five in
+    /// Only tenant-owned exemptions belong in it, which is why there are three names here and six in
     /// the shared list. <c>currencies</c>, <c>webauthn_challenges</c> and <c>__EFMigrationsHistory</c>
     /// carry neither ownership column, so the query's own shape predicate already excludes them;
     /// naming them here would turn an independent statement into a copy of a list and invite somebody
     /// to keep the two mechanically in sync. A future exemption on a table with no ownership column
     /// therefore stays green, because it was never a subject.
     /// </para>
+    /// <para>
+    /// The counts in the sentence above are a description, not a check. Nothing fails when they drift,
+    /// and nothing should — a test that compared the two lengths would be reading the shared list
+    /// again by the back door. They are here because a reader arriving at three names and six
+    /// exemptions needs to know the gap is expected.
+    /// </para>
     /// </remarks>
-    private static readonly string[] UnpolicedUserOwnedTables = ["credentials", "passkey_public_keys"];
+    private static readonly string[] UnpolicedUserOwnedTables =
+        ["credentials", "passkey_public_keys", "recovery_code_hashes"];
 
     /// <summary>
     /// The policy name a budget-owned table owes.
@@ -1576,9 +1595,9 @@ public sealed class DeploymentProvisioningTests
             order by c.relname
             """,
             connection);
-        // Both excused names at once, so the second written-down decision cannot read as a table
-        // whose policy was forgotten. <> all(...) is false as soon as one element matches, and an
-        // empty array excludes nothing rather than everything.
+        // Every excused name at once, so a written-down decision cannot read as a table whose policy
+        // was forgotten. <> all(...) is false as soon as one element matches, and an empty array
+        // excludes nothing rather than everything.
         command.Parameters.AddWithValue("exempt", UnpolicedUserOwnedTables);
         command.Parameters.AddWithValue("usersTable", UsersTable);
 

@@ -257,6 +257,15 @@ breaks the convention lands in the fourth bucket and goes red, which is the beha
   of every account, alongside the hash of every recovery code, is the opposite of what a product
   whose thesis is "the operator cannot read your records" should do by default.
 
+  **The recovery-code hash in that sentence has stopped being hypothetical, and it landed on a table
+  of its own.** `recovery_code_hashes` is exempt for a reason of the same shape — the row is found by
+  the hash on an anonymous redemption, before anybody has said who they are — and carries its own
+  pinned column set
+  ([ADR 0016](0016-give-recovery-code-hashes-their-own-exempt-table.md)). Keep the example above
+  where it is: the hypothetical is what made this decision visible *before* there was anything to
+  decide about, so it is the evidence the mechanism worked rather than a line to retire now that it
+  has been used once. The wrapped key beside it is still ahead of us, and it gets argued the same way.
+
 - **Where the cut belongs, so the next story does not have to re-derive it.** The exemption is not
   removable: a WebAuthn assertion verifies a signature with the stored public key *before* it knows
   whose account it is, so those columns genuinely have to be reachable with no identity on the

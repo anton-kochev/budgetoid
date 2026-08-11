@@ -4,6 +4,7 @@ using Application.Categories;
 using Application.CategoryGroups;
 using Application.Currencies;
 using Application.Payees;
+using Application.RecoveryCodes;
 using Application.Transactions;
 using Application.Users;
 using Application.Users.ExportData;
@@ -35,6 +36,7 @@ public static class DependencyInjection
         services.AddScoped<IBudgetRepository, BudgetRepository>();
         services.AddScoped<ISessionRepository, SessionRepository>();
         services.AddScoped<IPasskeyRepository, PasskeyRepository>();
+        services.AddScoped<IRecoveryCodeRepository, RecoveryCodeRepository>();
 
         // Scoped like every other writer over the DbContext, and for the same reason: it holds the
         // scoped BudgetoidDbContext, so a longer lifetime would keep one request's context alive
@@ -48,6 +50,7 @@ public static class DependencyInjection
         services.AddScoped<ICategoryReadService, CategoryReadService>();
         services.AddScoped<IUserAccountReadService, UserAccountReadService>();
         services.AddScoped<ICredentialReadService, CredentialReadService>();
+        services.AddScoped<IRecoveryCodeReadService, RecoveryCodeReadService>();
         services.AddScoped<IExportReadService, ExportReadService>();
         services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();
 

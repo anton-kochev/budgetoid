@@ -280,6 +280,7 @@ app.MapCategoryEndpoints();
 app.MapPasskeyEndpoints();
 app.MapAccountErasureEndpoints();
 app.MapCredentialEndpoints();
+app.MapRecoveryCodeEndpoints();
 app.MapDataExportEndpoints();
 app.MapSignedInUserEndpoints();
 

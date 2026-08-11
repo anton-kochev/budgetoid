@@ -47,13 +47,17 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 |---|---|
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. |
 | **Session** | An established sign-in recorded server-side, naming the credential that established it, which the product can end without asking any external party. A verified passkey assertion establishes one; nothing issues a token for it yet — see [sessions.md](sessions.md). |
-| **Passkey** | A WebAuthn discoverable credential held by the user's authenticator. The only credential type that opens a session reaching budget content — see [passkeys.md](passkeys.md). |
+| **Passkey** | A WebAuthn discoverable credential held by the user's authenticator. One of the two credential types that open a session reaching budget content — see [passkeys.md](passkeys.md). |
+| **Recovery code** | A secret the account holder writes down, so that losing the authenticator does not mean losing the account. **Minted in the browser; the server never sees one** — what it stores is `SHA-256` of a verifier the client derived. Redeeming one deletes its row, and there is no third state — see [recovery-codes.md](recovery-codes.md). |
+| **Verifier** | `V = HKDF(code, …)`, exactly 32 bytes, derived on the client from a recovery code and the only thing about that code the server ever receives. The account's key-encryption key comes off the same code on an **independent** HKDF branch, which is why a code reaching the server would hand the operator that key and a verifier does not. |
+| **Recovery-code set** | The ten codes an account is issued together, standing in the schema as **one** `credentials` row with one `recovery_code_hashes` row per unredeemed code. An account holds at most one set; issuing replaces it rather than adding to it. |
+| **Recovery factor** | Anything an account holder possesses that can get them back into the account and unwrap its keys. Today: a registered passkey, and a recovery code. A federated credential is not one — it returns claims rather than a secret. |
 | **WebAuthn ceremony** | One of the three exchanges a passkey takes part in: registration, which attaches a passkey to an account; assertion, which signs in with one; and re-authentication, which re-proves possession before an action too destructive to take on a bearer token alone. Each runs in two legs — a server-issued nonce, then a signed response. |
 | **Revocation** | Removing one way of signing in. Revoking a **passkey** deletes its credential row, and the sessions, key and counter beneath it go with it; the account must keep at least one passkey, so the last one is refused. Revoking a **session** is the opposite shape — a column written, never a row removed. The federated credential is revoked by neither: it is replaced — see [passkeys.md](passkeys.md) and [sessions.md](sessions.md). |
 | **PRF** | The WebAuthn `prf` extension: a secret the authenticator derives and the server never sees. Requested at registration and **required** for one to complete — a registration completes only when the client reports a `prf` result that is present and true, so reporting nothing and reporting `enabled: false` are alike refused. The claim is the client's and unverifiable, so the refusal is a product gate rather than a control; the product stores nothing about it. See [passkeys.md](passkeys.md). |
 | **Relying party** | The site a passkey is bound to, named by its `rpId`. An authenticator signs over `SHA-256(rpId)`, so a credential registered here cannot be asserted anywhere else. |
-| **Locked session** | A session established from a federated credential. It reaches no budget content, because an authorization exchange returns claims rather than a secret a client can turn into a key. |
-| **Full session** | A session established from a passkey — the only credential type whose authenticator can hold the account's keys, and so the only one that opens a session reaching budget content. |
+| **Locked session** | A session established from a federated credential. `federated` is the **only** credential type that cannot reach budget content, because an authorization exchange returns claims rather than a secret a client can turn into a key. |
+| **Full session** | The kind of session a credential the holder actually possesses opens: a passkey, whose authenticator holds the account's keys, or a set of recovery codes, which is the secret those keys are wrapped under. Nothing establishes one from recovery codes yet — nothing redeems a code. |
 | **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
 | **Erasure** | Destroying an account and everything owned beneath it, so that no row in any table references the erased user or any budget it owned. Not a status and not a soft delete: nothing is marked, and no row survives to record that it happened — see [erasure.md](erasure.md). |
 | **Export document** | The single JSON object an export answers with: a schema version, the user record, and every budget the user owns, each carrying its accounts, category groups, categories, payees and transactions as nested arrays. Nothing in it is summarized, sampled or paged, and assembling it writes no row — see [export.md](export.md). |
@@ -81,8 +85,8 @@ Accounts, Category Groups, and Categories; records, lists, edits and deletes Tra
 Payees, creates them implicitly by naming one on a transaction, and renames them; and reads global
 Currencies. The budget itself is not manageable — it is provisioned, never configured. The same
 owner can download a complete copy of everything the server holds about them, can see the address
-the account is registered under, and can destroy the account outright; none of the three is behind a
-support request. Unauthenticated visitors can only reach public login/welcome behavior.
+the account is registered under, can issue themselves a set of recovery codes and ask how many are
+left, and can destroy the account outright; none of it is behind a support request. Unauthenticated visitors can only reach public login/welcome behavior.
 
 ## Domain area map
 
@@ -111,8 +115,10 @@ references are additionally constrained by composite foreign keys to a row in th
 ## Table of contents
 
 - [Users & Ownership](users-and-ownership.md) — identity, claims, and provisioning.
-- [Passkeys](passkeys.md) — the two WebAuthn ceremonies, and the only path that opens a session
-  reaching budget content.
+- [Passkeys](passkeys.md) — the three WebAuthn ceremonies, and the only path that opens a session
+  today.
+- [Recovery Codes](recovery-codes.md) — the second way back into an account, minted in the browser and
+  never seen by the server.
 - [Sessions](sessions.md) — an established sign-in the product records and can end itself.
 - [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
   and its base currency.

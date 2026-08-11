@@ -31,6 +31,13 @@ public sealed class BudgetoidDbContext(
     // names nobody at all, because the authentication ceremony issues it before anybody has said who
     // they are, so there is no owner for a filter or a policy to key on. See
     // WebAuthnChallengeConfiguration for what stands in for isolation there.
+    //
+    // Recovery code hashes are unfiltered for a reason of their own, and it is the strictest of the
+    // lot. The row is found by the SHA-256 of the verifier on an ANONYMOUS redemption request, before
+    // anybody has said who they are, so there is no budget to filter by and no identity a policy could
+    // be keyed on either — which is why the table is written down in
+    // RowLevelSecurityCoverage.Exemptions rather than policed. Nothing beneath this set scopes it: any
+    // read or write of it other than the discovery lookup itself must carry its own user_id filter.
     public DbSet<Budget> Budgets => Set<Budget>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
     public DbSet<Account> Accounts => Set<Account>();
@@ -43,6 +50,7 @@ public sealed class BudgetoidDbContext(
     public DbSet<Session> Sessions => Set<Session>();
     public DbSet<PasskeyPublicKey> PasskeyPublicKeys => Set<PasskeyPublicKey>();
     public DbSet<PasskeySignatureCounter> PasskeySignatureCounters => Set<PasskeySignatureCounter>();
+    public DbSet<RecoveryCodeHash> RecoveryCodeHashes => Set<RecoveryCodeHash>();
 
     // Internal rather than public, following its row type: nothing outside this assembly has a reason
     // to read a protocol nonce, and a public set would be the first step towards one.

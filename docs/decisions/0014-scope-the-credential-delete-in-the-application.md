@@ -40,17 +40,25 @@ a comment asserts:
    caller-chosen id.** `IPasskeyRepository.DeletePasskeyAsync` is declared over `Credential`, so a
    caller cannot name a row directly. Be precise about what that buys, because the appealing
    shorthand — "the constructor is private, so the lookup is the only source" — is **false**:
-   `Credential.CreateFederated` and `Credential.CreatePasskey` are both public. What holds is
-   narrower and checkable. Both factories mint their own `Guid.CreateVersion7()`, so a fabricated
+   `Credential.CreateFederated`, `Credential.CreatePasskey` and `Credential.CreateRecoveryCodes` are
+   all public. What holds is
+   narrower and checkable. Every factory mints its own `Guid.CreateVersion7()`, so a fabricated
    instance can never name an existing row; a detached delete of an id no row carries matches nothing
-   and raises rather than removing somebody else's. And the one query that materializes a `Credential`
-   from the table, `FindPasskeyCredentialAsync(credentialId, userId)`, carries id, owner and type in
-   one predicate.
+   and raises rather than removing somebody else's. And **every** query that materializes a
+   `Credential` from the table carries owner and type in one predicate. There are now **two**:
+   `FindPasskeyCredentialAsync(credentialId, userId)`, behind passkey revocation, which additionally
+   carries the id; and `FindRecoveryCodeCredentialAsync(userId)`, behind recovery-code generation,
+   which carries no id because the account holds at most one set —
+   `IX_credentials_user_id_recovery_codes` is what makes `(user_id, type)` name at most one row, which
+   is also why that read is a `SingleOrDefault` rather than a `FirstOrDefault`: two rows would mean the
+   rule has been lost, leaving the read with two sets and nothing to choose between them.
 
    So the guarantee is: **to obtain a `Credential` naming an existing row of the caller's choosing,
-   someone has to add a new query to `PasskeyRepository`.** That is a rule a reviewer enforces over
-   one class, not a property of the type — weaker than "unavailable by construction", and worth
-   stating at its real strength. Widening that list is the thing review has to catch.
+   someone has to add a new query to `PasskeyRepository` or to `RecoveryCodeRepository`.** That is a
+   rule a reviewer enforces over
+   two classes, not a property of the type — weaker than "unavailable by construction", and worth
+   stating at its real strength. Widening that list is the thing review has to catch, and the list has
+   grown once already.
 2. **`credentials.user_id` is immutable**, enforced by the absent `UPDATE` grant of any shape. That
    is what makes a delete issued by primary key alone sound: the binding between an id and its owner
    cannot move between the read that scoped it and the write that used it.
@@ -94,9 +102,21 @@ reach without extending what revocation can do — the argument the `users` bloc
   nothing but an application predicate.** `Database_LetsTheAppRoleDeleteAnyCredential_OnASessionNamingNobody`
   states that premise as an executable test rather than as prose. It goes red the day somebody
   succeeds in policing this table, which is the day this ADR needs rewriting.
-- **One test stands between a refactor and a cross-tenant delete.**
+  - **It is no longer the only one.** `recovery_code_hashes` is the second, for a reason of the same
+    shape — its rows are found before the request has an identity — and the three legs above are what
+    hold its `DELETE` too ([ADR 0016](0016-give-recovery-code-hashes-their-own-exempt-table.md),
+    [ADR 0017](0017-consume-a-recovery-code-by-deleting-its-row.md)). One difference is worth carrying:
+    there, the scoping read is allowed to name **no owner at all**, because the caller's own input
+    names the row — a `SHA-256` of a 256-bit secret they must present in full, so selecting a row you
+    cannot name is guessing it. That is the same argument `ConsumeAsync` already makes for deleting a
+    challenge by the nonce a caller presents, and it does **not** transfer to `credentials`, whose ids
+    are neither secret nor caller-chosen.
+- **One test stands between a refactor and a cross-tenant delete, on each path.**
   `Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows` is the only thing
-  that would notice the `userId` predicate leaving the lookup. No layer below the application can.
+  that would notice the `userId` predicate leaving `FindPasskeyCredentialAsync`. No layer below the
+  application can — and the same is true of the owner predicate on
+  `FindRecoveryCodeCredentialAsync`, where the entity travels on to `DeleteSetAsync`, so whatever
+  scopes that read is what scopes that delete.
 - **The immutability of `credentials.user_id` is now load-bearing for a second, unrelated reason.**
   It was argued as an identity rule; it is now also what makes a primary-key delete correctly scoped.
   Anyone proposing an `UPDATE` grant on that column has to answer both.

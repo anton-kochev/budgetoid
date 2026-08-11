@@ -106,8 +106,8 @@ public partial class InitialCreate : Migration
                 table.PrimaryKey("PK_credentials", x => x.id);
                 table.UniqueConstraint("AK_credentials_id_user_id_type", x => new { x.id, x.user_id, x.type });
                 table.CheckConstraint("CK_credentials_provider", "provider is null or provider in ('google')");
-                table.CheckConstraint("CK_credentials_type", "type in ('passkey', 'federated')");
-                table.CheckConstraint("CK_credentials_type_shape", "(type = 'federated' and provider is not null and subject is not null and length(subject) > 0) or (type = 'passkey' and provider is null and subject is null)");
+                table.CheckConstraint("CK_credentials_type", "type in ('passkey', 'federated', 'recovery_codes')");
+                table.CheckConstraint("CK_credentials_type_shape", "(type = 'federated' and provider is not null and subject is not null and length(subject) > 0) or (type = 'passkey' and provider is null and subject is null) or (type = 'recovery_codes' and provider is null and subject is null)");
                 table.ForeignKey(
                     name: "FK_credentials_users_user_id",
                     column: x => x.user_id,
@@ -242,6 +242,29 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
+            name: "recovery_code_hashes",
+            columns: table => new
+            {
+                verifier_hash = table.Column<byte[]>(type: "bytea", nullable: false),
+                credential_id = table.Column<Guid>(type: "uuid", nullable: false),
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                credential_type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_recovery_code_hashes", x => x.verifier_hash);
+                table.CheckConstraint("CK_recovery_code_hashes_credential_type", "credential_type = 'recovery_codes'");
+                table.CheckConstraint("CK_recovery_code_hashes_verifier_hash_length", "length(verifier_hash) = 32");
+                table.ForeignKey(
+                    name: "FK_recovery_code_hashes_credentials",
+                    columns: x => new { x.credential_id, x.user_id, x.credential_type },
+                    principalTable: "credentials",
+                    principalColumns: new[] { "id", "user_id", "type" },
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
             name: "sessions",
             columns: table => new
             {
@@ -258,7 +281,7 @@ public partial class InitialCreate : Migration
             {
                 table.PrimaryKey("PK_sessions", x => x.id);
                 table.CheckConstraint("CK_sessions_kind", "kind in ('full', 'locked')");
-                table.CheckConstraint("CK_sessions_kind_matches_credential", "(kind = 'full') = (credential_type = 'passkey')");
+                table.CheckConstraint("CK_sessions_kind_matches_credential", "(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))");
                 table.CheckConstraint("CK_sessions_lifetime", "expires_at_utc > created_at_utc");
                 table.ForeignKey(
                     name: "FK_sessions_credentials_credential_id_user_id_credential_type",
@@ -433,6 +456,13 @@ public partial class InitialCreate : Migration
             filter: "type = 'federated'");
 
         migrationBuilder.CreateIndex(
+            name: "IX_credentials_user_id_recovery_codes",
+            table: "credentials",
+            column: "user_id",
+            unique: true,
+            filter: "type = 'recovery_codes'");
+
+        migrationBuilder.CreateIndex(
             name: "IX_passkey_public_keys_credential_id_user_id_credential_type",
             table: "passkey_public_keys",
             columns: new[] { "credential_id", "user_id", "credential_type" });
@@ -458,6 +488,11 @@ public partial class InitialCreate : Migration
             table: "payees",
             columns: new[] { "budget_id", "name" },
             unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_recovery_code_hashes_credential_id_user_id_credential_type",
+            table: "recovery_code_hashes",
+            columns: new[] { "credential_id", "user_id", "credential_type" });
 
         migrationBuilder.CreateIndex(
             name: "IX_sessions_credential_id_user_id_credential_type",
@@ -516,6 +551,9 @@ public partial class InitialCreate : Migration
 
         migrationBuilder.DropTable(
             name: "passkey_signature_counters");
+
+        migrationBuilder.DropTable(
+            name: "recovery_code_hashes");
 
         migrationBuilder.DropTable(
             name: "sessions");
