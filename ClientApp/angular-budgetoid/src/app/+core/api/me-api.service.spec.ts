@@ -84,4 +84,44 @@ describe('MeApiService', () => {
     request.flush({ email: 'owner@budgetoid.test' });
     expect(received).toEqual({ email: 'owner@budgetoid.test' });
   });
+
+  it('reads the remaining recovery-code count', () => {
+    // Arrange
+    let received: number | undefined;
+
+    // Act
+    api.getRecoveryCodes().subscribe((value) => (received = value));
+    const request = http.expectOne('https://api.test/api/me/recovery-codes');
+
+    // Assert
+    expect(request.request.method).toBe('GET');
+
+    request.flush({ remaining: 7 });
+    // The count itself, not the envelope. `{"remaining": n}` is a shape only
+    // the wire has a use for, and unwrapping at this boundary is what keeps it
+    // out of the service that renders the sentence.
+    expect(received).toBe(7);
+  });
+
+  it('reads an account with no set as zero rather than as no answer', () => {
+    // Arrange
+    let received: number | undefined;
+
+    // Act
+    api.getRecoveryCodes().subscribe((value) => (received = value));
+    const request = http.expectOne('https://api.test/api/me/recovery-codes');
+
+    // Assert
+    // The route never answers 404 — an account with no set has zero codes
+    // left, which is an answer. Without this half, an implementation reading
+    // `body.remaining ?? null`, or one treating a falsy count as a missing
+    // one, passes the test above and hands the screen a `null` that means
+    // "still loading" for an account that has already answered.
+    request.flush({ remaining: 0 });
+    expect(received).toBe(0);
+  });
+
+  // There is deliberately no test for a generate/POST method: the service has
+  // no such method, because `POST /api/me/recovery-codes` takes five WebAuthn
+  // assertion members this client cannot produce.
 });

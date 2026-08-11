@@ -58,6 +58,15 @@
   line-height: 1.55;
 }
 
+// A `body` line that holds its box while the number is still in flight, so the
+// page does not shift under the reader when it arrives — the label/value rule
+// applied to a value whose label is the section heading. Blank is a state here,
+// not an absence: it says the answer has not arrived, which is a different fact
+// from having no codes left.
+.s-count {
+  min-height: 1lh;
+}
+
 .s-facts {
   display: grid;
   gap: var(--bud-space-1);

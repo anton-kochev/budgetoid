@@ -112,12 +112,18 @@ control that is present and **disabled**, because erasure has to be confirmed wi
 the client cannot yet register. It states in plain words what the operator can read, and
 that erased rows survive in point-in-time backups for up to seven days.
 
-It also lists **every way of signing in** — each entry its type, "Passkey" or "Google", and
-the day it was registered, and nothing more. Registering and revoking are both present and
+It also lists **every way of signing in** — each entry its type in words and the day behind
+it, and nothing more. A recovery-code set is one of those entries, because redeeming a code
+opens a full session the way the other kinds do. Registering and revoking are present and
 **disabled**, for the same reason Erase is: both need a passkey ceremony the client cannot
 run. One sentence above the list explains it, rather than one beside each row, so a screen
-reader hears it once instead of once per entry.
+reader hears it once instead of once per entry. An entry nothing can ever revoke carries no
+button at all, not even a disabled one.
 
-Recovery codes, key rotation, the email-change action and the erasure confirmation dialog are
-not built. The three bullets above stay as written because they are the target, not a
-description of what shipped.
+Between that list and Export sits **Recovery codes**, which says how many are left and
+nothing more — no code, no part of one, no identifier, no date. It reads and never writes:
+its Generate control is present and **disabled** on the argument the others use, so
+generating a set, showing the codes once and redeeming one are unbuilt, as are key rotation,
+the email-change action and the erasure confirmation dialog. The section sits there and
+nowhere else because Export and Erase are a pair and nothing goes between them. The bullets
+above stay as written because they are the target, not a description of what shipped.

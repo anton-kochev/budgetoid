@@ -194,15 +194,31 @@ Load-bearing rules, each explained there or in the linked decision:
   the response bytes to disk **unread** (`responseType: 'blob'` — a JSON round-trip would turn
   exact `numeric(14,4)` amounts into doubles), and an erasure control that is present and
   **disabled** because the client cannot register a passkey yet. It also lists every credential
-  from `GET /api/me/credentials` — **type and registration day only**, never an id or a provider
-  subject — with registration and revocation present and **disabled** for the same reason. The
-  date is formatted in the reader's own zone by `credential-registration-date.ts`, never by
-  `DatePipe`: nothing provides `LOCALE_ID`, so `DatePipe` would silently pin every date to
-  `en-US`, and a UTC-formatted day is wrong for fourteen hours of every day under the
-  `Pacific/Kiritimati` test pin. Recovery codes, key rotation and email change render nothing
-  today and are owned by later stories — do not "complete" the screen. See
-  [export.md](docs/business-logic/export.md), [erasure.md](docs/business-logic/erasure.md) and
-  the credential-list chapter in [components.md](docs/design/components.md).
+  from `GET /api/me/credentials` — **type and day only**, never an id or a provider subject —
+  with registration present and **disabled** for the same reason. **Revoke renders only on a row
+  something can revoke**, which is the passkeys: a federated credential is replaced by an email
+  change and a recovery-code set is unrevocable by construction, so neither draws even a disabled
+  button. Every other disabled control on this screen promises a release; one that never could be
+  enabled is the worse lie. Revocability is carried per kind beside that kind's word and caption,
+  in a map declared exhaustive over `CredentialKind`, so a member added without one fails to
+  compile. The day is formatted in the reader's own zone by `credential-registration-date.ts`,
+  never by `DatePipe`: nothing provides `LOCALE_ID`, so `DatePipe` would silently pin every date
+  to `en-US`, and a UTC-formatted day is wrong for fourteen hours of every day under the
+  `Pacific/Kiritimati` test pin. A **Recovery codes** section reads the count from
+  `GET /api/me/recovery-codes` and never writes: six states that no two of which are
+  interchangeable, `null` and `0` never collapsed — a `catchError` returning `of(0)` would tell
+  somebody whose request failed that they have no way back — loading and failure in an
+  unconditional `role="status"` region that is empty at rest, the count rendered outside it, and
+  pluralisation as three template branches because `I18nPluralPipe` would pin plural rules to
+  `en-US` the way `DatePipe` pins days. Generate is present and **disabled**: generation is gated
+  on a fresh passkey assertion. `+core/security/recovery-codes.ts` mints codes and derives
+  verifiers with Web Crypto and **has no caller** — its spec is the only place in the system that
+  can check the 128-bit entropy rule, because the server sees fixed-width opaque bytes. Key
+  rotation and email change render nothing today and are owned by later stories — do not
+  "complete" the screen. See [export.md](docs/business-logic/export.md),
+  [erasure.md](docs/business-logic/erasure.md),
+  [recovery-codes.md](docs/business-logic/recovery-codes.md) and the credential-list and
+  recovery-codes chapters in [components.md](docs/design/components.md).
 
 ## Documentation
 

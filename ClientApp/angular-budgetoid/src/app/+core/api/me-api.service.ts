@@ -1,17 +1,34 @@
 import { Injectable } from '@angular/core';
-import { Observable } from 'rxjs';
+import { map, Observable } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 
 export interface MeDto {
   email: string;
 }
 
-// The two kinds of thing that can sign this account in, and the union is closed
-// on purpose: a third kind is a change to what the screen must render, not a
-// string that arrives one day and falls through a template. `federated` is the
-// provider sign-in; the response carries no provider subject and never will, so
-// there is nothing here to render but the kind and when it was attached.
-export type CredentialKind = 'passkey' | 'federated';
+// One member, and the route will never grow another: no id, no issued instant,
+// no total, and above all no hash. It is unwrapped at this boundary rather than
+// carried inward, because the screen renders a number and a one-member envelope
+// is a shape only the wire has a use for.
+interface RecoveryCodeCountDto {
+  remaining: number;
+}
+
+// The three kinds of thing that can sign this account in, and the union is
+// closed on purpose: a fourth kind is a change to what the screen must render,
+// not a string that arrives one day and falls through a template. `federated`
+// is the provider sign-in; the response carries no provider subject and never
+// will, so there is nothing here to render but the kind and when it was
+// attached.
+//
+// `recovery_codes` is the schema's own token and is deliberately not
+// camel-cased. It is a discriminant *value*, not a property name: the naming
+// policy that turns `CreatedAtUtc` into `createdAtUtc` applies to members, and
+// `recoveryCodes` is what applying it here would produce — a spelling that
+// agrees with nothing on either side of the wire. A set is listed by
+// `GET /api/me/credentials` like any other way in, because redeeming a code
+// opens a full session.
+export type CredentialKind = 'passkey' | 'federated' | 'recovery_codes';
 
 export interface CredentialSummary {
   id: string;
@@ -49,5 +66,23 @@ export class MeApiService extends BaseApiService {
   // statement rather than the screen's preference.
   public getCredentials(): Observable<readonly CredentialSummary[]> {
     return this.get<readonly CredentialSummary[]>('api/me/credentials');
+  }
+
+  // How many codes are left, and nothing else. An account that has never
+  // generated a set answers `0` rather than `404` — zero codes left is an
+  // answer, and the two readings of it ("never generated" and "all spent")
+  // share a next step, so nothing downstream needs them told apart. Whatever
+  // consumes this must therefore keep `0` and "no answer yet" apart itself;
+  // collapsing them is the one defect this whole path is shaped to prevent.
+  //
+  // There is deliberately **no** counterpart that generates a set.
+  // `POST /api/me/recovery-codes` takes five members of a fresh WebAuthn
+  // assertion this client cannot produce, so a method for it would be API
+  // surface no test could execute — a signature that compiles, is called by
+  // nothing, and is wrong in a way nothing on the screen would show.
+  public getRecoveryCodes(): Observable<number> {
+    return this.get<RecoveryCodeCountDto>('api/me/recovery-codes').pipe(
+      map((count) => count.remaining),
+    );
   }
 }

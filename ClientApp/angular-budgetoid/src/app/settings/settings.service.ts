@@ -38,6 +38,23 @@ export class SettingsService {
     readonly CredentialSummary[] | null
   >(null);
   private readonly credentialsFailedSignal = signal(false);
+  // `null` is not `0`, and the two are never collapsed. `null` means the answer
+  // has not arrived; `0` is a fact about the account — it has no codes left —
+  // and the screen renders them as a blank line box and a sentence
+  // respectively. A `catchError` that set this to `0` is the specific defect
+  // this type exists to make unrepresentable: it would tell somebody whose
+  // request failed that they have nothing to sign in with.
+  private readonly recoveryRemainingSignal = signal<number | null>(null);
+  private readonly recoveryFailedSignal = signal(false);
+  // In flight, published rather than inferred from `recoveryRemaining === null`
+  // — the third member the neighbouring reads do without, and the book's
+  // recovery-codes chapter is why: its six states are "no two of them
+  // interchangeable", and its `role="status"` region is "empty **at rest**".
+  // Inferred loading collapses at rest into loading, because both are a count
+  // that has not arrived, and the region would then hold a line from first
+  // paint instead of gaining one. This is `exporting`'s shape, on the section
+  // whose specification asks for it.
+  private readonly recoveryLoadingSignal = signal(false);
 
   public readonly email: Signal<string | null> = this.emailSignal.asReadonly();
   public readonly emailFailed: Signal<boolean> =
@@ -51,6 +68,12 @@ export class SettingsService {
     this.credentialsSignal.asReadonly();
   public readonly credentialsFailed: Signal<boolean> =
     this.credentialsFailedSignal.asReadonly();
+  public readonly recoveryRemaining: Signal<number | null> =
+    this.recoveryRemainingSignal.asReadonly();
+  public readonly recoveryFailed: Signal<boolean> =
+    this.recoveryFailedSignal.asReadonly();
+  public readonly recoveryLoading: Signal<boolean> =
+    this.recoveryLoadingSignal.asReadonly();
 
   public loadEmail(): void {
     this.emailFailedSignal.set(false);
@@ -89,6 +112,36 @@ export class SettingsService {
       // account has no way of signing in, which is a claim about the account
       // rather than about the request.
       .subscribe((credentials) => this.credentialsSignal.set(credentials));
+  }
+
+  // Shaped after `loadCredentials`, down to the single boolean: this is a read
+  // the screen starts on its own, every way it can fail ends in the same next
+  // step — load the page again — and a discriminant nothing discriminates on is
+  // a second thing to keep in step with the template.
+  //
+  // The one line to read twice is the `catchError`: it publishes **nothing**,
+  // so the count stays `null`. Returning `of(0)` here, or setting the signal in
+  // the handler, is the tempting simplification and it is the bug — it would
+  // put "You have no recovery codes." on the screen of somebody whose request
+  // never got an answer, which is a claim about their account made out of a
+  // network failure.
+  public loadRecoveryCodes(): void {
+    this.recoveryFailedSignal.set(false);
+    this.recoveryLoadingSignal.set(true);
+    this.api
+      .getRecoveryCodes()
+      .pipe(
+        catchError(() => {
+          this.recoveryFailedSignal.set(true);
+          return EMPTY;
+        }),
+        // Runs after `catchError`, so a failure ends in failed *and* not
+        // loading. The template checks the failure first regardless — a load
+        // that gave up is not still running, and saying both would ask the
+        // reader to keep waiting on a request that has already answered.
+        finalize(() => this.recoveryLoadingSignal.set(false)),
+      )
+      .subscribe((remaining) => this.recoveryRemainingSignal.set(remaining));
   }
 
   public export(): void {

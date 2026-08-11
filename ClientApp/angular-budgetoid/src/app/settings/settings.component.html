@@ -105,9 +105,15 @@
                    row states the type and is deliberately silent about the day.
                    `registeredOn` is empty exactly when `storedInstant` is null,
                    so this one condition covers both. -->
+              <!-- The caption word comes from the row, not from this line: a
+                   passkey and a provider sign-in were **Registered**, and a
+                   recovery-code set was **Generated**, because a set's instant
+                   moves every time it is replaced. Everything after the word is
+                   identical, including the formatter, so there is no second
+                   date path for a UTC day to leak back into. -->
               @if (credential.registeredOn) {
                 <p class="s-credential-date">
-                  Registered
+                  {{ credential.dateCaption }}
                   <time [attr.datetime]="credential.storedInstant">{{
                     credential.registeredOn
                   }}</time>
@@ -115,7 +121,18 @@
               }
             </div>
 
-            <!-- Outline, not Destructive: revoking is destructive, but the
+            <!-- Only on a row something can actually revoke, and a null label
+                 is that statement. A disabled control elsewhere on this screen
+                 is a promise — the ceremony lands, the sentence above the list
+                 goes, and the button starts working. A recovery-code set has no
+                 revocation to enable at all (it is replaced by generating
+                 again, and the route behind Revoke is scoped to passkeys by
+                 type), and a federated credential is replaced by an email
+                 change rather than removed. A button on either row promises a
+                 release that is not coming, which is worse than not offering
+                 it.
+
+                 Outline, not Destructive: revoking is destructive, but the
                  destructive treatment is spent on the control that commits the
                  act, and there is no confirmation behind this one yet.
 
@@ -131,15 +148,17 @@
                  row's own facts because two buttons named "Revoke" cannot be
                  told apart by anyone not looking at the screen — on the one
                  action where reaching the wrong control is unrecoverable. -->
-            <button
-              class="s-button"
-              mat-stroked-button
-              type="button"
-              disabled
-              [attr.aria-label]="credential.revokeLabel"
-            >
-              Revoke
-            </button>
+            @if (credential.revokeLabel !== null) {
+              <button
+                class="s-button"
+                mat-stroked-button
+                type="button"
+                disabled
+                [attr.aria-label]="credential.revokeLabel"
+              >
+                Revoke
+              </button>
+            }
           </li>
         }
       </ul>
@@ -150,6 +169,85 @@
        it will eventually do rather than hiding the capability until it works. -->
   <button class="s-button" mat-stroked-button type="button" disabled>
     Register a passkey
+  </button>
+</section>
+
+<!-- Between Ways to sign in and Export, and not after it: Export and Erase are a
+     pair — the alternative offered beside the destructive act — and nothing goes
+     between them. -->
+<section class="s-section" aria-labelledby="recovery-heading">
+  <h2 class="s-eyebrow" id="recovery-heading">Recovery codes</h2>
+
+  <!-- Read once into a local, for the reason the credential list gives: the
+       three branches below all have to be looking at the *same* answer, and
+       `null` is a state of its own rather than a zero. -->
+  @let remaining = settings.recoveryRemaining();
+
+  <!-- Loading and failure only. Both arrive after the first paint, so they land
+       inside a region that was already being watched; one created at the moment
+       it gains content is announced by nothing. `status`, never `alert`: polite
+       is right for the result of a read the screen started on its own, and
+       assertive is reserved for a failure to save something the person typed.
+
+       The two are exclusive by structure, not by coincidence — a load that
+       failed is not still loading, and rendering both would ask the reader to
+       keep waiting on a request that has already given up. -->
+  <div class="s-outcome" role="status">
+    @if (settings.recoveryFailed()) {
+      <p class="s-error">
+        Couldn&rsquo;t load your recovery codes. Reload the page.
+      </p>
+    } @else if (settings.recoveryLoading()) {
+      <p class="s-prose">Loading your recovery codes&hellip;</p>
+    }
+  </div>
+
+  <!-- Outside the region on purpose: the count is a fact about the account, not
+       the outcome of something the reader just did. Announcing a standing fact
+       as an event is how a screen reader ends up narrating the page's own
+       furniture.
+
+       The paragraph is unconditional and holds one line box, so the page does
+       not shift when the number arrives — the label/value rule, applied to a
+       value whose label is the section heading. At rest it is blank, and blank
+       is not zero: a blank line says the answer has not arrived, and "You have
+       no recovery codes." is a fact about the account.
+
+       Three branches and no pipe. `I18nPluralPipe` would silently pin every
+       count to `en-US` plural rules, because nothing in this app provides
+       `LOCALE_ID` — the same trap `credential-registration-date.ts` exists to
+       avoid for dates. The zero branch drops the word the other two carry:
+       *left* presupposes a set that once existed, and `0` is equally the answer
+       for an account that has never generated one. -->
+  <p class="s-prose s-count">
+    @if (remaining === 0) {
+      You have no recovery codes.
+    } @else if (remaining === 1) {
+      You have 1 recovery code left.
+    } @else if (remaining !== null) {
+      You have {{ remaining }} recovery codes left.
+    }
+  </p>
+
+  <!-- Visible prose above the control, never a title, a tooltip or an
+       aria-describedby: the button is disabled, so it is out of the tab order
+       and anything hung on it is read to nobody. -->
+  <p class="s-prose">
+    Generating a set has to be confirmed with a passkey, and Budgetoid
+    can&rsquo;t run a passkey check in the browser yet. The button stays off
+    until it can.
+  </p>
+
+  <!-- Outline rather than Destructive even though generating replaces an
+       existing set and invalidates every code printed from it: the Destructive
+       fill is a promise that a confirmation follows, and there is no
+       confirmation behind this control. Plain `disabled`, not
+       `disabledInteractive` — that carve-out is for a *busy* control that comes
+       back within the second, not for one unavailable for the whole life of the
+       screen. No composed accessible name: it is the only Generate here, so
+       there is nothing to tell it apart from, and no count belongs in a label. -->
+  <button class="s-button" mat-stroked-button type="button" disabled>
+    Generate recovery codes
   </button>
 </section>
 

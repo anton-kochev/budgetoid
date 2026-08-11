@@ -57,6 +57,16 @@ const CREDENTIALS_FAILURE =
 const CREDENTIALS_EMPTY = 'Nothing is attached to your account yet.';
 const PASSKEY_TYPE = 'Passkey';
 const FEDERATED_TYPE = 'Google';
+const RECOVERY_SET_TYPE = 'Recovery codes';
+const RECOVERY_HEADING = 'Recovery codes';
+const GENERATE_BUTTON = 'Generate recovery codes';
+const RECOVERY_LOADING = 'Loading your recovery codes…';
+const RECOVERY_FAILURE = 'Couldn’t load your recovery codes. Reload the page.';
+const RECOVERY_NONE = 'You have no recovery codes.';
+const RECOVERY_ONE = 'You have 1 recovery code left.';
+const RECOVERY_MANY = 'You have 5 recovery codes left.';
+const GENERATE_EXPLANATION =
+  'Generating a set has to be confirmed with a passkey, and Budgetoid can’t run a passkey check in the browser yet. The button stays off until it can.';
 
 // Two entries far enough apart to be told apart on screen, which the section's
 // own rules make a requirement rather than a convenience: the row shows the
@@ -77,6 +87,21 @@ const FEDERATED: CredentialSummary = {
   type: 'federated',
   createdAtUtc: '2026-01-12T08:30:00Z',
 };
+// A set is a row of this list on the same argument a passkey is: redeeming a
+// code opens a full session. It carries no action.
+const RECOVERY_SET: CredentialSummary = {
+  id: '019f4c0a-0000-7000-8000-0000000000d4',
+  type: 'recovery_codes',
+  createdAtUtc: '2026-02-02T05:00:00Z',
+};
+// A second *revocable* row, so that "each control is named for its own row" has
+// two controls to tell apart. It cannot be the federated row any more — that
+// row carries no Revoke — so telling two Revokes apart now means two passkeys.
+const PASSKEY_OTHER: CredentialSummary = {
+  id: '019f4c0a-0000-7000-8000-0000000000e5',
+  type: 'passkey',
+  createdAtUtc: '2026-04-20T02:00:00Z',
+};
 // A 200 carrying one field the screen cannot read. Every *network* failure on
 // this screen is caught and rendered as a sentence; a successful response with a
 // bad value in it is the one path with nothing between it and the template — and
@@ -90,15 +115,24 @@ const UNREADABLE: CredentialSummary = {
 };
 const PASSKEY_DATE = 'March 12, 2026';
 const FEDERATED_DATE = 'January 12, 2026';
+const RECOVERY_SET_DATE = 'February 2, 2026';
 // The one word that introduces the date on a row. Pinned as a fragment rather
 // than as a whole sentence — the exception the rest of this list is the rule for
 // — because the defect it catches *is* the fragment: a row that kept the caption
 // after dropping the date it introduces renders exactly this word and nothing
 // after it.
 const REGISTERED_CAPTION = 'Registered';
+// The word a recovery-code set's caption uses instead of `Registered`. Pinned
+// as a fragment for the same reason `REGISTERED_CAPTION` is: the defect is the
+// word itself.
+const GENERATED_CAPTION = 'Generated';
 // The visible label first, so voice control still reaches the control by what
 // it can see; the rest is what tells two buttons named "Revoke" apart.
 const REVOKE_PASSKEY = 'Revoke Passkey, registered March 12, 2026';
+const REVOKE_PASSKEY_OTHER = 'Revoke Passkey, registered April 20, 2026';
+// Kept only as a negative. The federated row carries no Revoke at all, so this
+// is the name of a control that must not be findable — a constant asserted to
+// match nothing rather than something.
 const REVOKE_FEDERATED = 'Revoke Google, registered January 12, 2026';
 // The same name with the clause the row cannot fill left off, rather than
 // `Revoke Passkey, registered ` — a sentence that stops mid-word is read out
@@ -121,8 +155,18 @@ class SettingsServiceStub {
     null,
   );
   public readonly credentialsFailed = signal(false);
+  // Starts `null`, like the real service: at rest is a state of its own and is
+  // not a zero, and a stub seeded with `0` would put the screen's first paint
+  // in a state the real one never reaches.
+  public readonly recoveryRemaining = signal<number | null>(null);
+  public readonly recoveryFailed = signal(false);
+  // False at first paint, so the stub's default render *is* the section's
+  // at-rest state: region present and empty. The real service sets it inside
+  // `loadRecoveryCodes`, which this stub deliberately does not do.
+  public readonly recoveryLoading = signal(false);
   public loadEmail = vi.fn();
   public loadCredentials = vi.fn();
+  public loadRecoveryCodes = vi.fn();
   public export = vi.fn();
 }
 
@@ -1041,7 +1085,13 @@ describe('SettingsComponent', () => {
 
     // Act
     fixture.detectChanges();
-    const controls = [buttonNamed(host, REGISTER_BUTTON), ...revokeButtons()];
+    const controls = [
+      buttonNamed(host, REGISTER_BUTTON),
+      // The recovery section's control is the same shape — disabled, with
+      // visible prose above it — and the same mistake is available on it.
+      buttonNamed(host, GENERATE_BUTTON),
+      ...revokeButtons(),
+    ];
 
     // Assert
     // Control for the tests above: the explanation is legible only while it is
@@ -1060,7 +1110,10 @@ describe('SettingsComponent', () => {
 
   it('keeps every revoke control inert', () => {
     // Arrange
-    service.credentials.set([FEDERATED, PASSKEY]);
+    // Two passkeys, not a passkey and a provider sign-in: only a revocable row
+    // draws a Revoke, so `[FEDERATED, PASSKEY]` leaves this loop one control to
+    // walk and "every" stops being a claim about more than one thing.
+    service.credentials.set([PASSKEY, PASSKEY_OTHER]);
 
     // Act
     fixture.detectChanges();
@@ -1075,12 +1128,20 @@ describe('SettingsComponent', () => {
 
   it('holds every control on the screen to the touch target', () => {
     // Arrange
-    service.credentials.set([FEDERATED, PASSKEY]);
+    // One row of every kind the list can render, and *two* of the one kind that
+    // draws a control. Both halves matter: the unrevocable kinds are on screen
+    // while the count is taken, so a template that started drawing a Revoke on
+    // one of them is caught by the number; and the second passkey is what makes
+    // the number move at all — with a single revocable row the census lands
+    // back on the five it read before this section existed, which is a count
+    // that proves nothing.
+    service.credentials.set([FEDERATED, RECOVERY_SET, PASSKEY, PASSKEY_OTHER]);
 
     // Act
     fixture.detectChanges();
     const controls = [
       buttonNamed(host, REGISTER_BUTTON),
+      buttonNamed(host, GENERATE_BUTTON),
       buttonNamed(host, EXPORT_BUTTON),
       buttonNamed(host, ERASE_BUTTON),
       ...revokeButtons(),
@@ -1088,22 +1149,33 @@ describe('SettingsComponent', () => {
 
     // Assert
     // Every control, not only the ones this section added: the minimum is a
-    // rule about controls, and a screen that holds four of five to it has a
+    // rule about controls, and a screen that holds five of six to it has a
     // control someone misses on a phone. The list is built by name so a missing
-    // control fails here rather than shrinking the loop to nothing.
-    expect(controls.length).toBe(5);
+    // control fails here rather than shrinking the loop to nothing — a census
+    // satisfied by "six controls appeared" is satisfied by any six.
+    expect(controls.length).toBe(6);
     for (const control of controls) {
       expect(control?.classList.contains(TOUCH_TARGET_CLASS)).toBe(true);
     }
   });
 
-  it('gives the credential controls the outline treatment', () => {
+  it('gives the credential and recovery controls the outline treatment', () => {
     // Arrange
-    service.credentials.set([FEDERATED, PASSKEY]);
+    // The same arrangement as the touch-target census, for the same two
+    // reasons.
+    service.credentials.set([FEDERATED, RECOVERY_SET, PASSKEY, PASSKEY_OTHER]);
 
     // Act
     fixture.detectChanges();
-    const controls = [buttonNamed(host, REGISTER_BUTTON), ...revokeButtons()];
+    const controls = [
+      buttonNamed(host, REGISTER_BUTTON),
+      // Outline and specifically not filled, even though generating replaces an
+      // existing set and invalidates every code printed from it: the
+      // Destructive fill is a promise that a confirmation follows, and there is
+      // no confirmation behind this control.
+      buttonNamed(host, GENERATE_BUTTON),
+      ...revokeButtons(),
+    ];
 
     // Assert
     // Outline, and specifically *not* filled. Revoking is destructive, but the
@@ -1114,7 +1186,7 @@ describe('SettingsComponent', () => {
     // carry both classes, and it is the filled treatment arriving that makes a
     // dead button read as the section's primary action. Export is deliberately
     // filled and is deliberately not in this list.
-    expect(controls.length).toBe(3);
+    expect(controls.length).toBe(4);
     for (const control of controls) {
       expect(control?.classList.contains(OUTLINE_CLASS)).toBe(true);
       expect(control?.classList.contains(FILLED_CLASS)).toBe(false);
@@ -1123,7 +1195,11 @@ describe('SettingsComponent', () => {
 
   it('names each revoke control for its own row', () => {
     // Arrange
-    service.credentials.set([FEDERATED, PASSKEY]);
+    // Two passkeys registered on different days. Two Revokes to tell apart can
+    // only be two passkeys now: the provider row draws no control, so the pair
+    // this test is about no longer exists in `[FEDERATED, PASSKEY]`, and the
+    // rows are told apart by the date because nothing else is on them.
+    service.credentials.set([PASSKEY, PASSKEY_OTHER]);
 
     // Act
     fixture.detectChanges();
@@ -1133,14 +1209,17 @@ describe('SettingsComponent', () => {
     // anyone driving the screen by voice or by screen reader, and this is a
     // destructive action — the one place where reaching the wrong control is
     // unrecoverable. `buttonNamed` matches the accessible name, so a shared
-    // visible label with no `aria-label` fails here.
+    // visible label with no `aria-label` fails here, and so does a name
+    // composed from the wrong row.
     expect(buttonNamed(host, REVOKE_PASSKEY)).not.toBeNull();
-    expect(buttonNamed(host, REVOKE_FEDERATED)).not.toBeNull();
+    expect(buttonNamed(host, REVOKE_PASSKEY_OTHER)).not.toBeNull();
   });
 
   it('keeps the visible label on every revoke control', () => {
     // Arrange
-    service.credentials.set([FEDERATED, PASSKEY]);
+    // The same pair, for the same reason: with one control on screen, "every"
+    // is a claim about one thing.
+    service.credentials.set([PASSKEY, PASSKEY_OTHER]);
 
     // Act
     fixture.detectChanges();
@@ -1151,11 +1230,114 @@ describe('SettingsComponent', () => {
     // what is printed on the button — or a button printing the whole composed
     // name — breaks voice control, which matches what it can see. `Revoke` is
     // read off the DOM text here precisely because the other test reads the
-    // accessible name.
+    // accessible name, and `revokeButtons` finds a control only when its own
+    // text is exactly that word.
     expect(buttons.length).toBe(2);
     expect(buttonNamed(host, REVOKE_PASSKEY)?.getAttribute('aria-label')).toBe(
       REVOKE_PASSKEY,
     );
+    expect(
+      buttonNamed(host, REVOKE_PASSKEY_OTHER)?.getAttribute('aria-label'),
+    ).toBe(REVOKE_PASSKEY_OTHER);
+  });
+
+  it('offers no revoke on a provider sign-in', () => {
+    // Arrange
+    service.credentials.set([FEDERATED, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // A federated credential is replaced by an email change, never removed, so
+    // the Revoke that shipped on this row was a control that will never be
+    // enabled — the one lie worse than an inert control, because every other
+    // disabled button on this screen is a promise that the ceremony lands and
+    // it starts working. The passkey's Revoke is the discriminating half: a
+    // template that dropped the button from every row passes the first
+    // assertion while taking the action off the one row that will get it.
+    expect(buttonNamed(host, REVOKE_FEDERATED)).toBeNull();
+    expect(revokeButtons().length).toBe(1);
+    expect(buttonNamed(host, REVOKE_PASSKEY)).not.toBeNull();
+    // The row itself is still listed, and still says what it is: removing the
+    // control is not removing the entry.
+    expect(normalize(credentialRows()[0] ?? null)).toContain(FEDERATED_TYPE);
+    expect(normalize(credentialRows()[0] ?? null)).toContain(FEDERATED_DATE);
+  });
+
+  it('lists a recovery-code set among the ways to sign in', () => {
+    // Arrange
+    service.credentials.set([RECOVERY_SET]);
+
+    // Act
+    fixture.detectChanges();
+    const row = normalize(credentialRows()[0] ?? null);
+
+    // Assert
+    // In words, and specifically not the wire token: a template printing the
+    // raw `type` renders `recovery_codes`, which is a schema identifier on a
+    // screen. The list is documented as every way into the account and
+    // redeeming a code opens a full session, so the row belongs here on the
+    // same argument a passkey's does.
+    expect(credentialRows().length).toBe(1);
+    expect(row).toContain(RECOVERY_SET_TYPE);
+    expect(row).not.toContain(RECOVERY_SET.type);
+  });
+
+  it('captions a set with the day it was generated, not registered', () => {
+    // Arrange
+    // Both rows, because the negative half needs a sibling: a template that
+    // renamed the caption for every row would pass `not.toContain('Registered')`
+    // while telling a passkey it was generated.
+    service.credentials.set([RECOVERY_SET, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+    const set = normalize(credentialRows()[0] ?? null);
+    const passkey = normalize(credentialRows()[1] ?? null);
+
+    // Assert
+    // A set's instant moves every time the set is replaced, so `Registered`
+    // would say the wrong thing about it on its second issue.
+    expect(set).toContain(GENERATED_CAPTION);
+    expect(set).not.toContain(REGISTERED_CAPTION);
+    expect(set).toContain(RECOVERY_SET_DATE);
+    expect(passkey).toContain(REGISTERED_CAPTION);
+    expect(passkey).not.toContain(GENERATED_CAPTION);
+  });
+
+  it('dates a set through the same formatter as a passkey', () => {
+    // Arrange
+    service.credentials.set([RECOVERY_SET]);
+
+    // Act
+    fixture.detectChanges();
+    const time = credentialRows()[0]?.querySelector('time');
+
+    // Assert
+    // The same `<time>` carrying the stored instant, the same reader's-own-day
+    // rule. A second date path is a second place for a UTC day to leak back in
+    // — and the rendered day here is the reader's, not the stamp's: 05:00Z on
+    // the 2nd is the 2nd at UTC+14 only because the offset does not carry it
+    // over midnight, which the passkey fixtures prove it otherwise would.
+    expect(time?.getAttribute('datetime')).toBe(RECOVERY_SET.createdAtUtc);
+    expect(normalize(time ?? null)).toBe(RECOVERY_SET_DATE);
+  });
+
+  it('offers no revoke on a recovery-code set', () => {
+    // Arrange
+    service.credentials.set([RECOVERY_SET, PASSKEY]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // A set is replaced by generating again, never revoked: the route behind
+    // Revoke is scoped to passkeys by type, so pointing it at a set answers the
+    // 404 an unknown id answers. The passkey's control is the discriminating
+    // half.
+    expect(revokeButtons().length).toBe(1);
+    expect(buttonNamed(host, REVOKE_PASSKEY)).not.toBeNull();
   });
 
   it('offers no revoke control when nothing is attached', () => {
@@ -1170,6 +1352,318 @@ describe('SettingsComponent', () => {
     // or a row rendered for an empty list — leaves a destructive control on a
     // screen with nothing for it to act on.
     expect(revokeButtons().length).toBe(0);
+  });
+
+  it('offers a section for the recovery codes', () => {
+    // Act
+    const section = sectionFor(host, 'recovery-heading');
+
+    // Assert
+    expect(section).not.toBeNull();
+    expect(normalize(section?.querySelector('#recovery-heading') ?? null)).toBe(
+      RECOVERY_HEADING,
+    );
+    // `h2` under the screen's one `h1`; no level skipped.
+    expect(section?.querySelector('#recovery-heading')?.tagName).toBe('H2');
+  });
+
+  it('puts the recovery codes between the sign-in ways and the export', () => {
+    // Act
+    const credentials = sectionFor(host, 'credentials-heading');
+    const recovery = sectionFor(host, 'recovery-heading');
+    const exportSection = sectionFor(host, 'export-heading');
+
+    // Assert
+    // Export and Erase are a pair — the alternative offered beside the
+    // destructive act — and nothing goes between them, which is what makes this
+    // an ordering assertion rather than a preference.
+    expect(precedes(credentials, recovery)).toBe(true);
+    expect(precedes(recovery, exportSection)).toBe(true);
+  });
+
+  it('loads the recovery codes on initialization', () => {
+    // Assert
+    // Without the call the section renders its blank count line forever and
+    // every state test below still passes, because each one sets the signals
+    // itself.
+    expect(service.loadRecoveryCodes).toHaveBeenCalledOnce();
+  });
+
+  it('does not load the recovery codes again when the screen re-renders', () => {
+    // Act
+    fixture.detectChanges();
+    fixture.detectChanges();
+
+    // Assert
+    // Control for the test above: a load started from a template expression
+    // re-fires on every change detection pass.
+    expect(service.loadRecoveryCodes).toHaveBeenCalledOnce();
+  });
+
+  it('carries the recovery outcome region before anything has happened', () => {
+    // Act
+    const region = recoveryRegion();
+
+    // Assert
+    // Present and empty, both halves — the at-rest row of the book's table, and
+    // the same pairing the account and export regions make. A live region
+    // created at the moment it gains content is announced by nothing, and a
+    // region that always holds a line is a screen reporting an event to
+    // somebody who has not caused one.
+    expect(region).not.toBeNull();
+    expect(normalize(region)).toBe('');
+    // At rest the count line is blank too, and blank is not zero.
+    expect(recoveryCount()).toBe('');
+  });
+
+  it('says the recovery codes are loading while the request runs', () => {
+    // Arrange
+    service.recoveryLoading.set(true);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // At rest and loading are different states and this is the pair that proves
+    // it: a template inferring loading from an absent count renders this line
+    // at rest as well, and the test above goes red instead.
+    expect(normalize(recoveryRegion())).toContain(RECOVERY_LOADING);
+    expect(recoveryCount()).toBe('');
+  });
+
+  it('stops saying the codes are loading once the count arrives', () => {
+    // Arrange
+    service.recoveryLoading.set(false);
+    service.recoveryRemaining.set(5);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(normalize(recoveryRegion())).not.toContain(RECOVERY_LOADING);
+  });
+
+  it('holds the count line open before the count arrives', () => {
+    // Act
+    const line = sectionFor(host, 'recovery-heading')?.querySelector(
+      '.s-count',
+    );
+
+    // Assert
+    // Present and empty, both halves. The element is what reserves the line box
+    // so the page does not shift when the number lands; a template that
+    // rendered the paragraph only once it had something to say passes every
+    // copy assertion here and moves the button under the reader's finger.
+    expect(line).not.toBeNull();
+    expect(normalize(line ?? null)).toBe('');
+  });
+
+  it('claims nothing about the count before one arrives', () => {
+    // Assert
+    // Control for the zero sentence below: a template treating `null` as `0` —
+    // `remaining ?? 0`, or a truthiness test — renders it on every first paint
+    // and tells somebody who has ten codes that they have none. The whole
+    // section is read, not the count line, because the claim is just as false
+    // wherever it is made.
+    expect(normalize(sectionFor(host, 'recovery-heading'))).not.toContain(
+      RECOVERY_NONE,
+    );
+  });
+
+  it('explains recovery codes it could not load', () => {
+    // Arrange
+    service.recoveryFailed.set(true);
+    service.recoveryRemaining.set(null);
+    // The real service clears this in a `finalize`, so the two are never both
+    // set; asserting from the state the service actually produces keeps this
+    // test about the template rather than about a combination nothing reaches.
+    service.recoveryLoading.set(false);
+
+    // Act
+    fixture.detectChanges();
+    const region = normalize(recoveryRegion());
+
+    // Assert
+    // Inside the region, which was in the DOM from first paint: a live region
+    // created at the moment it gains content is announced by nothing.
+    expect(region).toContain(RECOVERY_FAILURE);
+    // A load that failed is not still loading, and it is not an account with no
+    // codes. Both would answer a question the screen cannot answer.
+    expect(region).not.toContain(RECOVERY_LOADING);
+    expect(normalize(sectionFor(host, 'recovery-heading'))).not.toContain(
+      RECOVERY_NONE,
+    );
+    expect(recoveryCount()).toBe('');
+  });
+
+  it('explains nothing while the count is merely absent', () => {
+    // Assert
+    // Control for the test above: a failure sentence rendered unconditionally
+    // accuses the network on every first paint.
+    expect(normalize(sectionFor(host, 'recovery-heading'))).not.toContain(
+      RECOVERY_FAILURE,
+    );
+  });
+
+  it('states an account with no codes left as a fact, not as a shortage', () => {
+    // Arrange
+    service.recoveryRemaining.set(0);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // `0` covers "never generated" and "all spent" and the client cannot tell
+    // them apart, so the sentence drops the word the other two branches carry.
+    // "No recovery codes *left*" presupposes a set that once existed and tells
+    // somebody who has never generated one that they have spent something.
+    expect(recoveryCount()).toBe(RECOVERY_NONE);
+    expect(recoveryCount()).not.toContain('left');
+  });
+
+  it('does not call a zero count a loading one', () => {
+    // Arrange
+    service.recoveryRemaining.set(0);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // The other direction of the at-rest tests, and the reason `null` and `0`
+    // are held apart the whole way from the API service: a template testing the
+    // count for truthiness leaves an account with no codes waiting on a request
+    // that already answered.
+    expect(normalize(recoveryRegion())).not.toContain(RECOVERY_LOADING);
+    expect(normalize(recoveryRegion())).toBe('');
+  });
+
+  it('counts a single remaining code in the singular', () => {
+    // Arrange
+    service.recoveryRemaining.set(1);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // Paired with the plural below: each is the other's control, because one
+    // rendered string cannot satisfy both. `I18nPluralPipe` is not available
+    // for this — nothing provides `LOCALE_ID`, so it would silently pin every
+    // count to en-US plural rules, the same trap
+    // `credential-registration-date.ts` exists to avoid for dates.
+    expect(recoveryCount()).toBe(RECOVERY_ONE);
+  });
+
+  it('counts several remaining codes in the plural', () => {
+    // Arrange
+    service.recoveryRemaining.set(5);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(recoveryCount()).toBe(RECOVERY_MANY);
+  });
+
+  it('says nothing in the region once the count has arrived', () => {
+    // Arrange
+    service.recoveryRemaining.set(5);
+
+    // Act
+    fixture.detectChanges();
+    const region = recoveryRegion();
+
+    // Assert
+    // Presence and emptiness together, as on the other three regions: presence
+    // alone is satisfied by a region that always holds a line, emptiness alone
+    // by no region at all.
+    expect(region).not.toBeNull();
+    expect(normalize(region)).toBe('');
+  });
+
+  it('states the count outside the live region', () => {
+    // Arrange
+    service.recoveryRemaining.set(5);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // The count is a fact about the account, not the outcome of something the
+    // reader just did. Announcing a standing fact as an event is how a screen
+    // reader ends up narrating the page's own furniture — and the same call the
+    // credential list makes when it puts its empty sentence outside the region.
+    expect(normalize(recoveryRegion())).not.toContain(RECOVERY_MANY);
+    expect(normalize(sectionFor(host, 'recovery-heading'))).toContain(
+      RECOVERY_MANY,
+    );
+  });
+
+  it('shows no code, hash or identifier in the recovery section', () => {
+    // Arrange
+    service.recoveryRemaining.set(5);
+    service.credentials.set([RECOVERY_SET]);
+
+    // Act
+    fixture.detectChanges();
+    // `outerHTML`, not `textContent`: the plausible route for an identifier is
+    // an attribute, which moves the section's text by not one character.
+    const section = sectionFor(host, 'recovery-heading')?.outerHTML ?? '';
+
+    // Assert
+    // The count is the whole of what this section says. Not a code, not a
+    // verifier, not a hash, not the set's identifier, and not the day it was
+    // generated — that day is on the set's row in Ways to sign in, and a second
+    // copy here is a second thing to keep in step.
+    expect(section).not.toBe('');
+    expect(section).not.toContain(RECOVERY_SET.id);
+    expect(section).not.toContain(RECOVERY_SET_DATE);
+  });
+
+  it('keeps the generate control inert', () => {
+    // Act
+    const generate = buttonNamed(host, GENERATE_BUTTON);
+    const section = sectionFor(host, 'recovery-heading');
+
+    // Assert
+    // Present, so the section is honest about what it will eventually do, and
+    // plainly disabled — not `disabledInteractive`, whose carve-out is for a
+    // busy control that comes back within the second, not for one unavailable
+    // for the whole life of the screen.
+    expect(generate).not.toBeNull();
+    expect(generate?.disabled).toBe(true);
+    expect(normalize(section)).toContain(GENERATE_EXPLANATION);
+  });
+
+  it('says why the generate control is off before offering it', () => {
+    // Act
+    const section = sectionFor(host, 'recovery-heading');
+    const explanation = elementSaying(section, GENERATE_EXPLANATION);
+    const generate = buttonNamed(host, GENERATE_BUTTON);
+
+    // Assert
+    // Below the button the sentence is an apology; above it, an instruction.
+    expect(explanation).not.toBeNull();
+    expect(precedes(explanation, generate)).toBe(true);
+    // And as visible prose, never hung on the control: a disabled button is out
+    // of the tab order, so a title or aria-describedby on it is read to nobody.
+    expect(generate?.getAttribute('title')).toBeNull();
+    expect(generate?.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('puts no count in the generate control', () => {
+    // Arrange
+    service.recoveryRemaining.set(5);
+
+    // Act
+    fixture.detectChanges();
+    const generate = buttonNamed(host, GENERATE_BUTTON);
+
+    // Assert
+    // It is the only Generate on the screen, so there is nothing to tell it
+    // apart from and no composed accessible name is needed. A label carrying
+    // the count is a second place the number has to stay right.
+    expect(generate?.getAttribute('aria-label')).toBeNull();
+    expect(normalize(generate)).toBe(GENERATE_BUTTON);
   });
 
   // Reads the rows the way the design chapter specifies them, so a list that
@@ -1205,6 +1699,22 @@ describe('SettingsComponent', () => {
       ) ?? null
     );
   }
+
+  function recoveryRegion(): Element | null {
+    return (
+      sectionFor(host, 'recovery-heading')?.querySelector('[role="status"]') ??
+      null
+    );
+  }
+
+  // The count line, read on its own rather than through the section's whole
+  // text: the section also carries the explanation and the button, and an
+  // assertion over all of it cannot tell a blank count from a missing one.
+  function recoveryCount(): string {
+    return normalize(
+      sectionFor(host, 'recovery-heading')?.querySelector('.s-count') ?? null,
+    );
+  }
 });
 
 // A visit is not the same thing as a page load. The user exports, walks off to
@@ -1225,16 +1735,20 @@ describe('SettingsComponent on a second visit', () => {
     // Only the edges are replaced — the HTTP calls and the disk write. The
     // service under test is the shipped one.
     //
-    // `getCredentials` is in the `Pick` because the screen loads it on init and
-    // the real service is the one running here: a stub missing the method fails
-    // every test in this block with `getCredentials is not a function` before a
-    // single assertion about the export is reached. The `Pick` is over the real
-    // `MeApiService`, so this list is also what stops it from drifting into a
-    // shape the service no longer has.
-    const api: Pick<MeApiService, 'getMe' | 'getExport' | 'getCredentials'> = {
+    // `getCredentials` and `getRecoveryCodes` are in the `Pick` because the
+    // screen loads both on init and the real service is the one running here: a
+    // stub missing either fails every test in this block with `… is not a
+    // function` before a single assertion about the export is reached. The
+    // `Pick` is over the real `MeApiService`, so this list is also what stops it
+    // from drifting into a shape the service no longer has.
+    const api: Pick<
+      MeApiService,
+      'getMe' | 'getExport' | 'getCredentials' | 'getRecoveryCodes'
+    > = {
       getMe: () => of({ email: 'owner@budgetoid.test' }),
       getExport,
       getCredentials: () => of([FEDERATED, PASSKEY]),
+      getRecoveryCodes: () => of(3),
     };
     const downloads: Pick<FileDownloadService, 'save'> = { save: vi.fn() };
 

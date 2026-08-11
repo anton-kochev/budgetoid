@@ -31,6 +31,10 @@ class MeApiStub {
   public getCredentials = vi.fn(
     (): Observable<readonly CredentialSummary[]> => of([FEDERATED, PASSKEY]),
   );
+  // A count rather than a zero, so the default answer is distinguishable from
+  // both of the states the service holds apart: a stub answering `0` would make
+  // "published the server's count" and "seeded a zero" the same observation.
+  public getRecoveryCodes = vi.fn((): Observable<number> => of(4));
 }
 
 class FileDownloadStub {
@@ -293,5 +297,123 @@ describe('SettingsService', () => {
     // reload that succeeded would still be accused of failing.
     expect(service.credentialsFailed()).toBe(false);
     expect(service.credentials()).toEqual([FEDERATED, PASSKEY]);
+  });
+
+  it('holds no recovery count before the load is asked for', () => {
+    // Assert
+    // `null` is load-bearing and is not `0`. "Not asked yet" and "you have no
+    // codes left" are different facts and the screen renders them differently:
+    // a blank line box that holds its height, and a sentence. A service seeding
+    // `0` tells a user mid-load that they have nothing to fall back on.
+    //
+    // `recoveryLoading` is false here and that is the third fact: at rest is
+    // not loading, which is what keeps the section's `role="status"` region
+    // empty until a request is actually running.
+    expect(service.recoveryRemaining()).toBeNull();
+    expect(service.recoveryFailed()).toBe(false);
+    expect(service.recoveryLoading()).toBe(false);
+  });
+
+  it('reports the recovery count as loading while the request runs', () => {
+    // Arrange
+    const gate = new Subject<number>();
+    api.getRecoveryCodes.mockReturnValue(gate);
+
+    // Act
+    service.loadRecoveryCodes();
+
+    // Assert
+    // Held open deliberately: with a synchronous observable the flag is set and
+    // cleared inside the call and nothing can observe it, so a service that
+    // never set it at all would pass. The count is still absent, which is what
+    // distinguishes this from the resolved states.
+    expect(service.recoveryLoading()).toBe(true);
+    expect(service.recoveryRemaining()).toBeNull();
+
+    gate.next(4);
+    gate.complete();
+    expect(service.recoveryLoading()).toBe(false);
+    expect(service.recoveryRemaining()).toBe(4);
+  });
+
+  it('stops loading when the count cannot be read', () => {
+    // Arrange
+    api.getRecoveryCodes.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+
+    // Act
+    service.loadRecoveryCodes();
+
+    // Assert
+    // A load that gave up is not still running. Left latched, the section would
+    // render its failure sentence and keep the reader waiting on the request
+    // that produced it — the two states the book calls exclusive by structure.
+    expect(service.recoveryLoading()).toBe(false);
+    expect(service.recoveryFailed()).toBe(true);
+  });
+
+  it('publishes how many codes are left', () => {
+    // Arrange
+    api.getRecoveryCodes.mockReturnValue(of(7));
+
+    // Act
+    service.loadRecoveryCodes();
+
+    // Assert
+    expect(service.recoveryRemaining()).toBe(7);
+  });
+
+  it('publishes a spent set as zero rather than as no answer', () => {
+    // Arrange
+    api.getRecoveryCodes.mockReturnValue(of(0));
+
+    // Act
+    service.loadRecoveryCodes();
+
+    // Assert
+    // The other direction of the test above, and the reason the signal is
+    // `number | null` rather than `number`: a service that left the signal
+    // `null` on a zero — or a template testing the count for truthiness — is
+    // indistinguishable from one that never answered, and the screen would sit
+    // on its loading line forever for the very account that most needs telling.
+    expect(service.recoveryRemaining()).toBe(0);
+    expect(service.recoveryFailed()).toBe(false);
+  });
+
+  it('reports a count it could not load', () => {
+    // Arrange
+    api.getRecoveryCodes.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+
+    // Act
+    service.loadRecoveryCodes();
+
+    // Assert
+    // Both halves. This is the defect the shape exists to prevent: a
+    // `catchError` returning `of(0)` passes the flag assertion while telling
+    // somebody whose request failed, in plain words, that they have no recovery
+    // codes — a claim about their account manufactured out of a network
+    // failure.
+    expect(service.recoveryFailed()).toBe(true);
+    expect(service.recoveryRemaining()).toBeNull();
+  });
+
+  it('clears a previous recovery failure when the load is asked for again', () => {
+    // Arrange
+    api.getRecoveryCodes.mockReturnValueOnce(
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+    service.loadRecoveryCodes();
+    expect(service.recoveryFailed()).toBe(true);
+
+    // Act
+    service.loadRecoveryCodes();
+
+    // Assert
+    // The failure describes the last attempt, not the screen.
+    expect(service.recoveryFailed()).toBe(false);
+    expect(service.recoveryRemaining()).toBe(4);
   });
 });

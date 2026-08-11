@@ -31,9 +31,11 @@ set behind a fresh WebAuthn assertion, `GET /api/me/recovery-codes` answers how 
 **anonymous** `POST /api/recovery-codes/redemption` spends one code and signs its holder in. All of it
 is tested.
 
-What does **not** exist: **no browser mints a code and no screen redeems one.** Nothing generates a
-set client-side and nothing presents a verifier, so the only caller that reaches either route today is
-a test. And no key is wrapped under a code — the account's key-encryption key is derived from the same
+What does **not** exist: **no browser mints a code and no screen redeems one.** The client holds the
+generator — it mints a code, derives its verifier, and is covered by its own spec — and nothing calls
+it, because a generation is gated behind a WebAuthn ceremony this client cannot run; nothing anywhere
+presents a verifier. So the generation and redemption routes are reached only by a test, while the
+count is read by the settings screen on every visit. And no key is wrapped under a code — the account's key-encryption key is derived from the same
 code on an independent HKDF branch, and that derivation is a later story. Read every rule below
 against that: the server side of a recovery sign-in is whole, and the surface a person would reach it
 through is not.
@@ -114,9 +116,12 @@ erDiagram
     result is a claim the server cannot verify (see [passkeys.md](passkeys.md)).
   - **What the server pins instead, and it is the whole list**: the verifier's exact decoded width
     (32 bytes), the set size (10), and that the ten are distinct from each other. Nothing else.
-  - **Enforced in**: nowhere in this repository today. The only layer that can hold it is the client
-    that mints the code, and that client is not built — so the rule currently has no enforcer at all,
-    and the first browser to generate a set owns making it true and owns the test that says so.
+  - **Enforced in**: the browser's generator and its spec, and nowhere else in this repository — a
+    26-character code drawn uniformly from a 32-symbol alphabet is 130 bits, and the spec recomputes
+    that arithmetic rather than restating the number. The assertions are about the alphabet and the
+    draw rather than about a string's length, because a code of the right length drawn from
+    `Math.random` or through a modulo-biased mapping passes every length check there is. Nothing
+    below the client can restate it, so deleting that spec removes the requirement's only enforcer.
 
 - **A verifier MUST decode to exactly 32 bytes, and both directions of that bound are refused.**
   - **Why**: short is a shorter secret than the design claims, and it would hash to a well-formed
@@ -676,7 +681,8 @@ and a short verifier is a shorter secret than the design claims.
   entirely, which is a worse position than the one the codes were meant to improve. The consequence is
   a requirement on the client — it must push generation at or near passkey registration, when the
   person still has the authenticator in their hand — and that work belongs to a later story. Until it
-  ships, an account can hold a passkey and no codes indefinitely and nothing tells the person so.
+  ships, an account can hold a passkey and no codes indefinitely: the settings screen states the count,
+  so somebody who goes looking is told, and nobody who does not is ever prompted.
 - **`CK_credentials_type_shape`'s `recovery_codes` arm is byte-identical to its `passkey` arm**, so
   that constraint **no longer discriminates between those two types**. That is deliberate: both are
   self-contained credentials with no issuer and no provider subject, so from that constraint's point of
@@ -717,11 +723,12 @@ and a short verifier is a shorter secret than the design claims.
   rollback. So a caller who loses the race, or presents a malformed set, has to run the ceremony again.
   That is correct rather than a defect, and it must **not** be answered by moving the gate inside the
   transaction; [erasure.md](erasure.md) owns the argument.
-- **The client cannot generate a set or present a code, so the settings screen shows nothing about
-  recovery codes and there is no screen to redeem one on.** All three routes are reachable and answer
-  correctly; nothing calls any of them, and `/api/recovery-codes/redemption` has no client route to be
-  reached from at all. Read that the same way the disabled erasure control is read — the gate is built
-  and the surface in front of it is not.
+- **The client can neither generate a set nor present a code, and the settings screen shows the count
+  and nothing more.** Of the three routes, only `GET /api/me/recovery-codes` has a caller: the screen
+  reads it on open and renders how many are left. The generation route is reached by nothing but a
+  test, its control on screen present and disabled; `/api/recovery-codes/redemption` has no client
+  route to be reached from at all. Read that the same way the disabled erasure control is read — the
+  gate is built and the surface in front of it is not.
 - **A redeemed code buys a session nothing presents.** No session token is issued, and the API still
   authenticates every other request from the provider ID token, so the row a redemption writes ends
   access to nothing and opens access to nothing today. The response says what the session *is* — its

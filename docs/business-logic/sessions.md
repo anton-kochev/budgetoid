@@ -290,11 +290,12 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
 - **[Users & Ownership](users-and-ownership.md)** — the credential that establishes a session, and
   the account it belongs to. A session adds nothing to identity; it records what a credential already
   proved.
-- **[Recovery Codes](recovery-codes.md)** — the second credential type whose sessions are `Full`, the
-  second path that establishes one, and the second caller of the revocation sweep. Establishing and
-  revoking are different halves of it: a **redemption** opens a session and revokes nothing, while a
-  **regeneration** revokes the replaced set's sessions and opens none. It is also where the
-  `sessionsEnded` contract is argued from the other side.
+- **[Recovery Codes](recovery-codes.md)** — a set of codes opens a `Full` session, exactly as a passkey
+  does, and `RedeemRecoveryCodeHandler` establishes one the way `CompleteAssertionHandler` establishes a
+  passkey's. `GenerateRecoveryCodesHandler` calls the revocation sweep, as `RevokePasskeyHandler` does.
+  Establishing and revoking are different halves of it: a **redemption** opens a session and revokes
+  nothing, while a **regeneration** revokes the replaced set's sessions and opens none. It is also where
+  the `sessionsEnded` contract is argued from the other side.
 - **`user_isolation`** — the same policy `users`, `budgets` and `passkey_signature_counters` carry,
   keyed on the same session setting. `sessions` is policed on the person rather than on a budget,
   like each of them.
