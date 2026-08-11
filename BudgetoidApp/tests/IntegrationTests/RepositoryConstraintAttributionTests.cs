@@ -28,14 +28,35 @@ namespace IntegrationTests;
 /// </para>
 /// <para>
 /// The expected behaviour is that an unmatched violation <b>propagates</b> as a
-/// <see cref="DbUpdateException" />. A 500 naming the constraint beats a 400 that lies, which is the
-/// reasoning already written into <c>UserRepository.TryAddAsync</c> — the one repository that
-/// filters on <see cref="PostgresException.ConstraintName" />.
+/// <see cref="DbUpdateException" />. A 500 naming the constraint beats a 400 that lies, and that is
+/// no longer one repository's local reasoning but the rule this folder holds every translating
+/// repository to: <b>nine of the ten</b> filter on <see cref="PostgresException.ConstraintName" />.
+/// <c>SessionRepository</c> is the tenth and translates nothing — its only <c>catch</c> is a bounded
+/// concurrency retry. Note that the filter is not always visible at the <c>catch</c>:
+/// <c>CategoryRepository</c>, <c>CategoryGroupRepository</c> and <c>UserRepository</c> spell it
+/// inside an <c>IsUniqueViolationOf</c> / <c>IsForeignKeyViolationOf</c> helper while the rest write
+/// a property pattern in the <c>when</c> clause. "Does this repository narrow" is a question about
+/// the predicate, never about the syntax it is spelled in.
 /// </para>
 /// <para>
-/// Every repository is also covered from the other side: it must still translate <i>its own</i>
-/// constraint into its own message. Without that half, narrowing a <c>catch</c> could be "fixed" by
-/// deleting it.
+/// Each repository this file covers is covered from the other side too: it must still translate
+/// <i>its own</i> constraint into its own message. Without that half, narrowing a <c>catch</c> could
+/// be "fixed" by deleting it.
+/// </para>
+/// <para>
+/// <b>What this file covers is the five repositories reachable through a budget</b> — accounts,
+/// budgets, categories, category groups and payees. The identity-side repositories pin their own
+/// narrowing beside the method, in their own files: <c>UserRepositoryTests</c>,
+/// <c>PasskeyRepositoryTests</c> with <c>PasskeyCeremonyTests</c>,
+/// <c>RecoveryCodeRepositoryTests</c>, <c>SessionRepositoryTests</c> and
+/// <c>TransactionRepositoryTests</c>. That split is a placement decision, not a coverage claim, and
+/// the sentence that used to be here — "every repository is also covered from the other side" — was
+/// a completeness claim nothing executed, which is why it went stale twice unnoticed.
+/// <c>RepositoryAttributionCensusTests</c> in <c>UnitTests</c> now executes it: it reflects over the
+/// live <c>Infrastructure.Repositories</c> namespace and fails unless every repository in it appears
+/// in exactly one of those two sets. Read its <c>PinnedElsewhere</c> entries rather than this
+/// paragraph for which halves each of those files actually holds — three of them pin the translation
+/// and have no mis-attribution control at all.
 /// </para>
 /// <para>
 /// None of this is reachable through today's handlers — <c>UserProvisioningMiddleware</c> runs
@@ -44,11 +65,19 @@ namespace IntegrationTests;
 /// handler that performs two writes on one context.
 /// </para>
 /// <para>
-/// <c>TransactionRepository</c> is absent on purpose: it catches no constraint violation, so it has
-/// nothing to attribute and nothing to get wrong. Its one <c>catch</c> is for a concurrency conflict,
-/// which carries no constraint name and no SQLSTATE for a filter to mis-read; the entries are what
-/// narrows it, and that narrowing is pinned in <c>TransactionRepositoryTests</c> beside the method,
-/// as <c>UserRepository.DeleteAsync</c>'s is in <c>UserRepositoryTests</c>.
+/// <c>TransactionRepository</c> is absent on purpose, and the reason is placement rather than
+/// innocence. It does catch constraint violations — <c>UpdateAsync</c> has two, on the account and
+/// category foreign keys, each filtered by name for exactly the reason this file argues — so it is
+/// not the case that it has nothing to attribute. What earns the absence is that its narrowing is
+/// pinned beside the method in <c>TransactionRepositoryTests</c>, as
+/// <c>UserRepository.DeleteAsync</c>'s is in <c>UserRepositoryTests</c>. Its second narrowing is of a
+/// different kind and could not be written here anyway:
+/// <c>DeleteAllForAmbientBudgetAsync</c> answers a concurrency conflict, which carries no constraint
+/// name and no SQLSTATE for a filter to mis-read, so the <i>entries</i> are what narrow it.
+/// <b>The honest gap</b>: only that entries-based half has a control proving a foreign conflict
+/// escapes. <c>UpdateAsync</c>'s two constraint-name filters have none, here or anywhere, which is a
+/// real hole recorded in <c>RepositoryAttributionCensusTests</c> rather than closed by this
+/// paragraph.
 /// </para>
 /// </remarks>
 public sealed class RepositoryConstraintAttributionTests
