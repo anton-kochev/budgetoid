@@ -149,21 +149,20 @@ erDiagram
 
 - **A challenge is single-use, and consuming one is deleting it.** `webauthn_challenges` is one of
   the four identity tables holding `DELETE` — most of the budget-owned tables hold it too, for the
-  ordinary reason that people delete their own records, though `payees` deliberately does not.
-  The paragraph beside the grant says why this one does:
-  these rows are nonces, and a row nobody can delete is a row swept by a path that does not exist.
-  Contrast `sessions`, where revocation writes a column precisely so the row stays accountable. The
-  other three are `users`, for a reason that has nothing to do with nonces — it is the root every owned
-  row cascades from — `credentials`, which holds it for **revocation** rather than for erasure
+  ordinary reason that people delete their own records, though `payees` deliberately does not. The
+  paragraph beside the grant says why this one does: these rows are nonces, and a row nobody can
+  delete is a row swept by a path that does not exist. Contrast `sessions`, where revocation writes
+  a column precisely so the row stays accountable. The other three are `users`, for a reason that
+  has nothing to do with nonces — it is the root every owned row cascades from — `credentials`,
+  which holds it for **revocation** rather than for erasure
   ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)), and
   `recovery_code_hashes`, whose grant rests on **this** table's sentence word for word: those rows are
   single-use secrets too, so consuming one *is* deleting it
   ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)). Two of the four —
   `credentials` and `recovery_code_hashes` — have their delete scoped by the application alone,
-  because both tables are exempt from row-level security.
-  `passkey_public_keys` and `passkey_signature_counters` are emptied by the cascade and hold no
-  `DELETE` of their own — see [users-and-ownership.md](users-and-ownership.md) for why granting them
-  one would cost something.
+  because both tables are exempt from row-level security. `passkey_public_keys` and
+  `passkey_signature_counters` are emptied by the cascade and hold no `DELETE` of their own — see
+  [users-and-ownership.md](users-and-ownership.md) for why granting them one would cost something.
 
 ### MUST NOT
 
@@ -426,9 +425,10 @@ environment, and a session lifetime that varies per environment is a difference 
   no identity whatever token accompanies them, which is exactly the state the discovery read needs.
   The marker is read off the route rather than matched by path, so no exclusion list exists — one
   would be a second place the anonymous surface is defined.
-  - **The four authenticated passkey routes carry no `ProvisionsUser` marker**, so a caller whose
-    account does not exist is refused there before the ceremony is entered. A brand-new identity must
-    therefore reach one of the six data route groups before it can register a passkey; see
+  - **The authenticated passkey routes — both registration legs and the re-authentication options
+    leg — carry no `ProvisionsUser` marker**, so a caller whose account does not exist is refused
+    there before the ceremony is entered. A brand-new identity must therefore reach one of the six
+    data route groups before it can register a passkey; see
     [users-and-ownership.md](users-and-ownership.md).
 
 ## Edge Cases & Known Gotchas
@@ -451,11 +451,10 @@ environment, and a session lifetime that varies per environment is a difference 
     existing row — and that adding a source which *can* means adding a query to `PasskeyRepository`.
     The full inventory of accesses is in [data isolation](../engineering/data-isolation.md).
 - **The re-authentication pool is one ceremony, not one per sensitive action.** Three things spend it:
-  erasure, passkey revocation, and generating a set of recovery codes. None can tell which one a given
-  nonce was requested for, and
-  that is the design rather than a gap — all three are destructive, all three are reachable only by the
-  account holder, and a proof of presence is a proof of presence. If two sensitive actions ever need
-  telling apart, the split is a new
+  erasure, passkey revocation, and generating a set of recovery codes. None can tell which one a
+  given nonce was requested for, and that is the design rather than a gap — all three are
+  destructive, all three are reachable only by the account holder, and a proof of presence is a
+  proof of presence. If two sensitive actions ever need telling apart, the split is a new
   **ceremony value** — never a column on `webauthn_challenges`, which the pinned column set forbids.
   The third spender is the one with most riding on the gate: a set of recovery codes is a full-session
   credential, and issuing *replaces*, so an ungated generation would both mint a way in and destroy the

@@ -36,13 +36,13 @@ sessions before deleting the credential row (see [passkeys.md](passkeys.md)), an
 account's recovery codes ends the replaced set's sessions before deleting *its* credential row (see
 [recovery-codes.md](recovery-codes.md)). Both are the same shape and both are load-bearing for the
 same reason — the cascade would take those rows anyway, so the explicit revocation is the only thing
-that makes *when* access ended observable. Read that
-against the paragraph above before deciding what it is worth: because no session token is issued, a
-session is not what any request is authenticated by today, so ending one signs nobody out. The
-operation is correct and it is **anticipatory** — it makes the rule true of the rows now, so that the
-day a session token does authenticate a request, revocation is already the thing that ends it rather
-than a thing somebody has to remember to add. Saying otherwise — that revoking a passkey signs that
-device out — would be describing the session token as if it shipped.
+that makes *when* access ended observable. Read that against the paragraph above before deciding
+what it is worth: because no session token is issued, a session is not what any request is
+authenticated by today, so ending one signs nobody out. The operation is correct and it is
+**anticipatory** — it makes the rule true of the rows now, so that the day a session token does
+authenticate a request, revocation is already the thing that ends it rather than a thing somebody
+has to remember to add. Saying otherwise — that revoking a passkey signs that device out — would be
+describing the session token as if it shipped.
 
 ## Key Entities
 
@@ -156,25 +156,24 @@ erDiagram
   credential yet, because nothing redeems a code.
 - **Enforced in**: `CK_sessions_kind_matches_credential`,
   `(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))`, which is the lowest layer
-  that can state the rule declaratively. Without it the rule
-  lived only in the factory while `GRANT SELECT, INSERT ON sessions` stayed table-wide on `INSERT`
-  — `(credential_id = <a federated credential>, kind = 'full')` was a fully storable row.
+  that can state the rule declaratively. Without it the rule lived only in the factory while
+  `GRANT SELECT, INSERT ON sessions` stayed table-wide on `INSERT` —
+  `(credential_id = <a federated credential>, kind = 'full')` was a fully storable row.
   `CK_sessions_kind` bounds only the vocabulary and the composite foreign key proves only whose the
-  two rows are; neither refuses that pair.
-  Above it, `Session.Establish` takes the `Credential` and no kind, and derives it through a switch
-  with every arm written out and a throwing discard arm.
+  two rows are; neither refuses that pair. Above it, `Session.Establish` takes the `Credential` and
+  no kind, and derives it through a switch with every arm written out and a throwing discard arm.
 - **The full side stays enumerated, and the spelling is a decision rather than a style.** The mirror
   form — `(kind = 'locked') = (credential_type = 'federated')` — says the same thing about every row
   this schema can hold today, reads better, and is what a later reader will propose. It fails **open**:
   a fourth credential type added to the vocabulary is not `federated`, so it satisfies the right-hand
   side and is granted a full session by default, with nobody having decided that. The shipped form
   fails closed — an unenumerated type gets no full session until somebody adds it here, which is the
-  same decision `Session.KindFor` forces by writing out every arm.
-  **No test in the suite can tell the two spellings apart until that fourth type exists**, so no
-  assertion can separate "the rule changed meaning" from "the wording changed", and this paragraph and
-  the comment beside the constraint are the only things carrying the difference. That is also why
-  adding `recovery_codes` to the `in` list was the correct edit rather than the occasion to simplify:
-  the list growing by one member is exactly what the form is for.
+  same decision `Session.KindFor` forces by writing out every arm. **No test in the suite can tell
+  the two spellings apart until that fourth type exists**, so no assertion can separate "the rule
+  changed meaning" from "the wording changed", and this paragraph and the comment beside the
+  constraint are the only things carrying the difference. That is also why adding `recovery_codes`
+  to the `in` list was the correct edit rather than the occasion to simplify: the list growing by
+  one member is exactly what the form is for.
   `SessionTests.Session_ExposesNoWayToChooseItsKind` reflects over the public surface and fails on
   any parameter or settable property of type `SessionKind`. That is what makes the rule
   **unrepresentable** rather than merely untested: without it, the obvious accommodation for a caller
@@ -292,8 +291,9 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
 - **[Recovery Codes](recovery-codes.md)** — the second credential type whose sessions are `Full`, and
   the second caller of the revocation sweep. It is also where the `sessionsEnded` contract is argued
   from the other side.
-- **`user_isolation`** — the same policy `users` and `budgets` carry, keyed on the same session
-  setting. `sessions` is the third table policed on the person rather than on a budget.
+- **`user_isolation`** — the same policy `users`, `budgets` and `passkey_signature_counters` carry,
+  keyed on the same session setting. `sessions` is policed on the person rather than on a budget,
+  like each of them.
 - **`SessionContextInterceptor`** — **not** about a session in this file's sense. It writes
   `app.current_user_id` and `app.current_budget_id` onto each PostgreSQL connection the context
   opens; the PostgreSQL backend session and a `Domain.Sessions.Session` share a word and nothing
@@ -308,10 +308,10 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   credential-removal path must revoke explicitly **and then** delete, or the fact is unobservable.
   - **How the two paths that exist resolve it.** `RevokePasskeyHandler` and
     `GenerateRecoveryCodesHandler` each revoke and then delete — and because the delete removes the
-    very rows the revocation just stamped, the schema afterwards
-    is identical either way. So the evidence leaves in the response instead: each answers
-    with the count `RevokeForCredentialAsync` returned, as `sessionsEnded`. That is what the returned
-    count was for; see the revocation rule above.
+    very rows the revocation just stamped, the schema afterwards is identical either way. So the
+    evidence leaves in the response instead: each answers with the count `RevokeForCredentialAsync`
+    returned, as `sessionsEnded`. That is what the returned count was for; see the revocation
+    rule above.
   - **The test nobody should write** is "after revocation the credential has no active session". It
     is green with the revocation call deleted, and therefore proves nothing.
   - **On the recovery-code path a second mutation produces the same wrong number**: swapping the
@@ -324,8 +324,8 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   `DELETE FROM sessions` — on a table granted `SELECT, INSERT, UPDATE (revoked_at_utc)` and
   deliberately no `DELETE`, so the request dies with `42501`. **The failure names a permission and
   the cause is the change tracker; do not answer it with a grant on `sessions`.** This is the same
-  mechanism `EraseAccountHandler` documents for `budgets` and `GenerateRecoveryCodesHandler` documents
-  for the set it replaces, on the same stack.
+  mechanism `EraseAccountHandler` documents for `budgets` and `GenerateRecoveryCodesHandler`
+  documents for the set it replaces, on the same stack.
   - **The absent `DELETE` is what makes this loud, and one table beside it does not have that
     protection.** `recovery_code_hashes` **is** granted `DELETE`, so the same change-tracker mistake
     there succeeds silently instead of raising `42501` — see
@@ -335,10 +335,10 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   `DELETE` grant to do it with. Not a defect at today's size; it becomes one before the product has
   many users, and the grant that a sweep needs is the one this file argues against adding.
 - **`RevokeSessionsForCredentialHandler` has two callers**, `RevokePasskeyHandler` and
-  `GenerateRecoveryCodesHandler`, and the
-  `int` it returns is the only observable evidence the explicit revocation ran — see the cascade
-  gotcha above. Revoking the **federated** credential still has no caller and is not expected to
-  gain one: that credential is replaced rather than removed.
+  `GenerateRecoveryCodesHandler`, and the `int` it returns is the only observable evidence the
+  explicit revocation ran — see the cascade gotcha above. Revoking the **federated** credential
+  still has no caller and is not expected to gain one: that credential is replaced rather than
+  removed.
   - **Both callers reach it through the command handler rather than straight to `ISessionRepository`**,
     and that is deliberate: the handler is where the clock is read, so one decision to end access is
     stamped as one instant however many rows it touches.

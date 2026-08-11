@@ -23,8 +23,9 @@ payees, transactions — belongs to a budget, so **the budget, not the user, is 
 That invariant and the isolation rules for the money data live in [budgets.md](budgets.md); this area
 does not duplicate them. What it does own is the identity, its claims, the provisioning step that
 resolves a Google principal into an internal user together with the ambient budget for the request,
-and the isolation of the identity rows themselves — `users` and `budgets` are the two tables scoped
-to a **user** rather than to a budget, and that rule has its canonical statement here.
+and the isolation of the identity rows themselves — `users`, `budgets`, `sessions` and
+`passkey_signature_counters` are the tables scoped to a **user** rather than to a budget, and that
+rule has its canonical statement here.
 
 ## Key Entities
 
@@ -37,19 +38,18 @@ to a **user** rather than to a budget, and that rule has its canonical statement
   `Federated` (an external provider vouches for the user), `Passkey` (the authenticator holds it, and
   no external party is involved), or `RecoveryCodes` (one row standing for a whole **set** of codes
   the person wrote down, never one row per code — see [recovery-codes.md](recovery-codes.md)). A
-  federated credential names its `Provider` — drawn from a
-  dictionary the database enforces, of which `google` is the only member today — and the provider's
-  `Subject`, the OAuth `sub` claim, stable, non-empty and at most `Credential.MaxSubjectLength` =
-  255 characters. The other two carry neither. An account may hold more than one
-  credential, but **at most one of type `federated`** and **at most one of type `recovery_codes`**.
-  Every account is created with exactly one
-  federated Google credential; a signed-in person may then register passkeys beside it, each carrying
-  its own verification material on its own tables — see [passkeys.md](passkeys.md) — and may issue
-  themselves one set of recovery codes. A signed-in
-  person may **revoke a passkey**, proving presence with a fresh WebAuthn assertion, and an account's
-  **last** passkey is refused. The **federated** credential is not revocable at all: it is replaced
-  rather than removed, by an email change that is not built. A recovery-code set has no revocation
-  route either; it is **replaced** by issuing again, which is a single `POST`.
+  federated credential names its `Provider` — drawn from a dictionary the database enforces, of
+  which `google` is the only member today — and the provider's `Subject`, the OAuth `sub` claim,
+  stable, non-empty and at most `Credential.MaxSubjectLength` = 255 characters. The other two carry
+  neither. An account may hold more than one credential, but **at most one of type `federated`** and
+  **at most one of type `recovery_codes`**. Every account is created with exactly one federated
+  Google credential; a signed-in person may then register passkeys beside it, each carrying its own
+  verification material on its own tables — see [passkeys.md](passkeys.md) — and may issue
+  themselves one set of recovery codes. A signed-in person may **revoke a passkey**, proving
+  presence with a fresh WebAuthn assertion, and an account's **last** passkey is refused. The
+  **federated** credential is not revocable at all: it is replaced rather than removed, by an
+  email change that is not built. A recovery-code set has no revocation route either; it is
+  **replaced** by issuing again, which is a single `POST`.
 - **`CK_credentials_type_shape` no longer discriminates between `passkey` and `recovery_codes`.**
   Its two arms are byte-identical — both require `provider is null and subject is null` — because both
   are self-contained credentials with no issuer and no issuer-assigned identifier, so from that
@@ -117,11 +117,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
   Three tables that name a person are nonetheless **exempt**, and each for the same reason:
   `credentials`, `passkey_public_keys` and `recovery_code_hashes` are read to work out *who is asking*
-  and *whether it is really them*,
-  before the request has an identity a policy could be keyed on. An exemption is granted to a query
-  but applied to a whole table, so each pins the exact column set its reason was argued over, and a
-  new column there goes red until someone moves it somewhere policed. See
-  [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
+  and *whether it is really them*, before the request has an identity a policy could be keyed on. An
+  exemption is granted to a query but applied to a whole table, so each pins the exact column set its
+  reason was argued over, and a new column there goes red until someone moves it somewhere policed.
+  See [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
   and [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md). The third is
   the sharpest of them: a recovery code is redeemed by an **anonymous** request, so the lookup by hash
   is what establishes the identity, and a policy keyed on `app.current_user_id` would refuse the very
@@ -132,9 +131,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     `SessionContextInterceptor` puts `app.current_user_id` on every connection the context opens, so
     a session that resolved nobody fails with `22P02` rather than reading another person's row. There
     is no EF query filter above them — the provisioning lookup runs before an identity exists, so
-    `Budgets` is scoped by owner explicitly in `FindFirstForUserAsync`. `credentials` is the one
-    user-owned table deliberately left unpoliced: reading it is *how* the request discovers who is
-    asking, which is also why that lookup projects to `credentials.user_id` and never joins `users`.
+    `Budgets` is scoped by owner explicitly in `FindFirstForUserAsync`. `credentials`,
+    `passkey_public_keys` and `recovery_code_hashes` are the user-owned tables deliberately left
+    unpoliced: reading one is *how* a request discovers who is asking and whether it is really them,
+    which is also why the credential lookup projects to `credentials.user_id` and never joins `users`.
     `tests/IntegrationTests/RlsIsolationTests.cs` proves the isolation on both axes and
     `RlsCoverageTests.cs` fails any new table that owes a policy and has none.
 
@@ -500,22 +500,21 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 ---
 
 - **Rule**: The application role may **delete a `users` row**, and that one statement removes the
-  account's whole structural graph. Of the other owned tables it holds `DELETE` on exactly two,
-  `credentials` and `recovery_code_hashes`, and **neither grant exists for erasure** — the first is
-  for passkey revocation, the second for redeeming a recovery code. `budgets`,
-  `sessions`, `passkey_public_keys`, `passkey_signature_counters` (user-owned) and `payees`
-  (budget-owned) are emptied by the cascade descending from the `users` row, not by a privilege of
-  their own, and so is `recovery_code_hashes` — its own grant is beside the point for this path. The
-  asymmetry is worth reading twice: erasure needs neither of those two grants and
-  would still work if both were revoked tomorrow.
+  account's whole structural graph. Of the other **user-owned** tables it holds `DELETE` on exactly
+  two, `credentials` and `recovery_code_hashes`, and **neither grant exists for erasure** — the
+  first is for passkey revocation, the second for redeeming a recovery code. `budgets`, `sessions`,
+  `passkey_public_keys`, `passkey_signature_counters` (user-owned) and `payees` (budget-owned) are
+  emptied by the cascade descending from the `users` row, not by a privilege of their own, and so
+  is `recovery_code_hashes` — its own grant is beside the point for this path. The asymmetry is
+  worth reading twice: erasure needs neither of those two grants and would still work if both were
+  revoked tomorrow.
 - **It is not sufficient on its own.** Five edges in the owned graph are `Restrict` rather than
   `Cascade`, and erasure empties the one table that is the child of four of them — `transactions` —
-  before it deletes this row; see
-  [erasure.md](erasure.md), which owns the sequence and the reasons for it. The whole sequence runs
-  on **one** session: `SessionContextInterceptor` writes `app.current_user_id` and
-  `app.current_budget_id` in the same statement on every connection open, so the connection serving
-  an authenticated request already names both the user `user_isolation` reads and the budget
-  `budget_isolation` reads.
+  before it deletes this row; see [erasure.md](erasure.md), which owns the sequence and the reasons
+  for it. The whole sequence runs on **one** session: `SessionContextInterceptor` writes
+  `app.current_user_id` and `app.current_budget_id` in the same statement on every connection
+  open, so the connection serving an authenticated request already names both the user
+  `user_isolation` reads and the budget `budget_isolation` reads.
 - **Why**: erasing an account has to run as the application rather than on an elevated connection —
   that is the whole point of [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md), and
   a role that needed a database administrator to delete a row would dissolve it. Every owned table
@@ -525,14 +524,17 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   through internal triggers running with the privileges of the **referencing table's owner**, not of
   the role that issued the statement, so the cascade reaches every one of those tables with no grant
   on any of them.
-- **The six absent grants are a decision, not an oversight.** Two of them would cost something real.
-  `credentials` and `passkey_public_keys` are exempt from row-level security — they are read *before*
-  a request has an identity a policy could key on — so a `DELETE` there would be **unpoliced**, and
-  one statement carrying the wrong id would remove somebody else's only way in with nothing to catch
-  it. On `passkey_signature_counters` a `DELETE` would reopen counter rewind: deleting the row and
+- **The grants the cascade does without are a decision, not an oversight.** `budgets`, `payees`,
+  `sessions`, `passkey_public_keys` and `passkey_signature_counters` hold no `DELETE` of any shape,
+  and two of those absences would cost something real to fill. `passkey_public_keys` is exempt from
+  row-level security — it is read *before* a request has an identity a policy could key on — so a
+  `DELETE` there would be **unpoliced**, and one statement carrying the wrong id would remove
+  somebody else's only way in with nothing to catch it; that is the hazard `credentials`' own
+  `DELETE` already carries, bounded by the application and by nothing beneath it. On
+  `passkey_signature_counters` a `DELETE` would reopen counter rewind: deleting the row and
   re-inserting it at zero is the same thing the deliberately single-column
-  `GRANT UPDATE (signature_counter)` exists to forbid. The cascade reaches all three safely, because
-  it descends from one row rather than holding a privilege over a table.
+  `GRANT UPDATE (signature_counter)` exists to forbid. The cascade reaches every one of them safely,
+  because it descends from one row rather than holding a privilege over a table.
 - **Enforced in**: **database-owned.** `GRANT SELECT, INSERT, DELETE ON users` in
   `app-role-grants.sql`, scoped by the `user_isolation` policy — which is `FOR ALL`, so it constrains
   the delete exactly as it constrains a read.
@@ -828,13 +830,12 @@ The budget branch that runs after this, on every path, is in
   setting is still empty and the `users` INSERT fails `22P02` against its own `WITH CHECK`. It also
   needs no execution-strategy retry loop, and it keeps the `23505` attribution in a single `catch`
   instead of splitting it across writes that can each fail for a different reason.
-  **Modelling `Credential` inside the `User` aggregate**
-  would make atomicity automatic rather than argued — but the aggregate would then have to grow to
-  hold sessions and passkeys too, and a root loaded on every authenticated request is the wrong
-  place to accumulate them. `Session`, `PasskeyPublicKey` and `PasskeySignatureCounter` all landed as
-  their own aggregates for exactly that reason, and each references its user and its credential by id
-  the same way `Credential` does — see
-  [sessions.md](sessions.md).
+  **Modelling `Credential` inside the `User` aggregate** would make atomicity automatic rather than
+  argued — but the aggregate would then have to grow to hold sessions and passkeys too, and a root
+  loaded on every authenticated request is the wrong place to accumulate them. `Session`,
+  `PasskeyPublicKey` and `PasskeySignatureCounter` all landed as their own aggregates for exactly
+  that reason, and each references its user and its credential by id the same way `Credential` does
+  — see [sessions.md](sessions.md).
 
 - **Writers take `users` before `credentials`, always, and that is what makes deadlock impossible
   here.** Two transactions inserting into both tables cannot form a cycle if neither ever takes the

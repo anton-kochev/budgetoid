@@ -389,12 +389,13 @@ that is the one table erasure empties itself.
   was copied aside" would refuse the feature. **What that costs is stated rather than waved away.**
   The account row is guarded on this axis by a narrower test —
   `DataMinimizationSchemaTests.Schema_PinsTheColumnsOfTheUserRow` pins `users` to exactly
-  `created_at_utc`, `email` and `id` — and that pin, with the two beside it, reaches three of the
-  thirteen tables the schema maps. On the other ten a `transactions.is_archived` is refused by neither
-  the pins nor the vocabulary, deliberately: the only rule that would reach them refuses the word
-  `archived` outright and buys them by refusing the live-row state. `backup` and `history` are
-  permitted against collisions that exist today — `__EFMigrationsHistory` is a relation EF owns and
-  cannot be renamed, and `backup_eligible` / `backup_state` are the WebAuthn authenticator-data flags.
+  `created_at_utc`, `email` and `id` — and that pin, with the two beside it, reaches three tables:
+  `users`, `passkey_public_keys` and `passkey_signature_counters`. On every other table the schema
+  maps, a `transactions.is_archived` is refused by neither the pins nor the vocabulary,
+  deliberately: the only rule that would reach them refuses the word `archived` outright and buys
+  them by refusing the live-row state. `backup` and `history` are permitted against collisions
+  that exist today — `__EFMigrationsHistory` is a relation EF owns and cannot be renamed, and
+  `backup_eligible` / `backup_state` are the WebAuthn authenticator-data flags.
 - **`discarded` is refused, and *discard* being this product's word for an intentional hard delete is
   not an argument against that.** The vocabulary classifies catalog and model *names*, and a hard
   delete leaves no column behind — so the behaviour the word describes correctly can never appear as

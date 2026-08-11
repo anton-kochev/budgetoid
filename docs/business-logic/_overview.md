@@ -30,12 +30,18 @@ every column of `credentials` — is one PostgreSQL refuses to write at all (see
 well, on both axes. `budget_isolation` policies on the five budget-owned tables mean that role
 reaches no other budget's rows on any statement at all and can insert into no budget but the ambient
 one, so the query filters above them shape the answer rather than hold the boundary (see
-[ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); and the three
-tables that name a person, `users`, `budgets` and `sessions`, are policed on the **user** instead by
-`user_isolation`, because a budget *is* the tenant and so has no ambient budget to be checked
-against (see [ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). That split is a
-general rule rather than a local one: each rule is owned by the lowest layer that can enforce it
-declaratively, and where one deliberately sits higher the doc says why — see
+[ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); and the four
+tables policed on the **user** instead by `user_isolation` — `users`, `budgets`, `sessions` and
+`passkey_signature_counters` — are keyed there because a budget *is* the tenant and so has no
+ambient budget to be checked against (see
+[ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). Carrying `user_id` is not by itself
+what decides it: `credentials`, `passkey_public_keys` and `recovery_code_hashes` carry one and are
+policed by neither rule, exempt by written decision because each is read *before* the request has an
+identity a policy could be keyed on (see
+[ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
+and [data isolation](../engineering/data-isolation.md)). That split is a general rule rather than a
+local one: each rule is owned by the lowest layer that can enforce it declaratively, and where one
+deliberately sits higher the doc says why — see
 [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The central tenancy
 invariant — the budget, not the user, is what everything belongs to — is documented in
 [budgets.md](budgets.md); identity and provisioning are in
@@ -86,7 +92,8 @@ Payees, creates them implicitly by naming one on a transaction, and renames them
 Currencies. The budget itself is not manageable — it is provisioned, never configured. The same
 owner can download a complete copy of everything the server holds about them, can see the address
 the account is registered under, can issue themselves a set of recovery codes and ask how many are
-left, and can destroy the account outright; none of it is behind a support request. Unauthenticated visitors can only reach public login/welcome behavior.
+left, and can destroy the account outright; none of it is behind a support request.
+Unauthenticated visitors can only reach public login/welcome behavior.
 
 ## Domain area map
 
@@ -117,8 +124,8 @@ references are additionally constrained by composite foreign keys to a row in th
 - [Users & Ownership](users-and-ownership.md) — identity, claims, and provisioning.
 - [Passkeys](passkeys.md) — the three WebAuthn ceremonies, and the only path that opens a session
   today.
-- [Recovery Codes](recovery-codes.md) — the second way back into an account, minted in the browser and
-  never seen by the server.
+- [Recovery Codes](recovery-codes.md) — the second way back into an account, minted in the browser
+  and never seen by the server.
 - [Sessions](sessions.md) — an established sign-in the product records and can end itself.
 - [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
   and its base currency.

@@ -77,9 +77,12 @@ Enforced today:
   `__EFMigrationsHistory` pin nothing on purpose — the first belongs to no tenant whatever columns it
   grows, the second has its shape owned by EF.
 - **An exempt table scopes nothing, so the application is the only thing scoping access to it — and
-  one of those accesses is now a write.** On the two exempt tables that carry an owner column, one
-  query is allowed to omit it — the one that discovers who is asking — and every other access must
-  carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on `budgets`.
+  one of those accesses is now a write.** On the exempt tables that carry an owner column —
+  `credentials`, `passkey_public_keys` and `recovery_code_hashes` — one query per table is allowed to
+  omit it, the one that discovers who is asking, and every other access must
+  carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on `budgets`. On
+  `recovery_code_hashes` that one query is not routed yet, so every access it has today carries the
+  filter.
   `webauthn_challenges` is the exception to the sentence rather than to the rule: it has **no** owner
   column at all, because a nonce belongs to a ceremony rather than to a person, so there is nothing
   for an access to be scoped by and the pinned column set is what keeps it that way. The whole
@@ -204,13 +207,14 @@ Enforced today:
   `WITH CHECK` half holds the same rule underneath: an insert can only land in the ambient budget,
   so a future importer or bulk endpoint cannot stamp a foreign `budget_id` even consistently.
 
-Escape hatches the filter does **not** cover. These no longer leak — each one now meets the
-policies instead, and a cross-budget read comes back empty rather than populated. Still do not
-introduce them on budget-scoped data: an empty result where the code expects a row is a bug, and a
-connection that names no ambient budget — or no ambient user, for `users`, `budgets` and `sessions`
-— fails with `22P02` rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
-`Infrastructure` and `Api`, the only projects with an EF reference) turns each API below into an
-RS0030 compile error.
+Escape hatches the filter does **not** cover. These no longer leak — each one now meets
+the policies instead, and a cross-budget read comes back empty rather than populated.
+Still do not introduce them on budget-scoped data: an empty result where the code expects
+a row is a bug, and a connection that names no ambient budget — or no ambient user, for
+`users`, `budgets`, `sessions` and `passkey_signature_counters` — fails with `22P02`
+rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
+`Infrastructure` and `Api`, the only projects with an EF reference) turns each API below
+into an RS0030 compile error.
 - `IgnoreQueryFilters()` — never on `BudgetoidDbContext`.
 - Raw SQL (`FromSqlRaw` / `FromSqlInterpolated` / `ExecuteSql...`) — bypasses the filter; if
   unavoidable, scope by budget explicitly in the SQL.

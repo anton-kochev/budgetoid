@@ -54,10 +54,11 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- connection, which is the whole point of ADR 0004. It is policed: users carries user_isolation,
 -- so the role can only delete the row the session names.
 --
--- IT IS THE ONLY TABLE ERASURE NEEDS A NEW GRANT ON, and the six absent grants are a decision
--- rather than an oversight. Every owned table hangs off this row by ON DELETE CASCADE — users →
--- budgets → {payees, accounts, category_groups → categories}, and users → credentials →
--- {sessions, passkey_public_keys, passkey_signature_counters} — and PostgreSQL performs a
+-- IT IS THE ONLY TABLE ERASURE NEEDS A NEW GRANT ON, and the grants the cascade does without are a
+-- decision rather than an oversight. Every owned table hangs off this row by ON DELETE CASCADE —
+-- users → budgets → {payees, accounts, category_groups → categories}, and users → credentials →
+-- {sessions, passkey_public_keys, passkey_signature_counters, recovery_code_hashes} — and
+-- PostgreSQL performs a
 -- referential action through internal triggers that run with the privileges of the REFERENCING
 -- table's owner, not of the role that issued the statement. So this one grant empties the
 -- structural graph and a grant on any child buys nothing.
@@ -79,13 +80,18 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- the connection serving an authenticated request already names both the user for user_isolation
 -- and the budget for budget_isolation.
 --
--- Two of the six would cost something to add. credentials and passkey_public_keys are exempt from
--- row-level security — they are read before the request has an identity a policy could key on — so
--- a DELETE there would be UNPOLICED, and one statement carrying the wrong id would remove somebody
--- else's only way in with nothing to catch it. The cascade reaches those same rows as the table
--- owner, which is scoped by the row it descends from rather than by a privilege. Do not "complete"
--- this set: adding a grant to a child widens the role's reach without extending what erasure can
--- do.
+-- The children holding no DELETE of any shape are budgets, payees, sessions, passkey_public_keys
+-- and passkey_signature_counters, and two of those absences would cost something real to fill.
+-- passkey_public_keys is exempt from row-level security — it is read before the request has an
+-- identity a policy could key on — so a DELETE there would be UNPOLICED, and one statement carrying
+-- the wrong id would remove somebody else's only way in with nothing to catch it. That is the exact
+-- hazard credentials' own DELETE carries since ADR 0014, bounded by the application and by nothing
+-- beneath it, which is why that grant took an argument of its own rather than a precedent. On
+-- passkey_signature_counters a DELETE would reopen counter rewind: removing the row and
+-- re-inserting it at zero is what the deliberately single-column GRANT UPDATE (signature_counter)
+-- exists to forbid. The cascade reaches all of them as the table owner, which is scoped by the row
+-- it descends from rather than by a privilege. Do not "complete" this set: adding a grant to a
+-- child widens the role's reach without extending what erasure can do.
 REVOKE ALL ON users FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON users TO budgetoid_app;
 GRANT UPDATE (email) ON users TO budgetoid_app;
@@ -235,10 +241,9 @@ GRANT UPDATE (signature_counter) ON passkey_signature_counters TO budgetoid_app;
 -- a column precisely so the row stays accountable — opposite decisions, because the rows mean
 -- opposite things.
 --
--- (This paragraph said "two of six" before recovery_code_hashes existed, and it was already wrong
--- then: credentials had held DELETE since ADR 0014 and the count never moved with it. A count in
--- prose is a claim nothing executes, so it drifts silently — which is the argument for reading the
--- GRANT lines rather than trusting this sentence, and for fixing it when you notice.)
+-- (A count in prose is a claim nothing executes, so it drifts silently while every sentence around
+-- it still reads as current — this one has been wrong twice. Read the GRANT lines rather than
+-- trusting the number, and correct it when you notice.)
 -- (The budget-owned tables further down hold DELETE too, for the ordinary reason that a person may
 -- delete their own accounts, categories and transactions.)
 --
@@ -394,6 +399,11 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 --                         ceremony answers before it knows whose account it is; held to that reason
 --                         by its pinned column set, because a write-once secret would pass any
 --                         append-only rule the grants can express
+--   recovery_code_hashes  found by the SHA-256 of the verifier on an ANONYMOUS redemption request,
+--                         before anybody has said who they are; a policy keyed on
+--                         app.current_user_id would refuse the very query that establishes the
+--                         identity, and refuse it loudly — an unset setting reaches the policy as
+--                         ''::uuid and raises 22P02
 --   webauthn_challenges   a nonce belonging to a ceremony rather than to a person; the
 --                         authentication pool is issued before anybody has said who they are
 --   currencies            shared reference data belonging to no tenant
@@ -418,9 +428,9 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 -- because two of those have no adjudicator when they disagree and the loser fails open.
 --
 -- The direction is what matters, so do not "simplify" the exemption list back into a discovery
--- rule. A list of policed tables fails OPEN: the sixth table nobody added to it keeps the suite
--- green. A list of exemptions fails CLOSED: the sixth table is red until someone decides. Same
--- five names either way, opposite properties.
+-- rule. A list of policed tables fails OPEN: the next table nobody added to it keeps the suite
+-- green. A list of exemptions fails CLOSED: the next table is red until someone decides. Same names
+-- either way, opposite properties.
 --
 -- No table gets FORCE ROW LEVEL SECURITY, and that is a decision rather than an oversight. Owner
 -- and superuser bypass is load-bearing here: the schema is created and migrated on the admin
