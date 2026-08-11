@@ -1,7 +1,7 @@
-using System.Text.Json;
 using Application.Passkeys.Reauthentication;
 using Application.Passkeys.RevokePasskey;
 using Application.Users.ListCredentials;
+using Domain.Users;
 
 namespace Api.Endpoints;
 
@@ -73,18 +73,22 @@ public static class CredentialEndpoints
                 new ListCredentialsQuery(),
                 cancellationToken);
 
-            // The type is camel-cased here rather than by a global naming policy. Program.cs registers
-            // JsonStringEnumConverter with none, so CredentialType.Passkey would otherwise reach the
-            // wire as "Passkey" and disagree with the type column, its check constraint and the export
-            // document — and adding a policy would silently respell every other enum the API emits.
+            // The type is spelled by CredentialTypeSpelling rather than by a global naming policy or
+            // by anything derived from the member's name. Program.cs registers JsonStringEnumConverter
+            // with no policy, so CredentialType.Passkey handed straight to the serializer would reach
+            // the wire as "Passkey" and disagree with the type column and its check constraint — and
+            // adding a policy would silently respell every other enum the API emits.
             //
-            // This is the second endpoint hand-converting an enum, after PasskeyEndpoints' session
-            // kind. A third should be the moment a shared helper is written, still at the endpoints —
-            // not the moment the policy goes global.
+            // What used to stand here was a camel-case naming policy over ToString(), and it agreed
+            // with the column only while every member was one word: RecoveryCodes camel-cases to
+            // "recoveryCodes" where the column says "recovery_codes". The endpoint no longer derives a
+            // spelling at all — it reads the one the persistence configurations write, which is what
+            // makes "the wire agrees with the column" a fact rather than two hand-conversions that
+            // happen to match.
             return TypedResults.Ok(credentials
                 .Select(credential => new CredentialListEntry(
                     credential.Id,
-                    JsonNamingPolicy.CamelCase.ConvertName(credential.Type.ToString()),
+                    CredentialTypeSpelling.Of(credential.Type),
                     credential.CreatedAtUtc))
                 .ToArray());
         });

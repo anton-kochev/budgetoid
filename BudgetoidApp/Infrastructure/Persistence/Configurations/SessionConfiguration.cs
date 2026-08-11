@@ -86,7 +86,7 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
         // reasons.
         builder.Property(session => session.CredentialType)
             .HasConversion(
-                credentialType => ToCredentialTypeColumnValue(credentialType),
+                credentialType => CredentialTypeSpelling.Of(credentialType),
                 value => FromCredentialTypeColumnValue(value))
             .HasColumnName("credential_type")
             .HasMaxLength(20)
@@ -209,28 +209,16 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
             $"The sessions.kind column holds '{value}', a value CK_sessions_kind should have refused."),
     };
 
-    // Spelled out here rather than reached for on CredentialConfiguration: these arguments are
-    // expression trees, which cannot contain a switch expression, so the switch has to sit in a
-    // method this class owns. The spellings must match credentials.type — the foreign key compares
-    // the two columns directly.
-    private static string ToCredentialTypeColumnValue(CredentialType credentialType) => credentialType switch
-    {
-        CredentialType.Passkey => "passkey",
-        CredentialType.Federated => "federated",
-        CredentialType.RecoveryCodes => "recovery_codes",
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(credentialType),
-            credentialType,
-            $"No sessions.credential_type spelling is defined for this {nameof(CredentialType)} member."),
-    };
-
-    private static CredentialType FromCredentialTypeColumnValue(string value) => value switch
-    {
-        "passkey" => CredentialType.Passkey,
-        "federated" => CredentialType.Federated,
-        "recovery_codes" => CredentialType.RecoveryCodes,
-        _ => throw new InvalidOperationException(
-            $"The sessions.credential_type column holds '{value}', a value the foreign key to "
-            + "credentials should have refused."),
-    };
+    // The spellings must match credentials.type — the foreign key compares the two columns directly —
+    // so this column does not spell the vocabulary for itself. It reads CredentialTypeSpelling, the one
+    // definition credentials.type reads too, which is what makes "the copy agrees with its source" a
+    // fact rather than two lists somebody has to keep in step. What stays here is the message: a token
+    // this column holds that no member answers to is a row THIS foreign key should have refused, and
+    // the shared spelling has no way to know which of the schema's copies it was asked about.
+    private static CredentialType FromCredentialTypeColumnValue(string value) =>
+        CredentialTypeSpelling.TryParse(value, out CredentialType credentialType)
+            ? credentialType
+            : throw new InvalidOperationException(
+                $"The sessions.credential_type column holds '{value}', a value the foreign key to "
+                + "credentials should have refused.");
 }

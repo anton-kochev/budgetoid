@@ -124,13 +124,23 @@ public sealed class PasskeySignatureCounterConfiguration : IEntityTypeConfigurat
             $"The passkey_signature_counters.signature_counter column holds '{value}', a value "
             + $"{ValueCheckName} should have refused.");
 
-    // Spelled out here rather than reached for on CredentialConfiguration: these arguments are
-    // expression trees, which cannot contain a switch expression, so the switch has to sit in a method
-    // this class owns.
+    // A method of this class rather than CredentialTypeSpelling.Of directly, and the reason is the
+    // ACCEPTED SET, not the mechanics: an expression tree may call any static method, including one
+    // another class owns — CredentialConfiguration passes the shared spelling straight into the same
+    // kind of argument three files away — so nothing about a converter lambda forces a switch to live
+    // here.
+    //
+    // What does live here is the restriction. This column may say 'passkey' or 'federated' and nothing
+    // else: a counter against a set of recovery codes is a row that should not exist, and refusing it
+    // on the way to the column is the application's half of the rule
+    // CK_passkey_signature_counters_credential_type holds. The two members it does accept are spelled
+    // by the shared definition rather than repeated, so the copy cannot drift from credentials.type,
+    // which the foreign key compares it against directly. The restriction is stated as an enumerated
+    // arm rather than as an exclusion of RecoveryCodes, so a fourth member is refused until somebody
+    // decides otherwise here.
     private static string ToCredentialTypeColumnValue(CredentialType credentialType) => credentialType switch
     {
-        CredentialType.Passkey => "passkey",
-        CredentialType.Federated => "federated",
+        CredentialType.Passkey or CredentialType.Federated => CredentialTypeSpelling.Of(credentialType),
         _ => throw new ArgumentOutOfRangeException(
             nameof(credentialType),
             credentialType,
@@ -138,12 +148,14 @@ public sealed class PasskeySignatureCounterConfiguration : IEntityTypeConfigurat
             + $"{nameof(CredentialType)} member."),
     };
 
-    private static CredentialType FromCredentialTypeColumnValue(string value) => value switch
-    {
-        "passkey" => CredentialType.Passkey,
-        "federated" => CredentialType.Federated,
-        _ => throw new InvalidOperationException(
-            $"The passkey_signature_counters.credential_type column holds '{value}', a value the "
-            + "foreign key to credentials should have refused."),
-    };
+    // The same restriction on the way back, and it is not redundant with the one above: this direction
+    // reads whatever the column holds, so a 'recovery_codes' row — which the CHECK and the foreign key
+    // should both have refused — must not materialize as a counter that looks fine.
+    private static CredentialType FromCredentialTypeColumnValue(string value) =>
+        CredentialTypeSpelling.TryParse(value, out CredentialType credentialType)
+        && credentialType is CredentialType.Passkey or CredentialType.Federated
+            ? credentialType
+            : throw new InvalidOperationException(
+                $"The passkey_signature_counters.credential_type column holds '{value}', a value the "
+                + "foreign key to credentials should have refused.");
 }

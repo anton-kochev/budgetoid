@@ -104,7 +104,7 @@ public sealed class RecoveryCodeHashConfiguration : IEntityTypeConfiguration<Rec
         // columns directly.
         builder.Property(recoveryCodeHash => recoveryCodeHash.CredentialType)
             .HasConversion(
-                credentialType => ToCredentialTypeColumnValue(credentialType),
+                credentialType => CredentialTypeSpelling.Of(credentialType),
                 value => FromCredentialTypeColumnValue(value))
             .HasColumnName("credential_type")
             .HasMaxLength(20)
@@ -179,35 +179,19 @@ public sealed class RecoveryCodeHashConfiguration : IEntityTypeConfiguration<Rec
 
     private static ReadOnlyMemory<byte> Copy(ReadOnlyMemory<byte> memory) => memory.ToArray();
 
-    // Spelled out here rather than reached for on CredentialConfiguration: these arguments are
-    // expression trees, which cannot contain a switch expression, so the switch has to sit in a method
-    // this class owns. The spellings must match credentials.type — the foreign key compares the two
-    // columns directly.
+    // The spellings must match credentials.type — the foreign key compares the two columns directly —
+    // so this column reads CredentialTypeSpelling rather than repeating the vocabulary. Every member
+    // remains spellable here, including the two this table's own CHECK refuses: the check is what makes
+    // a row of the wrong type unstorable, and a converter that also refused them would move that refusal
+    // into a place where it reports as a mapping failure instead of a named constraint.
     //
-    // Every member is written out, including the two this table's own CHECK refuses. The discard arm
-    // is unreachable from anything the domain can produce: it means a member was added to
-    // CredentialType and nobody chose a spelling for it here, or an undeclared value was cast into the
-    // enum. That is a caller handing the converter a value outside its declared range, and the
-    // exception says so — the enum member, not the column, is what is wrong.
-    private static string ToCredentialTypeColumnValue(CredentialType credentialType) => credentialType switch
-    {
-        CredentialType.Passkey => "passkey",
-        CredentialType.Federated => "federated",
-        CredentialType.RecoveryCodes => "recovery_codes",
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(credentialType),
-            credentialType,
-            $"No recovery_code_hashes.credential_type spelling is defined for this "
-            + $"{nameof(CredentialType)} member."),
-    };
-
-    private static CredentialType FromCredentialTypeColumnValue(string value) => value switch
-    {
-        "passkey" => CredentialType.Passkey,
-        "federated" => CredentialType.Federated,
-        "recovery_codes" => CredentialType.RecoveryCodes,
-        _ => throw new InvalidOperationException(
-            $"The recovery_code_hashes.credential_type column holds '{value}', a value the foreign "
-            + "key to credentials should have refused."),
-    };
+    // The message stays here where the spelling does not: a token this column holds that no member
+    // answers to is a row THIS foreign key should have refused, and the shared spelling has no way to
+    // know which of the schema's copies of this vocabulary it was asked about.
+    private static CredentialType FromCredentialTypeColumnValue(string value) =>
+        CredentialTypeSpelling.TryParse(value, out CredentialType credentialType)
+            ? credentialType
+            : throw new InvalidOperationException(
+                $"The recovery_code_hashes.credential_type column holds '{value}', a value the foreign "
+                + "key to credentials should have refused.");
 }

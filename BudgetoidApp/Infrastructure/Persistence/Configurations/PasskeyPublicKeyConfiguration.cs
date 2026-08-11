@@ -238,13 +238,15 @@ public sealed class PasskeyPublicKeyConfiguration : IEntityTypeConfiguration<Pas
             + $"{CoseAlgorithmCheckName} should have refused."),
     };
 
-    // Spelled out here rather than reached for on CredentialConfiguration: these arguments are
-    // expression trees, which cannot contain a switch expression, so the switch has to sit in a method
-    // this class owns.
+    // A method of this class rather than CredentialTypeSpelling.Of directly, for the reason
+    // PasskeySignatureCounterConfiguration states at the same place: not the mechanics of an expression
+    // tree — which may call a static method any class owns — but the ACCEPTED SET. This column may say
+    // 'passkey' or 'federated' and nothing else, because this table exists only for passkeys, and the
+    // two members it does accept are spelled by the shared definition rather than repeated so the copy
+    // cannot drift from credentials.type, which the foreign key compares it against directly.
     private static string ToCredentialTypeColumnValue(CredentialType credentialType) => credentialType switch
     {
-        CredentialType.Passkey => "passkey",
-        CredentialType.Federated => "federated",
+        CredentialType.Passkey or CredentialType.Federated => CredentialTypeSpelling.Of(credentialType),
         _ => throw new ArgumentOutOfRangeException(
             nameof(credentialType),
             credentialType,
@@ -252,12 +254,14 @@ public sealed class PasskeyPublicKeyConfiguration : IEntityTypeConfiguration<Pas
             + $"{nameof(CredentialType)} member."),
     };
 
-    private static CredentialType FromCredentialTypeColumnValue(string value) => value switch
-    {
-        "passkey" => CredentialType.Passkey,
-        "federated" => CredentialType.Federated,
-        _ => throw new InvalidOperationException(
-            $"The passkey_public_keys.credential_type column holds '{value}', a value the foreign key "
-            + "to credentials should have refused."),
-    };
+    // The same restriction on the way back, and it is not redundant with the one above: this direction
+    // reads whatever the column holds, so a 'recovery_codes' row — which the credential_type check and
+    // the foreign key should both have refused — must not materialize as a key that looks fine.
+    private static CredentialType FromCredentialTypeColumnValue(string value) =>
+        CredentialTypeSpelling.TryParse(value, out CredentialType credentialType)
+        && credentialType is CredentialType.Passkey or CredentialType.Federated
+            ? credentialType
+            : throw new InvalidOperationException(
+                $"The passkey_public_keys.credential_type column holds '{value}', a value the foreign "
+                + "key to credentials should have refused.");
 }

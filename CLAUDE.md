@@ -87,6 +87,18 @@ Load-bearing rules, each explained there or in the linked decision:
   `app.current_user_id` is still empty, so every policed statement inside it fails with `22P02`.
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
   `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
+- **A credential type has exactly one spelling and it is written out, never derived from the member
+  name.** `Domain/Users/CredentialTypeSpelling.cs` owns it; the `type` column, every copy of that
+  column, `CK_credentials_type` and the `type` member of `GET /api/me/credentials` all read that one
+  definition, which is what makes "the wire agrees with the column" a fact rather than a
+  coincidence — it stopped being one the moment a two-word member was declared and camel-case
+  produced `recoveryCodes` for a column holding `recovery_codes`. Do not answer that with a global
+  `JsonNamingPolicy`: it would silently respell every other enum the API emits. Which spellings a
+  *table* accepts is a separate rule each configuration keeps on top — `passkey_public_keys` and
+  `passkey_signature_counters` take `passkey` or `federated` only, and folding that into the shared
+  type would impose it on everything reading it. `CredentialType` is ordered so `default` is
+  `Federated`, whose shape the database refuses; `SessionKind` made the same choice for the same
+  reason.
 - **The dependency direction is pinned, not described.** Between rings MSBuild's cycle detection
   already refuses the outward `ProjectReference`; what nothing caught until now is the outward edge
   that closes no loop — a package on `Application`, a `FrameworkReference` or `Sdk` attribute on

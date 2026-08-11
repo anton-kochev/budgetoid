@@ -80,17 +80,18 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
         builder.Property(credential => credential.Id).HasColumnName("id");
         builder.Property(credential => credential.UserId).HasColumnName("user_id").IsRequired();
 
-        // The vocabulary is written out once per direction below, so adding a CredentialType member
-        // is a decision taken here at compile time rather than a spelling ToString() invents and a
-        // case-insensitive Enum.Parse then accepts on the way back — that parse also took "PASSKEY"
-        // and the numeric "0", neither of which CK_credentials_type allows. That HasConversion<string>()
-        // would store the PascalCase member names remains true and remains a reason not to use it.
-        // The lowercase spelling is deliberate — it is the vocabulary the requirement uses, and it is
-        // what both the CHECK above and the API surface read. The switches sit in methods because
-        // these arguments are expression trees, which cannot contain a switch expression.
+        // The vocabulary is CredentialTypeSpelling's, written out once there rather than in each of
+        // the places that needs it, so adding a CredentialType member is a single decision taken at
+        // compile time rather than a spelling ToString() invents and a case-insensitive Enum.Parse then
+        // accepts on the way back — that parse also took "PASSKEY" and the numeric "0", neither of
+        // which CK_credentials_type allows. That HasConversion<string>() would store the PascalCase
+        // member names remains true and remains a reason not to use it. This column is the one the API
+        // surface has to agree with, which is why the spelling is owned above this layer instead of
+        // being copied out of it. The lambdas call methods because these arguments are expression
+        // trees; a method call is the one thing an expression tree can carry a switch behind.
         builder.Property(credential => credential.Type)
             .HasConversion(
-                type => ToColumnValue(type),
+                type => CredentialTypeSpelling.Of(type),
                 value => FromColumnValue(value))
             .HasColumnName("type")
             .HasMaxLength(20)
@@ -176,31 +177,20 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
             .HasName(IdUserIdTypeAlternateKeyName);
     }
 
-    // The discard arm is unreachable from anything the domain can produce: it means a member was
-    // added to CredentialType and nobody chose a spelling for it here, or an undeclared value was
-    // cast into the enum. That is a caller handing the converter a value outside its declared range,
-    // and the exception says so — the enum member, not the column, is what is wrong.
-    private static string ToColumnValue(CredentialType type) => type switch
-    {
-        CredentialType.Passkey => "passkey",
-        CredentialType.Federated => "federated",
-        CredentialType.RecoveryCodes => "recovery_codes",
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(type),
-            type,
-            $"No credentials.type spelling is defined for this {nameof(CredentialType)} member."),
-    };
-
-    // A different failure from the one above, so a different exception: nothing was passed wrongly
-    // here — the row itself holds a type CK_credentials_type should have refused, which makes it
-    // state the model says cannot exist rather than a bad argument. Anyone reading the message needs
-    // the offending value, because finding the row is the only way to learn how it got written.
-    private static CredentialType FromColumnValue(string value) => value switch
-    {
-        "passkey" => CredentialType.Passkey,
-        "federated" => CredentialType.Federated,
-        "recovery_codes" => CredentialType.RecoveryCodes,
-        _ => throw new InvalidOperationException(
-            $"The credentials.type column holds '{value}', a value CK_credentials_type should have refused."),
-    };
+    // The read direction keeps a method of its own where the write direction needed none, and the
+    // difference is the failure each reports. A member with no spelling is a bad argument, and
+    // CredentialTypeSpelling.Of says so without naming a column, because by then the fault belongs to
+    // no column in particular. A token this column holds that no member answers to is the opposite:
+    // nothing was passed wrongly — the row itself holds a type CK_credentials_type should have refused,
+    // which makes it state the model says cannot exist. That message has to name this column and that
+    // constraint, so the refusal stays here rather than moving into the shared spelling, which has no
+    // way to know which of the schema's four copies of this vocabulary it was asked about. Anyone
+    // reading it needs the offending value, because finding the row is the only way to learn how it got
+    // written.
+    private static CredentialType FromColumnValue(string value) =>
+        CredentialTypeSpelling.TryParse(value, out CredentialType type)
+            ? type
+            : throw new InvalidOperationException(
+                $"The credentials.type column holds '{value}', a value CK_credentials_type should have "
+                + "refused.");
 }
