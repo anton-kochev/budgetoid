@@ -52,6 +52,38 @@ namespace UnitTests;
 /// handler that deletes unconditionally, and what makes the reported session count a number rather
 /// than a constant zero that happens to be right once.
 /// </para>
+/// <para>
+/// <b>The re-established session is its own family, and it exists because of a defect the older half of
+/// this file could not see.</b> Replacing a set sweeps the sessions that set opened, and the person doing
+/// the replacing is very often signed in <em>on one of them</em> — they lost the authenticator, redeemed a
+/// code, registered a replacement passkey, and are now regenerating the card. Every assertion written
+/// before this family was about the <b>replaced credential</b> — that its sessions were stamped, and how
+/// many — and all of them are true of a handler that hands the person ten fresh codes and throws them out
+/// of the flow in the same response. The missing claim is about the <b>account's live sessions
+/// afterwards</b>, which is what
+/// <see cref="HandleAsync_WhenTheReplacedSetHadALiveSession_LeavesTheAccountOneLiveSession" /> states and
+/// nothing else does.
+/// </para>
+/// <para>
+/// <b>The condition is <c>sessionsEnded &gt; 0</c>, and the three negatives are what pin it there.</b>
+/// <see cref="HandleAsync_ForAnAccountWithNoPreviousSet_EstablishesNoSession" /> kills "always establish";
+/// <see cref="HandleAsync_WhenTheReplacedSetHadNoSessions_EstablishesNothing" /> kills "establish whenever
+/// there was a previous set", which is the same rule everywhere except on the account that never signed in
+/// with its codes; and
+/// <see cref="HandleAsync_WhenTheReplacedSetsSessionsWereAlreadyRevoked_EstablishesNothing" /> kills
+/// "establish whenever the sweep matched a row", which is deliberately not the number the repository
+/// reports. The rule is about the <em>set</em> and not about the caller, because nothing on this request
+/// presents a session: the server cannot know whose session it swept, so it asks whether the replaced set
+/// was carrying any at all.
+/// </para>
+/// <para>
+/// <b>That reading is generous in exactly one direction, and no test here demands otherwise.</b> It has no
+/// false negatives — a live session over the replaced set is always swept — and two false positives: a
+/// live session on another device, and a session unrevoked but past its expiry, since the sweep filters on
+/// <c>RevokedAtUtc is null</c> and not on expiry. Each costs one inert row. A test demanding the narrower
+/// "live at <see cref="UtcNow" />" reading would be pinning an asymmetry this design deliberately declines,
+/// and would have to be deleted by whoever noticed.
+/// </para>
 /// </remarks>
 public sealed class GenerateRecoveryCodesHandlerTests
 {
@@ -92,6 +124,25 @@ public sealed class GenerateRecoveryCodesHandlerTests
 
     /// <summary>Fixed instant for every seeded row, so nothing here depends on the wall clock.</summary>
     private static readonly DateTime UtcNow = new(2026, 8, 11, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// How long the session a replacement re-establishes lasts.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The same interval a passkey sign-in and a redemption get, and equality is the rule rather than a
+    /// coincidence.</b> The caller has just proved possession of a passkey through the gate in front of
+    /// this route, which is stronger than whatever opened the session the sweep took — so a shorter
+    /// lifetime here would quietly tell somebody who regenerated their card that the way back in they were
+    /// left with is worth less than the one they were signed in on.
+    /// </para>
+    /// <para>
+    /// Restated here rather than read off the handler, for the reason <see cref="RequiredCodeCount" />
+    /// gives: a test taking its expectation from the type under test agrees with whatever that type later
+    /// decides.
+    /// </para>
+    /// </remarks>
+    private static readonly TimeSpan SessionLifetime = TimeSpan.FromDays(14);
 
     /// <summary>When the account's previous set, where a test seeds one, was issued.</summary>
     private static readonly DateTime IssuedEarlier = UtcNow.AddDays(-30);
@@ -528,6 +579,311 @@ public sealed class GenerateRecoveryCodesHandlerTests
     }
 
     /// <summary>
+    /// Replacing a set that was carrying a live session leaves the account holding <b>one</b> live
+    /// session, opened over the <b>new</b> set.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The test this whole family exists for, and the one the older half of this file could not have
+    /// been.</b> Every assertion above about a replacement is about the <em>replaced credential</em> —
+    /// <c>SessionsEnded</c> counts what the sweep ended, and the ordering test observes that its sessions
+    /// were stamped before the delete. Both are true of a handler that sweeps the caller's own session and
+    /// leaves them with none, which is precisely what happens to the person this route is for: they lost
+    /// the authenticator, redeemed a code, registered a replacement passkey, and are regenerating the card
+    /// while signed in on the session that redemption opened. Ten fresh codes and an immediate sign-out is
+    /// the worst possible moment to be thrown out of the flow.
+    /// </para>
+    /// <para>
+    /// <b>Stated over the account's live sessions, never over the sweep's count or the replaced
+    /// credential.</b> That is the whole difference between this test and its neighbours: it reads what is
+    /// left rather than what was ended, so no rearrangement of the sweep can satisfy it. The credential the
+    /// surviving session hangs off is asserted to be the new set's, because a session left pointing at the
+    /// replaced credential is a session the database's own cascade already took — the fake models that
+    /// cascade, so such a handler is red here rather than plausibly green.
+    /// </para>
+    /// <para>
+    /// <b>Nothing here says the surviving session is the caller's.</b> It cannot: the request presents no
+    /// session, so the server does not know which one it swept, and the rule is therefore about the set
+    /// rather than about the caller. See the class remarks for the two false positives that reading
+    /// accepts and why each is cheap.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheReplacedSetHadALiveSession_LeavesTheAccountOneLiveSession()
+    {
+        // Arrange — an account holding a set, and one live session that set opened.
+        Fixture fixture = Fixture.Build(seedPreviousSet: true);
+        await fixture.Sessions.AddAsync(Session.Establish(fixture.PreviousSet!, IssuedEarlier, UtcNow.AddHours(1)));
+
+        // Act
+        await fixture.Handler.HandleAsync(fixture.Command);
+
+        // Assert — one set, and it is the replacement.
+        await Assert.That(fixture.RecoveryCodes.Credentials.Count).IsEqualTo(1);
+        Credential set = fixture.RecoveryCodes.Credentials[0];
+        await Assert.That(set.Id).IsNotEqualTo(fixture.PreviousSet!.Id);
+
+        // And the account is still signed in — on the new set, and on nothing else.
+        Session[] live = [.. fixture.Sessions.Sessions.Where(session => session.RevokedAtUtc is null)];
+        await Assert.That(live.Length).IsEqualTo(1);
+        await Assert.That(live[0].CredentialId).IsEqualTo(set.Id);
+        await Assert.That(live[0].RevokedAtUtc).IsNull();
+    }
+
+    /// <summary>
+    /// Replacing a set that was carrying a live session still <b>reports the sweep</b>, and the sweep
+    /// really ran.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The negative control for the test above, and it is aimed at one specific wrong fix.</b> "The
+    /// account is left with a live session" is satisfied perfectly by a handler that stops sweeping
+    /// altogether — the replaced set's sessions would then survive the revocation and be taken by the
+    /// delete's cascade exactly as they are now, and the schema afterwards would be byte-identical.
+    /// <c>SessionsEnded</c> is the only observable that says otherwise, which is why it is a response
+    /// member at all, and why it is asserted here beside the session that is stamped by reference.
+    /// </para>
+    /// <para>
+    /// <b>One session rather than the two
+    /// <see cref="HandleAsync_WhenTheAccountAlreadyHoldsASet_EndsTheSessionsItEstablishedAndReportsHowMany" />
+    /// drives, and it is the same arrangement as the test above rather than a second one.</b> The claim
+    /// being controlled is about that arrangement: a reader deleting the sweep to make the account keep its
+    /// session has to see this go red on the very shape they were editing. The count from both sides, and
+    /// the ordering against the delete, stay where they are.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheReplacedSetHadALiveSession_StillReportsTheSweep()
+    {
+        // Arrange — held by reference, because the delete's cascade empties the fake's list and an
+        // "it was stamped" predicate over zero rows is vacuously true.
+        Fixture fixture = Fixture.Build(seedPreviousSet: true);
+        Session swept = Session.Establish(fixture.PreviousSet!, IssuedEarlier, UtcNow.AddHours(1));
+        await fixture.Sessions.AddAsync(swept);
+
+        // Act
+        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+
+        // Assert — the number in the response, and the row it is a number about.
+        await Assert.That(generation.SessionsEnded).IsEqualTo(1);
+        await Assert.That(fixture.Sessions.RevokeForCredentialCallCount).IsEqualTo(1);
+        await Assert.That(swept.RevokedAtUtc).IsEqualTo(UtcNow);
+    }
+
+    /// <summary>
+    /// The re-established session is a full one, expiring <see cref="SessionLifetime" /> after the
+    /// handler's own instant — and it is stamped with that same instant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Full, and it is derived rather than chosen.</b> <see cref="Session.Establish" /> takes the
+    /// <see cref="Credential" /> and reads the kind off its type, which is what makes "a sign-in reaching
+    /// more of the account than its credential may" unrepresentable — so this assertion is really that the
+    /// new session was opened over the <em>new set's credential</em> and not fabricated from a kind
+    /// somebody named. A recovery-code set reaches the account's content because it is the secret the
+    /// content keys are wrapped under.
+    /// </para>
+    /// <para>
+    /// <b>One clock and one instant.</b> The revocation, the new credential, the ten hash rows and this
+    /// session are all stamped from the <see cref="DateTime" /> the handler read before the transaction
+    /// opened, so a replayed attempt does not spread one issuing decision across several instants. A
+    /// handler establishing the session outside the transactional delegate — or reading the clock a second
+    /// time for it — is red on the created-at assertion rather than on the expiry, which is why both are
+    /// stated.
+    /// </para>
+    /// <para>
+    /// The response's expiry and the stored row's are asserted against the same expression, because the
+    /// member the client reads and the row the database holds disagreeing is exactly the defect worth
+    /// catching: a client that renders one expiry while the server enforces another tells a person they
+    /// have longer than they do.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheReplacedSetHadALiveSession_EstablishesAFullSessionAtTheHandlersInstant()
+    {
+        // Arrange
+        Fixture fixture = Fixture.Build(seedPreviousSet: true);
+        await fixture.Sessions.AddAsync(Session.Establish(fixture.PreviousSet!, IssuedEarlier, UtcNow.AddHours(1)));
+
+        // Act
+        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+
+        // Assert — what the caller is told.
+        await Assert.That(generation.Session).IsNotNull();
+        await Assert.That(generation.Session!.Kind).IsEqualTo(SessionKind.Full);
+        await Assert.That(generation.Session.ExpiresAtUtc).IsEqualTo(UtcNow + SessionLifetime);
+
+        // And the row that was written, which is what the caller was told about. Filtered and counted
+        // rather than taken with Single, so a handler that wrote none fails as an assertion about how many
+        // sessions the account holds instead of as a LINQ exception that names nothing.
+        Session[] live = [.. fixture.Sessions.Sessions.Where(session => session.RevokedAtUtc is null)];
+        await Assert.That(live.Length).IsEqualTo(1);
+
+        Session established = live[0];
+        await Assert.That(established.Kind).IsEqualTo(SessionKind.Full);
+        await Assert.That(established.CredentialType).IsEqualTo(CredentialType.RecoveryCodes);
+        await Assert.That(established.CreatedAtUtc).IsEqualTo(UtcNow);
+        await Assert.That(established.ExpiresAtUtc).IsEqualTo(UtcNow + SessionLifetime);
+        await Assert.That(established.UserId).IsEqualTo(fixture.UserId);
+    }
+
+    /// <summary>
+    /// A first issue establishes nothing.
+    /// </summary>
+    /// <remarks>
+    /// <b>The test that kills "always establish".</b> Without it the whole family is satisfied by a handler
+    /// that opens a session on every generation — which would hand a full session to somebody who has
+    /// merely written down a card for the first time, on an account whose codes have never signed anybody
+    /// in and whose replaced set does not exist. The response member is asserted
+    /// <see langword="null" /> <em>and</em> the repository is asserted empty, because a handler could
+    /// report nothing while writing a row, and a client that believes what it is told is not evidence about
+    /// what was stored.
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_ForAnAccountWithNoPreviousSet_EstablishesNoSession()
+    {
+        // Arrange
+        Fixture fixture = Fixture.Build();
+
+        // Act
+        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+
+        // Assert
+        await Assert.That(generation.Session).IsNull();
+        await Assert.That(fixture.Sessions.Sessions.Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Replacing a set that had opened no session establishes nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is what pins the condition to the count rather than to the existence of a previous set.</b>
+    /// "Establish whenever there was a set to replace" agrees with the correct rule on every other
+    /// arrangement in this file, and differs only here: an account that generated a card, never redeemed a
+    /// code, and is regenerating from a device signed in with its passkey. That person's session was opened
+    /// by their passkey, the sweep never touches it, and a second one opened over the codes is a session
+    /// nobody asked for on a credential they have not used.
+    /// </para>
+    /// <para>
+    /// <c>SessionsEnded</c> is asserted at zero beside it, so a handler that established nothing because
+    /// its sweep had silently stopped running cannot pass this while failing
+    /// <see cref="HandleAsync_WhenTheReplacedSetHadALiveSession_StillReportsTheSweep" /> alone.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheReplacedSetHadNoSessions_EstablishesNothing()
+    {
+        // Arrange — a previous set, and deliberately not one session on it.
+        Fixture fixture = Fixture.Build(seedPreviousSet: true);
+
+        // Act
+        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+
+        // Assert
+        await Assert.That(generation.SessionsEnded).IsEqualTo(0);
+        await Assert.That(generation.Session).IsNull();
+        await Assert.That(fixture.Sessions.Sessions.Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Replacing a set whose sessions were <b>already revoked</b> establishes nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The condition is what the sweep <em>ended</em>, not what it matched, and this is the only test
+    /// that can tell those apart.</b> <see cref="ISessionRepository.RevokeForCredentialAsync" /> counts the
+    /// sessions that were still live — a re-run, or a second report of the same compromise, matches the
+    /// same rows and reports zero — and both fake and repository narrow on <c>revoked_at_utc is null</c>
+    /// for that reason. A handler keyed on "the sweep touched a row" would open a session for somebody
+    /// whose access was deliberately ended earlier, by a revocation or by a previous regeneration, and
+    /// would hand it to whoever is holding the bearer token now.
+    /// </para>
+    /// <para>
+    /// The session is revoked at <see cref="IssuedEarlier" /> rather than at <see cref="UtcNow" />, so the
+    /// instant it ended is provably not this request's — a row stamped with the handler's own clock would
+    /// be indistinguishable from one this very sweep ended.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheReplacedSetsSessionsWereAlreadyRevoked_EstablishesNothing()
+    {
+        // Arrange — a session this set opened and something else already ended.
+        Fixture fixture = Fixture.Build(seedPreviousSet: true);
+        Session ended = Session.Establish(fixture.PreviousSet!, IssuedEarlier, UtcNow.AddHours(1));
+        ended.Revoke(IssuedEarlier);
+        await fixture.Sessions.AddAsync(ended);
+
+        // Act
+        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+
+        // Assert — the sweep matched the row and ended nothing, so nothing is re-established.
+        await Assert.That(generation.SessionsEnded).IsEqualTo(0);
+        await Assert.That(generation.Session).IsNull();
+        await Assert.That(fixture.Sessions.Sessions.Any(session => session.RevokedAtUtc is null)).IsFalse();
+
+        // And the instant access actually ended was not rewritten by the sweep that ran here.
+        await Assert.That(ended.RevokedAtUtc).IsEqualTo(IssuedEarlier);
+    }
+
+    /// <summary>
+    /// A refused request writes no session, whichever of the two gates refused it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The insert lives behind the re-authentication gate and behind the validation, and the two
+    /// failures are worth driving separately because they stop the handler at different lines.</b> An
+    /// unproven request never enters the transactional delegate at all; a malformed set is refused after
+    /// the gate and still before it. A handler that hoisted the establish above either — the natural shape
+    /// if somebody decides the session should be opened "as soon as we know there is one to replace" —
+    /// would hand a full session to a caller holding nothing but a bearer token, on an account whose codes
+    /// it failed to replace.
+    /// </para>
+    /// <para>
+    /// <b>Each arrangement seeds a live session over the previous set</b>, so the claim is that the
+    /// account's sessions are exactly as they were rather than that a table is empty: a refusal that swept
+    /// on its way to saying no would sign the person out and satisfy a bare "no new row" check.
+    /// </para>
+    /// <para>
+    /// <b>Driven in one test rather than parameterized</b>, because the two refusals are two exception
+    /// types and <see cref="ThrowsAsync{TException}" /> names its type exactly on purpose — a parameter
+    /// carrying "some exception" would let either arrangement start failing for the other's reason without
+    /// anything going red. The shape is
+    /// <see cref="HandleAsync_RefusesEachMalformedSetWithASentenceOfItsOwn" />'s.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheRequestIsRefused_WritesNoSessionAndSweepsNothing()
+    {
+        // Arrange — two accounts, each holding a set with one live session on it, and two requests that
+        // are refused at different lines of the handler.
+        Fixture unproven = Fixture.Build(seedPreviousSet: true, challengeIsLive: false);
+        Session unprovensSession = Session.Establish(unproven.PreviousSet!, IssuedEarlier, UtcNow.AddHours(1));
+        await unproven.Sessions.AddAsync(unprovensSession);
+
+        Fixture malformed = Fixture.Build(Verifiers(RequiredCodeCount - 1), seedPreviousSet: true);
+        Session malformedsSession = Session.Establish(malformed.PreviousSet!, IssuedEarlier, UtcNow.AddHours(1));
+        await malformed.Sessions.AddAsync(malformedsSession);
+
+        // Act
+        await ThrowsAsync<PasskeyVerificationException>(() => unproven.Handler.HandleAsync(unproven.Command));
+        await ThrowsAsync<ValidationException>(() => malformed.Handler.HandleAsync(malformed.Command));
+
+        // Assert — each account's sessions are the ones it had, unswept and unjoined by a new one.
+        foreach ((Fixture fixture, Session seeded) in new[]
+                 {
+                     (unproven, unprovensSession),
+                     (malformed, malformedsSession),
+                 })
+        {
+            await Assert.That(fixture.Sessions.Sessions.Count).IsEqualTo(1);
+            await Assert.That(fixture.Sessions.Sessions[0].Id).IsEqualTo(seeded.Id);
+            await Assert.That(seeded.RevokedAtUtc).IsNull();
+            await Assert.That(fixture.Sessions.RevokeForCredentialCallCount).IsEqualTo(0);
+        }
+    }
+
+    /// <summary>
     /// A replayed unit of work leaves exactly one set, and spends the nonce once.
     /// </summary>
     /// <remarks>
@@ -681,6 +1037,73 @@ public sealed class GenerateRecoveryCodesHandlerTests
     }
 
     /// <summary>
+    /// A replayed replacement leaves exactly one set and exactly <b>one</b> live session.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Separate from
+    /// <see cref="HandleAsync_WhenAReplacementUnitOfWorkIsReplayed_LeavesExactlyOneSet" /> rather than
+    /// folded into it, because it is a different claim about the same replay.</b> That test is about the
+    /// codes — one credential, ten hashes, and the discard that stops an abandoned attempt's queued rows
+    /// committing beside the surviving attempt's. This one is about the session the surviving attempt
+    /// opens: a delegate that establishes one and does not survive being run twice leaves the account
+    /// signed in twice over, one row per attempt, from a single request nobody retried.
+    /// </para>
+    /// <para>
+    /// <b>What the rollback stands for here is both halves at once, and the fake cannot separate them.</b>
+    /// In production the session the abandoned attempt queued is a tracked insert the first
+    /// <c>DiscardTrackedEntities()</c> removes, and the row it would have written is one a <c>ROLLBACK</c>
+    /// never saw — the two point the same way, and
+    /// <see cref="InMemorySessionRepository.DiscardTrackedEntities" /> clears one list for both. It is
+    /// invoked from the rollback rather than wired into
+    /// <see cref="RecordingPersistenceState" /> for the reason the fixture states: wired in, the discard at
+    /// the top of the delegate would clear the <em>seeded</em> session too, and every sweep in this file
+    /// would match nothing. That is a limit of a fake holding committed and pending rows in one list, and
+    /// it is why <c>RecoveryCodeGenerationTests</c> owns the same claim against a real database.
+    /// </para>
+    /// <para>
+    /// The surviving session's credential is asserted to be the surviving <em>set's</em>, which is what
+    /// makes this more than a count: an attempt that opened its session over the credential a later attempt
+    /// deleted leaves exactly one row too, pointing at nothing the account still holds.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenAReplacementUnitOfWorkIsReplayed_LeavesExactlyOneLiveSession()
+    {
+        // Arrange — an account holding a set, one live session opened by it, and an executor that runs the
+        // whole unit of work twice.
+        Fixture fixture = Fixture.Build(seedPreviousSet: true, attempts: ReplayedAttempts);
+        RecoveryCodeHash[] previousCodes = [.. fixture.RecoveryCodes.Hashes];
+        await fixture.Sessions.AddAsync(Session.Establish(fixture.PreviousSet!, IssuedEarlier, UtcNow.AddHours(1)));
+
+        // What a ROLLBACK puts back before the replay: the rows the abandoned attempt removed, and the
+        // set's session as an unstamped row read again rather than the revoked copy left in memory —
+        // Session.Revoke keeps the first instant, so without that the replayed sweep would end nothing and
+        // report a zero the fake produced. See the remarks for what the discard is standing in for.
+        fixture.RollBackAbandonedAttempt = () =>
+        {
+            fixture.RecoveryCodes.Seed(fixture.PreviousSet!, previousCodes);
+            fixture.Sessions.DiscardTrackedEntities();
+
+            return fixture.Sessions.AddAsync(
+                Session.Establish(fixture.PreviousSet!, IssuedEarlier, UtcNow.AddHours(1)));
+        };
+
+        // Act
+        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+
+        // Assert — one set, and the surviving attempt's own sweep counted once rather than accumulated.
+        await Assert.That(fixture.RecoveryCodes.Credentials.Count).IsEqualTo(1);
+        await Assert.That(generation.SessionsEnded).IsEqualTo(1);
+
+        // One live session, over the set the account is left holding.
+        Credential set = fixture.RecoveryCodes.Credentials[0];
+        Session[] live = [.. fixture.Sessions.Sessions.Where(session => session.RevokedAtUtc is null)];
+        await Assert.That(live.Length).IsEqualTo(1);
+        await Assert.That(live[0].CredentialId).IsEqualTo(set.Id);
+    }
+
+    /// <summary>
     /// Drives a refusal and hands back the one sentence it carried.
     /// </summary>
     private static async Task<string> RefusalSentence(byte[][] verifiers)
@@ -730,7 +1153,7 @@ public sealed class GenerateRecoveryCodesHandlerTests
 
     /// <summary>
     /// The handler, the command, and every collaborator behind both — assembled once so no test has to
-    /// restate a seven-argument constructor.
+    /// restate an eight-argument constructor.
     /// </summary>
     /// <param name="Verifiers">
     /// The verifiers the command carries, as bytes. The command carries them as base64url text, which
@@ -805,9 +1228,14 @@ public sealed class GenerateRecoveryCodesHandlerTests
             Guid userId = Guid.CreateVersion7();
             StubUserContext userContext = new(userId);
 
-            // The session fake is wired into the recovery-code fake as the cascade the database
-            // performs when a set's credentials row goes. Without it the "revoke, then delete" ordering
-            // could be got wrong and still look right — see the ordering test's remarks.
+            // ONE session store, and every reader of it below is handed THIS instance. It is wired
+            // into the recovery-code fake as the cascade the database performs when a set's credentials
+            // row goes — without that, the "revoke, then delete" ordering could be got wrong and still
+            // look right, see the ordering test's remarks — it backs the revocation handler that
+            // sweeps the replaced set, it is injected into the handler that opens the session over the
+            // new one, and it is the same object every test reads back through Fixture.Sessions. The
+            // sweep and the establishment seeing two stores would leave every assertion in the
+            // re-established-session family measuring nothing.
             InMemorySessionRepository sessions = new();
             InMemoryRecoveryCodeRepository recoveryCodes =
                 new(credential => sessions.RemoveForCredential(credential.Id));
@@ -862,9 +1290,12 @@ public sealed class GenerateRecoveryCodesHandlerTests
                 attempts,
                 () => built?.RollBackAbandonedAttempt?.Invoke() ?? Task.CompletedTask);
 
-            // The discard is forwarded to the recovery-code fake only. Wiring the session fake's in too
-            // would clear the very rows the ordering test is about — RevokePasskeyHandlerTests makes
-            // the same choice for the same reason.
+            // The discard is forwarded to the two fakes holding rows an abandoned attempt queued, and
+            // deliberately NOT to the session fake: that one holds committed and pending sessions in a
+            // single list, so wiring it in would clear the seeded session at the top of the delegate
+            // and every sweep in this file would match nothing. The replay tests invoke it from their
+            // own rollback instead — RevokePasskeyHandlerTests makes the same choice for the same
+            // reason.
             RecordingPersistenceState persistenceState = new(
                 () => executor.Attempts,
                 recoveryCodes.DiscardTrackedEntities,
@@ -883,6 +1314,20 @@ public sealed class GenerateRecoveryCodesHandlerTests
                     userContext,
                     new StubPasskeyCeremonyPolicy(RelyingPartyId, Origin)),
                 new RevokeSessionsForCredentialHandler(sessions, timeProvider),
+
+                // NOT A STRAY ARGUMENT. The handler opens a session over the NEW set when the
+                // replacement swept any, and that write belongs to an injected ISessionRepository —
+                // the shape RedeemRecoveryCodeHandler already has — not to a handler whose name says
+                // revoke. Passing the same `sessions` instance the revocation handler above holds is
+                // load-bearing: the sweep and the establishment must see one store, or the
+                // re-established-session tests stop meaning anything.
+                //
+                // The parameter it binds to is being added by the change that moves the session write
+                // off RevokeSessionsForCredentialHandler; until that lands this call has one argument
+                // more than the constructor declares and the project does not compile. The position —
+                // beside the revocation handler, before the clock — is where a reader can see the two
+                // sharing a store; move it only together with the constructor.
+                sessions,
                 timeProvider);
 
             byte[][] presented = verifiers ?? GenerateRecoveryCodesHandlerTests.Verifiers(RequiredCodeCount);

@@ -54,8 +54,15 @@ through is not.
   appears in no column, no log and no response body. There is no type for it in this codebase.
 - **Verifier** — `V = HKDF(code, …)`, exactly 32 bytes, derived on the client and sent as base64url
   text. It is what the server receives and the only thing it can judge.
-- **`RecoveryCodesGeneration`** — what a completed issue answers with: `{"sessionsEnded": n}`, and
-  nothing else. See the rule below for why that member is load-bearing rather than informational.
+- **`RecoveryCodesGeneration`** — what a completed issue answers with:
+  `{"sessionsEnded": n, "session": {"kind": "full", "expiresAtUtc": …} | null}`, and nothing else. No
+  code, no verifier, no stored hash, no credential id and no account id. `session` is the sign-in a
+  replacement opened over the **new** set, and it is JSON `null` on an issue that opened none —
+  **present and null rather than omitted**, because a member that appears only sometimes makes *"the
+  server did not tell me"* and *"the server told me no"* the same observation for a client. Nothing
+  configures `DefaultIgnoreCondition`, which is what keeps it on the wire. Its two facts are nested
+  rather than laid beside the count so that *"kind present, expiry absent"* is unrepresentable.
+  `sessionsEnded` is load-bearing twice — see the two regeneration rules below.
 - **`RecoveryCodeCount`** — `{"remaining": n}`. One member: no id, no issued instant, no total, and
   above all no hash.
 - **`RedeemedRecoveryCode`** — what a spent code bought: the session's kind, its expiry, and how many
@@ -239,13 +246,22 @@ erDiagram
   `budgets` and `sessions` unscoped afterwards, because the id an accidental marker would mint is one
   no assertion could name.
 
-- **A refusal on the redemption route MUST NOT be distinguishable from any other refusal on it.**
-  Absent member, not base64url, wrong width, past the ceiling, no such code, already spent, and a
-  concurrent redemption of the same verifier all leave as one `401` with one title, byte for byte.
-  Telling "no such code" from "that code was already used" says a value the caller presented was once
-  real, which is exactly what somebody working through a partially-observed card wants to know; told
-  apart from "that was not base64url" it says the same about the encoding, and told apart from "too
-  long" it hands out the width of a verifier for free.
+- **A refusal on the redemption route MUST NOT carry anything that varies by cause.** Absent member,
+  not base64url, wrong width, past the ceiling, no such code, already spent, and a concurrent
+  redemption of the same verifier all leave as one `401`, with one title and one body. The word to
+  avoid here is *byte-identical*: the response carries a per-request `traceId`, so two refusals do
+  differ — in a value that varies with the request and never with what was wrong. State the rule at
+  its real strength, because a claim wider than its gates is one a reader checks once and then stops
+  believing. Telling "no such code" from "that code was already used" says a value the caller
+  presented was once real, which is exactly what somebody working through a partially-observed card
+  wants to know; told apart from "that was not base64url" it says the same about the encoding, and
+  told apart from "too long" it hands out the width of a verifier for free.
+  - **What is not held constant is the work a refusal does.** A malformed verifier touches the
+    database zero times, an unknown one once, and a lost race several. The response says the same
+    thing either way; how long it takes to say it does not, and no test holds that constant. The
+    difference is bounded rather than closed: the split at the decode is one the caller already knows,
+    because they built the value they presented, and every path beyond the discovery read requires a
+    verifier naming a **real** row — the digest of a 256-bit secret presented whole.
   - **Enforced in**: `RecoveryCodeRedemptionException`, the only exception the handler raises for a
     rejected code — deliberately **not** the passkey one, because "The passkey could not be verified."
     on this route is a *wrong* sentence that tells the person holding a card that the thing they do not
@@ -371,6 +387,10 @@ erDiagram
 - **`sessionsEnded` is therefore a published response contract**, not an internal return value.
   Widening the response later is additive; narrowing it — or dropping this member because "the cascade
   handles it" — is breaking, and it removes the only observation of the rule.
+- **It is also the condition the replacement's own session is written on**, so the number is
+  load-bearing twice over: as the evidence that the sweep ran, and as the decision the rule below is
+  keyed on. Changing what it counts is therefore never a local edit — see that rule, and
+  [sessions.md](sessions.md), which owns the sweep.
 - **Enforced in**: `GenerateRecoveryCodesHandler` calls `RevokeSessionsForCredentialHandler` and then
   `IRecoveryCodeRepository.DeleteSetAsync`, in that order, through the command handler rather than
   straight to `ISessionRepository` — the handler is where the clock is read, so one decision to end
@@ -382,6 +402,61 @@ erDiagram
   a table granted no `DELETE` at all — so the request dies with `42501` having removed nothing. **The
   SQLSTATE names a privilege and the cause is the change tracker; do not answer it with a grant on
   `sessions`.**
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: Replacing a set that was carrying live sessions **opens one session over the new set**;
+  replacing a set that was carrying none opens nothing. The condition is `sessionsEnded > 0`.
+- **Why**: the person this route is for very often lost their authenticator, redeemed a code,
+  registered a replacement passkey, and is regenerating the card **while signed in on the session that
+  redemption opened** — so the sweep above takes their own session. Without this rule they are handed
+  ten fresh codes and thrown out of the flow in the same response, at the worst possible moment.
+- **What that costs is the flow, not the account — the word to avoid here is *locked out*.** The
+  caller has just proved possession of a passkey to pass the gate in front of this route, so a new
+  session is always one assertion away. Being ejected from an account-recovery flow at its last step
+  is the whole of the harm and it is enough; the stronger word would not survive a reader checking
+  the code, and a rule defended by an overstatement is one they stop believing.
+- **Why it is stated about the *set* rather than about the caller**: nothing on this request presents a
+  session — the proof is a WebAuthn assertion — so the server cannot know whose session it swept. It
+  asks instead whether the set it replaced was carrying any at all. A rule with no referent would be
+  worse than a slightly generous one.
+- **The reading is generous in exactly one direction, and that is the deliberate part.** **No false
+  negatives**: a live session over the replaced set is always swept, so anybody signed out here is
+  signed back in. **Two false positives**: a live session on another device, and a session unrevoked
+  but past its expiry — the sweep narrows on `revoked_at_utc is null` and says nothing about expiry.
+  Each costs one inert row that hands nothing to anybody, which is the cheap side of the trade.
+- **Not "always establish"**, which is the simplification a reader reaches for first. A first issue is
+  the most frequent call to this route, and a phantom session there is a sign-in somebody never made,
+  at onboarding, indistinguishable from a compromise — and revoking it does not undo having been told
+  about it.
+- **Do not tighten the condition to "live at the handler's instant".** The number belongs to
+  `RevokeSessionsForCredentialHandler`, and `RevokePasskeyHandler` reports the same number through the
+  same sweep while meaning only *evidence* by it. Narrowing it here is a change to what the sweep
+  counts, on both paths, dressed up as a change to this rule.
+- **The session is `Full` and lasts 14 days**, derived by `Session.Establish` from the new set's own
+  `Credential` rather than named by this handler — the rule a redemption follows, for the reason
+  [sessions.md](sessions.md) gives. The interval matching the other two establishing paths is the rule
+  rather than a coincidence: the caller cleared a passkey gate to get here, which is stronger than
+  whatever opened the session the sweep took, so a shorter lifetime would say the way back in they were
+  left with is worth less than the one they were signed in on.
+- **Enforced in**: `GenerateRecoveryCodesHandler`, which writes the session through
+  `ISessionRepository` — never through `IRecoveryCodeRepository`, which has no right to write
+  `sessions` — **after** `AddSetAsync` and inside the same transactional delegate, stamped from the
+  same instant as the sweep, the new credential and the ten hash rows. Every other placement fails
+  concretely: before the insert the row names a credential that does not exist yet (`23503` on every
+  request); beside the revocation the second discard drops the queued row, so the response describes a
+  session nobody wrote, with no SQLSTATE to say so; inside the replacement branch before
+  `DeleteSetAsync` it lands over the **old**
+  credential and leaves with its cascade; outside the delegate it is not atomic with the set at all.
+  `HandleAsync_WhenTheReplacedSetHadALiveSession_LeavesTheAccountOneLiveSession` states it over the
+  account's live sessions rather than over the sweep's count, so no rearrangement of the sweep can
+  satisfy it, and three negatives pin the condition — no previous set, a previous set that had opened
+  no session, and a previous set whose sessions were already revoked.
+- **Under a replayed unit of work the rule converges** rather than accumulating: a second attempt sees
+  its own committed set as the previous one, sweeps the session it opened itself, deletes, re-inserts
+  and opens another — one set and one live session. *"Never establish on a retry"* would leave the
+  person with nothing.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -582,11 +657,12 @@ sequenceDiagram
     G->>D: consume the nonce, find the key by handle AND owner, verify, accept the counter
     H->>H: decode and validate the ten verifiers
     H->>D: BEGIN
-    H->>D: revoke the previous set's sessions (explicitly)
+    H->>D: revoke the previous set's sessions (explicitly) — n of them
     H->>D: delete the previous set's credential — hashes cascade away
     H->>D: insert the new credential and its ten hashes in ONE save
+    H->>D: insert a full session over the NEW set — only when n > 0
     H->>D: COMMIT
-    A-->>C: 200 {"sessionsEnded": n}
+    A-->>C: 200 {"sessionsEnded": n, "session": … or null}
 ```
 
 The gate runs to completion **outside** the transactional delegate, for the two reasons
@@ -634,12 +710,14 @@ and a short verifier is a shorter secret than the design claims.
   is the **third** spender of that nonce pool, beside erasure and passkey revocation, and it needs no
   new ceremony value: all three are destructive acts reachable only by the account holder, and a proof
   of presence is a proof of presence.
-- **[Sessions](sessions.md)** — a redemption establishes a session, and it is the establishing path
-  that runs no passkey ceremony; `CompleteAssertionHandler`, which does, is the other. The session
-  opened here is `Full` and lasts the same 14 days. Replacing a set revokes the sessions the replaced
-  one opened, which is why `GenerateRecoveryCodesHandler` calls `RevokeSessionsForCredentialHandler`
-  as `RevokePasskeyHandler` does — the redemption is not among its callers, and must not become one:
-  it revokes nothing, because spending one code says nothing about the sessions the others opened.
+- **[Sessions](sessions.md)** — this area holds **two** of the three paths that establish a session: a
+  redemption, and a regeneration that swept any. Each opens a `Full` session lasting the same 14 days,
+  and a redemption is the only establishing path in the product that runs no WebAuthn ceremony at all —
+  `CompleteAssertionHandler` completes one, and a regeneration consumes a re-authentication somebody
+  else minted. Replacing a set also revokes the sessions the replaced one opened, which is why
+  `GenerateRecoveryCodesHandler` calls `RevokeSessionsForCredentialHandler` as `RevokePasskeyHandler`
+  does; the redemption is not among that handler's callers and must not become one, because spending
+  one code says nothing about the sessions the others opened.
 - **[Users & ownership](users-and-ownership.md)** — the set is a `credentials` row, so it inherits that
   table's exemption, its immutability, and the `DELETE` that revocation introduced.
 - **[Data isolation](../engineering/data-isolation.md)** — `recovery_code_hashes` is exempt from
@@ -701,15 +779,33 @@ and a short verifier is a shorter secret than the design claims.
   discovery lookup — `FindByVerifierHashAsync`, matching a row by the `SHA-256` of a verifier the
   caller presented in full — is the one query allowed to read `recovery_code_hashes` without naming an
   owner, and that is the exemption doing the job it was written for rather than a gap in it. **Every
-  other read or write of this table carries its own `where user_id = …`, with nothing excepted** — the
-  consume included, because the row it spends is produced by `FindOwnedByVerifierHashAsync`, which
-  names the account as well as the hash. The rule holding without a qualifier is worth more than the
-  qualifier it replaces: an exempt table scopes nothing, so "only the statement that establishes the
-  identity may omit an owner" is checkable by reading the port, and a second member omitting one turns
-  *the discovery lookup* from a description of one statement into a hole. What makes that one sound
-  rather than merely narrow is that the caller's own input names the row: it is found by the digest of
-  a 256-bit secret they must present whole, so selecting a row you cannot name is guessing it. See
+  other member of the port that reads this table names an owner** — a rule checkable by reading the
+  port, and a second member omitting one turns *the discovery lookup* from a description of one
+  statement into a hole. What makes that one sound rather than merely unscoped is that the caller's own
+  input names the row: it is found by the digest of a 256-bit secret they must present whole, so
+  selecting a row you cannot name is guessing it. See
   [data isolation](../engineering/data-isolation.md) for the full inventory.
+  - **It is a rule about the port's shape, not a predicate on every statement, and the deletes are
+    where the difference shows.** `ConsumeAsync` removes a tracked `RecoveryCodeHash`, so what EF emits
+    is `delete from recovery_code_hashes where verifier_hash = …` — the primary key, and nothing about
+    whose row it is; `DeleteSetAsync` removes the set's `credentials` row by its id the same way.
+    Neither carries an owner predicate, and neither is missing one: the scope arrived with the
+    argument.
+  - **What actually holds those deletes** is [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)'s
+    three legs — the delete takes a **loaded entity** rather than an id, `credentials.user_id` is
+    immutable so a row's owner cannot move between the read that scoped it and the write that used it,
+    and the read and the write share one transaction — plus, on this table, the fact that the caller
+    had to present the **preimage of a 256-bit secret** to name the row at all. On the set's credential
+    the equivalent of that last leg is that every factory mints a fresh `Guid.CreateVersion7()`, so a
+    fabricated instance names no existing row and a detached delete raises instead of removing a
+    stranger's set.
+  - **The owner predicate on the in-transaction re-read discriminates nothing today**, and knowing that
+    is what stops it being defended for the wrong reason. The `userId` it carries is read off the row
+    the discovery lookup just returned, so the two agree by construction, and the hash alone selects
+    the same row. It is a constraint on the shape of the port — the entity reaching a `DELETE` comes
+    from a read that named an account — and a guard against a future caller that resolves the owner
+    some other way. The day one exists, that predicate is the difference between a refusal and a
+    session established for one account over a code deleted from another.
 - **Two codes hashing alike are unstorable rather than a duplicate nobody notices**, because
   `verifier_hash` is the primary key. That is a `23505` the repository deliberately does **not**
   translate into the lost-race `409`: it is a different broken rule with a different answer, which is
@@ -729,8 +825,11 @@ and a short verifier is a shorter secret than the design claims.
   test, its control on screen present and disabled; `/api/recovery-codes/redemption` has no client
   route to be reached from at all. Read that the same way the disabled erasure control is read — the
   gate is built and the surface in front of it is not.
-- **A redeemed code buys a session nothing presents.** No session token is issued, and the API still
-  authenticates every other request from the provider ID token, so the row a redemption writes ends
-  access to nothing and opens access to nothing today. The response says what the session *is* — its
-  kind and its expiry — and a client cannot act on it yet. That is the same anticipatory shape
+- **Both sessions this area opens are sessions nothing presents.** No session token is issued, and the
+  API still authenticates every other request from the provider ID token, so the row a redemption
+  writes — and the one a regeneration writes in place of the sessions it swept — ends access to nothing
+  and opens access to nothing today. Each response says what its session *is*, its kind and its expiry,
+  and a client cannot act on either yet. Read the re-establishment rule the same way: it is correct
+  about the rows now, so that the day a session token authenticates a request, a regeneration is
+  already signing the person back in rather than out. That is the same anticipatory shape
   [sessions.md](sessions.md) records for revocation, read from the other end.

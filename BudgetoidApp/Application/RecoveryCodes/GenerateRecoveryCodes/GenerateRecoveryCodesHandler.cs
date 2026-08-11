@@ -2,6 +2,7 @@ using Application.Abstractions;
 using Application.Passkeys;
 using Application.Passkeys.Reauthentication;
 using Application.Sessions.RevokeSessionsForCredential;
+using Domain.Sessions;
 using Domain.Users;
 using ValidationException = Domain.Common.ValidationException;
 
@@ -22,6 +23,15 @@ namespace Application.RecoveryCodes.GenerateRecoveryCodes;
 /// <b>The server never sees a code.</b> Verifiers arrive, hashes are stored, and nothing on this path
 /// holds a value a code can be recovered from — see <see cref="RecoveryCodeHash"/>.
 /// </para>
+/// <para>
+/// <b>Replacing a set that was carrying live sessions opens one session over the new set; replacing a
+/// set that was carrying none opens nothing.</b> The person this route is for very often lost their
+/// authenticator, redeemed a code, registered a replacement passkey, and is regenerating the card
+/// while signed in on the session that redemption opened — so the sweep below takes their own session,
+/// and without this rule they would be handed ten fresh codes and thrown out of the flow in the same
+/// response. The condition, and why it is the set's sessions rather than the caller's, is argued at
+/// the call site.
+/// </para>
 /// </remarks>
 public sealed class GenerateRecoveryCodesHandler(
     IRecoveryCodeRepository recoveryCodes,
@@ -30,6 +40,7 @@ public sealed class GenerateRecoveryCodesHandler(
     ITransactionalExecutor transactionalExecutor,
     PasskeyReauthentication reauthentication,
     RevokeSessionsForCredentialHandler revokeSessions,
+    ISessionRepository sessionRepository,
     TimeProvider timeProvider)
     : ICommandHandler<GenerateRecoveryCodesCommand, RecoveryCodesGeneration>
 {
@@ -44,6 +55,27 @@ public sealed class GenerateRecoveryCodesHandler(
     /// "lowest layer" is the boundary that ADR draws.
     /// </remarks>
     public const int RequiredCodeCount = 10;
+
+    /// <summary>
+    /// How long the session a replacement re-establishes lasts.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Product policy, and it lives here for the reason <c>CompleteAssertionHandler.SessionLifetime</c>
+    /// argues at length: <see cref="Session.Establish"/> takes an expiry instead of computing one,
+    /// because how long a session lasts is policy and the domain holds invariants.
+    /// </para>
+    /// <para>
+    /// <b>The same interval a passkey sign-in and a recovery-code redemption get, and equality is the
+    /// rule rather than a coincidence.</b> The caller has just proved possession of a passkey through
+    /// the gate in front of this route, which is stronger than whatever opened the session the sweep
+    /// took — so a shorter lifetime here would quietly tell somebody who regenerated their card that
+    /// the way back in they were left with is worth less than the one they were signed in on. Restated
+    /// rather than shared, because each handler owns the policy for the sign-in it performs; the
+    /// numbers differing is a defect, not a decision.
+    /// </para>
+    /// </remarks>
+    private static readonly TimeSpan SessionLifetime = TimeSpan.FromDays(14);
 
     public async Task<RecoveryCodesGeneration> HandleAsync(
         GenerateRecoveryCodesCommand command,
@@ -95,6 +127,11 @@ public sealed class GenerateRecoveryCodesHandler(
                 // the database's — a ROLLBACK never saw them — so without this the surviving attempt
                 // commits two credentials and both attempts' codes against an index that permits one
                 // set.
+                //
+                // THREE KINDS OF ROW NOW, not two: the credential, its hashes, and the session an
+                // abandoned attempt re-established at the end of the delegate. That third one is the
+                // reason a replayed replacement leaves ONE live session rather than one per attempt —
+                // it is in the tracker and not in the database, and this is what removes it.
                 persistenceState.DiscardTrackedEntities();
 
                 // Scoped by owner AND type. credentials is exempt from row-level security (ADR 0011),
@@ -118,9 +155,13 @@ public sealed class GenerateRecoveryCodesHandler(
                     // swapping it with the delete reports 0 as well, because the cascade has already
                     // taken the session rows and the sweep matches nothing.
                     //
-                    // Through the command handler and never straight to ISessionRepository: the
-                    // handler is where the clock is read, so one decision to end access is stamped as
-                    // one instant.
+                    // Through the command handler and never straight to ISessionRepository — which is
+                    // in scope below, so this is a live choice rather than a limitation: the handler
+                    // is where the clock is read for a sweep, so one decision to end access is stamped
+                    // as one instant. The establishment further down takes the opposite route for the
+                    // opposite reason — its instant is this method's `now`, shared with the credential
+                    // and the hash rows, so routing it through a collaborator that reads its own clock
+                    // would spread one issuing decision.
                     sessionsEnded = await revokeSessions.HandleAsync(
                         new RevokeSessionsForCredentialCommand(previousSet.Id),
                         token);
@@ -170,7 +211,77 @@ public sealed class GenerateRecoveryCodesHandler(
                 // code can never be redeemed.
                 await recoveryCodes.AddSetAsync(set, hashes, token);
 
-                return new RecoveryCodesGeneration(sessionsEnded);
+                // THE REPLACED SET'S SESSIONS WERE THE PERSON'S WAY IN, AND THE SWEEP ABOVE TOOK THEM.
+                // Somebody who lost their authenticator, redeemed a code, registered a replacement
+                // passkey and is now regenerating the card is signed in ON A SESSION THIS VERY REQUEST
+                // just revoked. Without the line below they are handed ten fresh codes and thrown out
+                // of the flow in the same response, at the worst possible moment.
+                //
+                // THE CONDITION IS sessionsEnded > 0, AND IT IS ABOUT THE SET, NOT THE CALLER. Nothing
+                // on this request presents a session — the proof is a WebAuthn assertion — so the
+                // server cannot know whose session it swept, and asks instead whether the set it
+                // replaced was carrying any at all. It is deliberately NOT "always establish": a first
+                // issue is the most frequent call to this route, and a phantom session there is a
+                // sign-in somebody never made, at onboarding, indistinguishable from a compromise, and
+                // revoking it does not undo having been told it.
+                //
+                // THE READING IS GENEROUS IN EXACTLY ONE DIRECTION, AND DELIBERATELY SO. No false
+                // negatives: a live session over the replaced set is always swept, so anybody signed
+                // out here is signed back in. Two false positives: a live session on ANOTHER device,
+                // and a session unrevoked but past its expiry — RevokeForCredentialAsync narrows on
+                // revoked_at_utc is null and says nothing about expiry. Each costs one inert row that
+                // nothing has been handed to anybody, which is the cheap side of the trade.
+                //
+                // DO NOT "TIGHTEN" THIS TO Session.IsActiveAt(now). The number is
+                // RevokeSessionsForCredentialHandler's, RevokePasskeyHandler reports the same number
+                // and means something different by it, and narrowing it would change what BOTH paths
+                // report — a change to a sweep's semantics dressed up as a change to this rule.
+                //
+                // AFTER AddSetAsync, and every other placement fails concretely:
+                //   - Before it: SessionRepository.AddAsync saves on its own, so the row would name a
+                //     credential that does not exist yet — 23503 on every request.
+                //   - Between the sweep and the second discard, which reads tidier because it sits
+                //     beside the revocation: the discard drops the queued session, the save never sees
+                //     it, and this handler reports a kind and an expiry for a row that is not there.
+                //     No SQLSTATE, no exception.
+                //   - Inside the `if`, before DeleteSetAsync: the session lands over the OLD
+                //     credential and leaves with its cascade. Silent again.
+                //   - Outside ExecuteAsync: atomicity gone — the set is committed, the sweep ran, the
+                //     insert fails on its own, and there is nothing left to roll back.
+                //   - Folded into AddSetAsync: that hands IRecoveryCodeRepository the right to write
+                //     sessions, which is the attribution RepositoryAttributionCensusTests pins. Two
+                //     SaveChanges inside one transaction is the same atomicity, so it buys nothing.
+                //
+                // Stamped from the SAME `now` as the revocation, the credential and the ten hash rows:
+                // one clock, one instant, so a replayed attempt does not spread one issuing decision.
+                //
+                // THE 22P02 ORDERING REDEMPTION DOCUMENTS DOES NOT APPLY HERE, and a reader will look
+                // for it by analogy. RedeemRecoveryCodeHandler must publish the identity before its
+                // transaction opens, because the connection is configured on open and sessions is
+                // policed by user_isolation. On this route UserProvisioningMiddleware published the
+                // identity long before the handler was entered, so app.current_user_id is already on
+                // the connection whenever it opens.
+                //
+                // UNDER REPLAY THE RULE IS CONVERGENT. A second attempt sees its own committed set as
+                // the previous one, sweeps the session it opened itself, deletes, re-inserts and opens
+                // another — the correct end state, one set and one live session. "Never establish on a
+                // retry" would leave the person with nothing.
+                ReestablishedSession? reestablished = null;
+                if (sessionsEnded > 0)
+                {
+                    // Built from the Credential and never from a kind this handler names.
+                    // Session.Establish derives the kind from the credential's type, and that
+                    // derivation is what makes "a sign-in reaching more of the account than its
+                    // credential may" unrepresentable; a factory taking a SessionKind would let this
+                    // call site name the kind and dissolve the rule. RedeemRecoveryCodeHandler opens
+                    // its session the same way, for the same reason.
+                    Session session = Session.Establish(set, now, now + SessionLifetime);
+                    await sessionRepository.AddAsync(session, token);
+
+                    reestablished = new ReestablishedSession(session.Kind, session.ExpiresAtUtc);
+                }
+
+                return new RecoveryCodesGeneration(sessionsEnded, reestablished);
             },
             cancellationToken);
     }

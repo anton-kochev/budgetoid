@@ -23,29 +23,34 @@ ended here, in one write, by the same role that serves every request.
 
 **What is built today and what is not.** The `sessions` table, its entity, its isolation policy, its
 grant matrix entry, and the two operations — establish one, revoke every session a credential
-established — exist and are tested. **Two things establish a session and there is no third**: a
-verified passkey assertion (see [passkeys.md](passkeys.md)) and a redeemed recovery code (see
-[recovery-codes.md](recovery-codes.md)). Both open a `Full` session lasting 14 days.
+established — exist and are tested. **Three things establish a session and there is no fourth**: a
+verified passkey assertion (see [passkeys.md](passkeys.md)), a redeemed recovery code, and a
+**regeneration of a recovery-code set that was carrying live sessions**, which opens one session over
+the new set in place of the ones its own sweep ended (both in
+[recovery-codes.md](recovery-codes.md)). All three open a `Full` session lasting 14 days.
 
-What still does not exist is anything that *presents* one. No session token is issued — **neither**
-establishing response carries a handle to the row it created, and both withhold it for the same
-reason — and the API still authenticates every other request from the Google ID token it is handed,
-exactly as [users-and-ownership.md](users-and-ownership.md) describes. So a recovery sign-in today
-opens a session that authenticates nothing; what the response tells its caller is what that session
-*is*, not something the caller can spend.
+What still does not exist is anything that *presents* one. No session token is issued — **not one** of
+the three establishing responses carries a handle to the row it created, and all three withhold it for
+the same reason — and the API still authenticates every other request from the Google ID token it is
+handed, exactly as [users-and-ownership.md](users-and-ownership.md) describes. So a recovery sign-in
+today opens a session that authenticates nothing; what each response tells its caller is what that
+session *is*, not something the caller can spend.
 
-**`RevokeSessionsForCredentialHandler` now has two callers.** Revoking a passkey ends that passkey's
+**`RevokeSessionsForCredentialHandler` has two callers.** Revoking a passkey ends that passkey's
 sessions before deleting the credential row (see [passkeys.md](passkeys.md)), and regenerating an
 account's recovery codes ends the replaced set's sessions before deleting *its* credential row (see
 [recovery-codes.md](recovery-codes.md)). Both are the same shape and both are load-bearing for the
 same reason — the cascade would take those rows anyway, so the explicit revocation is the only thing
-that makes *when* access ended observable. Read that against the paragraph above before deciding
-what it is worth: because no session token is issued, a session is not what any request is
-authenticated by today, so ending one signs nobody out. The operation is correct and it is
-**anticipatory** — it makes the rule true of the rows now, so that the day a session token does
-authenticate a request, revocation is already the thing that ends it rather than a thing somebody
-has to remember to add. Saying otherwise — that revoking a passkey signs that device out — would be
-describing the session token as if it shipped.
+that makes *when* access ended observable. On the regeneration path the number that sweep returns
+does a second job: it is the condition the replacement's own session is written on, so that path
+both ends sessions and establishes one, in one request. Read all of it against the paragraph above
+before deciding what it is worth: because no session token is issued, a session is not what any
+request is authenticated by today, so ending one signs nobody out and opening one signs nobody in.
+The operations are correct and they are **anticipatory** — they make the rules true of the rows now,
+so that the day a session token does authenticate a request, revocation is already the thing that
+ends access and a regeneration is already signing the person back in rather than out, rather than
+either being a thing somebody has to remember to add. Saying otherwise — that revoking a passkey
+signs that device out — would be describing the session token as if it shipped.
 
 ## Key Entities
 
@@ -123,9 +128,11 @@ erDiagram
 
 - **A session's expiry must be after its creation.**
   - **Enforced in**: `CK_sessions_lifetime` (`expires_at_utc > created_at_utc`), restated in
-    `Session.Establish` so a bad call fails with a named field rather than a raw `23514`. Nothing
-    renders that into a response yet — no endpoint establishes a session — so the restatement is
-    for the caller the establishing path will be, not for a status code that exists today.
+    `Session.Establish` so a bad call fails with a named field rather than a raw `23514`. No request
+    can reach it: each of the three establishing paths computes the expiry by adding its own constant
+    to the instant it just read, so the pair is well-formed by construction and nothing renders the
+    field error into a response. The restatement is a guard against a future caller that computes an
+    expiry from something a request supplied, not a validation a client can trip today.
 
 ### MUST NOT
 
@@ -211,9 +218,16 @@ erDiagram
   `GRANT UPDATE (revoked_at_utc)` column list is unaffected.
 - **What the returned count means**: the number of sessions **this call** ended, excluding any a
   concurrent sweep ended first. Two simultaneous revocations of one credential therefore report a
-  total of the sessions ended, not that number twice. The count now reaches the wire, as
-  `sessionsEnded` on the passkey-revocation response — which makes it a published contract rather
-  than an internal return value, and narrowing it later is breaking.
+  total of the sessions ended, not that number twice. It counts the **unrevoked**, not the live: the
+  filter is `revoked_at_utc is null` and says nothing about expiry, so a session that expired with
+  nobody revoking it is in the number.
+- **The count reaches the wire on both paths**, as `sessionsEnded` on the passkey-revocation and
+  recovery-code-generation responses, which makes it a published contract rather than an internal
+  return value; narrowing it later is breaking. On the generation path it is more than a report — it
+  is the condition that path's re-established session is written on — so **what this number counts
+  cannot be changed on one caller alone**. In particular, tightening it to "live at the caller's
+  instant" would look like a fix to the recovery-code rule and would silently change what a passkey
+  revocation reports. See [recovery-codes.md](recovery-codes.md).
 - **Note what this is not**: a tombstone. A session row exists only while its account does — the
   cascade below takes every one of them — so a revoked session leaves nothing behind an erasure.
 - **Source**: `[SOURCE: discussion — 2026-08-05]`
@@ -279,7 +293,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `CompleteAssertionHandler` once a passkey assertion verifies and from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
+| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, and from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
 | Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` and `GenerateRecoveryCodesHandler` each call before deleting a credential | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
 
@@ -293,9 +307,10 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
 - **[Recovery Codes](recovery-codes.md)** — a set of codes opens a `Full` session, exactly as a passkey
   does, and `RedeemRecoveryCodeHandler` establishes one the way `CompleteAssertionHandler` establishes a
   passkey's. `GenerateRecoveryCodesHandler` calls the revocation sweep, as `RevokePasskeyHandler` does.
-  Establishing and revoking are different halves of it: a **redemption** opens a session and revokes
-  nothing, while a **regeneration** revokes the replaced set's sessions and opens none. It is also where
-  the `sessionsEnded` contract is argued from the other side.
+  The two routes divide differently than the names suggest: a **redemption** opens a session and revokes
+  nothing, while a **regeneration** revokes the replaced set's sessions and — when it ended any — opens
+  one over the new set in their place, so it is the one path that does both. The condition is the
+  sweep's own count, which is why that file argues the `sessionsEnded` contract from the other side.
 - **`user_isolation`** — the same policy `users`, `budgets` and `passkey_signature_counters` carry,
   keyed on the same session setting. `sessions` is policed on the person rather than on a budget,
   like each of them.
@@ -344,13 +359,19 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   explicit revocation ran — see the cascade gotcha above. Revoking the **federated** credential
   still has no caller and is not expected to gain one: that credential is replaced rather than
   removed.
+  - **The two callers do not mean the same thing by the number**, and that is the trap on this page
+    for whoever edits the sweep. To `RevokePasskeyHandler` it is evidence and nothing more; to
+    `GenerateRecoveryCodesHandler` it is also the condition a re-established session is written on. So
+    a change to what `RevokeForCredentialAsync` counts — the obvious candidate being to narrow
+    `revoked_at_utc is null` to a live-at-now reading — changes behaviour on one path while looking
+    like a reporting fix on both.
   - **Both callers reach it through the command handler rather than straight to `ISessionRepository`**,
     and that is deliberate: the handler is where the clock is read, so one decision to end access is
     stamped as one instant however many rows it touches.
-- **The expiry is decided by the caller, and there are two callers holding the same number.**
+- **The expiry is decided by the caller, and there are three callers holding the same number.**
   `Session.Establish` validates only that the expiry is after the creation instant; the number itself
-  — **14 days** — is a constant on `CompleteAssertionHandler` and again on
-  `RedeemRecoveryCodeHandler`. It lives in Application rather than Domain because how long a session
+  — **14 days** — is a constant on `CompleteAssertionHandler`, on `RedeemRecoveryCodeHandler` and on
+  `GenerateRecoveryCodesHandler`. It lives in Application rather than Domain because how long a session
   lasts is product policy, which
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) keeps above the
   invariants, and it is not on `IPasskeyCeremonyPolicy` because a session lifetime that varies per
@@ -359,6 +380,9 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
     session — a set of recovery codes is the secret the account's keys are wrapped under, so it
     reaches as much as an authenticator does — and a recovery sign-in that expired sooner would tell
     somebody who has just lost their device that the way back in they were issued is worth less than
-    the one they lost. Each handler owns the policy for the sign-in it performs, so the constant is
-    restated rather than shared; **the two differing is a defect rather than a decision**, and a third
-    establishing path must not quietly bring a third number.
+    the one they lost. The regeneration path is held to the same number by an argument of its own: its
+    caller cleared a passkey gate, which is stronger than whatever opened the session that path's
+    sweep took, so the session it hands back must not be worth less than the one it ended. Each
+    handler owns the policy for the sign-in it performs, so the constant is restated rather than
+    shared; **any two of them differing is a defect rather than a decision**, and a fourth
+    establishing path must not quietly bring a fourth number.

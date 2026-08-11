@@ -96,12 +96,53 @@ public sealed class RecoveryCodeGenerationTests
     private const string SessionsEndedMember = "sessionsEnded";
 
     /// <summary>
-    /// The members of the generation response, joined exactly as
-    /// <see cref="Generation_ResponseCarriesTheSessionCountAndNothingElse" /> builds them. It is
-    /// <see cref="SessionsEndedMember" /> today because the record has one member; the constant exists so
-    /// that a second member arriving is a comparison of two strings rather than of two numbers.
+    /// The member carrying the session a replacement re-established, or JSON <c>null</c> when it
+    /// established none.
     /// </summary>
-    private const string GenerationMembers = SessionsEndedMember;
+    /// <remarks>
+    /// <b>One nullable member carrying both facts, rather than a kind and an expiry side by side.</b> Two
+    /// nullable members admit "kind present, expiry absent", which is a state no handler means and every
+    /// client has to branch on; nested, the question a client asks is the one it has — "was I signed back
+    /// in, and until when". It carries no session id, for the reason the redemption's response states: an
+    /// id would hand the client a stable handle to a session, and the likeliest way this design is broken
+    /// later is somebody deciding that handle is close enough to a token to start accepting it.
+    /// </remarks>
+    private const string SessionMember = "session";
+
+    /// <summary>The members of <see cref="SessionMember" />, when it is not null.</summary>
+    private const string KindMember = "kind";
+
+    private const string ExpiresAtUtcMember = "expiresAtUtc";
+
+    /// <summary>
+    /// How much of the account the re-established session reaches, as the wire spells it and as the
+    /// <c>sessions.kind</c> column spells it — the same word, which is the whole point of converting at
+    /// the endpoint boundary.
+    /// </summary>
+    /// <remarks>
+    /// <c>ConfigureHttpJsonOptions</c> registers <c>JsonStringEnumConverter</c> with no naming policy, so
+    /// a <c>SessionKind</c> serialized straight out of the application record would reach the wire as
+    /// <c>"Full"</c> while the column, and every other spelling of it in this product, reads <c>"full"</c>.
+    /// The assertion policy and the redemption response make the same conversion at the same boundary.
+    /// </remarks>
+    private const string FullKind = "full";
+
+    /// <summary>The <c>credential_type</c> a recovery-code session's row carries.</summary>
+    private const string RecoveryCodesCredentialType = "recovery_codes";
+
+    /// <summary>
+    /// The members of the generation response, joined exactly as
+    /// <see cref="Generation_ResponseCarriesTheSessionCountAndNothingElse" /> builds them — ordered
+    /// ordinal, because that is how that test orders what it read. The constant exists so that a member
+    /// arriving is a comparison of two strings rather than of two numbers.
+    /// </summary>
+    /// <remarks>
+    /// <b><see cref="SessionMember" /> is here even on a response that established nothing.</b> Nothing
+    /// configures <c>DefaultIgnoreCondition</c>, so a null member is written rather than omitted — and
+    /// that is the shape to keep: a member that appears only sometimes makes "the server did not tell me"
+    /// and "the server told me no" the same observation for a client.
+    /// </remarks>
+    private const string GenerationMembers = SessionMember + ", " + SessionsEndedMember;
 
     /// <summary>
     /// The <c>ceremony</c> value the re-authentication pool is filed under, as the column stores it.
@@ -176,15 +217,23 @@ public sealed class RecoveryCodeGenerationTests
     }
 
     /// <summary>
-    /// That the response carries exactly <c>sessionsEnded</c>, and no second member.
+    /// That the response carries exactly <c>sessionsEnded</c> and <c>session</c>, and no third member.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <b>Green the day it is written, and that is the point rather than an apology.</b> Nothing else in
-    /// either suite goes red when a second member starts arriving here: every other test on this route
-    /// reads the status, the rows behind it, or <c>sessionsEnded</c> alone, and all of them keep passing
-    /// beside a <c>credentialId</c> or a <c>generatedAtUtc</c>. The defect this exists to catch is one a
-    /// later reader adds the day a client wants to refresh its own view from the response.
+    /// either suite goes red when a further member starts arriving here: every other test on this route
+    /// reads the status, the rows behind it, or one named member, and all of them keep passing beside a
+    /// <c>credentialId</c> or a <c>generatedAtUtc</c>. The defect this exists to catch is one a later
+    /// reader adds the day a client wants to refresh its own view from the response.
+    /// </para>
+    /// <para>
+    /// <b><c>session</c> joining the list is the one widening this test was written to notice, and it was
+    /// argued rather than waved through.</b> A replacement that swept the caller's own session has to say
+    /// so, or the client cannot tell a person who has just been signed out from one who has not — see
+    /// <see cref="Generation_ResponseCarriesTheReestablishedSessionAndOtherwiseNull" />. What did not
+    /// change is that no code, no verifier, no hash and no id may appear, which
+    /// <see cref="Generation_ReturnsNoRecoveryCodeAndNoVerifierOnTheWire" /> holds.
     /// </para>
     /// <para>
     /// <b>Never <c>ContainsKey</c>, and that is the whole shape of the assertion.</b> A containment check
@@ -416,6 +465,205 @@ public sealed class RecoveryCodeGenerationTests
         JsonObject body = await ReadJsonObjectAsync(response);
         await Assert.That(body.ContainsKey(SessionsEndedMember)).IsTrue();
         await Assert.That(body[SessionsEndedMember]!.GetValue<int>()).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// Replacing a set that was carrying a live session leaves the account holding exactly one live
+    /// session — over the <b>new</b> set, and stored as a real <c>sessions</c> row the database accepted.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Only a real database can show this, and that is why it is here as well as in the unit suite.</b>
+    /// The row has to satisfy the composite foreign key to <c>credentials(id, user_id, type)</c> — so
+    /// <c>credential_id</c>, <c>user_id</c> and <c>credential_type</c> must agree with the credential
+    /// inserted moments earlier in the same transaction — <c>CK_sessions_kind_matches_credential</c>, the
+    /// application role's <c>INSERT</c> grant on <c>sessions</c>, and <c>user_isolation</c>, which is
+    /// keyed on <c>app.current_user_id</c> and refuses the row with <c>22P02</c> if the identity is not on
+    /// the connection. No fake has a grant, a constraint or a policy; every one of those five is
+    /// unobservable in memory.
+    /// </para>
+    /// <para>
+    /// <b>The defect this exists to catch is the person, not the schema.</b> Someone who lost their
+    /// authenticator, redeemed a code, registered a replacement passkey and is now regenerating is signed
+    /// in <em>on a session the replaced set opened</em> — so the sweep takes their own session, and before
+    /// this rule they were handed ten fresh codes and thrown out of the flow in the same response.
+    /// <c>sessionsEnded</c> and "no session of the replaced credential survived" are both true of that
+    /// handler, which is why this test counts the account's live sessions instead.
+    /// </para>
+    /// <para>
+    /// <b>The session under the replaced set is written out of band</b>, for the reason
+    /// <see cref="Generation_WhenTheReplacedSetHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant" />
+    /// gives: a session on a recovery-code credential is written by redeeming a code, and driving a
+    /// redemption here would make this test depend on that whole path to arrange one row. Delete the
+    /// arrangement the day driving it costs less than explaining it.
+    /// </para>
+    /// <para>
+    /// Counted on the container superuser, like every row in this file: <c>sessions</c> carries
+    /// <c>user_isolation</c>, which is <c>FOR ALL</c>, so a policed connection reports zero rows for a
+    /// session that is there exactly as it does for one that is gone.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Generation_WhenTheReplacedSetHadALiveSession_OpensOneOverTheNewSet()
+    {
+        // Arrange — a real first set, and one live session hanging off it.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        Guid userId = await ResolveUserIdAsync(host, Subject);
+
+        await Assert.That((await GenerateAsync(client, device, userId)).StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid replacedSetId = await ResolveSetCredentialIdAsync(admin, userId);
+        await InsertRecoveryCodeSessionAsync(admin, userId, replacedSetId);
+
+        // One live session before the act, or "one afterwards" is a claim about an arrangement that never
+        // happened — and a set carrying none is the arrangement the mirror test drives.
+        await Assert.That(await CountLiveSessionsAsync(admin, replacedSetId)).IsEqualTo(1L);
+
+        // Act
+        HttpResponseMessage response = await GenerateAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        // Exactly one live session for the account — not two, which is what a handler that established one
+        // without sweeping would leave, and not zero, which is the defect.
+        SessionRow[] live = await LiveSessionsAsync(admin, userId);
+        await Assert.That(live.Length).IsEqualTo(1);
+
+        // It is over the set the account is left holding, and it is a full session on a recovery-code
+        // credential — the three columns the composite foreign key and the kind check are about.
+        Guid newSetId = await ResolveSetCredentialIdAsync(admin, userId);
+        await Assert.That(newSetId).IsNotEqualTo(replacedSetId);
+        await Assert.That(live[0].CredentialId).IsEqualTo(newSetId);
+        await Assert.That(live[0].Kind).IsEqualTo(FullKind);
+        await Assert.That(live[0].CredentialType).IsEqualTo(RecoveryCodesCredentialType);
+    }
+
+    /// <summary>
+    /// A first issue writes no <c>sessions</c> row at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The mirror of the test above, and what stops "always establish" being the rule.</b> Writing down
+    /// a card for the first time signs nobody in: the codes have never opened a session, nothing was
+    /// swept, and a full session minted here would be one nobody asked for on a credential the person has
+    /// not used. The response is asserted to say so as well, so a handler reporting nothing while writing
+    /// a row cannot pass on the body alone.
+    /// </para>
+    /// <para>
+    /// Counted over the whole account rather than over the set, because the row a mistaken handler writes
+    /// might hang off either credential this account holds — and unscoped over <c>user_id</c> so that a
+    /// row filed under the wrong owner is caught here rather than reported as absent.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Generation_ForAnAccountWithNoPreviousSet_WritesNoSession()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        Guid userId = await ResolveUserIdAsync(host, Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // No session before the act, or every row counted afterwards is a row the arrangement produced.
+        await Assert.That(await ScalarAsync(admin, "select count(*) from sessions")).IsEqualTo(0L);
+
+        // Act
+        HttpResponseMessage response = await GenerateAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject body = await ReadJsonObjectAsync(response);
+        await Assert.That(body[SessionsEndedMember]!.GetValue<int>()).IsEqualTo(0);
+
+        // Present and null, never absent — a member that appears only sometimes makes "the server did not
+        // tell me" and "the server told me no" the same observation. A JSON null reads back as a null
+        // node, so the two questions are asked separately.
+        await Assert.That(body.ContainsKey(SessionMember)).IsTrue();
+        await Assert.That(body[SessionMember] is null).IsTrue();
+
+        await Assert.That(await ScalarAsync(admin, "select count(*) from sessions")).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// The response carries the re-established session as <c>{"kind": "full", "expiresAtUtc": …}</c> when
+    /// there was one, and a JSON <c>null</c> when there was not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both halves in one test, because the claim is a shape and a shape needs both of its states.</b> A
+    /// handler emitting the member only when it is populated satisfies a test that reads it on the
+    /// populated response, and leaves a client unable to tell "the server did not tell me" from "the server
+    /// told me no". So the first issue's <c>null</c> and the replacement's object are read off the same
+    /// account, in the order a person meets them.
+    /// </para>
+    /// <para>
+    /// <b><c>"full"</c> and never <c>"Full"</c>, and the difference is a boundary rather than a spelling
+    /// preference.</b> <c>ConfigureHttpJsonOptions</c> registers <c>JsonStringEnumConverter</c> with no
+    /// naming policy, so the application's <c>SessionKind</c> serialized straight through would reach the
+    /// wire as <c>"Full"</c> while the column and every other spelling in this product read <c>"full"</c> —
+    /// the conversion belongs at the endpoint, exactly as the assertion and redemption legs do it.
+    /// </para>
+    /// <para>
+    /// The expiry is asserted to parse as an instant in the future rather than compared to a literal: how
+    /// long a session lasts is product policy owned by the handler, and
+    /// <c>GenerateRecoveryCodesHandlerTests</c> pins the interval against a fixed clock. What this route
+    /// owes is that the member is there and is a date, not that this suite agrees with the handler about
+    /// fourteen days.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Generation_ResponseCarriesTheReestablishedSessionAndOtherwiseNull()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        Guid userId = await ResolveUserIdAsync(host, Subject);
+
+        // Act, Assert — a first issue signs nobody back in, and says so with a member that is present and
+        // null rather than with a member that is absent.
+        HttpResponseMessage first = await GenerateAsync(client, device, userId);
+        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject firstBody = await ReadJsonObjectAsync(first);
+        await Assert.That(firstBody.ContainsKey(SessionMember)).IsTrue();
+        await Assert.That(firstBody[SessionMember] is null).IsTrue();
+
+        // Arrange — the session that set opened, written out of band for the reason the test above gives.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await InsertRecoveryCodeSessionAsync(admin, userId, await ResolveSetCredentialIdAsync(admin, userId));
+
+        // Act — the replacement, which sweeps that session and opens one over the new set.
+        HttpResponseMessage second = await GenerateAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject secondBody = await ReadJsonObjectAsync(second);
+        await Assert.That(secondBody[SessionsEndedMember]!.GetValue<int>()).IsEqualTo(1);
+
+        JsonObject session = secondBody[SessionMember]!.AsObject();
+        await Assert.That(session[KindMember]!.GetValue<string>()).IsEqualTo(FullKind);
+        await Assert.That(session[ExpiresAtUtcMember]!.GetValue<DateTime>() > DateTime.UtcNow).IsTrue();
+
+        // The member list of the nested object, whole rather than by containment, for the reason the
+        // response's own member test gives: a session id arriving here is exactly the widening this
+        // product refuses, and a containment check can never fail.
+        string members = string.Join(", ", session.Select(member => member.Key).Order(StringComparer.Ordinal));
+        await Assert.That(members).IsEqualTo($"{ExpiresAtUtcMember}, {KindMember}");
     }
 
     /// <summary>
@@ -1321,6 +1569,47 @@ public sealed class RecoveryCodeGenerationTests
         return await ReadCountAsync(command);
     }
 
+    /// <summary>
+    /// Every session of one <b>account</b> that nothing has revoked, with the three columns the composite
+    /// foreign key and <c>CK_sessions_kind_matches_credential</c> are about.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Scoped by <c>user_id</c> rather than by credential, because the question is what the account is
+    /// left holding: a count over one credential cannot see a session opened over the wrong one, and that
+    /// is exactly the row a mistaken handler writes.
+    /// </para>
+    /// <para>
+    /// <b>Live means unrevoked, not unexpired</b> — the same reading the sweep uses. A session past its
+    /// expiry and never revoked is an inert row, and pinning it here would be pinning an asymmetry the
+    /// rule deliberately declines. See <c>GenerateRecoveryCodesHandlerTests</c>, which argues it.
+    /// </para>
+    /// <para>
+    /// On the container superuser, like every row read in this file: <c>sessions</c> carries
+    /// <c>user_isolation</c>, which is <c>FOR ALL</c>.
+    /// </para>
+    /// </remarks>
+    private static async Task<SessionRow[]> LiveSessionsAsync(NpgsqlConnection admin, Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            """
+            select credential_id, kind, credential_type
+            from sessions
+            where user_id = @userId and revoked_at_utc is null
+            """,
+            admin);
+        command.Parameters.AddWithValue("userId", userId);
+
+        List<SessionRow> rows = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new SessionRow(reader.GetGuid(0), reader.GetString(1), reader.GetString(2)));
+        }
+
+        return [.. rows];
+    }
+
     private static async Task<long> ScalarAsync(NpgsqlConnection admin, string sql)
     {
         await using NpgsqlCommand command = new(sql, admin);
@@ -1349,4 +1638,15 @@ public sealed class RecoveryCodeGenerationTests
         await host.StartAsync();
         return host;
     }
+
+    /// <summary>
+    /// One <c>sessions</c> row, in the three columns that say what it is: which credential opened it, how
+    /// much of the account it reaches, and what type that credential is.
+    /// </summary>
+    /// <remarks>
+    /// The id and the two instants are deliberately absent. Nothing here asks when a session was created —
+    /// the interval is product policy pinned against a fixed clock in
+    /// <c>GenerateRecoveryCodesHandlerTests</c> — and a row's identifier answers no question this file has.
+    /// </remarks>
+    private sealed record SessionRow(Guid CredentialId, string Kind, string CredentialType);
 }

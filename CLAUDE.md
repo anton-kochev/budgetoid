@@ -71,11 +71,15 @@ Load-bearing rules, each explained there or in the linked decision:
   `recovery_code_hashes` are exempt, each because it is read *before* the request has an identity a
   policy could be keyed on — so the credential lookup must never join `users`, and a recovery code is
   found by the hash of the verifier on a request that has said nothing about who is asking. **An
-  exempt table scopes nothing**: only the
-  discovery lookup may omit an owner filter, and every other read **or write** of one must carry its
-  own `where user_id = …`. That now includes a `DELETE` — revoking a passkey removes a `credentials`
-  row scoped by the application and by nothing beneath it, which is why the delete takes the loaded
-  entity rather than an id, and why `credentials.user_id` immutability is load-bearing twice over.
+  exempt table scopes nothing**: only the discovery lookup may omit an owner filter, and every other
+  **read** of one must carry its own `where user_id = …`. The destructive statements are an exception
+  to that sentence and not to the rule — EF emits each `DELETE` by primary key, so none of them
+  carries an owner predicate at all. What scopes one is the owner-bearing read that produced its
+  entity, in the same transaction, which is why a delete takes the loaded entity rather than an id,
+  and why `credentials.user_id` immutability is load-bearing twice over. Do not read the port's
+  shape as a narrowing that discriminates: a lookup handed an owner id taken off the row it is
+  about to select by primary key constrains nothing today, and exists to keep the rule literally
+  true and to bite the first caller that takes that id from somewhere else.
   What holds each exemption to its reason is its **pinned column set**, not the
   grant matrix — a write-once secret passes any append-only rule — so a new column there means *move
   the column*, never widen the pin. See

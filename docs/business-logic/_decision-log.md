@@ -8,6 +8,87 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-11 — A regeneration opens a session exactly when its sweep ended one, and the rule is about the set
+
+**Context:** replacing an account's recovery codes revokes the sessions the replaced set had opened and
+then deletes that set's credential, whose cascade removes those rows outright. The entry below records
+why the sweep must be explicit and why its count is reported. What neither it nor any test said is what
+the *account* is left holding afterwards. The person this route exists for is very often signed in on
+one of the swept rows: they lost the authenticator, redeemed a code, registered a replacement passkey,
+and are regenerating the card while signed in on the session that redemption opened. Every assertion
+about the path was about the **replaced credential** — that its sessions were stamped, and how many —
+and all of them are true of a handler that hands somebody ten fresh codes and throws them out of the
+flow in the same response.
+
+**Decision:** **replacing a set that was carrying live sessions opens one session over the new set;
+replacing a set that was carrying none opens nothing.** The condition is `sessionsEnded > 0`, the
+session is `Full` and lasts the same 14 days the other two establishing paths give, it is derived from
+the new set's own `Credential` rather than named, and it is written inside the same transaction and
+stamped from the same instant as the sweep, the credential and the ten hash rows. The response gains a
+nested `session` member, JSON `null` when nothing was opened and **never absent**: a member that
+appears only sometimes makes *"the server did not tell me"* and *"the server told me no"* the same
+observation for a client.
+
+**The rule is stated about the *set*, not about the caller, and that is the deliberate part.** Nothing
+on this request presents a session — the proof is a WebAuthn assertion — so the server cannot know
+whose session it swept. It asks instead whether the set it replaced was carrying any, and a rule with
+no referent is worse than a slightly generous one.
+
+**The generosity runs in one direction only, and the asymmetry is chosen rather than tolerated.** No
+false negatives: a live session over the replaced set is always swept, so anybody signed out here is
+signed back in. Two false positives: a live session on another device, and a session unrevoked but past
+its expiry, because the sweep narrows on `revoked_at_utc is null` and says nothing about expiry. Each
+costs one inert row that hands nothing to anybody. Tightening it to a live-at-now reading is not
+available as a local edit: the number is `RevokeSessionsForCredentialHandler`'s, and
+`RevokePasskeyHandler` reports the same number through the same sweep while meaning only evidence by
+it, so narrowing the condition is a change to what both paths count.
+
+**What this does to the entry below:** *"Why the response reports `sessionsEnded`"* gave one reason —
+the cascade erases the evidence, so the count is the only place the fact can live. There is now a
+second, and it is the stronger of the two: **the number decides whether a row is written.** What it
+counts is load-bearing twice over, which raises the cost of ever changing it.
+
+**Say "thrown out of the flow", not "locked out".** The caller has just proved possession of a passkey
+at the gate in front of this route, so a new session is always one assertion away. The defect was being
+ejected from a flow at the worst possible moment, not losing the account, and the stronger word does not
+survive a reader checking the code.
+
+**Alternatives considered:**
+
+- *Always establish, unconditionally* — one line shorter and it reads as the safe direction. A first
+  issue is the most frequent call to this route, so it would put a sign-in nobody made in front of
+  somebody who has just written a card down at onboarding: indistinguishable from a compromise, and
+  revoking it does not undo having been told about it.
+- *Never establish — the shipped behaviour* — defensible only while nothing presents a session. It is
+  the defect: ten fresh codes and an immediate ejection, for the exact person the route is for, and the
+  day a session token authenticates a request it becomes a sign-out in the middle of an account
+  recovery.
+- *Establish whenever there was a previous set to replace* — agrees with the chosen rule everywhere
+  except on the account that generated a card, never redeemed a code, and is regenerating from a device
+  signed in with its passkey. That person's session was opened by the passkey, the sweep never touches
+  it, and a second one opened over the codes is a session nobody asked for on a credential they have
+  not used.
+- *Key it on the caller's own session* — the reading everybody wants, and it has no referent: no
+  request on this route presents a session, so there is nothing to compare against. It becomes
+  available the day a session token authenticates a request, and this rule is what it would replace.
+- *Let the client ask — a member on the request, or a second call afterwards* — a member would be the
+  first thing a caller supplies that decides what this route writes, on a route whose whole design
+  keeps every identity value server-resolved. A follow-up call is worse: between the two the person is
+  signed out, which is the window this rule exists to close, and it costs a second ceremony.
+- *Stop sweeping, so the caller keeps the session they arrived on* — it does not work. The delete's
+  cascade takes those rows whether the sweep ran or not, so the person is signed out anyway, and the
+  only observable evidence that access ended deliberately is destroyed with it.
+
+**Known gap, stated rather than hidden:** nothing presents a session yet, so neither half of this is
+observable outside a test — the sweep signs nobody out and the re-establishment signs nobody in. Both
+are anticipatory in the sense [sessions.md](sessions.md) already records for revocation, and the
+re-established session is correct about the rows now so that the day a token authenticates a request,
+a regeneration is already signing the person back in.
+
+**Affected areas:** [recovery-codes.md](recovery-codes.md), [sessions.md](sessions.md).
+
+---
+
 ## 2026-08-11 — The client mints every recovery code, and the hashes live on a table of their own
 
 **Context:** an account had exactly one thing that could open its budget — a passkey — so losing the

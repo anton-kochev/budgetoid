@@ -68,10 +68,28 @@ public static class RecoveryCodeEndpoints
             // rows either way. See RecoveryCodesGeneration.
             //
             // TypedResults.Ok rather than hand-serialized JSON, so camelCase comes from
-            // ConfigureHttpJsonOptions like every other response instead of from this call site. The
-            // record carries one member and no code, no verifier and no id: the server never held a code,
-            // and the client already has the codes it derived its verifiers from.
-            return TypedResults.Ok(generation);
+            // ConfigureHttpJsonOptions like every other response instead of from this call site. Two
+            // members and no code, no verifier and no id: the server never held a code, and the client
+            // already has the codes it derived its verifiers from.
+            //
+            // A RESPONSE RECORD OF THIS LAYER'S OWN, unlike the count leg, for one reason: the kind is
+            // converted here rather than left to the serializer. ConfigureHttpJsonOptions registers
+            // JsonStringEnumConverter with no naming policy, so a SessionKind serialized straight out of
+            // the application record would reach the wire as "Full" while the sessions.kind column, and
+            // every other spelling of it in this product, reads "full". The assertion and redemption
+            // legs make the same conversion at the same boundary.
+            //
+            // The session member is written as JSON null when nothing was re-established rather than
+            // omitted — nothing configures DefaultIgnoreCondition, and that is the shape to keep: a
+            // member that appears only sometimes makes "the server did not tell me" and "the server told
+            // me no" the same observation for a client.
+            return TypedResults.Ok(new RecoveryCodeGenerationResponse(
+                generation.Session is { } session
+                    ? new ReestablishedSessionResponse(
+                        JsonNamingPolicy.CamelCase.ConvertName(session.Kind.ToString()),
+                        session.ExpiresAtUtc)
+                    : null,
+                generation.SessionsEnded));
         });
 
         // NOT gated by re-authentication, and that is a decision rather than an omission. A count is not
@@ -187,6 +205,36 @@ public static class RecoveryCodeEndpoints
     /// column's, decided at this boundary — see the conversion at the call site.
     /// </remarks>
     private sealed record RedemptionResponse(string Kind, DateTime ExpiresAtUtc, int Remaining);
+
+    /// <summary>
+    /// What an issue has to say for itself: the session a replacement re-established, or
+    /// <see langword="null" />, and how many sessions replacing the set ended.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Two members and no third one.</b> No code, no verifier, no stored hash, no credential id and
+    /// no account id: the server never held a code, echoing the verifiers back would put a value a
+    /// redemption could be attempted with into every client log on the way, and an id in a response body
+    /// is an id in a client log.
+    /// </para>
+    /// <para>
+    /// The session is nested rather than flattened into a kind and an expiry beside the count, so
+    /// "kind present, expiry absent" is unrepresentable — see <see cref="RecoveryCodesGeneration" />.
+    /// </para>
+    /// </remarks>
+    private sealed record RecoveryCodeGenerationResponse(
+        ReestablishedSessionResponse? Session,
+        int SessionsEnded);
+
+    /// <summary>
+    /// The session a replacement opened over the new set.
+    /// </summary>
+    /// <remarks>
+    /// The kind is a string rather than a <c>SessionKind</c> so the spelling on the wire is the
+    /// column's, decided at this boundary — see the conversion at the call site. No session id, for the
+    /// reason <see cref="RedemptionResponse" /> gives.
+    /// </remarks>
+    private sealed record ReestablishedSessionResponse(string Kind, DateTime ExpiresAtUtc);
 
     /// <summary>
     /// The set being presented, and the assertion the issue is authorized by — the latter in the shape

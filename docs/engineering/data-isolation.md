@@ -81,8 +81,12 @@ Enforced today:
 - **An exempt table scopes nothing, so the application is the only thing scoping access to it — and
   some of those accesses destroy rows.** On the exempt tables that carry an owner column —
   `credentials`, `passkey_public_keys` and `recovery_code_hashes` — one query per table is allowed to
-  omit it, the one that discovers who is asking, and every other access must
-  carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on `budgets`. On
+  omit it, the one that discovers who is asking, and every other **read** must
+  carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on `budgets`. **The
+  destructive statements are an exception to that sentence and not to the rule**: EF issues each of
+  them by primary key, with no owner predicate in the statement at all, and what scopes one is the
+  owner-bearing read that produced its entity inside the same transaction — spelled out below and in
+  [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md). On
   `recovery_code_hashes` that one query is the discovery lookup a redemption is matched by, and the
   `DELETE` beside it is scoped by a **second** read of the same row, inside the transaction that
   spends it, naming the account the first one resolved. The two reads answer two different questions:
