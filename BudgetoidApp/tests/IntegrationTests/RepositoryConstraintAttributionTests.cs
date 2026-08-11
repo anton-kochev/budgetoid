@@ -55,8 +55,9 @@ namespace IntegrationTests;
 /// <c>RepositoryAttributionCensusTests</c> in <c>UnitTests</c> now executes it: it reflects over the
 /// live <c>Infrastructure.Repositories</c> namespace and fails unless every repository in it appears
 /// in exactly one of those two sets. Read its <c>PinnedElsewhere</c> entries rather than this
-/// paragraph for which halves each of those files actually holds — three of them pin the translation
-/// and have no mis-attribution control at all.
+/// paragraph for which halves each of those files actually holds. Three of them used to pin the
+/// translation and carry no mis-attribution control; each now carries one, written to the mechanism
+/// this file's first paragraph describes and placed beside its method rather than moved in here.
 /// </para>
 /// <para>
 /// None of this is reachable through today's handlers — <c>UserProvisioningMiddleware</c> runs
@@ -74,10 +75,11 @@ namespace IntegrationTests;
 /// different kind and could not be written here anyway:
 /// <c>DeleteAllForAmbientBudgetAsync</c> answers a concurrency conflict, which carries no constraint
 /// name and no SQLSTATE for a filter to mis-read, so the <i>entries</i> are what narrow it.
-/// <b>The honest gap</b>: only that entries-based half has a control proving a foreign conflict
-/// escapes. <c>UpdateAsync</c>'s two constraint-name filters have none, here or anywhere, which is a
-/// real hole recorded in <c>RepositoryAttributionCensusTests</c> rather than closed by this
-/// paragraph.
+/// <b>The gap this paragraph used to record is closed</b>:
+/// <c>UpdateAsync_WhenATrackedRowBreaksAnotherForeignKey_LetsTheViolationEscape</c> is its
+/// mis-attribution control, staging the same payee-against-a-missing-budget <c>23503</c> that
+/// <see cref="AddCategory_WhenATrackedRowBreaksAnotherForeignKey_LetsTheViolationEscape" /> stages
+/// here — the same mechanism, in the file that owns the method.
 /// </para>
 /// </remarks>
 public sealed class RepositoryConstraintAttributionTests

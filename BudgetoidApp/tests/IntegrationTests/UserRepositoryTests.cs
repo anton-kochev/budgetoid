@@ -562,6 +562,103 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
+    /// A unique violation this method does not model is not dressed up as a lost race.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The narrowing half of <c>TryAddAsync</c>, and the reason its <c>when</c> clause lists two
+    /// index names rather than matching a bare <c>23505</c>.</b> The three tests above prove the
+    /// refusal it does model — the provider identity, the email, and both at once — and every one of
+    /// them stays green against a filter widened to the SQLSTATE. This is the one that does not.
+    /// </para>
+    /// <para>
+    /// <b>The mechanism is <c>RepositoryConstraintAttributionTests</c>'.</b>
+    /// <c>SaveChangesAsync</c> flushes everything the scoped context is tracking, not only the three
+    /// rows the repository was handed, so this test tracks one extra row that breaks a <i>third</i>
+    /// unique rule carrying the same <c>23505</c>, and then calls <c>TryAddAsync</c> with an account
+    /// nothing is wrong with. Widen the filter and the stranger's violation comes back as
+    /// <see langword="false" />, which <c>EnsureUserHandler</c> reads as "somebody else won the race,
+    /// re-read the credential" — and there is no credential to re-read, so a failed sign-in is all the
+    /// caller gets and nothing is logged about why.
+    /// </para>
+    /// <para>
+    /// <b>The intruder is a second federated credential for an account that already holds one</b>, and
+    /// it is chosen to be as close to the modelled rules as the schema permits: the same table, the
+    /// same SQLSTATE, and a rule about <c>credentials</c> that <c>TryAddAsync</c> nonetheless does not
+    /// speak for — <c>IX_credentials_user_id_federated</c>, pinned two tests up in
+    /// <see cref="Database_RejectsASecondFederatedCredentialForTheSameUser" />. A distant intruder in
+    /// another table would demonstrate less, because the filter that matters is the one between two
+    /// neighbouring indexes on one table.
+    /// </para>
+    /// <para>
+    /// <b>Its subject is fresh</b>, which is load-bearing rather than tidy: reusing the bystander's
+    /// subject would break <c>IX_credentials_provider_subject</c>, which <i>is</i> in the filter, and
+    /// the test would then pass against the widening it exists to catch. The account being added
+    /// carries a fresh email and a fresh subject of its own, so exactly one rule in the batch is broken
+    /// and the reported name is deterministic rather than an artifact of index creation order — the
+    /// hazard <see cref="TryAddAsync_WithADuplicateCredentialAndEmail_ReturnsFalse" /> declines to
+    /// assert around.
+    /// </para>
+    /// <para>
+    /// The SQLSTATE is asserted beside the constraint name, which is what keeps this a narrowing test
+    /// rather than a test that any failure escapes: a violation of some entirely different kind would
+    /// satisfy "neither of the two filtered names" without ever exercising the filter. The expected
+    /// behaviour is that an unmodelled violation <b>propagates</b> — a 500 naming the real constraint
+    /// beats a silent refusal that sends provisioning looking for a row nobody wrote.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task TryAddAsync_WhenATrackedRowBreaksAThirdUniqueRule_LetsTheViolationEscape()
+    {
+        // Arrange — a bystander account holding its Google credential, and a second federated
+        // credential for it carrying a subject of its own.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid bystanderId = await host.SeedUserAsync("google-1", "bystander@example.com");
+        await using BudgetoidDbContext db = CreateDb(host);
+        db.Credentials.Add(NewGoogleCredential(bystanderId, "google-2"));
+        var repository = new UserRepository(db);
+
+        // Act — the account being provisioned is beyond reproach: nobody holds this email and nobody
+        // holds this subject.
+        Exception? escaped = await CaptureAsync(() => repository.TryAddAsync(
+            NewUser("newcomer@example.com", out Guid userId),
+            NewGoogleCredential(userId, "google-3"),
+            NewDefaultBudget(userId)));
+
+        // Assert — something escaped, which is already the claim: a swallowed violation would have
+        // returned false and left this null.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+
+        // And it really was a unique violation — on a rule that is not this method's to speak for.
+        await Assert.That(SqlStateOf(escaped)).IsEqualTo(PostgresErrorCodes.UniqueViolation);
+        await Assert.That(ConstraintNameOf(escaped))
+            .IsEqualTo(CredentialConfiguration.FederatedPerUserIndexName);
+        await Assert.That(ConstraintNameOf(escaped))
+            .IsNotEqualTo(CredentialConfiguration.ProviderSubjectIndexName);
+        await Assert.That(ConstraintNameOf(escaped)).IsNotEqualTo(UserConfiguration.EmailIndexName);
+    }
+
+    /// <summary>
+    /// Names the constraint PostgreSQL actually refused on, or <see langword="null" /> when the
+    /// escaping exception never reached the database at all.
+    /// </summary>
+    private static string? ConstraintNameOf(Exception? exception) =>
+        exception is DbUpdateException { InnerException: PostgresException postgresException }
+            ? postgresException.ConstraintName
+            : null;
+
+    /// <summary>
+    /// The SQLSTATE PostgreSQL refused with, or <see langword="null" /> when nothing did. Read beside
+    /// the constraint name so a narrowing test can say the violation it staged really is the kind the
+    /// filter has to tell apart.
+    /// </summary>
+    private static string? SqlStateOf(Exception? exception) =>
+        exception is DbUpdateException { InnerException: PostgresException postgresException }
+            ? postgresException.SqlState
+            : null;
+
+    /// <summary>
     /// That the arrangement the two tests below stand on really does raise a concurrency conflict.
     /// </summary>
     /// <remarks>

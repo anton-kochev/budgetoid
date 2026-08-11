@@ -1383,44 +1383,33 @@ public sealed class DeploymentProvisioningTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The try/catch is a leak guard, not tidiness. Every call site has the shape
+    /// The start goes through <see cref="StartGuard" />, which is a leak guard rather than tidiness:
+    /// every call site has the shape
     /// <c>await using PostgreSqlContainer container = await StartBareContainerAsync();</c>, so the
-    /// variable is bound only <b>after</b> this method returns: when the start throws, nothing is
-    /// ever disposed. Docker has created and started the container long before a readiness check
-    /// gives up — that was checked directly against Testcontainers 4.12.0, where the container is
-    /// <c>Up</c> at the moment <c>StartAsync</c> raises its <see cref="TimeoutException" /> and stays
-    /// that way until <c>DisposeAsync</c> stops it. An abandoned one keeps its memory and its port
-    /// binding for the rest of the run, which makes the next start likelier to time out in turn:
-    /// the feedback loop <c>AssemblyInfo.cs</c> describes.
-    /// <c>SharedPostgresCluster.StartClusterAsync</c> already guards the same call the same way, and
-    /// this class is one of the two that deliberately stay outside it.
+    /// variable is bound only <b>after</b> this method returns, and a throw here would otherwise
+    /// abandon a container Docker has already started. The reasoning, the Testcontainers 4.12.0
+    /// observation it rests on, and the decision about a disposal that fails too all live on
+    /// <see cref="StartGuard" />, at the code that implements them; <c>AssemblyInfo.cs</c> carries the
+    /// suite-level history. <c>SharedPostgresCluster.StartClusterAsync</c> guards a wider region of its
+    /// own and deliberately does not share this helper.
     /// </para>
     /// <para>
-    /// This guard was written by matching that shape, not by capturing a failure. One test in this
+    /// The guard was written by matching that shape, not by capturing a failure. One test in this
     /// class was lost once under load and never reproduced over three full suite runs — which is what
     /// a one-in-six flake looks like when it does not fire. Read it as a closed leak path, not as a
-    /// diagnosed and cured flake.
+    /// diagnosed and cured flake. What has changed is that the path is now executed by something:
+    /// <see cref="StartGuardTests" /> drives it over a fake, because a <c>catch</c> reachable only by
+    /// a broken Docker daemon is a <c>catch</c> no test in this class can ever enter.
     /// </para>
     /// </remarks>
-    private static async Task<PostgreSqlContainer> StartBareContainerAsync()
-    {
-        PostgreSqlContainer container = new PostgreSqlBuilder("postgres:17")
-            .WithDatabase("budgetoid")
-            .WithUsername("postgres")
-            .WithPassword("postgres")
-            .Build();
-
-        try
-        {
-            await container.StartAsync();
-            return container;
-        }
-        catch
-        {
-            await container.DisposeAsync();
-            throw;
-        }
-    }
+    private static Task<PostgreSqlContainer> StartBareContainerAsync() =>
+        StartGuard.StartAsync(
+            new PostgreSqlBuilder("postgres:17")
+                .WithDatabase("budgetoid")
+                .WithUsername("postgres")
+                .WithPassword("postgres")
+                .Build(),
+            container => container.StartAsync());
 
     /// <summary>
     /// Opens a connection as the container account, which is a superuser. Every schema observation

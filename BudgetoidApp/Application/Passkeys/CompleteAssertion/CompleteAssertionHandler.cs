@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Application.Abstractions;
 using Application.Passkeys.Verification;
+using Application.Sessions;
 using Application.Users.EnsureUser;
 using Domain.Common;
 using Domain.Sessions;
@@ -35,19 +36,6 @@ public sealed class CompleteAssertionHandler(
     IPersistenceState persistenceState,
     TimeProvider timeProvider) : ICommandHandler<CompleteAssertionCommand, EstablishedSession>
 {
-    /// <summary>
-    /// How long a passkey sign-in lasts.
-    /// </summary>
-    /// <remarks>
-    /// Here rather than in Domain, and deliberately: <see cref="Session.Establish"/> takes an expiry
-    /// instead of computing one, because how long a session lasts is product policy and the domain
-    /// holds invariants. ADR 0002 keeps policy above the invariants for exactly this reason — the
-    /// bottom is the most expensive layer to change, and this number is one somebody will want to
-    /// change. It is not on <see cref="IPasskeyCeremonyPolicy"/> either: a session that expires after
-    /// a different interval in one environment than another is a difference nobody meant.
-    /// </remarks>
-    private static readonly TimeSpan SessionLifetime = TimeSpan.FromDays(14);
-
     public async Task<EstablishedSession> HandleAsync(
         CompleteAssertionCommand command,
         CancellationToken cancellationToken = default)
@@ -209,7 +197,7 @@ public sealed class CompleteAssertionHandler(
                     ?? throw new PasskeyVerificationException(
                         "The passkey has a public key but no credential.");
 
-                Session session = Session.Establish(credential, now, now + SessionLifetime);
+                Session session = Session.Establish(credential, now, now + SessionPolicy.Lifetime);
                 await sessionRepository.AddAsync(session, token);
 
                 return new EstablishedSession(session.Kind, session.ExpiresAtUtc);

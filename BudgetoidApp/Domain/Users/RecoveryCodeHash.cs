@@ -17,11 +17,18 @@ namespace Domain.Users;
 /// </para>
 /// <para>
 /// <b>The server never sees a code.</b> The browser mints one, derives a verifier
-/// <c>V = HKDF(code, …)</c> from it and sends only <c>V</c>; <see cref="From"/> stores
+/// <c>V = HKDF(canonical(code), …)</c> from it and sends only <c>V</c>; <see cref="From"/> stores
 /// <c>SHA-256(V)</c>. The account's key-encryption key is derived from the same code on an
 /// independent HKDF branch, so a code reaching this server would hand the operator that key — which
 /// is why nothing on this type takes a code, and why the hashing happens inside the factory rather
 /// than at a call site somebody could get wrong once.
+/// </para>
+/// <para>
+/// <c>canonical</c> is inside the derivation rather than in the ellipsis, because a derivation is not
+/// specified until it says what text goes in: the client upper-cases the code, strips the whitespace
+/// and hyphens it was grouped with, and folds <c>I</c> and <c>L</c> onto <c>1</c> and <c>O</c> onto
+/// <c>0</c>. That is a rule about text this type never receives, which is exactly why it is stated
+/// here — the bytes arriving are already past it, and nothing below this line could tell.
 /// </para>
 /// </remarks>
 public sealed class RecoveryCodeHash
@@ -44,8 +51,8 @@ public sealed class RecoveryCodeHash
     /// store the hash of a prefix, and no code would ever redeem.
     /// <para>
     /// Numerically equal to the width of the SHA-256 this type stores, and that is arithmetic rather
-    /// than a shared bound — the HKDF output width the client is specified to produce is chosen
-    /// independently of the digest length. <c>RecoveryCodeHashConfiguration</c> keeps its own constant
+    /// than a shared bound — the HKDF output width the client derives is chosen independently of the
+    /// digest length. <c>RecoveryCodeHashConfiguration</c> keeps its own constant
     /// for the column for that reason, and the two must not be folded together.
     /// </para>
     /// </remarks>

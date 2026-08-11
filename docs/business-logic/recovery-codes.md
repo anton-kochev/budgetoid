@@ -51,7 +51,13 @@ through is not.
   `created_at_utc`. The hash **is** the identity of the row, because a redemption arrives carrying a
   code and nothing else, so the hash is the only handle it has.
 - **Code** — the string a person writes down. It is minted in the browser, never transmitted, and
-  appears in no column, no log and no response body. There is no type for it in this codebase.
+  appears in no column, no log and no response body. **No backend type names it** — that is
+  [ADR 0015](../decisions/0015-mint-recovery-codes-on-the-client-and-store-only-a-hash-of-a-verifier.md)'s
+  claim, and it is the whole of what the server side can say. The client does name it: `RecoveryCode`
+  in `+core/security/recovery-codes.ts` is a branded string, declared distinct from
+  `RecoveryCodeVerifier`, so a request body typed as verifiers refuses the array of codes at compile
+  time. That is the last **free** place to catch *"sent the codes"*: below it there is nothing but a
+  runtime refusal on a value the server can judge by its width and by nothing else.
 - **Verifier** — `V = HKDF(canonical(code), …)`, exactly 32 bytes, derived on the client and sent as
   base64url text. It is what the server receives and the only thing it can judge. `canonical` is the
   canonicalisation rule below — the code upper-cased, its whitespace and hyphens stripped, and the
@@ -165,9 +171,11 @@ erDiagram
     deleted inside the same transaction.
   - **Enforced in**: `GenerateRecoveryCodesHandler.RequiredCodeCount` and `DecodeAndValidate`, each
     refusal carrying a sentence of its own. Ten is **product policy** and lives in Application for the
-    reason `CompleteAssertionHandler.SessionLifetime` does: a set of nine is not a malformed set, it is
-    a smaller quantity of a thing somebody chose, and a `CHECK` counting sibling rows cannot be written
-    without a trigger, which ADR 0002 refuses.
+    reason `SessionPolicy.Lifetime` does: a set of nine is not a malformed set, it is a smaller
+    quantity of a thing somebody chose, and a `CHECK` counting sibling rows cannot be written without
+    a trigger, which ADR 0002 refuses. It stays on the handler rather than joining that policy type,
+    and the asymmetry is the reason: how many codes a set holds is a number only this path has a use
+    for, while the lifetime is one three paths have to agree on.
 
 - **An account MUST hold at most one set.**
   - **Why**: two sets are two remaining-counts with nothing saying which one binds. "You have three
@@ -582,10 +590,11 @@ erDiagram
   than a coincidence.** A set of codes is the secret the account's keys are wrapped under, so it
   reaches exactly as much as an authenticator does, and a session that expired sooner here would
   quietly tell somebody who has just lost their device that the way back in they were issued is worth
-  less than the one they lost. The number is restated on
-  `RedeemRecoveryCodeHandler.SessionLifetime` rather than shared, because each handler owns the policy
-  for the sign-in it performs; the two differing is a defect, not a decision. See
-  [sessions.md](sessions.md).
+  less than the one they lost. The number is `SessionPolicy.Lifetime`, which this path and the other
+  two establishing paths all read: the three differing is a defect rather than a decision, and one
+  value is what stops a fourth path bringing a fourth number. What that sharing does **not** cover is
+  where in the handler the session is established — here, only after the code is spent, which is this
+  file's own rule below. See [sessions.md](sessions.md), which owns the lifetime.
 - **Enforced in**: `Session.KindFor`, with every arm written out and a throwing discard arm, and
   `CK_sessions_kind_matches_credential` restating it in the layer that rejects. The spelling of that
   constraint is itself a decision — see [sessions.md](sessions.md).

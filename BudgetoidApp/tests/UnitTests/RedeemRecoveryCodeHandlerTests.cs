@@ -55,8 +55,8 @@ public sealed class RedeemRecoveryCodeHandlerTests
     /// taking its expectation from the type under test agrees with whatever that type later decides,
     /// and <c>TimeSpan.FromDays(14000)</c> would leave this file green while an intercepted code bought
     /// a session that never practically expires. It is asserted as an <em>observable</em> expiry
-    /// against a fixed clock, so a coder consolidating the three handlers' constants into one shared
-    /// value does not have to touch this file for it to keep meaning what it means.
+    /// against a fixed clock, so the consolidation of the three handlers' private constants into
+    /// <c>SessionPolicy.Lifetime</c> moved not a line here and left this file meaning what it meant.
     /// </para>
     /// <para>
     /// The same interval a passkey sign-in and a regeneration get, and the equality is a rule rather

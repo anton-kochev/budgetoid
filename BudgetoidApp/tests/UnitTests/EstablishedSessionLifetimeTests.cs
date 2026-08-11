@@ -5,6 +5,7 @@ using Application.Passkeys.CompleteAssertion;
 using Application.Passkeys.Reauthentication;
 using Application.RecoveryCodes.GenerateRecoveryCodes;
 using Application.RecoveryCodes.RedeemRecoveryCode;
+using Application.Sessions;
 using Application.Sessions.RevokeSessionsForCredential;
 using Domain.Sessions;
 using Domain.Users;
@@ -20,10 +21,9 @@ namespace UnitTests;
 /// <remarks>
 /// <para>
 /// <b>Three handlers open a session — a passkey assertion, a recovery-code redemption and a
-/// regeneration that swept the sessions it replaced — and each holds the interval as a constant of its
-/// own.</b> Each of the three files that tests them pins its own handler's expiry, and none of them can
-/// say the other two agree. This is the file where the three are put beside each other, because the
-/// handlers' own remarks say the equality is a rule rather than a coincidence: all three open a
+/// regeneration that swept the sessions it replaced — and this is the file that puts the three beside
+/// each other.</b> Each of the three files that tests them pins its own handler's expiry, and none of
+/// them can say the other two agree. The equality is a rule rather than a coincidence: all three open a
 /// <see cref="SessionKind.Full" /> session, and a shorter one on the recovery paths would quietly tell
 /// somebody who has just lost their authenticator that the way back in they were issued is worth less
 /// than the one they lost.
@@ -32,9 +32,13 @@ namespace UnitTests;
 /// <b>The value is asserted as an observable expiry against a fixed clock, and never read off the
 /// production constant.</b> A test taking its expectation from the type under test agrees with whatever
 /// that type later decides — <c>TimeSpan.FromDays(14000)</c> included, which is how an intercepted code
-/// buys a session that never practically expires. Nothing here names a handler's field, so consolidating
-/// the three constants into one shared value leaves this file untouched and still meaning what it means;
-/// changing what any one of them <em>is</em> reddens it.
+/// buys a session that never practically expires. Nothing here names a handler's field or
+/// <see cref="SessionPolicy.Lifetime" />, so <b>how</b> the number is stored is invisible to this file
+/// and <b>what</b> it is, on each of the three paths, is not. That independence has already been paid
+/// out once: the three handlers used to hold a private constant each, those were consolidated into the
+/// one shared value, and not a line here moved. It is the same insurance against the reverse edit — a
+/// handler given a lifetime of its own again reddens the second test below without anything here having
+/// to know that a second constant now exists.
 /// </para>
 /// <para>
 /// <b>Two claims, deliberately not one.</b>
@@ -94,11 +98,13 @@ public sealed class EstablishedSessionLifetimeTests
     /// The three paths agree with each other, whatever the interval happens to be.
     /// </summary>
     /// <remarks>
-    /// <b>This is the claim the three handlers' remarks make and no test made.</b> Each says the interval
-    /// it uses is the same one the others use, and each holds a private constant, so the three can be
-    /// separated by a single edit that leaves that handler's own test green after its expectation is
-    /// updated alongside. Stated as an equality between observed values rather than against a literal, so
-    /// it survives a deliberate change of policy and refuses a partial one.
+    /// <b>This is the claim the three handlers' remarks made and no test made.</b> Sharing
+    /// <see cref="SessionPolicy.Lifetime" /> is what makes the three agree today, and a shared field is
+    /// exactly as easy to stop reading as a private one was to edit: a handler given an interval of its
+    /// own again leaves that handler's own test green once its expectation is updated alongside, and
+    /// leaves the first test below green too if the number it moved to happens to be fourteen days.
+    /// Stated as an equality between observed values rather than against a literal, so it survives a
+    /// deliberate change of policy and refuses a partial one.
     /// </remarks>
     [Test]
     public async Task EveryPathThatOpensASession_AgreesWithTheOthers()

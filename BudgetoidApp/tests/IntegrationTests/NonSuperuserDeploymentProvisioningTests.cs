@@ -126,33 +126,23 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// same server version as the rest of the suite; what is missing is everything they do afterwards.
     /// </summary>
     /// <remarks>
-    /// The try/catch is a leak guard, and the reasoning behind it is written out once on
-    /// <c>DeploymentProvisioningTests.StartBareContainerAsync</c> — the same helper, the same shape,
-    /// in the other class that deliberately keeps a container of its own. In short: the call site
-    /// binds its <c>await using</c> variable only after this method returns, so a throw here leaves a
+    /// The start goes through <see cref="StartGuard" />, which is a leak guard: the call site binds its
+    /// <c>await using</c> variable only after this method returns, so a throw here would leave a
     /// container Docker has already started with nothing left to dispose it, and each such leak makes
-    /// the next start likelier to time out. Guarded by shape-match to that documented failure mode,
-    /// not because a failure was captured here.
+    /// the next start likelier to time out. The reasoning lives on <see cref="StartGuard" /> rather
+    /// than being restated here — this class and <see cref="DeploymentProvisioningTests" /> are the two
+    /// that deliberately keep containers of their own, and the guard used to be written out in both,
+    /// which is a guard that can be corrected once. Guarded by shape-match to a documented failure
+    /// mode, not because a failure was captured here.
     /// </remarks>
-    private static async Task<PostgreSqlContainer> StartBareContainerAsync()
-    {
-        PostgreSqlContainer container = new PostgreSqlBuilder("postgres:17")
-            .WithDatabase("budgetoid")
-            .WithUsername("postgres")
-            .WithPassword("postgres")
-            .Build();
-
-        try
-        {
-            await container.StartAsync();
-            return container;
-        }
-        catch
-        {
-            await container.DisposeAsync();
-            throw;
-        }
-    }
+    private static Task<PostgreSqlContainer> StartBareContainerAsync() =>
+        StartGuard.StartAsync(
+            new PostgreSqlBuilder("postgres:17")
+                .WithDatabase("budgetoid")
+                .WithUsername("postgres")
+                .WithPassword("postgres")
+                .Build(),
+            container => container.StartAsync());
 
     /// <summary>
     /// Opens a connection as the container account, which is a superuser. Used only to build the

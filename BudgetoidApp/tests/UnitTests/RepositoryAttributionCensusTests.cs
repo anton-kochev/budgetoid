@@ -105,15 +105,25 @@ public sealed record AttributionCensus(
 /// census with nothing to count.
 /// </para>
 /// <para>
-/// <b>A gap this records rather than closes.</b> Narrowing on
+/// <b>A gap this recorded, and which is now closed.</b> Narrowing on
 /// <c>PostgresException.ConstraintName</c> is the house rule — nine of the ten repositories do it, and
 /// two of those spell it inside a helper rather than in the <c>when</c> clause. Having a narrowed
 /// <c>catch</c> is not the same as having it <i>tested from both sides</i>, and
-/// <see cref="PinnedElsewhere" /> says per entry which halves exist. <c>PasskeyRepository</c>,
-/// <c>TransactionRepository</c> and <c>UserRepository.TryAddAsync</c> have their translations pinned
-/// and <b>no mis-attribution control at all</b>. That predates this census, it is logged, and closing
-/// it means writing new tests rather than repairing a stale sentence — which is why the reason lines
-/// name it instead of implying parity.
+/// <see cref="PinnedElsewhere" /> says per entry which halves exist. It said, for three entries, that
+/// the translation was pinned and there was <b>no mis-attribution control at all</b>:
+/// <c>PasskeyRepository</c>, <c>TransactionRepository.UpdateAsync</c> and
+/// <c>UserRepository.TryAddAsync</c>. Each of those now has one, in the file its entry names, and
+/// <c>TransactionRepository.UpdateAsync</c> gained the translation half it also turned out to be
+/// missing. <b>The reason lines were rewritten in the same change</b>, which is the discipline this
+/// member exists for in both directions: a census that keeps claiming a gap it no longer has is the
+/// same defect as one that hides a gap it does have, and the second is only easier to notice.
+/// </para>
+/// <para>
+/// <b>What is not claimed is that the ten are now uniformly covered</b> — only that every entry says
+/// which halves it holds. <c>SessionRepository</c> holds neither and says so, because it translates
+/// nothing; the five in <see cref="CoveredByAttributionTests" /> hold both by that file's own
+/// definition. The next repository to land here still has to be argued about by a person, which is the
+/// property that survives every one of these lines being correct today.
 /// </para>
 /// <para>
 /// Sabotaged in four directions before it was believed, each on synthetic input so the proof is
@@ -149,23 +159,27 @@ public sealed class RepositoryAttributionCensusTests
     /// identity-side ones, plus the two whose narrowing is not a constraint name at all.
     /// </summary>
     /// <remarks>
-    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Three of these five
-    /// are pinned in one direction only.
+    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. All five are pinned in
+    /// both directions today, and one of them — <c>SessionRepository</c> — has nothing to attribute at
+    /// all, which is a different statement and says so.
     /// </remarks>
     private static readonly AttributionPin[] PinnedElsewhere =
     [
         new(
             nameof(PasskeyRepository),
-            "PasskeyCeremonyTests",
-            "TryAddAsync's webauthn_credential_id filter has its translation pinned only — "
-            + "Registration_OfTheSameAuthenticatorCredentialTwice_IsRefused takes the 409, and "
-            + "PasskeyRepositoryTests takes the delete's concurrency narrowing. No test puts a "
-            + "foreign unique violation through either, so the mis-attribution control the five "
-            + "budget-side repositories have is MISSING here"),
+            "PasskeyRepositoryTests",
+            "both halves on both narrowings: TryAddAsync's webauthn_credential_id filter is "
+            + "translated by TryAddAsync_WhenTheHandleIsAlreadyRegistered_ReturnsFalse and "
+            + "controlled by TryAddAsync_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape, "
+            + "and DeletePasskeyAsync's entries-based narrowing by "
+            + "DeletePasskeyAsync_WhenTheRowIsAlreadyGone_ThrowsNotFound and "
+            + "DeletePasskeyAsync_WhenAnUnrelatedEntityConflicts_LetsTheConflictEscape. "
+            + "PasskeyCeremonyTests takes the same registration refusal as a 409 over HTTP, which is "
+            + "the answer a client sees rather than a second pin of the filter"),
         new(
             nameof(RecoveryCodeRepository),
             "RecoveryCodeRepositoryTests",
-            "both halves, the only entry here that has them: "
+            "both halves: "
             + "AddSetAsync_WhenTheAccountAlreadyHoldsASet_ThrowsConflict translates its own index, "
             + "and AddSetAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape plus "
             + "DeleteSetAsync_WhenAnUnrelatedEntityConflicts_LetsTheConflictEscape are the "
@@ -181,18 +195,24 @@ public sealed class RepositoryAttributionCensusTests
         new(
             nameof(TransactionRepository),
             "TransactionRepositoryTests",
-            "split: DeleteAllForAmbientBudgetAsync's entries-based narrowing has both halves "
-            + "(_WhenAnotherRequestDeletedTheRowsFirst_Completes and "
-            + "_WhenTheConflictNamesAnotherEntity_LetsItEscape), while UpdateAsync's two FK "
-            + "constraint-name filters have NO mis-attribution control anywhere"),
+            "both halves on both narrowings: DeleteAllForAmbientBudgetAsync's entries-based narrowing "
+            + "by _WhenAnotherRequestDeletedTheRowsFirst_Completes and "
+            + "_WhenTheConflictNamesAnotherEntity_LetsItEscape, and UpdateAsync's two FK "
+            + "constraint-name filters by UpdateAsync_WhenTheAccountIsGone_ and "
+            + "UpdateAsync_WhenTheCategoryIsGone_TranslatesItsOwnForeignKey — one per clause, since a "
+            + "transaction pointed at two missing rows would only ever reach the first — with "
+            + "UpdateAsync_WhenATrackedRowBreaksAnotherForeignKey_LetsTheViolationEscape as the "
+            + "mis-attribution control for both"),
         new(
             nameof(UserRepository),
             "UserRepositoryTests",
-            "split: DeleteAsync's entries-based narrowing has both halves "
-            + "(_WhenAnotherRequestErasedTheRowFirst_Completes and "
-            + "_WhenTheConflictNamesAnotherEntity_LetsItEscape), while TryAddAsync's two-name unique "
-            + "filter has its translations pinned by TryAddAsync_With* and NO control proving a "
-            + "third unique rule propagates"),
+            "both halves on both narrowings: DeleteAsync's entries-based narrowing by "
+            + "_WhenAnotherRequestErasedTheRowFirst_Completes and "
+            + "_WhenTheConflictNamesAnotherEntity_LetsItEscape, and TryAddAsync's two-name unique "
+            + "filter by the TryAddAsync_With* translations plus "
+            + "TryAddAsync_WhenATrackedRowBreaksAThirdUniqueRule_LetsTheViolationEscape, which stages "
+            + "a third credentials index — IX_credentials_user_id_federated — so the control lives "
+            + "between two neighbouring rules on one table rather than across tables"),
     ];
 
     [Test]

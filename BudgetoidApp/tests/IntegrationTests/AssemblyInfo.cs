@@ -92,9 +92,12 @@
 // NonSuperuserDeploymentProvisioningTests — hold the only container starts left outside
 // SharedPostgresCluster, and both StartBareContainerAsync helpers carried the unguarded shape
 // verbatim: build, await StartAsync, return, with the caller's `await using` variable bound only
-// afterwards. Both now wrap the start in try/catch and dispose before rethrowing, which is what
-// SharedPostgresCluster.StartClusterAsync already did. The remarks on the first of the two carry the
-// reasoning, at the code that implements it.
+// afterwards. Both now start through StartGuard, which disposes before rethrowing — what
+// SharedPostgresCluster.StartClusterAsync already did inline, over a wider region of its own that it
+// keeps. StartGuard.cs carries the reasoning at the code that implements it, and StartGuardTests
+// executes the branch over a fake: a catch reachable only by a broken Docker daemon is a catch no
+// test in either of those classes can enter, which is why the guard sat unexecuted for as long as it
+// was written out twice.
 //
 // What the mechanism is was checked rather than assumed, against Testcontainers 4.12.0: a readiness
 // check that can never pass throws only after Docker has created and started the container, which is

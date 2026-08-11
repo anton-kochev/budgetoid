@@ -2,9 +2,11 @@ using System.Globalization;
 using Domain.Accounts;
 using Domain.Categories;
 using Domain.CategoryGroups;
+using Domain.Common;
 using Domain.Payees;
 using Domain.Transactions;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -12,6 +14,42 @@ using Npgsql;
 
 namespace IntegrationTests;
 
+/// <summary>
+/// The schema rules the transactions table holds, and both of the narrowings
+/// <see cref="TransactionRepository" /> writes on top of them.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>The two narrowings are narrowed on different things, and that is why they are tested in
+/// different shapes.</b> <see cref="TransactionRepository.UpdateAsync" /> filters a <c>23503</c> by
+/// constraint name — two of them, on the account and category foreign keys — and turns each into a
+/// <see cref="ValidationException" /> keyed on the field the caller named.
+/// <see cref="TransactionRepository.DeleteAllForAmbientBudgetAsync" /> filters a concurrency conflict,
+/// which carries no SQLSTATE and no constraint name, by the <i>entries</i>. Each is pinned here in both
+/// directions: the violation it does model, so the fix for a widened filter cannot be to delete the
+/// <c>catch</c>, and a violation it does not, so a widened filter reddens something.
+/// </para>
+/// <para>
+/// <b>The mis-attribution mechanism is <c>RepositoryConstraintAttributionTests</c>', not a second
+/// one.</b> <c>SaveChangesAsync</c> flushes everything the scoped context is tracking, not only the
+/// entity the repository was handed, so the escape tests below track one unrelated row that breaks a
+/// <i>different</i> constraint carrying the <i>same</i> SQLSTATE and then call the repository with an
+/// entity of its own that is beyond reproach. Read that file's remarks for the argument. What is worth
+/// stating here is only why this repository's half lives beside its method: that file covers the five
+/// repositories reachable through a budget, and its coverage is a placement decision rather than a
+/// judgement about which repositories deserve one.
+/// </para>
+/// <para>
+/// <b>None of the three <c>UpdateAsync</c> tests is reachable through <c>UpdateTransactionHandler</c>,
+/// and that is the point rather than a caveat.</b> The handler resolves the account and the category
+/// through their budget-filtered repositories before it mutates anything, so it answers a missing one
+/// with its own <see cref="ValidationException" /> and PostgreSQL never sees the row. These
+/// <c>catch</c> clauses are the backstop for the row that vanishes between that read and this save,
+/// which is a race no test can stage through the handler — so the state is arranged directly, exactly
+/// as <c>Database_RejectsATransactionReferencingAnAccountInAnotherBudget</c> bypasses the handler for
+/// the same reason.
+/// </para>
+/// </remarks>
 public sealed class TransactionRepositoryTests
 {
     /// <summary>
@@ -568,6 +606,225 @@ public sealed class TransactionRepositoryTests
     }
 
     /// <summary>
+    /// An account that went out from under the caller is reported as the missing account it is.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One of the two translation halves, and neither existed before.</b> Without them the escape
+    /// test below is satisfied by a repository whose <c>catch</c> clauses have been deleted outright,
+    /// which would answer the same race with an untranslated <see cref="DbUpdateException" /> — a 500
+    /// naming a foreign key, on a request whose only fault is that somebody removed the account while
+    /// the edit was in flight.
+    /// </para>
+    /// <para>
+    /// <b>The transaction is read back through <see cref="TransactionRepository.GetByIdAsync" /></b>,
+    /// which is the query the handler uses and the one that puts a real row into the change tracker.
+    /// The account it is then pointed at is an id nothing answers to, which is the same state a
+    /// concurrent account deletion leaves behind and is arranged the way
+    /// <c>RepositoryConstraintAttributionTests.AddCategory_WithAnUnknownCategoryGroup_TranslatesItsOwnForeignKey</c>
+    /// arranges its own: a fresh <see cref="Guid.CreateVersion7" />, rather than a row deleted out of
+    /// band, because the two are indistinguishable to the constraint and only one of them can fail for
+    /// an unrelated reason.
+    /// </para>
+    /// <para>
+    /// The key is asserted, not just the type. A <see cref="ValidationException" /> carrying the wrong
+    /// field renders against the wrong input on the client, and the two <c>catch</c> clauses in this
+    /// method differ in nothing else — swap their bodies and only this assertion and its neighbour
+    /// notice.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task UpdateAsync_WhenTheAccountIsGone_TranslatesItsOwnForeignKey()
+    {
+        // Arrange — a real transaction, read back through the repository.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        Guid transactionId = await SeedTransactionAsync(host, budgetId, accountId);
+        await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
+        var repository = new TransactionRepository(db);
+        Transaction transaction = await repository.GetByIdAsync(transactionId)
+            ?? throw new InvalidOperationException(
+                "The seeded transaction was not readable through the repository before the act.");
+
+        // The edit a caller made against an account that has since gone.
+        transaction.Update(
+            Guid.CreateVersion7(), Money("-15"), UsdMinorUnit, new DateOnly(2026, 6, 13), "Edited");
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(transaction));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ValidationException>();
+        await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(Transaction.AccountId)))
+            .IsTrue();
+    }
+
+    /// <summary>
+    /// A category that went out from under the caller is reported as the missing category it is.
+    /// </summary>
+    /// <remarks>
+    /// The other translation half. It sits beside the account one rather than being folded into it
+    /// because the two are separate <c>catch</c> clauses naming separate constraints, and a single test
+    /// could only reach one of them — the account is resolved first, so a transaction pointed at two
+    /// missing rows at once would never exercise this clause at all.
+    /// </remarks>
+    [Test]
+    public async Task UpdateAsync_WhenTheCategoryIsGone_TranslatesItsOwnForeignKey()
+    {
+        // Arrange — the account stays real, so the category foreign key is unambiguously the
+        // constraint under test.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        Guid transactionId = await SeedTransactionAsync(host, budgetId, accountId);
+        await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
+        var repository = new TransactionRepository(db);
+        Transaction transaction = await repository.GetByIdAsync(transactionId)
+            ?? throw new InvalidOperationException(
+                "The seeded transaction was not readable through the repository before the act.");
+
+        transaction.AssignCategory(Guid.CreateVersion7());
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(transaction));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ValidationException>();
+        await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(Transaction.CategoryId)))
+            .IsTrue();
+    }
+
+    /// <summary>
+    /// A foreign-key violation this repository does not model is not dressed up as a missing account or
+    /// a missing category.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The narrowing half for <c>UpdateAsync</c>, and the reason its two <c>catch</c> clauses carry
+    /// constraint names at all.</b> Widen either <c>when</c> clause to the bare <c>23503</c> and this
+    /// arrangement — a payee pointed at a budget that does not exist — comes back to the caller as
+    /// "Account was not found.", keyed on <see cref="Transaction.AccountId" />, and the client renders
+    /// it against an account the test can still read. A confident, specific, false 400.
+    /// </para>
+    /// <para>
+    /// <b>The intruder is the sharpest one available on this table</b>, and it is
+    /// <c>RepositoryConstraintAttributionTests</c>' own: <c>payees</c> is budget-owned, so a payee
+    /// naming a budget nobody created raises <c>23503</c> from
+    /// <c>FK_payees_budgets_budget_id</c> — the same SQLSTATE both of this method's clauses filter,
+    /// from a table the repository has no port for. Nothing about the transaction is wrong: it is
+    /// re-pointed at the account it already had, so both constraints this method does model are
+    /// satisfied and exactly one rule in the batch is broken.
+    /// </para>
+    /// <para>
+    /// The transaction is genuinely modified rather than merely tracked, so the batch really does carry
+    /// the <c>UPDATE</c> this method exists to send. A test that only tracked it would be measuring the
+    /// payee insert through a method that happened to be holding the door.
+    /// </para>
+    /// <para>
+    /// The SQLSTATE is asserted beside the constraint name, which is what keeps this a narrowing test
+    /// rather than a test that any failure escapes: a violation of some entirely different kind would
+    /// satisfy "neither of the transaction foreign keys" without ever exercising the filters. The
+    /// expected behaviour is that an unmodelled violation <b>propagates</b> — a 500 naming the real
+    /// constraint beats a 400 that lies.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task UpdateAsync_WhenATrackedRowBreaksAnotherForeignKey_LetsTheViolationEscape()
+    {
+        // Arrange — a transaction that is entirely healthy, and a payee filed against a budget that
+        // was never created.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-a", "a@example.com");
+        Guid accountId = await SeedAccountAsync(host, budgetId);
+        Guid transactionId = await SeedTransactionAsync(host, budgetId, accountId);
+        await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
+        var repository = new TransactionRepository(db);
+        Transaction transaction = await repository.GetByIdAsync(transactionId)
+            ?? throw new InvalidOperationException(
+                "The seeded transaction was not readable through the repository before the act.");
+
+        db.Payees.Add(Payee.Create(Guid.CreateVersion7(), "Corner Shop", UtcNow()));
+
+        // A real edit, against the account it already has — so the UPDATE is in the batch and is
+        // beyond reproach.
+        transaction.Update(accountId, Money("-15"), UsdMinorUnit, new DateOnly(2026, 6, 13), "Edited");
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(transaction));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+
+        // And it really was a foreign-key violation — on a rule that is not this repository's to speak
+        // for.
+        await Assert.That(SqlStateOf(escaped)).IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(PayeeBudgetForeignKey);
+        await Assert.That(ConstraintNameOf(escaped))
+            .IsNotEqualTo(TransactionConfiguration.AccountForeignKeyName);
+        await Assert.That(ConstraintNameOf(escaped))
+            .IsNotEqualTo(TransactionConfiguration.CategoryForeignKeyName);
+    }
+
+    /// <summary>
+    /// The foreign key <c>payees.budget_id</c> carries, spelled out rather than read off the
+    /// configuration that renders it — a test taking its expectation from the code under test agrees
+    /// with that code by construction. <c>RepositoryConstraintAttributionTests</c> spells the same name
+    /// as a literal for the same reason.
+    /// </summary>
+    private const string PayeeBudgetForeignKey = "FK_payees_budgets_budget_id";
+
+    /// <summary>
+    /// Writes one transaction through the domain factory and returns its id, which the raw-SQL
+    /// <see cref="InsertTransactionAsync" /> above cannot hand back.
+    /// </summary>
+    /// <remarks>
+    /// Through a context of its own, so the row is committed before the act rather than travelling
+    /// inside the unit of work under test — and through <see cref="Transaction.Create" />, so a seeded
+    /// row is one the application could really have written.
+    /// </remarks>
+    private static async Task<Guid> SeedTransactionAsync(
+        RepositoryTestHost host,
+        Guid budgetId,
+        Guid accountId)
+    {
+        await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
+        Transaction transaction = Transaction.Create(
+            budgetId,
+            accountId,
+            Money("-10"),
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            "Seeded",
+            UtcNow());
+        db.Transactions.Add(transaction);
+        await db.SaveChangesAsync();
+        return transaction.Id;
+    }
+
+    /// <summary>
+    /// Names the constraint PostgreSQL actually refused on, or <see langword="null" /> when the
+    /// escaping exception never reached the database at all.
+    /// </summary>
+    private static string? ConstraintNameOf(Exception? exception) =>
+        exception is DbUpdateException { InnerException: PostgresException postgresException }
+            ? postgresException.ConstraintName
+            : null;
+
+    /// <summary>
+    /// The SQLSTATE PostgreSQL refused with, or <see langword="null" /> when nothing did. Read beside
+    /// the constraint name so a narrowing test can say the violation it staged really is the kind the
+    /// filter has to tell apart.
+    /// </summary>
+    private static string? SqlStateOf(Exception? exception) =>
+        exception is DbUpdateException { InnerException: PostgresException postgresException }
+            ? postgresException.SqlState
+            : null;
+
+    /// <summary>
     /// Writes an empty category group into <paramref name="budgetId" /> and returns its id. Empty on
     /// purpose: nothing references it, so its row can be removed out of band without a RESTRICT edge
     /// refusing the removal.
@@ -594,8 +851,10 @@ public sealed class TransactionRepositoryTests
 
     /// <summary>
     /// Runs <paramref name="action" /> and hands back whatever escaped, or <see langword="null" />
-    /// when nothing did. Deliberately untyped: the question the two tests above ask is <i>which</i>
-    /// exception surfaces, so catching a specific one here would decide the answer in the helper.
+    /// when nothing did. Deliberately untyped: the question every test that uses it asks is
+    /// <i>which</i> exception surfaces — a <see cref="ValidationException" /> where a
+    /// <see cref="DbUpdateException" /> was expected, or the reverse — so catching a specific one here
+    /// would decide the answer in the helper.
     /// </summary>
     private static async Task<Exception?> CaptureAsync(Func<Task> action)
     {

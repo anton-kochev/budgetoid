@@ -129,9 +129,9 @@ erDiagram
 - **A session's expiry must be after its creation.**
   - **Enforced in**: `CK_sessions_lifetime` (`expires_at_utc > created_at_utc`), restated in
     `Session.Establish` so a bad call fails with a named field rather than a raw `23514`. No request
-    can reach it: each of the three establishing paths computes the expiry by adding its own constant
-    to the instant it just read, so the pair is well-formed by construction and nothing renders the
-    field error into a response. The restatement is a guard against a future caller that computes an
+    can reach it: each of the three establishing paths computes the expiry by adding the shared
+    lifetime to the instant it just read, so the pair is well-formed by construction and nothing
+    renders the field error into a response. The restatement is a guard against a future caller that computes an
     expiry from something a request supplied, not a validation a client can trip today.
 
 ### MUST NOT
@@ -368,21 +368,27 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   - **Both callers reach it through the command handler rather than straight to `ISessionRepository`**,
     and that is deliberate: the handler is where the clock is read, so one decision to end access is
     stamped as one instant however many rows it touches.
-- **The expiry is decided by the caller, and there are three callers holding the same number.**
+- **The expiry is decided by the caller, and the three callers read one value.**
   `Session.Establish` validates only that the expiry is after the creation instant; the number itself
-  — **14 days** — is a constant on `CompleteAssertionHandler`, on `RedeemRecoveryCodeHandler` and on
-  `GenerateRecoveryCodesHandler`. It lives in Application rather than Domain because how long a session
+  — **14 days** — is `SessionPolicy.Lifetime` in `Application/Sessions`, which
+  `CompleteAssertionHandler`, `RedeemRecoveryCodeHandler` and `GenerateRecoveryCodesHandler` each add
+  to the instant they read. It lives in Application rather than Domain because how long a session
   lasts is product policy, which
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) keeps above the
   invariants, and it is not on `IPasskeyCeremonyPolicy` because a session lifetime that varies per
   environment is a difference nobody meant.
-  - **The equality is the rule and the restatement is deliberate.** Both credentials open a `Full`
+  - **The equality is the rule, and one value is what makes it one.** Both credentials open a `Full`
     session — a set of recovery codes is the secret the account's keys are wrapped under, so it
     reaches as much as an authenticator does — and a recovery sign-in that expired sooner would tell
     somebody who has just lost their device that the way back in they were issued is worth less than
     the one they lost. The regeneration path is held to the same number by an argument of its own: its
     caller cleared a passkey gate, which is stronger than whatever opened the session that path's
-    sweep took, so the session it hands back must not be worth less than the one it ended. Each
-    handler owns the policy for the sign-in it performs, so the constant is restated rather than
-    shared; **any two of them differing is a defect rather than a decision**, and a fourth
-    establishing path must not quietly bring a fourth number.
+    sweep took, so the session it hands back must not be worth less than the one it ended. **Any two
+    of them differing is a defect rather than a decision**, and sharing the value is the only shape in
+    which a single edit cannot separate them — a fourth establishing path inherits the interval by
+    construction rather than by somebody remembering the rule.
+  - **What is shared is the interval and nothing else.** *When* each handler establishes its session —
+    after the signature verifies, after the code is spent, after the replacement set is saved — is a
+    security property that path owns, argued at its own call site and stated as its own rule in
+    [passkeys.md](passkeys.md) and [recovery-codes.md](recovery-codes.md). One lifetime is not licence
+    to lift those sequences into anything shared; they agree about a number and about nothing else.

@@ -20,9 +20,10 @@ public sealed class RecoveryCodeHashConfiguration : IEntityTypeConfiguration<Rec
 
     private const string CredentialForeignKeyName = "FK_recovery_code_hashes_credentials";
 
-    // SHA-256, so exactly 32 bytes. Stated here rather than on the domain type because nothing in the
-    // domain computes or checks it yet — the hashing arrives with its own failing test — and a
-    // constant with one reader is not yet a shared bound anything can drift from.
+    // SHA-256, so exactly 32 bytes. Its own constant rather than RecoveryCodeHash.VerifierLength,
+    // which is numerically equal and means something else: that one is the width of the VERIFIER the
+    // client derives, and this one is the width of the DIGEST RecoveryCodeHash.HashOf produces. Folding
+    // them together would make a change to either width silently move the other's check.
     private const int VerifierHashLength = 32;
 
     // The comparer PasskeyPublicKeyConfiguration declares, for the reason it declares one: change

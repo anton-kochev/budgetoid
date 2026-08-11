@@ -91,8 +91,11 @@ public sealed class GenerateRecoveryCodesHandlerTests
     /// How many codes an issued set holds.
     /// </summary>
     /// <remarks>
-    /// <b>Product policy, and it lives on the Application handler</b> — the placement
-    /// <c>CompleteAssertionHandler.SessionLifetime</c> makes the argument for. It is not a domain
+    /// <b>Product policy, and it lives in the Application ring</b> — the placement
+    /// <c>SessionPolicy.Lifetime</c> makes the argument for. It stays on this handler rather than
+    /// joining that class, because the two are not the same kind of number: a session's length is one
+    /// value three paths have to agree on, and the size of a set is read by the one handler that mints
+    /// one. It is not a domain
     /// invariant: a set of nine codes is not a malformed set, it is a smaller quantity of a thing
     /// somebody chose, and ADR 0002 keeps policy above the invariants because the bottom is the most
     /// expensive layer to change. It is not a database constraint either — a <c>CHECK</c> counting

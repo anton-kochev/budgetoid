@@ -404,20 +404,23 @@ the only durable trace is the deleted nonce. That is deliberate — see the rule
 [erasure.md](erasure.md) on why the freshness window is the challenge's own lifetime rather than a
 recorded instant.
 
-The session's lifetime is **14 days**, a constant on `CompleteAssertionHandler`. It lives in
-Application rather than Domain because `Session.Establish` deliberately takes an expiry and how long
-a session lasts is product policy, which ADR 0002 keeps above the invariants. It is deliberately not
-on `IPasskeyCeremonyPolicy` either: the relying-party id and the origin allow-list *must* vary per
-environment, and a session lifetime that varies per environment is a difference nobody meant. The
-redemption path restates the same number for reasons of its own, and the two being equal is a rule —
-see [sessions.md](sessions.md).
+The session's lifetime is **14 days**, read from `SessionPolicy.Lifetime` in Application. It lives
+there rather than in Domain because `Session.Establish` deliberately takes an expiry and how long a
+session lasts is product policy, which ADR 0002 keeps above the invariants. It is deliberately not on
+`IPasskeyCeremonyPolicy` either: the relying-party id and the origin allow-list *must* vary per
+environment, and a session lifetime that varies per environment is a difference nobody meant. The two
+recovery-code paths read the same value, and the three agreeing is a rule rather than a coincidence —
+see [sessions.md](sessions.md), which owns it. What they share is the interval alone: where this
+handler establishes its session, after the signature verifies and after the identity is published, is
+this file's own rule above.
 
 ## Integration Points
 
-- **[Sessions](sessions.md)** — a verified assertion establishes one, and a redeemed recovery code
-  establishes the other; both are `Full` and both last 14 days. The assertion path is no longer the
-  only establishing path, so the ordering rule below — identity published only after the proof, the
-  transaction opened only after that — is now a rule two handlers hold rather than one.
+- **[Sessions](sessions.md)** — a verified assertion establishes one and the two recovery-code paths
+  establish the other two; all three are `Full` and all three last 14 days. The ordering rule above —
+  identity published only after the proof, the transaction opened only after that — is held by two
+  handlers rather than one: this file's assertion path and the redemption. A regeneration needs no
+  such rule, its identity having been published by provisioning long before its handler runs.
 - **[Recovery Codes](recovery-codes.md)** — the third spender of the `reauthentication` pool, and the
   second full-session credential type. A passkey is what a person proves possession of in order to be
   issued a set, which is why the last-passkey floor cannot be lifted by holding one.

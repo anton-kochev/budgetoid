@@ -15,10 +15,18 @@ namespace Application.RecoveryCodes.GenerateRecoveryCodes;
 /// a way to destroy a stranger's recovery codes.
 /// </para>
 /// <para>
-/// <b>Verifiers, never codes.</b> The browser mints each code, derives <c>V = HKDF(code, …)</c> and
-/// sends only <c>V</c>; the account's key-encryption key comes off the same code on an independent
-/// HKDF branch, so a code arriving here would hand the operator that key. There is deliberately no
-/// member a code could travel in.
+/// <b>Verifiers, never codes.</b> The browser mints each code, derives
+/// <c>V = HKDF(canonical(code), …)</c> and sends only <c>V</c>; the account's key-encryption key comes
+/// off the same code on an independent HKDF branch, so a code arriving here would hand the operator
+/// that key. There is deliberately no member a code could travel in.
+/// </para>
+/// <para>
+/// <c>canonical</c> sits inside the derivation rather than in the ellipsis, because a derivation is
+/// not specified until it says what text goes in: the client upper-cases the code, strips the
+/// whitespace and hyphens it was grouped with when it was written down, and folds <c>I</c> and
+/// <c>L</c> onto <c>1</c> and <c>O</c> onto <c>0</c>. Nothing on this side can check that it did — a
+/// verifier derived from the raw text is a perfectly well-formed 32 bytes, and the mismatch surfaces
+/// only when the person types the code back and no row answers to it.
 /// </para>
 /// <para>
 /// They arrive as base64url <b>text</b>, which is how every binary member of this exchange crosses

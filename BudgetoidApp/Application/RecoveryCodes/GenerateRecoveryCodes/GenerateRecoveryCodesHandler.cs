@@ -1,6 +1,7 @@
 using Application.Abstractions;
 using Application.Passkeys;
 using Application.Passkeys.Reauthentication;
+using Application.Sessions;
 using Application.Sessions.RevokeSessionsForCredential;
 using Domain.Sessions;
 using Domain.Users;
@@ -46,36 +47,20 @@ public sealed class GenerateRecoveryCodesHandler(
 {
     /// <summary>How many codes an issued set holds.</summary>
     /// <remarks>
-    /// <b>Product policy, and it lives here</b> — the placement
-    /// <c>CompleteAssertionHandler.SessionLifetime</c> makes the argument for. It is not a domain
-    /// invariant: a set of nine codes is not a malformed set, it is a smaller quantity of a thing
-    /// somebody chose, and ADR 0002 keeps policy above the invariants because the bottom is the most
-    /// expensive layer to change. It is not a database constraint either — a <c>CHECK</c> counting
-    /// sibling rows cannot be written without a trigger, and pushing procedural logic down to satisfy
-    /// "lowest layer" is the boundary that ADR draws.
+    /// <b>Product policy, and it lives in this layer</b> — the placement
+    /// <see cref="SessionPolicy.Lifetime"/> makes the argument for. It is not a domain invariant: a set
+    /// of nine codes is not a malformed set, it is a smaller quantity of a thing somebody chose, and
+    /// ADR 0002 keeps policy above the invariants because the bottom is the most expensive layer to
+    /// change. It is not a database constraint either — a <c>CHECK</c> counting sibling rows cannot be
+    /// written without a trigger, and pushing procedural logic down to satisfy "lowest layer" is the
+    /// boundary that ADR draws.
+    /// <para>
+    /// It stays on this handler where the lifetime moved out, and the asymmetry is the reason: how many
+    /// codes a set holds is a number only this path has any use for, while the lifetime is one three
+    /// paths have to agree on.
+    /// </para>
     /// </remarks>
     public const int RequiredCodeCount = 10;
-
-    /// <summary>
-    /// How long the session a replacement re-establishes lasts.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Product policy, and it lives here for the reason <c>CompleteAssertionHandler.SessionLifetime</c>
-    /// argues at length: <see cref="Session.Establish"/> takes an expiry instead of computing one,
-    /// because how long a session lasts is policy and the domain holds invariants.
-    /// </para>
-    /// <para>
-    /// <b>The same interval a passkey sign-in and a recovery-code redemption get, and equality is the
-    /// rule rather than a coincidence.</b> The caller has just proved possession of a passkey through
-    /// the gate in front of this route, which is stronger than whatever opened the session the sweep
-    /// took — so a shorter lifetime here would quietly tell somebody who regenerated their card that
-    /// the way back in they were left with is worth less than the one they were signed in on. Restated
-    /// rather than shared, because each handler owns the policy for the sign-in it performs; the
-    /// numbers differing is a defect, not a decision.
-    /// </para>
-    /// </remarks>
-    private static readonly TimeSpan SessionLifetime = TimeSpan.FromDays(14);
 
     public async Task<RecoveryCodesGeneration> HandleAsync(
         GenerateRecoveryCodesCommand command,
@@ -275,7 +260,7 @@ public sealed class GenerateRecoveryCodesHandler(
                     // credential may" unrepresentable; a factory taking a SessionKind would let this
                     // call site name the kind and dissolve the rule. RedeemRecoveryCodeHandler opens
                     // its session the same way, for the same reason.
-                    Session session = Session.Establish(set, now, now + SessionLifetime);
+                    Session session = Session.Establish(set, now, now + SessionPolicy.Lifetime);
                     await sessionRepository.AddAsync(session, token);
 
                     reestablished = new ReestablishedSession(session.Kind, session.ExpiresAtUtc);

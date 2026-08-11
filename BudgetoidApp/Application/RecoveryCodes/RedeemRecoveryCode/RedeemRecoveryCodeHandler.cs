@@ -1,5 +1,6 @@
 using Application.Abstractions;
 using Application.Passkeys;
+using Application.Sessions;
 using Application.Users.EnsureUser;
 using Domain.Sessions;
 using Domain.Users;
@@ -40,28 +41,6 @@ public sealed class RedeemRecoveryCodeHandler(
     IPersistenceState persistenceState,
     TimeProvider timeProvider) : ICommandHandler<RedeemRecoveryCodeCommand, RedeemedRecoveryCode>
 {
-    /// <summary>
-    /// How long a recovery-code sign-in lasts.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Product policy, and it lives here for the reason <c>CompleteAssertionHandler.SessionLifetime</c>
-    /// argues at length: <see cref="Session.Establish"/> takes an expiry instead of computing one,
-    /// because how long a session lasts is policy and the domain holds invariants, and ADR 0002 keeps
-    /// policy above the invariants because the bottom is the most expensive layer to change.
-    /// </para>
-    /// <para>
-    /// <b>The same interval a passkey sign-in gets, and equality is the rule rather than a
-    /// coincidence.</b> Both credentials open a <see cref="SessionKind.Full"/> session — a set of
-    /// recovery codes is the secret the account's keys are wrapped under, so it reaches exactly as much
-    /// as an authenticator does — and a session that expired sooner here would quietly tell somebody
-    /// who has just lost their device that the way back in they were issued is worth less than the one
-    /// they lost. Restated rather than shared because each handler owns the policy for the sign-in it
-    /// performs; the two numbers differing is a defect, not a decision.
-    /// </para>
-    /// </remarks>
-    private static readonly TimeSpan SessionLifetime = TimeSpan.FromDays(14);
-
     public async Task<RedeemedRecoveryCode> HandleAsync(
         RedeemRecoveryCodeCommand command,
         CancellationToken cancellationToken = default)
@@ -218,7 +197,7 @@ public sealed class RedeemRecoveryCodeHandler(
                     ?? throw new RecoveryCodeRedemptionException(
                         "The matched code names a set whose credential is not there.");
 
-                Session session = Session.Establish(set, now, now + SessionLifetime);
+                Session session = Session.Establish(set, now, now + SessionPolicy.Lifetime);
                 await sessionRepository.AddAsync(session, token);
 
                 // Counted after the consume, inside the same transaction, so the number is what the
