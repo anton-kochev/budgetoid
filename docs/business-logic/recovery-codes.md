@@ -26,17 +26,17 @@ answered that lives in [sessions.md](sessions.md). This file covers the codes th
 
 **What is built today and what is not.** The schema exists: a third `CredentialType`, one
 `credentials` row per issued **set**, and a `recovery_code_hashes` table holding one row per
-unredeemed code. Two routes exist — `POST /api/me/recovery-codes` issues or replaces the account's
-set behind a fresh WebAuthn assertion, and `GET /api/me/recovery-codes` answers how many are left. All
-of it is tested.
+unredeemed code. Three routes exist — `POST /api/me/recovery-codes` issues or replaces the account's
+set behind a fresh WebAuthn assertion, `GET /api/me/recovery-codes` answers how many are left, and the
+**anonymous** `POST /api/recovery-codes/redemption` spends one code and signs its holder in. All of it
+is tested.
 
-What does **not** exist: **nothing redeems a code.** There is no route, no handler and no client that
-turns a code back into a session, and the anonymous lookup this table's row-level-security exemption
-was written for is therefore not reachable from anywhere. Nothing generates codes in a browser either,
-so the only caller that can present a well-formed set today is a test. And no key is wrapped under a
-code — the account's key-encryption key is derived from the same code on an independent HKDF branch,
-and that derivation is a later story. Read every rule below against that: the codes are **filed**, and
-the path that spends them is the next commit's.
+What does **not** exist: **no browser mints a code and no screen redeems one.** Nothing generates a
+set client-side and nothing presents a verifier, so the only caller that reaches either route today is
+a test. And no key is wrapped under a code — the account's key-encryption key is derived from the same
+code on an independent HKDF branch, and that derivation is a later story. Read every rule below
+against that: the server side of a recovery sign-in is whole, and the surface a person would reach it
+through is not.
 
 ## Key Entities
 
@@ -56,6 +56,13 @@ the path that spends them is the next commit's.
   nothing else. See the rule below for why that member is load-bearing rather than informational.
 - **`RecoveryCodeCount`** — `{"remaining": n}`. One member: no id, no issued instant, no total, and
   above all no hash.
+- **`RedeemedRecoveryCode`** — what a spent code bought: the session's kind, its expiry, and how many
+  codes the card has left. **No session id**, for the reason the assertion response gives — returning
+  the row's id would hand the client a stable handle to a session, and the likeliest way this design
+  is broken later is somebody deciding that handle is close enough to a token to start accepting it.
+  The kind crosses the wire as the column spells it, converted at the endpoint, because
+  `JsonStringEnumConverter` is registered with no naming policy and would otherwise write `Full` where
+  every other spelling in this product reads `full`.
 
 Deliberately **absent** from `recovery_code_hashes`: a `redeemed_at_utc`, a `used` flag, an attempt
 counter, a label, a wrapped key, and any per-row salt. Each is argued where it would have landed —
@@ -175,6 +182,36 @@ erDiagram
     The assertion is a **member of the command** rather than a separate call the endpoint makes, so
     issuing without proof is unreachable rather than merely uncustomary.
 
+- **A redemption MUST be anonymous, and the account it lands on MUST come from the matched row.**
+  - **Why**: somebody redeeming a code has lost the authenticator that would have proved who they
+    are, so the request names nobody and can name nobody — an account id, an email or a credential id
+    in the body would each be a value the server would have to ignore or trust, and trusting one would
+    let an anonymous caller choose whose code is matched. What establishes the identity is the row the
+    presented verifier hashes to.
+  - **Consequence a reader will trip on**: a browser interceptor that attaches a bearer to every
+    request will attach one here. A handler reading `IUserContext` for the account would find nothing
+    on a genuine recovery sign-in and *something* on that request, and the something is the wrong
+    account.
+  - **Enforced in**: `RedeemRecoveryCodeCommand` carries the verifier and nothing else;
+    `RedeemRecoveryCodeHandler` takes `IUserContextWriter` and never reads `IUserContext` for the
+    account, publishing the id it found on the row. The permission itself is reviewable as a set
+    rather than as a line: `AnonymousSurfaceTests` reads every `AllowAnonymous` route off the route
+    table and compares it whole against a written-out list, so this route's paragraph of argument is
+    what a reviewer answers rather than a `.AllowAnonymous()` call somebody has to notice.
+    `RecoveryCodeRedemptionTests.Redemption_TakesTheAccountFromTheCode_NotFromTheBearerToken` seeds
+    two accounts each holding a set — with one set in the table, "the code's owner" and "the only
+    owner there is" are the same account, and the claim would not be measurable at all.
+
+- **The identity MUST be published before the transaction opens, and the transaction MUST NOT open
+  before it.** The same ordering `CompleteAssertionHandler` carries, for the same reason: a
+  transaction opens a connection, and opening a connection is when `SessionContextInterceptor` runs
+  its `set_config`. Opened first, `app.current_user_id` reaches the database as `''` and every policed
+  statement inside fails with `22P02` — and `sessions` is policed by `user_isolation`, so the session
+  insert is exactly such a statement.
+  - **Enforced in**: the step order in `RedeemRecoveryCodeHandler`, with a comment at each step. No
+    test names the ordering directly; `Redemption_WithAValidCode_OpensAFullSessionAndReportsWhatIsLeft`
+    is what fails, with a `500`, and it is load-bearing for that reason as much as for the happy path.
+
 ### MUST NOT
 
 - **The set MUST NOT be requested without a proof, and no account may be named.**
@@ -182,13 +219,36 @@ erDiagram
   account** — the identity comes from `IUserContext` and nowhere else. Issuing *replaces*, so a
   chooseable account here would be a way to destroy a stranger's recovery codes.
 
-- **Neither route MUST carry `ProvisionsUser`, and neither may ever gain it.** A provider id token
-  stays valid for up to an hour after the account it names is erased, so a route that minted an account
-  in order to answer a generation would let that stale token bring the account back **as a shell
-  holding recovery codes** — strictly worse than the empty shell the erasure and export groups argue
-  about, because a set of codes is a full-session credential, and because the resurrected account holds
-  no passkey and can therefore never clear the re-authentication gate in front of erasure again. The
-  `GET` is the easier of the two to mark by mistake, because a read looks harmless.
+- **No route in this area may carry `ProvisionsUser`, and none may ever gain it.** A provider id
+  token stays valid for up to an hour after the account it names is erased, so a route that minted an
+  account in order to answer a generation would let that stale token bring the account back **as a
+  shell holding recovery codes** — strictly worse than the empty shell the erasure and export groups
+  argue about, because a set of codes is a full-session credential, and because the resurrected account
+  holds no passkey and can therefore never clear the re-authentication gate in front of erasure again.
+  Two of the three are easy to mark by mistake for opposite reasons: the `GET` because a read looks
+  harmless, and the **redemption** because it is the route people reach for when they cannot get in,
+  which reads a great deal like a route that should be able to create something. On the redemption the
+  marker would also do nothing it appears to do — `UserProvisioningMiddleware` reads the anonymous arm
+  first and returns, so the two markers are mutually exclusive and `UserProvisioningRouteTests` holds
+  them disjoint. `Redemption_ForASubjectWithNoAccount_CreatesNothing` counts `users`, `credentials`,
+  `budgets` and `sessions` unscoped afterwards, because the id an accidental marker would mint is one
+  no assertion could name.
+
+- **A refusal on the redemption route MUST NOT be distinguishable from any other refusal on it.**
+  Absent member, not base64url, wrong width, past the ceiling, no such code, already spent, and a
+  concurrent redemption of the same verifier all leave as one `401` with one title, byte for byte.
+  Telling "no such code" from "that code was already used" says a value the caller presented was once
+  real, which is exactly what somebody working through a partially-observed card wants to know; told
+  apart from "that was not base64url" it says the same about the encoding, and told apart from "too
+  long" it hands out the width of a verifier for free.
+  - **Enforced in**: `RecoveryCodeRedemptionException`, the only exception the handler raises for a
+    rejected code — deliberately **not** the passkey one, because "The passkey could not be verified."
+    on this route is a *wrong* sentence that tells the person holding a card that the thing they do not
+    have is the thing that failed. `RecoveryCodeRepository.ConsumeAsync` translates the concurrent
+    loser's `DbUpdateConcurrencyException` into the same refusal rather than letting it surface as a
+    `500` that is also a second answer.
+    `EveryReachableRedemptionRefusal_ProducesTheIdenticalResponse` drives all of them and asserts they
+    collapse to one status and one body, `traceId` aside.
 
 - **The application role MUST NOT hold `UPDATE` of any shape on `recovery_code_hashes`.** With no
   `UPDATE`, the delete is the only way a row can stop counting, so "a redeemed code is invalidated"
@@ -388,14 +448,80 @@ erDiagram
   keys; a recovery code is the secret those keys are wrapped under, so the code the holder typed
   unwraps them. Both are therefore secrets in the holder's possession, and both open the same kind of
   session.
-- **Nothing establishes one yet.** `Session.KindFor` maps the type and
-  `CK_sessions_kind_matches_credential` permits the row, but no code path calls `Session.Establish`
-  with a recovery-codes credential, because nothing redeems a code. The derivation is filed ahead of
-  its caller deliberately: the rule deciding what a session may read is not one to add in the same
-  commit as the path that first exercises it.
+- **A redemption is what establishes one.** `RedeemRecoveryCodeHandler` reads the set's own
+  `Credential` and hands *that* to `Session.Establish`, so the kind is derived from a real row rather
+  than named by the caller — a factory taking a `SessionKind` would let this route ask for one and
+  dissolve the rule. The credential is read rather than reconstructed for the same reason, and the
+  read carries owner **and** type: `credentials` is exempt from row-level security, so that predicate
+  is the only thing narrowing it, and the owner it names is the one the matched code established.
+- **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule rather
+  than a coincidence.** A set of codes is the secret the account's keys are wrapped under, so it
+  reaches exactly as much as an authenticator does, and a session that expired sooner here would
+  quietly tell somebody who has just lost their device that the way back in they were issued is worth
+  less than the one they lost. The number is restated on
+  `RedeemRecoveryCodeHandler.SessionLifetime` rather than shared, because each handler owns the policy
+  for the sign-in it performs; the two differing is a defect, not a decision. See
+  [sessions.md](sessions.md).
 - **Enforced in**: `Session.KindFor`, with every arm written out and a throwing discard arm, and
   `CK_sessions_kind_matches_credential` restating it in the layer that rejects. The spelling of that
   constraint is itself a decision — see [sessions.md](sessions.md).
+  `Redemption_WithAValidCode_OpensAFullSessionAndReportsWhatIsLeft` reads the row back on the
+  superuser connection and asserts its kind, its owner and the credential it hangs off.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The code is **consumed before** the session is established, and the two statements are two
+  saves inside one transaction rather than one flush.
+- **Why**: the asymmetry is the reason. A consumed code with no session is a retryable inconvenience —
+  the person uses the next code on the card. A session opened over a code that was not consumed is a
+  **replay window**, because the same value opens a second one, and a recovery code is a full-session
+  credential: that is an unbounded number of sign-ins from one intercepted verifier.
+- **Swap the two and every other assertion about this route still passes.** The happy path still opens
+  a session, the refusals are still identical, the remaining count still drops.
+  `Redemption_WithTheSameCodeTwice_IsRefusedTheSecondTime` is the only thing that reddens, and it
+  reddens on the *session count* rather than on the status: the `401` alone is also what a handler
+  answers when it consumed nothing and happens to refuse replays some other way.
+- **Enforced in**: the statement order in `RedeemRecoveryCodeHandler`, with
+  `RecoveryCodeRepository.ConsumeAsync` saving on its own so the ordering is one of **statements** and
+  not merely of C# lines — no reordering of a shared flush can put the session in front of the
+  consume. Both saves live inside the handler's one transaction, so a failure afterwards still takes
+  the delete back.
+- **The row spent inside the transaction is read again inside it**, after the tracked entities are
+  discarded, because the entity being removed has to be one this unit of work is tracking — ADR 0014's
+  third leg, which asks that the read producing an entity and the write removing it share one
+  transaction. That second read is also where a code redeemed between the discovery lookup and the
+  transaction is noticed, and it is noticed as the same refusal as every other.
+- **It is a different member of the port from the discovery lookup, and the owner predicate is the
+  difference.** `FindOwnedByVerifierHashAsync` matches on the account **and** the hash;
+  `FindByVerifierHashAsync` matches on the hash alone, and may, because it is the statement that
+  establishes the account — there is nothing to scope by until it has answered. So the discovery
+  lookup decides *whose account this is* and the re-read decides *which row disappears*, and naming
+  the owner is what makes the second an answer to the first by construction. The hash alone selects
+  the same row — `verifier_hash` is the primary key and `credentials.user_id` is immutable, so one
+  digest names one row of one account — but that is an argument living outside the handler, and the
+  failure if it ever stopped holding is a session established for one account over a code deleted from
+  another: precisely the unpoliced `DELETE` ADR 0014's three legs exist to bound. Finding nothing has
+  two causes — the code was spent between the two reads, or it is not this account's — and one answer,
+  because *"that code is real, but not yours"* is a fact about what is stored and about somebody
+  else's account at once.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: Redeeming the **last** code leaves the set's `credentials` row standing with nothing left
+  in it. The set is not deleted, and an empty set is the correct end state.
+- **Why**: that row is what the session the redemption just opened hangs off — `sessions` references
+  `credentials (id, user_id, type)` `ON DELETE CASCADE` — so deleting it would cascade the session
+  away in the same request and sign the person straight back out. It would also be an **anonymous**
+  request removing a `credentials` row, on a table nothing beneath the application polices.
+- **Somebody will try to clean this up**, because a set with no codes looks like a row with no
+  purpose. `IRecoveryCodeRepository` offers `DeleteSetAsync` and the redemption handler holds the port
+  that exposes it; the call it must never make is right there.
+- **Enforced in**: nothing below the application — by what `RedeemRecoveryCodeHandler` does not call,
+  and by `Redemption_OfTheLastCode_LeavesTheSetStandingWithNothingLeft`, which spends all ten through
+  the real route and then asserts the same credential id is still there with ten sessions hanging off
+  it.
 - **Source**: `[SOURCE: user-story]`
 
 ## Workflows & State Transitions
@@ -417,15 +543,17 @@ stateDiagram-v2
 table. A code has no lifetime of its own either: it is live until it is spent or replaced, and nothing
 sweeps it.
 
-Of the two exits, only **Replaced** is reachable from a route today. `Redeemed` is drawn because it is
-the transition the schema, the grant matrix and the row-level-security exemption were all designed
-around, and it is what the next commit routes.
+**Both exits are reachable from a route, and what removes the row is what tells them apart.** A
+redemption takes one row through `Redeemed` with the application's own `DELETE` on this table; a
+regeneration takes every row of the set through `Replaced` by the database's cascade from
+`credentials`, which runs with the referencing table owner's privileges rather than this role's. That
+distinction is the whole of the grant matrix's argument and of the change-tracker gotcha below.
 
 | Transition | Triggered by | Validations |
 |---|---|---|
 | → Issued | `POST /api/me/recovery-codes` | a fresh `reauthentication` assertion for a passkey registered to **this** account; then exactly ten verifiers, each decoding to exactly 32 bytes, all distinct |
 | Issued → Replaced | `POST /api/me/recovery-codes` on an account that already holds a set | the same gate and the same validation; the previous set's sessions are revoked, then its credential is deleted and these rows cascade away |
-| Issued → Redeemed | nothing today | — |
+| Issued → Redeemed | `POST /api/recovery-codes/redemption` | the presented verifier is base64url text decoding to exactly 32 bytes, and `SHA-256` of it names a row that is still there — and still that account's — when the transaction re-reads it. Nothing else is validated, because nothing else was presented |
 
 The request that issues a set:
 
@@ -463,15 +591,50 @@ time and refuse a **valid** request with the same `401` an attacker gets because
 The `22P02` ordering that governs the sign-in path is **not** what is going on here — identity is
 published by `UserProvisioningMiddleware` long before the handler runs.
 
+The request that spends one code, where that ordering **is** what is going on:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant R as POST /api/recovery-codes/redemption
+    participant H as RedeemRecoveryCodeHandler
+    participant D as PostgreSQL
+
+    Note over C: the person types a code, the client derives V = HKDF(code, …)
+    C->>R: anonymous, one member — V as base64url
+    R->>H: RedeemRecoveryCodeCommand
+    H->>H: decode against an exact 32-byte ceiling, then SHA-256(V)
+    H->>D: find the row by that hash — NAMING NO OWNER, no identity on the connection
+    H->>H: publish the account the row carries, and read the clock
+    H->>D: BEGIN — only now, so the connection is configured with that account
+    H->>D: re-read the row inside the transaction, scoped by that owner AND the hash
+    H->>D: DELETE it — before any session exists
+    H->>D: read the set's credential, scoped by that owner and by type
+    H->>D: INSERT a full session lasting 14 days
+    H->>D: count what is left, scoped by the same owner
+    H->>D: COMMIT
+    R-->>C: 200 {"kind": "full", "expiresAtUtc": …, "remaining": n}
+```
+
+Every step before the `BEGIN` is bounded by what an anonymous caller can make the server spend: the
+ceiling is refused before the text is validated or decoded, and it is **exact** rather than padded,
+because a verifier is a fixed width and there is no conforming client whose value is larger. The
+length is checked again after the decode, and the second check is not the first restated — the ceiling
+bounds the *encoded* text, which four characters per three bytes admits a value of 30, 31 or 32 bytes,
+and a short verifier is a shorter secret than the design claims.
+
 ## Integration Points
 
 - **[Passkeys](passkeys.md)** — the `reauthentication` ceremony is what authorizes a generation. This
   is the **third** spender of that nonce pool, beside erasure and passkey revocation, and it needs no
   new ceremony value: all three are destructive acts reachable only by the account holder, and a proof
   of presence is a proof of presence.
-- **[Sessions](sessions.md)** — a recovery-codes credential derives a `Full` session, and replacing a
-  set revokes the sessions the replaced one opened. `RevokeSessionsForCredentialHandler` now has **two**
-  callers.
+- **[Sessions](sessions.md)** — a redemption is the **second** path that establishes a session, and
+  the first that is not a passkey ceremony; the session it opens is `Full` and lasts the same 14 days.
+  Replacing a set revokes the sessions the replaced one opened, which is why
+  `RevokeSessionsForCredentialHandler` has **two** callers — the redemption is not one of them, and
+  must not become one: it revokes nothing, because spending one code says nothing about the sessions
+  the others opened.
 - **[Users & ownership](users-and-ownership.md)** — the set is a `credentials` row, so it inherits that
   table's exemption, its immutability, and the `DELETE` that revocation introduced.
 - **[Data isolation](../engineering/data-isolation.md)** — `recovery_code_hashes` is the **sixth**
@@ -500,6 +663,11 @@ published by `UserProvisioningMiddleware` long before the handler runs.
   else: no test can distinguish the two paths, because the table is empty afterwards either way. The
   way this breaks is a future reader adding a *"load the codes so we can count them"* read to the
   handler.
+  - **The redemption path tracks a `RecoveryCodeHash` on purpose, and that is not the same mistake.**
+    It removes one row it read itself, and a `recovery_code_hashes` row is a leaf — nothing in the
+    schema references one — so there is no cascade for EF to imitate. It therefore needs only the one
+    replay discard at the top of its transaction, and the *second* discard
+    `GenerateRecoveryCodesHandler` needs is deliberately absent rather than forgotten.
 - **The largest limitation in the feature is a sequencing one, and it is not a defect of the gate.**
   Generating a set needs a fresh passkey assertion, so somebody who has **already** lost their
   authenticator can never generate one. Recovery codes protect only people who generated a set
@@ -517,16 +685,24 @@ published by `UserProvisioningMiddleware` long before the handler runs.
   `credential_type` copy against `credentials.type`, so a recovery-code row cannot hang off a passkey
   credential and a public key cannot hang off a set. Collapsing the two arms into one would say the
   same thing in less space and lose the record of which types the schema has considered.
-- **The role's `DELETE` on `recovery_code_hashes` has no caller today.** Regeneration deletes the
-  *set's* `credentials` row and the hashes leave by the database's own cascade, which runs with the
-  referencing table owner's privileges rather than this role's. The only path that would use the grant
-  is redemption, which is not routed. It is a privilege the role holds and nothing exercises — the same
-  shape as the unexercised `GRANT UPDATE (email) ON users` — and it stays because the redemption path
-  is next. If that slips, it should be revoked rather than left standing.
+- **The role's `DELETE` on `recovery_code_hashes` has exactly one caller.**
+  `RecoveryCodeRepository.ConsumeAsync` spends the redeemed row, and nothing else in the application
+  removes one: regeneration deletes the *set's* `credentials` row and the hashes leave by the
+  database's own cascade, which runs with the referencing table owner's privileges rather than this
+  role's. A reader looking for a second caller will not find one and must not add one — the next
+  plausible candidate is a cleanup of an emptied set, which is the delete the rule above refuses.
 - **The exempt table scopes nothing, so the application is the only thing scoping access to it.** The
-  redemption lookup is the one query that will be allowed to read `recovery_code_hashes` without naming
-  an owner; every other read **or write** must carry its own `where user_id = …`. Today the only
-  application access at all is the count, which does. See
+  discovery lookup — `FindByVerifierHashAsync`, matching a row by the `SHA-256` of a verifier the
+  caller presented in full — is the one query allowed to read `recovery_code_hashes` without naming an
+  owner, and that is the exemption doing the job it was written for rather than a gap in it. **Every
+  other read or write of this table carries its own `where user_id = …`, with nothing excepted** — the
+  consume included, because the row it spends is produced by `FindOwnedByVerifierHashAsync`, which
+  names the account as well as the hash. The rule holding without a qualifier is worth more than the
+  qualifier it replaces: an exempt table scopes nothing, so "only the statement that establishes the
+  identity may omit an owner" is checkable by reading the port, and a second member omitting one turns
+  *the discovery lookup* from a description of one statement into a hole. What makes that one sound
+  rather than merely narrow is that the caller's own input names the row: it is found by the digest of
+  a 256-bit secret they must present whole, so selecting a row you cannot name is guessing it. See
   [data isolation](../engineering/data-isolation.md) for the full inventory.
 - **Two codes hashing alike are unstorable rather than a duplicate nobody notices**, because
   `verifier_hash` is the primary key. That is a `23505` the repository deliberately does **not**
@@ -541,6 +717,13 @@ published by `UserProvisioningMiddleware` long before the handler runs.
   rollback. So a caller who loses the race, or presents a malformed set, has to run the ceremony again.
   That is correct rather than a defect, and it must **not** be answered by moving the gate inside the
   transaction; [erasure.md](erasure.md) owns the argument.
-- **The client cannot generate a set yet, so the settings screen shows nothing about recovery codes.**
-  `GET /api/me/recovery-codes` is reachable and answers correctly; nothing calls it. Read that the same
-  way the disabled erasure control is read — the gate is built and the ceremony in front of it is not.
+- **The client cannot generate a set or present a code, so the settings screen shows nothing about
+  recovery codes and there is no screen to redeem one on.** All three routes are reachable and answer
+  correctly; nothing calls any of them, and `/api/recovery-codes/redemption` has no client route to be
+  reached from at all. Read that the same way the disabled erasure control is read — the gate is built
+  and the surface in front of it is not.
+- **A redeemed code buys a session nothing presents.** No session token is issued, and the API still
+  authenticates every other request from the provider ID token, so the row a redemption writes ends
+  access to nothing and opens access to nothing today. The response says what the session *is* — its
+  kind and its expiry — and a client cannot act on it yet. That is the same anticipatory shape
+  [sessions.md](sessions.md) records for revocation, read from the other end.

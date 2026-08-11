@@ -1,3 +1,4 @@
+using Application.RecoveryCodes;
 using Domain.Common;
 using Domain.Users;
 using Infrastructure.Persistence;
@@ -32,9 +33,9 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
         // row-level security (ADR 0011) — it is the table read to answer who is asking — so no policy
         // and no query filter narrows this statement to the person asking.
         //
-        // This is the SECOND read in the codebase producing a Credential naming a row the table
-        // actually holds, after PasskeyRepository.FindPasskeyCredentialAsync, and ADR 0014 names
-        // exactly that as the thing review has to catch: the entity travels on to DeleteSetAsync, so
+        // This read produces a Credential naming a row the table actually holds — the shape
+        // PasskeyRepository.FindPasskeyCredentialAsync also has — and ADR 0014 names exactly that as
+        // the thing review has to catch: the entity travels on to DeleteSetAsync, so
         // whatever scopes this read is what scopes that delete. It holds here because the owner is in
         // the predicate. Adding a lookup to this class that returns a Credential without naming its
         // owner is what would break it.
@@ -52,6 +53,110 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
                 credential => credential.UserId == userId
                               && credential.Type == CredentialType.RecoveryCodes,
                 cancellationToken);
+
+    /// <inheritdoc />
+    public Task<RecoveryCodeHash?> FindByVerifierHashAsync(
+        ReadOnlyMemory<byte> verifierHash,
+        CancellationToken cancellationToken = default) =>
+        // THE DISCOVERY LOOKUP, the shape PasskeyRepository.FindByWebAuthnCredentialIdAsync and
+        // DbWebAuthnChallengeStore.ConsumeAsync also have. It names no owner because there is no owner
+        // to name: a redemption arrives anonymous, on a connection whose app.current_user_id is still
+        // '', and whose account it belongs to is what this answer establishes. That is the whole reason
+        // recovery_code_hashes is exempt from row-level security (ADR 0016) — a user_isolation policy
+        // here would compare against ''::uuid and raise 22P02 on every redemption — and it is why this
+        // statement may touch no second table. A join to users or to credentials would put a policed
+        // relation on the same identity-less connection and fail for exactly that reason.
+        //
+        // WHAT THIS ESTABLISHES IS AN ACCOUNT, NOT A ROW TO SPEND. The redemption handler takes the
+        // user_id off the answer and publishes it, then reads the row it removes through
+        // FindOwnedByVerifierHashAsync below, which names that owner. So the entity this returns never
+        // has to survive as far as a DELETE, and the one statement on this path that runs unscoped is
+        // not the one that scopes a write.
+        //
+        // SingleOrDefault rather than FirstOrDefault: verifier_hash is the PRIMARY KEY, so a second row
+        // is not a case to choose between, it is a database that has lost the rule making two codes
+        // hashing alike unstorable.
+        //
+        // Equals rather than ==, for the reason FindByWebAuthnCredentialIdAsync gives: ReadOnlyMemory
+        // declares no equality operator, and what reaches PostgreSQL through the property's value
+        // converter is a bytea comparison of content rather than of buffer identity.
+        dbContext.RecoveryCodeHashes
+            .SingleOrDefaultAsync(hash => hash.VerifierHash.Equals(verifierHash), cancellationToken);
+
+    /// <inheritdoc />
+    public Task<RecoveryCodeHash?> FindOwnedByVerifierHashAsync(
+        Guid userId,
+        ReadOnlyMemory<byte> verifierHash,
+        CancellationToken cancellationToken = default) =>
+        // THE SCOPED READ, and the owner predicate is what makes it a different statement from the
+        // discovery lookup above rather than a second copy of it. recovery_code_hashes is exempt from
+        // row-level security (ADR 0016), so no policy and no query filter narrows either one: an exempt
+        // table scopes nothing, and only the statement that establishes the identity may run without an
+        // owner. This one runs after that identity is published, so it has an owner to name and no
+        // reason to omit it — ADR 0011.
+        //
+        // BOTH predicates are the scope, in the sense FindRecoveryCodeCredentialAsync's pair is. The
+        // hash alone would select the same row today, because it is the PRIMARY KEY and
+        // credentials.user_id is immutable; what the owner buys is that the row this hands to
+        // ConsumeAsync belongs to the account the caller has published, by predicate rather than by that
+        // argument. Without it the delete below would be scoped by the application and by nothing
+        // beneath it, on a statement that never mentions whose row it takes.
+        //
+        // NO TRACKING IS NOT WANTED HERE, unlike on the count next door: the entity this returns is the
+        // one ConsumeAsync removes, and a detached instance would have to be re-attached to be deleted.
+        //
+        // SingleOrDefault and Equals for the two reasons written out above.
+        dbContext.RecoveryCodeHashes
+            .SingleOrDefaultAsync(
+                hash => hash.UserId == userId && hash.VerifierHash.Equals(verifierHash),
+                cancellationToken);
+
+    /// <inheritdoc />
+    public async Task ConsumeAsync(RecoveryCodeHash hash, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(hash);
+
+        // Through the change tracker, and there is no alternative to weigh: ExecuteDelete is a compile
+        // error under BannedSymbols.txt.
+        //
+        // No owner predicate here, and none is missing: the scope arrived with the argument. The entity
+        // came from FindOwnedByVerifierHashAsync in this same unit of work — the third of ADR 0014's
+        // three legs — so the row removed is the row read, and that read named both the account and the
+        // hash. Restating the owner here would be a second source of tenancy that could disagree with
+        // the first, which is the reason DeleteSetAsync gives for not restating its own.
+        //
+        // Remove on the one code, never on the set's credential: deleting that row would cascade away
+        // the session this very redemption is about to open, and would be an anonymous request removing
+        // a credentials row that nothing beneath the application polices. See
+        // IRecoveryCodeRepository.ConsumeAsync.
+        dbContext.RecoveryCodeHashes.Remove(hash);
+
+        // A save of its own rather than one shared with the session insert, so the ordering FR-054 asks
+        // for is an ordering of STATEMENTS and not merely of C# lines. Both live inside the handler's
+        // one transaction, so a failure after this point still takes the delete back — what the separate
+        // save buys is that no reordering of the flush can put the session in front of the consume.
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        // THE SAME CODE PRESENTED TWICE AT ONCE. Two requests carrying one verifier both find the row,
+        // and the loser's DELETE matches nothing where EF expected one row. Left alone it is a 500 on an
+        // anonymous route — and worse than a 500, it is a SECOND ANSWER: a caller able to tell "that
+        // code went while you were asking" from "no such code" has learned the value they presented was
+        // real, which is precisely what the byte-identical refusal exists to withhold. So it becomes
+        // that refusal, and the losing request establishes no session, exactly as a caller replaying a
+        // spent code a second later gets.
+        //
+        // Translated here rather than in the handler because DbUpdateConcurrencyException is EF's, and
+        // the handler is in a layer that has never heard of it — the same reason the two catches below
+        // translate their own. Narrowed BY THE ENTRIES, the shape DeleteSetAsync's catch uses:
+        // SaveChangesAsync flushes everything the scoped context is tracking, so a stranger's entity
+        // conflicting on the same save must propagate rather than be reported as a spent code.
+        catch (DbUpdateConcurrencyException exception) when (IsAlreadyConsumed(exception))
+        {
+            throw new RecoveryCodeRedemptionException("The presented code was consumed by a concurrent redemption.");
+        }
+    }
 
     /// <inheritdoc />
     public async Task AddSetAsync(
@@ -183,4 +288,15 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
         exception.Entries.Count > 0
         && exception.Entries.All(entry =>
             entry.Entity is Credential && entry.State == EntityState.Deleted);
+
+    /// <summary>
+    /// True when the conflict is only about <see cref="RecoveryCodeHash"/> rows this call spent. The
+    /// count test carries the weight <see cref="IsAlreadyDeleted"/>'s does: an exception EF could not
+    /// attribute to any entry would otherwise satisfy the predicate vacuously and report an unrelated
+    /// failure as a spent code.
+    /// </summary>
+    private static bool IsAlreadyConsumed(DbUpdateConcurrencyException exception) =>
+        exception.Entries.Count > 0
+        && exception.Entries.All(entry =>
+            entry.Entity is RecoveryCodeHash && entry.State == EntityState.Deleted);
 }

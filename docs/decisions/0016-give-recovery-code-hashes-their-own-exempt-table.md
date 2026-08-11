@@ -101,12 +101,15 @@ row can stop counting, so that decision cannot be quietly reversed into a stamp.
 This is the third `DELETE` on an identity table bounded by no policy at all — `users`' is scoped by
 `user_isolation`, this one and `credentials`' are scoped by the application or by nothing. ADR 0014's
 three legs are what hold it and all three must keep holding: the delete takes the **loaded entity**
-and never a hash a caller supplied; every read producing one is either owner-and-type-scoped or **is**
-the discovery lookup the exemption exists for; and the read and the write share one transaction. What
-makes the discovery-scoped delete sound rather than merely narrow is that the caller's own input names
-the row — it is found by `SHA-256` of a 256-bit secret they must present in full, so selecting a row
-you cannot name is guessing it. That is not a new argument: `ConsumeAsync` already deletes a challenge
-by the nonce the caller presents, on the table directly above this one in the grants file.
+and never a hash a caller supplied; the read producing that entity names the **owner** as well as the
+hash, so the owner-less lookup the exemption exists for is not on the path to any write; and the read
+and the write share one transaction. That lookup is bounded by something other than a predicate, and
+it has to be, because a predicate is the one thing unavailable to a statement whose answer is the
+identity — what bounds it is that the caller's own input names the row, found by `SHA-256` of a
+256-bit secret they must present in full, so selecting a row you cannot name is guessing it. That is
+not a new argument: `ConsumeAsync` already deletes a challenge by the nonce the caller presents, on
+the table directly above this one in the grants file — the difference being that a challenge row names
+no person, so there is no owner a second read could add.
 
 ## Alternatives considered
 
@@ -161,12 +164,12 @@ this table grows quietly.
   write-once secret that must not join an exempt column set. It has now happened, on its own table, and
   the example is retained rather than retired: the hypothetical is what made the decision visible
   *before* there was anything to decide about, and the next write-once secret gets argued the same way.
-- **The exemption exists for a query that is not routed yet.** Nothing redeems a code today, so the
-  anonymous read the exemption was written for is not reachable from anywhere, and the `DELETE` grant
-  has no caller — regeneration deletes the *set's* `credentials` row and the hashes leave by the
-  cascade. That is unusual and is recorded rather than smoothed over: the exemption and the grant are
-  filed ahead of their user because the schema, not the route, is what a later commit has to build
-  against. A reader who finds no second caller should not add one.
+- **The exemption is used by one lookup and the `DELETE` grant by one caller.** `POST
+  /api/recovery-codes/redemption` reaches `FindByVerifierHashAsync`, which matches a row by the
+  `SHA-256` of the presented verifier on a connection naming nobody, and
+  `RecoveryCodeRepository.ConsumeAsync` spends that row; regeneration deletes the *set's*
+  `credentials` row instead and the hashes leave by the cascade. A reader who finds no second caller
+  of either should not add one.
 - **`RlsCoverageTests` and the deploy-time verifier both required a decision the moment the table
   existed**, and answering that red by editing an existing entry would have been the failure ADR 0011
   exists to prevent.

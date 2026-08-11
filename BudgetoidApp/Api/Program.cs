@@ -137,6 +137,12 @@ builder.Services.AddExceptionHandler<ConflictExceptionHandler>();
 // Before the catch-all, which would otherwise turn a refused sign-in into a 500 and log it as a
 // fault. Handlers run in registration order and the first to claim the exception wins.
 builder.Services.AddExceptionHandler<PasskeyVerificationExceptionHandler>();
+// Beside the passkey one and before the catch-all, for the same reason — and a handler of its own
+// rather than a second exception routed into that one: "The passkey could not be verified." on a
+// recovery-code route is a wrong sentence, which is worse for the person holding a card than an
+// uninformative one. Neither handler can claim the other's exception, so the order between these two
+// is free; the order against the catch-all is not.
+builder.Services.AddExceptionHandler<RecoveryCodeRedemptionExceptionHandler>();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddOpenApi();
 

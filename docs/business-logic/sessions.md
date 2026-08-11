@@ -23,13 +23,16 @@ ended here, in one write, by the same role that serves every request.
 
 **What is built today and what is not.** The `sessions` table, its entity, its isolation policy, its
 grant matrix entry, and the two operations — establish one, revoke every session a credential
-established — exist and are tested. **A verified passkey assertion establishes a session**, and it is
-the only thing that does; see [passkeys.md](passkeys.md).
+established — exist and are tested. **Two things establish a session and there is no third**: a
+verified passkey assertion (see [passkeys.md](passkeys.md)) and a redeemed recovery code (see
+[recovery-codes.md](recovery-codes.md)). Both open a `Full` session lasting 14 days.
 
-What still does not exist is anything that *presents* one. No session token is issued — the assertion
-response deliberately carries no handle to the row it created — and the API still authenticates every
-other request from the Google ID token it is handed, exactly as
-[users-and-ownership.md](users-and-ownership.md) describes.
+What still does not exist is anything that *presents* one. No session token is issued — **neither**
+establishing response carries a handle to the row it created, and both withhold it for the same
+reason — and the API still authenticates every other request from the Google ID token it is handed,
+exactly as [users-and-ownership.md](users-and-ownership.md) describes. So a recovery sign-in today
+opens a session that authenticates nothing; what the response tells its caller is what that session
+*is*, not something the caller can spend.
 
 **`RevokeSessionsForCredentialHandler` now has two callers.** Revoking a passkey ends that passkey's
 sessions before deleting the credential row (see [passkeys.md](passkeys.md)), and regenerating an
@@ -151,9 +154,8 @@ erDiagram
   budget content at all, and **`federated` is the only credential type that cannot**. The rule runs
   that way round rather than the other: a passkey's authenticator holds the account's keys, and a set
   of recovery codes is the secret those keys are wrapped under, so both are secrets in the holder's
-  own possession and both open a `Full` session. See
-  [recovery-codes.md](recovery-codes.md); nothing establishes a session from a recovery-codes
-  credential yet, because nothing redeems a code.
+  own possession and both open a `Full` session. Redeeming a code establishes exactly that session,
+  from the set's own credential — see [recovery-codes.md](recovery-codes.md).
 - **Enforced in**: `CK_sessions_kind_matches_credential`,
   `(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))`, which is the lowest layer
   that can state the rule declaratively. Without it the rule lived only in the factory while
@@ -277,7 +279,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached today only from `CompleteAssertionHandler` after a passkey assertion verifies | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
+| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `CompleteAssertionHandler` once a passkey assertion verifies and from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
 | Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` and `GenerateRecoveryCodesHandler` each call before deleting a credential | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
 
@@ -288,9 +290,11 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
 - **[Users & Ownership](users-and-ownership.md)** — the credential that establishes a session, and
   the account it belongs to. A session adds nothing to identity; it records what a credential already
   proved.
-- **[Recovery Codes](recovery-codes.md)** — the second credential type whose sessions are `Full`, and
-  the second caller of the revocation sweep. It is also where the `sessionsEnded` contract is argued
-  from the other side.
+- **[Recovery Codes](recovery-codes.md)** — the second credential type whose sessions are `Full`, the
+  second path that establishes one, and the second caller of the revocation sweep. Establishing and
+  revoking are different halves of it: a **redemption** opens a session and revokes nothing, while a
+  **regeneration** revokes the replaced set's sessions and opens none. It is also where the
+  `sessionsEnded` contract is argued from the other side.
 - **`user_isolation`** — the same policy `users`, `budgets` and `passkey_signature_counters` carry,
   keyed on the same session setting. `sessions` is policed on the person rather than on a budget,
   like each of them.
@@ -342,11 +346,18 @@ There is no transition back. Nothing un-revokes a session and nothing extends on
   - **Both callers reach it through the command handler rather than straight to `ISessionRepository`**,
     and that is deliberate: the handler is where the clock is read, so one decision to end access is
     stamped as one instant however many rows it touches.
-- **The expiry is decided by the caller, and today there is exactly one.** `Session.Establish`
-  validates only that the expiry is after the creation instant; the number itself —
-  **14 days** — is a constant on `CompleteAssertionHandler`. It lives in Application rather than
-  Domain because how long a session lasts is product policy, which
+- **The expiry is decided by the caller, and there are two callers holding the same number.**
+  `Session.Establish` validates only that the expiry is after the creation instant; the number itself
+  — **14 days** — is a constant on `CompleteAssertionHandler` and again on
+  `RedeemRecoveryCodeHandler`. It lives in Application rather than Domain because how long a session
+  lasts is product policy, which
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) keeps above the
   invariants, and it is not on `IPasskeyCeremonyPolicy` because a session lifetime that varies per
-  environment is a difference nobody meant. A second establishing path must not quietly bring a
-  second number.
+  environment is a difference nobody meant.
+  - **The equality is the rule and the restatement is deliberate.** Both credentials open a `Full`
+    session — a set of recovery codes is the secret the account's keys are wrapped under, so it
+    reaches as much as an authenticator does — and a recovery sign-in that expired sooner would tell
+    somebody who has just lost their device that the way back in they were issued is worth less than
+    the one they lost. Each handler owns the policy for the sign-in it performs, so the constant is
+    restated rather than shared; **the two differing is a defect rather than a decision**, and a third
+    establishing path must not quietly bring a third number.

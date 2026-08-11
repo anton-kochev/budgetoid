@@ -113,10 +113,11 @@ close.
   `Database_LetsTheAppRoleDeleteAnyRecoveryCodeHash_OnASessionNamingNobody` states that premise as an
   executable test; it goes red the day somebody succeeds in policing this table, which is the day
   [ADR 0016](0016-give-recovery-code-hashes-their-own-exempt-table.md) needs rewriting.
-- **The grant has no caller yet.** Regeneration deletes the *set's* `credentials` row and these rows
-  leave by the database's own cascade, which runs with the referencing table owner's privileges rather
-  than this role's. The only path that will use the grant is redemption, which is not routed. A reader
-  looking for a second caller will not find one and should not add one.
+- **The grant has exactly one caller.** `RecoveryCodeRepository.ConsumeAsync` deletes the row a
+  redemption spent. Regeneration does not use it: it deletes the *set's* `credentials` row and these
+  rows leave by the database's own cascade, which runs with the referencing table owner's privileges
+  rather than this role's. A reader looking for a second caller will not find one and should not add
+  one.
 - **There is a failure mode this creates that nothing beneath the application can catch**, and it is
   the most dangerous line in the area. Because the role **is** granted `DELETE` here, an EF cascade into
   tracked `RecoveryCodeHash` copies would **silently succeed** — the rows would leave by the application

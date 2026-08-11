@@ -288,12 +288,15 @@ GRANT SELECT, INSERT, DELETE ON webauthn_challenges TO budgetoid_app;
 -- cannot name is guessing it. That is not a new argument — ConsumeAsync already deletes a challenge
 -- by the nonce the caller presents, on the table directly above.
 --
--- Nothing uses this grant yet, and that is worth saying plainly rather than letting the paragraph
--- above read as a description of live traffic. Redemption is the one path that will, and it is not
--- routed; regenerating a set deletes the SET's credentials row instead, and these rows leave by the
--- cascade from it. So the role holds a privilege nothing exercises — the same shape as the
--- GRANT UPDATE (email) ON users above — and when redemption lands it becomes the single caller. A
--- reader looking for a second one will not find it, and should not add one.
+-- ONE PATH EXERCISES THIS GRANT, and there must never be a second.
+-- RecoveryCodeRepository.ConsumeAsync, reached from POST /api/recovery-codes/redemption, removes the
+-- single row whose verifier_hash the caller's own verifier hashes to. Every leg of the paragraph above
+-- is checkable there: the entity comes from IRecoveryCodeRedemption.FindByVerifierHashAsync, the
+-- delete takes that entity rather than bytes, and both statements run inside the handler's one
+-- transaction. Regenerating a set does NOT use this grant — it deletes the SET's credentials row and
+-- these rows leave by the cascade from it, which runs with the referencing table owner's privileges,
+-- and materialising them there is the mistake GenerateRecoveryCodesHandler is written to avoid. A
+-- reader looking for a second caller will not find one, and should not add one.
 --
 -- Note what a column added here would land on, because it is the same mismatch as credentials': the
 -- exemption is granted to one QUERY and applied by PostgreSQL to the whole TABLE. The pinned column

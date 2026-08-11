@@ -47,10 +47,11 @@ Enforced today:
   said who they are, so there is nobody for a policy to key on), `currencies` (reference data owned
   by no tenant), and `__EFMigrationsHistory`. The same list and the same classification are what the
   deploy-time verifier reads, so the gate and the test cannot drift apart.
-  **The third exemption is filed ahead of the query it exists for**: nothing redeems a recovery code
-  yet, so that anonymous read is not reachable from any route today. It is written with the schema
-  rather than with the route because it is the schema a later commit has to build against, and because
-  the classifier goes red the moment the table exists whether or not anything reads it.
+  **The third exemption is exercised by the query it was written for**: `POST
+  /api/recovery-codes/redemption` matches a row by the `SHA-256` of the verifier it was handed, on a
+  connection naming nobody, and publishes the account that row carries before it opens a transaction.
+  The classifier reaches its verdict from the table's own columns either way, so it demanded a decision
+  the moment the table existed whether or not anything read it.
   `passkey_signature_counters` is the counterexample that keeps the second of those honest: it is the
   *same ceremony* one step later, reached only after the signature has verified, so it carries
   `user_id` and is policed with no rule added
@@ -77,12 +78,17 @@ Enforced today:
   `__EFMigrationsHistory` pin nothing on purpose — the first belongs to no tenant whatever columns it
   grows, the second has its shape owned by EF.
 - **An exempt table scopes nothing, so the application is the only thing scoping access to it — and
-  one of those accesses is now a write.** On the exempt tables that carry an owner column —
+  some of those accesses destroy rows.** On the exempt tables that carry an owner column —
   `credentials`, `passkey_public_keys` and `recovery_code_hashes` — one query per table is allowed to
   omit it, the one that discovers who is asking, and every other access must
   carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on `budgets`. On
-  `recovery_code_hashes` that one query is not routed yet, so every access it has today carries the
-  filter.
+  `recovery_code_hashes` that one query is the discovery lookup a redemption is matched by, and the
+  `DELETE` beside it is scoped by a **second** read of the same row, inside the transaction that
+  spends it, naming the account the first one resolved. The two reads answer two different questions:
+  the discovery lookup decides **whose account this is**, the re-read decides **which row
+  disappears**, and the owner predicate is what makes the second an answer to the first. What makes
+  the discovery lookup sound rather than merely unscoped is that the row is named by the digest of a
+  256-bit secret the caller presented in full.
   `webauthn_challenges` is the exception to the sentence rather than to the rule: it has **no** owner
   column at all, because a nonce belongs to a ceremony rather than to a person, so there is nothing
   for an access to be scoped by and the pinned column set is what keeps it that way. The whole
@@ -99,8 +105,12 @@ Enforced today:
   | `credentials` | `CountPasskeysForUserAsync`, behind the last-passkey rule | `where user_id` and `type`, watched by `Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing` |
   | `credentials` | `ListForUserAsync`, behind `GET /api/me/credentials` | `where user_id`, watched by `Credentials_ForASecondAccount_ListThatAccountsCredentialsAndNotTheFirsts` |
   | `credentials` | `INSERT` at provisioning, and again at passkey registration | the owner is a value the application supplies, not one it filters by |
+  | `credentials` | `FindRecoveryCodeCredentialAsync`, on a generation and on a redemption | `where user_id` and `type` — and on the redemption the owner is the one the matched code named, never the request's |
   | `credentials` | **`DELETE`**, revoking a passkey, and again replacing a recovery-code set | the owner-scoped read above it, and nothing else — `FindPasskeyCredentialAsync` for the first, `FindRecoveryCodeCredentialAsync` for the second, each carrying owner **and** type |
-  | `recovery_code_hashes` | `CountRemainingForUserAsync`, behind `GET /api/me/recovery-codes` | `where user_id`, and it is the **only** application access to this table today |
+  | `recovery_code_hashes` | `FindByVerifierHashAsync`, the discovery lookup on redemption | **nothing, deliberately** — it runs before there is an identity to key a filter on, and the account it answers is the one the redemption then adopts |
+  | `recovery_code_hashes` | `FindOwnedByVerifierHashAsync`, the re-read inside a redemption's transaction | `where user_id` **and** `verifier_hash` — the owner being the account the discovery lookup resolved, and this is the read that scopes the `DELETE` below |
+  | `recovery_code_hashes` | `CountRemainingForUserAsync`, behind `GET /api/me/recovery-codes` and again at the end of a redemption | `where user_id` — the account's own on the read, the matched code's on the redemption |
+  | `recovery_code_hashes` | **`DELETE`**, consuming the code a redemption spent | the owner-scoped read above it, in the same transaction, and nothing else — never the discovery lookup, whose answer is an account rather than a row to spend |
   | `recovery_code_hashes` | `INSERT` at generation | the credential it hangs off, written in the same save |
   | `webauthn_challenges` | issue, consume, sweep | **nothing, and there is nothing to scope by** — the row names no person |
 
@@ -135,10 +145,11 @@ Enforced today:
   owner and the type. Adding a source that does not is what review has to catch. See
   [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
 
-  **`recovery_code_hashes` holds an unpoliced `DELETE` too, and it has no caller.** The grant exists
-  for redemption, which is not routed; replacing a set deletes the *set's* `credentials` row and these
-  rows leave by the database's own cascade, running with the referencing table owner's privileges
-  rather than this role's. Two consequences follow and both matter.
+  **`recovery_code_hashes` holds an unpoliced `DELETE` too, and it has one caller.**
+  `RecoveryCodeRepository.ConsumeAsync` spends the row a redemption matched; replacing a set deletes
+  the *set's* `credentials` row instead, and these rows leave by the database's own cascade, running
+  with the referencing table owner's privileges rather than this role's. Two consequences follow and
+  both matter.
   First, a reader looking for a second caller will not find one and should not add one.
   Second — and this is the sharpest hazard on this page — **an EF cascade into tracked
   `RecoveryCodeHash` copies would silently succeed here.** On `sessions` the identical change-tracker
@@ -192,8 +203,9 @@ Enforced today:
   whether it is really them, so they are the tables reached with no identity on the session at all
   ([ADR 0011](../decisions/0011-police-the-user-owned-tables.md),
   [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md),
-  [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md) — the third for a
-  read that is not routed yet, since nothing redeems a recovery code).
+  [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md) — the third for
+  the lookup a redemption is matched by, which is all a redemption touches before it knows who is
+  asking).
   That is also why the credential lookup projects to `credentials.user_id` and never joins `users`:
   the join would touch the table policed on the very id being resolved.
 - **Immutable ownership.** `Transaction.BudgetId` has no public setter and is set only via the

@@ -24,9 +24,11 @@ public interface IPasskeyRepository
     /// <remarks>
     /// <para>
     /// The pair with the lookup directly above, and the contrast between them is the point. That one
-    /// runs before the request has an identity and is the single query in the codebase permitted to
-    /// omit an owner filter; this one runs when an identity is already established, so it names the
-    /// owner like every other read of an exempt table. An exempt table scopes nothing — no policy and
+    /// runs before the request has an identity, which is what permits it to omit an owner filter — the
+    /// shape <see cref="IRecoveryCodeRepository.FindByVerifierHashAsync"/> and
+    /// <c>IWebAuthnChallengeStore.ConsumeAsync</c> also have, each the discovery read of its own exempt
+    /// table. This one runs when an identity is already established, so it names the owner like every
+    /// other read of an exempt table. An exempt table scopes nothing — no policy and
     /// no query filter narrows <c>passkey_public_keys</c> — so the predicate here is the only thing
     /// standing between a caller and somebody else's credential.
     /// </para>

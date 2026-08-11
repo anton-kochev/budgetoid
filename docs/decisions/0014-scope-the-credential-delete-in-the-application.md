@@ -106,11 +106,14 @@ reach without extending what revocation can do — the argument the `users` bloc
     shape — its rows are found before the request has an identity — and the three legs above are what
     hold its `DELETE` too ([ADR 0016](0016-give-recovery-code-hashes-their-own-exempt-table.md),
     [ADR 0017](0017-consume-a-recovery-code-by-deleting-its-row.md)). One difference is worth carrying:
-    there, the scoping read is allowed to name **no owner at all**, because the caller's own input
-    names the row — a `SHA-256` of a 256-bit secret they must present in full, so selecting a row you
-    cannot name is guessing it. That is the same argument `ConsumeAsync` already makes for deleting a
-    challenge by the nonce a caller presents, and it does **not** transfer to `credentials`, whose ids
-    are neither secret nor caller-chosen.
+    there, the read that scopes the delete names the owner and the hash but no **type**, because the
+    hash is the row's primary key and a set holds one kind of child. The statement that resolves that
+    owner in the first place is a separate one and names nothing at all — what bounds *it* is that the
+    caller's own input names the row, a `SHA-256` of a 256-bit secret they must present in full, so
+    selecting a row you cannot name is guessing it. It produces an account rather than a row to spend,
+    so it is not on the path to the delete; and the argument that makes it safe — the same one
+    `ConsumeAsync` makes for deleting a challenge by the nonce a caller presents — does **not**
+    transfer to `credentials`, whose ids are neither secret nor caller-chosen.
 - **One test stands between a refactor and a cross-tenant delete, on each path.**
   `Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows` is the only thing
   that would notice the `userId` predicate leaving `FindPasskeyCredentialAsync`. No layer below the

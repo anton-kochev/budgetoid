@@ -102,8 +102,9 @@ public sealed class CompleteAssertionHandler(
             throw new PasskeyVerificationException("The challenge is not a live authentication challenge.");
         }
 
-        // 2. The discovery read — the one statement in the system that runs with no identity on the
-        //    connection. Both legs of this ceremony are anonymous routes, and user provisioning returns
+        // 2. The discovery read — a statement that runs with no identity on the connection and names no
+        //    owner, the shape the challenge consume above and RedeemRecoveryCodeHandler's lookup also
+        //    have. Both legs of this ceremony are anonymous routes, and user provisioning returns
         //    on that marker before it resolves anyone, so app.current_user_id is still '' whatever token
         //    accompanied the request. This may therefore touch no policed table, and making this read
         //    safe is what passkey_public_keys is exempt from row-level security for (ADR 0012) — the

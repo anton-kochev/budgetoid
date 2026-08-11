@@ -52,7 +52,7 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | Term | Definition |
 |---|---|
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. |
-| **Session** | An established sign-in recorded server-side, naming the credential that established it, which the product can end without asking any external party. A verified passkey assertion establishes one; nothing issues a token for it yet — see [sessions.md](sessions.md). |
+| **Session** | An established sign-in recorded server-side, naming the credential that established it, which the product can end without asking any external party. A verified passkey assertion establishes one and so does a redeemed recovery code; nothing issues a token for it yet — see [sessions.md](sessions.md). |
 | **Passkey** | A WebAuthn discoverable credential held by the user's authenticator. One of the two credential types that open a session reaching budget content — see [passkeys.md](passkeys.md). |
 | **Recovery code** | A secret the account holder writes down, so that losing the authenticator does not mean losing the account. **Minted in the browser; the server never sees one** — what it stores is `SHA-256` of a verifier the client derived. Redeeming one deletes its row, and there is no third state — see [recovery-codes.md](recovery-codes.md). |
 | **Verifier** | `V = HKDF(code, …)`, exactly 32 bytes, derived on the client from a recovery code and the only thing about that code the server ever receives. The account's key-encryption key comes off the same code on an **independent** HKDF branch, which is why a code reaching the server would hand the operator that key and a verifier does not. |
@@ -63,7 +63,7 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | **PRF** | The WebAuthn `prf` extension: a secret the authenticator derives and the server never sees. Requested at registration and **required** for one to complete — a registration completes only when the client reports a `prf` result that is present and true, so reporting nothing and reporting `enabled: false` are alike refused. The claim is the client's and unverifiable, so the refusal is a product gate rather than a control; the product stores nothing about it. See [passkeys.md](passkeys.md). |
 | **Relying party** | The site a passkey is bound to, named by its `rpId`. An authenticator signs over `SHA-256(rpId)`, so a credential registered here cannot be asserted anywhere else. |
 | **Locked session** | A session established from a federated credential. `federated` is the **only** credential type that cannot reach budget content, because an authorization exchange returns claims rather than a secret a client can turn into a key. |
-| **Full session** | The kind of session a credential the holder actually possesses opens: a passkey, whose authenticator holds the account's keys, or a set of recovery codes, which is the secret those keys are wrapped under. Nothing establishes one from recovery codes yet — nothing redeems a code. |
+| **Full session** | The kind of session a credential the holder actually possesses opens: a passkey, whose authenticator holds the account's keys, or a set of recovery codes, which is the secret those keys are wrapped under. Both establish one, and both for 14 days — a verified assertion on the sign-in leg, and a spent code on `POST /api/recovery-codes/redemption`. |
 | **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
 | **Erasure** | Destroying an account and everything owned beneath it, so that no row in any table references the erased user or any budget it owned. Not a status and not a soft delete: nothing is marked, and no row survives to record that it happened — see [erasure.md](erasure.md). |
 | **Export document** | The single JSON object an export answers with: a schema version, the user record, and every budget the user owns, each carrying its accounts, category groups, categories, payees and transactions as nested arrays. Nothing in it is summarized, sampled or paged, and assembling it writes no row — see [export.md](export.md). |
@@ -122,10 +122,10 @@ references are additionally constrained by composite foreign keys to a row in th
 ## Table of contents
 
 - [Users & Ownership](users-and-ownership.md) — identity, claims, and provisioning.
-- [Passkeys](passkeys.md) — the three WebAuthn ceremonies, and the only path that opens a session
-  today.
+- [Passkeys](passkeys.md) — the three WebAuthn ceremonies, and one of the two paths that open a
+  session.
 - [Recovery Codes](recovery-codes.md) — the second way back into an account, minted in the browser
-  and never seen by the server.
+  and never seen by the server, and the other path that opens a session.
 - [Sessions](sessions.md) — an established sign-in the product records and can end itself.
 - [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
   and its base currency.

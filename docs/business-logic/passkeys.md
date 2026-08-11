@@ -14,11 +14,11 @@
 
 This area covers **the three WebAuthn ceremonies**: registering a passkey to an account, signing in
 with one, and re-proving possession of one before an action too destructive to take on a bearer token
-alone. It is the only path that opens a session **today**, and a passkey is one of the two credential
-types that open a session reaching budget content — the other is a set of recovery codes, which is a
-secret the holder possesses for the same reason and which nothing redeems yet. `federated` is the only
-type that can never reach budget content, because an authorization exchange returns claims rather than
-a secret a client can turn into a key. See [recovery-codes.md](recovery-codes.md) and
+alone. It is one of the two paths that open a session — the other is redeeming a recovery code — and a
+passkey is one of the two credential types whose session reaches budget content, the other being the
+set of codes, a secret the holder possesses for the same reason. `federated` is the only type that can
+never reach budget content, because an authorization exchange returns claims rather than a secret a
+client can turn into a key. See [recovery-codes.md](recovery-codes.md) and
 [sessions.md](sessions.md).
 
 Identity — who a person is, and which credentials prove it — lives in
@@ -203,7 +203,8 @@ erDiagram
   `SessionContextInterceptor`'s `set_config` run — while `app.current_user_id` is still empty, so
   every policed statement inside it fails with `22P02`.
   [ADR 0011](../decisions/0011-police-the-user-owned-tables.md) states that precondition in the
-  abstract; the assertion path is the first code path that can violate it.
+  abstract; the assertion path and the recovery-code redemption are the two code paths that can
+  violate it, and each carries the ordering with a comment at every step.
 - **Enforced in**: the ordering in `CompleteAssertionHandler`, with a comment at each step, and by
   `PasskeyCeremonyTests.Registration_ThenAssertion_EstablishesOneFullSessionForThatAccount`, which
   runs the whole ceremony over the real least-privilege connection.
@@ -407,13 +408,16 @@ The session's lifetime is **14 days**, a constant on `CompleteAssertionHandler`.
 Application rather than Domain because `Session.Establish` deliberately takes an expiry and how long
 a session lasts is product policy, which ADR 0002 keeps above the invariants. It is deliberately not
 on `IPasskeyCeremonyPolicy` either: the relying-party id and the origin allow-list *must* vary per
-environment, and a session lifetime that varies per environment is a difference nobody meant.
+environment, and a session lifetime that varies per environment is a difference nobody meant. The
+redemption path restates the same number for reasons of its own, and the two being equal is a rule —
+see [sessions.md](sessions.md).
 
 ## Integration Points
 
-- **[Sessions](sessions.md)** — a verified assertion is the only thing that establishes one today. It
-  is no longer the only credential type that *would* establish a `Full` one: a recovery-codes
-  credential derives the same kind, and nothing redeems a code yet.
+- **[Sessions](sessions.md)** — a verified assertion establishes one, and a redeemed recovery code
+  establishes the other; both are `Full` and both last 14 days. The assertion path is no longer the
+  only establishing path, so the ordering rule below — identity published only after the proof, the
+  transaction opened only after that — is now a rule two handlers hold rather than one.
 - **[Recovery Codes](recovery-codes.md)** — the third spender of the `reauthentication` pool, and the
   second full-session credential type. A passkey is what a person proves possession of in order to be
   issued a set, which is why the last-passkey floor cannot be lifted by holding one.

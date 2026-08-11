@@ -125,7 +125,8 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   the sharpest of them: a recovery code is redeemed by an **anonymous** request, so the lookup by hash
   is what establishes the identity, and a policy keyed on `app.current_user_id` would refuse the very
   query that produces the value it wants to compare against — loudly, with `22P02`, on every
-  redemption. That redemption is not routed yet; the exemption is filed with the schema it belongs to.
+  redemption. `POST /api/recovery-codes/redemption` is the request that makes that concrete, and the
+  account it publishes is the one the matched row carries rather than one anything asked for.
   - **Enforced in**: the `user_isolation` policies live beside the grants in
     `BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration;
     `SessionContextInterceptor` puts `app.current_user_id` on every connection the context opens, so
@@ -787,11 +788,14 @@ The budget branch that runs after this, on every path, is in
   refused with `NoAccountTitle` rather than provisioned. A client must reach one of the six
   account-creating route groups before it reaches this one.
 - **[Recovery Codes](recovery-codes.md)**: the third credential type, and the second family of rows
-  hanging off a `credentials` row. Its two routes — `POST` and `GET /api/me/recovery-codes` — carry no
-  `ProvisionsUser` and may never gain one: a stale provider token that minted an account there would
-  resurrect it **holding a full-session credential and no passkey**, which is strictly worse than the
-  empty shell the erasure and export routes argue about, because such an account can never clear the
-  re-authentication gate in front of erasure again.
+  hanging off a `credentials` row. Its three routes — `POST` and `GET /api/me/recovery-codes`, and the
+  anonymous `POST /api/recovery-codes/redemption` — carry no `ProvisionsUser` and may never gain one: a
+  stale provider token that minted an account there would resurrect it **holding a full-session
+  credential and no passkey**, which is strictly worse than the empty shell the erasure and export
+  routes argue about, because such an account can never clear the re-authentication gate in front of
+  erasure again. On the redemption the marker would also be inert — the middleware reads the anonymous
+  arm first and returns — so the two markers are mutually exclusive, and it is the route on which the
+  mistake is likeliest, being the one people reach for when they cannot get in.
 - **[Budgets](budgets.md)**: provisioning resolves the identity *and* the ambient budget in one step.
   Everything a user can see hangs off that budget, so all tenancy rules — stamping, filtering, name
   uniqueness, the 404 behaviour — are documented there.

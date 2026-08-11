@@ -12,9 +12,17 @@ public static class PasskeyEndpoints
     public static IEndpointRouteBuilder MapPasskeyEndpoints(this IEndpointRouteBuilder endpoints)
     {
         // Two groups over one path prefix rather than one group with per-endpoint attributes, so the
-        // anonymous surface of the whole application is a single line a reviewer can see. Anything
-        // added to the first group inherits the application's fallback policy and stays authenticated;
-        // anything added to the second is public, and has to be argued for where it is written.
+        // permission is declared once for a set of routes instead of once per route. Anything added to
+        // the first group inherits the application's fallback policy and stays authenticated; anything
+        // added to the second is public, and has to be argued for where it is written.
+        //
+        // WHAT THIS SHAPE DOES NOT BUY IS A COMPLETE ANONYMOUS SURFACE A REVIEWER CAN READ HERE. It
+        // never did: the health check in ServiceDefaults is anonymous and is nowhere near this file, and
+        // a redemption of a recovery code is anonymous in RecoveryCodeEndpoints. The surface is pinned
+        // whole by AnonymousSurfaceTests, which reads every AllowAnonymous route off the route table and
+        // compares it against a written-out set — so a route that gains the marker is a red test
+        // somebody has to answer for in the same commit, by adding the pattern AND the argument for it
+        // beside the others. That, and not a line in this file, is what makes the permission reviewable.
         RouteGroupBuilder authenticated = endpoints.MapGroup("/api/passkeys");
 
         // POST, not GET, for both options legs. They mint a nonce and persist it, so they are neither

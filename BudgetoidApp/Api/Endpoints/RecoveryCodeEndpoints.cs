@@ -1,6 +1,8 @@
+using System.Text.Json;
 using Application.Passkeys.Reauthentication;
 using Application.RecoveryCodes.CountRecoveryCodes;
 using Application.RecoveryCodes.GenerateRecoveryCodes;
+using Application.RecoveryCodes.RedeemRecoveryCode;
 
 namespace Api.Endpoints;
 
@@ -95,6 +97,56 @@ public static class RecoveryCodeEndpoints
             return TypedResults.Ok(count);
         });
 
+        // A SECOND GROUP OVER A SECOND PREFIX, AND IT IS ANONYMOUS. The shape PasskeyEndpoints uses for
+        // its sign-in legs, and for the same reason: a redemption by definition runs before anyone is
+        // signed in, because somebody redeeming a code has lost the authenticator that would have
+        // proved who they are. What makes the permission reviewable is not this line —
+        // AnonymousSurfaceTests reads every AllowAnonymous route off the route table and compares the
+        // set whole, and the argument for this pattern is written out beside it there.
+        //
+        // NOT UNDER "/api/me", which is the current principal's namespace and this request has no
+        // principal: it names nobody, and the account it lands on is discovered from the code. And not
+        // under "/api/passkeys", which is the two WebAuthn ceremonies and this is neither.
+        //
+        // NO ProvisionsUser, AND IT MAY NEVER GAIN ONE — a likelier accident here than on "/api/me",
+        // because this is the route people reach for when they cannot get in, which reads a great deal
+        // like a route that should be able to create something. A provider id token stays valid for up
+        // to an hour after the account it names is erased, so a marker here would turn one retried
+        // redemption into a resurrected, passkey-less account that the re-authentication gate in front
+        // of erasure can never remove again. The marker would also do nothing it appears to do:
+        // UserProvisioningMiddleware reads the anonymous arm first and returns, so the two markers are
+        // mutually exclusive and UserProvisioningRouteTests holds them disjoint.
+        RouteGroupBuilder anonymous = endpoints.MapGroup("/api/recovery-codes").AllowAnonymous();
+
+        // POST to a sub-resource rather than a verb: the thing being created is a redemption of the
+        // account's set. 200 rather than 201, and with no Location header, for the reason the assertion
+        // leg answers 200 — what this creates is a session, and a session is deliberately not a
+        // resource this API exposes at an address.
+        anonymous.MapPost("/redemption", async (
+            RedemptionRequest request,
+            RedeemRecoveryCodeHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            RedeemedRecoveryCode redemption = await handler.HandleAsync(
+                new RedeemRecoveryCodeCommand(request.Verifier),
+                cancellationToken);
+
+            // The kind, the expiry and what is left — and deliberately no session id, for the reason
+            // AssertionResponse states: returning the row's id would hand the client a stable handle to
+            // a session, and the likeliest way this design is broken later is somebody deciding that
+            // handle is close enough to a token to start accepting it. Do not add it.
+            //
+            // The kind is converted here rather than left to the serializer because
+            // ConfigureHttpJsonOptions registers JsonStringEnumConverter with no naming policy, so a
+            // SessionKind would go over the wire as "Full" while the column, and every other spelling
+            // of it in this product, reads "full". AssertionResponse makes the same conversion at the
+            // same boundary.
+            return TypedResults.Ok(new RedemptionResponse(
+                JsonNamingPolicy.CamelCase.ConvertName(redemption.Kind.ToString()),
+                redemption.ExpiresAtUtc,
+                redemption.Remaining));
+        });
+
         return endpoints;
     }
 
@@ -133,6 +185,43 @@ public static class RecoveryCodeEndpoints
     /// there is no second id space for it to be confused with.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// The verifier being presented, and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One member and no second one.</b> There is nothing else a redemption may carry: an account
+    /// id, an email or a credential id would each be a value the server would have to either ignore or
+    /// trust, and trusting one would let an anonymous caller name the account a code is matched
+    /// against.
+    /// </para>
+    /// <para>
+    /// <b>Not <c>required</c></b>, deliberately and for the reason
+    /// <see cref="RecoveryCodeGenerationRequest" /> gives about its own members: a body of <c>{}</c>
+    /// binds this to <see langword="null" /> and reaches the handler's own decode, which answers the
+    /// same 401 every other refusal answers. Marking it required would buy a framework 400 that tells
+    /// an anonymous caller the server has an opinion about the member's shape before it has refused
+    /// them, and it would be a second answer this route can give.
+    /// </para>
+    /// <para>
+    /// That envelope covers what binds, not what fails to. No body at all, a literal <c>null</c>, or a
+    /// member of the wrong JSON type is a framework 400 raised before the handler is entered, and the
+    /// gap is accepted for the reason the erasure states — a deserialization failure is a fact about
+    /// the caller's own request and says nothing about what is stored.
+    /// </para>
+    /// </remarks>
+    private sealed record RedemptionRequest(string? Verifier);
+
+    /// <summary>
+    /// What a redeemed code bought: how much of the account the sign-in reaches, until when, and how
+    /// many codes the card has left.
+    /// </summary>
+    /// <remarks>
+    /// The kind is a string rather than a <c>SessionKind</c> so the spelling on the wire is the
+    /// column's, decided at this boundary — see the conversion at the call site.
+    /// </remarks>
+    private sealed record RedemptionResponse(string Kind, DateTime ExpiresAtUtc, int Remaining);
+
     private sealed record RecoveryCodeGenerationRequest(
         IReadOnlyList<string> Verifiers,
         string CredentialId,
