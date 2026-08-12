@@ -15,17 +15,15 @@
 
 This area covers **who a user is** and how that identity comes to exist. Users are not registered
 through a form — they are provisioned transparently from their Google sign-in, on the first request
-they make **to a route that declares it may create an account**. Every other authenticated route
-resolves an existing account or refuses; it never mints one.
-
-A user owns **Budgets** and nothing else. Everything else — accounts, category groups, categories,
-payees, transactions — belongs to a budget, so **the budget, not the user, is the unit of tenancy.**
-That invariant and the isolation rules for the money data live in [budgets.md](budgets.md); this area
-does not duplicate them. What it does own is the identity, its claims, the provisioning step that
-resolves a Google principal into an internal user together with the ambient budget for the request,
-and the isolation of the identity rows themselves — `users`, `budgets`, `sessions` and
-`passkey_signature_counters` are the tables scoped to a **user** rather than to a budget, and that
-rule has its canonical statement here.
+they make **to a route that declares it may create an account**; every other authenticated route
+resolves an existing account or refuses, and never mints one. A user owns **Budgets** and nothing
+else. Everything else — accounts, category groups, categories, payees, transactions — belongs to a
+budget, so **the budget, not the user, is the unit of tenancy.** That invariant and the isolation
+rules for the money data live in [budgets.md](budgets.md); this area does not duplicate them. What it
+does own is the identity, its claims, the provisioning step that resolves a Google principal into an
+internal user together with the ambient budget for the request, and the isolation of the identity
+rows themselves — `users`, `budgets`, `sessions` and `passkey_signature_counters` are the tables
+scoped to a **user** rather than to a budget, and that rule has its canonical statement here.
 
 ## Key Entities
 
@@ -101,32 +99,35 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ### MUST
 
-- **Money data is isolated by budget; the identity rows are isolated by user.** The MUST/MUST NOT
-  rules for the first — every account, category group, category, payee and transaction belonging to
-  exactly one budget, per-budget name uniqueness and ordering, no response combining budgets — are
-  documented once, in [budgets.md](budgets.md#constraints). A user reaches that data only through
-  the budget they own, so for money "a user can only see their own data" is a consequence of budget
-  isolation rather than a separate rule.
+- **Money data is isolated by budget; the identity rows are isolated by user.**
+  - **Why**: the MUST/MUST NOT rules for the first — every account, category group, category, payee
+    and transaction belonging to exactly one budget, per-budget name uniqueness and ordering, no
+    response combining budgets — are documented once, in [budgets.md](budgets.md#constraints). A
+    user reaches that data only through the budget they own, so for money "a user can only see their
+    own data" is a consequence of budget isolation rather than a separate rule.
 
-  The tables that name a person are the exception, and they carry their own rule: `users`, `budgets`,
-  `sessions` and `passkey_signature_counters` are policed by a `user_isolation` policy comparing `id`
-  and `user_id` against the session's authenticated user. Budget isolation cannot express that — a
-  budget *is* the tenant, so there is no ambient budget to check a budgets row against — and leaving
-  it to application code would make the tables that name a person the only ones the database does not
-  guard. See [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
+    The tables that name a person are the exception, and they carry their own rule: `users`,
+    `budgets`, `sessions` and `passkey_signature_counters` are policed by a `user_isolation` policy
+    comparing `id` and `user_id` against the session's authenticated user. Budget isolation cannot
+    express that — a budget *is* the tenant, so there is no ambient budget to check a budgets row
+    against — and leaving it to application code would make the tables that name a person the only
+    ones the database does not guard. See
+    [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
 
-  Three tables that name a person are nonetheless **exempt**, and each for the same reason:
-  `credentials`, `passkey_public_keys` and `recovery_code_hashes` are read to work out *who is asking*
-  and *whether it is really them*, before the request has an identity a policy could be keyed on. An
-  exemption is granted to a query but applied to a whole table, so each pins the exact column set its
-  reason was argued over, and a new column there goes red until someone moves it somewhere policed.
-  See [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
-  and [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md). The third is
-  the sharpest of them: a recovery code is redeemed by an **anonymous** request, so the lookup by hash
-  is what establishes the identity, and a policy keyed on `app.current_user_id` would refuse the very
-  query that produces the value it wants to compare against — loudly, with `22P02`, on every
-  redemption. `POST /api/recovery-codes/redemption` is the request that makes that concrete, and the
-  account it publishes is the one the matched row carries rather than one anything asked for.
+    Three tables that name a person are nonetheless **exempt**, and each for the same reason:
+    `credentials`, `passkey_public_keys` and `recovery_code_hashes` are read to work out *who is
+    asking* and *whether it is really them*, before the request has an identity a policy could be
+    keyed on. An exemption is granted to a query but applied to a whole table, so each pins the
+    exact column set its reason was argued over, and a new column there goes red until someone moves
+    it somewhere policed. See
+    [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
+    and [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md). The
+    third is the sharpest of them: a recovery code is redeemed by an **anonymous** request, so the
+    lookup by hash is what establishes the identity, and a policy keyed on `app.current_user_id`
+    would refuse the very query that produces the value it wants to compare against — loudly, with
+    `22P02`, on every redemption. `POST /api/recovery-codes/redemption` is the request that makes
+    that concrete, and the account it publishes is the one the matched row carries rather than one
+    anything asked for.
   - **Enforced in**: the `user_isolation` policies live beside the grants in
     `BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration;
     `SessionContextInterceptor` puts `app.current_user_id` on every connection the context opens, so
@@ -148,12 +149,18 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     that resurrection is unerasable: the fresh account holds no passkey, so the re-authentication gate
     in front of erasure refuses it forever. "Leaving the product means actually leaving" is the claim
     [erasure.md](erasure.md) opens with, and this is what keeps it true of the erasure path itself.
-  - **Opt-in, and the polarity is the whole rule.** Marking the routes that must *not* mint leaves the
-    mint set as "everything else", so the stale token resurrects the account through `GET
-    /api/transactions` and the fix buys nothing. It also fails **silently**: a new endpoint whose
-    author forgets the marker mints, and nothing says so. Under opt-in a forgotten marker gives
-    brand-new users a `401` on that group — loud, caught by any integration test, and it writes no row
-    on the way past.
+    - **Opt-in, and the polarity is the whole rule.** Marking the routes that must *not* mint leaves
+      the mint set as "everything else", so the stale token resurrects the account through
+      `GET /api/transactions` and the fix buys nothing. It also fails **silently**: a new endpoint
+      whose author forgets the marker mints, and nothing says so. Under opt-in a forgotten marker
+      gives brand-new users a `401` on that group — loud, caught by any integration test, and it
+      writes no row on the way past.
+    - **What it does not fix, stated rather than implied**: a client that calls a *marked* route on
+      app boot still resurrects an erased account within the token's remaining life. That hole is
+      older than this rule and closes when account creation becomes a consented act and the six
+      markers collapse to one. What this rule buys today is that the erasure path and every
+      identity-bearing route beside it write nothing — so an account is not resurrected by the act
+      of trying to erase it again.
   - **Enforced in**: `Api/Infrastructure/ProvisionsUserAttribute.cs`, attached with
     `.WithMetadata(...)` to the **route group** in six endpoint files — accounts, transactions,
     categories, category groups, payees, currencies — so the whole minting surface is six greppable
@@ -161,18 +168,13 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     one place. `UserProvisioningRouteTests.ProvisionsUserMetadata_IsCarriedByExactlyTheDataRouteGroups`
     pins the set in both directions, so a marker added to `/api/passkeys` "so registration works" fails
     rather than quietly reopening the door.
-  - **A client must reach a marked route before any `/api/passkeys/*` or `/api/me/*` call.** Neither
-    the passkey groups nor the erasure route mints, so a brand-new identity that goes straight to
-    `POST /api/passkeys/registration/options` is refused — onboarding is ordered: provider sign-in, one
-    request to a marked group, then the passkey. Today that ordering lives only in
-    `ApiFactory.EstablishAccountAsync` and bites whoever builds the client's passkey flow, as a 401 at
-    the first step. It disappears when account creation becomes a consented act and the six markers
-    collapse to one.
-  - **What it does not fix, stated rather than implied**: a client that calls a *marked* route on app
-    boot still resurrects an erased account within the token's remaining life. That hole is older than
-    this rule and closes when account creation becomes a consented act and the six markers collapse to
-    one. What this rule buys today is that the erasure path and every identity-bearing route beside it
-    write nothing — so an account is not resurrected by the act of trying to erase it again.
+    - **A client must reach a marked route before any `/api/passkeys/*` or `/api/me/*` call.**
+      Neither the passkey groups nor the erasure route mints, so a brand-new identity that goes
+      straight to `POST /api/passkeys/registration/options` is refused — onboarding is ordered:
+      provider sign-in, one request to a marked group, then the passkey. Today that ordering lives
+      only in `ApiFactory.EstablishAccountAsync` and bites whoever builds the client's passkey flow,
+      as a 401 at the first step. It disappears when account creation becomes a consented act and
+      the six markers collapse to one.
   - **Counterexample**: answering the unmarked-and-unresolved case with `204` on the erasure route, on
     the grounds that "no account" satisfies erasure's post-condition. It reads well and it is wrong: it
     creates a path through the erasure handler that reports success having verified nothing, which is
@@ -201,6 +203,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     reached at — without either we cannot provision a user. `email_verified` decides whether that
     address may be registered at all: an address the provider will not vouch for is one anybody could
     have typed, and accepting it would let a token claim an address its holder never proved.
+    - **Why here and not in the database**: the rule is about a token, and the database cannot
+      inspect one. Pushing it lower would mean procedural logic, which
+      [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out. The API
+      boundary is the lowest layer capable of enforcing it.
   - **Enforced in**: `UserProvisioningMiddleware` returns `401` (ProblemDetails, "missing required
     claims") when `sub` or `email` is absent, and `401` ("email address is not asserted as verified")
     when `email_verified` is absent or is anything `bool.TryParse` does not read as `true` — `"false"`
@@ -210,9 +216,6 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     `AuthenticatedRequest_ExistingAccount_EmailNotAssertedVerified_Returns401ProblemJson` pins. The
     regression it guards against is moving the check below the credential lookup on the reasoning
     that a known user need not be re-gated.
-  - **Why here and not in the database**: the rule is about a token, and the database cannot inspect
-    one. Pushing it lower would mean procedural logic, which [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md)
-    rules out. The API boundary is the lowest layer capable of enforcing it.
 
 - **The verified-email claim is read and never stored.**
   - **Why**: it answers one question — may this address be registered — and once answered it holds
@@ -233,23 +236,40 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     entity's property surface, so a field reappearing in the domain fails before it can reach a
     migration. The schema test reads the catalog rather than the EF model on purpose: a pinned set
     checked against the same code that would have had to notice the column proves nothing.
-  - **One candidate column has already been argued and deferred: `default_budget_id`.** PostgreSQL
-    cannot express "a user owns at least one budget" without either a trigger — which
-    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out — or a
-    circular `users.default_budget_id → budgets(id)`, `NOT NULL DEFERRABLE INITIALLY DEFERRED`,
-    checked at commit. That would make "a user with no budget" *unstorable* rather than merely
-    unreached, which one save cannot do; see [budgets.md](budgets.md). It is the one column whose
-    case is already made, and it is deferred rather than refused, because unlike every claim this
-    rule exists to keep out it is a structural pointer rather than a fact about the person. Whoever
-    takes it up owns the erasure path — the cascade would then run against a cycle — and owes this
-    pin an argument rather than an edit. Read the decision-log entry first; do not treat the
-    deferral as permission.
+    - **One candidate column has already been argued and deferred: `default_budget_id`.** PostgreSQL
+      cannot express "a user owns at least one budget" without either a trigger — which
+      [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out — or a
+      circular `users.default_budget_id → budgets(id)`, `NOT NULL DEFERRABLE INITIALLY DEFERRED`,
+      checked at commit. That would make "a user with no budget" *unstorable* rather than merely
+      unreached, which one save cannot do; see [budgets.md](budgets.md). It is the one column whose
+      case is already made, and it is deferred rather than refused, because unlike every claim this
+      rule exists to keep out it is a structural pointer rather than a fact about the person. Whoever
+      takes it up owns the erasure path — the cascade would then run against a cycle — and owes this
+      pin an argument rather than an edit. Read the decision-log entry first; do not treat the
+      deferral as permission.
 
 - **A column on any table MUST NOT store an analytics identifier, an advertising identifier, a
   device fingerprint, or a behavioural event record.**
   - **Why**: the account row being minimal is worth little if the same data arrives one table over.
     The product has no reader for any of it, and a column nothing reads is data held for no one — the
     exact shape the minimal account row exists to refuse.
+    - **What a first-party security record may still carry**: the session or credential's own
+      identifier, when it began, when it expires or was revoked, and when it was last used — each of
+      those is read in order to **end** access, and a record that cannot say which session to revoke
+      cannot be revoked. What such a record may not do is accumulate one row per sign-in as history,
+      or count them. This is why the vocabulary refuses phrases like `session_count` and `last_login`
+      rather than the bare words `session` and `login`: a rule that cannot tell a revocable session
+      from a measured one would refuse the security feature along with the surveillance. `sessions`
+      is the record that shape was argued for, and it carries less than the rule permits — `id`,
+      `user_id`, `credential_id`, `kind`, `created_at_utc`, `expires_at_utc`, `revoked_at_utc`, and
+      nothing else. See [sessions.md](sessions.md).
+    - **Why here and not in the database**: PostgreSQL cannot refuse a column for what its name
+      connotes, and reaching it would need an event trigger — procedural logic, which
+      [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out. A
+      forbidden column can only arrive through a migration, so the build is genuinely the lowest
+      capable layer. Unlike the row-level security coverage check, this one is deliberately **not**
+      run at deploy time: a policy fails open and can drift from outside the repository, a column
+      name cannot.
   - **Enforced in**: `ProhibitedColumnVocabulary`
     (`Infrastructure/Persistence/Provisioning/ProhibitedColumnVocabulary.cs`) is the single spelling
     of the list; `Schema_HoldsNoAnalyticsOrTrackingIdentifier`
@@ -265,31 +285,16 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     which narrows — or a genuinely prohibited column somebody just added, in which case the pattern
     is right and it is the **schema** that changes. Reading it only the first way is how a real
     tracking column gets made green by weakening the rule that caught it.
-  - **Each pattern is matched in the plural as well as as written.** The matcher compares whole
-    tokens and does not stem, so `device_fingerprints`, `page_views` and `event_logs` walked past a
-    list that refused their singulars — and every table in this schema is named in the plural. The
-    plural comes from `IdentifierTokens.PluralOf`, shared with the erasure-remnant vocabulary so the
-    two cannot disagree about what a plural is.
-  - **A name can carry two patterns, and then the order of `Rules` decides.** No pattern's tokens sit
-    inside another's, so no rule shadows another — but `analytics_event_log` reaches `analytics` and
-    `event_log`, which are in different categories, and the first rule listed wins. A new pattern
-    overlapping an existing one has to say in its reason which category it means to win.
-  - **What a first-party security record may still carry**: the session or credential's own
-    identifier, when it began, when it expires or was revoked, and when it was last used — each of
-    those is read in order to **end** access, and a record that cannot say which session to revoke
-    cannot be revoked. What such a record may not do is accumulate one row per sign-in as history,
-    or count them. This is why the vocabulary refuses phrases like `session_count` and `last_login`
-    rather than the bare words `session` and `login`: a rule that cannot tell a revocable session
-    from a measured one would refuse the security feature along with the surveillance. `sessions` is
-    the record that shape was argued for, and it carries less than the rule permits — `id`,
-    `user_id`, `credential_id`, `kind`, `created_at_utc`, `expires_at_utc`, `revoked_at_utc`, and
-    nothing else. See [sessions.md](sessions.md).
-  - **Why here and not in the database**: PostgreSQL cannot refuse a column for what its name
-    connotes, and reaching it would need an event trigger — procedural logic, which
-    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out. A forbidden
-    column can only arrive through a migration, so the build is genuinely the lowest capable layer.
-    Unlike the row-level security coverage check, this one is deliberately **not** run at deploy
-    time: a policy fails open and can drift from outside the repository, a column name cannot.
+    - **Each pattern is matched in the plural as well as as written.** The matcher compares whole
+      tokens and does not stem, so `device_fingerprints`, `page_views` and `event_logs` walked past a
+      list that refused their singulars — and every table in this schema is named in the plural. The
+      plural comes from `IdentifierTokens.PluralOf`, shared with the erasure-remnant vocabulary so
+      the two cannot disagree about what a plural is.
+    - **A name can carry two patterns, and then the order of `Rules` decides.** No pattern's tokens
+      sit inside another's, so no rule shadows another — but `analytics_event_log` reaches
+      `analytics` and `event_log`, which are in different categories, and the first rule listed wins.
+      A new pattern overlapping an existing one has to say in its reason which category it means to
+      win.
 
 - **An email address belongs to at most one user, compared case-insensitively.**
   - **Why**: Two rows holding the same address are two people as far as every budget is concerned,
@@ -304,11 +309,13 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ### MUST NOT
 
-- **A request MUST NOT reach data outside its ambient budget.** Stated and enforced in
-  [budgets.md](budgets.md#must-not) — another budget's row is unreachable under the `budget_isolation`
-  row-level security policies, resolves to `null` through the `BudgetIsolation` filter above them,
-  and surfaces as a 404 when it was the target of the request or a 400 when it was a reference inside
-  one, never a 403.
+- **A request MUST NOT reach data outside its ambient budget.**
+  - **Why**: stated in [budgets.md](budgets.md#must-not), which owns the tenancy rules — this file
+    does not restate them.
+  - **Enforced in**: another budget's row is unreachable under the `budget_isolation` row-level
+    security policies, resolves to `null` through the `BudgetIsolation` filter above them, and
+    surfaces as a 404 when it was the target of the request or a 400 when it was a reference inside
+    one, never a 403.
 
 ## Business Rules & Invariants
 
@@ -321,6 +328,9 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   what the account holds — an address the user never asked to change is not an address they can be
   reached at, and silently adopting one would move the account's only human-readable identifier
   because a token said so.
+  - **Consequence, accepted**: the stored address goes stale, and there is no way to update it yet.
+    Changing it is its own operation, requiring its own fresh authorization exchange, and that is
+    not built.
 - **Enforced in**: two handlers, split along the line the rule above draws.
   `ResolveUserHandler` (`Application/Users/EnsureUser/ResolveUserHandler.cs`) finds the account and
   returns `ProvisionedUser(UserId, BudgetId)` or `null`; it never creates one, and
@@ -347,10 +357,7 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   Which is also why the address is not refreshed: the credential is the identity, so a changed
   address is new *information about* the account, not a new account and not a fact the account must
   adopt.
-- **Consequence, accepted**: the stored address goes stale, and there is no way to update it yet.
-  Changing it is its own operation, requiring its own fresh authorization exchange, and that is not
-  built.
-- **Source**: `[SOURCE: discussion — 2026-08-03]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -362,13 +369,26 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   different value the moment the person changes their Google address, and the account would still be
   reachable only at the old one. So the disagreement between the two is not a defect this endpoint
   papers over; it is the reason the endpoint exists rather than the claim being read client-side.
-- **Only the email, because only the email is displayed.** An internal user id handed to a client is
-  an identifier the client will eventually send back, and every tenancy value in this API is resolved
-  server-side from the authenticated subject and never addressed by the caller — the rule
-  `BudgetRouteConstructionTests` holds the route table to, and the one `ExportDataQuery` and
-  `EraseAccountCommand` state for their own inputs. Publishing one for a field nothing renders is the
-  first half of a client-supplied tenancy parameter. Widening the response later is additive and
-  cheap; narrowing it is breaking, which is why the narrow shape is the one that ships.
+  - **Only the email, because only the email is displayed.** An internal user id handed to a client
+    is an identifier the client will eventually send back, and every tenancy value in this API is
+    resolved server-side from the authenticated subject and never addressed by the caller — the rule
+    `BudgetRouteConstructionTests` holds the route table to, and the one `ExportDataQuery` and
+    `EraseAccountCommand` state for their own inputs. Publishing one for a field nothing renders is
+    the first half of a client-supplied tenancy parameter. Widening the response later is additive
+    and cheap; narrowing it is breaking, which is why the narrow shape is the one that ships.
+  - **Handing back null is a race, not a 404.** No *stored* state produces it: the account, its
+    first credential and its default budget land in one `SaveChanges`, and `credentials` cascades
+    from `users` on delete, so a live credential standing over a missing user row is not a shape the
+    schema holds. What produces one is **read skew** — the middleware resolves the identity out of
+    `credentials`, then reads `budgets`, and only then does the handler read `users`, three round
+    trips sharing no transaction, so an erasure committing inside that window leaves the earlier
+    reads valid and this one empty. The handler throws and the caller sees the 500
+    `GlobalExceptionHandler` writes, which is also how `ResolveUserHandler` answers the same race one
+    step earlier. Answering "no such account" to a request the pipeline has just authenticated *as
+    that account* would file it as an ordinary missing resource, which is the one shape nobody
+    investigates.
+  - **The address change is not here.** `GET /api/me` is a read; nothing in the product writes
+    `users.email` after the insert, and the gap below still stands.
 - **Enforced in**: `GetSignedInUserHandler` reads `IUserContext.UserId` and never an id from the
   request — `GetSignedInUserQuery` carries no member and may not gain one. It projects the single
   column through the existing `IUserAccountReadService.FindEmailAsync`; `user_isolation` on `users`
@@ -381,21 +401,6 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   makes the read meaningful — a second account established *after* the first, each asking for itself,
   asserted in both directions, because with one account every wrong answer and the right one are the
   same value.
-- **Counterexample**: a response carrying `id` or `createdAtUtc` is exactly the widening this rule
-  refuses. `SignedInUserEndpointTests.Me_ResponseCarriesTheEmailAndNothingElse` enumerates the
-  arriving members and joins them, so it reports `"createdAtUtc, email"` rather than that a count
-  moved — the member to delete is named in the failure. It is a pin, green the day it was written,
-  and it was watched fail against a deliberately widened record before it was trusted.
-- **Handing back null is a race, not a 404.** No *stored* state produces it: the account, its first
-  credential and its default budget land in one `SaveChanges`, and `credentials` cascades from
-  `users` on delete, so a live credential standing over a missing user row is not a shape the schema
-  holds. What produces one is **read skew** — the middleware resolves the identity out of
-  `credentials`, then reads `budgets`, and only then does the handler read `users`, three round trips
-  sharing no transaction, so an erasure committing inside that window leaves the earlier reads valid
-  and this one empty. The handler throws and the caller sees the 500 `GlobalExceptionHandler` writes,
-  which is also how `ResolveUserHandler` answers the same race one step earlier. Answering "no such
-  account" to a request the pipeline has just authenticated *as that account* would file it as an
-  ordinary missing resource, which is the one shape nobody investigates.
 - **Example**: a person registered as `old@example.com` changes their Google address to
   `new@example.com` and signs in again. The token now asserts `new@example.com`; `GET /api/me`
   answers `{"email":"old@example.com"}`, because that is the address the account is reachable at
@@ -405,9 +410,12 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   address is returned and that the claim's address appears nowhere in the body. Without the second
   half, an endpoint echoing the claim passes: in every other test the claim and the stored row hold
   the same string, so nothing there could tell them apart.
-- **The address change is not here.** `GET /api/me` is a read; nothing in the product writes
-  `users.email` after the insert, and the gap below still stands.
-- **Source**: `[SOURCE: user-story — 2026-08-10]`
+- **Counterexample**: a response carrying `id` or `createdAtUtc` is exactly the widening this rule
+  refuses. `SignedInUserEndpointTests.Me_ResponseCarriesTheEmailAndNothingElse` enumerates the
+  arriving members and joins them, so it reports `"createdAtUtc, email"` rather than that a count
+  moved — the member to delete is named in the failure. It is a pin, green the day it was written,
+  and it was watched fail against a deliberately widened record before it was trusted.
+- **Source**: `[SOURCE: user-story]`
 
 ---
 
@@ -418,15 +426,16 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   accounts. That identity is written whole at registration and has no edit that means anything. The
   address is the one column on `users` an edit could ever legitimately touch — the grant is what an
   edit *may* reach, and today no code path reaches it at all.
-- **Scope, stated precisely because the obvious reading is wrong**: the identity columns *are* every
-  column of `credentials`, so the table holds no `UPDATE` grant of any shape. Read that as a property
-  of the table rather than as the current state of a list. A passkey's mutable fact — the signature
-  counter its authenticator reports — lives on `passkey_signature_counters`, which carries `user_id`
-  and is policed, because it is compared only *after* an assertion's signature verifies, while
-  `credentials` is exempt from row-level security precisely because it is read *before* that. The rule
-  being defended is "a credential's identity is never rewritten" rather than "a credential is never
-  written", and the boundary that keeps the two apart is a table rather than a column list. See
-  [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
+  - **Scope, stated precisely because the obvious reading is wrong**: the identity columns *are*
+    every column of `credentials`, so the table holds no `UPDATE` grant of any shape. Read that as a
+    property of the table rather than as the current state of a list. A passkey's mutable fact — the
+    signature counter its authenticator reports — lives on `passkey_signature_counters`, which
+    carries `user_id` and is policed, because it is compared only *after* an assertion's signature
+    verifies, while `credentials` is exempt from row-level security precisely because it is read
+    *before* that. The rule being defended is "a credential's identity is never rewritten" rather
+    than "a credential is never written", and the boundary that keeps the two apart is a table
+    rather than a column list. See
+    [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
 - **Enforced in**: **database-owned, restated in the domain.** The application role has no `UPDATE`
   grant on `credentials` of any shape — not a column list with nothing on it, but no grant at all —
   so every `UPDATE` is refused with `42501` on the connection every request is served by. The role
@@ -444,14 +453,14 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   `Database_RefusesToChangeAUsersCreatedAt_WhileStillAllowingProfileEdits` pins that the users grant
   really is a list. Above them, neither `Domain/Users/User.cs` nor `Domain/Users/Credential.cs`
   exposes a mutator: both are written whole and never edited.
+  - **Gap, stated rather than hidden**: the `users` `UPDATE` grant now has no caller. It is a
+    privilege the role holds and nothing exercises, which is the opposite of how the rest of this
+    matrix is built. It stays because the gated email change and the erasure scheduling that need it
+    are both specified and both next; if either slips, the grant should be revoked rather than left
+    standing.
 - **Example**: nothing in the application can change a stored email, so the 409 on the insert path
   is the only outcome a duplicate address can produce.
-- **Gap, stated rather than hidden**: the `users` `UPDATE` grant now has no caller. It is a
-  privilege the role holds and nothing exercises, which is the opposite of how the rest of this
-  matrix is built. It stays because the gated email change and the erasure scheduling that need it
-  are both specified and both next; if either slips, the grant should be revoked rather than left
-  standing.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -465,14 +474,15 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   is the one credential type that can never open a session reaching budget content: an account left
   holding only its federated credential could still sign in, still could not reach its own money, and
   could not even prove presence for an erasure.
-- **The floor is "the last passkey" and a set of recovery codes does not lift it**, which is the
-  reading a later story will be tempted into. A recovery-codes credential derives a `Full` session, so
-  it looks like the second thing that should satisfy the floor. It cannot, and the reason is circular
-  by construction: **issuing a set requires a fresh passkey assertion**, so an account holding codes
-  and no passkey can never regenerate them, and once those codes are spent or lost there is nothing
-  left to re-authenticate with. Allowing the last passkey to be revoked because codes exist would trade
-  a state a person can recover from for one nobody can. The floor moves only when some path can issue a
-  recovery factor without already holding one. See [recovery-codes.md](recovery-codes.md).
+  - **The floor is "the last passkey" and a set of recovery codes does not lift it**, which is the
+    reading a later story will be tempted into. A recovery-codes credential derives a `Full` session,
+    so it looks like the second thing that should satisfy the floor. It cannot, and the reason is
+    circular by construction: **issuing a set requires a fresh passkey assertion**, so an account
+    holding codes and no passkey can never regenerate them, and once those codes are spent or lost
+    there is nothing left to re-authenticate with. Allowing the last passkey to be revoked because
+    codes exist would trade a state a person can recover from for one nobody can. The floor moves
+    only when some path can issue a recovery factor without already holding one. See
+    [recovery-codes.md](recovery-codes.md).
 - **Enforced in**: `RevokePasskeyHandler`, and **nowhere below it.** The rule is a cross-row claim —
   no `CHECK` sees another row, no unique index expresses "at least one" — and both mechanisms that
   could reach it are refused: a trigger by
@@ -480,23 +490,23 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   column by the pinned exemption column set. ADR 0002 requires the owning doc to say *why* whenever a
   rule sits above its lowest capable layer, and this paragraph is that statement. The refusal answers
   **409**: the request is well-formed and would succeed the moment a second passkey exists.
-- **How the target is scoped, and why a delete by primary key is sound**: the credential is loaded
-  through `FindPasskeyCredentialAsync(credentialId, userId)` — id, owner and type in one predicate —
-  and the loaded **entity** is handed to the delete, never an id. `credentials` is exempt from
-  row-level security, so that read is the only thing scoping the statement. What makes it sufficient
-  is the rule immediately above: `credentials.user_id` is immutable, so the binding between an id and
-  its owner cannot move between the read and the write. See
-  [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
-- **The federated credential is refused by construction rather than by a branch**: the `type`
-  predicate sits inside the same lookup, so revoking it answers the same **404** an unknown id
-  answers. A branch on `Type` would produce a better client message and is exactly the kind of
-  comparison a later refactor deletes.
+  - **How the target is scoped, and why a delete by primary key is sound**: the credential is loaded
+    through `FindPasskeyCredentialAsync(credentialId, userId)` — id, owner and type in one
+    predicate — and the loaded **entity** is handed to the delete, never an id. `credentials` is
+    exempt from row-level security, so that read is the only thing scoping the statement. What makes
+    it sufficient is the rule immediately above: `credentials.user_id` is immutable, so the binding
+    between an id and its owner cannot move between the read and the write. See
+    [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
+  - **The federated credential is refused by construction rather than by a branch**: the `type`
+    predicate sits inside the same lookup, so revoking it answers the same **404** an unknown id
+    answers. A branch on `Type` would produce a better client message and is exactly the kind of
+    comparison a later refactor deletes.
+  - **Known gap**: the count and the delete are not serialized against each other, so two concurrent
+    revocations can leave an account with zero passkeys — see [passkeys.md](passkeys.md).
 - **Counterexample**: counting the account's passkeys through the list projection instead of the
   repository. A rule keyed on a value chosen for display is what the read-service/repository split
   exists to prevent.
-- **Known gap**: the count and the delete are not serialized against each other, so two concurrent
-  revocations can leave an account with zero passkeys — see [passkeys.md](passkeys.md).
-- **Source**: `[SOURCE: user-story — 2026-08-10]`
+- **Source**: `[SOURCE: user-story]`
 
 ---
 
@@ -509,13 +519,6 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   is `recovery_code_hashes` — its own grant is beside the point for this path. The asymmetry is
   worth reading twice: erasure needs neither of those two grants and would still work if both were
   revoked tomorrow.
-- **It is not sufficient on its own.** Five edges in the owned graph are `Restrict` rather than
-  `Cascade`, and erasure empties the one table that is the child of four of them — `transactions` —
-  before it deletes this row; see [erasure.md](erasure.md), which owns the sequence and the reasons
-  for it. The whole sequence runs on **one** session: `SessionContextInterceptor` writes
-  `app.current_user_id` and `app.current_budget_id` in the same statement on every connection
-  open, so the connection serving an authenticated request already names both the user
-  `user_isolation` reads and the budget `budget_isolation` reads.
 - **Why**: erasing an account has to run as the application rather than on an elevated connection —
   that is the whole point of [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md), and
   a role that needed a database administrator to delete a row would dissolve it. Every owned table
@@ -525,17 +528,24 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   through internal triggers running with the privileges of the **referencing table's owner**, not of
   the role that issued the statement, so the cascade reaches every one of those tables with no grant
   on any of them.
-- **The grants the cascade does without are a decision, not an oversight.** `budgets`, `payees`,
-  `sessions`, `passkey_public_keys` and `passkey_signature_counters` hold no `DELETE` of any shape,
-  and two of those absences would cost something real to fill. `passkey_public_keys` is exempt from
-  row-level security — it is read *before* a request has an identity a policy could key on — so a
-  `DELETE` there would be **unpoliced**, and one statement carrying the wrong id would remove
-  somebody else's only way in with nothing to catch it; that is the hazard `credentials`' own
-  `DELETE` already carries, bounded by the application and by nothing beneath it. On
-  `passkey_signature_counters` a `DELETE` would reopen counter rewind: deleting the row and
-  re-inserting it at zero is the same thing the deliberately single-column
-  `GRANT UPDATE (signature_counter)` exists to forbid. The cascade reaches every one of them safely,
-  because it descends from one row rather than holding a privilege over a table.
+  - **It is not sufficient on its own.** Five edges in the owned graph are `Restrict` rather than
+    `Cascade`, and erasure empties the one table that is the child of four of them — `transactions` —
+    before it deletes this row; see [erasure.md](erasure.md), which owns the sequence and the reasons
+    for it. The whole sequence runs on **one** session: `SessionContextInterceptor` writes
+    `app.current_user_id` and `app.current_budget_id` in the same statement on every connection
+    open, so the connection serving an authenticated request already names both the user
+    `user_isolation` reads and the budget `budget_isolation` reads.
+  - **The grants the cascade does without are a decision, not an oversight.** `budgets`, `payees`,
+    `sessions`, `passkey_public_keys` and `passkey_signature_counters` hold no `DELETE` of any
+    shape, and two of those absences would cost something real to fill. `passkey_public_keys` is
+    exempt from row-level security — it is read *before* a request has an identity a policy could
+    key on — so a `DELETE` there would be **unpoliced**, and one statement carrying the wrong id
+    would remove somebody else's only way in with nothing to catch it; that is the hazard
+    `credentials`' own `DELETE` already carries, bounded by the application and by nothing beneath
+    it. On `passkey_signature_counters` a `DELETE` would reopen counter rewind: deleting the row and
+    re-inserting it at zero is the same thing the deliberately single-column
+    `GRANT UPDATE (signature_counter)` exists to forbid. The cascade reaches every one of them
+    safely, because it descends from one row rather than holding a privilege over a table.
 - **Enforced in**: **database-owned.** `GRANT SELECT, INSERT, DELETE ON users` in
   `app-role-grants.sql`, scoped by the `user_isolation` policy — which is `FOR ALL`, so it constrains
   the delete exactly as it constrains a read.
@@ -546,12 +556,12 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   which is the policy holding rather than the grant matrix.
   `AppRoleGrantMatrixTests.AppRoleGrants_MatchTheDeclaredMatrix` pins the whole privilege set in both
   directions, so a `DELETE` added to a seventh table fails as loudly as one removed from this one.
-- **Its caller is the erasure endpoint.** `POST /api/me/erasure` reaches this grant through
-  `EraseAccountHandler` and `IUserRepository.DeleteAsync`, and the id it deletes is read from
-  `IUserContext` rather than from the route or the body. `EraseAccountCommand` carries the
-  re-authentication assertion and **no field naming an account** — its members name a credential
-  handle, which the owner-scoped lookup makes incapable of selecting one. The rule is "no account may
-  be named", not "no members". See [erasure.md](erasure.md).
+  - **Its caller is the erasure endpoint.** `POST /api/me/erasure` reaches this grant through
+    `EraseAccountHandler` and `IUserRepository.DeleteAsync`, and the id it deletes is read from
+    `IUserContext` rather than from the route or the body. `EraseAccountCommand` carries the
+    re-authentication assertion and **no field naming an account** — its members name a credential
+    handle, which the owner-scoped lookup makes incapable of selecting one. The rule is "no account
+    may be named", not "no members". See [erasure.md](erasure.md).
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -574,7 +584,18 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   bound would have, so no branch in the domain tests it separately.
 - **Example**: a 300-character `email` claim is rejected by `Email.Create` with "Email must be 254
   characters or fewer." rather than being silently cut to fit.
-- **Related rule**: a federated credential's `Provider` must be a member of a **dictionary**, and its
+- **Counterexample**: assuming the column *truncates* to fit. It does not — `varchar(n)` **rejects**
+  an over-long value with SQLSTATE `22001`, which is what makes it enforcement in the sense
+  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) means. Contrast
+  `numeric(14,4)` on the money columns, which silently rounds an over-precise value and therefore
+  enforces nothing, leaving the decimal-places rule domain-owned while separate check constraints
+  carry the magnitude half. These three columns are the cleanest illustration in the schema of the
+  difference.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: A federated credential's `Provider` must be a member of a **dictionary**, and its
   `Subject` must be non-empty.
 - **Why**: `"Google"` and `"google"` are the same provider to a person and two identities to a
   unique index, so one human ends up with two accounts and neither can see the other's budget. The
@@ -594,7 +615,7 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   the null test would silently readmit a null subject.
 - **Counterexample**: adding `length(provider) > 0` "for symmetry". The dictionary already refuses an
   empty provider, and two constraints refusing the same row make the reported name nondeterministic.
-- **Source**: `[SOURCE: discussion — 2026-08-03]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -607,28 +628,21 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   *different* rule from `IX_credentials_provider_subject`, which says one account per provider
   identity: that one catches two users claiming one Google identity, this one catches one user
   holding two. Both tests exist and neither is a duplicate of the other.
-- **Gotcha**: declaring this index made EF's `ForeignKeyIndexConvention` stop generating the plain
-  `IX_credentials_user_id`, because the convention backs off as soon as *any* index covers the
-  column — uniqueness and filter irrelevant. It is therefore declared explicitly now. Removing that
-  declaration would silently leave cascade delete and every read of an account's credentials with
-  only a federated-rows-only index.
-- **The same rule shape now exists over the other self-contained type.**
-  `IX_credentials_user_id_recovery_codes`, partial on `type = 'recovery_codes'`, gives an account at
-  most **one issued set of
-  recovery codes**. Nothing else on the row refuses a second — the provider-identity index names
-  federated rows only, and every recovery-codes row carries `(NULL, NULL)`. Two sets are two
-  remaining-counts with nothing saying which one binds. The filter is load-bearing rather than tidy:
-  an **unfiltered** unique index over `user_id` enforces this rule just as well and also refuses an
-  account a second passkey, which is expressly allowed. Its `23505` is translated into a `409` naming
-  a lost race; see [recovery-codes.md](recovery-codes.md).
-- **Counterexample**: assuming the column *truncates* to fit. It does not — `varchar(n)` **rejects**
-  an over-long value with SQLSTATE `22001`, which is what makes it enforcement in the sense
-  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) means. Contrast
-  `numeric(14,4)` on the money columns, which silently rounds an over-precise value and therefore
-  enforces nothing, leaving the decimal-places rule domain-owned while separate check constraints
-  carry the magnitude half. These three columns are the cleanest illustration in the schema of the
-  difference.
-- **Source**: `[SOURCE: discussion — 2026-07-28]`
+  - **Gotcha on the index declaration**: declaring this index made EF's `ForeignKeyIndexConvention`
+    stop generating the plain `IX_credentials_user_id`, because the convention backs off as soon as
+    *any* index covers the column — uniqueness and filter irrelevant. It is therefore declared
+    explicitly now. Removing that declaration would silently leave cascade delete and every read of
+    an account's credentials with only a federated-rows-only index.
+  - **The same rule shape now exists over the other self-contained type.**
+    `IX_credentials_user_id_recovery_codes`, partial on `type = 'recovery_codes'`, gives an account
+    at most **one issued set of recovery codes**. Nothing else on the row refuses a second — the
+    provider-identity index names federated rows only, and every recovery-codes row carries
+    `(NULL, NULL)`. Two sets are two remaining-counts with nothing saying which one binds. The
+    filter is load-bearing rather than tidy: an **unfiltered** unique index over `user_id` enforces
+    this rule just as well and also refuses an account a second passkey, which is expressly allowed.
+    Its `23505` is translated into a `409` naming a lost race; see
+    [recovery-codes.md](recovery-codes.md).
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -663,7 +677,7 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   email, so the loser breaches both indexes, and PostgreSQL names whichever of them it checked
   first. The user row is written before its credential, so the email index is the one that reports
   — and that person is told their own address belongs to a different Google account.
-- **Source**: `[SOURCE: discussion — 2026-07-28]`
+- **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
 
@@ -837,9 +851,9 @@ The budget branch that runs after this, on every path, is in
   **Modelling `Credential` inside the `User` aggregate** would make atomicity automatic rather than
   argued — but the aggregate would then have to grow to hold sessions and passkeys too, and a root
   loaded on every authenticated request is the wrong place to accumulate them. `Session`,
-  `PasskeyPublicKey` and `PasskeySignatureCounter` all landed as their own aggregates for exactly
-  that reason, and each references its user and its credential by id the same way `Credential` does
-  — see [sessions.md](sessions.md).
+  `PasskeyPublicKey`, `PasskeySignatureCounter` and `RecoveryCodeHash` all landed as their own
+  aggregates for exactly that reason, and each references its user and its credential by id the same
+  way `Credential` does — see [sessions.md](sessions.md).
 
 - **Writers take `users` before `credentials`, always, and that is what makes deadlock impossible
   here.** Two transactions inserting into both tables cannot form a cycle if neither ever takes the
@@ -857,7 +871,7 @@ The budget branch that runs after this, on every path, is in
 
 - **A returning user's stored email is deliberately never refreshed, and it will go stale.** The
   obvious "fix" is to re-apply the token's claims on the existing-user branch, which is what the
-  code did until 2026-08-03. Do not restore it: the provider gates registration and is not standing
+  code once did. Do not restore it: the provider gates registration and is not standing
   authority to rewrite the account afterwards, and a silent refresh both contacts the provider on
   every request and moves the account's only reachable address without anyone asking. Changing the
   address is its own operation with its own fresh authorization, and it is not built yet.

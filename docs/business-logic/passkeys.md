@@ -7,6 +7,7 @@
 - [Constraints](#constraints)
 - [Business Rules & Invariants](#business-rules--invariants)
 - [Workflows & State Transitions](#workflows--state-transitions)
+- [Decision Trees](#decision-trees)
 - [Integration Points](#integration-points)
 - [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
 
@@ -14,30 +15,15 @@
 
 This area covers **the three WebAuthn ceremonies**: registering a passkey to an account, signing in
 with one, and re-proving possession of one before an action too destructive to take on a bearer token
-alone. It is one of the two paths that open a session — the other is redeeming a recovery code — and a
-passkey is one of the two credential types whose session reaches budget content, the other being the
-set of codes, a secret the holder possesses for the same reason. `federated` is the only type that can
-never reach budget content, because an authorization exchange returns claims rather than a secret a
-client can turn into a key. See [recovery-codes.md](recovery-codes.md) and
-[sessions.md](sessions.md).
-
-Identity — who a person is, and which credentials prove it — lives in
-[users-and-ownership.md](users-and-ownership.md). What happens after a credential has answered that
-question lives in [sessions.md](sessions.md). This file covers the answering itself.
-
-**What is built today and what is not.** Both ceremonies exist as endpoints, a verified assertion
-establishes a `Full` session, and all of it is tested. What does **not** exist: the API still
-authenticates every other request from the Google ID token it is handed. **No session token is issued
-and none is presented** — the assertion response deliberately carries no handle to the session it
-created. Registration is also not yet gated: an account exists before any passkey does, so a passkey
-is something an already-signed-in person adds rather than something registration requires.
-
-A signed-in person can now **list** every credential the account holds and **revoke** a passkey, the
-revocation gated by a fresh re-authentication exactly as erasure is. Nothing **replaces** a passkey,
-and nothing removes or replaces the **federated** credential — that is the email change, and it is
-not built. Read the revocation against [sessions.md](sessions.md) before deciding what it is worth:
-it ends the passkey's sessions, but no session authenticates a request today, so what revocation
-actually takes away is the ability to sign in again with that authenticator.
+alone. It is one of the three paths that open a session — the other two are redeeming a recovery code
+and regenerating a set that was carrying live sessions, both in [recovery-codes.md](recovery-codes.md)
+— and a passkey is one of the two credential types whose session reaches budget content, the other
+being the set of codes, a secret the holder possesses for the same reason; `federated` is the only
+type that can never, because an authorization exchange returns claims rather than a secret a client
+can turn into a key (see [sessions.md](sessions.md), which owns the count). Identity — who a person
+is, and which credentials prove it — lives in [users-and-ownership.md](users-and-ownership.md); what
+happens after a credential has answered that question lives in [sessions.md](sessions.md); this file
+covers the answering itself. What of it is built today and what is not is the first gotcha below.
 
 ## Key Entities
 
@@ -109,28 +95,37 @@ erDiagram
     See [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
 
 - **The pinned column set is what holds the exemption to its reason — not the absent `UPDATE`
-  grant.** The role holds no `UPDATE` of any shape and no `DELETE` on `passkey_public_keys`, and that
-  is a genuine narrowing, but it is not the one that matters. The hazard is that the exemption is
-  granted to a *query* and applied to a whole *table*, so every column is readable by every session
-  whoever it names. **A wrapped key or a recovery-code hash is written once and never updated** — it
-  satisfies any append-only rule perfectly while being exactly what must not land here. A red on the
-  pin means **move the column** to a table carrying `user_id`, never widen the pin.
-  - **The recovery-code hash has stopped being hypothetical, and it landed somewhere else** — on
-    `recovery_code_hashes`, with its own exemption and its own pin
-    ([ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md)). Keep the
-    example where it is. The hypothetical is what made this decision visible *before* there was
-    anything to decide about, so it is the evidence the mechanism worked rather than a line to retire
-    now that it has been used once, and the wrapped key beside it is still ahead of us.
+  grant.** A new column on an exempt table means **move the column** to a table carrying `user_id`,
+  never widen the pin.
+  - **Why**: the role holds no `UPDATE` of any shape and no `DELETE` on `passkey_public_keys`, and
+    that is a genuine narrowing, but it is not the one that matters. The hazard is that the
+    exemption is granted to a *query* and applied to a whole *table*, so every column is readable by
+    every session whoever it names. **A wrapped key or a recovery-code hash is written once and
+    never updated** — it satisfies any append-only rule perfectly while being exactly what must not
+    land here.
+    - **The recovery-code hash has stopped being hypothetical, and it landed somewhere else** — on
+      `recovery_code_hashes`, with its own exemption and its own pin
+      ([ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md)). Keep the
+      example where it is. The hypothetical is what made this decision visible *before* there was
+      anything to decide about, so it is the evidence the mechanism worked rather than a line to
+      retire now that it has been used once, and the wrapped key beside it is still ahead of us.
+  - **Enforced in**: the exact column sets pinned by the `Exemptions` entries in
+    `RowLevelSecurityCoverage` — a column added to an exempt table goes red there.
 
 - **A passkey's key and counter belong to the same person as the credential, and to a credential of
   type `passkey`.**
+  - **Why**: one person's key attached to another person's credential, or a key attached to a
+    federated credential, must be *unstorable* rather than merely unlikely — the discovery read is
+    unpoliced, so the rows themselves have to be incapable of disagreeing about whose they are.
   - **Enforced in**: a composite foreign key on each,
     `(credential_id, user_id, credential_type) → credentials (id, user_id, type)` against
     `AK_credentials_id_user_id_type`, plus a check pinning `credential_type = 'passkey'`. The same
-    idiom `sessions` uses. It makes one person's key attached to another person's credential, and a
-    key attached to a federated credential, both *unstorable* rather than merely unlikely.
+    idiom `sessions` uses.
 
 - **One authenticator credential resolves to at most one account.**
+  - **Why**: the discovery lookup resolves the account from the credential id alone — an
+    authenticator credential registered to two accounts would leave sign-in with no answer to whose
+    session to establish.
   - **Enforced in**: the unique index `IX_passkey_public_keys_webauthn_credential_id`, which is also
     the discovery lookup's index, and `PasskeyRepository.TryAddAsync`, which turns its `23505` into a
     409 by filtering on the **constraint name** rather than the SQLSTATE alone.
@@ -147,52 +142,66 @@ erDiagram
     rule sits where it does; here the answer is that there is nothing to push down, so no
     constraint, grant or policy carries any part of it.
 
-- **A challenge is single-use, and consuming one is deleting it.** `webauthn_challenges` is one of
-  the four identity tables holding `DELETE` — most of the budget-owned tables hold it too, for the
-  ordinary reason that people delete their own records, though `payees` deliberately does not. The
-  paragraph beside the grant says why this one does: these rows are nonces, and a row nobody can
-  delete is a row swept by a path that does not exist. Contrast `sessions`, where revocation writes
-  a column precisely so the row stays accountable. The other three are `users`, for a reason that
-  has nothing to do with nonces — it is the root every owned row cascades from — `credentials`,
-  which holds it for **revocation** rather than for erasure
-  ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)), and
-  `recovery_code_hashes`, whose grant rests on **this** table's sentence word for word: those rows are
-  single-use secrets too, so consuming one *is* deleting it
-  ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)). Two of the four —
-  `credentials` and `recovery_code_hashes` — have their delete scoped by the application alone,
-  because both tables are exempt from row-level security. `passkey_public_keys` and
-  `passkey_signature_counters` are emptied by the cascade and hold no `DELETE` of their own — see
-  [users-and-ownership.md](users-and-ownership.md) for why granting them one would cost something.
+- **A challenge is single-use, and consuming one is deleting it.**
+  - **Why**: these rows are nonces, and a row nobody can delete is a row swept by a path that does
+    not exist. Contrast `sessions`, where revocation writes a column precisely so the row stays
+    accountable.
+    - **The company the grant keeps.** `webauthn_challenges` is one of the four identity tables
+      holding `DELETE` — most of the budget-owned tables hold it too, for the ordinary reason that
+      people delete their own records, though `payees` deliberately does not. The other three are
+      `users`, for a reason that has nothing to do with nonces — it is the root every owned row
+      cascades from — `credentials`, which holds it for **revocation** rather than for erasure
+      ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)), and
+      `recovery_code_hashes`, whose grant rests on **this** table's sentence word for word: those
+      rows are single-use secrets too, so consuming one *is* deleting it
+      ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)). Two of the
+      four — `credentials` and `recovery_code_hashes` — have their delete scoped by the application
+      alone. Being exempt from row-level security is only half of why: `webauthn_challenges` is
+      exempt too and is not among them, because it carries no owner column at all, so its delete has
+      nothing to be scoped *by*. What singles those two out is holding an owner column **and** no
+      policy to check it against. `passkey_public_keys` and `passkey_signature_counters` are emptied
+      by the cascade and hold no `DELETE` of their own — see
+      [users-and-ownership.md](users-and-ownership.md) for why granting them one would cost
+      something.
+  - **Enforced in**: the `DELETE` grant on `webauthn_challenges` in `app-role-grants.sql`, with the
+    paragraph beside it carrying this argument, and `ConsumeAsync` deleting the matched row.
 
 ### MUST NOT
 
-- **MUST NOT send `allowCredentials`.** It requires the client to name an account before
-  authenticating, which turns the sign-in endpoint into an account-enumeration oracle. This is also
-  why only discoverable credentials are accepted, and why `transports` is not stored.
-  - **The enumeration argument is about content, and there is a residual timing channel it does not
-    cover.** On every ceremony a credential id that resolves goes on to a full ECDSA or RSA
-    verification and a counter read; one that resolves to nothing returns as soon as the lookup
-    misses. The responses are byte-identical — that is what the two "every reachable refusal" tests
-    pin — but they do not take the same time. The gap is accepted rather than closed: a credential id
-    is 32 random bytes, so it cannot be walked towards a real one, and every probe costs an options
-    call and burns a nonce. Closing it would mean verifying against a decoy key, which spends real
-    cryptography on every miss and gives an attacker a way to make the server do it. **Do not reorder
-    a ceremony's ladder to flatten this** — the owner-scoped lookup has to precede the user-handle
-    check, or the legal absent-handle case loses its account binding entirely.
+- **MUST NOT send `allowCredentials`.**
+  - **Why**: it requires the client to name an account before authenticating, which turns the
+    sign-in endpoint into an account-enumeration oracle. This is also why only discoverable
+    credentials are accepted, and why `transports` is not stored.
+    - **The enumeration argument is about content, and there is a residual timing channel it does
+      not cover.** On every ceremony a credential id that resolves goes on to a full ECDSA or RSA
+      verification and a counter read; one that resolves to nothing returns as soon as the lookup
+      misses. The responses are byte-identical — that is what the two "every reachable refusal"
+      tests pin — but they do not take the same time. The gap is accepted rather than closed: a
+      credential id is 32 random bytes, so it cannot be walked towards a real one, and every probe
+      costs an options call and burns a nonce. Closing it would mean verifying against a decoy key,
+      which spends real cryptography on every miss and gives an attacker a way to make the server
+      do it. **Do not reorder a ceremony's ladder to flatten this** — the owner-scoped lookup has
+      to precede the user-handle check, or the legal absent-handle case loses its account binding
+      entirely.
+  - **Enforced in**: the options legs, which never emit an `allowCredentials` member.
 
-- **MUST NOT accept an attestation format other than `none`.** Verifying `packed` or `tpm` means
-  X.509 chain building against a metadata service and a trust policy — and attestation answers *which
-  model of authenticator is this*, a question this product has no use for. Refusing is one branch and
-  is stricter than ignoring the field: an unverified attestation statement that is stored or trusted
-  is worse than no attestation at all.
+- **MUST NOT accept an attestation format other than `none`.**
+  - **Why**: verifying `packed` or `tpm` means X.509 chain building against a metadata service and a
+    trust policy — and attestation answers *which model of authenticator is this*, a question this
+    product has no use for. Refusing is one branch and is stricter than ignoring the field: an
+    unverified attestation statement that is stored or trusted is worse than no attestation at all.
+  - **Enforced in**: the registration finish leg's validation ladder — see the transition table.
 
-- **MUST NOT publish the identity before the signature verifies**, and **MUST NOT open the
-  transaction before the identity is published**. See the rule below; this is the highest-value trap
-  in the area.
+- **MUST NOT publish the identity before the signature verifies, and MUST NOT open the transaction
+  before the identity is published.**
+  - **Why**: this is the highest-value trap in the area — see the first rule below, which owns it.
+  - **Enforced in**: the ordering in `CompleteAssertionHandler`.
 
-- **MUST NOT let an assertion failure be distinguishable.** Every one — unknown credential, bad
-  signature, wrong origin, consumed or expired challenge, counter regression, user-handle mismatch —
-  produces a byte-identical 401. A distinguishing message is a credential-enumeration oracle.
+- **MUST NOT let an assertion failure be distinguishable.**
+  - **Why**: a distinguishing message is a credential-enumeration oracle.
+  - **Enforced in**: every refusal — unknown credential, bad signature, wrong origin, consumed or
+    expired challenge, counter regression, user-handle mismatch — produces a byte-identical 401,
+    pinned by the two "every reachable refusal" tests.
 
 ## Business Rules & Invariants
 
@@ -210,7 +219,7 @@ erDiagram
   runs the whole ceremony over the real least-privilege connection.
 - **Counterexample**: wrapping the handler in `ITransactionalExecutor` for tidiness. Every policed
   read inside it then fails, loudly but for a reason nobody would guess from the symptom.
-- **Source**: `[SOURCE: discussion — 2026-08-05]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -220,11 +229,15 @@ erDiagram
 - **Enforced in**: the consume step preceding the discovery read in `CompleteAssertionHandler`;
   `PasskeyCeremonyTests.Assertion_WhenVerificationFails_StillConsumesTheChallenge` drives a failing
   attempt and then a *valid* one reusing the same challenge, and asserts the second is refused too.
-- **Note what the comparison is not**: the verifier's fixed-time challenge equality is tautological
-  on this path, because the challenge is looked up **by** the bytes decoded from `clientDataJSON`. It
-  is `ConsumeAsync` that makes the nonce mean anything — that the row existed proves the server
-  issued it and that it was still live, and deleting it proves nobody else may use it.
-- **Source**: `[SOURCE: discussion — 2026-08-05]`
+  - **Note what the comparison is not**: the verifier's fixed-time challenge equality is
+    tautological on this path, because the challenge is looked up **by** the bytes decoded from
+    `clientDataJSON`. It is `ConsumeAsync` that makes the nonce mean anything — that the row existed
+    proves the server issued it and that it was still live, and deleting it proves nobody else may
+    use it.
+- **Example**: an assertion fails on a bad signature, and the same client retries a *valid*
+  assertion over the same challenge bytes. The retry is refused too — the failure already burnt the
+  nonce, and only a fresh options call issues another.
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -236,7 +249,7 @@ erDiagram
   inside the stored key disagree, pinned by
   `Assertion_WhenTheStoredAlgorithmDisagreesWithTheStoredKey_IsRefused` — a test whose absence let
   that check be deleted with the whole suite green.
-- **Source**: `[SOURCE: discussion — 2026-08-05]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -248,18 +261,22 @@ erDiagram
   `RSA.Create(RSAParameters)` has no validation contract of its own — acceptance is whatever the
   platform decides, and macOS and the production container decide differently about degenerate
   exponents and short moduli.
-- **Effective length, not array length, and this is the load-bearing part.** COSE omits leading zero
-  octets but a DER-copying encoder emits one, so a byte-length rule must accept 257 bytes — and then
-  a 512-bit modulus left-padded with 224 zero bytes passes it. `Registration_WhenTheRs256ModulusIs`
-  `ZeroPaddedToReachTheFloor_IsRefused` is the only test separating the correct rule from that one.
-- **Above its lowest capable layer, and why.** The algorithm allow-list *is* a database rule —
-  `cose_algorithm` is a column, so `CK_passkey_public_keys_cose_algorithm` bounds it. The key-strength
-  rule cannot be: the modulus and exponent live inside the CBOR blob, PostgreSQL cannot read CBOR,
-  and [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing
-  procedural logic down to satisfy "lowest layer". Decomposing the key into columns would add data
-  nothing reads and a second representation free to disagree. No blob-length bound helps either — an
-  ES256 key is about 77 bytes and a 512-bit RS256 key about 90.
-- **Source**: `[SOURCE: discussion — 2026-08-05]`
+  - **Effective length, not array length, and this is the load-bearing part.** COSE omits leading
+    zero octets but a DER-copying encoder emits one, so a byte-length rule must accept 257 bytes —
+    and then a 512-bit modulus left-padded with 224 zero bytes passes it.
+  - **Above its lowest capable layer, and why.** The algorithm allow-list *is* a database rule —
+    `cose_algorithm` is a column, so `CK_passkey_public_keys_cose_algorithm` bounds it. The
+    key-strength rule cannot be: the modulus and exponent live inside the CBOR blob, PostgreSQL
+    cannot read CBOR, and
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing
+    procedural logic down to satisfy "lowest layer". Decomposing the key into columns would add data
+    nothing reads and a second representation free to disagree. No blob-length bound helps either —
+    an ES256 key is about 77 bytes and a 512-bit RS256 key about 90.
+- **Enforced in**: `CK_passkey_public_keys_cose_algorithm` for the allow-list; the registration
+  path's key-strength checks for the RSA bounds, with `Registration_WhenTheRs256ModulusIs`
+  `ZeroPaddedToReachTheFloor_IsRefused` as the only test separating the effective-length rule from a
+  byte-length one.
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -268,12 +285,15 @@ erDiagram
   passkeys — which is most of them — always report `0`, and refusing that would refuse the majority
   of real passkeys. A counter that did not advance when at least one side is non-zero is the
   signature of a cloned authenticator, and that is refused.
+  - **Also above its lowest layer**: monotonicity is a comparison between the old and new values of
+    a row, which PostgreSQL can express only as a trigger, and ADR 0002 rules that out.
 - **Enforced in**: `PasskeySignatureCounter.Accept`, which returns whether the stored value changed
   so the caller writes only when something did — keeping the single-column `UPDATE` grant exercised
   for a reason rather than on every sign-in.
-- **Also above its lowest layer**: monotonicity is a comparison between the old and new values of a
-  row, which PostgreSQL can express only as a trigger, and ADR 0002 rules that out.
-- **Source**: `[SOURCE: discussion — 2026-08-05]`
+- **Example**: a synced platform passkey reports `0` on every sign-in against a stored `0` — each is
+  accepted, and nothing is written. A stored `5` answered by a reported `5` is refused: at least one
+  side is non-zero and the counter did not advance.
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -285,35 +305,38 @@ erDiagram
   person who learns that months later learns it by losing their records — a loss no operator can
   reverse, because there is no escrow and no administrative override. Telling them at the one moment
   they can still choose a different device is the whole value of the rule.
-- **What this refusal is not**: `prf.enabled` is asserted by the *client*, is covered by no
-  signature, and the server can neither verify it nor ever see the PRF output, which never leaves the
-  authenticator. So this is a **product gate, not a security control** — an upper layer restating a
-  rule for error quality, never for enforcement. There is no adversary for it: the claim is the
-  account holder's own browser describing the account holder's own authenticator, and whoever forges
-  it registers a passkey whose keys they will not be able to derive, harming nobody else. Anything
-  that later needs to *rely* on PRF must key on a value derived through PRF that the server can
-  check — never on this flag, and never on the fact that this endpoint refuses without it.
+  - **What this refusal is not**: `prf.enabled` is asserted by the *client*, is covered by no
+    signature, and the server can neither verify it nor ever see the PRF output, which never leaves
+    the authenticator. So this is a **product gate, not a security control** — an upper layer
+    restating a rule for error quality, never for enforcement. There is no adversary for it: the
+    claim is the account holder's own browser describing the account holder's own authenticator, and
+    whoever forges it registers a passkey whose keys they will not be able to derive, harming nobody
+    else. Anything that later needs to *rely* on PRF must key on a value derived through PRF that
+    the server can check — never on this flag, and never on the fact that this endpoint refuses
+    without it.
 - **Enforced in**: `CompleteRegistrationHandler`, deliberately as the **last** check on the response,
   after `PasskeyRegistrationVerifier.Verify`. Checked earlier, a malformed, replayed or wrong-origin
   response would be told its authenticator cannot hold the keys, which is a lie about the device.
   `Registration_WhoseOriginIsWrongAndReportsNoPrfResult_IsRefusedForTheOriginRatherThanTheAuthenticator`
   owns that ordering, so it is held by a named test rather than incidentally by the payload shape
   other tests happen to send.
-- **Also**: the refusal spends the challenge, like every refusal that gets past the decode — the
-  ceiling and parse refusals above `ConsumeAsync` do not. So a client that hits this one must return
-  to the options leg for a fresh nonce rather than retrying the same response against the old one.
-  `Registration_RefusedForItsAuthenticator_ThenRetriedOnTheSameChallenge_FindsItSpent` holds it.
-- **Every shape of silence refuses, and each is pinned.** A client can say nothing in four distinct
-  ways, and none of them may pass: `clientExtensionResults` as JSON null and `prf.enabled: false`
-  (`Registration_WhoseAuthenticatorReportsNoPrfResult_Returns400NamingTheAuthenticator`, two cases
-  because a predicate written against either half alone passes the other), the `prf` object present
-  and empty (`Registration_WhosePrfResultCarriesNoEnabledMember_…`), `prf.enabled` explicitly null
-  (`Registration_WhosePrfResultReportsANullEnabledMember_…`), and the object present with no `prf`
-  member at all (`Registration_WhoseClientExtensionResultsCarryNoPrfMember_…`) — which is the shape a
-  real browser sends, because `getClientExtensionResults()` always returns an object. `Enabled` is
-  `bool?` precisely so all four reach this refusal's sentence instead of the framework's generic
-  400. `Registration_WhoseAuthenticatorReportsAPrfResult_FilesTheCredentialAndItsKeyAndCounter` is
-  the control on the other side, which a handler refusing *everything* would fail.
+  - **The refusal spends the challenge**, like every refusal that gets past the decode — the ceiling
+    and parse refusals above `ConsumeAsync` do not. So a client that hits this one must return to
+    the options leg for a fresh nonce rather than retrying the same response against the old one.
+    `Registration_RefusedForItsAuthenticator_ThenRetriedOnTheSameChallenge_FindsItSpent` holds it.
+  - **Every shape of silence refuses, and each is pinned.** A client can say nothing in four
+    distinct ways, and none of them may pass: `clientExtensionResults` as JSON null and
+    `prf.enabled: false`
+    (`Registration_WhoseAuthenticatorReportsNoPrfResult_Returns400NamingTheAuthenticator`, two cases
+    because a predicate written against either half alone passes the other), the `prf` object
+    present and empty (`Registration_WhosePrfResultCarriesNoEnabledMember_…`), `prf.enabled`
+    explicitly null (`Registration_WhosePrfResultReportsANullEnabledMember_…`), and the object
+    present with no `prf` member at all
+    (`Registration_WhoseClientExtensionResultsCarryNoPrfMember_…`) — which is the shape a real
+    browser sends, because `getClientExtensionResults()` always returns an object. `Enabled` is
+    `bool?` precisely so all four reach this refusal's sentence instead of the framework's generic
+    400. `Registration_WhoseAuthenticatorReportsAPrfResult_FilesTheCredentialAndItsKeyAndCounter` is
+    the control on the other side, which a handler refusing *everything* would fail.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -327,9 +350,9 @@ erDiagram
   WebAuthn prompt for this relying party can obtain a signed one — which must not authorize erasing an
   account. A `registration` nonce is minted for an already-signed-in person, which is exactly the
   stolen-session adversary re-authentication exists to stop.
-- **The ceremony is never a request member.** Each options leg hard-codes its own value, and no
-  command carries one. A `ceremony` parameter on the anonymous assertion leg would let anybody mint a
-  re-authentication nonce and would dissolve the separation in a single field.
+  - **The ceremony is never a request member.** Each options leg hard-codes its own value, and no
+    command carries one. A `ceremony` parameter on the anonymous assertion leg would let anybody
+    mint a re-authentication nonce and would dissolve the separation in a single field.
 - **Enforced in**: `WebAuthnCeremony`, the `ConsumeAsync` check in each finish leg written as
   `is not <the expected member>` rather than as a null check, and `CK_webauthn_challenges_ceremony`
   bounding the vocabulary. The nine-cell matrix is pinned by
@@ -353,8 +376,8 @@ erDiagram
   together at connection open, so a user id re-published mid-request does **not** move the budget.
   Alice's bearer token with Bob's passkey would empty **Alice's** budget while deleting **Bob's** user
   row — two accounts destroyed, neither as asked.
-- **This is the single thing a future reader is most likely to get backwards**, because the sign-in
-  handler's rule is the more memorable one and it is written two paragraphs above.
+  - **This is the single thing a future reader is most likely to get backwards**, because the
+    sign-in handler's rule is the more memorable one and it is written two paragraphs above.
 - **Enforced in**: `PasskeyReauthentication`, which takes `IUserContext` and never
   `IUserContextWriter`, and looks the key up through the **owner-scoped**
   `FindByWebAuthnCredentialIdForUserAsync` rather than the discovery lookup — so another account's
@@ -371,7 +394,9 @@ erDiagram
   exactly the fact that matters. Returning the row's id would hand the client a stable handle to a
   session, and the most likely way this design gets broken later is somebody deciding that handle is
   close enough to a token to start accepting it.
-- **Source**: `[SOURCE: discussion — 2026-08-05]`
+- **Enforced in**: the shape of the assertion finish leg's response — it has members for the kind
+  and the expiry and none for an id, so carrying one would take a deliberate addition.
+- **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
 
@@ -414,6 +439,29 @@ see [sessions.md](sessions.md), which owns it. What they share is the interval a
 handler establishes its session, after the signature verifies and after the identity is published, is
 this file's own rule above.
 
+## Decision Trees
+
+How the sign-in finish leg treats a presented response — every refusing arm answers the same
+byte-identical 401:
+
+```
+IF the presented nonce matches no live challenge row       ← nothing is spent
+  THEN 401
+ELSE consume the row — from here every outcome has burnt the nonce
+  IF the row's ceremony is not `authentication`
+    THEN 401
+  ELSE IF any verification step fails                      ← type, origin, rpId, flags, signature
+    THEN 401
+  ELSE IF the counter did not advance and a side is non-zero
+    THEN 401
+  ELSE
+    THEN publish the identity, open the transaction, establish the Full session — 200
+```
+
+The registration and re-authentication finish legs walk the same ladder with their own pools and
+their own final arms — see the transition table above; the PRF gate is registration's extra last
+check, after everything else has passed.
+
 ## Integration Points
 
 - **[Sessions](sessions.md)** — a verified assertion establishes one and the two recovery-code paths
@@ -440,6 +488,19 @@ this file's own rule above.
 
 ## Edge Cases & Known Gotchas
 
+- **What is built today and what is not.** Both ceremonies exist as endpoints, a verified assertion
+  establishes a `Full` session, and all of it is tested. What does **not** exist: the API still
+  authenticates every other request from the Google ID token it is handed. **No session token is
+  issued and none is presented** — the assertion response deliberately carries no handle to the
+  session it created. Registration is also not yet gated: an account exists before any passkey does,
+  so a passkey is something an already-signed-in person adds rather than something registration
+  requires. A signed-in person can **list** every credential the account holds and **revoke** a
+  passkey, the revocation gated by a fresh re-authentication exactly as erasure is. Nothing
+  **replaces** a passkey, and nothing removes or replaces the **federated** credential — that is the
+  email change, and it is not built. Read the revocation against [sessions.md](sessions.md) before
+  deciding what it is worth: it ends the passkey's sessions, but no session authenticates a request
+  today, so what revocation actually takes away is the ability to sign in again with that
+  authenticator.
 - **The exempt table scopes nothing, so the application is the only thing scoping access to it.** The
   discovery lookup is the one query allowed to read `passkey_public_keys` without naming an owner.
   Every other read must carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on

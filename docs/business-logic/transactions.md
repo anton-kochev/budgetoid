@@ -90,8 +90,10 @@ erDiagram
     order.
 
 - **A Payee referenced by any Transaction MUST NOT be deleted.** The Transaction's existence is what
-  makes the rule bite; the rule itself, its reasoning and its enforcement are stated once, in
-  [payees.md](payees.md#must-not).
+  makes the rule bite.
+  - **Why**: stated once, in [payees.md](payees.md#must-not), which owns the rule.
+  - **Enforced in**: the mechanism [payees.md](payees.md#must-not) names — this file does not
+    restate it.
 
 ## Business Rules & Invariants
 
@@ -111,7 +113,7 @@ erDiagram
 - **Counterexample**: recording an expense as `40.00` because the form already labels the row an
   expense makes the account's total climb with every purchase. Nothing rejects it — no validation
   reads the sign — so the mistake never surfaces as an error, only as a total nobody can explain.
-- **Source**: `[SOURCE: discussion — 2026-07-28]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -134,7 +136,7 @@ erDiagram
 - **Example**: on a USD account `-40.00` is accepted and `10.005` is rejected as too precise; on a
   JPY account `-4000` is accepted and `-40.5` is rejected as not a whole number; `2000000000` is
   rejected as over the cap in any currency.
-- **Source**: `[SOURCE: discussion — 2026-07-28]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -145,7 +147,7 @@ erDiagram
 - **Enforced in**: `Transaction.ValidateOrThrow`, shared by `Transaction.Create` and
   `Transaction.Update`.
 - **Example**: `"   "` is stored as null, not as a blank string.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -159,7 +161,7 @@ erDiagram
   `UpdateTransactionHandler` only when the field is mentioned.
 - **Example**: a `-12.50` corner-shop transaction with no category is valid and appears in lists with
   an empty category column.
-- **Source**: `[SOURCE: discussion — 2026-07-14]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -178,7 +180,7 @@ erDiagram
   [payees.md](payees.md#business-rules--invariants).
 - **Example**: a transaction submitted with `payeeName: "tesco"` comes back carrying the `payeeId`
   and the stored spelling `Tesco` of the payee that already existed.
-- **Source**: `[SOURCE: discussion — 2026-07-13]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -193,7 +195,7 @@ erDiagram
 - **Counterexample**: copying `CategoryGroupId` onto the Transaction makes the two disagree the
   moment the Category moves — the transaction keeps naming the old heading while the category list
   shows the new one, and no read can tell which of the two was meant.
-- **Source**: `[SOURCE: discussion — 2026-07-14]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -207,7 +209,7 @@ erDiagram
   payee, category and category group.
 - **Example**: renaming an account is visible in the transaction list on the next read, because the
   name is joined rather than snapshotted.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -251,7 +253,7 @@ erDiagram
   memo, the counterparty and the category — every field it did not echo back — and no error is
   raised, because each of them may legitimately be empty. The loss surfaces days later as a
   transaction stripped of its context, with nothing to point at as the cause.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -285,7 +287,7 @@ erDiagram
   sorts to the top of every list. Only the account fails loudly, and it fails badly — `Guid.Empty`
   reaches `Transaction.Update`, which answers "Account id is required." about a field the caller
   explicitly sent.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -316,7 +318,7 @@ erDiagram
   against the ambient budget afterwards. It gives the same answer while it is written correctly, and
   it puts the tenancy decision in a branch that a later refactor can drop without any test that
   reads only same-budget data noticing.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -347,7 +349,7 @@ erDiagram
 - **Counterexample**: passing a blank name through to `GetOrCreateAsync`. `Payee.Create` throws on
   the empty name, so clearing the counterparty comes back a 400 naming a field the person
   deliberately emptied.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -387,7 +389,7 @@ erDiagram
   it still exists and still satisfies every constraint. The delete guards on accounts and categories
   would have to be taught about the flag too, or an account would stay undeletable on the strength
   of transactions the user has already removed.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
 

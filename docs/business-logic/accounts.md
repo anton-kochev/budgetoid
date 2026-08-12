@@ -103,7 +103,7 @@ erDiagram
   runaway names would make the UI unusable.
 - **Enforced in**: `Account.Create` / `Account.Update` → `ValidateOrThrow` in `Domain/Accounts/Account.cs`.
 - **Example**: `"  Everyday Checking  "` is accepted and stored trimmed as `"Everyday Checking"`.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -118,7 +118,7 @@ erDiagram
 - **Example**: `Checking`, `Savings`, `Cash` and `CreditCard` are the whole set; `Brokerage` is
   rejected as a validation error by `ValidateOrThrow`, and the same value written straight into
   `accounts.type` by hand is refused by `CK_accounts_type`.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -149,7 +149,7 @@ erDiagram
   and it still does not refuse, it stores `10.00005` as `10.0001` and raises nothing. That is why the
   decimal-places half cannot be pushed down to join the magnitude bound. Rounding hides the entry
   error, and it resurfaces later as a balance that never reconciles against the real account.
-- **Source**: `[SOURCE: discussion — 2026-07-28]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -161,7 +161,7 @@ erDiagram
 - **Counterexample**: storing the code as typed leaves `usd` on the row while `currencies.code`
   holds `USD`. The `Restrict` foreign key rejects the insert outright — and if it did not, the
   currency join would drop the account out of its own list rather than fail visibly.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
 

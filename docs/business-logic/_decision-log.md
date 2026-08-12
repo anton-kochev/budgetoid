@@ -163,9 +163,10 @@ mint a *persistent* factor that survives token rotation entirely. The consequenc
 requirement on the client — push generation at or near passkey registration — and that work belongs to
 a later story. Second, **a redeemed code leaves no trace**, so *"was this code used, or never issued?"*
 is unanswerable by anyone, which is the same trade erasure already makes against a deletion record.
-Third, **nothing redeems a code yet**: the anonymous read the exemption was written for is not routed,
-the `DELETE` grant on the new table has no caller, and the `Full` session a recovery-codes credential
-derives is never established by anything.
+Third, **no browser mints a code and no screen redeems one**. The server side is whole — the anonymous
+lookup the exemption was written for is routed, the `DELETE` grant has its caller, and a redemption
+establishes the `Full` session — but nothing anywhere presents a verifier, so both write paths are
+reached only by a test. Neither is observable in any case, because nothing presents a session yet.
 
 **Affected areas:** [recovery-codes.md](recovery-codes.md), [passkeys.md](passkeys.md),
 [sessions.md](sessions.md), [users-and-ownership.md](users-and-ownership.md),

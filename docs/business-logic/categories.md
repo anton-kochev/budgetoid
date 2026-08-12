@@ -139,7 +139,7 @@ erDiagram
 - **Enforced in**: `CategoryGroup.Create` / `Category.Create` and their `Update` counterparts.
 - **Example**: `"  Groceries  "` is stored as `"Groceries"`; a whitespace-only description is stored
   as null.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -201,7 +201,7 @@ erDiagram
   survivors alone. Nothing rejects `0, 2, 3` — the check constraint reads each number in isolation
   and the ordering index is not unique — so the list still renders in the right order, and the defect
   surfaces only later, when the next drag lands a row one slot away from where it was dropped.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -210,7 +210,7 @@ erDiagram
   and deleting the parts that do not fit is more work than creating the parts that do.
 - **Enforced in**: `Budget.CreateDefault` creates the budget only; no handler seeds groups.
 - **Example**: a brand-new user's `/categories` screen is empty until they add a group.
-- **Source**: `[SOURCE: discussion — 2026-07-14]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -220,7 +220,7 @@ erDiagram
 - **Enforced in**: `Category` has a single required `CategoryGroupId`; `CategoryGroup` has no parent.
 - **Example**: "Essential Obligations → Groceries" is expressible; "Essential Obligations → Food →
   Groceries" is not.
-- **Source**: `[SOURCE: discussion — 2026-07-14]`
+- **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
 

@@ -120,7 +120,9 @@ erDiagram
     SQL, because raw SQL is the only way to attempt it.
 
 - **A payee MUST NOT be shared across budgets.**
-  - **Why and Enforced in**: stated once, in [budgets.md](budgets.md#must-not).
+  - **Why**: stated once, in [budgets.md](budgets.md#must-not) — the budget is the unit of tenancy,
+    and a counterparty list is part of one budget's money picture.
+  - **Enforced in**: the tenancy machinery [budgets.md](budgets.md#must-not) owns;
     `PayeeIntegrationTests.Payees_AreIsolatedPerUser` pins it end to end: a payee created in one
     budget is absent from another budget's `GET /api/payees`.
 
@@ -157,7 +159,7 @@ erDiagram
   answering it — typed free text on the transaction form, picked from a managed list elsewhere — so
   the same counterparty can be brought into existence twice with different spellings, which is the
   duplication find-or-create exists to prevent.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -186,7 +188,7 @@ erDiagram
   disagree the lookup misses a row the index then refuses to duplicate, so `GetOrCreateAsync` catches
   the `23505`, re-reads with the same mismatched predicate, finds nothing again, and throws — every
   transaction naming that payee fails, on a row the code cannot see.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -209,7 +211,7 @@ erDiagram
 - **Counterexample**: passing the blank string through to `GetOrCreateAsync`. `Payee.Create` throws a
   `ValidationException` on the empty name, so the transaction comes back a 400 naming a field the
   person deliberately left empty.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -235,7 +237,7 @@ erDiagram
 - **Counterexample**: catching `23505` on the SQLSTATE alone. A unique violation from another table
   in the same save would be reported as a payee collision, the re-read would find no matching payee,
   and the caller would get a 500 blaming payees for a rule that has nothing to do with them.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -280,7 +282,7 @@ erDiagram
   rename then has to fan out a write across every transaction that ever named the payee, or it is
   merely cosmetic — the autocomplete list shows the corrected spelling while the ledger keeps the
   typo, and the same counterparty reads two ways depending on which screen is open.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -309,7 +311,7 @@ erDiagram
   rejected as a duplicate of itself — the feature breaks on precisely its commonest use. The precheck
   is check-then-act besides, so the index still has to catch the loser of a race and the catch it was
   written to replace cannot be removed.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -340,7 +342,7 @@ erDiagram
 - **Counterexample**: reporting the duplicate as a 409. The status says two things disagree but not
   which field, so the client either parses the message text or highlights nothing, and a caller ends
   up handling two statuses for one kind of mistake depending on which entity they were editing.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -362,7 +364,7 @@ erDiagram
   (`PayeeIntegrationTests.PatchPayee_FromAnotherBudget_ReturnsNotFoundButSucceedsForItsOwner`). An id
   belonging to no budget at all answers the same 404
   (`PatchPayee_WithAnUnknownId_ReturnsNotFoundButSucceedsForARealPayee`).
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
 

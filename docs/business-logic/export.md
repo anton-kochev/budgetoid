@@ -7,6 +7,7 @@
 - [Constraints](#constraints)
 - [Business Rules & Invariants](#business-rules--invariants)
 - [Workflows & State Transitions](#workflows--state-transitions)
+- [Decision Trees](#decision-trees)
 - [Integration Points](#integration-points)
 - [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
 
@@ -15,18 +16,15 @@
 Export is the action that hands a person a complete copy of what the server holds about them: one
 authenticated request, one JSON document, no queue, no emailed link and no waiting period. It is the
 counterweight to [erasure](erasure.md) — the two together are what make "the data is yours" a
-capability rather than a claim, and neither is reachable behind a support request.
-
-It cuts across every domain area — the `users` row from
-[users-and-ownership.md](users-and-ownership.md), the budget from [budgets.md](budgets.md), and every
-budget-owned table — so the completeness rule lives here rather than being split across the files
-whose rows it reads.
-
-The thing worth understanding before changing anything here is what the export **cannot** do: both
-isolation layers beneath it are scoped to the *ambient* budget and neither takes an argument, so the
-export can read the contents of one budget per request. That is not a limitation it works around. It
-is the reason for the central rule below — when the owned set is not exactly that budget, the export
-**refuses** rather than returning the part it can reach.
+capability rather than a claim, and neither is reachable behind a support request. It cuts across
+every domain area — the `users` row from [users-and-ownership.md](users-and-ownership.md), the budget
+from [budgets.md](budgets.md), and every budget-owned table — so the completeness rule lives here
+rather than being split across the files whose rows it reads. The thing worth understanding before
+changing anything here is what the export **cannot** do: both isolation layers beneath it are scoped
+to the *ambient* budget and neither takes an argument, so the export can read the contents of one
+budget per request. That is not a limitation it works around; it is the reason for the central rule
+below — when the owned set is not exactly that budget, the export **refuses** rather than returning
+the part it can reach.
 
 ## Key Entities
 
@@ -57,42 +55,76 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
 
 ### MUST
 
-- The document **MUST** carry every persisted column of every row it names. A row present with a
-  null name, a zeroed balance or a dropped parent id satisfies a set comparison exactly, and a person
-  restoring from that file would find the rows there and the data gone.
-- The document **MUST** carry a schema version identifier. A saved file outlives the deployment that
-  wrote it, and the version is the only thing telling a reader which shape they are holding.
-- Every array **MUST** ascend by `CreatedAtUtc`, with `Id` as a tiebreaker. Without an `ORDER BY`,
-  PostgreSQL row order is unspecified and shifts on any update, vacuum or plan change.
-- The export **MUST** be delivered in the same request-response exchange, with no queue, no
-  notification and no waiting period.
-- The export **MUST** refuse, rather than answer partially, when it cannot reach everything the
-  requesting user owns.
-- The response **MUST** carry `application/json` and a filename-bearing content disposition, and the
-  filename **MUST** be rendered in the Gregorian calendar whatever culture the serving thread holds.
+- **The document MUST carry every persisted column of every row it names.**
+  - **Why**: a row present with a null name, a zeroed balance or a dropped parent id satisfies a set
+    comparison exactly, and a person restoring from that file would find the rows there and the data
+    gone.
+  - **Enforced in**: the export's own records in `ExportDocument`, pinned by
+    `DataExportCompletenessTests` — see the own-records rule below.
+- **The document MUST carry a schema version identifier.**
+  - **Why**: a saved file outlives the deployment that wrote it, and the version is the only thing
+    telling a reader which shape they are holding.
+  - **Enforced in**: `ExportDocument.CurrentSchemaVersion`, pinned by
+    `DataExportEndpointTests.Export_CarriesSchemaVersionOne`.
+- **Every array MUST ascend by `CreatedAtUtc`, with `Id` as a tiebreaker.**
+  - **Why**: without an `ORDER BY`, PostgreSQL row order is unspecified and shifts on any update,
+    vacuum or plan change.
+  - **Enforced in**: `ExportReadService`, with the contract on `IExportReadService` — see the
+    ordering rule below.
+- **The export MUST be delivered in the same request-response exchange, with no queue, no
+  notification and no waiting period.**
+  - **Why**: an export behind a queue or an emailed link is an export behind an operator, and the
+    point of the feature is that a copy of one's own data is not.
+  - **Enforced in**: `DataExportEndpoints` answers the request directly; no job table, queue or
+    notification path exists on this route.
+- **The export MUST refuse, rather than answer partially, when it cannot reach everything the
+  requesting user owns.**
+  - **Why**: a partial answer under a document claiming completeness is silent truncation — see the
+    central rule below.
+  - **Enforced in**: `ExportDataHandler.HandleAsync` throwing `ExportCompletenessException` before
+    the contents are read.
+- **The response MUST carry `application/json` and a filename-bearing content disposition, and the
+  filename MUST be rendered in the Gregorian calendar whatever culture the serving thread holds.**
+  - **Why**: `attachment` is what makes a browser save the file; a non-Gregorian culture renders a
+    filename centuries wrong — see the disposition rule below.
+  - **Enforced in**: `DataExportEndpoints.DispositionFor`, pinned by
+    `DataExportEndpointTests.Export_NamesTheFileWithTheRequestInstantInUtc` and its culture control.
 
 ### MUST NOT
 
-- The export **MUST NOT** summarize, sample, aggregate, paginate or truncate. Every one of those is a
-  design that looks correct at small volumes and silently loses data at large ones.
-- The export **MUST NOT** write a row, a column or a log line. There is no job record, no
-  `exported_at`, no audit trail — a row recording that an export happened is a remnant an
-  [erasure](erasure.md) would have to destroy, and a log line naming the exporting user is the same
-  remnant kept where no erasure gate can reach it.
-- The export **MUST NOT** take the account's identity from the request — not from the route, not from
-  a query string. It reads `IUserContext` and nothing else.
-- The export route **MUST NOT** carry `ProvisionsUser` metadata. An export is a read; a route that
-  minted an account in order to answer one would let a provider token outliving an erasure bring the
-  account back as an empty shell.
-- The refusal message **MUST NOT** name a budget id. In Development `GlobalExceptionHandler` echoes
-  the exception's message *and* its full stack trace into the response body, so an id in the message
-  leaks twice.
-- The document **MUST NOT** carry recovery-code material of any kind — no verifier hash, no remaining
-  count, no issued instant, and no row for the set's credential. See the rule below.
+- **The export MUST NOT summarize, sample, aggregate, paginate or truncate.**
+  - **Why**: every one of those is a design that looks correct at small volumes and silently loses
+    data at large ones.
+  - **Enforced in**: the handler assembles complete lists — no pagination parameter exists on the
+    route — and `DataExportCompletenessTests` pins the full shape.
+- **The export MUST NOT write a row, a column or a log line.**
+  - **Why**: there is no job record, no `exported_at`, no audit trail — a row recording that an
+    export happened is a remnant an [erasure](erasure.md) would have to destroy, and a log line
+    naming the exporting user is the same remnant kept where no erasure gate can reach it.
+  - **Enforced in**: the no-logger reflection test and the schema gates — see the persists-nothing
+    rule below.
+- **The export MUST NOT take the account's identity from the request — not from the route, not from
+  a query string.**
+  - **Why**: an identity a caller supplies is an identity a caller chooses; the ambient identity is
+    resolved server-side or not at all.
+  - **Enforced in**: the route pattern carries no parameter and `ExportDataHandler` reads
+    `IUserContext` and nothing else.
+- **The export route MUST NOT carry `ProvisionsUser` metadata.**
+  - **Why**: an export is a read; a route that minted an account in order to answer one would let a
+    provider token outliving an erasure bring the account back as an empty shell.
+  - **Enforced in**: the route registration in `DataExportEndpoints` withholds the marker — see
+    [users-and-ownership.md](users-and-ownership.md) for the marker's own rules.
+- **The refusal message MUST NOT name a budget id.**
+  - **Why**: in Development `GlobalExceptionHandler` echoes the exception's message *and* its full
+    stack trace into the response body, so an id in the message leaks twice.
+  - **Enforced in**: the wording of `ExportCompletenessException`'s message, which names counts and
+    never ids.
+- **The document MUST NOT carry recovery-code material of any kind — no verifier hash, no remaining
+  count, no issued instant, and no row for the set's credential.**
+  - **Why**: a hash in a downloaded file is an offline grinding target — see the rule below.
+  - **Enforced in**: `ExportDocument` and `ExportReadService` have no member for any of it.
 
 ## Business Rules & Invariants
-
----
 
 - **Rule**: The export refuses when the set of budgets the user owns is not **exactly** the ambient
   budget. Set equality, in both directions — not "more than one".
@@ -102,15 +134,15 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
   contents under a document claiming to hold everything — which is precisely the truncation the
   constraint above forbids, shipped as a green feature. Refusing is the honest answer, and it becomes
   the tripwire on the day a second budget becomes creatable.
-- **Both directions, because they fail differently.** Owning a budget the request is not inside means
-  rows are missing. The request being inside a budget the user does not own means one budget's rows
-  would be filed under another's id — a count-only guard passes that case cleanly.
-- **The refusal is a `500`, and deliberately has no `IExceptionHandler` of its own.** `404` would say
-  the export does not exist; it does, and the server cannot assemble it. `400` would blame a request
-  with no field to correct. `409` implies a resolution the client can perform, and the client cannot
-  create, delete or select budgets because no endpoint does. A *named* 5xx mapping is the thing a
-  later reader could soften into "return the ambient budget and a warning" — leaving it on the
-  catch-all means the only way to change the answer is to change the throw.
+  - **Both directions, because they fail differently.** Owning a budget the request is not inside
+    means rows are missing. The request being inside a budget the user does not own means one
+    budget's rows would be filed under another's id — a count-only guard passes that case cleanly.
+  - **The refusal is a `500`, and deliberately has no `IExceptionHandler` of its own.** `404` would
+    say the export does not exist; it does, and the server cannot assemble it. `400` would blame a
+    request with no field to correct. `409` implies a resolution the client can perform, and the
+    client cannot create, delete or select budgets because no endpoint does. A *named* 5xx mapping
+    is the thing a later reader could soften into "return the ambient budget and a warning" —
+    leaving it on the catch-all means the only way to change the answer is to change the throw.
 - **Enforced in**: `ExportDataHandler.HandleAsync` throws `ExportCompletenessException` before the
   contents are read. `ExportDataHandlerTests.HandleAsync_WhenTheUserOwnsABudgetOtherThanTheAmbientOne_`
   `RefusesRatherThanTruncating` and `…HandleAsync_WhenTheAmbientBudgetIsNotOneTheUserOwns_Refuses`
@@ -120,6 +152,9 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
   `DataExportRefusalTests.Export_ForAnOwnerOfASecondBudget_IsRefusedWithoutABody`, whose control
   `…Export_ForAnOwnerOfTheProvisionedBudgetAlone_IsAnswered` proves the seeding path can produce a
   success.
+- **Example**: an owner of only the provisioned budget receives the complete document with a `200`.
+  The same person handed a second budget out of band gets a bodyless `500` on the next export — and
+  keeps getting it until the export can read both.
 - **Counterexample**: a user owning a second budget receives a document listing both budgets with one
   budget's accounts and transactions repeated under each. Nothing in the file says which rows are
   real, the totals are wrong, and a person restoring from it would create duplicate money movement.
@@ -136,13 +171,14 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
   name and symbol, adding fields no column holds. The read services behind them also order for
   display — `PayeeReadService` orders by name, which is the one order an export must not use, because
   a rename would reshuffle the whole file and make two exports of unchanged data diff.
-- **This will read as duplication to someone tidying up.** It is not: the display shapes are free to
-  change with the screens that consume them, and an export bound to them would follow.
 - **Enforced in**: `Application/Users/ExportData/ExportDocument.cs` and `ExportReadService`.
   `DataExportCompletenessTests.Export_PreservesTheNullsAPersistedRowCarries` is the test that goes red
   the moment the document is rebuilt on `TransactionDto`, and it asserts present-and-null rather than
   reading the value, because a `JsonNode` indexer answers `null` identically for an absent property
   and a JSON null.
+- **Counterexample**: folding the document back onto the display DTOs to remove "duplication". It is
+  not duplication: the display shapes are free to change with the screens that consume them, and an
+  export bound to them would follow.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -156,17 +192,20 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
   needed, and it is **not** `Id` alone: `IBudgetRepository.FindFirstForUserAsync` already states as
   contract that UUID v7 sorts by creation time under PostgreSQL's `uuid` byte order but **not** under
   .NET's `Guid.CompareTo`.
-- **The tiebreaker is deliberately outside the contract**, because it cannot be inside one. `uuid`
-  collation is provider-defined: PostgreSQL compares the sixteen bytes big-endian, `Guid.CompareTo`
-  compares fields. Two rows sharing an instant may therefore order one way through the read service
-  and another through an in-memory implementation, with neither being wrong. Promising
-  `(CreatedAtUtc, Id)` as a whole would be promising an agreement across implementations that no code
-  here delivers.
+  - **The tiebreaker is deliberately outside the contract**, because it cannot be inside one. `uuid`
+    collation is provider-defined: PostgreSQL compares the sixteen bytes big-endian, `Guid.CompareTo`
+    compares fields. Two rows sharing an instant may therefore order one way through the read service
+    and another through an in-memory implementation, with neither being wrong. Promising
+    `(CreatedAtUtc, Id)` as a whole would be promising an agreement across implementations that no
+    code here delivers.
 - **Enforced in**: `ExportReadService`, with the contract stated on `IExportReadService`.
   `DataExportCompletenessTests.Export_OrdersEachCollectionByCreationRatherThanByInsertionOrder` seeds
   out of band with `created_at_utc` **inverted** against insertion order — without that inversion the
   test is a decoration, because rows written over HTTP get monotonic timestamps and monotonic v7 ids
   at once, so insertion, id and creation order all coincide and nothing can be distinguished.
+- **Example**: a payee renamed between two exports keeps its position in the file; only its name
+  line diffs. Under the display services' name ordering, the same rename would reshuffle the whole
+  array.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -195,26 +234,28 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
   money picture they created — and identity material has always sat outside it. Recovery codes make
   that boundary worth restating rather than inheriting, because they are the first excluded rows a
   reader can argue are "about the person" in a way a signature counter is not.
-- **What a hash would give the person: nothing.** They cannot redeem with it — there is no preimage —
-  and they cannot regenerate a code from it. The one thing they might want, *"do I still have codes?"*,
-  is a live question about an account that may change tomorrow, and `GET /api/me/recovery-codes`
-  answers it exactly. A saved file answering it answers it as of the day it was written.
-- **What a hash would cost: a value in a downloaded file that something can be run against offline.**
-  An export lands in a downloads folder, a backup, a cloud sync and an email attachment, and it lives
-  there for years with none of the database's protections around it. Putting the digest a redemption is
-  matched against into that artifact turns "somebody read your export" into "somebody can grind for
-  your recovery codes at their leisure, and succeed silently if the client that minted them was ever
-  weak". That is precisely the attack the entropy rule the server **cannot enforce** is the only
-  defence against — see [recovery-codes.md](recovery-codes.md).
-- **The count is excluded for a smaller reason and it is still a reason.** *"This account has two
-  recovery codes left"* is a fact worth harvesting on its own: an account down to its last code is an
-  account worth attacking now. It is the same argument `CountRecoveryCodesHandler` makes for taking no
-  logger.
+  - **What a hash would give the person: nothing.** They cannot redeem with it — there is no
+    preimage — and they cannot regenerate a code from it. The one thing they might want, *"do I
+    still have codes?"*, is a live question about an account that may change tomorrow, and
+    `GET /api/me/recovery-codes` answers it exactly. A saved file answering it answers it as of the
+    day it was written.
+  - **The count is excluded for a smaller reason and it is still a reason.** *"This account has two
+    recovery codes left"* is a fact worth harvesting on its own: an account down to its last code is
+    an account worth attacking now. It is the same argument `CountRecoveryCodesHandler` makes for
+    taking no logger.
 - **Enforced in**: `ExportDocument` and `ExportReadService`, which name the `users` row, `budgets` and
   the five budget-owned collections and nothing else. There is no member for any of it, so exclusion is
   structural rather than a filter somebody has to remember — which is also why no test guards it
   directly: the shape of the document is pinned by `DataExportCompletenessTests`, and a member added
   here would have to be added deliberately.
+- **Counterexample** — what a hash in the file would cost: a value in a downloaded artifact that
+  something can be run against offline. An export lands in a downloads folder, a backup, a cloud
+  sync and an email attachment, and it lives there for years with none of the database's protections
+  around it. Putting the digest a redemption is matched against into that artifact turns "somebody
+  read your export" into "somebody can grind for your recovery codes at their leisure, and succeed
+  silently if the client that minted them was ever weak". That is precisely the attack the entropy
+  rule the server **cannot enforce** is the only defence against — see
+  [recovery-codes.md](recovery-codes.md).
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -237,12 +278,13 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
   load-bearing, not decoration: the same format string under a non-Gregorian culture renders the
   Buddhist year and produces a filename 543 years wrong, and a server whose culture comes from its
   host image is not an exotic deployment.
-- **This is a transport decision with a known expiry, and the rule says so rather than letting a
-  future reader discover it.** It is correct while the server assembles the file a person keeps. The
-  day the client decrypts the document before it reaches the user, the saved artifact is created by
-  the browser and a server-sent `attachment` is at best dead weight — at worst it means navigating to
-  the URL saves ciphertext under a name that looks like a finished export. The gotcha below about
-  `Access-Control-Expose-Headers` is the same boundary seen from the other side.
+  - **This is a transport decision with a known expiry, and the rule says so rather than letting a
+    future reader discover it.** It is correct while the server assembles the file a person keeps.
+    The day the client decrypts the document before it reaches the user, the saved artifact is
+    created by the browser and a server-sent `attachment` is at best dead weight — at worst it means
+    navigating to the URL saves ciphertext under a name that looks like a finished export. The
+    gotcha below about `Access-Control-Expose-Headers` is the same boundary seen from the other
+    side.
 - **Enforced in**: `DataExportEndpoints.DispositionFor`, pinned **exactly** — not by a `Contains` — by
   `DataExportEndpointTests.Export_NamesTheFileWithTheRequestInstantInUtc`, because the two halves that
   break silently are the `attachment` token and the quoting. Its control,
@@ -293,6 +335,24 @@ sequenceDiagram
 
 The gate sits **before** the contents are read, so a document that will not be assembled costs nobody
 a round trip over their own transactions.
+
+## Decision Trees
+
+How a request to `GET /api/me/export` is answered:
+
+```
+IF the request carries no valid token                       ← arms are mutually exclusive
+  THEN 401 from the fallback policy (title "Unauthorized")
+ELSE IF the token's subject resolves to no account
+  THEN 401 from UserProvisioningMiddleware (its own NoAccountTitle)
+ELSE IF the set of budgets the user owns ≠ { the ambient budget }   — either direction
+  THEN 500: ExportCompletenessException, before any contents are read
+ELSE
+  THEN 200 with the complete document and the Content-Disposition header
+```
+
+The two 401 arms are distinct refusals from different components — see the gotcha below; the 500 arm
+is the completeness rule above.
 
 ## Integration Points
 

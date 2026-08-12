@@ -292,7 +292,7 @@ erDiagram
   `DEFAULT` on `name` would not restore the guarantee either: EF sends every mapped,
   non-store-generated property in the INSERT, so the default would never fire, and it would put a
   UI-visible string in the schema where it cannot be localized.
-- **Source**: `[SOURCE: discussion — 2026-07-28]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -305,12 +305,13 @@ erDiagram
   [users-and-ownership.md](users-and-ownership.md) already makes for the credential, applied verbatim.
   What that buys beyond the round-trip: nothing on an unmarked route writes at all, and there is no
   unconditional repair a future reader can delete as apparent duplication.
-- **Unreachable from the only path that creates a user — not unreachable outright.** Nothing in the
-  schema forbids the state, so a direct `DELETE FROM budgets` still produces it, and the account is
-  then **dead rather than healed**: every resolve throws and the person cannot even erase. That is a
-  deliberate trade, bounded by production holding no data. The stronger guarantee — a participation
-  constraint, `users.default_budget_id` `NOT NULL DEFERRABLE INITIALLY DEFERRED` — was considered and
-  deferred; see the decision log for what it would buy and what it costs.
+  - **Unreachable from the only path that creates a user — not unreachable outright.** Nothing in
+    the schema forbids the state, so a direct `DELETE FROM budgets` still produces it, and the
+    account is then **dead rather than healed**: every resolve throws and the person cannot even
+    erase. That is a deliberate trade, bounded by production holding no data. The stronger
+    guarantee — a participation constraint, `users.default_budget_id`
+    `NOT NULL DEFERRABLE INITIALLY DEFERRED` — was considered and deferred; see the decision log for
+    what it would buy and what it costs.
 - **Enforced in**: `IUserRepository.TryAddAsync(User, Credential, Budget, …)`, one save, one `catch`;
   `ResolveUserHandler` reads and throws `InvalidOperationException` — not a 404, because the invariant
   broke rather than the account being absent.
@@ -398,7 +399,7 @@ erDiagram
   "This budget still has transactions." It would be right most of the time and wrong at random,
   because which constraint PostgreSQL names is decided by foreign-key creation order rather than by
   anything the caller did (see Edge Cases below). Asking first is what makes the sentence true.
-- **Source**: `[SOURCE: discussion — 2026-07-29]`
+- **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
 
