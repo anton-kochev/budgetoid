@@ -81,6 +81,25 @@ export class SettingsService {
 
   public loadEmail(): void {
     this.emailFailedSignal.set(false);
+    // Cleared when the read *starts*, for the reason `loadRecoveryCodes` gives
+    // below at length: an address from a previous answer that survives a load
+    // which gives up leaves the row saying `Email address: owner@…` under
+    // "Couldn't load your email address. Reload the page." — a reader told the
+    // address could not be loaded, and told an address. Clearing it only in the
+    // `catchError` moves the same pair of sentences one state earlier, onto the
+    // retry itself.
+    //
+    // This value has a way of being *wrong* that the neighbouring two do not,
+    // which is why it clears rather than being the one section that keeps its
+    // last answer: an email change lands, this read refreshes it, and a refresh
+    // that fails would leave the previous address on screen as the answer to
+    // the only question this row exists to answer.
+    //
+    // `null`, never `''` — the screen reads `null` as "not loaded" and renders
+    // a blank value beside the sentence. An empty string is the same render
+    // arrived at by a different claim, and nothing downstream could tell the
+    // two apart again.
+    this.emailSignal.set(null);
     this.api
       .getMe()
       .pipe(
@@ -103,6 +122,20 @@ export class SettingsService {
   // discriminates on is a second thing to keep in step with the template.
   public loadCredentials(): void {
     this.credentialsFailedSignal.set(false);
+    // Cleared when the read *starts*, the same line in the same position as in
+    // `loadEmail` above and `loadRecoveryCodes` below, and for the same reason:
+    // rows from a previous answer that survive a load which gives up are listed
+    // under "Couldn't load your ways to sign in. Reload the page." Cleared only
+    // on failure, they are still listed *during* the retry, beside the loading
+    // line that says they have not arrived.
+    //
+    // `null`, and emphatically not `[]` — the distinction this whole path is
+    // shaped around. An empty array renders "Nothing is attached to your
+    // account yet.", which would answer a failed request with a claim about the
+    // account, on a page the reader is signed in to. `null` renders the loading
+    // line while the read runs and nothing at all once it has failed, because
+    // the template checks the failure first.
+    this.credentialsSignal.set(null);
     this.api
       .getCredentials()
       .pipe(
@@ -111,10 +144,11 @@ export class SettingsService {
           return EMPTY;
         }),
       )
-      // On failure nothing is published, so the list stays `null`. That is
-      // deliberate: an empty array here would render the sentence saying this
-      // account has no way of signing in, which is a claim about the account
-      // rather than about the request.
+      // The only place a list is ever published, and nothing is published on
+      // failure — the list is left where the clearing above put it. An empty
+      // array published here, or returned from the `catchError`, would render
+      // the sentence saying this account has no way of signing in, which is a
+      // claim about the account rather than about the request.
       .subscribe((credentials) => this.credentialsSignal.set(credentials));
   }
 
@@ -131,6 +165,25 @@ export class SettingsService {
   // network failure.
   public loadRecoveryCodes(): void {
     this.recoveryFailedSignal.set(false);
+    // Cleared when the read *starts*, not only when it fails, and this is the
+    // line that keeps the section's six states exclusive. Left in place, the
+    // count from a previous answer survives a load that gives up, and the
+    // section renders "Couldn't load your recovery codes. Reload the page."
+    // above "You have 10 recovery codes left." — a reader told the count could
+    // not be loaded, and told the count. Observed in a browser, not reasoned
+    // about.
+    //
+    // The clearing belongs here rather than in the `catchError` for the same
+    // reason `export` clears its outcome before the request rather than after
+    // it: a count that is only cleared on failure is still on screen *during*
+    // the retry, beside the loading line, which is the same pair of
+    // incompatible sentences one state earlier. A number returns with an
+    // answer or not at all.
+    //
+    // `null`, never `0` — the distinction this whole path is shaped around. A
+    // zero here would tell somebody whose request is still running that they
+    // have no way back into their account.
+    this.recoveryRemainingSignal.set(null);
     this.recoveryLoadingSignal.set(true);
     this.api
       .getRecoveryCodes()

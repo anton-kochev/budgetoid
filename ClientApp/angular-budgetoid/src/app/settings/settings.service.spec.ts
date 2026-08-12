@@ -217,6 +217,57 @@ describe('SettingsService', () => {
     expect(service.email()).toBeNull();
   });
 
+  it('drops the previous email while a new load is running', () => {
+    // Arrange
+    api.getMe.mockReturnValueOnce(of({ email: 'first@budgetoid.test' }));
+    service.loadEmail();
+    expect(service.email()).toBe('first@budgetoid.test');
+    const gate = new Subject<MeDto>();
+    api.getMe.mockReturnValue(gate);
+
+    // Act
+    service.loadEmail();
+
+    // Assert
+    // The address answers the read that is running, so it is absent while one
+    // is. Kept, it sits under `Email address` throughout the retry and then
+    // beside "Couldn't load your email address. Reload the page." if the retry
+    // gives up — a reader told the address could not be loaded, and told an
+    // address.
+    expect(service.email()).toBeNull();
+
+    // And a *different* address comes back, so the clearing is not an address
+    // lost — and a service that republished the first one would not pass.
+    gate.next({ email: 'second@budgetoid.test' });
+    gate.complete();
+    expect(service.email()).toBe('second@budgetoid.test');
+  });
+
+  it('leaves no email behind when a reload fails', () => {
+    // Arrange
+    api.getMe.mockReturnValueOnce(of({ email: 'owner@budgetoid.test' }));
+    service.loadEmail();
+    // The first load really did publish an address. Without this the assertion
+    // below holds on a service that never publishes one.
+    expect(service.email()).toBe('owner@budgetoid.test');
+    api.getMe.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+
+    // Act
+    service.loadEmail();
+
+    // Assert
+    // `null`, and deliberately not `''`: the screen reads `null` as "not
+    // loaded" and renders a blank value beside the failure sentence, which is
+    // the same fact said once. An empty string is the same render arrived at by
+    // a different claim, and the distinction is the one the whole signal type
+    // exists for. `reports an email it could not load` above pins this from a
+    // cold start; this pins it after an address has been on screen.
+    expect(service.emailFailed()).toBe(true);
+    expect(service.email()).toBeNull();
+  });
+
   it('publishes the credentials in the order the server sent them', () => {
     // Arrange
     // **Descending**, and that is the whole test. The server orders ascending,
@@ -297,6 +348,55 @@ describe('SettingsService', () => {
     // reload that succeeded would still be accused of failing.
     expect(service.credentialsFailed()).toBe(false);
     expect(service.credentials()).toEqual([FEDERATED, PASSKEY]);
+  });
+
+  it('drops the previous credentials while a new load is running', () => {
+    // Arrange
+    api.getCredentials.mockReturnValueOnce(of([FEDERATED, PASSKEY]));
+    service.loadCredentials();
+    expect(service.credentials()).toEqual([FEDERATED, PASSKEY]);
+    const gate = new Subject<readonly CredentialSummary[]>();
+    api.getCredentials.mockReturnValue(gate);
+
+    // Act
+    service.loadCredentials();
+
+    // Assert
+    // `null`, and emphatically not `[]`. The list answers the read that is
+    // running, so it is absent while one is — and absent is the state the
+    // screen renders as "Loading your ways to sign in…". An empty array here
+    // would tell somebody mid-retry, in plain words, that nothing is attached
+    // to their account.
+    expect(service.credentials()).toBeNull();
+
+    // And a *different* list comes back, so the clearing is not a list lost —
+    // and a service that republished the first one would not pass.
+    gate.next([PASSKEY]);
+    gate.complete();
+    expect(service.credentials()).toEqual([PASSKEY]);
+  });
+
+  it('leaves no credentials behind when a reload fails', () => {
+    // Arrange
+    api.getCredentials.mockReturnValueOnce(of([FEDERATED, PASSKEY]));
+    service.loadCredentials();
+    // The first load really did publish a list. Without this the assertion
+    // below holds on a service that never publishes one.
+    expect(service.credentials()).toEqual([FEDERATED, PASSKEY]);
+    api.getCredentials.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+
+    // Act
+    service.loadCredentials();
+
+    // Assert
+    // `null`, never `[]` — the two are never collapsed anywhere on this path.
+    // `reports credentials it could not load` above pins that from a cold
+    // start, where the signal has never held anything else; this pins it after
+    // a list has been on screen, which is the state a retry control reaches.
+    expect(service.credentialsFailed()).toBe(true);
+    expect(service.credentials()).toBeNull();
   });
 
   it('holds no recovery count before the load is asked for', () => {
@@ -415,5 +515,55 @@ describe('SettingsService', () => {
     // The failure describes the last attempt, not the screen.
     expect(service.recoveryFailed()).toBe(false);
     expect(service.recoveryRemaining()).toBe(4);
+  });
+
+  it('drops the previous count while a new load is running', () => {
+    // Arrange
+    api.getRecoveryCodes.mockReturnValueOnce(of(10));
+    service.loadRecoveryCodes();
+    expect(service.recoveryRemaining()).toBe(10);
+    const gate = new Subject<number>();
+    api.getRecoveryCodes.mockReturnValue(gate);
+
+    // Act
+    service.loadRecoveryCodes();
+
+    // Assert
+    // The count answers the read that is running, so it is absent while one is.
+    // Kept, it sits beside the loading line — and then beside the failure
+    // sentence if the read gives up, which is the pair a browser actually
+    // rendered: "Couldn't load your recovery codes. Reload the page." above
+    // "You have 10 recovery codes left."
+    expect(service.recoveryLoading()).toBe(true);
+    expect(service.recoveryRemaining()).toBeNull();
+
+    // And it comes back with an answer, so the clearing is not a count lost.
+    gate.next(9);
+    gate.complete();
+    expect(service.recoveryRemaining()).toBe(9);
+  });
+
+  it('leaves no count behind when a reload fails', () => {
+    // Arrange
+    api.getRecoveryCodes.mockReturnValueOnce(of(10));
+    service.loadRecoveryCodes();
+    // The first load really did publish a count. Without this the assertion
+    // below holds on a service that never publishes one.
+    expect(service.recoveryRemaining()).toBe(10);
+    api.getRecoveryCodes.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+
+    // Act
+    service.loadRecoveryCodes();
+
+    // Assert
+    // `null`, and deliberately not `0`: the two are never collapsed anywhere on
+    // this path, because a failed request must not tell somebody they have no
+    // way back into their account. `reports a count it could not load` above
+    // pins that from a cold start; this pins it after an answer has been on
+    // screen, which is the state the browser was in.
+    expect(service.recoveryFailed()).toBe(true);
+    expect(service.recoveryRemaining()).toBeNull();
   });
 });

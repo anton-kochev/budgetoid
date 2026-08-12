@@ -91,6 +91,55 @@ the buttons onto it is its own change, made once in `styles.scss` rather than pe
 The rule is unaffected: whatever the fill turns out to be, an unconfirmable destructive
 action is the secondary variant and disabled, never Destructive.
 
+## A value read from the network
+
+Any section that fills itself from a request answers by this rule, whatever it renders — a row, a
+list, a count, a figure. The chapters below apply it; none of them owns it.
+
+**A value is on screen only as the answer to the read that is running.** A section renders at most
+one of: the value, the line saying the read is running, the sentence saying it failed.
+
+**The value is therefore cleared when a read starts, not when one fails.** Cleared on failure only,
+the previous answer is still on screen *during* the retry, beside the line saying it has not
+arrived — the same contradiction one state earlier. Where the value's box is reserved
+(`min-height: 1lh`, below) clearing costs no layout at all; where it is a list, what replaces it is
+the loading line the reader is looking at anyway.
+
+**What it clears to is the section's own "no answer yet", never a substitute for it** — `null` and
+not `0` for a count, `null` and not `[]` for a list, `null` and not `""` for a string. Each
+substitute is a sentence the section may render only once the server has said so: that you have no
+recovery codes, that nothing is attached to your account, that your address is blank. Substituting
+one turns a request that failed into a claim about the account.
+
+**"No answer yet" and "the read is running" are different states too, so the running state is
+published rather than inferred from the absent value.** The value is absent at rest, absent in
+flight and absent after a failure, so a section reading its loading line off that absence has one
+predicate covering three states — and it goes on saying *loading* to somebody whose request has
+already given up. Published, it is set when the read starts and cleared however the read ends,
+which makes the exclusivity above structural rather than a matter of which template branch happens
+to be written first. A section may render no loading line at all: then the reserved blank box is
+what says the answer has not arrived, and the rule stands with that render unused.
+
+**Loading and failure are exclusive by structure**, not by coincidence: a load that failed is not
+still loading, and rendering both asks the reader to keep waiting on a request that has already
+answered.
+
+**The lines land in a `role="status"` region that is in the DOM from first paint**, empty until
+there is something to say. A live region created at the moment it gains content is announced
+unreliably, because assistive technology has to have been watching the node before the text landed.
+It is `status` and never `assertive`: these are results of reads a screen started on its own, and
+assertive is reserved for a failure to save something the person typed
+([accessibility](accessibility.md)). Colour is never the message — every failure sentence reads the
+same with `--bud-over` removed.
+
+**A stale value is not equally harmful in every section, and the section it harms most sets the rule
+for all of them.** A count that is stale is merely old. An address is *wrong*: it is the single
+value that answers the only question its row exists for, and the same read is what updates it on the
+day changing an address becomes possible, so a refresh that failed would leave the previous address
+standing as the answer. A section may not keep its last answer through a failed re-read on the
+argument that its own value ages harmlessly — the reader cannot tell a kept answer from a fresh one,
+and nothing in the render tells them which they have.
+
 ## Settings section and label/value row
 
 - A settings section is a `<section aria-labelledby>` with an `eyebrow` heading,

@@ -5,6 +5,7 @@ import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import {
   MeApiService,
   type CredentialSummary,
+  type MeDto,
 } from '@app-core/api/me-api.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import { of, throwError, type Observable } from 'rxjs';
@@ -18,6 +19,7 @@ import { SettingsService, type ExportFailure } from './settings.service';
 // changes what the sentence promises, which is the only thing these lines
 // exist to protect.
 const EMAIL_LABEL = 'Email address';
+const OWNER_EMAIL = 'owner@budgetoid.test';
 const ERASE_BUTTON = 'Erase everything';
 const EXPORT_BUTTON = 'Export';
 const BACKUP_WINDOW =
@@ -74,6 +76,11 @@ const RECOVERY_FAILURE = 'Couldn’t load your recovery codes. Reload the page.'
 const RECOVERY_NONE = 'You have no recovery codes.';
 const RECOVERY_ONE = 'You have 1 recovery code left.';
 const RECOVERY_MANY = 'You have 5 recovery codes left.';
+// The count the browser left stranded beside a failure sentence. A different
+// number from `RECOVERY_MANY` on purpose: that one is set by hand on the stub,
+// this one comes back from a stubbed response through the real service, and a
+// shared constant would let a copy-paste between the two blocks pass unnoticed.
+const RECOVERY_TEN = 'You have 10 recovery codes left.';
 const GENERATE_EXPLANATION =
   'Generating a set has to be confirmed with a passkey, and Budgetoid can’t run a passkey check in the browser yet. The button stays off until it can.';
 
@@ -2045,6 +2052,196 @@ describe('SettingsComponent on a second visit', () => {
     expect(exportSection(second)).not.toContain(EXPORT_BUILD_FAILURE);
   });
 });
+
+// Reproduced in a browser: the first load answered with ten, a second load
+// failed, and the section rendered "Couldn't load your recovery codes. Reload
+// the page." and "You have 10 recovery codes left." in adjacent lines — the
+// reader told the count could not be loaded, and told the count.
+//
+// The same shape sits on the two reads either side of it, and the three blocks
+// below pin all three. A second load is not something the shipped screen offers
+// today: `ngOnInit` is the only caller of any of them. That is why these are
+// pinned rather than left as review notes — "no two of the six states are
+// interchangeable" is a property of a section, not of its current call sites,
+// and all three of these sections say *Reload the page* on failure, which is an
+// invitation to add exactly the retry control that reaches the combination.
+//
+// Driven through the **real** service, like the second-visit block above and for
+// the same reason: the defect lives in the transition between two loads, and the
+// signal stub cannot have one — every state it shows is set by hand, so a
+// combination the service reaches on its own is invisible through it.
+describe('SettingsComponent when the recovery count is loaded twice', () => {
+  it('says only that the count could not be loaded when a reload fails', async () => {
+    // Arrange
+    const getRecoveryCodes = vi
+      .fn(
+        (): Observable<number> =>
+          throwError(() => new HttpErrorResponse({ status: 500 })),
+      )
+      .mockReturnValueOnce(of(10));
+    const fixture = await visitWithApi({ getRecoveryCodes });
+    const element = fixture.nativeElement as HTMLElement;
+    const region = sectionFor(element, 'recovery-heading')?.querySelector(
+      '[role="status"]',
+    );
+    // The first load really did put a number on the screen. Without this the
+    // assertions below hold on a section that never renders a count at all.
+    expect(normalize(region ?? null)).toBe(RECOVERY_TEN);
+
+    // Act
+    fixture.debugElement.injector.get(SettingsService).loadRecoveryCodes();
+    fixture.detectChanges();
+
+    // Assert
+    const said = normalize(region ?? null);
+    expect(said).toContain(RECOVERY_FAILURE);
+    // The defect itself, read as rendered text rather than off a flag: the two
+    // sentences were on screen together, so what has to be absent is the
+    // sentence, not a signal that happens to feed it. Stated twice on purpose —
+    // the `not.toContain` names the pairing this exists to forbid, and the whole
+    // -region equality catches a count that moved somewhere else in the region
+    // rather than going away.
+    expect(said).not.toContain('recovery codes left');
+    expect(said).toBe(RECOVERY_FAILURE);
+    // And the count line is blank rather than gone: it holds the line box open,
+    // so a failure that removed it would shift the page under the reader.
+    const count = sectionFor(element, 'recovery-heading')?.querySelector(
+      '.s-count',
+    );
+    expect(count).not.toBeNull();
+    expect(normalize(count ?? null)).toBe('');
+  });
+});
+
+// The same defect on the account section: an address from an earlier answer
+// still under `Email address` while the sentence above it says the address
+// could not be loaded.
+//
+// Worth pinning here rather than only in the service, and worth clearing at all,
+// because this value has a way of being *wrong* that a count does not: an email
+// change lands, this read refreshes it, and a refresh that fails leaves the
+// previous address on screen as the answer to "which address does this account
+// hold" — the one question this row exists to answer.
+describe('SettingsComponent when the email is loaded twice', () => {
+  it('says only that the address could not be loaded when a reload fails', async () => {
+    // Arrange
+    const getMe = vi
+      .fn(
+        (): Observable<MeDto> =>
+          throwError(() => new HttpErrorResponse({ status: 500 })),
+      )
+      .mockReturnValueOnce(of({ email: OWNER_EMAIL }));
+    const fixture = await visitWithApi({ getMe });
+    const host = fixture.nativeElement as HTMLElement;
+    // The first load really did put an address on the screen. Without this the
+    // assertions below hold on a section that never renders one at all.
+    expect(emailValue(host)).toBe(OWNER_EMAIL);
+
+    // Act
+    fixture.debugElement.injector.get(SettingsService).loadEmail();
+    fixture.detectChanges();
+
+    // Assert
+    const said = normalize(sectionFor(host, 'account-heading'));
+    expect(said).toContain(EMAIL_FAILURE);
+    // The defect itself, read as rendered text: the address and the sentence
+    // denying it were on screen together.
+    expect(said).not.toContain(OWNER_EMAIL);
+    expect(emailValue(host)).toBe('');
+    // And the row keeps its label, so the section does not reshape under the
+    // reader — it is the value that goes, not the fact that an account has an
+    // address.
+    expect(said).toContain(EMAIL_LABEL);
+  });
+});
+
+// And on the credential list: rows from an earlier answer still listed under
+// the sentence saying the list could not be loaded.
+//
+// The one to read twice is the last assertion. The list clears to `null`, never
+// to `[]` — "the answer has not arrived" and "nothing is attached to this
+// account" are different facts rendered as different sentences, and an empty
+// array here would replace a failure the reader can retry with a claim about
+// their account that is worse than the defect being fixed.
+describe('SettingsComponent when the ways to sign in are loaded twice', () => {
+  it('says only that the list could not be loaded when a reload fails', async () => {
+    // Arrange
+    const getCredentials = vi
+      .fn(
+        (): Observable<readonly CredentialSummary[]> =>
+          throwError(() => new HttpErrorResponse({ status: 500 })),
+      )
+      .mockReturnValueOnce(of([PASSKEY]));
+    const fixture = await visitWithApi({ getCredentials });
+    const host = fixture.nativeElement as HTMLElement;
+    const section = sectionFor(host, 'credentials-heading');
+    // The first load really did put a row on the screen.
+    expect(section?.querySelectorAll('.s-credential')).toHaveLength(1);
+    expect(normalize(section)).toContain(PASSKEY_TYPE);
+
+    // Act
+    fixture.debugElement.injector.get(SettingsService).loadCredentials();
+    fixture.detectChanges();
+
+    // Assert
+    const said = normalize(section);
+    expect(said).toContain(CREDENTIALS_FAILURE);
+    // Read as rendered text and as rows, because the two catch different
+    // regressions: the text catches a row that survived, the count catches rows
+    // emptied of their type but left in the document as blank list items.
+    expect(said).not.toContain(PASSKEY_TYPE);
+    expect(section?.querySelectorAll('.s-credential')).toHaveLength(0);
+    // Not the loading line — a load that gave up is not still running.
+    expect(said).not.toContain(CREDENTIALS_LOADING);
+    // And never the empty sentence. A list cleared to `[]` renders this, which
+    // tells somebody whose request failed that they have no way of signing in
+    // — on a page they are signed in to.
+    expect(said).not.toContain(CREDENTIALS_EMPTY);
+  });
+});
+
+// The reads the screen starts on its own, plus the one it starts on a click.
+// The `Pick` is over the real `MeApiService`, so this list is what stops a stub
+// below from drifting into a shape the service no longer has.
+type MeApiEdges = Pick<
+  MeApiService,
+  'getMe' | 'getExport' | 'getCredentials' | 'getRecoveryCodes'
+>;
+
+// One arrival at the screen with only the edges replaced — the HTTP calls and
+// the disk write. The service under test is the shipped one, which is the whole
+// point for the three blocks that use this: each pins a defect living in the
+// transition between two loads, and a hand-set signal stub has no transitions.
+//
+// Every read is defaulted so a block overrides only the one it is about. That is
+// not tidiness: the screen loads all three on init, and a stub missing any of
+// them fails with `… is not a function` before a single assertion is reached.
+async function visitWithApi(
+  overrides: Partial<MeApiEdges>,
+): Promise<ComponentFixture<SettingsComponent>> {
+  const api: MeApiEdges = {
+    getMe: () => of({ email: OWNER_EMAIL }),
+    getExport: () => of(new Blob()),
+    getCredentials: () => of([PASSKEY]),
+    getRecoveryCodes: () => of(3),
+    ...overrides,
+  };
+  const downloads: Pick<FileDownloadService, 'save'> = { save: vi.fn() };
+
+  await TestBed.configureTestingModule({
+    imports: [SettingsComponent],
+    providers: [
+      provideNoopAnimations(),
+      { provide: MeApiService, useValue: api },
+      { provide: FileDownloadService, useValue: downloads },
+    ],
+  }).compileComponents();
+
+  const fixture = TestBed.createComponent(SettingsComponent);
+  fixture.detectChanges();
+
+  return fixture;
+}
 
 // Collapses the whitespace an HTML template introduces. Without it every
 // whole-sentence assertion above is hostage to where Prettier wrapped the
