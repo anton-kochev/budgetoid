@@ -54,10 +54,10 @@ of any narrative field are all later work.
   deliberately **not** the credential id;
   [ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
   gives the reason.
-- **Factor** — one secret that can derive a key-encryption key, which is **not** the same as one
-  credential. A passkey is one factor and one credential. A set of recovery codes is one credential
-  and **ten** factors, because each code is a secret of its own. That distinction is what the primary
-  key records: `credential_id` is an ordinary column and repeats ten times for a set.
+- **Recovery factor** — one secret that can derive a key-encryption key, which is **not** the same
+  as one credential. A passkey is one factor and one credential. A set of recovery codes is one
+  credential and **ten** factors, because each code is a secret of its own. That distinction is what
+  the primary key records: `credential_id` is an ordinary column and repeats ten times for a set.
 
 Deliberately **absent** from anything this module produces: any representation of an unwrapped key
 on the wire, any key-encryption key outside the browser, any PRF output, and any recovery code.
@@ -341,8 +341,9 @@ reachable — the two routes refuse a request without it.
    verifier beside that code's own factor identifier and envelope pair. Each handler checks every
    identifier's spelling, every envelope's width and version, and — on the generation path — that no
    two identifiers in the set repeat, then writes **in the same `SaveChanges`** as the credential:
-   four rows on the passkey path, twenty-two on the recovery-code path. There is no partial state in
-   which a factor exists holding no share of the keys.
+   four rows on the passkey path, and twenty-one on the recovery-code path — the credential, ten
+   hash rows and ten wrapped-key rows. There is no partial state in which a factor exists holding
+   no share of the keys.
 
    The set's ten identifiers must differ, and that rule lives in the handler rather than being left
    to the primary key: as a `23505` it would arrive *after* the previous set had already been deleted

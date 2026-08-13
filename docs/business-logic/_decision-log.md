@@ -54,8 +54,9 @@ database could have decrypted with it before redeeming too.
 
 **Affected areas:** [account-keys.md](account-keys.md), [recovery-codes.md](recovery-codes.md),
 [ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
-This corrects the entry below, which stands as written except where it says one row per factor and
-means one row per credential.
+This supersedes the entry below wherever the two disagree. That entry argues the shape correctly and
+was written while "factor" was still assumed to mean "credential", so read every factor in it as one
+**secret** — one passkey, or one code of a set — rather than as one `credentials` row.
 
 ---
 
