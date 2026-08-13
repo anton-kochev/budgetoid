@@ -47,7 +47,10 @@ public static class PasskeyEndpoints
                 new CompleteRegistrationCommand(
                     request.ClientDataJson,
                     request.AttestationObject,
-                    request.ClientExtensionResults),
+                    request.ClientExtensionResults,
+                    request.FactorId,
+                    request.WrappedContentKey,
+                    request.WrappedIndexKey),
                 cancellationToken);
 
             // 201 with no Location header and no body: the credential is a fact about the account,
@@ -117,10 +120,30 @@ public static class PasskeyEndpoints
         return endpoints;
     }
 
+    /// <summary>
+    /// What the device produced, and the share of the account keys the factor it becomes is to hold.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The three key-custody members are passed straight through, and none of them is <c>required</c> —
+    /// see <see cref="CompleteRegistrationCommand"/>, which makes the whole argument: an absent member
+    /// binds to <see langword="null"/> and is refused by the handler in a sentence about this ceremony,
+    /// past the prf gate, rather than by a framework 400 raised before anything signed was judged.
+    /// </para>
+    /// <para>
+    /// This route gains no <c>ProvisionsUser</c> metadata and may never: a provider id token outlives
+    /// the account it names by up to an hour, so a registration able to mint one would let a stale token
+    /// resurrect an erased account — here as a shell holding a passkey <em>and</em> a copy of the
+    /// account keys, which is a working way back in rather than an empty row.
+    /// </para>
+    /// </remarks>
     private sealed record RegistrationRequest(
         string ClientDataJson,
         string AttestationObject,
-        PasskeyClientExtensionResults? ClientExtensionResults);
+        PasskeyClientExtensionResults? ClientExtensionResults,
+        string FactorId,
+        string WrappedContentKey,
+        string WrappedIndexKey);
 
     private sealed record AssertionRequest(
         string CredentialId,

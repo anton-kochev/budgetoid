@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Api.Infrastructure;
 using Application.Passkeys;
+using Domain.Users;
 using Npgsql;
 using TestSupport;
 
@@ -154,6 +155,19 @@ public sealed class RecoveryCodeGenerationTests
     /// cause, and therefore the one member a comparison of two refusals must not compare.
     /// </summary>
     private const string TraceIdMember = "traceId";
+
+    /// <summary>
+    /// The clause only the factor-identifier conflict carries, and the one thing that tells it apart from
+    /// the two lost-race conflicts this route answers with the same status and the same title.
+    /// </summary>
+    /// <remarks>
+    /// Spelled out here rather than read off the repository, and the copy is deliberate: the sentence is
+    /// <c>private</c> to <c>RecoveryCodeRepository</c> and to <c>PasskeyRepository</c>, which hold it
+    /// twice on purpose so that one route's wording cannot be changed by editing the other's. A test
+    /// taking its expectation from the constant under test would agree with whatever that constant later
+    /// said, including with the lost-race sentence.
+    /// </remarks>
+    private const string FactorConflictClause = "factor identifier is already registered";
 
     /// <summary>
     /// How many refusals <see cref="EveryReachableGenerationRefusal_ProducesTheIdenticalResponse" />
@@ -390,6 +404,354 @@ public sealed class RecoveryCodeGenerationTests
 
         await Assert.That(await CountSetsAsync(admin, userId)).IsEqualTo(1L);
         await Assert.That(await ResolveSetCredentialIdAsync(admin, userId)).IsNotEqualTo(previousSetId);
+    }
+
+    /// <summary>
+    /// A generation carrying no factor and neither envelope is refused, and the set the person is
+    /// holding — its credential, its ten codes <b>and</b> its share of the account keys — is still
+    /// exactly where it was.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the test that catches a handler validating after it has deleted.</b> The three
+    /// members are validated inside <c>DecodeAndValidate</c>, past the re-authentication gate and
+    /// before anything is read or removed; let that validation drift down past the read and the
+    /// request answers 400 exactly as this test demands, having already taken the previous set with
+    /// it. The status alone cannot see that, which is why the previous set is compared by value here
+    /// rather than counted.
+    /// </para>
+    /// <para>
+    /// <b>The wrapped keys are the half a reader will leave out, and they are the expensive half.</b>
+    /// Ten deleted hash rows cost the person the codes on a card they still hold; a deleted
+    /// <c>wrapped_account_keys</c> row costs them the only copy of the content key that factor could
+    /// open, and nothing on this server can mint another. So the row is read back and its factor id
+    /// and both envelopes compared against the values the first generation posted.
+    /// </para>
+    /// <para>
+    /// The refusal is a 400 in the shape the <c>Verifiers</c> refusals already use, and it is past the
+    /// gate for the reason
+    /// <see cref="Generation_WithAMalformedSet_IsRefusedWithASentenceAndWritesNothing" /> gives: the
+    /// caller has proved possession of an authenticator registered to this account, so a sentence
+    /// naming what is missing enumerates nobody.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RecoveryCodeGeneration_RefusesASetCarryingNoWrappedKeys_AndLeavesThePreviousSetIntact()
+    {
+        // Arrange — a real first set, whose share of the account keys is a fixture this test keeps, so
+        // "still there" can be a comparison of values rather than of a count.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        Guid userId = await ResolveUserIdAsync(host, Subject);
+
+        WrappedKeyFixture issued = WrappedKeyFixture.Mint();
+        string[] verifiers = Verifiers();
+        await Assert.That((await GenerateAsync(client, device, userId, verifiers, issued)).StatusCode)
+            .IsEqualTo(HttpStatusCode.OK);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid issuedSetId = await ResolveSetCredentialIdAsync(admin, userId);
+
+        // The set really is whole before the act, or every survival below is a claim about rows the
+        // arrangement never wrote.
+        await Assert.That(await StoredHashesAsync(admin, userId)).IsEquivalentTo(ExpectedHashesOf(verifiers));
+
+        WrappedAccountKeysRow[] before = await WrappedAccountKeysAsync(admin, userId);
+        await Assert.That(before.Any(row => row.FactorId == issued.Factor)).IsTrue();
+
+        // Act — a fresh, genuine proof and a well-formed set of ten verifiers, with no factor
+        // identifier and neither envelope anywhere in the body.
+        HttpResponseMessage response = await GenerateWithoutWrappedKeysAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+
+        // The account still holds the one set it held, under the same credential, with the same ten
+        // codes.
+        await Assert.That(await CountSetsAsync(admin, userId)).IsEqualTo(1L);
+        await Assert.That(await ResolveSetCredentialIdAsync(admin, userId)).IsEqualTo(issuedSetId);
+        await Assert.That(await StoredHashesAsync(admin, userId)).IsEquivalentTo(ExpectedHashesOf(verifiers));
+        await Assert.That(await CountCodesOfSetAsync(admin, issuedSetId)).IsEqualTo((long)RequiredCodeCount);
+
+        // And its share of the account keys is byte for byte the share it was issued with. Named by
+        // the factor identifier the first generation posted, which is unique across the whole table,
+        // so this is the row that generation wrote and no other.
+        WrappedAccountKeysRow[] surviving = [.. (await WrappedAccountKeysAsync(admin, userId))
+            .Where(row => row.FactorId == issued.Factor)];
+        await Assert.That(surviving.Length).IsEqualTo(1);
+        await Assert.That(surviving[0].CredentialId).IsEqualTo(issuedSetId);
+        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedContentKey)).IsEqualTo(issued.WrappedContentKey);
+        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedIndexKey)).IsEqualTo(issued.WrappedIndexKey);
+    }
+
+    /// <summary>
+    /// A genuine generation files the set's share of the account keys against the <b>set's own</b>
+    /// credential, and each value lands in the column it belongs to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The credential is the assertion a reader will assume rather than check.</b> Two credentials
+    /// are in play on this request: the passkey that proved presence, which is loaded and verified
+    /// moments earlier and therefore the one nearest to hand, and the set's own <c>credentials</c> row,
+    /// which the handler mints in the same save. Filing the row against the asserting passkey stores
+    /// envelopes wrapped under the recovery code's key-encryption key beside a factor that derives a
+    /// different one — nothing refuses it, and the discovery is a browser failing to open a passkey's
+    /// keys on the day somebody uses that passkey.
+    /// </para>
+    /// <para>
+    /// <b>Which envelope landed in which column is the other half, and no constraint the database holds
+    /// can tell them apart.</b> Both are <see cref="WrappedAccountKeys.EnvelopeLength" /> bytes, both
+    /// carry <see cref="WrappedAccountKeys.EnvelopeVersion" />, both are <c>NOT NULL</c>: a swapped
+    /// pair satisfies every check. Only bytes told apart by which column they landed in can catch it,
+    /// which is what <see cref="WrappedKeyFixture" /> mints.
+    /// </para>
+    /// <para>
+    /// The row is found by the factor identifier the request posted rather than by the credential it
+    /// should have been filed under — that identifier is minted by the client and unique across the
+    /// whole table, so it names the row this request wrote without presupposing the very column the
+    /// test is about.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RecoveryCodeGeneration_FilesTheSetsWrappedKeys_WithTheSetsOwnCredential()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        Guid userId = await ResolveUserIdAsync(host, Subject);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // Act
+        HttpResponseMessage response = await GenerateAsync(client, device, userId, verifiers: null, keys);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        WrappedAccountKeysRow[] ofFactor = [.. (await WrappedAccountKeysAsync(admin, userId))
+            .Where(row => row.FactorId == keys.Factor)];
+        await Assert.That(ofFactor.Length).IsEqualTo(1);
+
+        // Column by column, because a row of the right shape under the wrong credential, or with the
+        // two envelopes exchanged, is a row every constraint in the schema accepts.
+        WrappedAccountKeysRow row = ofFactor[0];
+        await Assert.That(row.CredentialId).IsEqualTo(await ResolveSetCredentialIdAsync(admin, userId));
+        await Assert.That(row.UserId).IsEqualTo(userId);
+        await Assert.That(row.CredentialType).IsEqualTo(RecoveryCodesCredentialType);
+
+        // Re-encoded and compared against the text the request carried, so the comparison is over the
+        // exact bytes in their exact order.
+        await Assert.That(Base64UrlText.Encode(row.WrappedContentKey)).IsEqualTo(keys.WrappedContentKey);
+        await Assert.That(Base64UrlText.Encode(row.WrappedIndexKey)).IsEqualTo(keys.WrappedIndexKey);
+    }
+
+    /// <summary>
+    /// A second generation leaves the account with exactly one set's worth of wrapped keys — the second
+    /// one's — and the replaced set's row leaves by the <b>database's own cascade</b>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What makes this load-bearing rather than a restatement of the replacement test.</b> The
+    /// application role holds no <c>DELETE</c> on <c>wrapped_account_keys</c>, so the replaced set's row
+    /// can only leave by the cascade from <c>credentials</c>, which runs with the referencing table
+    /// owner's privileges rather than this role's. A handler that ever materialised that row — a "load
+    /// the old envelopes so we can check them" read is the way it happens — would have EF emit its own
+    /// <c>DELETE FROM wrapped_account_keys</c> and die with <c>42501</c>, having removed nothing.
+    /// <c>GenerateRecoveryCodesHandler</c> already carries that rule for <c>recovery_code_hashes</c>;
+    /// this is the same rule binding a second table.
+    /// </para>
+    /// <para>
+    /// <b>The absent grant is pinned elsewhere and this test is what notices the rows failing to
+    /// leave.</b>
+    /// <c>AppRoleGrantsTests.Database_RefusesADeleteOnAWrappedAccountKey_WhileTheCascadeFromItsCredentialStillTakesIt</c>
+    /// is the permanent control for the privilege; nothing there can see a second generation leaving
+    /// two rows behind, or the first set's envelopes outliving the card they belonged to. Do not answer
+    /// a <c>42501</c> here with a grant: the SQLSTATE names a privilege and the cause is the change
+    /// tracker.
+    /// </para>
+    /// <para>
+    /// The surviving row is compared by value, not counted. One row is what a correct replacement
+    /// leaves and also what a handler that replaced the credential while leaving the old envelopes
+    /// under it leaves, and the person would then be holding a card whose codes derive a key-encryption
+    /// key that opens nothing.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RecoveryCodeGeneration_ReplacesTheWrappedKeysByTheDatabasesOwnCascade()
+    {
+        // Arrange — a first set, with a share of the account keys of its own.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        Guid userId = await ResolveUserIdAsync(host, Subject);
+
+        WrappedKeyFixture first = WrappedKeyFixture.Mint();
+        await Assert.That((await GenerateAsync(client, device, userId, verifiers: null, first)).StatusCode)
+            .IsEqualTo(HttpStatusCode.OK);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // The first set's row is really there, or "exactly one afterwards" is a claim about a row the
+        // arrangement never wrote rather than about a row the replacement took.
+        await Assert.That((await WrappedAccountKeysAsync(admin, userId)).Any(row => row.FactorId == first.Factor))
+            .IsTrue();
+
+        // Act — the same account, a fresh proof, a second factor's share of the same two keys.
+        WrappedKeyFixture second = WrappedKeyFixture.Mint();
+        HttpResponseMessage response = await GenerateAsync(client, device, userId, verifiers: null, second);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        WrappedAccountKeysRow[] rows = await WrappedAccountKeysAsync(admin, userId);
+
+        // One set's worth, and it is the second one's — read by the credential type the column holds,
+        // because the passkey that proves every ceremony in this file holds a share of its own and that
+        // one is nobody's business here.
+        WrappedAccountKeysRow[] ofSets =
+            [.. rows.Where(row => row.CredentialType == RecoveryCodesCredentialType)];
+        await Assert.That(ofSets.Length).IsEqualTo(1);
+        await Assert.That(ofSets[0].CredentialId).IsEqualTo(await ResolveSetCredentialIdAsync(admin, userId));
+        await Assert.That(ofSets[0].FactorId).IsEqualTo(second.Factor);
+        await Assert.That(Base64UrlText.Encode(ofSets[0].WrappedContentKey)).IsEqualTo(second.WrappedContentKey);
+        await Assert.That(Base64UrlText.Encode(ofSets[0].WrappedIndexKey)).IsEqualTo(second.WrappedIndexKey);
+
+        // And the replaced factor is gone from the whole account, not merely outnumbered.
+        await Assert.That(rows.Any(row => row.FactorId == first.Factor)).IsFalse();
+    }
+
+    /// <summary>
+    /// A generation claiming a factor identifier the account's passkey already holds is refused as a
+    /// conflict, and everything the replacement had already taken apart is put back: the set's
+    /// credential, its ten codes, its share of the account keys, and the session it had opened.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The identifier comes from the passkey, and the alternative is not a matter of taste.</b> A
+    /// second generation reusing the <em>replaced set's own</em> identifier collides with nothing: the
+    /// delete of that set's credential cascades its <c>wrapped_account_keys</c> row away inside this same
+    /// transaction and before the insert, so the request is answered 200 and
+    /// <c>AddSetAsync</c>'s factor-id filter is never reached at all. The identifier has to belong to a
+    /// factor this request does <em>not</em> replace, and the passkey that proves every ceremony in this
+    /// file is the one such factor an account holds today — filed table-wide under the same
+    /// <c>IX_wrapped_account_keys_factor_id</c>, so the collision is real and it is across factor kinds,
+    /// which is the collision the index exists for.
+    /// </para>
+    /// <para>
+    /// <b>The sentence is asserted, because three refusals on this route are 409 and the status cannot
+    /// tell them apart.</b> <c>DeleteSetAsync</c>'s lost race, <c>AddSetAsync</c>'s collision on the
+    /// account's one-set index, and this one all become a <see cref="ConflictException" /> and reach the
+    /// wire as the same status with the same title. Only <c>detail</c> says which filter fired — and the
+    /// first two carry the lost-race sentence, which would send this caller looking for a second client
+    /// they do not have. A test satisfied by the status alone would stay green over a request refused one
+    /// statement earlier, having proved nothing about the clause it was written for.
+    /// </para>
+    /// <para>
+    /// <b>What the refusal had to put back is the half worth more than the status.</b> Issuing
+    /// <em>replaces</em>: by the time the insert collides, the handler has already revoked every session
+    /// the previous set opened and removed that set's credential, both inside the one transaction
+    /// <c>ITransactionalExecutor</c> opened. So a refusal here is only a refusal if all of it unwinds —
+    /// and the failure this catches is a sweep or a delete that commits on its own, which leaves a person
+    /// answered "mint a fresh identifier" while their codes are gone and they are signed out. The
+    /// previous set is therefore compared by value, its wrapped keys byte for byte, and its session read
+    /// back still unrevoked.
+    /// </para>
+    /// <para>
+    /// The claimed factor's surviving row is compared against the <b>passkey's</b> envelopes rather than
+    /// counted, because the refused request minted envelopes of its own under that same identifier: a row
+    /// of the right shape carrying the wrong bytes is what a handler that updated instead of inserting
+    /// would leave, and it would have overwritten the only copy of the content key that passkey can open.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RecoveryCodeGeneration_RefusesAFactorIdentifierAlreadyRegistered()
+    {
+        // Arrange — a passkey registered under an identifier this test keeps, and a real set of codes
+        // filed under one of its own, so the account holds two factors and only one of them is the one
+        // the act replaces.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture claimed = WrappedKeyFixture.Mint();
+        await RegisterPasskeyAsync(client, device, claimed);
+        Guid userId = await ResolveUserIdAsync(host, Subject);
+
+        WrappedKeyFixture issued = WrappedKeyFixture.Mint();
+        string[] verifiers = Verifiers();
+        await Assert.That((await GenerateAsync(client, device, userId, verifiers, issued)).StatusCode)
+            .IsEqualTo(HttpStatusCode.OK);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid issuedSetId = await ResolveSetCredentialIdAsync(admin, userId);
+
+        // The session the set opened, written out of band for the reason the replacement tests give:
+        // there is no product path to a recovery-code session until redemption ships. Without it the
+        // sweep has nothing to revoke and this test would say nothing about the half of the transaction
+        // that runs before the delete.
+        await InsertRecoveryCodeSessionAsync(admin, userId, issuedSetId);
+
+        // The whole arrangement really is in place, or every survival below is a claim about rows nothing
+        // wrote — two factors' shares, ten codes, one live session.
+        await Assert.That(await StoredHashesAsync(admin, userId)).IsEquivalentTo(ExpectedHashesOf(verifiers));
+        await Assert.That((await WrappedAccountKeysAsync(admin, userId)).Length).IsEqualTo(2);
+        await Assert.That(await CountLiveSessionsAsync(admin, issuedSetId)).IsEqualTo(1L);
+
+        // Act — a fresh, genuine proof and a well-formed set of ten new verifiers, claiming the factor
+        // identifier the passkey already holds. The envelopes under it are this request's own, so a row
+        // that changed hands is visible by its bytes.
+        HttpResponseMessage response = await GenerateAsync(
+            client,
+            device,
+            userId,
+            Verifiers(),
+            WrappedKeyFixture.MintFor(claimed.Factor));
+
+        // Assert — the status, and the sentence that says which of this route's three conflicts answered.
+        JsonObject refusal = await ReadJsonObjectAsync(response);
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(DetailOf(refusal)).Contains(FactorConflictClause, StringComparison.Ordinal);
+
+        // The account still holds the one set it held, under the same credential, with the same ten
+        // codes — none of which the act's verifiers hash to.
+        await Assert.That(await CountSetsAsync(admin, userId)).IsEqualTo(1L);
+        await Assert.That(await ResolveSetCredentialIdAsync(admin, userId)).IsEqualTo(issuedSetId);
+        await Assert.That(await StoredHashesAsync(admin, userId)).IsEquivalentTo(ExpectedHashesOf(verifiers));
+        await Assert.That(await CountCodesOfSetAsync(admin, issuedSetId)).IsEqualTo((long)RequiredCodeCount);
+
+        // Two factors' shares and no third: the refused request filed nothing of its own.
+        WrappedAccountKeysRow[] rows = await WrappedAccountKeysAsync(admin, userId);
+        await Assert.That(rows.Length).IsEqualTo(2);
+
+        // The set's share is byte for byte the share it was issued with, under the set's own credential.
+        WrappedAccountKeysRow[] ofSet = [.. rows.Where(row => row.FactorId == issued.Factor)];
+        await Assert.That(ofSet.Length).IsEqualTo(1);
+        await Assert.That(ofSet[0].CredentialId).IsEqualTo(issuedSetId);
+        await Assert.That(Base64UrlText.Encode(ofSet[0].WrappedContentKey)).IsEqualTo(issued.WrappedContentKey);
+        await Assert.That(Base64UrlText.Encode(ofSet[0].WrappedIndexKey)).IsEqualTo(issued.WrappedIndexKey);
+
+        // And the claimed identifier still names the passkey's share, carrying the passkey's envelopes
+        // rather than the ones the refused request wrapped under it.
+        WrappedAccountKeysRow[] ofPasskey = [.. rows.Where(row => row.FactorId == claimed.Factor)];
+        await Assert.That(ofPasskey.Length).IsEqualTo(1);
+        await Assert.That(Base64UrlText.Encode(ofPasskey[0].WrappedContentKey)).IsEqualTo(claimed.WrappedContentKey);
+        await Assert.That(Base64UrlText.Encode(ofPasskey[0].WrappedIndexKey)).IsEqualTo(claimed.WrappedIndexKey);
+
+        // The sweep unwound too: the session the set opened is still the account's one live session, and
+        // it is still over the set the person is holding.
+        SessionRow[] live = await LiveSessionsAsync(admin, userId);
+        await Assert.That(live.Length).IsEqualTo(1);
+        await Assert.That(live[0].CredentialId).IsEqualTo(issuedSetId);
+        await Assert.That(live[0].CredentialType).IsEqualTo(RecoveryCodesCredentialType);
     }
 
     /// <summary>
@@ -1228,11 +1590,17 @@ public sealed class RecoveryCodeGenerationTests
     /// The set to present. Null means a well-formed one of the required size, which is what every test
     /// that is not about the validation family wants.
     /// </param>
+    /// <param name="wrappedKeys">
+    /// The share of the account keys the set is to hold. Null mints a fresh one, which is what every
+    /// test that is not about the wrapped keys wants — and it has to be fresh, because
+    /// <c>IX_wrapped_account_keys_factor_id</c> is unique table-wide and half this file issues twice.
+    /// </param>
     private static async Task<HttpResponseMessage> GenerateAsync(
         HttpClient client,
         SyntheticAuthenticator device,
         Guid userId,
-        IReadOnlyList<string>? verifiers = null)
+        IReadOnlyList<string>? verifiers = null,
+        WrappedKeyFixture? wrappedKeys = null)
     {
         byte[] challenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
 
@@ -1243,7 +1611,7 @@ public sealed class RecoveryCodeGenerationTests
             PasskeyEncoding.ToUserHandle(userId),
             signCount: 0);
 
-        return await PostGenerationAsync(client, assertion, verifiers ?? Verifiers());
+        return await PostGenerationAsync(client, assertion, verifiers ?? Verifiers(), wrappedKeys);
     }
 
     /// <summary>
@@ -1258,8 +1626,12 @@ public sealed class RecoveryCodeGenerationTests
     private static Task<HttpResponseMessage> PostGenerationAsync(
         HttpClient client,
         AssertionResult assertion,
-        IReadOnlyList<string> verifiers) =>
-        client.PostAsJsonAsync(RecoveryCodesPath, new
+        IReadOnlyList<string> verifiers,
+        WrappedKeyFixture? wrappedKeys = null)
+    {
+        WrappedKeyFixture keys = wrappedKeys ?? WrappedKeyFixture.Mint();
+
+        return client.PostAsJsonAsync(RecoveryCodesPath, new
         {
             verifiers,
             credentialId = assertion.CredentialIdBase64Url,
@@ -1267,7 +1639,43 @@ public sealed class RecoveryCodeGenerationTests
             authenticatorData = assertion.AuthenticatorDataBase64Url,
             signature = assertion.SignatureBase64Url,
             userHandle = assertion.UserHandleBase64Url,
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
+    }
+
+    /// <summary>
+    /// The whole issuing ceremony again, with the three wrapped-key members left off the body
+    /// <b>entirely</b> — the one shape <see cref="PostGenerationAsync" /> cannot produce.
+    /// </summary>
+    /// <remarks>
+    /// Absent rather than null or empty, because absent is what a client that has not been updated
+    /// sends and it is the request that reaches the handler with nothing to file. The set of verifiers
+    /// is well-formed, so the only thing wrong with this request is the one under test.
+    /// </remarks>
+    private static async Task<HttpResponseMessage> GenerateWithoutWrappedKeysAsync(
+        HttpClient client,
+        SyntheticAuthenticator device,
+        Guid userId)
+    {
+        byte[] challenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
+        AssertionResult assertion = device.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(userId),
+            signCount: 0);
+
+        return await client.PostAsJsonAsync(RecoveryCodesPath, new
+        {
+            verifiers = Verifiers(),
+            credentialId = assertion.CredentialIdBase64Url,
+            clientDataJson = assertion.ClientDataJsonBase64Url,
+            authenticatorData = assertion.AuthenticatorDataBase64Url,
+            signature = assertion.SignatureBase64Url,
+            userHandle = assertion.UserHandleBase64Url,
+        });
+    }
 
     /// <summary>
     /// The same ceremony with one bit of the signature moved, so the response is genuine in every respect
@@ -1292,7 +1700,16 @@ public sealed class RecoveryCodeGenerationTests
     /// rather than shared, because it is private to <c>CredentialRevocationTests</c> and that file makes
     /// the same choice for the same reason.
     /// </remarks>
-    private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
+    /// <param name="wrappedKeys">
+    /// The share of the account keys the passkey is to hold. Null mints a fresh one, which is what every
+    /// test that never names the passkey's own factor wants — and it has to be fresh, because
+    /// <c>IX_wrapped_account_keys_factor_id</c> is unique table-wide and this file registers a passkey on
+    /// every account it establishes.
+    /// </param>
+    private static async Task RegisterPasskeyAsync(
+        HttpClient client,
+        SyntheticAuthenticator device,
+        WrappedKeyFixture? wrappedKeys = null)
     {
         await ApiFactory.EstablishAccountAsync(client);
 
@@ -1302,11 +1719,15 @@ public sealed class RecoveryCodeGenerationTests
             ApiFactory.PasskeyOrigin,
             signCount: 0,
             prfEnabled: true);
+        WrappedKeyFixture keys = wrappedKeys ?? WrappedKeyFixture.Mint();
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
         response.EnsureSuccessStatusCode();
     }
@@ -1440,6 +1861,12 @@ public sealed class RecoveryCodeGenerationTests
     private static string TitleOf(JsonObject body) => body["title"]!.GetValue<string>();
 
     /// <summary>
+    /// The <c>detail</c> of a problem-details body, which is the only member that says which of this
+    /// route's several 409s answered — the title and the status are one value for all of them.
+    /// </summary>
+    private static string DetailOf(JsonObject body) => body["detail"]!.GetValue<string>();
+
+    /// <summary>
     /// <see cref="ComparableBodyOf" /> for a caller that needs nothing else out of the response.
     /// </summary>
     private static async Task<string> ReadComparableBodyAsync(HttpResponseMessage response) =>
@@ -1528,6 +1955,71 @@ public sealed class RecoveryCodeGenerationTests
         }
 
         return [.. hashes.Order(StringComparer.Ordinal)];
+    }
+
+    /// <summary>
+    /// One <c>wrapped_account_keys</c> row, every column of it.
+    /// </summary>
+    /// <remarks>
+    /// <c>credential_type</c> as the column spells it rather than as the enum member it parses to, so
+    /// the assertion is over the token the database actually holds. <c>created_at_utc</c> is absent:
+    /// nothing here asks when a factor's share was filed, only which factor holds which bytes.
+    /// </remarks>
+    private readonly record struct WrappedAccountKeysRow(
+        Guid CredentialId,
+        Guid FactorId,
+        Guid UserId,
+        string CredentialType,
+        byte[] WrappedContentKey,
+        byte[] WrappedIndexKey);
+
+    /// <summary>
+    /// Every <c>wrapped_account_keys</c> row of one account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Unfiltered by credential type, and every caller names the row it means.</b> The account holds
+    /// more than the set's share: the passkey that proves every ceremony in this file was registered
+    /// with a share of its own, so a read scoped to <c>recovery_codes</c> would hide a row filed against
+    /// the wrong credential — which is exactly the mistake
+    /// <see cref="RecoveryCodeGeneration_FilesTheSetsWrappedKeys_WithTheSetsOwnCredential" /> is about.
+    /// A test names its row by the factor identifier it posted, which is unique table-wide, or by the
+    /// credential type the column holds.
+    /// </para>
+    /// <para>
+    /// On the container superuser, like every row read in this file: this table carries
+    /// <c>user_isolation</c>, so a policed connection reports no row for one that is still there exactly
+    /// as it does for one that is gone — and most of what is claimed here is that a row survived.
+    /// </para>
+    /// </remarks>
+    private static async Task<WrappedAccountKeysRow[]> WrappedAccountKeysAsync(
+        NpgsqlConnection admin,
+        Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            """
+            select credential_id, factor_id, user_id, credential_type, wrapped_content_key, wrapped_index_key
+            from wrapped_account_keys
+            where user_id = @userId
+            order by created_at_utc
+            """,
+            admin);
+        command.Parameters.AddWithValue("userId", userId);
+
+        List<WrappedAccountKeysRow> rows = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new WrappedAccountKeysRow(
+                reader.GetGuid(0),
+                reader.GetGuid(1),
+                reader.GetGuid(2),
+                reader.GetString(3),
+                reader.GetFieldValue<byte[]>(4),
+                reader.GetFieldValue<byte[]>(5)));
+        }
+
+        return [.. rows];
     }
 
     /// <summary>How many sets the account holds, which the product's own index bounds at one.</summary>

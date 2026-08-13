@@ -36,6 +36,17 @@ namespace Application.Passkeys.CompleteRegistration;
 /// that needs to <i>rely</i> on PRF must key on a value derived through PRF that the server can
 /// check — never on this flag, and never on the fact that this endpoint refuses without it.
 /// </para>
+/// <para>
+/// <b>The wrapped account keys are that value, and it is worth saying exactly how far they go.</b> They
+/// are <em>not</em> the check the paragraph above asks for: the server cannot verify that the
+/// key-encryption key they were sealed under came out of an authenticator's PRF evaluation rather than
+/// out of a constant a client chose, and no member it could be handed would let it. What they do buy is
+/// the half that is enforceable here — a factor cannot exist without a wrapped copy of both account
+/// keys. <see cref="Domain.Users.WrappedAccountKeys"/>'s two <c>NOT NULL</c> columns and the single
+/// save below make "registered, but holding no share of the keys" unstorable rather than merely
+/// uncustomary, so the failure the prf gate is a product guess about is at least no longer reachable by
+/// a client that simply omitted the members.
+/// </para>
 /// </remarks>
 public sealed class CompleteRegistrationHandler(
     IWebAuthnChallengeStore challengeStore,
@@ -134,10 +145,52 @@ public sealed class CompleteRegistrationHandler(
                 + "the prf extension — most current phones, laptops and hardware security keys do.");
         }
 
+        // AFTER the prf gate, and the ordering is the same rule that gate's own comment makes about
+        // itself rather than a second one. A client that cannot do PRF cannot have produced a wrapped
+        // key either, so these three members are very often absent on exactly the requests the gate is
+        // for. Judged first, such a request would be told its PAYLOAD was malformed — sending somebody
+        // holding a device that genuinely lacks the extension off to debug their client, when what they
+        // need to hear is that the device cannot hold the account's keys. The gate says the true thing;
+        // these refusals are only reached once it has passed and the payload is the only thing left they
+        // can be about.
+        //
+        // One spelling of the identifier and no more. Guid.TryParse accepts five, and this value is the
+        // associated data both envelopes were sealed with: the browser needs back the exact bytes it
+        // bound, so a server taking four spellings would be storing a value one of its own clients
+        // cannot recognise as its own. The all-zero uuid parses in this format and is refused with it —
+        // it is what an unset field sends, and it is the one value two accounts reach independently,
+        // which would turn a table-wide unique index into a cross-account collision.
+        if (!Guid.TryParseExact(command.FactorId, "D", out Guid factorId) || factorId == Guid.Empty)
+        {
+            throw Refused(
+                "factorId must be a uuid in the 36-character hyphenated form, and not the all-zero uuid.");
+        }
+
+        // ONE SENTENCE PER MEMBER, STATING THE WHOLE REQUIREMENT, the shape
+        // GenerateRecoveryCodesHandler.DecodeAndValidate argues for its own: splitting "not base64url"
+        // from "wrong width" from "unknown version" would tell a caller which half of an opaque value it
+        // got wrong. The two members are judged separately because they are supplied separately — a
+        // handler that decoded one and passed the other through would file whatever a client felt like
+        // sending into half of the account's key custody.
+        //
+        // The width and the version are read off the entity that refuses a row against them, never
+        // written out here: a message carrying its own copy of either goes on being confident after the
+        // real bound has moved.
+        if (!WrappedKeyEnvelope.TryDecode(command.WrappedContentKey, out byte[]? wrappedContentKey))
+        {
+            throw Refused(MalformedEnvelope("wrappedContentKey"));
+        }
+
+        if (!WrappedKeyEnvelope.TryDecode(command.WrappedIndexKey, out byte[]? wrappedIndexKey))
+        {
+            throw Refused(MalformedEnvelope("wrappedIndexKey"));
+        }
+
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
 
-        // One credential, its key and its counter, all derived from the credential so that none of
-        // them can be filed against a different one. The repository writes the three in one save.
+        // One credential, its key, its counter and its share of the account keys, all derived from the
+        // credential so that none of them can be filed against a different one. The repository writes
+        // the four in one save.
         Credential credential = Credential.CreatePasskey(userId, now);
         PasskeyPublicKey publicKey = PasskeyPublicKey.Register(
             credential,
@@ -145,12 +198,31 @@ public sealed class CompleteRegistrationHandler(
             verified.CoseKey,
             verified.Algorithm);
         PasskeySignatureCounter counter = PasskeySignatureCounter.Start(credential, verified.SignCount);
+        WrappedAccountKeys wrappedAccountKeys = WrappedAccountKeys.For(
+            credential,
+            factorId,
+            wrappedContentKey,
+            wrappedIndexKey,
+            now);
 
-        if (!await passkeyRepository.TryAddAsync(credential, publicKey, counter, cancellationToken))
+        if (!await passkeyRepository.TryAddAsync(
+                credential,
+                publicKey,
+                counter,
+                wrappedAccountKeys,
+                cancellationToken))
         {
             throw new ConflictException("This authenticator is already registered.");
         }
     }
+
+    /// <summary>
+    /// What is required of <paramref name="member"/>, said whole rather than split into which part of it
+    /// was wrong.
+    /// </summary>
+    private static string MalformedEnvelope(string member) =>
+        $"{member} must be base64url text decoding to exactly {WrappedAccountKeys.EnvelopeLength} bytes "
+        + $"carrying envelope version {WrappedAccountKeys.EnvelopeVersion}.";
 
     // Domain.Common.ValidationException by name, because both layers declare one and only that one is
     // what ValidationExceptionHandler turns into a 400 with the field errors on it.

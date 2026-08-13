@@ -9,6 +9,21 @@ namespace Infrastructure.Repositories;
 
 public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRepository
 {
+    // ONE FACT ABOUT ONE TABLE, REACHED FROM TWO ROUTES. The identical sentence lives on
+    // RecoveryCodeRepository.AddSetAsync, which is the other write of wrapped_account_keys: a factor
+    // identifier is unique across the whole table, so a passkey registration and a recovery-code
+    // generation collide on the same index and the caller's situation is the same either way — nothing
+    // was written, and the identifier their client chose is spoken for. Change one message and change
+    // both.
+    //
+    // It says what to do next, because a 409 with no detail leaves a client with no idea whether to
+    // retry. Minting a fresh identifier is not optional advice: the envelopes were sealed with the old
+    // one as their associated data, so they have to be re-wrapped rather than re-sent. And the ceremony
+    // has to run again either way, because this attempt's nonce is already spent.
+    private const string FactorAlreadyRegisteredMessage =
+        "That factor identifier is already registered. Mint a fresh one, wrap the account keys under it, "
+        + "and run the ceremony again.";
+
     /// <inheritdoc />
     public Task<PasskeyPublicKey?> FindByWebAuthnCredentialIdAsync(
         ReadOnlyMemory<byte> webAuthnCredentialId,
@@ -82,21 +97,25 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         Credential credential,
         PasskeyPublicKey publicKey,
         PasskeySignatureCounter counter,
+        WrappedAccountKeys wrappedAccountKeys,
         CancellationToken cancellationToken = default)
     {
         dbContext.Credentials.Add(credential);
         dbContext.PasskeyPublicKeys.Add(publicKey);
         dbContext.PasskeySignatureCounters.Add(counter);
+        dbContext.WrappedAccountKeys.Add(wrappedAccountKeys);
 
         try
         {
-            // One save, so the three rows land together or not at all. A credential without its public
-            // key would be a passkey nothing can verify a signature against, and a key without its
-            // counter would be a passkey whose clone detection silently never runs.
+            // One save, so the four rows land together or not at all. A credential without its public
+            // key would be a passkey nothing can verify a signature against, a key without its counter
+            // would be a passkey whose clone detection silently never runs, and either of them without
+            // the wrapped keys would be a factor that looks registered to every screen in the product
+            // and opens nothing — discovered on the day somebody needs it.
             await dbContext.SaveChangesAsync(cancellationToken);
             return true;
         }
-        // Filtered on the constraint name, never on the SQLSTATE alone: three rows are written here and
+        // Filtered on the constraint name, never on the SQLSTATE alone: four rows are written here and
         // each carries unique rules of its own, so a 23505 says only that some rule was broken. Naming
         // the index is what makes this catch mean the one thing the caller can act on — that handle is
         // already registered. Any other unique violation propagates on purpose, because it is a
@@ -109,12 +128,38 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         })
         {
             // Detached so the rejected rows cannot ride along on a later save through the same scoped
-            // context, which would report the refusal a second time from somewhere unrelated.
+            // context, which would report the refusal a second time from somewhere unrelated. All four,
+            // because all four were queued by this call.
             dbContext.Entry(credential).State = EntityState.Detached;
             dbContext.Entry(publicKey).State = EntityState.Detached;
             dbContext.Entry(counter).State = EntityState.Detached;
+            dbContext.Entry(wrappedAccountKeys).State = EntityState.Detached;
 
             return false;
+        }
+        // THE OTHER RACE ON THE SAME SAVE, AND IT THROWS WHERE THE ONE ABOVE ANSWERS false. That
+        // asymmetry is deliberate: a WebAuthn handle collision is a fact about the AUTHENTICATOR the
+        // caller's own device produced — their device has enrolled here before, and "this authenticator
+        // is already registered" is something they can act on. A factor identifier is a value the CLIENT
+        // chose, so a collision on it says nothing about any device, and reporting it as an
+        // already-registered authenticator would be a confident, specific, false sentence about hardware
+        // that has never been seen here. Two facts, two answers; they must not be collapsed into one.
+        //
+        // The message is RecoveryCodeRepository.AddSetAsync's, verbatim — the same table reached from
+        // the other route; see the constant above.
+        //
+        // NARROWED ON THE CONSTRAINT NAME for the reason the catch above is, and the need is greater
+        // rather than equal: this save now writes rows carrying several unique rules apiece, so a bare
+        // SQLSTATE catch would report a collision on any of them — the WebAuthn handle included — as a
+        // factor-id conflict. RepositoryConstraintAttributionTests pins that every translated exception
+        // in this folder names its constraint.
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: WrappedAccountKeysConfiguration.FactorIdIndexName,
+        })
+        {
+            throw new ConflictException(FactorAlreadyRegisteredMessage);
         }
     }
 

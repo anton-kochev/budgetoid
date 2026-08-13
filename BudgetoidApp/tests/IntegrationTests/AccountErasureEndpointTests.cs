@@ -453,11 +453,15 @@ public sealed class AccountErasureEndpointTests
 
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
         response.EnsureSuccessStatusCode();
     }
@@ -649,11 +653,15 @@ public sealed class AccountErasureEndpointTests
             passkey, WebAuthnCredentialIdFor(userId), CoseKey, CoseAlgorithm.Es256));
         db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(passkey, 0));
 
-        // The account's two keys as this passkey factor holds them, which is the only thing that puts a
-        // row in wrapped_account_keys: no endpoint writes one yet, so without this the before-count loop
-        // reads zero on the table it was just asked to cover. Filed against the passkey rather than the
-        // recovery-code set below because a passkey is the factor whose PRF output derives the
-        // key-encryption key in production; either is legal, the federated credential is not.
+        // The account's two keys as this passkey factor holds them, in wrapped_account_keys. The
+        // registration route writes a row of its own now, but that does not make this one redundant:
+        // the survivor of Erase_LeavesAnotherAccountUntouched is furnished and never registers a
+        // passkey, so for that account this is the only thing the before-count loop finds on the
+        // table. Filed against the passkey seeded just above rather than against the credential
+        // RegisterPasskeyAsync registers, because a second row hung off that credential would collide
+        // on PK_wrapped_account_keys. A passkey rather than the recovery-code set below because a
+        // passkey is the factor whose PRF output derives the key-encryption key in production; either
+        // is legal, the federated credential is not.
         db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
             passkey,
 

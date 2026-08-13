@@ -3,7 +3,7 @@ using Domain.Users;
 namespace UnitTests.Fakes;
 
 /// <summary>
-/// The three passkey tables in memory, with the one behaviour of the real stack that a retried unit
+/// The four passkey tables in memory, with the one behaviour of the real stack that a retried unit
 /// of work turns on: a counter already materialised is handed back rather than read again.
 /// </summary>
 /// <remarks>
@@ -27,6 +27,27 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
 
     /// <summary>Every counter value a save was asked to write, oldest first.</summary>
     public IReadOnlyList<uint> SavedCounterValues => _savedCounterValues;
+
+    /// <summary>
+    /// Every factor's share of the account keys this fake holds — one row per registered passkey.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read off the entries rather than kept in a list of its own, so it leaves when its credential
+    /// does. The row cascades from <c>credentials</c> exactly as the public key and the counter do, and
+    /// a fake that dropped three of the four would let a unit test of the revocation path pass while
+    /// the real stack behaved differently.
+    /// </para>
+    /// <para>
+    /// A passkey filed by <see cref="Register" /> carries none, which is
+    /// <c>RepositoryTestHost.SeedPasskeyAsync</c>'s choice and not an oversight: the wrapped keys are a
+    /// row of their own, seeded by a call of their own where a test needs one, and nothing this fake
+    /// answers reads a seeded factor's envelopes. What the registration path writes is not a
+    /// simplification, which is why <see cref="TryAddAsync" /> files it.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<WrappedAccountKeys> WrappedKeys =>
+        [.. _entries.Select(entry => entry.WrappedAccountKeys).OfType<WrappedAccountKeys>()];
 
     /// <summary>
     /// A question this fake asks once, at the moment <see cref="DeletePasskeyAsync"/> is entered and
@@ -54,7 +75,7 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(publicKey);
 
-        _entries.Add(new Entry(credential, publicKey, signatureCounter));
+        _entries.Add(new Entry(credential, publicKey, signatureCounter, WrappedAccountKeys: null));
     }
 
     /// <summary>
@@ -113,24 +134,39 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
                 .Select(entry => entry.PublicKey.WebAuthnCredentialId),
         ]);
 
+    /// <summary>
+    /// Files the four rows a registration writes, or refuses the handle somebody else already holds.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="wrappedAccountKeys" /> is stored beside the other three rather than accepted and
+    /// dropped, for the reason the credential and its siblings are: the promise of the single save is
+    /// that a factor cannot exist without its share of the account keys, and a fake that took the
+    /// argument and forgot it would let a handler filing the envelopes against the wrong credential —
+    /// or filing none at all — look correct from every assertion a unit test can make.
+    /// </remarks>
     public Task<bool> TryAddAsync(
         Credential credential,
         PasskeyPublicKey publicKey,
         PasskeySignatureCounter counter,
+        WrappedAccountKeys wrappedAccountKeys,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(publicKey);
         ArgumentNullException.ThrowIfNull(counter);
+        ArgumentNullException.ThrowIfNull(wrappedAccountKeys);
 
         bool taken = _entries.Exists(entry =>
             entry.PublicKey.WebAuthnCredentialId.Span.SequenceEqual(publicKey.WebAuthnCredentialId.Span));
         if (taken)
         {
+            // Nothing is filed, which is the whole of the refusal: the real save writes the four rows
+            // together or not at all, so a fake keeping the wrapped keys of a registration it turned
+            // down would hold a row the database never saw.
             return Task.FromResult(false);
         }
 
-        _entries.Add(new Entry(credential, publicKey, counter.Value));
+        _entries.Add(new Entry(credential, publicKey, counter.Value, wrappedAccountKeys));
 
         return Task.FromResult(true);
     }
@@ -182,12 +218,13 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
             && entry.Credential.Type == CredentialType.Passkey));
 
     /// <summary>
-    /// Removes a passkey credential and, with it, the public key and the signature counter that hang
-    /// off it — the database's own <c>ON DELETE CASCADE</c>, mirrored rather than stubbed.
+    /// Removes a passkey credential and, with it, the public key, the signature counter and the
+    /// factor's wrapped account keys — the database's own <c>ON DELETE CASCADE</c>, mirrored rather
+    /// than stubbed.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <see cref="Entry" /> holds all three rows together, so dropping it is the cascade: a fake
+    /// The <see cref="Entry" /> holds all four rows together, so dropping it is the cascade: a fake
     /// that removed the credential and left the counter behind would let a unit test of the revocation
     /// path pass while the real stack behaved differently — and the counter is the row that shape of
     /// error hides best, since nothing else reads it once the credential is gone.
@@ -272,5 +309,16 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
         return Task.CompletedTask;
     }
 
-    private sealed record Entry(Credential Credential, PasskeyPublicKey PublicKey, uint RowCounterValue);
+    /// <summary>
+    /// One registered passkey: the <c>credentials</c> row and everything hanging off it.
+    /// </summary>
+    /// <param name="WrappedAccountKeys">
+    /// The factor's share of the account keys, or <see langword="null" /> for a passkey
+    /// <see cref="Register" /> seeded — see <see cref="WrappedKeys" /> for why a seed files none.
+    /// </param>
+    private sealed record Entry(
+        Credential Credential,
+        PasskeyPublicKey PublicKey,
+        uint RowCounterValue,
+        WrappedAccountKeys? WrappedAccountKeys);
 }

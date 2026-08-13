@@ -511,11 +511,15 @@ public sealed class UserProvisioningTests
     {
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
         response.EnsureSuccessStatusCode();
     }

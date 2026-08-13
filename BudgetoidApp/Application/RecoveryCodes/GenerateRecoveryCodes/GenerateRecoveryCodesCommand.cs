@@ -1,4 +1,6 @@
+using Application.Passkeys;
 using Application.Passkeys.Reauthentication;
+using Domain.Users;
 
 namespace Application.RecoveryCodes.GenerateRecoveryCodes;
 
@@ -40,7 +42,24 @@ namespace Application.RecoveryCodes.GenerateRecoveryCodes;
 /// </para>
 /// </remarks>
 /// <param name="Verifiers">The set's verifiers, each base64url text.</param>
+/// <param name="FactorId">
+/// The client-minted identifier of the factor this set stands for, and the associated data both
+/// envelopes below were sealed with — see <see cref="WrappedAccountKeys.FactorId"/> for why it is
+/// deliberately not <c>credentials.id</c>. One uuid in one spelling: the 36-character hyphenated form,
+/// because this contract is cross-client and a value the browser cannot recognise as the bytes it bound
+/// is a card whose codes open nothing.
+/// </param>
+/// <param name="WrappedContentKey">
+/// The account's content key as this set holds it: one base64url envelope, judged by
+/// <see cref="WrappedKeyEnvelope.TryDecode"/>. It is wrapped under a key-encryption key the client
+/// derived from the codes it minted, on an HKDF branch independent of the verifiers above — so nothing
+/// on this command lets the server open it, and nothing may be added that would.
+/// </param>
+/// <param name="WrappedIndexKey">The account's index key — the same shape, judged by the same rule.</param>
 /// <param name="Assertion">The fresh re-authentication the issue is authorized by.</param>
 public sealed record GenerateRecoveryCodesCommand(
     IReadOnlyList<string> Verifiers,
+    string FactorId,
+    string WrappedContentKey,
+    string WrappedIndexKey,
     ReauthenticationAssertion Assertion);

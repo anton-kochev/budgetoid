@@ -54,6 +54,9 @@ public static class RecoveryCodeEndpoints
             RecoveryCodesGeneration generation = await handler.HandleAsync(
                 new GenerateRecoveryCodesCommand(
                     request.Verifiers,
+                    request.FactorId,
+                    request.WrappedContentKey,
+                    request.WrappedIndexKey,
                     new ReauthenticationAssertion(
                         request.CredentialId,
                         request.ClientDataJson,
@@ -237,8 +240,9 @@ public static class RecoveryCodeEndpoints
     private sealed record ReestablishedSessionResponse(string Kind, DateTime ExpiresAtUtc);
 
     /// <summary>
-    /// The set being presented, and the assertion the issue is authorized by — the latter in the shape
-    /// the erasure and revocation legs' own request records already use.
+    /// The set being presented, the share of the account keys it is to hold, and the assertion the issue
+    /// is authorized by — the last in the shape the erasure and revocation legs' own request records
+    /// already use.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -257,6 +261,20 @@ public static class RecoveryCodeEndpoints
     /// exists to prevent. So an absent set arrives here as <see langword="null" /> despite the
     /// non-nullable declaration and is refused past the gate as a set of the wrong size, which is what
     /// it is.
+    /// </para>
+    /// <para>
+    /// <b>The three key-custody members inherit that decision whole, and <see cref="FactorId" /> is the
+    /// sharpest case for it.</b> Declared <see cref="string" /> rather than <see cref="Guid" />: a
+    /// <see cref="Guid" /> member would earn a framework 400 on a malformed value, raised before the
+    /// handler is entered and therefore before the re-authentication gate has run — telling an unproven
+    /// caller that the server has an opinion about this account's key custody, which is the exact
+    /// disclosure the gate-before-validation ordering exists to prevent. It would also silently widen
+    /// the wire format, since the framework parses more spellings of a uuid than this contract accepts.
+    /// </para>
+    /// <para>
+    /// <b>Neither envelope is a key.</b> Each is a sealed blob the client wrapped under a key-encryption
+    /// key derived from the codes it minted; the server can open neither and holds no value that could,
+    /// which is why they may cross this boundary at all when a recovery code may not.
     /// </para>
     /// <para>
     /// That envelope covers what binds, not what fails to. No body at all, a literal <c>null</c>, or a
@@ -278,5 +296,8 @@ public static class RecoveryCodeEndpoints
         string ClientDataJson,
         string AuthenticatorData,
         string Signature,
-        string? UserHandle);
+        string? UserHandle,
+        string FactorId,
+        string WrappedContentKey,
+        string WrappedIndexKey);
 }

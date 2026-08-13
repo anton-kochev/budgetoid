@@ -1065,6 +1065,318 @@ public sealed class PasskeyCeremonyTests
     }
 
     /// <summary>
+    /// A registration that carries no share of the account keys is refused, and nothing about the
+    /// passkey is filed.
+    /// </summary>
+    /// <remarks>
+    /// The three members are absent rather than malformed, which is the shape a client written against
+    /// the older contract sends — and the shape a handler binding them into optional members would let
+    /// straight through. A passkey filed without its envelopes is a factor that unlocks nothing: it
+    /// looks like a registered device to every screen in the product, and the discovery that it opens
+    /// no key happens on the day somebody signs in on it.
+    /// </remarks>
+    [Test]
+    public async Task PasskeyRegistration_RefusesAResponseCarryingNoWrappedKeys_AndWritesNoCredential()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony whose device reports the extension, so the prf gate is passed and
+        // only the missing members can decide the answer.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { enabled = true } },
+        });
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// An envelope of any width but the one the contract defines, and text outside the alphabet it
+    /// travels in, are refused before anything is stored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both sides of the width, because neither may be repaired: a padded or truncated envelope is a
+    /// well-formed row holding bytes whose tag cannot verify, and the account looks registered until
+    /// the day somebody needs the keys. One byte over is the case a payload ceiling cannot cover for
+    /// this member — 62 bytes encodes to 83 characters against an allowance of 84 — so it arrives at
+    /// the width check having passed everything before it.
+    /// </para>
+    /// <para>
+    /// Every case is driven against each of the two members on its own. The columns are written from
+    /// two independently supplied values, so a handler that decodes one and passes the other through
+    /// files whatever the client felt like sending into half of the account's key custody — and one
+    /// member covering the other's gap is exactly what a shared case would hide.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(WrappedKeyMember.Content, MalformedEnvelope.OneByteShort)]
+    [Arguments(WrappedKeyMember.Content, MalformedEnvelope.OneByteTooWide)]
+    [Arguments(WrappedKeyMember.Content, MalformedEnvelope.OutsideTheAlphabet)]
+    [Arguments(WrappedKeyMember.Index, MalformedEnvelope.OneByteShort)]
+    [Arguments(WrappedKeyMember.Index, MalformedEnvelope.OneByteTooWide)]
+    [Arguments(WrappedKeyMember.Index, MalformedEnvelope.OutsideTheAlphabet)]
+    public async Task PasskeyRegistration_RefusesAWrappedKeyThatIsNotBase64UrlOfExactlySixtyOneBytes(
+        WrappedKeyMember member,
+        MalformedEnvelope fault)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act — a genuine ceremony carrying one malformed member and one well-formed one.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        string malformed = MalformedEnvelopeText(fault);
+        HttpResponseMessage response = await PostRegistrationAsync(
+            authenticated,
+            attestation,
+            keys.FactorId,
+            member is WrappedKeyMember.Content ? malformed : keys.WrappedContentKey,
+            member is WrappedKeyMember.Index ? malformed : keys.WrappedIndexKey);
+
+        // Assert — filed under the key this leg's every other refusal is filed under, because a caller
+        // reading one field learns nothing from a refusal written into another.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsNotEmpty();
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// An envelope of the right width whose leading byte names a version this deployment does not
+    /// implement is refused, on both members.
+    /// </summary>
+    /// <remarks>
+    /// The two versions are the two ways the byte goes wrong and they arrive from opposite directions:
+    /// the one below is what a field nobody set sends — an all-zero buffer of the legal width satisfies
+    /// every other rule — and the one above is a client claiming a contract that does not exist, whose
+    /// bytes no version of this system could interpret.
+    /// </remarks>
+    [Test]
+    [Arguments(WrappedKeyMember.Content, (byte)(WrappedAccountKeys.EnvelopeVersion - 1))]
+    [Arguments(WrappedKeyMember.Content, (byte)(WrappedAccountKeys.EnvelopeVersion + 1))]
+    [Arguments(WrappedKeyMember.Index, (byte)(WrappedAccountKeys.EnvelopeVersion - 1))]
+    [Arguments(WrappedKeyMember.Index, (byte)(WrappedAccountKeys.EnvelopeVersion + 1))]
+    public async Task PasskeyRegistration_RefusesAWrappedKeyWhoseEnvelopeVersionIsUnknown(
+        WrappedKeyMember member,
+        byte version)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act — the exact width the contract defines, so the version byte is the only fault.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        string unknownVersion = EnvelopeText(WrappedAccountKeys.EnvelopeLength, version);
+        HttpResponseMessage response = await PostRegistrationAsync(
+            authenticated,
+            attestation,
+            keys.FactorId,
+            member is WrappedKeyMember.Content ? unknownVersion : keys.WrappedContentKey,
+            member is WrappedKeyMember.Index ? unknownVersion : keys.WrappedIndexKey);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsNotEmpty();
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// The factor identifier is one uuid in one spelling: the hyphenated 36-character form and nothing
+    /// else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The first three cases are a single genuine uuid written the other three ways
+    /// <see cref="Guid.ToString(string)"/> can produce, and every one of them is accepted by
+    /// <see cref="Guid.TryParse(string, out Guid)"/> — which is why they are here rather than assumed
+    /// impossible. The value is the associated data both envelopes were sealed with and the browser
+    /// needs back the bytes it bound, so a server that accepted four spellings would be storing a
+    /// value the client cannot recognise as its own.
+    /// </para>
+    /// <para>
+    /// The all-zero uuid is refused on a different argument: it is storable, it is what an unset field
+    /// sends, and it is the one value two accounts reach independently — so accepting it turns a
+    /// table-wide unique index into a cross-account collision the second account meets as a refusal to
+    /// register.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("0198f2c0d1e474a0b9c6e2f8a1b3c5d7")]
+    [Arguments("{0198f2c0-d1e4-74a0-b9c6-e2f8a1b3c5d7}")]
+    [Arguments("(0198f2c0-d1e4-74a0-b9c6-e2f8a1b3c5d7)")]
+    [Arguments("not a factor identifier at all")]
+    [Arguments("00000000-0000-0000-0000-000000000000")]
+    public async Task PasskeyRegistration_RefusesAFactorIdentifierThatIsNotOneCanonicalUuid(string factorId)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act — both envelopes well-formed, so the identifier is the only fault.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage response = await PostRegistrationAsync(
+            authenticated,
+            attestation,
+            factorId,
+            keys.WrappedContentKey,
+            keys.WrappedIndexKey);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsNotEmpty();
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// A registration files the credential, its public key, its signature counter and its share of the
+    /// account keys — and each value lands in the column it belongs to.
+    /// </summary>
+    /// <remarks>
+    /// Read back column by column rather than counted, and the two envelope columns are the reason.
+    /// They are the same width, carry the same version and are both <c>NOT NULL</c>, so a handler that
+    /// files each in the other's column satisfies every check constraint, every foreign key and every
+    /// schema test in this suite. What separates them is the associated data each envelope was sealed
+    /// with, which binds the key's purpose — so a swap has no server-side symptom at any point and is
+    /// discovered in a browser months later, by somebody whose content key will not open. Bytes told
+    /// apart by which column they landed in are the only thing that can catch it, which is why
+    /// <see cref="WrappedKeyFixture"/> mints a pair that differs by a byte chosen for the purpose.
+    /// </remarks>
+    [Test]
+    public async Task PasskeyRegistration_FilesTheCredentialItsKeyItsCounterAndItsWrappedKeys_InOneSave()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation, keys);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(1L);
+
+        IReadOnlyList<WrappedAccountKeysRow> rows = await ReadWrappedAccountKeysAsync(host);
+        await Assert.That(rows.Count).IsEqualTo(1);
+
+        WrappedAccountKeysRow row = rows[0];
+        Guid credentialId = await FindPasskeyCredentialIdAsync(host, authenticator.CredentialId);
+        await Assert.That(row.CredentialId).IsEqualTo(credentialId);
+        await Assert.That(row.FactorId).IsEqualTo(keys.Factor);
+        await Assert.That(row.UserId).IsEqualTo(owner.UserId);
+        await Assert.That(row.CredentialType).IsEqualTo(CredentialTypeSpelling.Of(CredentialType.Passkey));
+
+        // Re-encoded and compared against the text the request carried, so the comparison is over the
+        // exact bytes in their exact order.
+        await Assert.That(Base64UrlText.Encode(row.WrappedContentKey)).IsEqualTo(keys.WrappedContentKey);
+        await Assert.That(Base64UrlText.Encode(row.WrappedIndexKey)).IsEqualTo(keys.WrappedIndexKey);
+    }
+
+    /// <summary>
+    /// A factor identifier that is already registered is refused as a conflict, and the attempt leaves
+    /// nothing of its own behind.
+    /// </summary>
+    /// <remarks>
+    /// A second device, whose own ceremony is faultless, claiming the factor the first one holds. The
+    /// identifier is minted by the client and unique across the whole table, so a duplicate is a claim
+    /// on somebody's existing factor rather than an internal accident — and since it is the associated
+    /// data of all four envelopes involved, a shared one would let a client seal one factor's keys and
+    /// open them against another's.
+    /// </remarks>
+    [Test]
+    public async Task PasskeyRegistration_RefusesAFactorIdentifierAlreadyRegistered()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator registered = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture claimed = WrappedKeyFixture.Mint();
+        await RegisterAsync(authenticated, registered, claimed);
+
+        // Act — a different authenticator, on its own fresh challenge, against the claimed factor.
+        SyntheticAuthenticator second = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = second.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage response = await PostRegistrationAsync(
+            authenticated,
+            attestation,
+            WrappedKeyFixture.MintFor(claimed.Factor));
+
+        // Assert — the first registration is untouched and the second added nothing, so every count is
+        // the one the first ceremony left.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(1L);
+    }
+
+    /// <summary>
     /// The negative side of "only a passkey opens a session that reads budget content": a provider
     /// token reaches an ordinary endpoint and establishes nothing.
     /// </summary>
@@ -1399,16 +1711,26 @@ public sealed class PasskeyCeremonyTests
     /// </summary>
     private static async Task<AttestationResult> RegisterAsync(
         HttpClient client,
-        SyntheticAuthenticator authenticator)
+        SyntheticAuthenticator authenticator,
+        WrappedKeyFixture? wrappedKeys = null)
     {
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult result = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
-        HttpResponseMessage response = await PostRegistrationAsync(client, result);
+        HttpResponseMessage response = await PostRegistrationAsync(client, result, wrappedKeys);
         response.EnsureSuccessStatusCode();
         return result;
     }
 
-    private static Task<HttpResponseMessage> PostRegistrationAsync(HttpClient client, AttestationResult result)
+    /// <param name="wrappedKeys">
+    /// The share of the account keys this factor is to hold. Null mints a fresh one, which is what
+    /// every test that is not about the wrapped keys wants — and it has to be fresh, because
+    /// <c>IX_wrapped_account_keys_factor_id</c> is unique table-wide and several tests here register
+    /// twice to measure something else.
+    /// </param>
+    private static Task<HttpResponseMessage> PostRegistrationAsync(
+        HttpClient client,
+        AttestationResult result,
+        WrappedKeyFixture? wrappedKeys = null)
     {
         // JSON null rather than a present object carrying false when the device reported nothing about
         // the extension: the two are different claims, and collapsing them here would hide the
@@ -1416,13 +1738,104 @@ public sealed class PasskeyCeremonyTests
         object? clientExtensionResults = result.PrfEnabled is { } enabled
             ? new { prf = new { enabled } }
             : null;
+        WrappedKeyFixture keys = wrappedKeys ?? WrappedKeyFixture.Mint();
 
         return client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = result.ClientDataJsonBase64Url,
             attestationObject = result.AttestationObjectBase64Url,
             clientExtensionResults,
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
+    }
+
+    /// <summary>
+    /// Posts a registration whose three key-custody members are exactly what the caller supplies, for
+    /// the values <see cref="WrappedKeyFixture"/> cannot express — a malformed envelope, a factor
+    /// identifier that is not one canonical uuid.
+    /// </summary>
+    /// <remarks>
+    /// Everything else is the genuine ceremony, so the member under test is the only thing that can
+    /// decide the response. The two envelopes are supplied separately rather than as a pair, because
+    /// what several of these tests measure is a handler judging one of them and not the other.
+    /// </remarks>
+    private static Task<HttpResponseMessage> PostRegistrationAsync(
+        HttpClient client,
+        AttestationResult result,
+        string factorId,
+        string wrappedContentKey,
+        string wrappedIndexKey) =>
+        client.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = result.ClientDataJsonBase64Url,
+            attestationObject = result.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { enabled = result.PrfEnabled } },
+            factorId,
+            wrappedContentKey,
+            wrappedIndexKey,
+        });
+
+    /// <summary>
+    /// The two columns a wrapped account key crosses the wire in, named so a failing case says which
+    /// of them stopped being judged.
+    /// </summary>
+    /// <remarks>
+    /// Public because TUnit builds the parameterised cases from these values.
+    /// </remarks>
+    public enum WrappedKeyMember
+    {
+        Content,
+        Index,
+    }
+
+    /// <summary>
+    /// The ways a wrapped key member can be wrong about its width or its alphabet, each one thing at a
+    /// time.
+    /// </summary>
+    public enum MalformedEnvelope
+    {
+        OneByteShort,
+        OneByteTooWide,
+        OutsideTheAlphabet,
+    }
+
+    /// <summary>
+    /// A wrapped key member with exactly one fault in it and everything else about it right.
+    /// </summary>
+    /// <remarks>
+    /// Both width cases carry the version byte, so the width is the only thing wrong with either.
+    /// The alphabet case is a well-formed envelope's text with its leading character replaced by one
+    /// base64url does not define — the character a client that reached for the standard encoder emits
+    /// — so it is the right length and refused for its alphabet alone.
+    /// </remarks>
+    private static string MalformedEnvelopeText(MalformedEnvelope fault) => fault switch
+    {
+        MalformedEnvelope.OneByteShort =>
+            EnvelopeText(WrappedAccountKeys.EnvelopeLength - 1, WrappedAccountKeys.EnvelopeVersion),
+        MalformedEnvelope.OneByteTooWide =>
+            EnvelopeText(WrappedAccountKeys.EnvelopeLength + 1, WrappedAccountKeys.EnvelopeVersion),
+        MalformedEnvelope.OutsideTheAlphabet => OutsideTheBase64UrlAlphabet
+            + EnvelopeText(WrappedAccountKeys.EnvelopeLength, WrappedAccountKeys.EnvelopeVersion)[1..],
+        _ => throw new ArgumentOutOfRangeException(nameof(fault), fault, "No text is defined for this fault."),
+    };
+
+    /// <summary>
+    /// A character standard base64 defines and base64url does not.
+    /// </summary>
+    private const char OutsideTheBase64UrlAlphabet = '+';
+
+    /// <summary>
+    /// An envelope of exactly <paramref name="length"/> bytes whose leading byte is
+    /// <paramref name="version"/>, as the wire carries one.
+    /// </summary>
+    private static string EnvelopeText(int length, byte version)
+    {
+        byte[] envelope = RandomNumberGenerator.GetBytes(length);
+        envelope[0] = version;
+
+        return Base64UrlText.Encode(envelope);
     }
 
     /// <summary>
@@ -1673,6 +2086,58 @@ public sealed class PasskeyCeremonyTests
 
     private static Task<long> CountPasskeySignatureCountersAsync(RepositoryTestHost host) =>
         ScalarCountAsync(host, "select count(*) from passkey_signature_counters", parameter: null);
+
+    private static Task<long> CountWrappedAccountKeysAsync(RepositoryTestHost host) =>
+        ScalarCountAsync(host, "select count(*) from wrapped_account_keys", parameter: null);
+
+    /// <summary>
+    /// One <c>wrapped_account_keys</c> row, every column of it.
+    /// </summary>
+    /// <remarks>
+    /// <c>credential_type</c> as the column spells it rather than as the enum member it parses to, so
+    /// the assertion is over the token the database actually holds.
+    /// </remarks>
+    private readonly record struct WrappedAccountKeysRow(
+        Guid CredentialId,
+        Guid FactorId,
+        Guid UserId,
+        string CredentialType,
+        byte[] WrappedContentKey,
+        byte[] WrappedIndexKey);
+
+    /// <summary>
+    /// Every <c>wrapped_account_keys</c> row, on the container's superuser connection for the reason
+    /// <see cref="ReadSessionsAsync"/> gives: the policy on this table is keyed on the owner, and a
+    /// read that ran without one would make a present row look absent.
+    /// </summary>
+    private static async Task<IReadOnlyList<WrappedAccountKeysRow>> ReadWrappedAccountKeysAsync(
+        RepositoryTestHost host)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            """
+            select credential_id, factor_id, user_id, credential_type, wrapped_content_key, wrapped_index_key
+            from wrapped_account_keys
+            order by created_at_utc
+            """,
+            connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+
+        List<WrappedAccountKeysRow> rows = [];
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new WrappedAccountKeysRow(
+                reader.GetGuid(0),
+                reader.GetGuid(1),
+                reader.GetGuid(2),
+                reader.GetString(3),
+                reader.GetFieldValue<byte[]>(4),
+                reader.GetFieldValue<byte[]>(5)));
+        }
+
+        return rows;
+    }
 
     private static Task<long> CountUsersAsync(RepositoryTestHost host) =>
         ScalarCountAsync(host, "select count(*) from users", parameter: null);

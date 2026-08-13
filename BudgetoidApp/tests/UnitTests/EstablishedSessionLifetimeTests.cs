@@ -268,6 +268,14 @@ public sealed class EstablishedSessionLifetimeTests
 
         RecoveryCodesGeneration generation = await handler.HandleAsync(new GenerateRecoveryCodesCommand(
             [.. Verifiers().Select(verifier => Base64UrlText.Encode(verifier))],
+
+            // A fresh factor and a well-formed envelope pair, because this file is about the session's
+            // expiry and nothing else: a request refused for its wrapped keys would never reach the
+            // establishment this method reads. Minted per call for the reason
+            // <see cref="Envelope" /> gives about the width it does not restate.
+            Guid.CreateVersion7().ToString("D"),
+            Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
+            Base64UrlText.Encode(Envelope(IndexKeyPurpose)),
             new ReauthenticationAssertion(
                 assertion.CredentialIdBase64Url,
                 assertion.ClientDataJsonBase64Url,
@@ -300,4 +308,28 @@ public sealed class EstablishedSessionLifetimeTests
     [
         .. Enumerable.Range(0, CodesPerSet).Select(_ => RandomNumberGenerator.GetBytes(VerifierLength)),
     ];
+
+    /// <summary>The byte that says which of the two envelopes a reader is looking at.</summary>
+    private const byte ContentKeyPurpose = 0xC0;
+
+    private const byte IndexKeyPurpose = 0x1D;
+
+    /// <summary>
+    /// A well-formed wrapped-key envelope: the one version the contract defines, the byte saying which
+    /// column it belongs in, and random bytes to the exact width.
+    /// </summary>
+    /// <remarks>
+    /// The width and the version are read off <see cref="WrappedAccountKeys" /> rather than restated,
+    /// unlike <see cref="CodesPerSet" /> and <see cref="VerifierLength" /> beside them: those are
+    /// numbers this file's independence argument is about, and these are not the subject here at all —
+    /// a copy of either bound would redden a lifetime test on the day the envelope's shape moved.
+    /// </remarks>
+    private static byte[] Envelope(byte purpose)
+    {
+        byte[] envelope = RandomNumberGenerator.GetBytes(WrappedAccountKeys.EnvelopeLength);
+        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
+        envelope[1] = purpose;
+
+        return envelope;
+    }
 }

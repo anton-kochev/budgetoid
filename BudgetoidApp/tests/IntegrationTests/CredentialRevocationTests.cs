@@ -674,6 +674,84 @@ public sealed class CredentialRevocationTests
     }
 
     /// <summary>
+    /// Two passkeys, each holding its own share of the account keys, one revoked — and the survivor's
+    /// share is not merely still there, it is <b>byte for byte</b> what was written.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both halves are load-bearing and only one of them is obvious.</b> The revoked factor's row
+    /// must leave, and it leaves by the database's own <c>ON DELETE CASCADE</c> from
+    /// <c>credentials</c> — the application role holds no <c>DELETE</c> on
+    /// <c>wrapped_account_keys</c>, so any other route out of the table is a <c>42501</c>. The half a
+    /// reader will drop is the second: that the surviving factor's envelopes were not <em>rewritten</em>
+    /// on the way past. A handler that re-filed the account's keys under the remaining factor — the
+    /// natural shape the day somebody decides revocation should "re-key" — leaves the same one row
+    /// standing, so a count cannot see it, and the person's remaining authenticator then derives a
+    /// key-encryption key that opens envelopes nothing sealed for it.
+    /// </para>
+    /// <para>
+    /// Each passkey is registered with a fixture of its own, so the two shares are distinguishable and
+    /// the row that survived can be named by the factor identifier it was posted with rather than by
+    /// being the only one left.
+    /// </para>
+    /// <para>
+    /// Read on the container superuser connection, like every row in this file:
+    /// <c>wrapped_account_keys</c> carries <c>user_isolation</c>, so a policed connection reports no row
+    /// for one that is still there exactly as it does for one that is gone — and "the survivor is still
+    /// there" is half of what this test claims.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RevokingOneOfTwoPasskeys_LeavesTheOtherFactorsWrappedKeys_AndRewritesNone()
+    {
+        // Arrange — two passkeys, and two distinguishable shares of the same two account keys.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        SyntheticAuthenticator revoked = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture survivingKeys = WrappedKeyFixture.Mint();
+        WrappedKeyFixture revokedKeys = WrappedKeyFixture.Mint();
+        await RegisterPasskeyAsync(client, proving, survivingKeys);
+        await RegisterPasskeyAsync(client, revoked, revokedKeys);
+        Guid userId = await ResolveUserIdAsync(host, Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid provingCredentialId = await ResolveCredentialIdAsync(admin, proving);
+        Guid revokedCredentialId = await ResolveCredentialIdAsync(admin, revoked);
+
+        // Both shares are filed before the act, or "one left" is a claim about a row that was never
+        // there and "one survived" a claim about a row the arrangement never wrote.
+        WrappedAccountKeysRow[] before = await WrappedAccountKeysAsync(admin, userId);
+        await Assert.That(before.Any(row => row.FactorId == survivingKeys.Factor)).IsTrue();
+        await Assert.That(before.Any(row => row.FactorId == revokedKeys.Factor)).IsTrue();
+
+        // Act — the assertion is signed by the passkey that stays, and the route names the one that
+        // goes.
+        HttpResponseMessage response = await RevokeAsync(client, proving, userId, revokedCredentialId);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        WrappedAccountKeysRow[] rows = await WrappedAccountKeysAsync(admin, userId);
+
+        // The revoked factor's share left with its credential, and it is gone from the whole account
+        // rather than merely gone from that credential.
+        await Assert.That(rows.Any(row => row.CredentialId == revokedCredentialId)).IsFalse();
+        await Assert.That(rows.Any(row => row.FactorId == revokedKeys.Factor)).IsFalse();
+
+        // And the surviving factor holds exactly the bytes it was registered with, in the columns they
+        // were filed in.
+        WrappedAccountKeysRow[] surviving = [.. rows.Where(row => row.CredentialId == provingCredentialId)];
+        await Assert.That(surviving.Length).IsEqualTo(1);
+        await Assert.That(surviving[0].FactorId).IsEqualTo(survivingKeys.Factor);
+        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedContentKey))
+            .IsEqualTo(survivingKeys.WrappedContentKey);
+        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedIndexKey))
+            .IsEqualTo(survivingKeys.WrappedIndexKey);
+    }
+
+    /// <summary>
     /// A passkey holding a live session is revoked, and the request answers <b>200 and not 500</b>.
     /// </summary>
     /// <remarks>
@@ -979,6 +1057,22 @@ public sealed class CredentialRevocationTests
     private readonly record struct PasskeyRowCounts(long Credentials, long PublicKeys, long Counters);
 
     /// <summary>
+    /// One <c>wrapped_account_keys</c> row, every column of it.
+    /// </summary>
+    /// <remarks>
+    /// <c>credential_type</c> as the column spells it rather than as the enum member it parses to, so a
+    /// reader of a failure sees the token the database actually holds. <c>created_at_utc</c> is absent:
+    /// nothing here asks when a factor's share was filed, only which factor holds which bytes.
+    /// </remarks>
+    private readonly record struct WrappedAccountKeysRow(
+        Guid CredentialId,
+        Guid FactorId,
+        Guid UserId,
+        string CredentialType,
+        byte[] WrappedContentKey,
+        byte[] WrappedIndexKey);
+
+    /// <summary>
     /// The route the revocation is posted to. The <c>{credentialId}</c> segment is a
     /// <c>credentials.id</c>, which is a different id space from the WebAuthn handle the body carries
     /// under the same word — see the class remarks.
@@ -1002,7 +1096,16 @@ public sealed class CredentialRevocationTests
     /// leg provisions and neither does <c>/api/me/*</c>, so without this line the very first request
     /// is refused with a 401 and every test here would be red for a reason it is not about.
     /// </remarks>
-    private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
+    /// <param name="wrappedKeys">
+    /// The share of the account keys this factor is to hold. Null mints a fresh one, which is what
+    /// every test that is not about the wrapped keys wants — and it has to be fresh, because
+    /// <c>IX_wrapped_account_keys_factor_id</c> is unique table-wide and most tests here register two
+    /// passkeys onto one account.
+    /// </param>
+    private static async Task RegisterPasskeyAsync(
+        HttpClient client,
+        SyntheticAuthenticator device,
+        WrappedKeyFixture? wrappedKeys = null)
     {
         await ApiFactory.EstablishAccountAsync(client);
 
@@ -1012,11 +1115,15 @@ public sealed class CredentialRevocationTests
             ApiFactory.PasskeyOrigin,
             signCount: 0,
             prfEnabled: true);
+        WrappedKeyFixture keys = wrappedKeys ?? WrappedKeyFixture.Mint();
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
         response.EnsureSuccessStatusCode();
     }
@@ -1296,6 +1403,46 @@ public sealed class CredentialRevocationTests
                 admin,
                 "select count(*) from passkey_signature_counters where credential_id = @id",
                 credentialId));
+
+    /// <summary>
+    /// Every <c>wrapped_account_keys</c> row of one account, on the container superuser connection.
+    /// </summary>
+    /// <remarks>
+    /// Unfiltered by credential, so a test can say a row <b>left the account</b> rather than only that
+    /// it left the credential it was filed under. On the superuser connection for the reason
+    /// <see cref="CountLiveSessionsAsync" /> gives: this table carries <c>user_isolation</c>, so a
+    /// policed read would make a surviving row look absent — and a surviving row is what most of the
+    /// claims here are about.
+    /// </remarks>
+    private static async Task<WrappedAccountKeysRow[]> WrappedAccountKeysAsync(
+        NpgsqlConnection admin,
+        Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            """
+            select credential_id, factor_id, user_id, credential_type, wrapped_content_key, wrapped_index_key
+            from wrapped_account_keys
+            where user_id = @userId
+            order by created_at_utc
+            """,
+            admin);
+        command.Parameters.AddWithValue("userId", userId);
+
+        List<WrappedAccountKeysRow> rows = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new WrappedAccountKeysRow(
+                reader.GetGuid(0),
+                reader.GetGuid(1),
+                reader.GetGuid(2),
+                reader.GetString(3),
+                reader.GetFieldValue<byte[]>(4),
+                reader.GetFieldValue<byte[]>(5)));
+        }
+
+        return [.. rows];
+    }
 
     /// <summary>
     /// The credential's sessions that nothing has revoked, on the superuser connection.

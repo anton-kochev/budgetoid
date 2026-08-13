@@ -8,6 +8,52 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-13 — The account keys are demanded by the server before any client can produce them
+
+**Context:** an account owns one content key and one index key, and every recovery factor stores its
+own wrapped copy of both. Building that meant deciding, for a set of things that are *deliberately
+absent*, whether each absence is this story's or a later one's. Every one of them reads as an
+oversight to whoever finds it next, which is why they are written down here rather than left to be
+inferred from what is missing.
+
+**Decision:** **the two write paths demand the wrapped keys now, and nothing in the browser can
+produce them yet.** `POST /api/passkeys/registration` and `POST /api/me/recovery-codes` refuse a
+request that carries no factor identifier and no pair of envelopes; the crypto that would mint them
+lives in `+core/security/account-keys.ts` and **has no caller**, because this client cannot run a
+WebAuthn ceremony and so cannot obtain a PRF output from a real authenticator. The only requests that
+have ever satisfied the new requirement are the integration suite's.
+
+That order is the deliberate part, and the alternative is what makes it worth recording: opening the
+routes first and tightening them once a client existed would leave a window in which a factor could be
+registered holding no share of the account's keys — a passkey that proves identity and unlocks
+nothing, discovered by its owner months later when there is no way to reconstruct what it should have
+held. Closing the write path first means that window never opens. The cost is a server stricter than
+its own client, and it is paid up front.
+
+**Four further absences, each this story's decision rather than an unfinished edge:**
+
+- **No endpoint returns a wrapped key.** Nothing can unlock anything yet: there is no ceremony able to
+  produce a key-encryption key and no ciphertext to read. An endpoint handing out wrapped keys is a
+  real surface, and the story that needs one argues for it in place, where its own threat model can be
+  stated.
+- **The blind-index collision requirement is deferred.** The rule that one payee name entered in two
+  sessions unlocked by two different passkeys must produce the same index value cannot be proved
+  before a blind index exists. It is recorded as a deferral, not as a pass.
+- **The PRF eval input is pinned and unwired.** Nothing derives from it, so its literal in the client
+  spec is the only thing that would notice it drifting — and a drifted eval input locks every account
+  out silently, because the key-encryption key it produces is simply a different key.
+- **The `prf.enabled` gate stays, and stays a guess.** A reader seeing wrapped keys arrive on the same
+  request will conclude the gate has been made real. It has not: the server cannot tell a
+  key-encryption key derived from an authenticator's PRF output from one derived out of a constant, and
+  no member it could be handed would let it. What the wrapped keys buy is smaller and real — a factor
+  holding no share of the account keys is unstorable.
+
+**Affected areas:** [account-keys.md](account-keys.md), [passkeys.md](passkeys.md),
+[recovery-codes.md](recovery-codes.md),
+[ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
+
+---
+
 ## 2026-08-11 — A regeneration opens a session exactly when its sweep ended one, and the rule is about the set
 
 **Context:** replacing an account's recovery codes revokes the sessions the replaced set had opened and

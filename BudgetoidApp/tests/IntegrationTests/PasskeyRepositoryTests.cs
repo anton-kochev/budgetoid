@@ -217,23 +217,36 @@ public sealed class PasskeyRepositoryTests
 
         await using BudgetoidDbContext db = CreateDb(host);
         var repository = new PasskeyRepository(db);
-        (Credential credential, PasskeyPublicKey publicKey, PasskeySignatureCounter counter) =
-            NewPasskeyFor(userId, WebAuthnCredentialId);
+        (Credential credential, PasskeyPublicKey publicKey, PasskeySignatureCounter counter,
+            WrappedAccountKeys wrappedAccountKeys) = NewPasskeyFor(userId, WebAuthnCredentialId);
 
         // Act
-        bool added = await repository.TryAddAsync(credential, publicKey, counter);
+        bool added = await repository.TryAddAsync(credential, publicKey, counter, wrappedAccountKeys);
 
         // Assert — refused, and the winner is still the account's.
         await Assert.That(added).IsFalse();
 
         // Nothing of the loser's survives, and each row is looked for by the loser's own id rather
-        // than by a count: the winner's three rows are still there, so a count would be answering a
+        // than by a count: the winner's rows are still there, so a count would be answering a
         // question about the seed.
+        //
+        // ALL FOUR ROWS, because all four are what the one save promises. Three of them checked would
+        // stay green on a refusal that left the wrapped account keys behind — a factor's share of the
+        // account's keys filed against a credential the same statement rolled back, which nothing else
+        // in this suite reads and no screen in the product would ever show.
         await using BudgetoidDbContext verify = CreateDb(host);
         await Assert.That(await verify.Credentials.AnyAsync(row => row.Id == credential.Id)).IsFalse();
         await Assert.That(await verify.PasskeyPublicKeys.AnyAsync(row => row.CredentialId == credential.Id))
             .IsFalse();
         await Assert.That(await verify.PasskeySignatureCounters.AnyAsync(row => row.CredentialId == credential.Id))
+            .IsFalse();
+        await Assert.That(await verify.WrappedAccountKeys.AnyAsync(row => row.CredentialId == credential.Id))
+            .IsFalse();
+
+        // And by the factor identifier as well, which is the column a client chose and the one a row
+        // surviving under a different credential would still carry.
+        await Assert.That(await verify.WrappedAccountKeys
+                .AnyAsync(row => row.FactorId == wrappedAccountKeys.FactorId))
             .IsFalse();
         await Assert.That(await verify.Credentials.AnyAsync(row => row.Id == winnerId)).IsTrue();
     }
@@ -285,13 +298,14 @@ public sealed class PasskeyRepositoryTests
         db.Users.Add(User.Create(TakenEmail, SeedInstant));
         var repository = new PasskeyRepository(db);
 
-        // The registration itself is flawless: a handle no row in the table carries.
-        (Credential credential, PasskeyPublicKey publicKey, PasskeySignatureCounter counter) =
-            NewPasskeyFor(userId, UnregisteredWebAuthnCredentialId);
+        // The registration itself is flawless: a handle no row in the table carries, and a factor
+        // identifier freshly minted.
+        (Credential credential, PasskeyPublicKey publicKey, PasskeySignatureCounter counter,
+            WrappedAccountKeys wrappedAccountKeys) = NewPasskeyFor(userId, UnregisteredWebAuthnCredentialId);
 
         // Act
         Exception? escaped = await CaptureAsync(
-            () => repository.TryAddAsync(credential, publicKey, counter));
+            () => repository.TryAddAsync(credential, publicKey, counter, wrappedAccountKeys));
 
         // Assert — something escaped, which is already the claim: a swallowed violation would have
         // returned false and left this null.
@@ -303,6 +317,12 @@ public sealed class PasskeyRepositoryTests
         await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(UserEmailIndex);
         await Assert.That(ConstraintNameOf(escaped))
             .IsNotEqualTo(PasskeyPublicKeyConfiguration.WebAuthnCredentialIdIndexName);
+
+        // Nor the other index this save now writes against. TryAddAsync has two 23505 filters and they
+        // answer differently — one returns false, the other throws — so a stranger's violation widened
+        // into either is a lie, and only naming both says this arrangement escaped both.
+        await Assert.That(ConstraintNameOf(escaped))
+            .IsNotEqualTo(WrappedAccountKeysConfiguration.FactorIdIndexName);
     }
 
     /// <summary>
@@ -351,26 +371,40 @@ public sealed class PasskeyRepositoryTests
     private static readonly byte[] CoseKey = [0xA5, 0x01, 0x02, 0x03];
 
     /// <summary>
-    /// Builds the three rows a registration writes — the credential the key hangs off, the key itself,
-    /// and the counter a clone gives itself away against — without writing any of them.
+    /// Builds the four rows a registration writes — the credential the key hangs off, the key itself,
+    /// the counter a clone gives itself away against, and the factor's share of the account keys —
+    /// without writing any of them.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Through the domain factories rather than assembled from loose ids, for the reason
-    /// <c>RepositoryTestHost.SeedPasskeyAsync</c> gives: <see cref="PasskeyPublicKey.Register" /> and
-    /// <see cref="PasskeySignatureCounter.Start" /> copy the owner and the type off the credential
-    /// itself, which are the columns the composite foreign keys compare against
-    /// <c>credentials(id, user_id, type)</c>. A test that built them from ids of its own could arrange a
-    /// shape no ceremony can produce, and would then be measuring a schema nobody ships.
+    /// <c>RepositoryTestHost.SeedPasskeyAsync</c> gives: <see cref="PasskeyPublicKey.Register" />,
+    /// <see cref="PasskeySignatureCounter.Start" /> and <see cref="WrappedAccountKeys.For" /> copy the
+    /// owner and the type off the credential itself, which are the columns the composite foreign keys
+    /// compare against <c>credentials(id, user_id, type)</c>. A test that built them from ids of its
+    /// own could arrange a shape no ceremony can produce, and would then be measuring a schema nobody
+    /// ships.
+    /// </para>
+    /// <para>
+    /// The factor identifier and both envelopes come from <see cref="WrappedKeyFixture.Mint" />, so
+    /// each call gets its own: <c>IX_wrapped_account_keys_factor_id</c> is unique across the whole
+    /// table rather than per account, and a value shared between two calls would refuse the second
+    /// registration with a <c>23505</c> no test in this file is reading.
+    /// </para>
     /// </remarks>
-    private static (Credential Credential, PasskeyPublicKey PublicKey, PasskeySignatureCounter Counter)
+    private static (Credential Credential, PasskeyPublicKey PublicKey, PasskeySignatureCounter Counter,
+        WrappedAccountKeys WrappedAccountKeys)
         NewPasskeyFor(Guid userId, byte[] webAuthnCredentialId)
     {
         Credential credential = Credential.CreatePasskey(userId, SeedInstant);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
 
         return (
             credential,
             PasskeyPublicKey.Register(credential, webAuthnCredentialId, CoseKey, CoseAlgorithm.Es256),
-            PasskeySignatureCounter.Start(credential, value: 0));
+            PasskeySignatureCounter.Start(credential, value: 0),
+            WrappedAccountKeys.For(
+                credential, keys.Factor, keys.ContentEnvelope, keys.IndexEnvelope, SeedInstant));
     }
 
     /// <summary>

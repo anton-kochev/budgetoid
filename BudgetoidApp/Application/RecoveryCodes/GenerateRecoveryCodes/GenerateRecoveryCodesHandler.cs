@@ -96,7 +96,10 @@ public sealed class GenerateRecoveryCodesHandler(
         // proved possession of an authenticator registered to this account and there is nobody left to
         // enumerate about; that is also why each refusal below is a real sentence where every gate
         // refusal is a byte-identical 401, the argument CompleteRegistrationHandler makes for its own.
-        byte[][] verifiers = DecodeAndValidate(command.Verifiers);
+        //
+        // The factor identifier and the two envelopes are judged in the same place and inherit that
+        // ordering whole; there is nothing further to argue for them.
+        PresentedSet presented = DecodeAndValidate(command);
 
         // Read before the transaction, so a replayed attempt stamps the set with one instant rather
         // than with whenever the surviving attempt happened to run.
@@ -180,6 +183,16 @@ public sealed class GenerateRecoveryCodesHandler(
                     // and the rows would leave by the application instead of by the cascade, with no
                     // SQLSTATE to say so. A future reader adding a "load the codes so we can count
                     // them" read here is the way that breaks.
+                    //
+                    // IT NOW BINDS A SECOND TABLE, AND THAT ONE FAILS THE OTHER WAY. The old set's
+                    // wrapped_account_keys row must not be materialised either — no read above loads it
+                    // and nothing on this path takes it — but the role holds NO DELETE on that table at
+                    // all. So the same mistake there does not succeed quietly, it dies with 42501 having
+                    // removed nothing, on a request that has already swept the set's sessions. Do not
+                    // answer that SQLSTATE with a grant: it names a privilege and the cause is the change
+                    // tracker, and ADR 0018 records the absent DELETE as the thing that makes the mistake
+                    // loud. The plausible way in is a "load the old envelopes so we can check them" read,
+                    // and there is nothing to check — the server cannot open either of them.
                     await recoveryCodes.DeleteSetAsync(previousSet, token);
                 }
 
@@ -190,11 +203,29 @@ public sealed class GenerateRecoveryCodesHandler(
                 // One row per verifier, each hashed by the entity. The instant is the handler's, so
                 // one issuing decision reads as one instant across every row.
                 IReadOnlyList<RecoveryCodeHash> hashes =
-                    [.. verifiers.Select(verifier => RecoveryCodeHash.From(set, verifier, now))];
+                    [.. presented.Verifiers.Select(verifier => RecoveryCodeHash.From(set, verifier, now))];
 
-                // One save for the credential and its codes: a set that counts as issued and holds no
-                // code can never be redeemed.
-                await recoveryCodes.AddSetAsync(set, hashes, token);
+                // Filed against `set` — the credential minted two lines above — and NEVER against the
+                // passkey that authorized this request. That passkey is verified moments earlier and is
+                // therefore the credential nearest to hand, which is exactly what makes the mistake
+                // likely; it is also the one nothing would catch. The two factors derive different
+                // key-encryption keys, so envelopes sealed under a recovery code and filed against a
+                // passkey satisfy every check constraint and every foreign key here, and the discovery is
+                // a browser failing to open that passkey's keys months later.
+                //
+                // Stamped from the SAME `now` as the credential and the ten hash rows, so one issuing
+                // decision reads as one instant across all twelve.
+                WrappedAccountKeys wrappedAccountKeys = WrappedAccountKeys.For(
+                    set,
+                    presented.FactorId,
+                    presented.WrappedContentKey,
+                    presented.WrappedIndexKey,
+                    now);
+
+                // One save for the credential, its codes and its share of the account keys: a set that
+                // counts as issued and holds no code can never be redeemed, and one holding no envelopes
+                // is a card whose codes unlock nothing.
+                await recoveryCodes.AddSetAsync(set, hashes, wrappedAccountKeys, token);
 
                 // THE REPLACED SET'S SESSIONS WERE THE PERSON'S WAY IN, AND THE SWEEP ABOVE TOOK THEM.
                 // Somebody who lost their authenticator, redeemed a code, registered a replacement
@@ -272,15 +303,27 @@ public sealed class GenerateRecoveryCodesHandler(
     }
 
     /// <summary>
-    /// Decodes the presented verifiers, or refuses the set with the one thing that is wrong with it.
+    /// What a well-formed request presents: the ten decoded verifiers, the factor the set stands for,
+    /// and the two envelopes that factor holds the account's keys in.
+    /// </summary>
+    private readonly record struct PresentedSet(
+        byte[][] Verifiers,
+        Guid FactorId,
+        byte[] WrappedContentKey,
+        byte[] WrappedIndexKey);
+
+    /// <summary>
+    /// Decodes what the request presents, or refuses it with the one thing that is wrong with it.
     /// </summary>
     /// <remarks>
-    /// Three rules, three sentences of their own. Each says something a caller can act on, and one
-    /// shared "the recovery codes are invalid." would satisfy every refusal test while telling a
-    /// person who has already proved presence nothing at all.
+    /// Six rules, six sentences of their own, each keyed on the member a caller can correct. Each says
+    /// something that caller can act on, and one shared "the recovery codes are invalid." would satisfy
+    /// every refusal test while telling a person who has already proved presence nothing at all.
     /// </remarks>
-    private static byte[][] DecodeAndValidate(IReadOnlyList<string> presented)
+    private static PresentedSet DecodeAndValidate(GenerateRecoveryCodesCommand command)
     {
+        IReadOnlyList<string> presented = command.Verifiers;
+
         // Count first. Too few is a person left with fewer ways back into their account than the
         // screen told them they had; too many is a client the server no longer agrees with about what
         // a set is; zero is the argument a handler is most likely to treat as "nothing to do" and
@@ -289,7 +332,9 @@ public sealed class GenerateRecoveryCodesHandler(
         // set is a set of the wrong size, not a fault.
         if (presented is not { Count: RequiredCodeCount })
         {
-            throw Refused($"Exactly {RequiredCodeCount} recovery code verifiers are required.");
+            throw Refused(
+                nameof(GenerateRecoveryCodesCommand.Verifiers),
+                $"Exactly {RequiredCodeCount} recovery code verifiers are required.");
         }
 
         byte[][] verifiers = new byte[RequiredCodeCount][];
@@ -308,6 +353,7 @@ public sealed class GenerateRecoveryCodesHandler(
                 || verifier.Length != RecoveryCodeHash.VerifierLength)
             {
                 throw Refused(
+                    nameof(GenerateRecoveryCodesCommand.Verifiers),
                     "Each recovery code verifier must be base64url text decoding to exactly "
                     + $"{RecoveryCodeHash.VerifierLength} bytes.");
             }
@@ -328,18 +374,68 @@ public sealed class GenerateRecoveryCodesHandler(
         // sets is invisible here by design: the previous set's rows are never loaded.
         if (verifiers.Select(Convert.ToHexString).Distinct(StringComparer.Ordinal).Count() != verifiers.Length)
         {
-            throw Refused("Every recovery code verifier in the set must be different.");
+            throw Refused(
+                nameof(GenerateRecoveryCodesCommand.Verifiers),
+                "Every recovery code verifier in the set must be different.");
         }
 
-        return verifiers;
+        // One spelling of the identifier and no more. Guid.TryParse accepts five, and this value is the
+        // associated data both envelopes were sealed with: the browser needs back the exact bytes it
+        // bound, so a server taking four spellings would be storing a value one of its own clients
+        // cannot recognise as its own. The all-zero uuid parses in this format and is refused with it —
+        // it is what an unset field sends, and it is the one value two accounts reach independently,
+        // which would turn a table-wide unique index into a cross-account collision.
+        if (!Guid.TryParseExact(command.FactorId, "D", out Guid factorId) || factorId == Guid.Empty)
+        {
+            throw Refused(
+                nameof(GenerateRecoveryCodesCommand.FactorId),
+                "The factor identifier must be a uuid in the 36-character hyphenated form, and not the "
+                + "all-zero uuid.");
+        }
+
+        // ONE SENTENCE PER MEMBER, STATING THE WHOLE REQUIREMENT, for the reason the verifier refusal
+        // above gives about its own: splitting "not base64url" from "wrong width" from "unknown version"
+        // would tell a caller which half of an opaque value it got wrong. The two envelopes are judged
+        // separately because they are supplied separately — a handler that decoded one and passed the
+        // other through would file whatever a client felt like sending into half of the account's key
+        // custody.
+        //
+        // The width and the version are read off the entity that refuses a row against them, never
+        // written out here: a message carrying its own copy of either goes on being confident after the
+        // real bound has moved.
+        if (!WrappedKeyEnvelope.TryDecode(command.WrappedContentKey, out byte[]? wrappedContentKey))
+        {
+            throw Refused(
+                nameof(GenerateRecoveryCodesCommand.WrappedContentKey),
+                MalformedEnvelope("wrapped content key"));
+        }
+
+        if (!WrappedKeyEnvelope.TryDecode(command.WrappedIndexKey, out byte[]? wrappedIndexKey))
+        {
+            throw Refused(
+                nameof(GenerateRecoveryCodesCommand.WrappedIndexKey),
+                MalformedEnvelope("wrapped index key"));
+        }
+
+        return new PresentedSet(verifiers, factorId, wrappedContentKey, wrappedIndexKey);
     }
 
+    /// <summary>
+    /// What is required of <paramref name="member"/>, said whole rather than split into which part of it
+    /// was wrong.
+    /// </summary>
+    private static string MalformedEnvelope(string member) =>
+        $"The {member} must be base64url text decoding to exactly "
+        + $"{WrappedAccountKeys.EnvelopeLength} bytes carrying envelope version "
+        + $"{WrappedAccountKeys.EnvelopeVersion}.";
+
     // Domain.Common.ValidationException by name, because both layers declare one and only that one is
-    // what ValidationExceptionHandler turns into a 400 with the field errors on it. Keyed on the
-    // command member the caller can correct.
-    private static ValidationException Refused(string message) =>
-        new(new Dictionary<string, string[]>
-        {
-            [nameof(GenerateRecoveryCodesCommand.Verifiers)] = [message],
-        });
+    // what ValidationExceptionHandler turns into a 400 with the field errors on it.
+    //
+    // The field is a parameter rather than one constant for the whole method, because a refusal is only
+    // actionable if it is filed under the member the caller can correct: a malformed envelope reported
+    // against Verifiers would send a client to re-derive ten codes that were never the problem. The
+    // verifier refusals keep landing on Verifiers, which is the key their own tests read by name.
+    private static ValidationException Refused(string field, string message) =>
+        new(new Dictionary<string, string[]> { [field] = [message] });
 }

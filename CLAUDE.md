@@ -132,6 +132,23 @@ Load-bearing rules, each explained there or in the linked decision:
   ADRs [0015](docs/decisions/0015-mint-recovery-codes-on-the-client-and-store-only-a-hash-of-a-verifier.md),
   [0016](docs/decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md),
   [0017](docs/decisions/0017-consume-a-recovery-code-by-deleting-its-row.md).
+- **An account owns one content key and one index key, and every recovery factor stores its own
+  wrapped copy of both.** Deriving either from a credential would give a second passkey a second index
+  key — two blind index values for one name, and a uniqueness constraint that appears to work while
+  enforcing nothing. `wrapped_account_keys` is **policed** by `user_isolation`, not exempt: it is read
+  after the request has an identity. Registering a passkey and issuing a set of recovery codes each
+  **require** `factorId` and both envelopes and write the row in the **same** `SaveChanges` as the
+  credential, so a factor holding no share of the keys is unstorable. `factor_id` is client-minted and
+  deliberately **not** `credentials.id` — letting a client choose that id retires ADR 0014's first leg.
+  Three consequences a reader will try to "fix": the role holds **no `UPDATE` and no `DELETE`** here,
+  so a replaced set's row must leave by the cascade and `GenerateRecoveryCodesHandler`'s
+  never-materialise rule now binds a second table that fails **loudly** with `42501`; the wrapped keys
+  are **not** the verifiable PRF evidence `CompleteRegistrationHandler`'s remarks ask for, because the
+  server cannot tell a key-encryption key derived through PRF from one derived out of a constant; and
+  the client crypto in `+core/security/account-keys.ts` **has no caller** while the server already
+  demands its output — that asymmetry is deliberate and argued in the decision log. See
+  [account-keys.md](docs/business-logic/account-keys.md) and
+  [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
 - **The schema carries no remnant of an erasure and the route table offers no way back** — no
   soft-delete flag, tombstone, deletion record, anonymized remnant or archived copy, and no route
   that restores, undeletes or reactivates an account. Three gates, and each holds a different half:

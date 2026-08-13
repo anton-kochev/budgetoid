@@ -25,6 +25,21 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
         "Another request replaced this account's recovery codes. Present a fresh re-authentication and "
         + "generate them again.";
 
+    // ONE FACT ABOUT ONE TABLE, REACHED FROM TWO ROUTES. The identical sentence lives on
+    // PasskeyRepository.TryAddAsync, which is the other write of wrapped_account_keys: a factor
+    // identifier is unique across the whole table, so a recovery-code generation and a passkey
+    // registration collide on the same index and the caller's situation is the same either way — nothing
+    // was written, and the identifier their client chose is spoken for. Change one message and change
+    // both.
+    //
+    // It says what to do next, because a 409 with no detail leaves a client with no idea whether to
+    // retry. Minting a fresh identifier is not optional advice: the envelopes were sealed with the old
+    // one as their associated data, so they have to be re-wrapped rather than re-sent. And the ceremony
+    // has to run again either way, because this attempt's nonce is already spent.
+    private const string FactorAlreadyRegisteredMessage =
+        "That factor identifier is already registered. Mint a fresh one, wrap the account keys under it, "
+        + "and run the ceremony again.";
+
     /// <inheritdoc />
     public Task<Credential?> FindRecoveryCodeCredentialAsync(
         Guid userId,
@@ -162,19 +177,24 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
     public async Task AddSetAsync(
         Credential credential,
         IReadOnlyList<RecoveryCodeHash> hashes,
+        WrappedAccountKeys wrappedAccountKeys,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(hashes);
+        ArgumentNullException.ThrowIfNull(wrappedAccountKeys);
 
         dbContext.Credentials.Add(credential);
         dbContext.RecoveryCodeHashes.AddRange(hashes);
+        dbContext.WrappedAccountKeys.Add(wrappedAccountKeys);
 
         try
         {
-            // One save, so the credential and its codes land together or not at all. EF orders the
-            // statements from the foreign key between the two entity types, so the credential is
-            // inserted before the rows whose composite key references it.
+            // One save, so the credential, its codes and its share of the account keys land together or
+            // not at all. EF orders the statements from the foreign keys between the entity types, so
+            // the credential is inserted before the rows whose composite keys reference it. A set filed
+            // without its envelopes would be a card whose codes derive a key-encryption key with nothing
+            // to open, and the person would find that out on the day they had nothing else left.
             await dbContext.SaveChangesAsync(cancellationToken);
         }
         // THE LIKELIER HALF OF THE RACE, and the one no delete is involved in. Two concurrent FIRST
@@ -204,6 +224,30 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
         })
         {
             throw new ConflictException(LostTheRaceMessage);
+        }
+        // A DIFFERENT COLLISION WITH A DIFFERENT ANSWER, and it is not the race above wearing another
+        // name. That one is two requests contending for the account's one set — a fact about timing,
+        // which is why it tells the caller to prove presence again. This one is the client-minted factor
+        // identifier already standing in wrapped_account_keys, which at 122 random bits is never chance:
+        // it means an identifier reused or a request replayed. Telling such a caller "another request
+        // replaced your codes" would send them looking for a second client they do not have.
+        //
+        // The message is PasskeyRepository.TryAddAsync's, verbatim — the same table reached from the
+        // other route; see the constant above.
+        //
+        // NARROWED ON THE CONSTRAINT NAME for the reason the catch above is, and the need is greater
+        // rather than equal: this save writes the credential, one row per code and the wrapped keys, each
+        // carrying unique rules of its own, so a bare SQLSTATE catch would report a verifier-hash
+        // collision or the one-set-per-account index as a factor-id conflict.
+        // RepositoryConstraintAttributionTests pins that every translated exception in this folder names
+        // its constraint.
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: WrappedAccountKeysConfiguration.FactorIdIndexName,
+        })
+        {
+            throw new ConflictException(FactorAlreadyRegisteredMessage);
         }
     }
 

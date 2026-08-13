@@ -594,10 +594,13 @@ erDiagram
   authenticator holds one and the person wrote the other down, so each is a secret in the holder's
   own possession that a client can derive from. That is the whole of the reason today, and it is
   already enough. The key custody those two secrets are meant to carry — an authenticator holding
-  the account's keys, a code the keys are wrapped under — has its cryptography built and **nothing
-  above it**: the derivations and the wrapping exist in `+core/security/account-keys.ts` with no
-  caller, and no account has ever had a key wrapped under either secret. So custody is still what
-  makes the rule durable rather than what makes it true now.
+  the account's keys, a code the keys are wrapped under — now has its cryptography built **and the
+  two write paths that store the result**: issuing a set requires a factor identifier and both
+  wrapped keys, and files them in the same save as the set's credential. What is still missing is the
+  browser: the derivations in `+core/security/account-keys.ts` have no caller, this client cannot run
+  the ceremony that would obtain a PRF output, and no account outside the test suite has ever had a
+  key wrapped under either secret. So custody is what makes the rule durable rather than what makes
+  it true today — but the schema can no longer hold a factor that carries none.
   - **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule
     rather than a coincidence.** A set of codes is a secret its holder possesses exactly as an
     authenticator is, and reaches exactly as far, so a session that expired sooner here would
@@ -939,12 +942,12 @@ ELSE                                                               ← first iss
   while the count is read by the settings screen on every visit — the generation control on screen is
   present and disabled, and `/api/recovery-codes/redemption` has no client route to be reached from
   at all. Read that the same way the disabled erasure control is read — the gate is built and the
-  surface in front of it is not. And **no key is wrapped under a code yet**, though the derivation
-  that would wrap one now exists: `keyEncryptionKeyFromRecoveryCode` in
-  `+core/security/account-keys.ts` derives the account's key-encryption key from the same code on an
-  independent HKDF branch, over the same canonical form this area's verifier uses. It has no caller.
-  Nothing generates account keys on a real registration, no request carries a wrapped key, and the
-  `wrapped_account_keys` table is written from nowhere — see
+  surface in front of it is not. The route now **requires** a factor identifier and both wrapped
+  account keys, so the client that eventually calls it will have to derive them first;
+  `keyEncryptionKeyFromRecoveryCode` in `+core/security/account-keys.ts` is what it will call, on an
+  independent HKDF branch over the same canonical form this area's verifier uses. **That derivation
+  still has no caller**, nothing in the browser generates account keys, and the only requests that
+  have ever satisfied the new requirement are the suite's — see
   [account-keys.md](account-keys.md). The server side of a recovery sign-in is whole, and the
   surface a person would reach it through is not.
 - **Both sessions this area opens are sessions nothing presents.** No session token is issued, and the

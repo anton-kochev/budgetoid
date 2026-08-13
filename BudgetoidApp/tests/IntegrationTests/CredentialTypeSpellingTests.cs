@@ -483,6 +483,8 @@ public sealed class CredentialTypeSpellingTests
             PasskeyEncoding.ToUserHandle(userId),
             signCount: 0);
 
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
         return await client.PostAsJsonAsync(RecoveryCodesPath, new
         {
             verifiers = Verifiers(),
@@ -491,6 +493,9 @@ public sealed class CredentialTypeSpellingTests
             authenticatorData = assertion.AuthenticatorDataBase64Url,
             signature = assertion.SignatureBase64Url,
             userHandle = assertion.UserHandleBase64Url,
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
     }
 
@@ -529,11 +534,15 @@ public sealed class CredentialTypeSpellingTests
             signCount: 0,
             prfEnabled: true);
 
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
         response.EnsureSuccessStatusCode();
     }

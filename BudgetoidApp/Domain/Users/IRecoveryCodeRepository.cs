@@ -160,17 +160,36 @@ public interface IRecoveryCodeRepository
     Task ConsumeAsync(RecoveryCodeHash hash, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Writes a set: the credential standing for it and one <see cref="RecoveryCodeHash"/> per code,
-    /// in one save, so a refusal leaves none of them behind.
+    /// Writes a set: the credential standing for it, one <see cref="RecoveryCodeHash"/> per code, and
+    /// the set's share of the account keys — in one save, so a refusal leaves none of them behind.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// One save is the rule rather than an optimisation. A credential with no codes is a set that
     /// counts as issued and can never be redeemed, and codes with no credential are unstorable
     /// anyway — the composite foreign key to <c>credentials(id, user_id, type)</c> refuses them.
+    /// </para>
+    /// <para>
+    /// <b>What the wrapped keys buy is that a set holding no copy of the account keys is unreachable
+    /// rather than merely uncustomary</b> — the enforceable half of FR-060, and the same guarantee
+    /// <see cref="IPasskeyRepository.TryAddAsync"/> carries for a passkey. Both envelope columns are
+    /// <c>NOT NULL</c> and they land in this save, so there is no partial failure and no second request
+    /// that could leave a person holding a printed card whose codes derive a key-encryption key with
+    /// nothing to open. It is the <em>set's own</em> credential the row is filed against, never the
+    /// passkey that authorized the issue: those two factors derive different key-encryption keys, and
+    /// nothing in the schema can tell that mistake from a correct row.
+    /// </para>
+    /// <para>
+    /// A <see cref="WrappedAccountKeys"/> whose factor identifier is already stored raises
+    /// <see cref="Domain.Common.ConflictException"/>. The value is client-minted and unique across the
+    /// whole table, so at 122 random bits a collision means a reused identifier or a replayed request
+    /// rather than an accident.
+    /// </para>
     /// </remarks>
     Task AddSetAsync(
         Credential credential,
         IReadOnlyList<RecoveryCodeHash> hashes,
+        WrappedAccountKeys wrappedAccountKeys,
         CancellationToken cancellationToken = default);
 
     /// <summary>

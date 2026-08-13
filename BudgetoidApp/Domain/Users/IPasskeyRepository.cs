@@ -55,15 +55,37 @@ public interface IPasskeyRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Inserts the credential, its public key and its signature counter. All three rows are written
-    /// in one save, so a refusal leaves none of them behind. Returns <see langword="false"/> when the
-    /// insert lost to an existing row on the WebAuthn credential id, meaning that handle is already
-    /// registered.
+    /// Inserts the credential, its public key, its signature counter and its share of the account keys.
+    /// All four rows are written in one save, so a refusal leaves none of them behind. Returns
+    /// <see langword="false"/> when the insert lost to an existing row on the WebAuthn credential id,
+    /// meaning that handle is already registered.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What the fourth row buys is that a factor holding no copy of the account keys is unreachable
+    /// rather than merely uncustomary</b> — the enforceable half of FR-060. The two envelope columns are
+    /// <c>NOT NULL</c> and they are written in this same save, so there is no ordering of statements, no
+    /// partial failure and no second request that can leave a registered passkey standing without them.
+    /// The server still cannot check that the key-encryption key was derived through PRF, and this does
+    /// not claim to: what it forbids is the state where the check would not even have anything to run
+    /// against.
+    /// </para>
+    /// <para>
+    /// <b>Two races, two answers, and they must not be collapsed into one.</b> A WebAuthn handle already
+    /// registered comes back as <see langword="false"/>, because it is a fact about the caller's own
+    /// <em>authenticator</em> — their device has enrolled here before, and they can act on that. A
+    /// factor identifier already registered is a fact about a value the client <em>chose</em>, and it is
+    /// raised as <see cref="Domain.Common.ConflictException"/> instead: at 122 random bits a genuine
+    /// collision is not a thing that happens, so it means a client reusing an identifier or replaying a
+    /// request, and answering it with "that authenticator is already registered" would be a confident,
+    /// specific, false sentence about a device that has never been seen here.
+    /// </para>
+    /// </remarks>
     Task<bool> TryAddAsync(
         Credential credential,
         PasskeyPublicKey publicKey,
         PasskeySignatureCounter counter,
+        WrappedAccountKeys wrappedAccountKeys,
         CancellationToken cancellationToken = default);
 
     /// <summary>

@@ -1131,6 +1131,49 @@ public sealed class GenerateRecoveryCodesHandlerTests
         [.. Enumerable.Range(0, count).Select(_ => RandomNumberGenerator.GetBytes(length))];
 
     /// <summary>
+    /// The byte that says which of the two envelopes an assertion is looking at.
+    /// </summary>
+    /// <remarks>
+    /// Two values rather than one, because the two columns are otherwise indistinguishable: same
+    /// width, same version, both required. See <see cref="Envelope" />.
+    /// </remarks>
+    private const byte ContentKeyPurpose = 0xC0;
+
+    private const byte IndexKeyPurpose = 0x1D;
+
+    /// <summary>
+    /// A well-formed wrapped-key envelope: the one version the contract defines, the byte that says
+    /// which of the two columns this is, and random bytes to the exact width.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The width and the version are read off <see cref="WrappedAccountKeys" /> rather than restated,
+    /// which is the opposite of the choice <see cref="RequiredCodeCount" /> makes and is right for the
+    /// same reason. Those two are the numbers <c>WrappedAccountKeysTests</c> pins against the entity
+    /// itself; here they are not the subject at all — nothing in this file is about the envelope's
+    /// shape, and a copy of either bound would turn every test below red on the day it moved, for a
+    /// reason none of them is about.
+    /// </para>
+    /// <para>
+    /// <paramref name="purpose" /> sits immediately after the version, where a real envelope carries
+    /// the first byte of its nonce. Nothing here opens an envelope and no rule any layer holds looks
+    /// past the leading byte, so the position costs nothing and makes a handler that filed the content
+    /// key in the index column visible by eye — the one mistake at this layer that satisfies every
+    /// width check, every version check and every database constraint. It is
+    /// <c>IntegrationTests.WrappedKeyFixture</c>'s choice, spelled here because the two projects share
+    /// no fixture.
+    /// </para>
+    /// </remarks>
+    private static byte[] Envelope(byte purpose)
+    {
+        byte[] envelope = RandomNumberGenerator.GetBytes(WrappedAccountKeys.EnvelopeLength);
+        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
+        envelope[1] = purpose;
+
+        return envelope;
+    }
+
+    /// <summary>
     /// Runs <paramref name="action" /> and returns the exception it was expected to throw.
     /// </summary>
     /// <remarks>
@@ -1339,6 +1382,20 @@ public sealed class GenerateRecoveryCodesHandlerTests
                 handler,
                 new GenerateRecoveryCodesCommand(
                     [.. presented.Select(verifier => Base64UrlText.Encode(verifier))],
+
+                    // A FRESH FACTOR PER FIXTURE, and a well-formed envelope pair to go with it. Every
+                    // test in this file is about something else — the gate, the set, the sweep, the
+                    // replay — so the factor and the two envelopes are valid on every path, and the
+                    // validation tests keep refusing for the reason their own name gives rather than
+                    // for a malformed envelope they never meant to send.
+                    //
+                    // Minted per call rather than shared: IX_wrapped_account_keys_factor_id is unique
+                    // across the whole table, so a constant would be a collision the moment two
+                    // fixtures' rows met in one database. Nothing in memory enforces that index, which
+                    // is exactly why the habit has to be kept where it cannot be observed.
+                    Guid.CreateVersion7().ToString("D"),
+                    Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
+                    Base64UrlText.Encode(Envelope(IndexKeyPurpose)),
                     new ReauthenticationAssertion(
                         assertion.CredentialIdBase64Url,
                         assertion.ClientDataJsonBase64Url,

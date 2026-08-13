@@ -159,31 +159,62 @@ public sealed class RepositoryAttributionCensusTests
     /// identity-side ones, plus the two whose narrowing is not a constraint name at all.
     /// </summary>
     /// <remarks>
-    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. All five are pinned in
-    /// both directions today, and one of them — <c>SessionRepository</c> — has nothing to attribute at
-    /// all, which is a different statement and says so.
+    /// <para>
+    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Two of the five are
+    /// pinned in both directions on every narrowing they hold; one — <c>SessionRepository</c> — has
+    /// nothing to attribute at all, which is a different statement and says so; and the two that write
+    /// <c>wrapped_account_keys</c> each gained a <c>factor_id</c> narrowing whose two halves are not
+    /// both in the file named beside it.
+    /// </para>
+    /// <para>
+    /// That split is stated rather than smoothed over, for the reason the class remarks give about the
+    /// gap this member was added to expose: the mis-attribution control for the new filter is at that
+    /// layer on both — an unrelated <c>23505</c> reaching either <c>catch</c> would come back as a
+    /// conflict about a factor identifier nobody claimed — while on both the translation is pinned
+    /// only over HTTP, by the route that stages a duplicate identifier end to end. Both entries name
+    /// the test that does it.
+    /// </para>
     /// </remarks>
     private static readonly AttributionPin[] PinnedElsewhere =
     [
         new(
             nameof(PasskeyRepository),
             "PasskeyRepositoryTests",
-            "both halves on both narrowings: TryAddAsync's webauthn_credential_id filter is "
+            "both halves on two of the three narrowings: TryAddAsync's webauthn_credential_id filter is "
             + "translated by TryAddAsync_WhenTheHandleIsAlreadyRegistered_ReturnsFalse and "
             + "controlled by TryAddAsync_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape, "
             + "and DeletePasskeyAsync's entries-based narrowing by "
             + "DeletePasskeyAsync_WhenTheRowIsAlreadyGone_ThrowsNotFound and "
             + "DeletePasskeyAsync_WhenAnUnrelatedEntityConflicts_LetsTheConflictEscape. "
             + "PasskeyCeremonyTests takes the same registration refusal as a 409 over HTTP, which is "
-            + "the answer a client sees rather than a second pin of the filter"),
+            + "the answer a client sees rather than a second pin of the filter. "
+            + "THE THIRD IS TryAddAsync's IX_wrapped_account_keys_factor_id filter, which throws where "
+            + "the handle filter answers false: its control is that same "
+            + "_LetsTheViolationEscape test, which now asserts the escaping violation names neither "
+            + "index, and its TRANSLATION is pinned only over HTTP, by "
+            + "PasskeyCeremonyTests.PasskeyRegistration_RefusesAFactorIdentifierAlreadyRegistered — "
+            + "nothing here stages a duplicate factor identifier at this layer"),
         new(
             nameof(RecoveryCodeRepository),
             "RecoveryCodeRepositoryTests",
-            "both halves: "
-            + "AddSetAsync_WhenTheAccountAlreadyHoldsASet_ThrowsConflict translates its own index, "
-            + "and AddSetAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape plus "
-            + "DeleteSetAsync_WhenAnUnrelatedEntityConflicts_LetsTheConflictEscape are the "
-            + "mis-attribution controls"),
+            "both halves on three of the four narrowings: "
+            + "AddSetAsync_WhenTheAccountAlreadyHoldsASet_ThrowsConflict translates its own credentials "
+            + "index and AddSetAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape controls it; "
+            + "DeleteSetAsync's entries-based narrowing is translated by "
+            + "DeleteSetAsync_WhenTheSetIsAlreadyGone_ThrowsConflict and controlled by "
+            + "DeleteSetAsync_WhenAnUnrelatedEntityConflicts_LetsTheConflictEscape; ConsumeAsync's by "
+            + "ConsumeAsync_WhenTheCodeIsAlreadyGone_RefusesTheRedemption and "
+            + "ConsumeAsync_WhenAnUnrelatedEntityConflicts_LetsTheConflictEscape. "
+            + "THE FOURTH IS AddSetAsync's IX_wrapped_account_keys_factor_id filter, whose two halves "
+            + "are not both here: its control is "
+            + "AddSetAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape, which asserts the "
+            + "escaping violation names neither index, and its TRANSLATION is pinned only over HTTP, by "
+            + "RecoveryCodeGenerationTests.RecoveryCodeGeneration_RefusesAFactorIdentifierAlreadyRegistered "
+            + "— which claims the account's passkey factor, because reusing the replaced set's own "
+            + "identifier never reaches the filter, and reads the detail sentence, because this route's "
+            + "other two conflicts answer the same status and title. Nothing here stages a duplicate "
+            + "factor identifier at this layer, exactly as on PasskeyRepository's copy of the same "
+            + "catch"),
         new(
             nameof(SessionRepository),
             "SessionRepositoryTests",

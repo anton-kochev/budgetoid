@@ -531,6 +531,7 @@ public sealed class RecoveryCodeCountEndpointTests
             PasskeyEncoding.ToUserHandle(userId),
             signCount: 0);
 
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
         HttpResponseMessage response = await client.PostAsJsonAsync(RecoveryCodesPath, new
         {
             verifiers,
@@ -539,6 +540,9 @@ public sealed class RecoveryCodeCountEndpointTests
             authenticatorData = assertion.AuthenticatorDataBase64Url,
             signature = assertion.SignatureBase64Url,
             userHandle = assertion.UserHandleBase64Url,
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
 
         // Fails loudly, or every count below is a number read from an arrangement that never happened.
@@ -566,11 +570,15 @@ public sealed class RecoveryCodeCountEndpointTests
             ApiFactory.PasskeyOrigin,
             signCount: 0,
             prfEnabled: true);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
         response.EnsureSuccessStatusCode();
     }

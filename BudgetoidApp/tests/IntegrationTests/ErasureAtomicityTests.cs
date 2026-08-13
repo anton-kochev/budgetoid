@@ -575,11 +575,15 @@ public sealed class ErasureAtomicityTests
 
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
+            factorId = keys.FactorId,
+            wrappedContentKey = keys.WrappedContentKey,
+            wrappedIndexKey = keys.WrappedIndexKey,
         });
         response.EnsureSuccessStatusCode();
     }
@@ -706,8 +710,9 @@ public sealed class ErasureAtomicityTests
     /// Adds the passkey material, the session row, the set of recovery codes and the wrapped account
     /// keys, so the whole-database enumeration has something to find in every user-owned table rather
     /// than only in the two provisioning fills. Without it the non-vacuity guard fails on
-    /// <c>sessions</c>, on <c>recovery_code_hashes</c> and on <c>wrapped_account_keys</c>, which is the
-    /// point of the guard.
+    /// <c>sessions</c> and on <c>recovery_code_hashes</c>, which is the point of the guard.
+    /// <c>wrapped_account_keys</c> would survive it — <see cref="RegisterPasskeyAsync" /> writes a row
+    /// of that route's own — and the seeded row is kept beside it for the reason below.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -735,11 +740,16 @@ public sealed class ErasureAtomicityTests
             passkey, WebAuthnCredentialIdFor(userId), CoseKey, CoseAlgorithm.Es256));
         db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(passkey, 0));
 
-        // The account's two keys as this passkey factor holds them, which is what puts a row in
-        // wrapped_account_keys — a table the enumeration discovers and no endpoint writes to yet, so
-        // without this the non-vacuity guard fails on it. Filed against the passkey rather than the
-        // recovery-code set below because a passkey is the factor whose PRF output derives the
-        // key-encryption key in production; either is legal here, the federated credential is not.
+        // The account's two keys as this passkey factor holds them, in wrapped_account_keys — a table
+        // the enumeration discovers, and one the non-vacuity guard covers like any other. The
+        // registration route writes a row of its own now, so this one is no longer the only thing
+        // standing between that guard and a zero; it is kept for the reason the remarks give, which is
+        // that this file's arrangement stays independent of any issuance route's shape. Filed against
+        // the passkey seeded just above rather than against the registered credential, because a
+        // second row hung off that credential would collide on PK_wrapped_account_keys. A passkey
+        // rather than the recovery-code set below because a passkey is the factor whose PRF output
+        // derives the key-encryption key in production; either is legal here, the federated credential
+        // is not.
         db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
             passkey,
 

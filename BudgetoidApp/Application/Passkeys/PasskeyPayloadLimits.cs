@@ -99,4 +99,22 @@ public static class PasskeyPayloadLimits
     /// </para>
     /// </remarks>
     public const int AttestationObjectBytes = 4096;
+
+    /// <summary>
+    /// A wrapped account key envelope, on the one width the domain will store.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the same constant <see cref="WrappedAccountKeys"/> refuses a row against, for the
+    /// reason <see cref="CredentialIdBytes"/> gives: a member the wire accepted but the entity could
+    /// never store is text decoded for nothing, and a separate number here would only be a way for this
+    /// ceiling and the column's <c>CHECK length(...) = 61</c> to disagree.
+    /// <para>
+    /// A <b>width</b> and not a padded ceiling — the only other member here that is exact is
+    /// <see cref="SignatureBytes"/>. AES-GCM ciphertext is the length of its plaintext and the plaintext
+    /// is a 32-byte key, so an envelope over a wrapped key has exactly one legal size and there is no
+    /// slack to leave. Note that it still only bounds the <em>encoded</em> length where it is applied,
+    /// which is why <see cref="WrappedKeyEnvelope"/> checks the decoded width separately.
+    /// </para>
+    /// </remarks>
+    public const int WrappedKeyBytes = WrappedAccountKeys.EnvelopeLength;
 }

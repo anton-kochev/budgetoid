@@ -27,12 +27,17 @@ two index keys produce two blind index values for one name, the uniqueness const
 colliding, and a person signing in from a second device silently accumulates duplicate payees while
 the constraint appears to work.
 
-**What is built today is the cryptography and nothing above it.** The client can generate the keys,
-derive a key-encryption key from either kind of factor, wrap both keys under it and unwrap them
-again. Nothing calls any of it: this client cannot yet run a WebAuthn ceremony, so no key-encryption
-key can be obtained from a real authenticator, and no request carries a wrapped key. The server has
-a table for the wrapped copies and writes to it from nowhere. Registration, unlocking, the locked
-state, the blind index and the encryption of any narrative field are all later work.
+**What is built today is the cryptography, and the two write paths that store its output.** The
+client can generate the keys, derive a key-encryption key from either kind of factor, wrap both keys
+under it and unwrap them again; the server refuses to register a passkey or issue a set of recovery
+codes unless the request carries a factor identifier and both wrapped keys, and files them in the
+same save as the credential.
+
+The two halves are not yet joined, and the gap is worth naming precisely: **this client cannot run a
+WebAuthn ceremony**, so nothing in the browser can obtain a PRF output from a real authenticator,
+and no screen calls the crypto module. The requests the server now demands wrapped keys on are made
+today only by the integration suite. Unlocking, the locked state, the blind index and the encryption
+of any narrative field are all later work.
 
 ## Key Entities
 
@@ -117,7 +122,21 @@ erDiagram
   - **Why**: the operator holding the database and every backup must recover nothing. A key-encryption
     key on the wire would hand over the account.
   - **Enforced in**: the shape of the request surface — no member of any endpoint's request type can
-    hold one — and by there being no server-side type for any of them.
+    hold one — and by there being no server-side type for any of them. What *does* cross is three
+    members on each of two routes: a factor identifier and two envelopes, each of which the server
+    can check the shape of and open none of.
+
+- **A factor identifier MUST be one spelling on the wire.** The two write paths accept a UUID in the
+  36-character hyphenated form and nothing else — not the braced, parenthesised or undashed
+  spellings `Guid.TryParse` would take, and not the all-zero UUID.
+  - **Why**: it is the value both envelopes were sealed against, so a client that sent one spelling
+    and bound another finds its own envelopes unopenable, permanently and with no error naming the
+    cause. The all-zero UUID is refused separately because it is what an unset field sends and it is
+    the one value two accounts reach independently — on a unique index that spans the whole table,
+    that turns a client bug into a cross-account collision.
+  - **Enforced in**: `CompleteRegistrationHandler` and `GenerateRecoveryCodesHandler`, both through
+    `Guid.TryParseExact(value, "D", …)`. The database refuses the empty UUID a second time, through
+    the entity.
 
 - **The key-encryption key MUST NOT be extractable.** It is imported with `extractable: false` and
   only `encrypt`/`decrypt` usages, so no later caller can export the bytes.
@@ -207,7 +226,8 @@ and lives in the associated data.
 
 ## Workflows & State Transitions
 
-Nothing here is reachable from the running client today; this is what the module supports.
+Steps 1–4 are the client module; no screen reaches them today. Step 5 is the server, and it is
+reachable — the two routes refuse a request without it.
 
 1. **Minting an account's keys.** 64 bytes are drawn in one call and split into two independent
    copies. No further state exists — the keys live only in memory.
@@ -218,6 +238,24 @@ Nothing here is reachable from the running client today; this is what the module
 4. **Unwrapping.** Each wire value is decoded and opened with the same associated data. A copy moved
    to another factor, or to the other purpose, fails to authenticate rather than returning wrong
    bytes.
+5. **Storing.** `POST /api/passkeys/registration` and `POST /api/me/recovery-codes` each carry
+   `factorId`, `wrappedContentKey` and `wrappedIndexKey`. Each handler checks the identifier's
+   spelling and each envelope's width and version, then writes the row **in the same `SaveChanges`**
+   as the credential — four rows on the passkey path, twelve on the recovery-code path. There is no
+   partial state in which a factor exists holding no share of the keys.
+
+**Registration validates the wrapped keys after the `prf` gate, and the ordering is a rule.** A
+client that cannot do PRF cannot have produced a wrapped key either, so those members are very often
+absent on exactly the requests the gate is for. Judged first, such a request would be told its
+payload was malformed — sending somebody holding a device that genuinely lacks the extension off to
+debug their client. Generation validates them after its re-authentication gate, for the reason that
+gate's own ordering already carries.
+
+**Replacing a set of recovery codes replaces its wrapped keys by the database's cascade**, never by
+the application: the role holds no `DELETE` on `wrapped_account_keys` at all, so a handler that
+materialised the replaced row would die with `42501` rather than quietly take it. That is the same
+never-materialise rule the recovery-code hashes already carry, binding a second table and failing
+the opposite way — loudly.
 
 ## Decision Trees
 
@@ -242,9 +280,12 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
 
 - **`recovery-codes.md`** — the code a key-encryption key is derived from, and why it never reaches
   the server. The verifier branch and this one are separated only by HKDF's `info`.
-- **`passkeys.md`** — the ceremony that will supply a PRF output. The registration path refuses an
-  authenticator that reports no enabled `prf` result; that check is a product gate on an unverifiable
-  claim, and a wrapped key is the value that will replace it as evidence.
+- **`passkeys.md`** — the ceremony that will supply a PRF output, and the three members registration
+  now carries. The registration path refuses an authenticator that reports no enabled `prf` result;
+  that check is a product gate on an unverifiable claim, and a wrapped key is **not** the evidence
+  that replaces it — the server cannot tell a key-encryption key derived through PRF from one derived
+  out of a constant. What the wrapped keys buy is narrower and real: a factor holding no share of the
+  account keys is unstorable.
 - **[ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)**
   — where the wrapped copies live, why the factor identifier is its own column, and why the table
   holds no `UPDATE` or `DELETE` grant.
@@ -253,9 +294,19 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
 
 ## Edge Cases & Known Gotchas
 
-- **The module has no caller, on purpose.** It follows `recovery-codes.ts`: a pure module tested in
-  place, shipped ahead of the ceremony that will use it, because its spec is the only place several
-  of these rules can be checked at all. Do not wire it into a screen to "finish" it.
+- **The client module has no caller, on purpose, while the server already demands its output.** That
+  asymmetry is the story's shape, not an oversight: the crypto follows `recovery-codes.ts` — a pure
+  module tested in place, shipped ahead of the ceremony that will use it, because its spec is the
+  only place several of these rules can be checked at all — and the write paths were closed in the
+  same change so that no factor can ever be registered without its share of the keys. Do not wire the
+  module into a screen to "finish" it, and do not relax the server's demand to make a screen work.
+- **The client's base64url decoder is stricter than the server's, deliberately.** The client refuses
+  padding; `PasskeyEncoding.TryDecode` accepts it, because `Base64Url` does and the looser bound is
+  the one that never refuses a member a client legitimately encoded. Nothing is lost by the
+  difference — the column stores decoded bytes, so a padded envelope and an unpadded one become the
+  same row. The strictness is a rule about what *this* client emits, not a claim about what the
+  server admits, and a reader comparing the two decoders should not read the gap as a defect in
+  either.
 - **The PRF eval input is unused today and still load-bearing.** Nothing derives from it, so its
   pinned literal in the spec is the only thing that would notice it drifting — and a drifted eval
   input locks every account out silently, because the key-encryption key it produces is simply a

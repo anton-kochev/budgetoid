@@ -108,7 +108,13 @@ erDiagram
       ([ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md)). Keep the
       example where it is. The hypothetical is what made this decision visible *before* there was
       anything to decide about, so it is the evidence the mechanism worked rather than a line to
-      retire now that it has been used once, and the wrapped key beside it is still ahead of us.
+      retire now that it has been used once.
+    - **The wrapped key has landed too, and it went the same way** — onto `wrapped_account_keys`,
+      which carries `user_id` and is therefore *policed* rather than exempt, because it is read only
+      after the request has an identity
+      ([ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)).
+      Two hypotheticals raised here, two tables elsewhere, no column widened: that is the pin doing
+      its work twice.
   - **Enforced in**: the exact column sets pinned by the `Exemptions` entries in
     `RowLevelSecurityCoverage` — a column added to an exempt table goes red there.
 
@@ -129,6 +135,24 @@ erDiagram
   - **Enforced in**: the unique index `IX_passkey_public_keys_webauthn_credential_id`, which is also
     the discovery lookup's index, and `PasskeyRepository.TryAddAsync`, which turns its `23505` into a
     409 by filtering on the **constraint name** rather than the SQLSTATE alone.
+
+- **A registration MUST NOT complete unless it carries a factor identifier and both wrapped account
+  keys.** The finish leg takes `factorId`, `wrappedContentKey` and `wrappedIndexKey` beside the
+  ceremony response.
+  - **Why**: a passkey that cannot open the account's keys is not a way back in, however well it
+    proves identity. This is the enforceable half of "registration completes only once the account's
+    keys are wrapped under it" — the count of passkeys and the count of wrapped-key rows are the same
+    number by construction, which is what a later completion gate can be keyed on.
+  - **Enforced in**: `CompleteRegistrationHandler` for the shape, and the database for the rest —
+    `wrapped_account_keys` carries both envelope columns `NOT NULL`, one row per factor, and
+    `PasskeyRepository.TryAddAsync` writes all four rows in **one** save, so "registered, holding no
+    share of the keys" is unstorable rather than merely uncustomary. See
+    [account-keys.md](account-keys.md).
+  - **The identifier has one spelling**: a UUID in the 36-character hyphenated form, never the
+    braced, parenthesised or undashed ones, and never the all-zero UUID. It is the value both
+    envelopes were sealed against, and it is unique across the whole table — a second registration
+    reusing one is a 409 whose sentence is deliberately different from the "this authenticator is
+    already registered" 409 beside it.
 
 - **A registration MUST NOT complete unless the client reports a `prf` extension result of true.**
   - **Why**: an authenticator that cannot derive a PRF secret cannot hold the account's keys. This is
@@ -314,9 +338,22 @@ erDiagram
     else. Anything that later needs to *rely* on PRF must key on a value derived through PRF that
     the server can check — never on this flag, and never on the fact that this endpoint refuses
     without it.
-- **Enforced in**: `CompleteRegistrationHandler`, deliberately as the **last** check on the response,
-  after `PasskeyRegistrationVerifier.Verify`. Checked earlier, a malformed, replayed or wrong-origin
-  response would be told its authenticator cannot hold the keys, which is a lie about the device.
+  - **The wrapped account keys are not that value, and the difference is worth stating plainly**,
+    because a reader will see them arrive on the same request and conclude the gate has been made
+    real. It has not. The server cannot tell a key-encryption key derived from an authenticator's PRF
+    output from one derived out of a constant a client chose; no member it could be handed would let
+    it, since seeing any part of the derivation is exactly what must never happen. What the wrapped
+    keys buy is a different and smaller thing: a factor that holds no share of the account keys is
+    **unstorable**, so the failure this gate guesses at is at least no longer reachable by a client
+    that simply omitted them. The gate stays, and stays a guess.
+- **Enforced in**: `CompleteRegistrationHandler`, deliberately as the **last check on the ceremony
+  response**, after `PasskeyRegistrationVerifier.Verify`. Checked earlier, a malformed, replayed or
+  wrong-origin response would be told its authenticator cannot hold the keys, which is a lie about
+  the device. The factor identifier and the two envelopes are judged *after* it, and that is the
+  same argument pointing the other way: a client that cannot do PRF cannot have produced a wrapped
+  key either, so those members are very often absent on exactly the requests this gate is for, and
+  judging them first would tell somebody holding a genuinely incapable device that their *payload*
+  was malformed.
   `Registration_WhoseOriginIsWrongAndReportsNoPrfResult_IsRefusedForTheOriginRatherThanTheAuthenticator`
   owns that ordering, so it is held by a named test rather than incidentally by the payload shape
   other tests happen to send.
@@ -406,7 +443,7 @@ stateDiagram-v2
     [*] --> ChallengeIssued : options leg, a nonce is written
     ChallengeIssued --> Consumed : finish leg, the nonce is deleted before anything is checked
     Consumed --> Verified : format, origin, relying party, flags, signature
-    Verified --> Registered : registration — credential, key and counter in one save
+    Verified --> Registered : registration — credential, key, counter and wrapped keys in one save
     Verified --> SignedIn : assertion — counter accepted, then a Full session
     Verified --> Proved : re-authentication — counter accepted, nothing returned
     Consumed --> Refused : any check fails

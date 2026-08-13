@@ -4,8 +4,8 @@ using Domain.Users;
 namespace UnitTests.Fakes;
 
 /// <summary>
-/// The recovery-code tables in memory: the <c>credentials</c> row standing for a set, and the
-/// <c>recovery_code_hashes</c> rows hanging off it.
+/// The recovery-code tables in memory: the <c>credentials</c> row standing for a set, the
+/// <c>recovery_code_hashes</c> rows hanging off it, and the set's share of the account keys.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -76,6 +76,31 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
     /// <summary>Every unredeemed code the database would hold if this unit of work committed now.</summary>
     public IReadOnlyList<RecoveryCodeHash> Hashes =>
         [.. _committed.Concat(_pending).SelectMany(set => set.Hashes)];
+
+    /// <summary>
+    /// Every set's share of the account keys the database would hold if this unit of work committed
+    /// now — one row per issued set.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read off the sets rather than kept in a list of its own, so it leaves when its credential does:
+    /// the row cascades from <c>credentials</c> exactly as the code hashes do, and a fake that took the
+    /// set away and left its envelopes behind would hold a row the database could not.
+    /// </para>
+    /// <para>
+    /// A set filed by <see cref="Seed" /> carries none, which is
+    /// <c>RepositoryTestHost.SeedPasskeyAsync</c>'s choice rather than an oversight: the wrapped keys
+    /// are a row of their own, and nothing this fake answers reads a seeded set's envelopes. What
+    /// <see cref="AddSetAsync" /> writes is not a simplification, because the single save is what makes
+    /// a set without its share of the keys unreachable.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<WrappedAccountKeys> WrappedKeys =>
+    [
+        .. _committed.Concat(_pending)
+            .Select(set => set.WrappedAccountKeys)
+            .OfType<WrappedAccountKeys>(),
+    ];
 
     /// <summary>
     /// How many times the unscoped discovery lookup ran.
@@ -158,7 +183,7 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(hashes);
 
-        _committed.Add(new Set(credential, [.. hashes]));
+        _committed.Add(new Set(credential, [.. hashes], WrappedAccountKeys: null));
     }
 
     /// <summary>
@@ -331,15 +356,28 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Queues the whole set — its credential, its codes and its share of the account keys — as one
+    /// unit of work's worth of inserts.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="wrappedAccountKeys" /> is queued beside the other rows rather than accepted and
+    /// dropped, for the reason the hashes are: the single save is what makes a set that holds no
+    /// envelopes unreachable, and a fake that took the argument and forgot it would let a handler
+    /// filing them against the passkey that authorized the request — the credential nearest to hand,
+    /// and the mistake nothing beneath the application can catch — look correct here.
+    /// </remarks>
     public Task AddSetAsync(
         Credential credential,
         IReadOnlyList<RecoveryCodeHash> hashes,
+        WrappedAccountKeys wrappedAccountKeys,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(hashes);
+        ArgumentNullException.ThrowIfNull(wrappedAccountKeys);
 
-        _pending.Add(new Set(credential, [.. hashes]));
+        _pending.Add(new Set(credential, [.. hashes], wrappedAccountKeys));
 
         return Task.CompletedTask;
     }
@@ -383,5 +421,12 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
     /// One set: the <c>credentials</c> row and the codes hanging off it. The codes are mutable because
     /// a redemption spends one of them and leaves the rest — see <see cref="ConsumeAsync" />.
     /// </summary>
-    private sealed record Set(Credential Credential, List<RecoveryCodeHash> Hashes);
+    /// <param name="WrappedAccountKeys">
+    /// The set's share of the account keys, or <see langword="null" /> for a set <see cref="Seed" />
+    /// filed — see <see cref="WrappedKeys" /> for why a seed files none.
+    /// </param>
+    private sealed record Set(
+        Credential Credential,
+        List<RecoveryCodeHash> Hashes,
+        WrappedAccountKeys? WrappedAccountKeys);
 }
