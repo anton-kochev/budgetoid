@@ -703,10 +703,11 @@ public sealed class ErasureAtomicityTests
     }
 
     /// <summary>
-    /// Adds the passkey material, the session row and the set of recovery codes, so the
-    /// whole-database enumeration has something to find in every user-owned table rather than only in
-    /// the two provisioning fills. Without it the non-vacuity guard fails on <c>sessions</c> and on
-    /// <c>recovery_code_hashes</c>, which is the point of the guard.
+    /// Adds the passkey material, the session row, the set of recovery codes and the wrapped account
+    /// keys, so the whole-database enumeration has something to find in every user-owned table rather
+    /// than only in the two provisioning fills. Without it the non-vacuity guard fails on
+    /// <c>sessions</c>, on <c>recovery_code_hashes</c> and on <c>wrapped_account_keys</c>, which is the
+    /// point of the guard.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -733,6 +734,22 @@ public sealed class ErasureAtomicityTests
         db.PasskeyPublicKeys.Add(PasskeyPublicKey.Register(
             passkey, WebAuthnCredentialIdFor(userId), CoseKey, CoseAlgorithm.Es256));
         db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(passkey, 0));
+
+        // The account's two keys as this passkey factor holds them, which is what puts a row in
+        // wrapped_account_keys — a table the enumeration discovers and no endpoint writes to yet, so
+        // without this the non-vacuity guard fails on it. Filed against the passkey rather than the
+        // recovery-code set below because a passkey is the factor whose PRF output derives the
+        // key-encryption key in production; either is legal here, the federated credential is not.
+        db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+            passkey,
+
+            // Minted here rather than derived from the owner, which is what production does: the value
+            // is chosen by the client and its unique index is global. Nothing asserts on it, and a fresh
+            // one per call is what keeps two seeded accounts from colliding on that index.
+            Guid.CreateVersion7(),
+            Envelope(0xC0),
+            Envelope(0x1D),
+            SeedInstant));
 
         // Established against the passkey rather than the federated credential because
         // CK_sessions_kind_matches_credential ties the two together.
@@ -829,6 +846,25 @@ public sealed class ErasureAtomicityTests
     /// here verify against a registered device — and the only rule the column holds is a length.
     /// </summary>
     private static readonly byte[] CoseKey = [0xA5, 0x01, 0x02, 0x03];
+
+    /// <summary>
+    /// A well-formed wrapped-key envelope: the one version byte the contract defines, then filler.
+    /// </summary>
+    /// <remarks>
+    /// The filler is neither a nonce nor a ciphertext, and nothing here opens either — no unlock path
+    /// exists and this server holds no value that could. What the row has to satisfy is the width and
+    /// the version, which <see cref="WrappedAccountKeys.For" /> and two check constraints per column
+    /// both refuse to bend. The two callers pass different fillers so the columns can be told apart by
+    /// eye in a failure message.
+    /// </remarks>
+    private static byte[] Envelope(byte filler)
+    {
+        byte[] envelope = new byte[WrappedAccountKeys.EnvelopeLength];
+        Array.Fill(envelope, filler);
+        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
+
+        return envelope;
+    }
 
     private static async Task<PostgresTestHost> StartHostAsync()
     {

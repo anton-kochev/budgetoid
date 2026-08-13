@@ -7,6 +7,9 @@ using Api.Infrastructure;
 using Application.Passkeys;
 using Application.Passkeys.Reauthentication;
 using Application.Passkeys.Verification;
+using Domain.Users;
+using Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using TestSupport;
 
@@ -90,6 +93,7 @@ public sealed class ErasureReauthenticationTests
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
+        await SeedWrappedAccountKeysAsync(host, userId);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -123,6 +127,7 @@ public sealed class ErasureReauthenticationTests
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
+        await SeedWrappedAccountKeysAsync(host, userId);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -160,6 +165,7 @@ public sealed class ErasureReauthenticationTests
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
+        await SeedWrappedAccountKeysAsync(host, userId);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -274,6 +280,11 @@ public sealed class ErasureReauthenticationTests
         Guid aliceId = await ResolveUserIdAsync(host, Subject);
         Guid bobId = await ResolveUserIdAsync(host, OtherSubject);
 
+        // Bob only: Alice never registered a passkey here, so she has no factor these envelopes could
+        // hang off — and no assertion below asks her wrapped-key count to be non-zero. Her zero is
+        // compared against her zero like every other count.
+        await SeedWrappedAccountKeysAsync(host, bobId);
+
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         IReadOnlyDictionary<string, long> aliceBefore = await CountOwnedRowsAsync(admin, aliceId);
@@ -378,6 +389,7 @@ public sealed class ErasureReauthenticationTests
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
+        await SeedWrappedAccountKeysAsync(host, userId);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -442,6 +454,11 @@ public sealed class ErasureReauthenticationTests
         Guid aliceId = await ResolveUserIdAsync(host, Subject);
         Guid bobId = await ResolveUserIdAsync(host, OtherSubject);
 
+        // Both, because both registered a passkey: Alice's row is what her successful erasure has to
+        // carry away through the cascade, and Bob's is what the replay must not touch.
+        await SeedWrappedAccountKeysAsync(host, aliceId);
+        await SeedWrappedAccountKeysAsync(host, bobId);
+
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         IReadOnlyDictionary<string, long> bobBefore = await CountOwnedRowsAsync(admin, bobId);
@@ -497,6 +514,7 @@ public sealed class ErasureReauthenticationTests
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
+        await SeedWrappedAccountKeysAsync(host, userId);
         byte[] userHandle = PasskeyEncoding.ToUserHandle(userId);
         byte[] challenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
 
@@ -560,6 +578,7 @@ public sealed class ErasureReauthenticationTests
         await RegisterPasskeyAsync(client, regressedDevice, RegisteredCounterAboveAnyAssertion);
         await RegisterPasskeyAsync(bob, bobsDevice);
         Guid userId = await ResolveUserIdAsync(host, Subject);
+        await SeedWrappedAccountKeysAsync(host, userId);
         byte[] userHandle = PasskeyEncoding.ToUserHandle(userId);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -715,6 +734,7 @@ public sealed class ErasureReauthenticationTests
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
+        await SeedWrappedAccountKeysAsync(host, userId);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -753,6 +773,7 @@ public sealed class ErasureReauthenticationTests
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
+        await SeedWrappedAccountKeysAsync(host, userId);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -838,6 +859,21 @@ public sealed class ErasureReauthenticationTests
     /// <c>AccountErasureEndpointTests</c>; what this file needs is the identity graph, because that is
     /// what a wrongly bound gate reaches into.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>wrapped_account_keys</c> belongs to that graph and is the one row on it that is worth more
+    /// than the account: it holds the account's content and index keys as one recovery factor wrapped
+    /// them. A gate bound to the wrong account is exactly the request that must not reach them, so the
+    /// table is counted like the rest. <see cref="SeedWrappedAccountKeysAsync" /> is what puts a row
+    /// there, because no endpoint writes one yet.
+    /// </para>
+    /// <para>
+    /// <b>This list is hand-written and nothing checks it against the live schema</b>, which is how
+    /// <c>wrapped_account_keys</c> could join the database and leave every test in this file green
+    /// while counting one identity table less than the prose claims. The next table added here has to
+    /// be added by hand, exactly as this one was.
+    /// </para>
+    /// </remarks>
     private static readonly OwnedTable[] UserOwnedTables =
     [
         new("users", "id"),
@@ -845,6 +881,7 @@ public sealed class ErasureReauthenticationTests
         new("budgets", "user_id"),
         new("passkey_public_keys", "user_id"),
         new("passkey_signature_counters", "user_id"),
+        new("wrapped_account_keys", "user_id"),
     ];
 
     private static async Task<PostgresTestHost> StartHostAsync()
@@ -1001,6 +1038,79 @@ public sealed class ErasureReauthenticationTests
                 $"Provisioning wrote no account for subject '{subject}', got '{unexpected ?? "null"}'."),
         };
     }
+
+    /// <summary>
+    /// Files the account's two keys against the passkey a real registration just wrote, so
+    /// <c>wrapped_account_keys</c> holds a row for <paramref name="userId" />.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Written out of band on the container superuser, through the domain factory rather than raw SQL —
+    /// the choice the two other erasure files make for their own seeding, and for the same reason: there
+    /// is no route that writes one of these rows, and the factory is what keeps a seeded row the shape
+    /// production will write. It hangs off the account's <b>real</b> passkey credential rather than a
+    /// credential of its own, because that is the factor whose PRF output derives the key-encryption
+    /// key, and because every caller here has already registered one.
+    /// </para>
+    /// <para>
+    /// Only the accounts that register a passkey are seeded, and the accounts that do not are not
+    /// exceptions to the non-vacuity rule: no test asserts a seeded count for one of those, so their
+    /// zero before and zero after is compared like every other count.
+    /// </para>
+    /// </remarks>
+    private static async Task SeedWrappedAccountKeysAsync(PostgresTestHost host, Guid userId)
+    {
+        await using BudgetoidDbContext db = new(
+            new DbContextOptionsBuilder<BudgetoidDbContext>()
+                .UseNpgsql(host.ConnectionString)
+                .Options);
+
+        // First rather than Single: one test registers two devices for the same account, and either
+        // credential is a factor these envelopes could legitimately be wrapped under.
+        Credential passkey = await db.Credentials
+            .Where(credential => credential.UserId == userId
+                                 && credential.Type == CredentialType.Passkey)
+            .OrderBy(credential => credential.CreatedAtUtc)
+            .FirstAsync();
+
+        db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+            passkey,
+
+            // Minted here rather than derived from the owner, which is what production does: the value
+            // is chosen by the client and its unique index is global. Nothing asserts on it, and a fresh
+            // one per call is what keeps the two accounts of a two-account test from colliding on it.
+            Guid.CreateVersion7(),
+            Envelope(0xC0),
+            Envelope(0x1D),
+            SeedInstant));
+
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// A well-formed wrapped-key envelope: the one version byte the contract defines, then filler.
+    /// </summary>
+    /// <remarks>
+    /// The filler is neither a nonce nor a ciphertext, and nothing here opens either — no unlock path
+    /// exists and this server holds no value that could. What the row has to satisfy is the width and
+    /// the version, which <see cref="WrappedAccountKeys.For" /> and two check constraints per column
+    /// both refuse to bend. The two arguments differ so the columns can be told apart by eye in a
+    /// failure message.
+    /// </remarks>
+    private static byte[] Envelope(byte filler)
+    {
+        byte[] envelope = new byte[WrappedAccountKeys.EnvelopeLength];
+        Array.Fill(envelope, filler);
+        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
+
+        return envelope;
+    }
+
+    /// <summary>
+    /// Fixed UTC instant for the out-of-band row. PostgreSQL <c>timestamptz</c> rejects a non-UTC
+    /// <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
+    /// </summary>
+    private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
     private static async Task<IReadOnlyDictionary<string, long>> CountOwnedRowsAsync(
         NpgsqlConnection connection,

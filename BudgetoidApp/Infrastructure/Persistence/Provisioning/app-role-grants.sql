@@ -315,6 +315,52 @@ GRANT SELECT, INSERT, DELETE ON webauthn_challenges TO budgetoid_app;
 REVOKE ALL ON recovery_code_hashes FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 
+-- wrapped_account_keys is where the column the block above refuses ended up, and it is policed
+-- rather than exempt for the reason that block, RowLevelSecurityCoverage and
+-- docs/engineering/data-isolation.md all give: a wrapped key is read AFTER the request has an
+-- identity, so it belongs on a table carrying user_id, which the coverage rule polices by itself.
+-- The table therefore needs no entry in RowLevelSecurityCoverage.Exemptions — that absence is the
+-- mechanism working, not an omission, and it is the whole of the argument. Nothing is re-argued here.
+--
+-- SELECT IS GRANTED FOR A READER NO APPLICATION CODE PROVIDES, and this file's header tells the next
+-- reader to grant only what a table needs, so the exception is stated rather than left to look like
+-- coverage. No application code reads this table today: there is no unlock path, no client ceremony
+-- able to produce a key-encryption key, and deliberately no endpoint that returns a wrapped key —
+-- the story that needs one argues for it in place.
+--
+-- The readers are the row-level-security isolation tests, and a policed table whose isolation nothing
+-- exercises is a policy nobody has watched fire.
+-- Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser is the one this grant exists
+-- for: it reads the table as this role on a session naming one owner and asserts that the other
+-- owner's row is not there, which is the only statement in the system that has watched user_isolation
+-- decide anything here. Database_RefusesAWrappedKeyReadOnASessionNamingNobody needs the grant too,
+-- for the 22P02 an unset app.current_user_id reaches the policy as. Both go red the day the grant is
+-- withdrawn and the day the policy is, which is what makes this paragraph a claim about the
+-- repository rather than a plan for one.
+--
+-- NO UPDATE OF ANY SHAPE. Every column is immutable. Registering or revoking a recovery factor
+-- rewrites wrapped keys only and is not a key rotation (FR-101), so adding a factor writes a new row
+-- rather than editing one. A content-key rotation (FR-080) is the one operation that would rewrite
+-- these two columns, and it will need GRANT UPDATE (wrapped_content_key, wrapped_index_key) and must
+-- arrive with its own argument for it. Withholding a privilege until something uses it costs nothing;
+-- granting one nobody uses is a standing capability with no reader to explain it.
+--
+-- NO DELETE, AND THE ABSENCE IS LOAD-BEARING. Revoking a factor removes its wrapped keys by the
+-- ON DELETE CASCADE from credentials, which runs with the referencing table owner's privileges rather
+-- than this role's — so the cascade succeeds while this role cannot issue the statement itself. That
+-- asymmetry is what ADR 0017 argues for: with DELETE granted, an EF cascade into rows the change
+-- tracker happens to be holding succeeds SILENTLY, and the rows leave by the application instead of
+-- by the database with no SQLSTATE to say so; without it, the same mistake dies loudly with 42501.
+--
+-- The concrete consequence, because it now binds a SECOND table: GenerateRecoveryCodesHandler must
+-- never materialise the replaced set's child rows. It already carries that rule for
+-- recovery_code_hashes — where the role DOES hold DELETE, which is exactly why the mistake would be
+-- silent there — and the rule now covers this table too. A future "load the wrapped keys so we can
+-- count them" read on that path is the way it breaks. RevokePasskeyHandler and EraseAccountHandler
+-- document the identical mechanism for their own tables.
+REVOKE ALL ON wrapped_account_keys FROM budgetoid_app;
+GRANT SELECT, INSERT ON wrapped_account_keys TO budgetoid_app;
+
 -- budgets: a budgets row is never updated at all (rule B2), so there is no UPDATE grant of
 -- any shape. No delete path exists either.
 REVOKE ALL ON budgets FROM budgetoid_app;
@@ -576,5 +622,29 @@ CREATE POLICY user_isolation ON sessions FOR ALL TO budgetoid_app
 ALTER TABLE passkey_signature_counters ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON passkey_signature_counters;
 CREATE POLICY user_isolation ON passkey_signature_counters FOR ALL TO budgetoid_app
+    USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
+    WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
+
+-- wrapped_account_keys sits on the same side of the same boundary as passkey_signature_counters, and
+-- for the same reason: it is read only after something has already answered who is asking. A passkey
+-- assertion has verified, or a recovery code has been redeemed; either way an identity is on the
+-- connection before this policy is evaluated. Its sibling passkey_public_keys is read one step
+-- earlier, with no identity at all, which is why that table is exempt and this one is not.
+--
+-- The policy reads only the ownership column, like the two above it. It deliberately says nothing
+-- about the credential_type, the factor_id or the envelope: whether a factor may be used at all is
+-- decided by the ceremony above this layer, and a predicate here consulting any of those would be
+-- inventing an isolation axis beside the two this file carries.
+--
+-- What this policy does NOT protect against is worth stating, because the absence of a claim is
+-- easier to misread than a claim. It scopes which rows the app role may see and write; it cannot tell
+-- a content key from an index key, and it cannot notice the two envelopes being written to each
+-- other's column. That binding lives in the associated data of each envelope — the factor identifier
+-- and the key's purpose — and it is checkable only by a client holding the key-encryption key. The
+-- database's part is that a row of one account is unreachable from another's session; the rest is
+-- cryptographic and deliberately not here.
+ALTER TABLE wrapped_account_keys ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_isolation ON wrapped_account_keys;
+CREATE POLICY user_isolation ON wrapped_account_keys FOR ALL TO budgetoid_app
     USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
     WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);

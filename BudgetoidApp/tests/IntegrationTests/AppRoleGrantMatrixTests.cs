@@ -135,6 +135,16 @@ public sealed class AppRoleGrantMatrixTests
         // AppRoleGrantsTests.Database_RefusesEveryUpdateOnARecoveryCodeHash_WhileStillAllowingInsertAndDelete
         // for the statement-shaped half.
         ("recovery_code_hashes", ["SELECT", "INSERT", "DELETE"]),
+        // The second table in this matrix with no DELETE, alongside sessions, and the absence is the
+        // rule rather than a privilege nothing needs yet. Revoking a recovery factor removes its
+        // wrapped keys through the ON DELETE CASCADE from credentials, which runs with the referencing
+        // table owner's privileges rather than this role's — so the cascade succeeds while this role
+        // cannot issue the statement itself. With DELETE granted, an EF cascade into rows the change
+        // tracker happens to be holding would succeed SILENTLY and the rows would leave by the
+        // application instead of by the database, with no SQLSTATE to say so; without it, the same
+        // mistake dies loudly with 42501. It appears on no line of ExpectedUpdateColumnGrants either:
+        // every column is immutable, so the table holds no UPDATE of any shape — see the remarks there.
+        ("wrapped_account_keys", ["SELECT", "INSERT"]),
         ("budgets", ["SELECT", "INSERT"]),
         ("accounts", ["SELECT", "INSERT", "DELETE"]),
         ("category_groups", ["SELECT", "INSERT", "DELETE"]),
@@ -155,10 +165,19 @@ public sealed class AppRoleGrantMatrixTests
     /// <para>
     /// The tables absent from this array hold no <c>UPDATE</c> grant of any shape —
     /// <c>currencies</c>, <c>credentials</c>, <c>passkey_public_keys</c>,
-    /// <c>webauthn_challenges</c>, <c>budgets</c>, <c>recovery_code_hashes</c> and
-    /// <c>__EFMigrationsHistory</c> — and their absence is checked in the same direction as
-    /// everything else: a column grant appearing on one of them has no entry to match and is reported
-    /// as unexpected.
+    /// <c>webauthn_challenges</c>, <c>budgets</c>, <c>recovery_code_hashes</c>,
+    /// <c>wrapped_account_keys</c> and <c>__EFMigrationsHistory</c> — and their absence is checked in
+    /// the same direction as everything else: a column grant appearing on one of them has no entry to
+    /// match and is reported as unexpected.
+    /// </para>
+    /// <para>
+    /// <c>wrapped_account_keys</c> is absent for a reason of its own, and it is the reason a later
+    /// story will come here to change. Every column of that table is immutable: adding a recovery
+    /// factor writes a new row rather than editing one, so nothing on the registration or revocation
+    /// paths rewrites an envelope. A content-key rotation (FR-080) is the one operation that would,
+    /// and it will need <c>GRANT UPDATE (wrapped_content_key, wrapped_index_key)</c> and must arrive
+    /// with its own argument for it. Until then the absence is what makes an envelope rewritten in
+    /// place fail with <c>42501</c> rather than replace an account's only way back into its own data.
     /// </para>
     /// <para>
     /// <c>recovery_code_hashes</c> is absent for a reason of its own, and it is the reason worth

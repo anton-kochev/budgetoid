@@ -749,6 +749,131 @@ public sealed class RlsIsolationTests
     }
 
     [Test]
+    public async Task Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser()
+    {
+        // Arrange — two owners, each with a registered passkey and the account's two keys filed
+        // against it. Two owners because this table is isolated by user: a second factor under the
+        // same owner would be invisible to this rule, and the foreign count would come back zero with
+        // or without a policy. The handles differ, or IX_passkey_public_keys_webauthn_credential_id
+        // would refuse the second registration; the factor ids differ because
+        // IX_wrapped_account_keys_factor_id is unique across the whole table rather than per account.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        Guid sessionCredentialId = await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0x15));
+        Guid otherCredentialId = await host.SeedPasskeyAsync(other.UserId, PasskeyHandle(0x26));
+        await host.SeedWrappedAccountKeysAsync(sessionCredentialId, SessionFactorId);
+        await host.SeedWrappedAccountKeysAsync(otherCredentialId, OtherAccountFactorId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — both halves, on one session. The own count is not decoration: a policy that hides
+        // every row from everyone satisfies the foreign half on its own, and only this notices.
+        long own = await CountKeyedRowsAsync(app, "wrapped_account_keys", "user_id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(app, "wrapped_account_keys", "user_id", other.UserId);
+
+        // Assert — and this file's whole reason for existing is at its plainest on this table. Nothing
+        // in the application reads wrapped_account_keys today: there is no unlock path and no endpoint
+        // that returns a wrapped key, so no EF query filter is in the way of a statement aimed at it
+        // and the policy is the only thing standing between one account's session and another
+        // account's two envelopes. Those envelopes are the account — the content key its transaction
+        // data is encrypted under and the index key its search is derived under — so a leak here is not
+        // one row of somebody's data, it is every row of it, in a form whose only remaining protection
+        // is a key-encryption key derived from a factor this server never sees.
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesAWrappedKeyReadOnASessionNamingNobody()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares nobody. Every
+        // exempt table below reads that state as the requirement; on this one it is the bug, and it must
+        // fail loudly rather than quietly returning an empty result — which on this table would read as
+        // "this account has no way back into its own data", the one answer a caller must never be
+        // handed by accident.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        Guid credentialId = await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0x37));
+        await host.SeedWrappedAccountKeysAsync(credentialId, SessionFactorId);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the row is seeded, and that is a precondition rather than a convenience. A policy qual
+        // is only evaluated when there are candidate rows, so the same query over an empty table
+        // returns zero rows without ever touching the setting and this guarantee does not reach it.
+        // That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new("select count(*) from wrapped_account_keys", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, the same failure every other policed table pins, and for the same reason: the
+        // policy reads the setting as COALESCE(current_setting('app.current_user_id', true), '')::uuid,
+        // so an unset setting reaches it as the ''::uuid cast. One bug, one SQLSTATE.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The owner's own row is still there — the refusal above is the connection's doing, not a
+        // seeding failure that would make the SQLSTATE assertion meaningless.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "wrapped_account_keys", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_RefusesAWrappedKeyInsertNamingAnotherAccount()
+    {
+        // Arrange — a bare passkey credential for each owner, with no wrapped keys filed against it
+        // yet. Bare on purpose: credential_id is the primary key of this table, so a probe needs a
+        // credential whose slot is free, and each probe names its own owner's credential so the
+        // composite foreign key over (credential_id, user_id, credential_type) is satisfied by
+        // construction and the only thing wrong with the row is whose keys it is.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid ownCredentialId = await InsertPasskeyCredentialAsync(admin, session.UserId);
+        Guid otherCredentialId = await InsertPasskeyCredentialAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // owner's wrapped keys says nothing about whether this session can file a pair in their name,
+        // and a USING-only policy would let this through. A refused INSERT is loud, unlike a filtered
+        // UPDATE — 42501, "new row violates row-level security policy". The two probes carry different
+        // factor ids, so IX_wrapped_account_keys_factor_id is never what refuses either.
+        await using NpgsqlCommand forOther = BuildWrappedKeysInsertProbe(
+            app, other.UserId, otherCredentialId, OtherAccountFactorId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        await using NpgsqlCommand forOwn = BuildWrappedKeysInsertProbe(
+            app, session.UserId, ownCredentialId, SessionFactorId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — writing here is a different kind of harm from reading, and the worse one on this
+        // table. A row filed under somebody else's name is presented to them as a recovery factor: two
+        // envelopes wrapped under a key-encryption key this session chose, offered as their way back
+        // into their own account. The database cannot tell one envelope from another — that binding is
+        // in the associated data and is checkable only by a client holding the key — so nothing below
+        // the browser would ever notice. The null coalesce is for the failure message: a bare
+        // refusal?.SqlState renders a statement that went through as the empty string, which reads as a
+        // blank SQLSTATE rather than as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // owner still has no wrapped keys at all. On the superuser connection, which row-level security
+        // does not apply to — no policed session could answer this question about another owner.
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "wrapped_account_keys", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "wrapped_account_keys", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Database_ReadsAPasskeyPublicKeyWithNoUserOnTheSession()
     {
         // Arrange — one registered passkey and a bare app-role connection: no set_config, so the
@@ -1153,6 +1278,59 @@ public sealed class RlsIsolationTests
             connection);
         command.Parameters.AddWithValue("credential_id", credentialId);
         command.Parameters.AddWithValue("user_id", ownerId);
+        return command;
+    }
+
+    /// <summary>
+    /// The factor identifiers the two accounts' wrapped keys carry. Fixed rather than minted per call
+    /// so a failure message names a value that can be found in this file, and <b>distinct</b> because
+    /// <c>IX_wrapped_account_keys_factor_id</c> is unique across the whole table rather than per
+    /// account: two accounts sharing one would collide on that index, and the <c>23505</c> would arrive
+    /// during seeding instead of the refusal the probe is reading.
+    /// </summary>
+    private static readonly Guid SessionFactorId =
+        new("0199f3a1-0000-7000-8000-000000000001");
+
+    private static readonly Guid OtherAccountFactorId =
+        new("0199f3a1-0000-7000-8000-000000000002");
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>wrapped_account_keys</c>, owned by <paramref name="ownerId" />
+    /// and filed against <paramref name="credentialId" />. Separate from
+    /// <see cref="BuildInsertProbe" /> because a pair of wrapped keys names no budget: it is
+    /// user-owned, so the column a policy could object to is <c>user_id</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>'passkey'</c> because every credential these probes name is one, and
+    /// <c>CK_wrapped_account_keys_credential_type</c> accepts only <c>passkey</c> or
+    /// <c>recovery_codes</c> while the composite foreign key compares the column against the
+    /// credential's own type. The envelopes are well-formed at the one legal width and version, so the
+    /// four length and version checks refuse nothing: a row refused by a CHECK would never reach the
+    /// policy at all, and the refusal being read would be the wrong one.
+    /// </remarks>
+    private static NpgsqlCommand BuildWrappedKeysInsertProbe(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid credentialId,
+        Guid factorId)
+    {
+        NpgsqlCommand command = new(
+            "insert into wrapped_account_keys " +
+            "(credential_id, user_id, factor_id, credential_type, " +
+            "wrapped_content_key, wrapped_index_key, created_at_utc) " +
+            "values (@credential_id, @user_id, @factor_id, 'passkey', " +
+            "@wrapped_content_key, @wrapped_index_key, @created_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("credential_id", credentialId);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+        command.Parameters.AddWithValue(
+            "wrapped_content_key",
+            RepositoryTestHost.WrappedKeyEnvelope(RepositoryTestHost.SeededContentKeyFiller));
+        command.Parameters.AddWithValue(
+            "wrapped_index_key",
+            RepositoryTestHost.WrappedKeyEnvelope(RepositoryTestHost.SeededIndexKeyFiller));
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
         return command;
     }
 

@@ -1174,6 +1174,224 @@ public sealed class AppRoleGrantsTests
     }
 
     [Test]
+    public async Task Database_RefusesEveryUpdateOnAWrappedAccountKey_WhileStillAllowingInsert()
+    {
+        // Arrange — one account holding a registered passkey with the account's two keys filed against
+        // it, a SECOND bare passkey credential on the same account, and a second real user. Both extras
+        // exist so a leaked grant would land its statement rather than trip a foreign key and pass for
+        // the wrong reason: the bare credential has no wrapped keys row, so repointing credential_id
+        // onto it would not collide with the primary key either.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
+        Guid credentialId = await host.SeedPasskeyAsync(userId, SeededHandle, SeededCoseKey);
+        await host.SeedWrappedAccountKeysAsync(credentialId, SeededFactorId);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid freeCredentialId = await InsertPasskeyCredentialAsync(admin, userId);
+
+        // wrapped_account_keys is policed by user_isolation, so the session names the owner and no
+        // ambient budget. The identity is what keeps the pair below intact: on a session with no user id
+        // the permitted INSERT would fail its WITH CHECK instead of landing — and the read of the seeded
+        // row would raise 22P02 rather than a privilege answer — so a refusal with no permitted write
+        // beside it would prove nothing (see the class remarks).
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
+
+        // Act — every column of wrapped_account_keys by name: credential_id, user_id, factor_id,
+        // credential_type, wrapped_content_key, wrapped_index_key, created_at_utc. The rule is "no
+        // UPDATE of any shape — every column is immutable", and column-for-column is the only shape
+        // that absence can be pinned in: a table-wide GRANT UPDATE would let all seven through, and so
+        // would a column list quietly added for the key rotation that has not arrived.
+        //
+        // Each value is one the column itself would accept, which is what keeps every SQLSTATE below
+        // about the grant. The forged envelopes are exactly 61 bytes carrying version 1 — the four
+        // length and version checks refuse nothing, so a leaked grant lands them — and the forged
+        // credential type is 'recovery_codes', a spelling CK_wrapped_account_keys_credential_type
+        // accepts. Three of the seven could not land even with a leak: the foreign key is composite over
+        // (credential_id, user_id, credential_type), so no value moves user_id or credential_type alone.
+        // What still makes each a measurement is the SQLSTATE — a leaked grant RUNS the statement and
+        // reports 23503, while a refused grant never runs it and reports 42501.
+        PostgresException credentialRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update wrapped_account_keys set credential_id = @value where credential_id = @id",
+            freeCredentialId,
+            credentialId);
+        PostgresException userRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update wrapped_account_keys set user_id = @value where credential_id = @id",
+            otherUserId,
+            credentialId);
+        PostgresException factorRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update wrapped_account_keys set factor_id = @value where credential_id = @id",
+            ForgedFactorId,
+            credentialId);
+        PostgresException credentialTypeRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update wrapped_account_keys set credential_type = @value where credential_id = @id",
+            "recovery_codes",
+            credentialId);
+        PostgresException contentKeyRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update wrapped_account_keys set wrapped_content_key = @value where credential_id = @id",
+            ForgedContentKey,
+            credentialId);
+        PostgresException indexKeyRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update wrapped_account_keys set wrapped_index_key = @value where credential_id = @id",
+            ForgedIndexKey,
+            credentialId);
+        PostgresException createdAtRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update wrapped_account_keys set created_at_utc = @value where credential_id = @id",
+            ForgedInstant,
+            credentialId);
+
+        // Assert — rewriting either envelope is the attack the missing grant closes from the front. The
+        // database cannot tell a well-formed envelope from a well-formed lie: both columns are 61 bytes
+        // of version 1, and what says an envelope is the right one is the associated data it was sealed
+        // with, which only a client holding the key-encryption key can check. So an editable envelope
+        // column is a way to replace the account's keys with two the operator chose, and the discovery
+        // that they do not open happens in the browser, months later, on the day somebody needs them.
+        // Repointing credential_id, user_id or factor_id is the same door from the side — the factor id
+        // IS the associated data, so editing it invalidates both envelopes in place — and an editable
+        // created_at_utc would rewrite the one fact that says which factor was registered when.
+        //
+        // Registering or revoking a factor writes or removes a whole row, which is why none of this
+        // costs the product anything: a content-key rotation is the one operation that would rewrite
+        // these two columns, and it must arrive with its own GRANT UPDATE and its own argument.
+        await Assert.That(credentialRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(factorRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(credentialTypeRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(contentKeyRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(indexKeyRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(createdAtRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+
+        // The success half of the pair (see the class remarks), and here it is an INSERT because there
+        // is no permitted column to update and there is not meant to be one. Registering a factor writes
+        // a new row, so that half of the table's lifecycle has to work for a role holding no UPDATE at
+        // all — which is what rules out the other way every refusal above could pass, the role reaching
+        // nothing on this table whatsoever. Onto the same account's free credential with its own factor
+        // id: same owner, same type, so nothing but the grant and the policy stands between this
+        // statement and the row.
+        await using NpgsqlCommand insert = new(
+            "insert into wrapped_account_keys " +
+            "(credential_id, user_id, factor_id, credential_type, " +
+            "wrapped_content_key, wrapped_index_key, created_at_utc) " +
+            "values (@credential_id, @user_id, @factor_id, 'passkey', " +
+            "@wrapped_content_key, @wrapped_index_key, @created_at_utc)",
+            app);
+        insert.Parameters.AddWithValue("credential_id", freeCredentialId);
+        insert.Parameters.AddWithValue("user_id", userId);
+        insert.Parameters.AddWithValue("factor_id", InsertedFactorId);
+        insert.Parameters.AddWithValue("wrapped_content_key", SeededContentKey);
+        insert.Parameters.AddWithValue("wrapped_index_key", SeededIndexKey);
+        insert.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        await Assert.That(await insert.ExecuteNonQueryAsync()).IsEqualTo(1);
+
+        // And the seeded row is untouched, column for column. A SQLSTATE says each statement was
+        // rejected; only this says none of them rewrote the row on its way to failing. Both envelopes are
+        // read back as bytes rather than counted, because a swapped or replaced envelope is the one
+        // change nothing else in this system could ever notice.
+        await Assert.That(await SelectScalarAsync(
+                admin, "select user_id from wrapped_account_keys where credential_id = @id", credentialId))
+            .IsEqualTo(userId);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select factor_id from wrapped_account_keys where credential_id = @id",
+                credentialId))
+            .IsEqualTo(SeededFactorId);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select credential_type from wrapped_account_keys where credential_id = @id",
+                credentialId))
+            .IsEqualTo("passkey");
+        await Assert.That(await SelectBytesAsync(
+                admin,
+                "select wrapped_content_key from wrapped_account_keys where credential_id = @id",
+                credentialId))
+            .IsEquivalentTo(SeededContentKey);
+        await Assert.That(await SelectBytesAsync(
+                admin,
+                "select wrapped_index_key from wrapped_account_keys where credential_id = @id",
+                credentialId))
+            .IsEquivalentTo(SeededIndexKey);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select created_at_utc from wrapped_account_keys where credential_id = @id",
+                credentialId))
+            .IsEqualTo(SeedInstant);
+    }
+
+    [Test]
+    public async Task Database_RefusesADeleteOnAWrappedAccountKey_WhileTheCascadeFromItsCredentialStillTakesIt()
+    {
+        // Arrange — one account holding a registered passkey with the account's two keys filed against
+        // it. Nothing else: this test needs one parent and one child, and the whole of it is which of
+        // the two the role may remove.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid credentialId = await host.SeedPasskeyAsync(userId, SeededHandle, SeededCoseKey);
+        await host.SeedWrappedAccountKeysAsync(credentialId, SeededFactorId);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // The session names the owner, because wrapped_account_keys is policed by user_isolation and the
+        // permitted half below has to be a statement that really reaches its row. It costs the refused
+        // half nothing: a missing table privilege is answered before any policy is consulted.
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
+
+        // Act — the direct delete first.
+        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
+            app, "delete from wrapped_account_keys where credential_id = @id", credentialId);
+
+        // Assert — 42501, and the row is still there. This is the half that says the absent DELETE grant
+        // is a real refusal rather than a privilege nobody happens to use.
+        await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select count(*) from wrapped_account_keys where credential_id = @id",
+                credentialId))
+            .IsEqualTo(1L);
+
+        // Act — and now the same rows, removed the way the product removes them: by deleting the parent
+        // credential, which this role DOES hold DELETE on. Revoking a factor is exactly this statement.
+        int credentialsDeleted = await ExecuteAsync(
+            app, "delete from credentials where id = @id", credentialId);
+
+        // Assert — the affected count first, because a delete matching nothing raises nothing and would
+        // make the zero below mean "there was never a row" rather than "the cascade took it".
+        await Assert.That(credentialsDeleted).IsEqualTo(1);
+        await Assert.That(await SelectScalarAsync(
+                admin,
+                "select count(*) from wrapped_account_keys where credential_id = @id",
+                credentialId))
+            .IsEqualTo(0L);
+
+        // This pair is what makes the missing DELETE grant safe rather than merely narrow, and it is the
+        // reason that absence is load-bearing instead of an oversight somebody should tidy. PostgreSQL
+        // runs ON DELETE CASCADE through referential-integrity triggers that execute with the privileges
+        // of the REFERENCING table's owner, not of the current role — so revoking a factor removes its
+        // wrapped keys through the cascade while this role cannot issue that DELETE itself. Nothing the
+        // product needs is withheld.
+        //
+        // What the asymmetry buys is the other direction, which is ADR 0017's argument: with DELETE
+        // granted, an EF cascade into rows the change tracker happens to be holding SUCCEEDS SILENTLY,
+        // and the account's only way back into its own data leaves by the application instead of by the
+        // database, with no SQLSTATE to say so. Without it, the same mistake dies loudly with the 42501
+        // above. The concrete consequence lives in GenerateRecoveryCodesHandler, which must never
+        // materialise a replaced set's child rows.
+    }
+
+    [Test]
     public async Task Database_AllowsInsertingAndDeletingAWebAuthnChallenge()
     {
         // Arrange — nothing to seed beside it. A challenge belongs to a ceremony rather than to a
@@ -1311,6 +1529,38 @@ public sealed class AppRoleGrantsTests
     /// <see cref="DateTimeKind.Utc" /> is load-bearing here too.
     /// </summary>
     private static readonly DateTime ForgedInstant = new(2031, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+
+    /// <summary>
+    /// The two envelopes the seeded wrapped-keys row carries, and the two a refused statement tried to
+    /// put in their place. All four are well-formed — exactly
+    /// <see cref="WrappedAccountKeys.EnvelopeLength" /> bytes carrying
+    /// <see cref="WrappedAccountKeys.EnvelopeVersion" /> — which is the point: an envelope of any other
+    /// shape would be refused by one of the four length and version checks rather than by the grant, and
+    /// the test would go green against a table-wide <c>GRANT UPDATE</c>. All four differ from one
+    /// another, so a read-back cannot pass on the wrong column or on a value nobody wrote.
+    /// </summary>
+    private static readonly byte[] SeededContentKey =
+        RepositoryTestHost.WrappedKeyEnvelope(RepositoryTestHost.SeededContentKeyFiller);
+
+    private static readonly byte[] SeededIndexKey =
+        RepositoryTestHost.WrappedKeyEnvelope(RepositoryTestHost.SeededIndexKeyFiller);
+
+    private static readonly byte[] ForgedContentKey = RepositoryTestHost.WrappedKeyEnvelope(0x5A);
+
+    private static readonly byte[] ForgedIndexKey = RepositoryTestHost.WrappedKeyEnvelope(0x6B);
+
+    /// <summary>
+    /// The factor identifier the seeded wrapped-keys row carries, the one a refused statement tried to
+    /// move it to, and the one the permitted <c>INSERT</c> files its own row under. Three distinct
+    /// values, because <c>IX_wrapped_account_keys_factor_id</c> is unique across the whole table: a
+    /// shared one would turn the permitted insert into a <c>23505</c> and the read-back into an
+    /// assertion that could not tell a refused update from a successful one.
+    /// </summary>
+    private static readonly Guid SeededFactorId = new("0199f3a1-0000-7000-8000-0000000000a1");
+
+    private static readonly Guid ForgedFactorId = new("0199f3a1-0000-7000-8000-0000000000b2");
+
+    private static readonly Guid InsertedFactorId = new("0199f3a1-0000-7000-8000-0000000000c3");
 
     /// <summary>
     /// Writes a second credential onto an existing account, on the superuser connection. Raw SQL

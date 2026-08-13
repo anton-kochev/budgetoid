@@ -25,6 +25,14 @@ namespace UnitTests;
 /// assembly is what closes that.
 /// </para>
 /// <para>
+/// That argument is no longer hypothetical. <c>WrappedAccountKeys</c> arrived carrying a
+/// <c>UserId</c> and no test of its own naming it, and the pinned set below is what said so — by
+/// failing, on purpose, until a human wrote the literal. The set is deliberately a checkpoint and
+/// not a derived list: a test that widened itself to whatever the assembly happens to declare would
+/// have accepted the new key in silence, and accepting it in silence is the one outcome this file
+/// exists to prevent.
+/// </para>
+/// <para>
 /// <b>The two-property overlap with those tests is deliberate; do not de-duplicate it.</b> They rest
 /// on different reasons: a budget is not renamed or re-owned because that is the business rule about
 /// what a budget is, whereas a row does not change tenant because isolation depends on it. Two
@@ -141,6 +149,14 @@ public sealed class OwnershipKeyImmutabilityTests
             "RecoveryCodeHash.UserId",
             "Session.UserId",
             "Transaction.BudgetId",
+            // The twelfth key, and the first one whose column has no table yet: WrappedAccountKeys is
+            // Domain-only today, so the database half of the rule — the column's absence from every
+            // GRANT UPDATE list — is not in place, and this file is the whole enforcement until the
+            // table lands. What it protects is the factory's one decision: For() reads the owner off
+            // the loaded credential rather than taking it as an argument, so a settable UserId would
+            // hand back a way to re-file an account's two envelopes against another account's factor
+            // after every validation that could have caught it has already run.
+            "WrappedAccountKeys.UserId",
         ];
         await Assert.That(string.Join(", ", declared.Except(expected))).IsEqualTo(string.Empty);
         await Assert.That(string.Join(", ", expected.Except(declared))).IsEqualTo(string.Empty);

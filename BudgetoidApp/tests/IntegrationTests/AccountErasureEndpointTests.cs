@@ -90,6 +90,22 @@ public sealed class AccountErasureEndpointTests
     /// beneath the application is watching it, which is what makes this row of the list the one no
     /// other layer would have caught.
     /// </para>
+    /// <para>
+    /// <c>wrapped_account_keys</c> is keyed on <c>credential_id</c> and carries <c>user_id</c> beside
+    /// it, like the two passkey tables, and it is in the list because what it holds is the account's
+    /// content and index keys as one recovery factor wrapped them. A row the erasure failed to take is
+    /// two envelopes still filed under a person who asked to be forgotten. The application role holds
+    /// no <c>DELETE</c> on it at all, so the only thing that can remove one is the
+    /// <c>ON DELETE CASCADE</c> from <c>credentials</c> — this row of the list is what proves the
+    /// cascade really reaches it rather than that some statement was issued.
+    /// </para>
+    /// <para>
+    /// <b>This list is hand-written and nothing checks it against the live schema</b>, which is why
+    /// <c>wrapped_account_keys</c> could be added to the database and leave every test in this file
+    /// green while the FR-025 claim quietly covered one table less than it says.
+    /// <c>ErasureAtomicityTests</c> is the file that discovers its tables from the catalog; the next
+    /// table added here has to be added by hand, exactly as this one was.
+    /// </para>
     /// </remarks>
     private static readonly OwnedTable[] OwnedTables =
     [
@@ -99,6 +115,7 @@ public sealed class AccountErasureEndpointTests
         new("passkey_public_keys", "user_id", OwnedBy.User),
         new("passkey_signature_counters", "user_id", OwnedBy.User),
         new("recovery_code_hashes", "user_id", OwnedBy.User),
+        new("wrapped_account_keys", "user_id", OwnedBy.User),
         new("budgets", "user_id", OwnedBy.User),
         new("accounts", "budget_id", OwnedBy.Budget),
         new("category_groups", "budget_id", OwnedBy.Budget),
@@ -603,9 +620,9 @@ public sealed class AccountErasureEndpointTests
     }
 
     /// <summary>
-    /// Adds the passkey material, the session row and the set of recovery codes, so the FR-025
-    /// enumeration has something to find in every user-owned table rather than only in the two
-    /// provisioning fills.
+    /// Adds the passkey material, the session row, the set of recovery codes and the wrapped account
+    /// keys, so the FR-025 enumeration has something to find in every user-owned table rather than only
+    /// in the two provisioning fills.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -631,6 +648,23 @@ public sealed class AccountErasureEndpointTests
         db.PasskeyPublicKeys.Add(PasskeyPublicKey.Register(
             passkey, WebAuthnCredentialIdFor(userId), CoseKey, CoseAlgorithm.Es256));
         db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(passkey, 0));
+
+        // The account's two keys as this passkey factor holds them, which is the only thing that puts a
+        // row in wrapped_account_keys: no endpoint writes one yet, so without this the before-count loop
+        // reads zero on the table it was just asked to cover. Filed against the passkey rather than the
+        // recovery-code set below because a passkey is the factor whose PRF output derives the
+        // key-encryption key in production; either is legal, the federated credential is not.
+        db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+            passkey,
+
+            // Minted here rather than derived from the owner, which is what production does: the value
+            // is chosen by the client and its unique index is global. Nothing asserts on it, and a fresh
+            // one per call is what keeps the two accounts of Erase_LeavesAnotherAccountUntouched from
+            // colliding on that index.
+            Guid.CreateVersion7(),
+            Envelope(0xC0),
+            Envelope(0x1D),
+            SeedInstant));
 
         // Established against the passkey rather than the federated credential because
         // CK_sessions_kind_matches_credential ties the two together; the seeded row is the full
@@ -802,6 +836,25 @@ public sealed class AccountErasureEndpointTests
     /// column holds is that the key is between one byte and <see cref="PasskeyPublicKey.MaxCoseKeyLength" />.
     /// </summary>
     private static readonly byte[] CoseKey = [0xA5, 0x01, 0x02, 0x03];
+
+    /// <summary>
+    /// A well-formed wrapped-key envelope: the one version byte the contract defines, then filler.
+    /// </summary>
+    /// <remarks>
+    /// The filler is neither a nonce nor a ciphertext, and nothing here opens either — no unlock path
+    /// exists and this server holds no value that could. What the row has to satisfy is the width and
+    /// the version, which <see cref="WrappedAccountKeys.For" /> and two check constraints per column
+    /// both refuse to bend. The two callers pass different fillers so the columns can be told apart by
+    /// eye in a failure message.
+    /// </remarks>
+    private static byte[] Envelope(byte filler)
+    {
+        byte[] envelope = new byte[WrappedAccountKeys.EnvelopeLength];
+        Array.Fill(envelope, filler);
+        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
+
+        return envelope;
+    }
 
     private static async Task<PostgresTestHost> StartHostAsync()
     {

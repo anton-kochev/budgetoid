@@ -292,6 +292,34 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
+            name: "wrapped_account_keys",
+            columns: table => new
+            {
+                credential_id = table.Column<Guid>(type: "uuid", nullable: false),
+                factor_id = table.Column<Guid>(type: "uuid", nullable: false),
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                credential_type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                wrapped_content_key = table.Column<byte[]>(type: "bytea", nullable: false),
+                wrapped_index_key = table.Column<byte[]>(type: "bytea", nullable: false),
+                created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_wrapped_account_keys", x => x.credential_id);
+                table.CheckConstraint("CK_wrapped_account_keys_credential_type", "credential_type in ('passkey', 'recovery_codes')");
+                table.CheckConstraint("CK_wrapped_account_keys_wrapped_content_key_length", "length(wrapped_content_key) = 61");
+                table.CheckConstraint("CK_wrapped_account_keys_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
+                table.CheckConstraint("CK_wrapped_account_keys_wrapped_index_key_length", "length(wrapped_index_key) = 61");
+                table.CheckConstraint("CK_wrapped_account_keys_wrapped_index_key_version", "get_byte(wrapped_index_key, 0) = 1");
+                table.ForeignKey(
+                    name: "FK_wrapped_account_keys_credentials",
+                    columns: x => new { x.credential_id, x.user_id, x.credential_type },
+                    principalTable: "credentials",
+                    principalColumns: new[] { "id", "user_id", "type" },
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
             name: "categories",
             columns: table => new
             {
@@ -541,6 +569,22 @@ public partial class InitialCreate : Migration
             name: "IX_webauthn_challenges_expires_at_utc",
             table: "webauthn_challenges",
             column: "expires_at_utc");
+
+        migrationBuilder.CreateIndex(
+            name: "IX_wrapped_account_keys_credential_id_user_id_credential_type",
+            table: "wrapped_account_keys",
+            columns: new[] { "credential_id", "user_id", "credential_type" });
+
+        migrationBuilder.CreateIndex(
+            name: "IX_wrapped_account_keys_factor_id",
+            table: "wrapped_account_keys",
+            column: "factor_id",
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_wrapped_account_keys_user_id",
+            table: "wrapped_account_keys",
+            column: "user_id");
     }
 
     /// <inheritdoc />
@@ -565,7 +609,7 @@ public partial class InitialCreate : Migration
             name: "webauthn_challenges");
 
         migrationBuilder.DropTable(
-            name: "credentials");
+            name: "wrapped_account_keys");
 
         migrationBuilder.DropTable(
             name: "accounts");
@@ -575,6 +619,9 @@ public partial class InitialCreate : Migration
 
         migrationBuilder.DropTable(
             name: "payees");
+
+        migrationBuilder.DropTable(
+            name: "credentials");
 
         migrationBuilder.DropTable(
             name: "category_groups");

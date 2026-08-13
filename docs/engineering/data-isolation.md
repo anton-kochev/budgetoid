@@ -10,8 +10,8 @@ security, and the layers above it exist for error quality. Keep all of the follo
 Enforced today:
 - **Row-level security, on both axes.** A `budget_isolation` policy on `accounts`,
   `category_groups`, `categories`, `payees` and `transactions` compares `budget_id` against the
-  session's ambient budget, and a `user_isolation` policy on `users`, `budgets`, `sessions` and
-  `passkey_signature_counters`
+  session's ambient budget, and a `user_isolation` policy on `users`, `budgets`, `sessions`,
+  `passkey_signature_counters` and `wrapped_account_keys`
   compares `id` and `user_id` against the session's authenticated user — each in both `USING` and
   `WITH CHECK`, so the connection every request is served by reaches no other tenant's rows and can insert into
   no tenant but its own, whatever produced the statement. `SessionContextInterceptor` puts both
@@ -68,13 +68,14 @@ Enforced today:
   exemption to its stated reason. The absent `UPDATE` and `DELETE` on `passkey_public_keys` stop
   *mutable* per-user state accumulating, which is real but is not the threat: a wrapped key or a
   recovery-code hash is written once and never updated, so it would satisfy any append-only rule
-  while being precisely what must not sit on a table every session reads in full. **That
-  recovery-code hash has since stopped being hypothetical, and it landed on a table of its own** —
-  which is the pin working rather than a reason to retire the example, so the example stays and the
-  wrapped key beside it is still ahead of us. `recovery_code_hashes` pins the columns its own
-  anonymous lookup needs before an identity exists — the hash it is found by, and the credential, user
-  and type the redemption then adopts — and a wrapped key is the column it will be offered first, read
-  *after* redemption has answered who is asking and therefore belonging on a table carrying `user_id`.
+  while being precisely what must not sit on a table every session reads in full. **Neither of those
+  two is hypothetical any more, and both landed on tables of their own** — the recovery-code hash on
+  `recovery_code_hashes`, and the wrapped key on `wrapped_account_keys`, which carries `user_id` and
+  is policed by `user_isolation` with no rule added. The example stays because both arrived exactly
+  where the pin said they would, which is the pin working. `recovery_code_hashes` pins the columns its
+  own anonymous lookup needs before an identity exists — the hash it is found by, and the credential,
+  user and type the redemption then adopts — and the wrapped key it was offered first is read *after*
+  redemption has answered who is asking, so it went to the policed table instead.
   `currencies` and
   `__EFMigrationsHistory` pin nothing on purpose — the first belongs to no tenant whatever columns it
   grows, the second has its shape owned by EF.
@@ -200,7 +201,7 @@ Enforced today:
   — `BudgetRepository.FindFirstForUserAsync` and `ExportReadService.ListOwnedBudgetsAsync`, which are
   the two that exist today and which a third must join rather than assume it is covered; a session and
   a passkey name no budget at all, so there is none to filter them by. That is a statement about the
-  *read-side filter* only, and it no longer travels with the coverage exemption: `users`, `budgets`, `sessions` and `passkey_signature_counters` are
+  *read-side filter* only, and it no longer travels with the coverage exemption: `users`, `budgets`, `sessions`, `passkey_signature_counters` and `wrapped_account_keys` are
   policed on the user, while `credentials`, `passkey_public_keys`, `recovery_code_hashes` and
   `webauthn_challenges` are
   exempt. The first three have to be — reading them is how a request discovers who is asking and
@@ -227,8 +228,8 @@ Escape hatches the filter does **not** cover. These no longer leak — each one 
 the policies instead, and a cross-budget read comes back empty rather than populated.
 Still do not introduce them on budget-scoped data: an empty result where the code expects
 a row is a bug, and a connection that names no ambient budget — or no ambient user, for
-`users`, `budgets`, `sessions` and `passkey_signature_counters` — fails with `22P02`
-rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
+`users`, `budgets`, `sessions`, `passkey_signature_counters` and `wrapped_account_keys` — fails
+with `22P02` rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
 `Infrastructure` and `Api`, the only projects with an EF reference) turns each API below
 into an RS0030 compile error.
 - `IgnoreQueryFilters()` — never on `BudgetoidDbContext`.
@@ -257,7 +258,12 @@ cannot supply it: an exemption says a policy is *not required*, never that one i
 adding `user_isolation` to `credentials` leaves `RlsCoverageTests` entirely green and surfaces only as
 provisioning failing on every sign-in. `currencies` and `__EFMigrationsHistory` need no such control —
 their exemption rests on belonging to no tenant rather than on being read before an identity exists, so
-a policy landing on either fails loudly on a session that names somebody),
+a policy landing on either fails loudly on a session that names somebody. `wrapped_account_keys` is
+the newest policed table and the one whose grant depends on these tests existing: nothing in the
+application reads it yet, so `Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser`
+and `Database_RefusesAWrappedKeyReadOnASessionNamingNobody` are the only statements that have
+watched its policy decide anything, and `app-role-grants.sql` names them where it justifies granting
+`SELECT` at all),
 `tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so any
 new table without the policy its ownership calls for, or without a stated exemption, fails —
 including one carrying neither ownership column, and one that is a view or materialized view),

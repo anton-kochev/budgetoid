@@ -38,6 +38,15 @@ public sealed class BudgetoidDbContext(
     // be keyed on either — which is why the table is written down in
     // RowLevelSecurityCoverage.Exemptions rather than policed. Nothing beneath this set scopes it: any
     // read or write of it other than the discovery lookup itself must carry its own user_id filter.
+    //
+    // Wrapped account keys are unfiltered for the reason the passkey material is, and the reason is not
+    // that a budget filter would be inconvenient: these envelopes belong to a recovery factor, and
+    // through it to a person. They name no budget and could not — the content key they wrap is the
+    // account's, so a copy keyed on one budget would be a claim that some of an account's data is
+    // encrypted under a different key than the rest. They are also read while authenticating, before any
+    // budget could be ambient. Isolation on user_id comes from the user_isolation policy, which this
+    // table is subject to rather than exempt from: nothing about it is read before the request has an
+    // identity, so every read must both carry its own user_id filter and stay policed.
     public DbSet<Budget> Budgets => Set<Budget>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
     public DbSet<Account> Accounts => Set<Account>();
@@ -51,6 +60,7 @@ public sealed class BudgetoidDbContext(
     public DbSet<PasskeyPublicKey> PasskeyPublicKeys => Set<PasskeyPublicKey>();
     public DbSet<PasskeySignatureCounter> PasskeySignatureCounters => Set<PasskeySignatureCounter>();
     public DbSet<RecoveryCodeHash> RecoveryCodeHashes => Set<RecoveryCodeHash>();
+    public DbSet<WrappedAccountKeys> WrappedAccountKeys => Set<WrappedAccountKeys>();
 
     // Internal rather than public, following its row type: nothing outside this assembly has a reason
     // to read a protocol nonce, and a public set would be the first step towards one.

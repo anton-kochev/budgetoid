@@ -360,6 +360,35 @@ public sealed class BudgetoidDbContextConstructionTests
             // The same rule CK_sessions_lifetime states, owed here for the same reason: a row whose
             // expiry is at or before its creation was never live for an instant.
             "CK_webauthn_challenges_lifetime: webauthn_challenges expires_at_utc > created_at_utc",
+            // The fourth table carrying a copy of its credential's type, and the only one whose copy may
+            // say two things rather than one: account keys are wrapped under whichever factors have a
+            // key-encryption key — a passkey through its PRF output, a set of recovery codes through the
+            // code the holder still has. 'federated' is the spelling this arm exists to refuse; OAuth has
+            // no PRF equivalent, so a row filed against the federated credential would be two envelopes
+            // nothing in the world can open, presented as a way back into the account. Enumerated rather
+            // than written as an exclusion of federated, so a fourth credential type is refused until
+            // somebody decides here that it may hold the account's keys.
+            "CK_wrapped_account_keys_credential_type: wrapped_account_keys credential_type in "
+            + "('passkey', 'recovery_codes')",
+            // Two bounds per envelope and both read off WrappedAccountKeys, which is the whole reason
+            // they are not local literals: WrappedAccountKeys.For refuses an envelope that is not exactly
+            // EnvelopeLength bytes carrying EnvelopeVersion, and these constraints refuse the identical
+            // row arriving by any other path. A copy of 61 here would not be a second fact, it would be
+            // the same fact able to disagree with itself.
+            //
+            // Equality rather than a range, and stated per column rather than once over both. AES-GCM
+            // ciphertext is the length of its plaintext and the plaintext is a 32-byte key, so an
+            // envelope has one legal size and both sides of the bound are refused; per column, so a
+            // violation names which envelope was malformed — nothing else can tell the two apart, since
+            // every check here reads the same on either.
+            "CK_wrapped_account_keys_wrapped_content_key_length: wrapped_account_keys "
+            + "length(wrapped_content_key) = 61",
+            "CK_wrapped_account_keys_wrapped_content_key_version: wrapped_account_keys "
+            + "get_byte(wrapped_content_key, 0) = 1",
+            "CK_wrapped_account_keys_wrapped_index_key_length: wrapped_account_keys "
+            + "length(wrapped_index_key) = 61",
+            "CK_wrapped_account_keys_wrapped_index_key_version: wrapped_account_keys "
+            + "get_byte(wrapped_index_key, 0) = 1",
             "CK_currencies_code: currencies code ~ '^[A-Z]{3}$'",
             "CK_currencies_minor_unit: currencies minor_unit between 0 and 4",
             // The kind vocabulary, bounded the way the credential vocabularies above are, and it is
@@ -431,7 +460,15 @@ public sealed class BudgetoidDbContextConstructionTests
         // FROZEN_FROM in that job does not move with this literal: it is a lower bound every present
         // file already sorts above, so advancing it while the window is open would be a second,
         // silent change to what the guard covers. It moves once, together with the window closing.
-        const string frozenBaselineId = "20260811062119_InitialCreate";
+        //
+        // This literal moved again when wrapped_account_keys joined the schema: the baseline was
+        // regenerated under the open window (CON-002 — the production database holds no data), so the
+        // new table, its grants and its user_isolation policy land in one initial migration rather than
+        // in a chain nothing will ever replay step by step. The move is deliberate and it carries the
+        // same obligation every earlier one did: whoever regenerates the baseline resets production's
+        // __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3), or that deploy fails on the
+        // first CREATE TABLE against a database that already holds the schema.
+        const string frozenBaselineId = "20260813112541_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

@@ -104,6 +104,20 @@ public sealed class SchemaConstraintSnapshotTests
             "transactions.FK_transactions_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE RESTRICT",
             "transactions.FK_transactions_categories_category_id_budget_id: FOREIGN KEY (category_id, budget_id) REFERENCES categories(id, budget_id) ON DELETE RESTRICT",
             "transactions.FK_transactions_payees_payee_id_budget_id: FOREIGN KEY (payee_id, budget_id) REFERENCES payees(id, budget_id) ON DELETE RESTRICT",
+            // The fourth composite over the same three credential columns, and the owner half is the
+            // half that decides who is handed the account's wrapped keys: user_isolation on this table
+            // reads user_id and never looks at the credential, so shortened to credential_id alone the
+            // database would accept one account's envelopes filed under another account's owner id.
+            // The credential_type half is what keeps CK_wrapped_account_keys_credential_type honest —
+            // that check can only read the copy on this row, so without this reference the copy is free
+            // to say 'passkey' over a federated credential, and a federated credential has no PRF
+            // equivalent: the row would be two envelopes nothing in the world can open, presented as a
+            // way back into the account.
+            // Cascade, and deliberately not Restrict, for the reason the credentials -> users row above
+            // records and for one of its own: key bookkeeping must never hold up a person's erasure, and
+            // a factor that no longer exists cannot derive the key-encryption key that opens these
+            // envelopes, so the row it would leave behind is ciphertext nothing can ever read.
+            "wrapped_account_keys.FK_wrapped_account_keys_credentials: FOREIGN KEY (credential_id, user_id, credential_type) REFERENCES credentials(id, user_id, type) ON DELETE CASCADE",
         ];
         await Assert.That(foreignKeys).IsEquivalentTo(expected);
     }
@@ -198,6 +212,16 @@ public sealed class SchemaConstraintSnapshotTests
             // A challenge is spent by being looked up under its own bytes, so uniqueness here is the
             // rule that keeps a nonce from being redeemable twice through two rows.
             """CREATE UNIQUE INDEX "IX_webauthn_challenges_challenge" ON public.webauthn_challenges USING btree (challenge)""",
+            // The factor identifier is minted by the CLIENT, which is what makes uniqueness a rule here
+            // rather than a lookup that happens to hold: nothing else stops two rows carrying the same
+            // one, and it is the associated data both of this row's envelopes were sealed with. A shared
+            // factor id would let one factor's keys be opened against another's, and the second account
+            // would meet the collision as a refusal to register — the only way anybody would learn of
+            // it. Unique across the whole table rather than per user on purpose: scoping it to an owner
+            // would make the duplicate storable and leave the associated data ambiguous exactly where it
+            // is trusted. This table's two non-unique indexes — over user_id, and over the foreign key's
+            // three columns — are out of scope for this query rather than missing from this list.
+            """CREATE UNIQUE INDEX "IX_wrapped_account_keys_factor_id" ON public.wrapped_account_keys USING btree (factor_id)""",
             """CREATE UNIQUE INDEX "PK___EFMigrationsHistory" ON public."__EFMigrationsHistory" USING btree ("MigrationId")""",
             """CREATE UNIQUE INDEX "PK_accounts" ON public.accounts USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_budgets" ON public.budgets USING btree (id)""",
@@ -222,6 +246,12 @@ public sealed class SchemaConstraintSnapshotTests
             """CREATE UNIQUE INDEX "PK_transactions" ON public.transactions USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_users" ON public.users USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_webauthn_challenges" ON public.webauthn_challenges USING btree (id)""",
+            // Keyed on credential_id alone, for the reason the two passkey tables above are: exactly one
+            // pair of envelopes exists per recovery factor, so the credential is the identity of the row
+            // rather than something a surrogate id and a unique index would have to say twice. factor_id
+            // cannot take this job — it is client-minted, which is precisely why it gets the unique index
+            // above and not the key.
+            """CREATE UNIQUE INDEX "PK_wrapped_account_keys" ON public.wrapped_account_keys USING btree (credential_id)""",
         ];
         await Assert.That(uniqueIndexes).IsEquivalentTo(expected);
     }
@@ -369,6 +399,30 @@ public sealed class SchemaConstraintSnapshotTests
             // The same shape as CK_sessions_lifetime above, owed for the same reason: a row whose
             // expiry is at or before its creation was never live for an instant.
             """CK_webauthn_challenges_lifetime: webauthn_challenges CHECK ((expires_at_utc > created_at_utc))""",
+            // The fourth copy of a credential's type pinned to what its own table may hold, and the only
+            // one of the four that is a vocabulary of TWO rather than a single value. That is the whole
+            // difference between this table and the passkey tables above: those hold rows for exactly one
+            // credential type, while account keys are wrapped under whichever factors have a
+            // key-encryption key — a passkey through its PRF output, a set of recovery codes through the
+            // code the holder still has. 'federated' is the spelling that must not appear: OAuth has no
+            // PRF equivalent, so a row filed against the federated credential would be two envelopes
+            // nothing in the world can open, presented as a way back into the account.
+            """CK_wrapped_account_keys_credential_type: wrapped_account_keys CHECK (((credential_type)::text = ANY ((ARRAY['passkey'::character varying, 'recovery_codes'::character varying])::text[])))""",
+            // Exactly 61 bytes, not a range, and stated once per column. AES-GCM ciphertext is the length
+            // of its plaintext and the plaintext is a 32-byte key, so an envelope over a wrapped account
+            // key has one legal size — 1 version + 12 nonce + 32 ciphertext + 16 tag — and both sides of
+            // the bound are refused. Padding or truncating either one would store a well-formed row
+            // holding an envelope whose tag cannot verify, and the account would look registered until
+            // the day somebody needed the keys. Per column rather than once over both, so a violation
+            // names which envelope was malformed; nothing else here can tell the two apart.
+            """CK_wrapped_account_keys_wrapped_content_key_length: wrapped_account_keys CHECK ((length(wrapped_content_key) = 61))""",
+            // The one envelope version this deployment implements (IFR-007): AES-256-GCM, 96-bit nonce,
+            // 128-bit tag. Bounded here rather than left to the client because the successor does not
+            // exist — a row carrying version 2 is a client claiming a contract nothing has implemented,
+            // and storing it would file bytes no version of this system can interpret.
+            """CK_wrapped_account_keys_wrapped_content_key_version: wrapped_account_keys CHECK ((get_byte(wrapped_content_key, 0) = 1))""",
+            """CK_wrapped_account_keys_wrapped_index_key_length: wrapped_account_keys CHECK ((length(wrapped_index_key) = 61))""",
+            """CK_wrapped_account_keys_wrapped_index_key_version: wrapped_account_keys CHECK ((get_byte(wrapped_index_key, 0) = 1))""",
         ];
         await Assert.That(checkConstraints).IsEquivalentTo(expected);
     }

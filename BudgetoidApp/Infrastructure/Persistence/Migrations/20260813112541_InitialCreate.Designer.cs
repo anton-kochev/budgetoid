@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BudgetoidDbContext))]
-    [Migration("20260811062119_InitialCreate")]
+    [Migration("20260813112541_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -702,6 +702,66 @@ namespace Infrastructure.Persistence.Migrations
                     b.ToTable("users", (string)null);
                 });
 
+            modelBuilder.Entity("Domain.Users.WrappedAccountKeys", b =>
+                {
+                    b.Property<Guid>("CredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("credential_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("CredentialType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("credential_type");
+
+                    b.Property<Guid>("FactorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("factor_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<byte[]>("WrappedContentKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("wrapped_content_key");
+
+                    b.Property<byte[]>("WrappedIndexKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("wrapped_index_key");
+
+                    b.HasKey("CredentialId");
+
+                    b.HasIndex("FactorId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_wrapped_account_keys_factor_id");
+
+                    b.HasIndex("CredentialId", "UserId", "CredentialType")
+                        .HasDatabaseName("IX_wrapped_account_keys_credential_id_user_id_credential_type");
+
+                    b.HasIndex(new[] { "UserId" }, "IX_wrapped_account_keys_user_id")
+                        .HasDatabaseName("IX_wrapped_account_keys_user_id");
+
+                    b.ToTable("wrapped_account_keys", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_wrapped_account_keys_credential_type", "credential_type in ('passkey', 'recovery_codes')");
+
+                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_content_key_length", "length(wrapped_content_key) = 61");
+
+                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
+
+                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_index_key_length", "length(wrapped_index_key) = 61");
+
+                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_index_key_version", "get_byte(wrapped_index_key, 0) = 1");
+                        });
+                });
+
             modelBuilder.Entity("Infrastructure.Persistence.WebAuthnChallengeRow", b =>
                 {
                     b.Property<Guid>("Id")
@@ -891,6 +951,17 @@ namespace Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("FK_recovery_code_hashes_credentials");
+                });
+
+            modelBuilder.Entity("Domain.Users.WrappedAccountKeys", b =>
+                {
+                    b.HasOne("Domain.Users.Credential", null)
+                        .WithMany()
+                        .HasForeignKey("CredentialId", "UserId", "CredentialType")
+                        .HasPrincipalKey("Id", "UserId", "Type")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_wrapped_account_keys_credentials");
                 });
 #pragma warning restore 612, 618
         }

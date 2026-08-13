@@ -273,6 +273,71 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     private static readonly byte[] DefaultCoseKey = [0xA5, 0x01, 0x02, 0x03];
 
     /// <summary>
+    /// Files the account's two wrapped keys against an existing credential — one row in
+    /// <c>wrapped_account_keys</c> — and returns the <b>factor</b> identifier it carries, which is the
+    /// only column of that row a caller cannot already name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Through <see cref="WrappedAccountKeys.For" /> rather than raw SQL, for the reason
+    /// <see cref="SeedPasskeyAsync" /> gives: a seeded row is then one the application could really
+    /// have written, so a probe landing beside it is measured against production's own shape. The
+    /// factory takes the loaded <see cref="Credential" />, so this reads it back rather than accepting
+    /// three loose ids — which is the whole argument that factory makes.
+    /// </para>
+    /// <para>
+    /// <paramref name="factorId" /> is the caller's to choose and is required. It is minted by the
+    /// client in production, <c>IX_wrapped_account_keys_factor_id</c> is unique across the whole table
+    /// rather than per account, and a default would therefore turn two seeded rows anywhere in one
+    /// database into a <c>23505</c> — which is exactly the refusal one test here is reading and no
+    /// other test wants to meet by accident.
+    /// </para>
+    /// </remarks>
+    public async Task<Guid> SeedWrappedAccountKeysAsync(Guid credentialId, Guid factorId)
+    {
+        await using var db = CreateSeedingDbContext();
+        Credential credential = await db.Credentials
+            .SingleAsync(candidate => candidate.Id == credentialId);
+        db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+            credential,
+            factorId,
+            WrappedKeyEnvelope(SeededContentKeyFiller),
+            WrappedKeyEnvelope(SeededIndexKeyFiller),
+            SeedInstant));
+        await db.SaveChangesAsync();
+
+        return factorId;
+    }
+
+    /// <summary>
+    /// The fillers the two seeded envelopes carry. Different from each other so a read-back naming the
+    /// wrong column is visible by eye, and neither is the filler a probe writes.
+    /// </summary>
+    public const byte SeededContentKeyFiller = 0xC0;
+
+    public const byte SeededIndexKeyFiller = 0x1D;
+
+    /// <summary>
+    /// Builds a well-formed wrapped-key envelope: the one version byte the contract defines, then
+    /// <paramref name="filler" /> to the column's exact width.
+    /// </summary>
+    /// <remarks>
+    /// The filler is neither a nonce nor a ciphertext, and nothing in these tests opens either — no
+    /// unlock path exists and this server holds no value that could. What a row has to satisfy is the
+    /// width and the version, which <see cref="WrappedAccountKeys.For" /> and two check constraints
+    /// per column both refuse to bend; an envelope of any other shape would be refused by one of those
+    /// instead of by the grant or the policy a test is reading.
+    /// </remarks>
+    public static byte[] WrappedKeyEnvelope(byte filler)
+    {
+        byte[] envelope = new byte[WrappedAccountKeys.EnvelopeLength];
+        Array.Fill(envelope, filler);
+        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
+
+        return envelope;
+    }
+
+    /// <summary>
     /// Adds another budget to an existing owner and returns its id, so a test can exercise two
     /// tenants without inventing a second user.
     /// </summary>
