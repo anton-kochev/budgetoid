@@ -3,8 +3,12 @@
 // verifier `V = HKDF(canonical(code), …)` from it, and the client sends only
 // `V`; the server stores `SHA-256(V)` and has no member a code could travel in.
 // `canonical` is part of that definition rather than a step in front of it —
-// the derivation is not specified until it says what text goes in, and the rule
-// lives on `canonicalRecoveryCode` below. The
+// the derivation is not specified until it says what text goes in. The rule
+// itself no longer lives here: it moved to `./recovery-code-canonical`, because
+// the key-encryption-key branch folds the same code and has to fold it to the
+// identical text, and one definition imported by both is the only arrangement
+// in which that is a fact rather than a hope. What did *not* move is the
+// requirement that this derivation apply it — see `recoveryCodeVerifier`. The
 // reason is not tidiness about secrets: the account's key-encryption key is
 // derived from the same code on an independent HKDF branch, so a code reaching
 // the server would hand the operator that key for an account whose content it
@@ -18,8 +22,12 @@
 // module tested in place.
 //
 // Nothing here is a service and nothing here is injected. There is no state, no
-// configuration and no dependency, so a function is the whole of it; a class
-// would only add a way to hold a code alive past the render that shows it.
+// configuration and nothing to inject — the imports below are pure functions
+// resolved at build time — so a function is the whole of it; a class would only
+// add a way to hold a code alive past the render that shows it.
+import { encodeBase64Url } from './base64url';
+import { hkdfSha256 } from './hkdf';
+import { canonicalRecoveryCode } from './recovery-code-canonical';
 
 // Phantom brands. Declared as `unique symbol`s so no object literal can
 // accidentally satisfy either type and nothing can read the marker at runtime —
@@ -123,12 +131,15 @@ export const RECOVERY_CODE_VERIFIER_BYTES = 32;
 // property ADR 0015 rests on. A database holding `SHA-256(V)` is two one-way
 // steps and a different `info` away from the key-encryption key.
 //
-// `keyEncryptionKey` is **declared and not derived here.** The next epic wraps
-// the account's keys under a key off that branch and owns the derivation, its
-// output width and its use; what this module owns is that the two `info`
-// strings can never silently become one — the spec pins them distinct, so the
-// collision that would quietly fold the branches together fails a test instead
-// of shipping. Do not add a derivation for it in this file to "finish" it.
+// `keyEncryptionKey` is **declared and not derived here.** The derivation now
+// exists and lives in `./account-keys`, where `keyEncryptionKeyFromRecoveryCode`
+// imports this constant and owns the branch's output width and its use; what
+// this module owns is that the two `info` strings can never silently become one
+// — the spec pins them distinct, so the collision that would quietly fold the
+// branches together fails a test instead of shipping. Do not add a derivation
+// for it in this file to "finish" it: that module already imports this one, so a
+// second derivation here would be a second definition of a key that must have
+// exactly one.
 export const RECOVERY_CODE_BRANCH_INFO = {
   verifier: 'budgetoid/recovery-code/verifier/v1',
   keyEncryptionKey: 'budgetoid/recovery-code/key-encryption-key/v1',
@@ -152,18 +163,10 @@ type RecoveryCodeBranchInfo =
  */
 export const RECOVERY_CODE_VERIFIER_INFO = RECOVERY_CODE_BRANCH_INFO.verifier;
 
-// RFC 5869 permits an empty salt, and an empty one is what this has to use. A
-// redemption arrives carrying a verifier and no identity at all, so the client
-// deriving `V` from a typed-back code has no account, no credential and no
-// row to take a salt from — anything per-account would be a value the
-// derivation cannot know until after the lookup it is needed for. A fixed
-// non-secret salt would be domain separation spelled twice, and `info` already
-// spells it. See ADR 0015's rejection of per-row salting for the server-side
-// half of the same argument.
-const EMPTY_SALT = new Uint8Array(0);
-
-const HKDF_HASH = 'SHA-256';
-
+// The input keying material of this branch is text, and `hkdfSha256` takes
+// bytes on purpose — it refuses to guess an encoding for material handed to it
+// as a buffer — so the UTF-8 encoding of a code is this module's decision and
+// is made here, once.
 const utf8 = new TextEncoder();
 
 /**
@@ -195,39 +198,6 @@ export function mintRecoveryCode(): RecoveryCode {
   }
 
   return code as RecoveryCode;
-}
-
-// The decoding half of the alphabet's own decision, and it lives here because
-// here is the only place a code is ever turned into anything.
-//
-// Excluding `I`, `L` and `O` from the *draw* protects nobody on its own: it
-// means no code contains them, not that nobody types them. The exclusion is a
-// statement that a reader resolves those glyphs as `1`, `1` and `0` — so the
-// derivation has to resolve them the same way, or the confusion the alphabet
-// was chosen to avoid comes back on the only path that matters. Leaving this to
-// a future caller is worse than leaving it out: a redemption screen would have
-// to rediscover which characters fold into which, and the symptom of getting it
-// wrong is a `401` that is deliberately indistinguishable from a wrong code —
-// the only way back into the account, looking broken, saying nothing.
-//
-// Each rule is the inverse of an exclusion the alphabet already made, so none
-// of them can fold two *codes* together: no minted code contains a lowercase
-// letter, an `I`, an `L`, an `O`, a space or a hyphen, which is exactly why
-// this is the identity on everything the generator produces and why no verifier
-// already derived can move. `U` is excluded too and is deliberately **not**
-// mapped — it is excluded so a draw cannot spell an obscenity, not because it
-// is read back as something else, and a rule generous enough to rescue every
-// typo would quietly shrink the code's 130 bits.
-//
-// `toUpperCase`, never `toLocaleUpperCase`: the latter maps `i` to `İ` under a
-// Turkish locale, which would make the same typed code derive different
-// verifiers on two phones.
-function canonicalRecoveryCode(code: string): string {
-  return code
-    .toUpperCase()
-    .replace(/[\s-]/g, '')
-    .replace(/[IL]/g, '1')
-    .replace(/O/g, '0');
 }
 
 /**
@@ -267,7 +237,10 @@ export async function recoveryCodeVerifier(
     RECOVERY_CODE_VERIFIER_BYTES,
   );
 
-  return toBase64Url(bytes);
+  // The brand is declared in this module, so the assertion that puts it on is
+  // this module's to make: `encodeBase64Url` returns a plain `string` because
+  // it encodes bytes for every caller, not verifiers for this one.
+  return encodeBase64Url(bytes) as RecoveryCodeVerifier;
 }
 
 /**
@@ -290,53 +263,23 @@ export async function mintRecoveryCodeSet(): Promise<RecoveryCodeSet> {
   return { codes, verifiers };
 }
 
-// One derivation, parameterised by the branch and nothing else. The `info`
-// parameter is typed to the declared branches, so a caller cannot introduce a
-// third branch by passing a string literal at a call site.
-async function deriveBranch(
+// One derivation, parameterised by the branch and nothing else. The expansion
+// itself is `hkdfSha256`, shared with every other branch this client derives;
+// what stays here is the *type* of `info`.
+//
+// That type is the control, not a convenience. `hkdfSha256` takes `info` as a
+// plain `string`, because it serves branches this module knows nothing about;
+// called directly from here, a call site could introduce a third recovery-code
+// branch by writing a string literal, and the separation
+// `RECOVERY_CODE_BRANCH_INFO` states as a value would quietly stop being one.
+// Narrowing the parameter to the declared branches is what makes a new one a
+// compile error at the place it is declared rather than a label appearing at a
+// call site. The wrapper is thin on purpose: it narrows and encodes, and
+// decides nothing about the derivation.
+function deriveBranch(
   code: string,
   info: RecoveryCodeBranchInfo,
   bytes: number,
 ): Promise<Uint8Array> {
-  const material = await crypto.subtle.importKey(
-    'raw',
-    utf8.encode(code),
-    'HKDF',
-    // Not extractable, and the key is discarded with the call. The code is
-    // already in memory as a string; this at least keeps the derived keying
-    // material out of anything that could export it.
-    false,
-    ['deriveBits'],
-  );
-
-  const derived = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: HKDF_HASH,
-      salt: EMPTY_SALT,
-      info: utf8.encode(info),
-    },
-    material,
-    bytes * 8,
-  );
-
-  return new Uint8Array(derived);
-}
-
-// Unpadded base64url, matching the alphabet the server decodes with. `btoa`
-// emits standard base64, so the two substitutions and the padding strip are the
-// whole of the difference; `+` and `/` reaching a URL-safe decoder are a
-// refusal, and `=` is what the server's decoder is written to reject rather
-// than tolerate.
-function toBase64Url(bytes: Uint8Array): RecoveryCodeVerifier {
-  let binary = '';
-
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return btoa(binary)
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replaceAll('=', '') as RecoveryCodeVerifier;
+  return hkdfSha256(utf8.encode(code), info, bytes);
 }

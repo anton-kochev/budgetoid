@@ -497,9 +497,13 @@ describe('the canonical form of a typed-back code', () => {
   });
 });
 
-// The canonical form is not exported — it is an internal rule of the
-// derivation, and a second caller applying it separately is a second place for
-// it to drift. It is observed here through the only thing that can observe it:
+// The canonical form is exported: it lives in `./recovery-code-canonical` and
+// this module's derivation imports it, because the account's key-encryption key
+// is derived from the same code on an independent branch and has to fold it to
+// the identical text. One definition imported twice is what answers the drift
+// argument — privacy would have answered it backwards, by forcing that second
+// branch to restate the rule, which is precisely the second place for it to
+// drift. It is observed here through the only thing that can observe it:
 // two codes derive one verifier exactly when they canonicalise alike. This
 // spells the expected rule out independently of the implementation, so the
 // identity claim above is checked against a stated rule rather than against

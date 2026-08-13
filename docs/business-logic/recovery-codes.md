@@ -594,8 +594,10 @@ erDiagram
   authenticator holds one and the person wrote the other down, so each is a secret in the holder's
   own possession that a client can derive from. That is the whole of the reason today, and it is
   already enough. The key custody those two secrets are meant to carry — an authenticator holding
-  the account's keys, a code the keys are wrapped under — is designed and **not built**, so it is
-  what makes the rule durable rather than what makes it true now.
+  the account's keys, a code the keys are wrapped under — has its cryptography built and **nothing
+  above it**: the derivations and the wrapping exist in `+core/security/account-keys.ts` with no
+  caller, and no account has ever had a key wrapped under either secret. So custody is still what
+  makes the rule durable rather than what makes it true now.
   - **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule
     rather than a coincidence.** A set of codes is a secret its holder possesses exactly as an
     authenticator is, and reaches exactly as far, so a session that expired sooner here would
@@ -937,10 +939,14 @@ ELSE                                                               ← first iss
   while the count is read by the settings screen on every visit — the generation control on screen is
   present and disabled, and `/api/recovery-codes/redemption` has no client route to be reached from
   at all. Read that the same way the disabled erasure control is read — the gate is built and the
-  surface in front of it is not. And **no key is wrapped under a code**: the account's
-  key-encryption key is to be derived from the same code on an independent HKDF branch, and that
-  derivation is a later story — nothing in this repository performs it today. The server side of a
-  recovery sign-in is whole, and the surface a person would reach it through is not.
+  surface in front of it is not. And **no key is wrapped under a code yet**, though the derivation
+  that would wrap one now exists: `keyEncryptionKeyFromRecoveryCode` in
+  `+core/security/account-keys.ts` derives the account's key-encryption key from the same code on an
+  independent HKDF branch, over the same canonical form this area's verifier uses. It has no caller.
+  Nothing generates account keys on a real registration, no request carries a wrapped key, and the
+  `wrapped_account_keys` table is written from nowhere — see
+  [account-keys.md](account-keys.md). The server side of a recovery sign-in is whole, and the
+  surface a person would reach it through is not.
 - **Both sessions this area opens are sessions nothing presents.** No session token is issued, and the
   API still authenticates every other request from the provider ID token, so the row a redemption
   writes — and the one a regeneration writes in place of the sessions it swept — ends access to nothing
