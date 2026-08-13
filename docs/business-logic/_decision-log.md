@@ -8,6 +8,57 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-14 — A recovery factor is one code, not one set of ten
+
+**Context:** the entry below records wrapping the account's two keys under every recovery factor. It
+left one question unasked, and a review asked it: **which of a set's ten codes derives the
+key-encryption key?** The client API was per-code from the first line — `keyEncryptionKeyFromRecoveryCode(code)`
+— while the schema was per-set, because `wrapped_account_keys` was keyed on `credential_id` and a set
+of recovery codes is one `credentials` row. Nobody reconciled the two.
+
+Held together, the two halves said something nobody would have written down: only whichever code the
+set's single envelope pair happened to be sealed under could open the account. A person redeems
+whichever code they still have, so **nine redemptions out of ten would have opened a session that
+unlocks nothing** — on the day they had already lost their authenticator, which is the only day this
+route exists for. Every test passed, because a set with one wrapped-key row is exactly what the schema
+asked for.
+
+**Decision:** **a recovery factor is one secret, not one credential.** `factor_id` becomes the primary
+key of `wrapped_account_keys` and `credential_id` becomes an ordinary, non-unique column. A passkey is
+one factor and one row. A set of recovery codes is one credential and **ten** factors — ten rows, each
+with its own client-minted factor identifier and its own pair of envelopes sealed under the
+key-encryption key derived from *that* code.
+
+`POST /api/me/recovery-codes` therefore carries ten **submissions** rather than ten verifier strings:
+each is a verifier, a factor identifier, and two wrapped keys. The ten identifiers must differ, and
+that rule lives in the handler rather than in the primary key — as a `23505` it would arrive after the
+previous set had already been deleted inside the same transaction, and it would say "that factor
+identifier is already registered" about a factor the client never registered.
+
+**Alternatives considered.** *Wrap under a per-set key and wrap that key under each code* — the ten
+wrapped set-keys need ten rows of their own, so it buys a second envelope kind and a second table for
+nothing. *Hang the envelopes off `recovery_code_hashes`, which already has exactly ten rows per set* —
+refused for the reason [ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
+refuses it: that table is exempt from row-level security and holds a pinned column set, and a column
+read only after redemption would become readable by every session. *Leave recovery codes carrying no
+keys until a later story* — smaller, and it contradicts the requirement that names the recovery-code
+branch by name.
+
+**Consequences.** Nothing links a code's hash row to its wrapped row, deliberately: a client tries each
+of the ten and exactly one opens, because the associated data binds each pair to its own factor. Twenty
+AEAD attempts is a cost nobody can measure. And **redeeming a code deletes its hash row while leaving
+its wrapped row standing** — consuming a code removes its ability to authenticate, never its ability to
+decrypt, because the secret that opens the envelope is the code itself, written on a card this system
+has never seen. Nothing is exposed that was not already: whoever holds a spent code and a copy of the
+database could have decrypted with it before redeeming too.
+
+**Affected areas:** [account-keys.md](account-keys.md), [recovery-codes.md](recovery-codes.md),
+[ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
+This corrects the entry below, which stands as written except where it says one row per factor and
+means one row per credential.
+
+---
+
 ## 2026-08-13 — The account keys are demanded by the server before any client can produce them
 
 **Context:** an account owns one content key and one index key, and every recovery factor stores its
@@ -45,8 +96,9 @@ its own client, and it is paid up front.
 - **The `prf.enabled` gate stays, and stays a guess.** A reader seeing wrapped keys arrive on the same
   request will conclude the gate has been made real. It has not: the server cannot tell a
   key-encryption key derived from an authenticator's PRF output from one derived out of a constant, and
-  no member it could be handed would let it. What the wrapped keys buy is smaller and real — a factor
-  holding no share of the account keys is unstorable.
+  no member it could be handed would let it. What the wrapped keys buy is smaller and real — both
+  write paths refuse a registration that carries no share of the account keys, and there are only two
+  write paths.
 
 **Affected areas:** [account-keys.md](account-keys.md), [passkeys.md](passkeys.md),
 [recovery-codes.md](recovery-codes.md),

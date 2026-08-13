@@ -161,7 +161,8 @@ public interface IRecoveryCodeRepository
 
     /// <summary>
     /// Writes a set: the credential standing for it, one <see cref="RecoveryCodeHash"/> per code, and
-    /// the set's share of the account keys — in one save, so a refusal leaves none of them behind.
+    /// one <see cref="WrappedAccountKeys"/> per code — in one save, so a refusal leaves none of them
+    /// behind.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -170,26 +171,36 @@ public interface IRecoveryCodeRepository
     /// anyway — the composite foreign key to <c>credentials(id, user_id, type)</c> refuses them.
     /// </para>
     /// <para>
+    /// <b>The wrapped keys are a list because a set is ten factors, not one.</b> A passkey is one
+    /// credential, one key-encryption key and one pair of envelopes; a set of recovery codes is ten
+    /// separate secrets under a single credential, and the client derives a key-encryption key from each
+    /// <em>code</em>. A single share for the whole set would seal the account under whichever code that
+    /// share belonged to, and nine of the ten would open nothing — the defect ADR 0018 moved this
+    /// table's key to <c>factor_id</c> to make storable in the first place.
+    /// </para>
+    /// <para>
     /// <b>What the wrapped keys buy is that a set holding no copy of the account keys is unreachable
     /// rather than merely uncustomary</b> — the enforceable half of FR-060, and the same guarantee
     /// <see cref="IPasskeyRepository.TryAddAsync"/> carries for a passkey. Both envelope columns are
-    /// <c>NOT NULL</c> and they land in this save, so there is no partial failure and no second request
-    /// that could leave a person holding a printed card whose codes derive a key-encryption key with
-    /// nothing to open. It is the <em>set's own</em> credential the row is filed against, never the
-    /// passkey that authorized the issue: those two factors derive different key-encryption keys, and
-    /// nothing in the schema can tell that mistake from a correct row.
+    /// <c>NOT NULL</c> and every row lands in this save, so there is no partial failure and no second
+    /// request that could leave a person holding a printed card whose codes derive a key-encryption key
+    /// with nothing to open. It is the <em>set's own</em> credential every row is filed against, never
+    /// the passkey that authorized the issue: those two factors derive different key-encryption keys,
+    /// and nothing in the schema can tell that mistake from a correct row.
     /// </para>
     /// <para>
     /// A <see cref="WrappedAccountKeys"/> whose factor identifier is already stored raises
     /// <see cref="Domain.Common.ConflictException"/>. The value is client-minted and unique across the
     /// whole table, so at 122 random bits a collision means a reused identifier or a replayed request
-    /// rather than an accident.
+    /// rather than an accident. Two rows of one list colliding with each other is the same violation and
+    /// would arrive here as the same conflict, which is why the caller refuses a set repeating an
+    /// identifier before it reaches this call — by then the previous set is already gone.
     /// </para>
     /// </remarks>
     Task AddSetAsync(
         Credential credential,
         IReadOnlyList<RecoveryCodeHash> hashes,
-        WrappedAccountKeys wrappedAccountKeys,
+        IReadOnlyList<WrappedAccountKeys> wrappedAccountKeys,
         CancellationToken cancellationToken = default);
 
     /// <summary>

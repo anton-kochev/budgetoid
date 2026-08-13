@@ -48,6 +48,14 @@ const QUADRANT_FOUR_BYTES = new Uint8Array([0xf8, 0x00, 0xff]);
 const GOLDEN_CODE = '0123456789ABCDEFGHJKMNPQRS';
 const GOLDEN_VERIFIER = 'aGr2Qher4pOLKZ335Uwyi92Ti9GAZ-Ek5G_9Br5plNE';
 
+// The URL-safe alphabet in index order — symbol `n` is the encoding of the
+// six-bit value `n`. Written out rather than derived through the encoder,
+// because the trailing-group tests below are statements about which six-bit
+// values a final group may carry: symbols taken from the module under test would
+// let a wrong mapping define its own expectation.
+const BASE64URL_ALPHABET =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
 // Standard base64, computed here rather than taken from the module under test,
 // so the claim "this input demands the URL-safe symbols" is checked instead of
 // assumed.
@@ -59,6 +67,40 @@ function standardBase64(bytes: Uint8Array): string {
   }
 
   return btoa(binary);
+}
+
+// What one decode did, kept as a value so a whole family of inputs can be driven
+// in the Act phase and judged together in the Assert phase. A refusal that lost
+// its message would leave the trailing-group tests unable to say *which* check
+// turned an input down, which is the entire difference they are measuring.
+type DecodeOutcome =
+  | {
+      readonly text: string;
+      readonly status: 'decoded';
+      readonly bytes: Uint8Array;
+    }
+  | {
+      readonly text: string;
+      readonly status: 'refused';
+      readonly message: string;
+    };
+
+function attemptDecode(text: string): DecodeOutcome {
+  try {
+    return { text, status: 'decoded', bytes: decodeBase64Url(text) };
+  } catch (error: unknown) {
+    return {
+      text,
+      status: 'refused',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function textsRefusedIn(outcomes: readonly DecodeOutcome[]): readonly string[] {
+  return outcomes
+    .filter((outcome) => outcome.status === 'refused')
+    .map((outcome) => outcome.text);
 }
 
 describe('the base64url encoder', () => {
@@ -228,6 +270,95 @@ describe('the base64url decoder', () => {
     // Assert
     expect(decodingOne).toThrow();
     expect(decodingFive).toThrow();
+  });
+
+  it('refuses a two-character final group carrying bits no encoder would set', () => {
+    // Arrange
+    // Two characters carry twelve bits and stand for one byte, so the low four
+    // bits of the second symbol are surplus — and `atob` discards them instead
+    // of refusing them. `AA` and `AB` therefore both come back as a single zero
+    // byte, and only `AA` is an encoding of it. That is the quietest repair of
+    // all the ones this decoder is written to refuse: nothing about the input
+    // looks wrong, the output is the right width, and what comes out is a
+    // plausible key.
+    //
+    // Every symbol of the alphabet is driven rather than one example, so this is
+    // the whole rule: the four symbols whose value is a multiple of sixteen are
+    // the only ones with those four bits clear.
+    const groups = [...BASE64URL_ALPHABET].map((symbol) => `A${symbol}`);
+    const canonical = groups.filter(
+      (group, sixBitValue) => sixBitValue % 16 === 0,
+    );
+    const nonCanonical = groups.filter(
+      (group, sixBitValue) => sixBitValue % 16 !== 0,
+    );
+
+    // Act
+    const outcomes = groups.map(attemptDecode);
+
+    // Assert
+    // Set equality in both directions: every non-canonical group is refused, and
+    // no canonical one is. A decoder that threw on all sixty-four would satisfy
+    // the first half alone while refusing values the encoder actually emits.
+    expect(textsRefusedIn(outcomes)).toEqual(nonCanonical);
+    expect(nonCanonical).toHaveLength(60);
+    expect(canonical).toEqual(['AA', 'AQ', 'Ag', 'Aw']);
+
+    // Refused by the canonicality check and not by an earlier one. Both other
+    // checks would also throw here, and a length or alphabet rule that started
+    // catching these would be catching them for a reason that is not true of
+    // them — so the message is what says which rule fired.
+    for (const outcome of outcomes.filter(
+      (entry) => entry.status === 'refused',
+    )) {
+      expect(outcome.message).toMatch(/final group/);
+    }
+
+    // And the accepted four really are one byte that re-encodes to itself, which
+    // is the identity this decoder's contract claims over its whole accepted set.
+    for (const group of canonical) {
+      const bytes = decodeBase64Url(group);
+
+      expect(bytes).toHaveLength(1);
+      expect(encodeBase64Url(bytes)).toBe(group);
+    }
+  });
+
+  it('refuses a three-character final group carrying bits no encoder would set', () => {
+    // Arrange
+    // The other short group, and it has to be stated separately because the
+    // surplus is a different width: three characters carry eighteen bits and
+    // stand for two bytes, so only the low *two* bits of the third symbol are
+    // over. A decoder that masked the two-character case with a hard-coded
+    // four-bit rule passes the test above and waves every input here through.
+    const groups = [...BASE64URL_ALPHABET].map((symbol) => `AA${symbol}`);
+    const canonical = groups.filter(
+      (group, sixBitValue) => sixBitValue % 4 === 0,
+    );
+    const nonCanonical = groups.filter(
+      (group, sixBitValue) => sixBitValue % 4 !== 0,
+    );
+
+    // Act
+    const outcomes = groups.map(attemptDecode);
+
+    // Assert
+    expect(textsRefusedIn(outcomes)).toEqual(nonCanonical);
+    expect(nonCanonical).toHaveLength(48);
+    expect(canonical).toHaveLength(16);
+
+    for (const outcome of outcomes.filter(
+      (entry) => entry.status === 'refused',
+    )) {
+      expect(outcome.message).toMatch(/final group/);
+    }
+
+    for (const group of canonical) {
+      const bytes = decodeBase64Url(group);
+
+      expect(bytes).toHaveLength(2);
+      expect(encodeBase64Url(bytes)).toBe(group);
+    }
   });
 });
 

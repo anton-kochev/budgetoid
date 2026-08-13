@@ -287,8 +287,9 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// </para>
     /// <para>
     /// <paramref name="factorId" /> is the caller's to choose and is required. It is minted by the
-    /// client in production, <c>IX_wrapped_account_keys_factor_id</c> is unique across the whole table
-    /// rather than per account, and a default would therefore turn two seeded rows anywhere in one
+    /// client in production, <c>factor_id</c> is the table's primary key —
+    /// <c>PK_wrapped_account_keys</c> — unique across the whole table rather than per account, and a
+    /// default would therefore turn two seeded rows anywhere in one
     /// database into a <c>23505</c> — which is exactly the refusal one test here is reading and no
     /// other test wants to meet by accident.
     /// </para>

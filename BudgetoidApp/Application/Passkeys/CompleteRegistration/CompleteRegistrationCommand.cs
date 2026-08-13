@@ -39,9 +39,14 @@ namespace Application.Passkeys.CompleteRegistration;
 /// <param name="FactorId">
 /// The client-minted identifier of the factor this passkey stands for, and the associated data both
 /// envelopes below were sealed with — see <see cref="WrappedAccountKeys.FactorId"/> for why it is
-/// deliberately not <c>credentials.id</c>. One uuid in one spelling: the 36-character hyphenated form,
-/// because this contract is cross-client and a value the browser cannot recognise as the bytes it bound
-/// is a factor whose envelopes never open.
+/// deliberately not <c>credentials.id</c>. One uuid in one spelling: the <b>lower-case</b> 36-character
+/// hyphenated form with no surrounding whitespace, which is what a <see cref="Guid"/> renders as and
+/// therefore what every later read hands back. This contract is cross-client, and a value the browser
+/// cannot recognise as the bytes it bound is a factor whose envelopes never open. Enforced by
+/// <see cref="Application.Passkeys.CanonicalFactorId.TryParse"/>, which compares the text against what
+/// the parsed value renders as — <see cref="Guid.TryParseExact(string, string, out Guid)"/> under
+/// <c>"D"</c> admits upper-case and mixed-case hex and trims whitespace before it reads the format at
+/// all, so the format alone does not pin a spelling.
 /// </param>
 /// <param name="WrappedContentKey">
 /// The account's content key as this factor holds it: one base64url envelope, judged by

@@ -79,28 +79,30 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
 
     /// <summary>
     /// Every set's share of the account keys the database would hold if this unit of work committed
-    /// now — one row per issued set.
+    /// now — one row per <b>code</b> of every issued set.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Read off the sets rather than kept in a list of its own, so it leaves when its credential does:
-    /// the row cascades from <c>credentials</c> exactly as the code hashes do, and a fake that took the
-    /// set away and left its envelopes behind would hold a row the database could not.
+    /// the rows cascade from <c>credentials</c> exactly as the code hashes do, and a fake that took the
+    /// set away and left its envelopes behind would hold rows the database could not.
+    /// </para>
+    /// <para>
+    /// <b>Flattened, because a set holds one of these per code and not one per set.</b> The client
+    /// derives a key-encryption key from each <em>code</em>, so ten codes are ten factors and ten pairs
+    /// of envelopes; a fake keeping one per set would let a handler filing a single share for the whole
+    /// set look correct while nine of the person's ten codes opened nothing.
     /// </para>
     /// <para>
     /// A set filed by <see cref="Seed" /> carries none, which is
     /// <c>RepositoryTestHost.SeedPasskeyAsync</c>'s choice rather than an oversight: the wrapped keys
-    /// are a row of their own, and nothing this fake answers reads a seeded set's envelopes. What
+    /// are rows of their own, and nothing this fake answers reads a seeded set's envelopes. What
     /// <see cref="AddSetAsync" /> writes is not a simplification, because the single save is what makes
     /// a set without its share of the keys unreachable.
     /// </para>
     /// </remarks>
     public IReadOnlyList<WrappedAccountKeys> WrappedKeys =>
-    [
-        .. _committed.Concat(_pending)
-            .Select(set => set.WrappedAccountKeys)
-            .OfType<WrappedAccountKeys>(),
-    ];
+        [.. _committed.Concat(_pending).SelectMany(set => set.WrappedAccountKeys)];
 
     /// <summary>
     /// How many times the unscoped discovery lookup ran.
@@ -183,7 +185,7 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(hashes);
 
-        _committed.Add(new Set(credential, [.. hashes], WrappedAccountKeys: null));
+        _committed.Add(new Set(credential, [.. hashes], WrappedAccountKeys: []));
     }
 
     /// <summary>
@@ -357,27 +359,34 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
     }
 
     /// <summary>
-    /// Queues the whole set — its credential, its codes and its share of the account keys — as one
-    /// unit of work's worth of inserts.
+    /// Queues the whole set — its credential, its codes and every code's share of the account keys —
+    /// as one unit of work's worth of inserts.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <paramref name="wrappedAccountKeys" /> is queued beside the other rows rather than accepted and
     /// dropped, for the reason the hashes are: the single save is what makes a set that holds no
     /// envelopes unreachable, and a fake that took the argument and forgot it would let a handler
     /// filing them against the passkey that authorized the request — the credential nearest to hand,
     /// and the mistake nothing beneath the application can catch — look correct here.
+    /// </para>
+    /// <para>
+    /// <b>A list, and it is copied rather than aliased.</b> A set files one row per code, so the
+    /// argument is the whole set's share; kept as the caller's own collection it would be a queued
+    /// insert a later mutation could rewrite, which is a state no change tracker produces.
+    /// </para>
     /// </remarks>
     public Task AddSetAsync(
         Credential credential,
         IReadOnlyList<RecoveryCodeHash> hashes,
-        WrappedAccountKeys wrappedAccountKeys,
+        IReadOnlyList<WrappedAccountKeys> wrappedAccountKeys,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(hashes);
         ArgumentNullException.ThrowIfNull(wrappedAccountKeys);
 
-        _pending.Add(new Set(credential, [.. hashes], wrappedAccountKeys));
+        _pending.Add(new Set(credential, [.. hashes], [.. wrappedAccountKeys]));
 
         return Task.CompletedTask;
     }
@@ -422,11 +431,13 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
     /// a redemption spends one of them and leaves the rest — see <see cref="ConsumeAsync" />.
     /// </summary>
     /// <param name="WrappedAccountKeys">
-    /// The set's share of the account keys, or <see langword="null" /> for a set <see cref="Seed" />
-    /// filed — see <see cref="WrappedKeys" /> for why a seed files none.
+    /// The set's share of the account keys, one row per code — and empty for a set <see cref="Seed" />
+    /// filed, see <see cref="WrappedKeys" /> for why a seed files none. Empty rather than null now that
+    /// it is a collection: "the set holds no share" and "this fake was told nothing about its shares"
+    /// were never two states any test meant to tell apart.
     /// </param>
     private sealed record Set(
         Credential Credential,
         List<RecoveryCodeHash> Hashes,
-        WrappedAccountKeys? WrappedAccountKeys);
+        IReadOnlyList<WrappedAccountKeys> WrappedAccountKeys);
 }

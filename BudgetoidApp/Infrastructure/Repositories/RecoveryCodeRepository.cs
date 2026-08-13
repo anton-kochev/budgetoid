@@ -177,7 +177,7 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
     public async Task AddSetAsync(
         Credential credential,
         IReadOnlyList<RecoveryCodeHash> hashes,
-        WrappedAccountKeys wrappedAccountKeys,
+        IReadOnlyList<WrappedAccountKeys> wrappedAccountKeys,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(credential);
@@ -186,15 +186,21 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
 
         dbContext.Credentials.Add(credential);
         dbContext.RecoveryCodeHashes.AddRange(hashes);
-        dbContext.WrappedAccountKeys.Add(wrappedAccountKeys);
+
+        // AddRange rather than Add, because a set holds one of these per CODE and not one per set: the
+        // client derives a key-encryption key from each code, so ten codes are ten factors and ten pairs
+        // of envelopes. See ADR 0018 and WrappedAccountKeysConfiguration, where the key moved off
+        // credential_id for exactly this.
+        dbContext.WrappedAccountKeys.AddRange(wrappedAccountKeys);
 
         try
         {
-            // One save, so the credential, its codes and its share of the account keys land together or
-            // not at all. EF orders the statements from the foreign keys between the entity types, so
-            // the credential is inserted before the rows whose composite keys reference it. A set filed
-            // without its envelopes would be a card whose codes derive a key-encryption key with nothing
-            // to open, and the person would find that out on the day they had nothing else left.
+            // One save, so the credential, its codes and every code's share of the account keys land
+            // together or not at all. EF orders the statements from the foreign keys between the entity
+            // types, so the credential is inserted before the rows whose composite keys reference it. A
+            // set filed without its envelopes would be a card whose codes derive a key-encryption key
+            // with nothing to open, and the person would find that out on the day they had nothing else
+            // left.
             await dbContext.SaveChangesAsync(cancellationToken);
         }
         // THE LIKELIER HALF OF THE RACE, and the one no delete is involved in. Two concurrent FIRST
@@ -236,15 +242,20 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
         // other route; see the constant above.
         //
         // NARROWED ON THE CONSTRAINT NAME for the reason the catch above is, and the need is greater
-        // rather than equal: this save writes the credential, one row per code and the wrapped keys, each
-        // carrying unique rules of its own, so a bare SQLSTATE catch would report a verifier-hash
-        // collision or the one-set-per-account index as a factor-id conflict.
+        // rather than equal: this save writes the credential, one hash row per code and one wrapped-key
+        // row per code, each carrying unique rules of its own, so a bare SQLSTATE catch would report a
+        // verifier-hash collision or the one-set-per-account index as a factor-id conflict.
         // RepositoryConstraintAttributionTests pins that every translated exception in this folder names
         // its constraint.
+        //
+        // Two rows of ONE set claiming one identifier would arrive here as this same violation, and the
+        // caller refuses that before it gets this far — by this line the previous set's credential is
+        // already deleted inside the transaction, so a caller whose request was merely wrong would be
+        // answered a conflict about a factor they never registered.
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
         {
             SqlState: PostgresErrorCodes.UniqueViolation,
-            ConstraintName: WrappedAccountKeysConfiguration.FactorIdIndexName,
+            ConstraintName: WrappedAccountKeysConfiguration.PrimaryKeyName,
         })
         {
             throw new ConflictException(FactorAlreadyRegisteredMessage);

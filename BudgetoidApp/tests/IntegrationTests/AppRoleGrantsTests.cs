@@ -1179,8 +1179,10 @@ public sealed class AppRoleGrantsTests
         // Arrange — one account holding a registered passkey with the account's two keys filed against
         // it, a SECOND bare passkey credential on the same account, and a second real user. Both extras
         // exist so a leaked grant would land its statement rather than trip a foreign key and pass for
-        // the wrong reason: the bare credential has no wrapped keys row, so repointing credential_id
-        // onto it would not collide with the primary key either.
+        // the wrong reason: the second credential is a real credentials row whose (id, user_id, type)
+        // the composite foreign key accepts, and repointing credential_id onto it collides with no
+        // unique rule at all — the primary key is factor_id and credential_id carries no uniqueness of
+        // its own, so nothing but the missing grant stands between a leaked UPDATE and a landed row.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
@@ -1552,7 +1554,8 @@ public sealed class AppRoleGrantsTests
     /// <summary>
     /// The factor identifier the seeded wrapped-keys row carries, the one a refused statement tried to
     /// move it to, and the one the permitted <c>INSERT</c> files its own row under. Three distinct
-    /// values, because <c>IX_wrapped_account_keys_factor_id</c> is unique across the whole table: a
+    /// values, because <c>factor_id</c> is the table's primary key — <c>PK_wrapped_account_keys</c> —
+    /// unique across the whole table: a
     /// shared one would turn the permitted insert into a <c>23505</c> and the read-back into an
     /// assertion that could not tell a refused update from a successful one.
     /// </summary>

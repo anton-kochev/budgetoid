@@ -267,15 +267,11 @@ public sealed class EstablishedSessionLifetimeTests
             clock);
 
         RecoveryCodesGeneration generation = await handler.HandleAsync(new GenerateRecoveryCodesCommand(
-            [.. Verifiers().Select(verifier => Base64UrlText.Encode(verifier))],
-
-            // A fresh factor and a well-formed envelope pair, because this file is about the session's
-            // expiry and nothing else: a request refused for its wrapped keys would never reach the
-            // establishment this method reads. Minted per call for the reason
-            // <see cref="Envelope" /> gives about the width it does not restate.
-            Guid.CreateVersion7().ToString("D"),
-            Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
-            Base64UrlText.Encode(Envelope(IndexKeyPurpose)),
+            // One whole submission per code, each with a fresh factor and a well-formed envelope pair
+            // of its own, because this file is about the session's expiry and nothing else: a request
+            // refused for its wrapped keys would never reach the establishment this method reads. See
+            // Submissions.
+            Submissions(),
             new ReauthenticationAssertion(
                 assertion.CredentialIdBase64Url,
                 assertion.ClientDataJsonBase64Url,
@@ -307,6 +303,26 @@ public sealed class EstablishedSessionLifetimeTests
     private static byte[][] Verifiers() =>
     [
         .. Enumerable.Range(0, CodesPerSet).Select(_ => RandomNumberGenerator.GetBytes(VerifierLength)),
+    ];
+
+    /// <summary>
+    /// A well-formed set as the command carries it: one whole submission per code, each with a verifier,
+    /// a factor of its own and a pair of envelopes sealed under it.
+    /// </summary>
+    /// <remarks>
+    /// A set is ten separate secrets under a single credential and the client derives a key-encryption
+    /// key from each <em>code</em>, so one factor and one pair for the whole set would seal the account
+    /// under whichever code that pair belonged to. Minted per submission rather than shared, because two
+    /// codes repeating a factor identifier is a refusal of its own and would stop this method ever
+    /// reaching the session it is here to time.
+    /// </remarks>
+    private static IReadOnlyList<RecoveryCodeSubmission> Submissions() =>
+    [
+        .. Verifiers().Select(verifier => new RecoveryCodeSubmission(
+            Base64UrlText.Encode(verifier),
+            Guid.CreateVersion7().ToString("D"),
+            Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
+            Base64UrlText.Encode(Envelope(IndexKeyPurpose)))),
     ];
 
     /// <summary>The byte that says which of the two envelopes a reader is looking at.</summary>

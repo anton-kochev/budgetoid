@@ -21,12 +21,18 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
 
     public const string IndexKeyVersionCheckName = "CK_wrapped_account_keys_wrapped_index_key_version";
 
-    // Public for the reason IX_passkey_public_keys_webauthn_credential_id is public: a 23505 from this
-    // index is the one duplicate a caller can be told something useful about — the factor id arrives
-    // minted by the client, so a collision is a claim on a factor that already exists rather than an
-    // internal accident, and a repository has to be able to tell it apart from every other unique
-    // violation the same statement could raise.
-    public const string FactorIdIndexName = "IX_wrapped_account_keys_factor_id";
+    // Public for the reason IX_passkey_public_keys_webauthn_credential_id is public: a 23505 reported
+    // under this name is the one duplicate a caller can be told something useful about — the factor id
+    // arrives minted by the client, so a collision is a claim on a factor that already exists rather
+    // than an internal accident, and a repository has to be able to tell it apart from every other
+    // unique violation the same statement could raise.
+    //
+    // It is the PRIMARY KEY's name that carries that job now, and it used to be a separate unique index
+    // over the same column. The uniqueness did not move because the key's name is prettier: it moved
+    // because the key moved to factor_id, and one constraint stating one rule is the whole point — a
+    // second constraint saying the same thing is a second name the same duplicate could arrive under,
+    // and a `catch ... when` can only filter on one. See HasKey below.
+    public const string PrimaryKeyName = "PK_wrapped_account_keys";
 
     private const string CredentialIndexName =
         "IX_wrapped_account_keys_credential_id_user_id_credential_type";
@@ -111,11 +117,29 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
                 $"get_byte(wrapped_index_key, 0) = {WrappedAccountKeys.EnvelopeVersion}");
         });
 
-        // The credential is the identity of the row: exactly one pair of envelopes exists per recovery
-        // factor, so making credential_id the primary key says so rather than inventing a surrogate id
-        // and then a unique index to say the same thing twice. factor_id cannot take this job — it is
-        // client-minted, which is precisely why it gets a unique index and not the key.
-        builder.HasKey(wrappedAccountKeys => wrappedAccountKeys.CredentialId);
+        // THE FACTOR IS THE IDENTITY OF THE ROW. The key used to be credential_id, on the argument that
+        // exactly one pair of envelopes exists per recovery factor — true, and it quietly assumed that a
+        // factor IS a credential. A passkey is: one credential, one PRF output, one key-encryption key,
+        // one pair of envelopes. A set of recovery codes is not. A set is ten separate secrets filed
+        // under a single credentials row, because a set is issued, counted and revoked as a unit — and
+        // the client derives a key-encryption key from each CODE. Ten codes are ten key-encryption keys
+        // and ten pairs of envelopes, no one of which can stand for the others. Keyed on the credential
+        // the table stored the first pair and refused the other nine, so nine codes of every set opened
+        // nothing at all, and the holder would learn it by redeeming one, being handed a session, and
+        // finding the account still locked. So credential_id is now an ordinary, NON-UNIQUE column and a
+        // credential carries as many rows as it has factors.
+        //
+        // Being client-minted is the reason factor_id NEEDS this key, not a reason it cannot hold it.
+        // Nothing else in the system stops two rows claiming one factor identifier, and it is the
+        // associated data both of a row's envelopes were sealed with — so a shared value would let one
+        // factor's keys be opened against another's, and the second registration is the only place
+        // anybody would ever learn of the collision. What a client-minted value needs is therefore a
+        // constraint whose violation a repository can NAME, and the key is that constraint; it carries
+        // the uniqueness alone, with no second unique index over the same column. Table-wide rather than
+        // per owner, for the reason it always was: scoping it to an account would make the duplicate
+        // storable and leave the associated data ambiguous exactly where it is trusted.
+        builder.HasKey(wrappedAccountKeys => wrappedAccountKeys.FactorId)
+            .HasName(PrimaryKeyName);
 
         builder.Property(wrappedAccountKeys => wrappedAccountKeys.CredentialId)
             .HasColumnName("credential_id")
@@ -131,7 +155,7 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
             .HasColumnName("user_id")
             .IsRequired();
 
-        // Client-minted, so NOT NULL is the least of what it needs; see the unique index below. It is
+        // Client-minted, so NOT NULL is the least of what it needs; see the key above. It is
         // also the associated data both envelopes were sealed with, which is why it is stored rather
         // than derived: the browser needs back the exact value it bound, and credentials.id is
         // deliberately not that value — WrappedAccountKeys.FactorId records why.
@@ -179,23 +203,21 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
             .HasColumnType("timestamp with time zone")
             .IsRequired();
 
-        // Unique, and the uniqueness is the rule rather than a lookup optimisation that happens to
-        // hold, for the reason IX_passkey_public_keys_webauthn_credential_id is unique: the value is
-        // chosen outside this server, so nothing else stops two rows carrying the same one. It is the
-        // associated data of all four envelopes involved, so a shared factor id would let a client seal
-        // one factor's keys and open them against another's — and the second account would meet the
-        // collision as a refusal to register, which is the only way anybody would learn of it. Unique
-        // across the whole table rather than per user on purpose: scoping it to an owner would make the
-        // duplicate storable and leave the associated data ambiguous exactly where it is trusted.
-        builder.HasIndex(wrappedAccountKeys => wrappedAccountKeys.FactorId)
-            .IsUnique()
-            .HasDatabaseName(FactorIdIndexName);
-
-        // Covers exactly the columns of the composite foreign key below, for the reason
-        // SessionConfiguration records: EF's foreign-key convention generates an index over the foreign
-        // key's columns unless an existing one already starts with them, and the primary key on
-        // credential_id alone is not a covering prefix of (credential_id, user_id, credential_type). So
-        // the index exists either way; declaring it is what pins the name.
+        // Covers exactly the columns of the composite foreign key below, and this line stopped being
+        // incidental the day the key moved. EF's foreign-key convention generates an index over the
+        // foreign key's columns unless an existing one already starts with them; the key used to lead
+        // with credential_id and merely fell short of covering all three, so the index existed either
+        // way and declaring it did nothing but pin the name. The key now names factor_id, a column the
+        // foreign key does not contain at all, so nothing else in this table leads with credential_id.
+        //
+        // That makes this the only index answering "which rows belong to this credential" — the question
+        // a set of recovery codes asks by existing, since a set is ten rows under one credentials row —
+        // and the only one the ON DELETE CASCADE below can use when a factor is revoked or an account
+        // erased. Declaring it still pins the name; that is no longer all it is doing.
+        //
+        // Non-unique, and deliberately so: uniqueness over credential_id is the exact rule the key move
+        // removed, and restoring it here in any form would put every set of recovery codes back to one
+        // stored pair of envelopes and nine codes that open nothing.
         builder.HasIndex(wrappedAccountKeys => new
         {
             wrappedAccountKeys.CredentialId,

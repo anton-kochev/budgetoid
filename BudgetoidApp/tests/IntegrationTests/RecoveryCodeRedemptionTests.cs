@@ -871,21 +871,51 @@ public sealed class RecoveryCodeRedemptionTests
             PasskeyEncoding.ToUserHandle(userId),
             signCount: 0);
 
-        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
         HttpResponseMessage response = await client.PostAsJsonAsync(RecoveryCodesPath, new
         {
-            verifiers,
+            codes = SubmissionsOf(verifiers),
             credentialId = assertion.CredentialIdBase64Url,
             clientDataJson = assertion.ClientDataJsonBase64Url,
             authenticatorData = assertion.AuthenticatorDataBase64Url,
             signature = assertion.SignatureBase64Url,
             userHandle = assertion.UserHandleBase64Url,
-            factorId = keys.FactorId,
-            wrappedContentKey = keys.WrappedContentKey,
-            wrappedIndexKey = keys.WrappedIndexKey,
         });
         response.EnsureSuccessStatusCode();
     }
+
+    /// <summary>
+    /// One whole submission per verifier, as the issuing route spells a set: the verifier, a factor of
+    /// its own, and the pair of envelopes sealed under that code's key.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Ten submissions and never ten verifiers beside one factor and one pair.</b> A set is ten
+    /// separate secrets under a single <c>credentials</c> row and the client derives a key-encryption
+    /// key from each <em>code</em>, so one pair for the whole set would seal the account under whichever
+    /// code that pair belonged to and nine of the ten would open nothing.
+    /// </para>
+    /// <para>
+    /// Nothing in this file redeems an envelope — a redemption presents a verifier and gets a session —
+    /// so what these have to be is well-formed, and fresh: two codes of one set repeating a factor
+    /// identifier is a refusal of its own, and <c>factor_id</c> is the table's primary key —
+    /// <c>PK_wrapped_account_keys</c> — unique across the whole table rather than per account.
+    /// </para>
+    /// </remarks>
+    private static object[] SubmissionsOf(IReadOnlyList<string> verifiers) =>
+    [
+        .. verifiers.Select(verifier =>
+        {
+            WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+            return new
+            {
+                verifier,
+                factorId = keys.FactorId,
+                wrappedContentKey = keys.WrappedContentKey,
+                wrappedIndexKey = keys.WrappedIndexKey,
+            };
+        }),
+    ];
 
     /// <summary>
     /// Runs both authenticated legs of a registration, so the account really holds a passkey a signature

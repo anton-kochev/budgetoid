@@ -165,7 +165,7 @@ public sealed class RecoveryCodeRepositoryTests
         await using BudgetoidDbContext db = CreateDb(host);
         RecoveryCodeRepository repository = new(db);
         (Credential set, RecoveryCodeHash[] hashes) = NewSetFor(userId, Verifiers());
-        WrappedAccountKeys wrappedAccountKeys = NewWrappedKeysFor(set);
+        WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
 
         // Act
         Exception? escaped = await CaptureAsync(
@@ -223,7 +223,7 @@ public sealed class RecoveryCodeRepositoryTests
         await using BudgetoidDbContext db = CreateDb(host);
         RecoveryCodeRepository repository = new(db);
         (Credential set, RecoveryCodeHash[] hashes) = NewSetFor(userId, Verifiers());
-        WrappedAccountKeys wrappedAccountKeys = NewWrappedKeysFor(set);
+        WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -240,12 +240,22 @@ public sealed class RecoveryCodeRepositoryTests
         await Assert.That(await CountCredentialAsync(admin, set.Id)).IsEqualTo(1L);
         await Assert.That(await CountCodesAsync(admin, set.Id)).IsEqualTo((long)SeededCodeCount);
 
-        // One row of wrapped keys, and it carries the factor the caller minted — counted by the
-        // credential and read by the identifier, because a row filed against the right credential with
-        // the wrong factor satisfies every count and binds the envelopes to nothing the client sealed
+        // One row of wrapped keys PER CODE, and they carry the factors the caller minted — counted by
+        // the credential and read by the identifiers, because rows filed against the right credential
+        // with the wrong factors satisfy every count and bind the envelopes to nothing the client sealed
         // them with.
-        await Assert.That(await CountWrappedAccountKeysAsync(admin, set.Id)).IsEqualTo(1L);
-        await Assert.That(await FactorIdOfAsync(admin, set.Id)).IsEqualTo(wrappedAccountKeys.FactorId);
+        //
+        // The count moved with the contract: a set is ten of these rows now, not one, because the client
+        // derives a key-encryption key from each code. Ten and one are not two readings of the same
+        // claim — a save that still wrote a single share would leave nine of the person's codes opening
+        // nothing — so the old number is the defect rather than a stricter version of this one.
+        await Assert.That(await CountWrappedAccountKeysAsync(admin, set.Id))
+            .IsEqualTo((long)SeededCodeCount);
+
+        // Compared as a set, both sides ordered: nothing on this path promises a row order, and the
+        // claim is which factors the rows carry rather than which order they came back in.
+        await Assert.That(await FactorIdsOfAsync(admin, set.Id))
+            .IsEquivalentTo(Ordered(wrappedAccountKeys.Select(keys => keys.FactorId)));
     }
 
     /// <summary>
@@ -296,7 +306,7 @@ public sealed class RecoveryCodeRepositoryTests
         (Credential set, RecoveryCodeHash[] hashes) = NewSetFor(userId, verifiers);
 
         // Freshly minted, so the factor identifier is not a second rule this insert could break.
-        WrappedAccountKeys wrappedAccountKeys = NewWrappedKeysFor(set);
+        WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -317,12 +327,14 @@ public sealed class RecoveryCodeRepositoryTests
         await Assert.That(ConstraintNameOf(escaped))
             .IsNotEqualTo(CredentialConfiguration.RecoveryCodesPerUserIndexName);
 
-        // Nor the other index this save now writes against. AddSetAsync carries two 23505 filters
-        // saying two different things to a caller — one that their codes were replaced, one that their
-        // factor identifier is spoken for — so a stranger's violation widened into either is a
-        // confident, specific, false sentence, and only naming both says this one escaped both.
+        // Nor the other unique rule this save now writes against — wrapped_account_keys' PRIMARY KEY,
+        // which is where the uniqueness of the client-minted factor id lives now that the key is
+        // factor_id and credential_id is an ordinary non-unique column. AddSetAsync carries two 23505
+        // filters saying two different things to a caller — one that their codes were replaced, one
+        // that their factor identifier is spoken for — so a stranger's violation widened into either is
+        // a confident, specific, false sentence, and only naming both says this one escaped both.
         await Assert.That(ConstraintNameOf(escaped))
-            .IsNotEqualTo(WrappedAccountKeysConfiguration.FactorIdIndexName);
+            .IsNotEqualTo(WrappedAccountKeysConfiguration.PrimaryKeyName);
     }
 
     /// <summary>
@@ -669,7 +681,7 @@ public sealed class RecoveryCodeRepositoryTests
         await using BudgetoidDbContext insertingDb = CreateDb(host);
         RecoveryCodeRepository inserting = new(insertingDb);
         (Credential set, RecoveryCodeHash[] hashes) = NewSetFor(loserOnTheInsert, Verifiers());
-        WrappedAccountKeys wrappedAccountKeys = NewWrappedKeysFor(set);
+        WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
 
         await using BudgetoidDbContext deletingDb = CreateDb(host);
         RecoveryCodeRepository deleting = new(deletingDb);
@@ -764,31 +776,44 @@ public sealed class RecoveryCodeRepositoryTests
     }
 
     /// <summary>
-    /// The set's share of the account keys, as a generation files it: a fresh factor identifier and a
-    /// distinguishable pair of envelopes bound to <paramref name="set" />.
+    /// The set's share of the account keys, as a generation files it: <b>one row per code</b>, each with
+    /// a fresh factor identifier and a distinguishable pair of envelopes bound to <paramref name="set" />.
     /// </summary>
     /// <remarks>
     /// <para>
+    /// <b>A list rather than a row, because a set is ten factors and not one.</b> A passkey is one
+    /// credential, one key-encryption key and one pair of envelopes; a set of recovery codes is ten
+    /// separate secrets under a single credential, and the client derives a key-encryption key from each
+    /// <em>code</em>. One share for the whole set would seal the account under whichever code that share
+    /// belonged to, which is the defect ADR 0018 moved this table's key to <c>factor_id</c> to make
+    /// storable in the first place. As many rows as <see cref="NewSetFor" /> writes codes, paired by
+    /// nothing here — no assertion in this file pairs a verifier with an envelope.
+    /// </para>
+    /// <para>
     /// Separate from <see cref="NewSetFor" /> rather than folded into it, because
-    /// <see cref="SeedRecoveryCodeSetAsync" /> writes a set without one — the row is seeded by a call
-    /// of its own where a test needs it, the choice <c>RepositoryTestHost.SeedPasskeyAsync</c> makes —
-    /// and a helper handing back a value most of its callers discard reads as though the two always
+    /// <see cref="SeedRecoveryCodeSetAsync" /> writes a set without any — the rows are seeded by a call
+    /// of their own where a test needs them, the choice <c>RepositoryTestHost.SeedPasskeyAsync</c> makes
+    /// — and a helper handing back a value most of its callers discard reads as though the two always
     /// travel together.
     /// </para>
     /// <para>
-    /// Minted per call, never once per file: <c>IX_wrapped_account_keys_factor_id</c> is unique across
-    /// the whole table rather than per account, so a shared identifier would turn the second write
-    /// anywhere in one database into a <c>23505</c> — and the tests that would meet it are the ones
-    /// issuing twice on purpose, to measure something else entirely.
+    /// Minted per row, never once per file: <c>factor_id</c> is the table's primary key —
+    /// <c>PK_wrapped_account_keys</c> — unique across the whole table rather than per account, so a
+    /// shared identifier would turn the second write
+    /// anywhere in one database into a <c>23505</c> — and it would now do it inside a single set, whose
+    /// ten rows land in one save.
     /// </para>
     /// </remarks>
-    private static WrappedAccountKeys NewWrappedKeysFor(Credential set)
-    {
-        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+    private static WrappedAccountKeys[] NewWrappedKeysFor(Credential set) =>
+    [
+        .. Enumerable.Range(0, SeededCodeCount).Select(_ =>
+        {
+            WrappedKeyFixture keys = WrappedKeyFixture.Mint();
 
-        return WrappedAccountKeys.For(
-            set, keys.Factor, keys.ContentEnvelope, keys.IndexEnvelope, SeedInstant);
-    }
+            return WrappedAccountKeys.For(
+                set, keys.Factor, keys.ContentEnvelope, keys.IndexEnvelope, SeedInstant);
+        }),
+    ];
 
     /// <summary>
     /// <see cref="SeededCodeCount" /> distinct verifiers of the width <c>RecoveryCodeHash.From</c>
@@ -879,29 +904,44 @@ public sealed class RecoveryCodeRepositoryTests
         await CountAsync(admin, "select count(*) from wrapped_account_keys where user_id = @id", userId);
 
     /// <summary>
-    /// The factor identifier the account keys of <paramref name="credentialId" /> are bound to.
+    /// Every factor identifier the account keys of <paramref name="credentialId" /> are bound to,
+    /// ordered.
     /// </summary>
     /// <remarks>
-    /// Read as a scalar rather than through the context, so the value asserted is the one the column
-    /// holds rather than the one the entity handed the repository a moment earlier.
+    /// <para>
+    /// Read as rows rather than as a scalar, and the plural is the contract rather than a convenience:
+    /// a set files one of these per code, so <c>ExecuteScalarAsync</c> here would silently report
+    /// whichever of ten rows the scan happened to return first and an assertion over it would pass on
+    /// nine wrong ones.
+    /// </para>
+    /// <para>
+    /// Through the connection rather than the context, so the values asserted are the ones the columns
+    /// hold rather than the ones the entities handed the repository a moment earlier. Ordered on the way
+    /// out, because no read on this path promises a row order.
+    /// </para>
     /// </remarks>
-    private static async Task<Guid> FactorIdOfAsync(NpgsqlConnection admin, Guid credentialId)
+    private static async Task<Guid[]> FactorIdsOfAsync(NpgsqlConnection admin, Guid credentialId)
     {
         await using NpgsqlCommand command = new(
             "select factor_id from wrapped_account_keys where credential_id = @id",
             admin);
         command.Parameters.AddWithValue("id", credentialId);
 
-        // Pattern-matched rather than cast-and-null-forgive, exactly as CountAsync reads its own
-        // scalar: no row means the arrangement never wrote one, and that should fail loudly here
-        // instead of at the assertion.
-        return await command.ExecuteScalarAsync() switch
+        List<Guid> factorIds = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
         {
-            Guid factorId => factorId,
-            var unexpected => throw new InvalidOperationException(
-                $"Expected one factor id for credential '{credentialId}', got '{unexpected ?? "null"}'."),
-        };
+            factorIds.Add(reader.GetGuid(0));
+        }
+
+        return Ordered(factorIds);
     }
+
+    /// <summary>
+    /// The same identifiers in one agreed order, so a comparison is about which factors are stored and
+    /// never about the order a scan returned them in.
+    /// </summary>
+    private static Guid[] Ordered(IEnumerable<Guid> factorIds) => [.. factorIds.Order()];
 
     /// <summary>
     /// How many sets the account holds, which the product's own partial index bounds at one — so this is

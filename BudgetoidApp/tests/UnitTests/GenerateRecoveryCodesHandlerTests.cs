@@ -114,6 +114,18 @@ public sealed class GenerateRecoveryCodesHandlerTests
     /// </summary>
     private const int VerifierLength = 32;
 
+    /// <summary>
+    /// Which code of a set the refusals that are about <b>one submission</b> put their one fault on.
+    /// </summary>
+    /// <remarks>
+    /// <b>Deliberately not the first, and that is the whole reason it is named.</b> A handler that
+    /// judges <c>codes[0]</c> and trusts the other nine is green on every case whose fault sits on the
+    /// first code — and it would file nine codes' worth of unjudged bytes into the account's key
+    /// custody. It is also what makes the refusal keys below assertable: the key names the submission a
+    /// caller has to correct, so a test asserting one has to know which submission it broke.
+    /// </remarks>
+    private const int FaultedOrdinal = RequiredCodeCount - 1;
+
     private const string RelyingPartyId = "localhost";
     private const string Origin = "https://localhost:4200";
     private const int ChallengeBytes = 32;
@@ -321,6 +333,11 @@ public sealed class GenerateRecoveryCodesHandlerTests
     /// argument <c>CompleteRegistrationHandler</c> makes for its own sentences, and the reason this
     /// refusal is a 400 with a field on it rather than one more byte-identical 401.
     /// </para>
+    /// <para>
+    /// <b>Keyed on the set and never on one submission</b>, which is what the size of a set is about: a
+    /// caller sending nine codes has nothing to correct on any one of them, and a refusal filed against
+    /// a submission would send a client to re-derive a code that was never the problem.
+    /// </para>
     /// </remarks>
     [Test]
     [Arguments(0)]
@@ -336,7 +353,7 @@ public sealed class GenerateRecoveryCodesHandlerTests
             await ThrowsAsync<ValidationException>(() => fixture.Handler.HandleAsync(fixture.Command));
 
         // Assert
-        await Assert.That(exception.Errors.ContainsKey(nameof(GenerateRecoveryCodesCommand.Verifiers))).IsTrue();
+        await Assert.That(exception.Errors.ContainsKey(nameof(GenerateRecoveryCodesCommand.Codes))).IsTrue();
         await Assert.That(fixture.RecoveryCodes.Hashes.Count).IsEqualTo(0);
     }
 
@@ -359,6 +376,14 @@ public sealed class GenerateRecoveryCodesHandlerTests
     /// the first element only, or over the set's total length, is red on this arrangement and green on
     /// a uniformly malformed one.
     /// </para>
+    /// <para>
+    /// <b>Keyed on the faulted submission's own verifier, not on the set</b>, and the precision is the
+    /// assertion rather than decoration. Nine of these ten codes are faultless, so a refusal naming the
+    /// whole set would leave a client re-deriving ten codes when one of them was the problem — and a
+    /// key naming a <em>different</em> ordinal would send it to correct a code it got right. That the
+    /// fault sits on <see cref="FaultedOrdinal" /> rather than on the first is what makes the ordinal in
+    /// the key say something.
+    /// </para>
     /// </remarks>
     [Test]
     [Arguments(VerifierLength - 1)]
@@ -367,7 +392,7 @@ public sealed class GenerateRecoveryCodesHandlerTests
     {
         // Arrange — nine well-formed verifiers and one that is not.
         byte[][] verifiers = Verifiers(RequiredCodeCount);
-        verifiers[^1] = RandomNumberGenerator.GetBytes(width);
+        verifiers[FaultedOrdinal] = RandomNumberGenerator.GetBytes(width);
         Fixture fixture = Fixture.Build(verifiers);
 
         // Act
@@ -375,7 +400,10 @@ public sealed class GenerateRecoveryCodesHandlerTests
             await ThrowsAsync<ValidationException>(() => fixture.Handler.HandleAsync(fixture.Command));
 
         // Assert
-        await Assert.That(exception.Errors.ContainsKey(nameof(GenerateRecoveryCodesCommand.Verifiers))).IsTrue();
+        await Assert
+            .That(exception.Errors.ContainsKey(
+                CodeMember(FaultedOrdinal, nameof(RecoveryCodeSubmission.Verifier))))
+            .IsTrue();
         await Assert.That(fixture.RecoveryCodes.Hashes.Count).IsEqualTo(0);
     }
 
@@ -396,13 +424,19 @@ public sealed class GenerateRecoveryCodesHandlerTests
     /// inside one set is a client whose randomness is not what it claims, and that is worth a refusal
     /// even though a duplicate <em>across</em> sets is invisible here by design.
     /// </para>
+    /// <para>
+    /// <b>Keyed on the set, and this is the one of the three keys that could be argued either way.</b>
+    /// Two submissions are wrong and neither is wrong on its own — each is a perfectly well-formed code
+    /// until the other one is read — so the fault belongs to the set, and naming one of the pair would
+    /// be picking a culprit between two identical claims.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task HandleAsync_WithADuplicateVerifierInTheSet_IsRefused()
     {
         // Arrange
         byte[][] verifiers = Verifiers(RequiredCodeCount);
-        verifiers[^1] = verifiers[0];
+        verifiers[FaultedOrdinal] = verifiers[0];
         Fixture fixture = Fixture.Build(verifiers);
 
         // Act
@@ -410,7 +444,7 @@ public sealed class GenerateRecoveryCodesHandlerTests
             await ThrowsAsync<ValidationException>(() => fixture.Handler.HandleAsync(fixture.Command));
 
         // Assert
-        await Assert.That(exception.Errors.ContainsKey(nameof(GenerateRecoveryCodesCommand.Verifiers))).IsTrue();
+        await Assert.That(exception.Errors.ContainsKey(nameof(GenerateRecoveryCodesCommand.Codes))).IsTrue();
         await Assert.That(fixture.RecoveryCodes.Hashes.Count).IsEqualTo(0);
     }
 
@@ -1131,6 +1165,52 @@ public sealed class GenerateRecoveryCodesHandlerTests
         [.. Enumerable.Range(0, count).Select(_ => RandomNumberGenerator.GetBytes(length))];
 
     /// <summary>
+    /// One whole submission per verifier: the verifier as the wire spells it, and a factor of its own
+    /// holding a well-formed pair of envelopes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Ten submissions and never ten verifiers beside one factor and one pair.</b> A set is ten
+    /// separate secrets under a single credential and the client derives a key-encryption key from each
+    /// <em>code</em>, so one share for the whole set would seal the account under whichever code that
+    /// pair belonged to and leave nine codes opening nothing.
+    /// </para>
+    /// <para>
+    /// <b>Every member but the verifier is faultless, on every path, and that is what keeps each
+    /// validation test on its own subject.</b> A malformed envelope or a repeated factor introduced here
+    /// would be refused before or instead of the rule a test was written for, and a "wrong count" test
+    /// would go on passing while saying nothing about the count.
+    /// </para>
+    /// <para>
+    /// A fresh factor per submission, minted per call rather than shared: two codes of one set repeating
+    /// an identifier is a refusal of its own, and <c>factor_id</c> is the table's primary key —
+    /// <c>PK_wrapped_account_keys</c> — so it is unique across the whole table and a constant would be a
+    /// collision the moment two fixtures' rows met in
+    /// one database. Nothing in memory enforces either, which is exactly why the habit is kept where it
+    /// cannot be observed.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<RecoveryCodeSubmission> SubmissionsOf(IReadOnlyList<byte[]> verifiers) =>
+    [
+        .. verifiers.Select(verifier => new RecoveryCodeSubmission(
+            Base64UrlText.Encode(verifier),
+            Guid.CreateVersion7().ToString("D"),
+            Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
+            Base64UrlText.Encode(Envelope(IndexKeyPurpose)))),
+    ];
+
+    /// <summary>
+    /// The key one code's member is refused under: which submission of the set, and which member of it.
+    /// </summary>
+    /// <remarks>
+    /// Spelled out here rather than read off the handler, for the reason <see cref="RequiredCodeCount" />
+    /// gives: a test taking its expectation from the type under test agrees with whatever that type
+    /// later decides — including with a key that had quietly stopped naming the submission at all.
+    /// </remarks>
+    private static string CodeMember(int ordinal, string member) =>
+        $"{nameof(GenerateRecoveryCodesCommand.Codes)}[{ordinal}].{member}";
+
+    /// <summary>
     /// The byte that says which of the two envelopes an assertion is looking at.
     /// </summary>
     /// <remarks>
@@ -1202,9 +1282,9 @@ public sealed class GenerateRecoveryCodesHandlerTests
     /// restate an eight-argument constructor.
     /// </summary>
     /// <param name="Verifiers">
-    /// The verifiers the command carries, as bytes. The command carries them as base64url text, which
-    /// is how every binary member of this exchange crosses JSON; the decoded form is kept here because
-    /// the expected hashes are computed from it.
+    /// The verifiers the command carries, as bytes. The command carries each one inside its own
+    /// submission as base64url text, which is how every binary member of this exchange crosses JSON;
+    /// the decoded form is kept here because the expected hashes are computed from it.
     /// </param>
     /// <param name="PreviousSet">
     /// The credential of the set the account already held, where a test seeded one.
@@ -1381,21 +1461,13 @@ public sealed class GenerateRecoveryCodesHandlerTests
             built = new Fixture(
                 handler,
                 new GenerateRecoveryCodesCommand(
-                    [.. presented.Select(verifier => Base64UrlText.Encode(verifier))],
-
-                    // A FRESH FACTOR PER FIXTURE, and a well-formed envelope pair to go with it. Every
-                    // test in this file is about something else — the gate, the set, the sweep, the
-                    // replay — so the factor and the two envelopes are valid on every path, and the
-                    // validation tests keep refusing for the reason their own name gives rather than
-                    // for a malformed envelope they never meant to send.
-                    //
-                    // Minted per call rather than shared: IX_wrapped_account_keys_factor_id is unique
-                    // across the whole table, so a constant would be a collision the moment two
-                    // fixtures' rows met in one database. Nothing in memory enforces that index, which
-                    // is exactly why the habit has to be kept where it cannot be observed.
-                    Guid.CreateVersion7().ToString("D"),
-                    Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
-                    Base64UrlText.Encode(Envelope(IndexKeyPurpose)),
+                    // ONE WHOLE SUBMISSION PER CODE, each with a fresh factor and a well-formed
+                    // envelope pair of its own. Every test in this file is about something else — the
+                    // gate, the set, the sweep, the replay — so every member but the verifier is valid
+                    // on every path, and the validation tests keep refusing for the reason their own
+                    // name gives rather than for a malformed envelope they never meant to send. See
+                    // SubmissionsOf.
+                    SubmissionsOf(presented),
                     new ReauthenticationAssertion(
                         assertion.CredentialIdBase64Url,
                         assertion.ClientDataJsonBase64Url,

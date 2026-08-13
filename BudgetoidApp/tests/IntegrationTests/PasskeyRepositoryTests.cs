@@ -318,11 +318,14 @@ public sealed class PasskeyRepositoryTests
         await Assert.That(ConstraintNameOf(escaped))
             .IsNotEqualTo(PasskeyPublicKeyConfiguration.WebAuthnCredentialIdIndexName);
 
-        // Nor the other index this save now writes against. TryAddAsync has two 23505 filters and they
-        // answer differently — one returns false, the other throws — so a stranger's violation widened
-        // into either is a lie, and only naming both says this arrangement escaped both.
+        // Nor the other unique rule this save now writes against — wrapped_account_keys' PRIMARY KEY,
+        // which is where the uniqueness of the client-minted factor id lives now that the key is
+        // factor_id and credential_id is an ordinary non-unique column. TryAddAsync has two 23505
+        // filters and they answer differently — one returns false, the other throws — so a stranger's
+        // violation widened into either is a lie, and only naming both says this arrangement escaped
+        // both.
         await Assert.That(ConstraintNameOf(escaped))
-            .IsNotEqualTo(WrappedAccountKeysConfiguration.FactorIdIndexName);
+            .IsNotEqualTo(WrappedAccountKeysConfiguration.PrimaryKeyName);
     }
 
     /// <summary>
@@ -387,8 +390,9 @@ public sealed class PasskeyRepositoryTests
     /// </para>
     /// <para>
     /// The factor identifier and both envelopes come from <see cref="WrappedKeyFixture.Mint" />, so
-    /// each call gets its own: <c>IX_wrapped_account_keys_factor_id</c> is unique across the whole
-    /// table rather than per account, and a value shared between two calls would refuse the second
+    /// each call gets its own: <c>factor_id</c> is the table's primary key —
+    /// <c>PK_wrapped_account_keys</c> — unique across the whole table rather than per account, and a
+    /// value shared between two calls would refuse the second
     /// registration with a <c>23505</c> no test in this file is reading.
     /// </para>
     /// </remarks>

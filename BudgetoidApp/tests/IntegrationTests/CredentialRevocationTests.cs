@@ -1099,8 +1099,8 @@ public sealed class CredentialRevocationTests
     /// <param name="wrappedKeys">
     /// The share of the account keys this factor is to hold. Null mints a fresh one, which is what
     /// every test that is not about the wrapped keys wants — and it has to be fresh, because
-    /// <c>IX_wrapped_account_keys_factor_id</c> is unique table-wide and most tests here register two
-    /// passkeys onto one account.
+    /// <c>factor_id</c> is the table's primary key — <c>PK_wrapped_account_keys</c> — so it is unique
+    /// table-wide, and most tests here register two passkeys onto one account.
     /// </param>
     private static async Task RegisterPasskeyAsync(
         HttpClient client,

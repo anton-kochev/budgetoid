@@ -237,6 +237,67 @@ public sealed class KeyMaterialSecrecyTests
         await Assert.That(stale).DoesNotContain("wrapped_account_keys.wrapped_content_key");
     }
 
+    /// <summary>
+    /// Every classification says what its column holds and why holding it unwraps nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The set comparison above compares <see cref="BinaryColumnClassification.Qualified" /> and
+    /// nothing else</b>, so both prose members are read by no assertion at all: a new <c>bytea</c> column
+    /// entered as <c>new("t", "c", "", "")</c> satisfies it completely. That is the whole requirement
+    /// gone — the record's own remarks say <see cref="BinaryColumnClassification.UnwrapsNothingBecause" />
+    /// is the member carrying FR-064, because the requirement is not that these columns are binary but
+    /// that no value the server holds is one by which a wrapped key can be unwrapped, and only prose can
+    /// make that claim per column. A list nobody has to argue on is a list that agrees with whatever
+    /// arrives next.
+    /// </para>
+    /// <para>
+    /// A length floor rather than a judgement of the words, which is what
+    /// <c>UnwrappedKeyMaterialVocabularyTests.Vocabulary_StatesAReasonForEveryRule</c> does next door for
+    /// the same reason: no assertion can tell a real argument from a fluent one, and the cheapest way to
+    /// write nothing is to write nothing. The floors differ because the two members answer different
+    /// questions — <see cref="BinaryColumnClassification.Holds" /> is a fact in one clause, the reason is
+    /// an argument the next reader has to be able to disagree with, and "not a key" is four words that
+    /// restate the verdict.
+    /// </para>
+    /// <para>
+    /// No database, deliberately: the list is the requirement and the catalog is only what stops it
+    /// lying, so this half of it is checkable with nothing running.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Classifications_StateWhatEachColumnHoldsAndWhyItUnwrapsNothing()
+    {
+        // Arrange
+        IReadOnlyList<BinaryColumnClassification> classifications = Classifications;
+
+        // Act — reported by column rather than counted, so a failure names the entry to argue about.
+        string[] unstated =
+        [
+            .. classifications
+                .Where(entry => string.IsNullOrWhiteSpace(entry.Holds)
+                                || entry.Holds.Length < MinimumHoldsLength)
+                .Select(entry => $"{entry.Qualified} holds: <unstated>")
+                .Order(StringComparer.Ordinal),
+        ];
+
+        string[] unargued =
+        [
+            .. classifications
+                .Where(entry => string.IsNullOrWhiteSpace(entry.UnwrapsNothingBecause)
+                                || entry.UnwrapsNothingBecause.Length < MinimumReasonLength)
+                .Select(entry => $"{entry.Qualified} unwraps nothing because: <unargued>")
+                .Order(StringComparer.Ordinal),
+        ];
+
+        // Assert — the non-empty check first: an empty list has no unargued entry either, and would pass
+        // both assertions below with nothing in it. That is not hypothetical here, since the list is
+        // hand-written and its only other reader is a set comparison that an empty schema also satisfies.
+        await Assert.That(classifications).IsNotEmpty();
+        await Assert.That(string.Join(", ", unstated)).IsEqualTo(string.Empty);
+        await Assert.That(string.Join(", ", unargued)).IsEqualTo(string.Empty);
+    }
+
     [Test]
     public async Task Schema_HoldsNoColumnNamedForUnwrappedKeyMaterial()
     {
@@ -437,6 +498,27 @@ public sealed class KeyMaterialSecrecyTests
             + "expires it; it is an input to no KDF on either side, and the PRF eval input the "
             + "authenticator is asked for is a fixed domain string rather than this value"),
     ];
+
+    /// <summary>
+    /// The shortest a clause saying what a column holds may be.
+    /// </summary>
+    /// <remarks>
+    /// Low, because the member is one clause of fact and a floor that forced padding would buy nothing.
+    /// It is above every one-word placeholder — <c>bytes</c>, <c>a key</c>, <c>opaque</c> — which is the
+    /// whole job: a column whose contents nobody can write in a clause is already the defect.
+    /// </remarks>
+    private const int MinimumHoldsLength = 24;
+
+    /// <summary>
+    /// The shortest an argument that a column unwraps nothing may be.
+    /// </summary>
+    /// <remarks>
+    /// Higher than <see cref="MinimumHoldsLength" /> and higher than the vocabulary's floor next door,
+    /// because this member carries FR-064 and the sentence it has to beat is a restatement of the
+    /// verdict: <c>not a key</c>, <c>it is a hash</c>, <c>safe to store</c> all fit in a clause. Saying
+    /// what stands between the stored bytes and a key-encryption key does not.
+    /// </remarks>
+    private const int MinimumReasonLength = 80;
 
     /// <summary>
     /// The binary half of the fail-closed control: a relation carrying one <c>bytea</c> column under a

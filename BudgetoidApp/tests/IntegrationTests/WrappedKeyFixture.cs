@@ -17,8 +17,9 @@ namespace IntegrationTests;
 /// fixture that keeps passing after the real bound moved.
 /// </para>
 /// <para>
-/// <b>Minted per call, never once per file.</b> <c>IX_wrapped_account_keys_factor_id</c> is unique
-/// across the whole table rather than per account, so a shared constant would turn the second write
+/// <b>Minted per call, never once per file.</b> <c>factor_id</c> is the table's primary key —
+/// <c>PK_wrapped_account_keys</c> — so it is unique across the whole table rather than per account, and
+/// a shared constant would turn the second write
 /// anywhere in one database into a <c>23505</c> — and the tests that would meet it are the ones that
 /// register or issue twice on purpose, to measure something else entirely.
 /// </para>

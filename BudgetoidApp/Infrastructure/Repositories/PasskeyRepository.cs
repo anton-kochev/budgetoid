@@ -156,7 +156,7 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
         {
             SqlState: PostgresErrorCodes.UniqueViolation,
-            ConstraintName: WrappedAccountKeysConfiguration.FactorIdIndexName,
+            ConstraintName: WrappedAccountKeysConfiguration.PrimaryKeyName,
         })
         {
             throw new ConflictException(FactorAlreadyRegisteredMessage);

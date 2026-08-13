@@ -124,15 +124,31 @@ export interface WrappedAccountKeys {
 // checks the only one whose shape a caller chooses.
 const UNIT_SEPARATOR = String.fromCharCode(0x1f);
 
-// The canonical spelling, and the ways a caller may write it. A UUID has one
-// canonical form and several renderings — `Guid.ToString` on the server that
-// issues these ids emits any of `D`, `N`, `B` and `P` — and they all name the same
-// factor, so they all have to fold to the same bytes here.
+// The canonical spelling, and the ways a caller may write it. **The client
+// mints these identifiers**, and that is the decision ADR 0018 §4 exists to
+// record: a server-minted one was refused, because letting a caller choose
+// `credentials.id` instead would retire ADR 0014's first leg. So nothing
+// upstream hands this module a normalised value — the fold below is the only
+// place one is made.
 //
-// The folding is not a convenience. Associated data is re-supplied rather than
-// carried, so a client that wrapped under one spelling and read back another finds
-// the envelope unopenable, forever, with nothing anywhere saying which of the two
-// spellings was right.
+// **The hazard is case, not braces.** Associated data is re-supplied from where
+// the envelope was found rather than carried inside it, so the spelling a
+// factor is bound under has to be the spelling every later read reproduces.
+// The server keeps a uuid and renders it back lower-case hyphenated, so a
+// client that binds an upper-case rendering seals two envelopes whose
+// associated data nothing will ever rebuild — permanently, with nothing
+// anywhere naming the cause. Folding here is what keeps this client from being
+// that client.
+//
+// The server no longer accepts any other spelling at all: `CanonicalFactorId`
+// parses with `"D"` and then compares the submitted text ordinally against
+// `parsed.ToString("D")`, so upper-case hex, surrounding whitespace, the bare
+// 32-digit form and the brace- and parenthesis-wrapped ones are each refused
+// with a 400. Against that contract the tolerance below is dead: a caller that
+// mints one of those spellings has its request refused whatever this module
+// folded it to. It stays because it is the half of the rule this module can
+// hold on its own — the refusal is a fact about today's server, while these
+// envelopes are sealed here, before any server has seen the value.
 const HYPHENATED_UUID =
   /^([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})$/;
 const BARE_UUID =

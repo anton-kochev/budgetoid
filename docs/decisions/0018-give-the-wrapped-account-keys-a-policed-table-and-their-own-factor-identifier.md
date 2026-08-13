@@ -35,12 +35,32 @@ ADR exists to record refusing.
 
 **Wrapped account keys live on `wrapped_account_keys`, one row per recovery factor, policed by
 `user_isolation`. The value their associated data binds is a `factor_id` column of that table, minted
-by the client — and deliberately not `credentials.id`.**
+by the client — and deliberately not `credentials.id`. That column is the table's primary key.**
 
-1. **One row per factor, both keys or neither.** `credential_id` is the primary key, and
+1. **One row per factor, and a factor is not a credential.** `factor_id` is the primary key;
+   `credential_id` is an ordinary, **non-unique** column. A passkey is one factor and one credential.
+   A set of recovery codes is one credential and **ten** factors, because each of the ten codes is a
+   secret of its own from which the client derives its own key-encryption key — so a set stores ten
+   rows, one per code, and `credential_id` repeats across them.
+
+   The first draft of this decision keyed the table on `credential_id`, and it was wrong in a way
+   worth recording rather than quietly correcting: with one row per set, only whichever code that
+   row's envelopes had been sealed under could open the account. A person redeems whichever code they
+   still have, so nine redemptions out of ten would have opened a session that unlocks nothing — on
+   the day they had already lost their authenticator. The client API was per-code from the start and
+   the schema was per-set; nobody reconciled the two until a review asked which of the ten it was.
+
    `wrapped_content_key` and `wrapped_index_key` are both `NOT NULL`, so "a factor carries a copy of
-   both keys" is a declarative fact rather than a rule some handler keeps. The composite foreign key
-   to `AK_credentials_id_user_id_type` cascades, so revoking a factor takes its keys with it.
+   both keys, or no row at all" is a declarative fact. **That a factor has a row at all is not one** —
+   one-to-optional is not expressible without a trigger, which ADR 0002 forbids pushing down. It is
+   held by there being exactly two write paths. The composite foreign key to
+   `AK_credentials_id_user_id_type` cascades, so revoking a factor takes its keys with it, and
+   replacing a set takes all ten.
+
+   Nothing links a code's `recovery_code_hashes` row to its `wrapped_account_keys` row, deliberately:
+   the link would have to live on the hash table, which is exempt from row-level security and holds a
+   pinned column set. A client tries each row in turn and exactly one opens, which is what the
+   associated data is for.
 
 2. **Policed, with no new rule and no exemption entry.** The table carries `user_id`, so the shared
    classifier requires `user_isolation` of it without being told, and it appears in no exemption list.
@@ -64,14 +84,24 @@ by the client — and deliberately not `credentials.id`.**
    first leg is what makes the third one checkable. Six comment blocks across the Domain ports, both
    repositories, the in-memory fake and `app-role-grants.sql` assert the retired property today.
 
-   A separate column costs one `uuid` and one unique index and touches none of that. It also removes
+   A separate column costs one `uuid` — which then became the primary key — and touches none of that.
+   It also removes
    a naming hazard rather than adding one: `ReauthenticationAssertion.CredentialId` already means the
    WebAuthn handle, so "credential id" was about to acquire a third meaning.
 
 5. **`SELECT, INSERT`, and nothing else.** No `UPDATE` of any shape: every column is immutable, and
-   registering or revoking a factor rewrites wrapped keys rather than editing them. A content-key
-   rotation is the one operation that would ever rewrite these two columns, and it must arrive with
-   its own argument for the grant it needs.
+   registering or revoking a factor writes new rows rather than editing them. A content-key rotation
+   is the one operation that would ever rewrite these two columns, and it must arrive with its own
+   argument for the grant it needs.
+
+   **`SELECT` is granted to a reader that is not production code, and that is a real tension worth
+   naming rather than glossing.** The paragraph above argues that withholding a privilege until
+   something uses it costs nothing while granting an unused one leaves a standing capability with no
+   reader to explain it — and then `SELECT` is granted to the row-level-security probes and to nothing
+   else. The difference that decides it: without the grant, the policy could never be *observed*, so
+   the isolation this whole decision rests on would be asserted and unchecked. An ungranted `UPDATE`
+   leaves nothing unobservable; an ungranted `SELECT` does. When the unlock story arrives it will
+   bring the production reader this grant is already sized for, and this paragraph should go with it.
 
    No `DELETE`: revoking a factor removes its keys by the cascade from `credentials`, which runs with
    the referencing table owner's privileges rather than the application role's.
@@ -114,8 +144,12 @@ server-assigned and still hands the client a value before it wraps. It needs a c
 pin* — a whole table's worth of cost for a property a plain column on the policed table already gives.
 
 **Register the factor first, then upload its wrapped keys in a second request.** Removes the need for
-any client-known identifier. It also makes a factor that exists without its keys a reachable state,
-which is exactly what the two `NOT NULL` columns and the single `SaveChanges` exist to forbid.
+any client-known identifier. It also makes a factor that exists without its keys a reachable state —
+and reachable is the operative word, because nothing in the schema forbids that state. The two
+`NOT NULL` columns say a row carries both keys or neither; what says a factor *has* a row is that
+both write paths demand the members and write them in the same `SaveChanges` as the credential. A
+second request would be a third write path, and the first one whose failure leaves a passkey that
+proves identity and unlocks nothing.
 
 ## Consequences
 
@@ -143,3 +177,17 @@ which is exactly what the two `NOT NULL` columns and the single `SaveChanges` ex
 - **`factor_id` is unique across the table rather than per account.** A collision between two accounts
   therefore surfaces as the same refusal as a collision within one. The value is 122 random bits, so
   this is a statement about what the schema guarantees rather than about an event anyone will see.
+- **A set's ten identifiers are required to differ by the handler, not by the key.** Left to
+  `PK_wrapped_account_keys`, the refusal would arrive as a 409 *after* the previous set had been
+  deleted inside the same transaction, and it would say "that factor identifier is already registered"
+  about a factor the client never registered. It is also the same evidence the existing
+  verifier-distinctness rule is: a client repeating an identifier inside one set has randomness that
+  is not what it claims.
+- **A factor identifier has exactly one spelling on the wire, and `Guid.TryParseExact(…, "D")` is not
+  enough to say so.** That overload also accepts upper-case hex, mixed case and surrounding
+  whitespace — it trims before it looks at the format. Since the identifier is the associated data
+  both envelopes were sealed with, a client that bound one spelling and sent another finds its own
+  envelopes permanently unopenable, with no error naming the cause. Both handlers therefore compare
+  the text ordinally against `parsed.ToString("D")`. That comparison looks redundant beside the parse
+  and is not: it is the rendering itself rather than a hand-maintained copy of it, so it cannot drift
+  from what the runtime actually produces.

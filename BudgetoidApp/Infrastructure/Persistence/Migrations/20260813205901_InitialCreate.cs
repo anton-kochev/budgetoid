@@ -295,8 +295,8 @@ public partial class InitialCreate : Migration
             name: "wrapped_account_keys",
             columns: table => new
             {
-                credential_id = table.Column<Guid>(type: "uuid", nullable: false),
                 factor_id = table.Column<Guid>(type: "uuid", nullable: false),
+                credential_id = table.Column<Guid>(type: "uuid", nullable: false),
                 user_id = table.Column<Guid>(type: "uuid", nullable: false),
                 credential_type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
                 wrapped_content_key = table.Column<byte[]>(type: "bytea", nullable: false),
@@ -305,7 +305,7 @@ public partial class InitialCreate : Migration
             },
             constraints: table =>
             {
-                table.PrimaryKey("PK_wrapped_account_keys", x => x.credential_id);
+                table.PrimaryKey("PK_wrapped_account_keys", x => x.factor_id);
                 table.CheckConstraint("CK_wrapped_account_keys_credential_type", "credential_type in ('passkey', 'recovery_codes')");
                 table.CheckConstraint("CK_wrapped_account_keys_wrapped_content_key_length", "length(wrapped_content_key) = 61");
                 table.CheckConstraint("CK_wrapped_account_keys_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
@@ -574,12 +574,6 @@ public partial class InitialCreate : Migration
             name: "IX_wrapped_account_keys_credential_id_user_id_credential_type",
             table: "wrapped_account_keys",
             columns: new[] { "credential_id", "user_id", "credential_type" });
-
-        migrationBuilder.CreateIndex(
-            name: "IX_wrapped_account_keys_factor_id",
-            table: "wrapped_account_keys",
-            column: "factor_id",
-            unique: true);
 
         migrationBuilder.CreateIndex(
             name: "IX_wrapped_account_keys_user_id",

@@ -53,10 +53,7 @@ public static class RecoveryCodeEndpoints
         {
             RecoveryCodesGeneration generation = await handler.HandleAsync(
                 new GenerateRecoveryCodesCommand(
-                    request.Verifiers,
-                    request.FactorId,
-                    request.WrappedContentKey,
-                    request.WrappedIndexKey,
+                    request.Codes,
                     new ReauthenticationAssertion(
                         request.CredentialId,
                         request.ClientDataJson,
@@ -240,9 +237,9 @@ public static class RecoveryCodeEndpoints
     private sealed record ReestablishedSessionResponse(string Kind, DateTime ExpiresAtUtc);
 
     /// <summary>
-    /// The set being presented, the share of the account keys it is to hold, and the assertion the issue
-    /// is authorized by — the last in the shape the erasure and revocation legs' own request records
-    /// already use.
+    /// The set being presented — ten whole submissions, each carrying its own code's share of the
+    /// account keys — and the assertion the issue is authorized by, the last in the shape the erasure
+    /// and revocation legs' own request records already use.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -255,7 +252,7 @@ public static class RecoveryCodeEndpoints
     /// to <see langword="null" /> — a body of <c>{}</c>, or one naming only some of them — reaches the
     /// gate's own decode, which answers the same 401 every other refusal on this endpoint answers.
     /// Marking them required would buy a framework 400 that tells a caller holding a stolen bearer token
-    /// that its proof was the thing found wanting. It bites harder on <see cref="Verifiers" /> than on
+    /// that its proof was the thing found wanting. It bites harder on <see cref="Codes" /> than on
     /// the assertion members: a framework 400 there would tell an unproven caller that the server has an
     /// opinion about the set, which is the disclosure the handler's gate-before-validation ordering
     /// exists to prevent. So an absent set arrives here as <see langword="null" /> despite the
@@ -263,18 +260,19 @@ public static class RecoveryCodeEndpoints
     /// it is.
     /// </para>
     /// <para>
-    /// <b>The three key-custody members inherit that decision whole, and <see cref="FactorId" /> is the
-    /// sharpest case for it.</b> Declared <see cref="string" /> rather than <see cref="Guid" />: a
-    /// <see cref="Guid" /> member would earn a framework 400 on a malformed value, raised before the
-    /// handler is entered and therefore before the re-authentication gate has run — telling an unproven
-    /// caller that the server has an opinion about this account's key custody, which is the exact
-    /// disclosure the gate-before-validation ordering exists to prevent. It would also silently widen
-    /// the wire format, since the framework parses more spellings of a uuid than this contract accepts.
+    /// <b>The set is <see cref="RecoveryCodeSubmission" /> rather than a wire record of this layer's
+    /// own, unlike every other member here.</b> That record carries the same decision whole — all four
+    /// members <see cref="string" />, none <c>required</c>, and its own remarks argue why — so a copy
+    /// would be four declarations able to disagree with the command about which spellings a caller may
+    /// send, on the one member of this request whose shape is a cryptographic binding rather than a
+    /// convenience. The assertion members stay flat and mapped, because they are flattened onto this
+    /// request rather than nested and there is nothing to reuse.
     /// </para>
     /// <para>
-    /// <b>Neither envelope is a key.</b> Each is a sealed blob the client wrapped under a key-encryption
-    /// key derived from the codes it minted; the server can open neither and holds no value that could,
-    /// which is why they may cross this boundary at all when a recovery code may not.
+    /// <b>Ten submissions and not ten verifiers beside one factor and one pair of envelopes.</b> A set is
+    /// ten separate secrets under a single credential and the client derives a key-encryption key from
+    /// each <em>code</em>, so one pair for the whole set would seal the account under whichever code that
+    /// pair belonged to and nine of the ten would open nothing.
     /// </para>
     /// <para>
     /// That envelope covers what binds, not what fails to. No body at all, a literal <c>null</c>, or a
@@ -283,21 +281,18 @@ public static class RecoveryCodeEndpoints
     /// caller's own request and says nothing about what this account holds.
     /// </para>
     /// <para>
-    /// The verifiers are base64url <b>text</b>, which is how every binary member of this exchange crosses
-    /// JSON, and they travel beside the assertion rather than nested because they are members of the same
-    /// command. <see cref="CredentialId" /> is the WebAuthn <em>handle</em> of the authenticator that
-    /// signed the assertion — this route addresses no credential of its own, so unlike the revocation
-    /// there is no second id space for it to be confused with.
+    /// Every binary member of a submission is base64url <b>text</b>, which is how binary crosses JSON
+    /// here, and the set travels beside the assertion rather than nested because both are members of the
+    /// same command. <see cref="CredentialId" /> is the WebAuthn <em>handle</em> of the authenticator
+    /// that signed the assertion — this route addresses no credential of its own, so unlike the
+    /// revocation there is no second id space for it to be confused with.
     /// </para>
     /// </remarks>
     private sealed record RecoveryCodeGenerationRequest(
-        IReadOnlyList<string> Verifiers,
+        IReadOnlyList<RecoveryCodeSubmission> Codes,
         string CredentialId,
         string ClientDataJson,
         string AuthenticatorData,
         string Signature,
-        string? UserHandle,
-        string FactorId,
-        string WrappedContentKey,
-        string WrappedIndexKey);
+        string? UserHandle);
 }

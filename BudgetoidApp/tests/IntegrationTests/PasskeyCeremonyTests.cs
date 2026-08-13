@@ -918,6 +918,87 @@ public sealed class PasskeyCeremonyTests
     }
 
     /// <summary>
+    /// A response that is wrong twice over the other way — no <c>prf</c> result <b>and</b> a malformed
+    /// key-custody member — is refused for its authenticator, not for its payload.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The mirror of
+    /// <see cref="Registration_WhoseOriginIsWrongAndReportsNoPrfResult_IsRefusedForTheOriginRatherThanTheAuthenticator" />
+    /// and the other half of the same ordering: everything signed is judged <b>before</b> the extension
+    /// claim, and the three members that carry the account's key custody are judged <b>after</b> it.
+    /// This is the half nothing owned. A client that cannot do PRF cannot have produced a wrapped key
+    /// either, so these members are very often absent or nonsense on exactly the requests the gate is
+    /// for — and judged first, such a request is told its <em>payload</em> is malformed. That sends
+    /// somebody holding a device which genuinely lacks the extension off to debug their client, when
+    /// what they need to hear is that the device cannot hold the account's keys.
+    /// </para>
+    /// <para>
+    /// It was held only incidentally before this test.
+    /// <see cref="Registration_WhoseAuthenticatorReportsNoPrfResult_Returns400NamingTheAuthenticator" />
+    /// goes through <see cref="PostRegistrationAsync(HttpClient, AttestationResult, WrappedKeyFixture)" />,
+    /// which mints a <b>valid</b> <see cref="WrappedKeyFixture" />, so it never reaches a payload check
+    /// at all and cannot see the ordering. What did cover it were the two hand-built tests that happen
+    /// to omit the three members — coverage that would vanish silently the moment either was tidied onto
+    /// the shared helper. Here the members are <b>present and wrong</b>, so only the order of the checks
+    /// can decide which sentence answers.
+    /// </para>
+    /// <para>
+    /// One case per member, because each is a separate check in the handler and any one of them could be
+    /// moved above the gate on its own. The body is assembled by hand for the reason the sibling prf
+    /// tests assemble theirs: neither helper can express a request that carries no extension results
+    /// <em>and</em> a member the fixture is incapable of producing.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(KeyCustodyMember.FactorId)]
+    [Arguments(KeyCustodyMember.WrappedContentKey)]
+    [Arguments(KeyCustodyMember.WrappedIndexKey)]
+    public async Task Registration_WhoseKeyCustodyMemberIsMalformedAndReportsNoPrfResult_IsRefusedForTheAuthenticatorRatherThanThePayload(
+        KeyCustodyMember member)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act — a genuine ceremony in every signed respect, reporting nothing about the extension, with
+        // exactly one key-custody member the handler is bound to refuse if it ever looks at it.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        string malformed = MalformedEnvelopeText(MalformedEnvelope.OneByteShort);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+
+            // The empty object a device with no PRF support really produces, rather than the JSON null
+            // a hand-written client would have to choose: the ordering has to hold on the shape that
+            // actually arrives.
+            clientExtensionResults = new { },
+            factorId = member is KeyCustodyMember.FactorId ? NotOneCanonicalUuid : keys.FactorId,
+            wrappedContentKey = member is KeyCustodyMember.WrappedContentKey
+                ? malformed
+                : keys.WrappedContentKey,
+            wrappedIndexKey = member is KeyCustodyMember.WrappedIndexKey
+                ? malformed
+                : keys.WrappedIndexKey,
+        });
+
+        // Assert — the sentence is pinned whole rather than by a prefix, because what this test is about
+        // is which of two true sentences the caller is told, and a prefix long enough to tell them apart
+        // is most of the sentence anyway.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
     /// The provable-fail control beside the refusal above: an authenticator that does report a
     /// <c>prf</c> result registers, and the whole passkey is filed.
     /// </summary>
@@ -1162,7 +1243,7 @@ public sealed class PasskeyCeremonyTests
         // Assert — filed under the key this leg's every other refusal is filed under, because a caller
         // reading one field learns nothing from a refusal written into another.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await Assert.That(await ReadValidationErrorAsync(response)).IsNotEmpty();
+        await AssertNamesTheMalformedEnvelopeAsync(response, member);
         await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
@@ -1212,7 +1293,7 @@ public sealed class PasskeyCeremonyTests
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await Assert.That(await ReadValidationErrorAsync(response)).IsNotEmpty();
+        await AssertNamesTheMalformedEnvelopeAsync(response, member);
         await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
@@ -1238,6 +1319,18 @@ public sealed class PasskeyCeremonyTests
     /// table-wide unique index into a cross-account collision the second account meets as a refusal to
     /// register.
     /// </para>
+    /// <para>
+    /// The last four cases are the 36-character hyphenated form itself, written the ways
+    /// <see cref="Guid.TryParseExact(string, string, out Guid)"/> also admits under <c>"D"</c>: hex in
+    /// upper case, hex in mixed case, and the same uuid with a leading or a trailing space, which that
+    /// overload trims before it looks at anything. Each is a different value on the wire and the same
+    /// <see cref="Guid"/> in the row, and the row is what every later read hands back — rendered lower
+    /// case, unspaced, once. A second client that binds its associated data to the spelling it sent
+    /// therefore rebuilds associated data the stored value cannot reproduce, and <b>both</b> of that
+    /// factor's envelopes stop opening permanently, with nothing anywhere naming the cause. This
+    /// client is safe only because its own canonical form lower-cases before sealing; the server owes
+    /// the same guarantee to a client whose source it does not hold.
+    /// </para>
     /// </remarks>
     [Test]
     [Arguments("0198f2c0d1e474a0b9c6e2f8a1b3c5d7")]
@@ -1245,6 +1338,10 @@ public sealed class PasskeyCeremonyTests
     [Arguments("(0198f2c0-d1e4-74a0-b9c6-e2f8a1b3c5d7)")]
     [Arguments("not a factor identifier at all")]
     [Arguments("00000000-0000-0000-0000-000000000000")]
+    [Arguments("C1D2E3F4-5A6B-7C8D-9E0F-A1B2C3D4E5F6")]
+    [Arguments("C1d2E3f4-5A6b-7C8d-9E0f-A1b2C3d4E5f6")]
+    [Arguments(" 0198f2c0-d1e4-74a0-b9c6-e2f8a1b3c5d7")]
+    [Arguments("0198f2c0-d1e4-74a0-b9c6-e2f8a1b3c5d7 ")]
     public async Task PasskeyRegistration_RefusesAFactorIdentifierThatIsNotOneCanonicalUuid(string factorId)
     {
         // Arrange
@@ -1268,9 +1365,13 @@ public sealed class PasskeyCeremonyTests
             keys.WrappedContentKey,
             keys.WrappedIndexKey);
 
-        // Assert
+        // Assert — the sentence is pinned whole, because it carries no bound that could move and because
+        // "some sentence arrived" is satisfied by a refusal about any of the other five members of this
+        // request. It names the member on the wire, which is the only spelling a caller can act on.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await Assert.That(await ReadValidationErrorAsync(response)).IsNotEmpty();
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "factorId must be a uuid in the lower-case 36-character hyphenated form with no "
+            + "surrounding whitespace, and not the all-zero uuid.");
         await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
@@ -1724,8 +1825,8 @@ public sealed class PasskeyCeremonyTests
     /// <param name="wrappedKeys">
     /// The share of the account keys this factor is to hold. Null mints a fresh one, which is what
     /// every test that is not about the wrapped keys wants — and it has to be fresh, because
-    /// <c>IX_wrapped_account_keys_factor_id</c> is unique table-wide and several tests here register
-    /// twice to measure something else.
+    /// <c>factor_id</c> is the table's primary key — <c>PK_wrapped_account_keys</c> — so it is unique
+    /// table-wide, and several tests here register twice to measure something else.
     /// </param>
     private static Task<HttpResponseMessage> PostRegistrationAsync(
         HttpClient client,
@@ -1788,6 +1889,88 @@ public sealed class PasskeyCeremonyTests
     {
         Content,
         Index,
+    }
+
+    /// <summary>
+    /// The three members of a registration that carry the account's key custody, each of which the
+    /// handler judges <b>after</b> the <c>prf</c> gate.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="WrappedKeyMember" /> rather than an extension of it, because the two
+    /// enumerations answer different questions: that one names the pair a test corrupts one of, this one
+    /// names every member whose check could be moved above the gate. Public because TUnit builds the
+    /// parameterised cases from these values.
+    /// </remarks>
+    public enum KeyCustodyMember
+    {
+        FactorId,
+        WrappedContentKey,
+        WrappedIndexKey,
+    }
+
+    /// <summary>
+    /// A factor identifier no spelling of a uuid produces, so the identifier check refuses it wherever
+    /// that check happens to sit.
+    /// </summary>
+    /// <remarks>
+    /// One of the cases
+    /// <see cref="PasskeyRegistration_RefusesAFactorIdentifierThatIsNotOneCanonicalUuid" /> drives,
+    /// restated here rather than shared with it: that test's arguments are attribute literals, and a
+    /// constant folded into them would make one edit move both a refusal test and an ordering test.
+    /// </remarks>
+    private const string NotOneCanonicalUuid = "not a factor identifier at all";
+
+    /// <summary>
+    /// The member name a refusal about <paramref name="member" /> has to lead with — the spelling the
+    /// wire uses, which is the only one a caller can act on.
+    /// </summary>
+    /// <remarks>
+    /// Written out rather than read off the command record, and the copy is the point: a test taking its
+    /// expectation from the type under test agrees with whatever that type later says, including with
+    /// the two members swapped.
+    /// </remarks>
+    private static string WireNameOf(WrappedKeyMember member) => member switch
+    {
+        WrappedKeyMember.Content => "wrappedContentKey",
+        WrappedKeyMember.Index => "wrappedIndexKey",
+        _ => throw new ArgumentOutOfRangeException(nameof(member), member, "No wire name is defined for this member."),
+    };
+
+    /// <summary>The member of the pair that this case left well formed.</summary>
+    private static WrappedKeyMember Other(WrappedKeyMember member) =>
+        member is WrappedKeyMember.Content ? WrappedKeyMember.Index : WrappedKeyMember.Content;
+
+    /// <summary>
+    /// The refusal names the member this case corrupted, states the width and states the version.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The member name is the assertion that discriminates, and it is why "a sentence arrived" is not
+    /// enough here.</b> The two envelopes are supplied separately, judged separately and refused in
+    /// sentences that differ by one word — so swapping the two arguments the handler builds those
+    /// sentences from leaves every case of every parameterised test green while telling a caller to go
+    /// and fix the member that was fine. Asserting the message is non-empty cannot see that: it fails
+    /// only if the route stops returning a validation body at all, which the status assertion beside it
+    /// already implies. The <c>prf</c> tests in this file pin their sentence with an equality, so this is
+    /// an inconsistency inside one file rather than the file's style.
+    /// </para>
+    /// <para>
+    /// The prose in between is deliberately not restated. The width and the version are read off the
+    /// entity that refuses a row against them — a test carrying its own copy of either goes on being
+    /// confident after the real bound has moved — and the wording is left free to improve, since what a
+    /// caller needs from it is which member and which two facts.
+    /// </para>
+    /// </remarks>
+    private static async Task AssertNamesTheMalformedEnvelopeAsync(
+        HttpResponseMessage response,
+        WrappedKeyMember member)
+    {
+        string message = await ReadValidationErrorAsync(response);
+
+        await Assert.That(message).StartsWith(WireNameOf(member));
+        await Assert.That(message).DoesNotContain(WireNameOf(Other(member)));
+        await Assert.That(message).Contains($"{WrappedAccountKeys.EnvelopeLength} bytes");
+        await Assert.That(message).Contains($"version {WrappedAccountKeys.EnvelopeVersion}");
     }
 
     /// <summary>

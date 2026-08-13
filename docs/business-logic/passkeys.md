@@ -143,16 +143,19 @@ erDiagram
     proves identity. This is the enforceable half of "registration completes only once the account's
     keys are wrapped under it" — the count of passkeys and the count of wrapped-key rows are the same
     number by construction, which is what a later completion gate can be keyed on.
-  - **Enforced in**: `CompleteRegistrationHandler` for the shape, and the database for the rest —
-    `wrapped_account_keys` carries both envelope columns `NOT NULL`, one row per factor, and
-    `PasskeyRepository.TryAddAsync` writes all four rows in **one** save, so "registered, holding no
-    share of the keys" is unstorable rather than merely uncustomary. See
+  - **Enforced in**: `CompleteRegistrationHandler` for the shape, and `PasskeyRepository.TryAddAsync`
+    writing all four rows in **one** save. Read what each half holds: the two envelope columns are
+    `NOT NULL` on a table keyed on `factor_id`, so "a row carries both keys or neither" is a schema
+    fact — but **"a passkey has a row" is not one**, because one-to-optional needs a trigger and
+    ADR 0002 forbids pushing that down. It is held by there being exactly two paths that write a
+    factor at all. A passkey is one factor; a set of recovery codes is ten. See
     [account-keys.md](account-keys.md).
-  - **The identifier has one spelling**: a UUID in the 36-character hyphenated form, never the
-    braced, parenthesised or undashed ones, and never the all-zero UUID. It is the value both
-    envelopes were sealed against, and it is unique across the whole table — a second registration
-    reusing one is a 409 whose sentence is deliberately different from the "this authenticator is
-    already registered" 409 beside it.
+  - **The identifier has one spelling**, and the parse alone does not pin it: `Guid.TryParseExact(…,
+    "D")` also admits upper-case hex and surrounding whitespace, so `CanonicalFactorId.TryParse`
+    compares the text ordinally against `parsed.ToString("D")`. The all-zero UUID is refused
+    separately. It is the value both envelopes were sealed against, and it is the table's primary
+    key — a second registration reusing one is a 409 whose sentence is deliberately different from
+    the "this authenticator is already registered" 409 beside it.
 
 - **A registration MUST NOT complete unless the client reports a `prf` extension result of true.**
   - **Why**: an authenticator that cannot derive a PRF secret cannot hold the account's keys. This is

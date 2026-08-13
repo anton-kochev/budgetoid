@@ -97,6 +97,16 @@ const GOLDEN_SPEC_ASSOCIATED_DATA = 'budgetoid/account-keys/spec/v1';
 
 const GOLDEN_NONCE_BYTES = fromHex(GOLDEN_NONCE);
 
+// The recovery-code branch's frozen vector carries its own nonce, plaintext and
+// associated data, so that a change to either branch reddens exactly one of the
+// two and a reader can tell them apart at a glance in a failure's hex.
+const GOLDEN_RECOVERY_NONCE = 'c0c1c2c3c4c5c6c7c8c9cacb';
+const GOLDEN_RECOVERY_PLAINTEXT =
+  '404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f';
+const GOLDEN_RECOVERY_SPEC_ASSOCIATED_DATA = 'budgetoid/recovery-code/spec/v1';
+
+const GOLDEN_RECOVERY_NONCE_BYTES = fromHex(GOLDEN_RECOVERY_NONCE);
+
 // Seals under `key` with the frozen nonce and returns the envelope as hex.
 //
 // The nonce is the one input a caller cannot supply, so it is fed through the
@@ -113,6 +123,7 @@ async function sealedUnder(
   key: CryptoKey,
   plaintext: Uint8Array,
   associatedData: Uint8Array,
+  nonce: Uint8Array = GOLDEN_NONCE_BYTES,
 ): Promise<string> {
   const fixedNonce = vi
     .spyOn(crypto, 'getRandomValues')
@@ -122,7 +133,7 @@ async function sealedUnder(
         (buffer as ArrayBufferView).byteOffset,
         (buffer as ArrayBufferView).byteLength,
       );
-      bytes.set(GOLDEN_NONCE_BYTES.subarray(0, bytes.length));
+      bytes.set(nonce.subarray(0, bytes.length));
 
       return buffer;
     });
@@ -286,6 +297,26 @@ describe('a key-encryption key', () => {
   const GOLDEN_PASSKEY_ENVELOPE =
     '01b0b1b2b3b4b5b6b7b8b9babbcc175362fa23e1b57690d974afd12fd44aa18baa1184ae370fa0fef7711ca912e1b77dc29b673f8035c130ca48b65505';
 
+  // The same artifact for the other branch, and the branch that needs it most.
+  // Every other assertion the recovery-code branch has is *relative* — different
+  // from the passkey branch, different from the verifier, equal to itself across
+  // two spellings of one code — and each of those compares the branch against
+  // itself, so changing `RECOVERY_CODE_BRANCH_INFO.keyEncryptionKey` moves both
+  // sides together and leaves them all green while handing every account a
+  // different key-encryption key. The card already printed keeps redeeming
+  // perfectly and unwraps nothing.
+  //
+  // It is also the branch nobody else can check. The server holds opaque bytes
+  // and the mobile client has no target to reproduce, so this vector and the row
+  // it copies in `docs/business-logic/account-keys.md` are the whole definition.
+  // Computed independently through `node:crypto` and cross-checked by deriving
+  // the verifier from the same code on the other branch, which came back as the
+  // already-shipped `GOLDEN_VERIFIER` in `recovery-codes.spec.ts` — so the two
+  // vectors sit on one input and prove the branches are separate rather than
+  // merely different on two inputs.
+  const GOLDEN_RECOVERY_CODE_ENVELOPE =
+    '01c0c1c2c3c4c5c6c7c8c9cacbc989999fa07877001b181630c519f634e2508f0244b66f6a5f691a79c01bee8dd8bfbb2649838e3cf8266e86fa021bf1';
+
   it('seals the frozen plaintext to the frozen envelope on the passkey branch', async () => {
     // Arrange
     const prfOutput = fromHex(GOLDEN_PRF_OUTPUT);
@@ -303,6 +334,32 @@ describe('a key-encryption key', () => {
     // about the derivation, and the real associated data has a frozen vector of
     // its own below, so a change to either reddens exactly one test.
     expect(envelope).toBe(GOLDEN_PASSKEY_ENVELOPE);
+    expect(envelope).toHaveLength(61 * 2);
+  });
+
+  it('seals the frozen plaintext to the frozen envelope on the recovery-code branch', async () => {
+    // Arrange
+    // The code is already its own canonical form, so this vector says nothing
+    // about the folds — those have their own tests — and everything about the
+    // derivation the canonical text feeds.
+    const code = PRINTED_CODE;
+
+    // Act
+    const kek = await keyEncryptionKeyFromRecoveryCode(code);
+    const envelope = await sealedUnder(
+      kek,
+      fromHex(GOLDEN_RECOVERY_PLAINTEXT),
+      utf8.encode(GOLDEN_RECOVERY_SPEC_ASSOCIATED_DATA),
+      GOLDEN_RECOVERY_NONCE_BYTES,
+    );
+
+    // Assert
+    // If this goes red the question is never "what is the new value". It is
+    // which input changed — the `info` string, the salt, the output width, the
+    // encoding of the code — because each of those makes every account key
+    // already wrapped under a recovery code permanently unopenable, while the
+    // codes themselves go on redeeming.
+    expect(envelope).toBe(GOLDEN_RECOVERY_CODE_ENVELOPE);
     expect(envelope).toHaveLength(61 * 2);
   });
 

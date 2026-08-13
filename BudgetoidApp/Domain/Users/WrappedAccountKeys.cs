@@ -10,9 +10,18 @@ namespace Domain.Users;
 /// <para>
 /// Its own entity referencing its credential and its user by id, for the reason
 /// <see cref="PasskeyPublicKey"/> gives: hanging it off <see cref="User"/> would grow a root that is
-/// loaded on every authenticated request. One row per factor, so registering a second passkey or
-/// issuing a set of recovery codes adds a way back into the same two keys rather than re-keying the
-/// account.
+/// loaded on every authenticated request. Registering a second passkey or issuing a set of recovery
+/// codes adds a way back into the same two keys rather than re-keying the account.
+/// </para>
+/// <para>
+/// <b>One row per factor, and a factor is not a credential.</b> A passkey is one of each, so it holds
+/// one row. A set of recovery codes is <em>ten separate secrets</em> under a single
+/// <see cref="Credential"/> — a set is issued, counted and revoked as a unit — and the client derives
+/// a key-encryption key from each <em>code</em>. Ten codes are therefore ten key-encryption keys and
+/// ten of these, each with its own <see cref="FactorId"/> and its own pair of envelopes sealed under
+/// that code's key; no one of them can stand for the others. <see cref="For"/> is called once per
+/// factor, which for a set means ten times, and <c>factor_id</c> — not <c>credential_id</c> — is what
+/// identifies the row.
 /// </para>
 /// <para>
 /// <b>The server can open neither envelope and holds no value that could.</b> Both keys are generated
@@ -63,7 +72,15 @@ public sealed class WrappedAccountKeys
     {
     }
 
-    /// <summary>The credential standing for the recovery factor these envelopes are wrapped under.</summary>
+    /// <summary>
+    /// The credential the factor was registered under — a passkey's own credential, or the one
+    /// credential standing for a whole issued set of recovery codes.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not the identity of the row and not unique.</b> A set's ten rows all carry this same value,
+    /// which is the reason the key is <see cref="FactorId"/>: keyed here, a set could store one pair of
+    /// envelopes and nine of its codes would open nothing.
+    /// </remarks>
     public Guid CredentialId { get; private set; }
 
     /// <summary>
@@ -138,10 +155,11 @@ public sealed class WrappedAccountKeys
         }
 
         // All-zeros is a storable uuid and it is what an unset field sends. It is also the one value two
-        // accounts reach independently, so accepting it turns a unique index into a cross-account
+        // accounts reach independently, so accepting it turns the primary key into a cross-account
         // collision the second account experiences as a refusal to register — and since it is the
         // associated data of both envelopes, nothing downstream can tell a deliberate zero from a
-        // mistake.
+        // mistake. Within one account it is worse than that now: a set of recovery codes writes ten of
+        // these in one save, so a client sending the same identifier twice would take its own set down.
         if (factorId == Guid.Empty)
         {
             errors[nameof(FactorId)] = ["Factor id is required."];

@@ -212,16 +212,6 @@ public sealed class SchemaConstraintSnapshotTests
             // A challenge is spent by being looked up under its own bytes, so uniqueness here is the
             // rule that keeps a nonce from being redeemable twice through two rows.
             """CREATE UNIQUE INDEX "IX_webauthn_challenges_challenge" ON public.webauthn_challenges USING btree (challenge)""",
-            // The factor identifier is minted by the CLIENT, which is what makes uniqueness a rule here
-            // rather than a lookup that happens to hold: nothing else stops two rows carrying the same
-            // one, and it is the associated data both of this row's envelopes were sealed with. A shared
-            // factor id would let one factor's keys be opened against another's, and the second account
-            // would meet the collision as a refusal to register — the only way anybody would learn of
-            // it. Unique across the whole table rather than per user on purpose: scoping it to an owner
-            // would make the duplicate storable and leave the associated data ambiguous exactly where it
-            // is trusted. This table's two non-unique indexes — over user_id, and over the foreign key's
-            // three columns — are out of scope for this query rather than missing from this list.
-            """CREATE UNIQUE INDEX "IX_wrapped_account_keys_factor_id" ON public.wrapped_account_keys USING btree (factor_id)""",
             """CREATE UNIQUE INDEX "PK___EFMigrationsHistory" ON public."__EFMigrationsHistory" USING btree ("MigrationId")""",
             """CREATE UNIQUE INDEX "PK_accounts" ON public.accounts USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_budgets" ON public.budgets USING btree (id)""",
@@ -246,12 +236,31 @@ public sealed class SchemaConstraintSnapshotTests
             """CREATE UNIQUE INDEX "PK_transactions" ON public.transactions USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_users" ON public.users USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_webauthn_challenges" ON public.webauthn_challenges USING btree (id)""",
-            // Keyed on credential_id alone, for the reason the two passkey tables above are: exactly one
-            // pair of envelopes exists per recovery factor, so the credential is the identity of the row
-            // rather than something a surrogate id and a unique index would have to say twice. factor_id
-            // cannot take this job — it is client-minted, which is precisely why it gets the unique index
-            // above and not the key.
-            """CREATE UNIQUE INDEX "PK_wrapped_account_keys" ON public.wrapped_account_keys USING btree (credential_id)""",
+            // Keyed on factor_id, and NOT on credential_id the way the two passkey tables above are keyed
+            // — the difference between this table and those is a set of recovery codes. A passkey is one
+            // factor under one credential, so credential_id would have served; a set is TEN separate
+            // secrets under one credentials row, and the client derives a key-encryption key from each
+            // CODE. Ten codes are ten key-encryption keys and ten pairs of envelopes, so keying on the
+            // credential stored one of them and left nine codes opening nothing — a person redeems any
+            // one of them, is handed a session, and nine times out of ten still cannot unlock the
+            // account. The factor is the identity of the row; credential_id is an ordinary, non-unique
+            // column carrying no key of its own.
+            //
+            // Being the key is also the whole of this column's uniqueness, and there is deliberately no
+            // second unique index over factor_id beside it. The value is minted by the CLIENT, which is
+            // what makes uniqueness a rule here rather than a lookup that happens to hold: nothing else
+            // stops two rows carrying the same one, and it is the associated data both of a row's
+            // envelopes were sealed with, so a shared factor id would let one factor's keys be opened
+            // against another's. A repository filters a 23505 on the constraint NAME to tell that
+            // collision from every other unique violation the same statement can raise, and a second
+            // constraint saying the same thing would be a second name the same duplicate could arrive
+            // under. Unique across the whole table rather than per user on purpose: scoping it to an
+            // owner would make the duplicate storable and leave the associated data ambiguous exactly
+            // where it is trusted. This table's two non-unique indexes — over user_id, and over the
+            // foreign key's three columns — are out of scope for this query rather than missing from
+            // this list, and the second of them stopped being incidental with this line: the foreign
+            // key's columns are no longer led by the primary key at all.
+            """CREATE UNIQUE INDEX "PK_wrapped_account_keys" ON public.wrapped_account_keys USING btree (factor_id)""",
         ];
         await Assert.That(uniqueIndexes).IsEquivalentTo(expected);
     }

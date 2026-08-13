@@ -701,23 +701,24 @@ namespace Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Domain.Users.WrappedAccountKeys", b =>
                 {
-                    b.Property<Guid>("CredentialId")
+                    b.Property<Guid>("FactorId")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
-                        .HasColumnName("credential_id");
+                        .HasColumnName("factor_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
+
+                    b.Property<Guid>("CredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("credential_id");
 
                     b.Property<string>("CredentialType")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("credential_type");
-
-                    b.Property<Guid>("FactorId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("factor_id");
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
@@ -733,11 +734,8 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("wrapped_index_key");
 
-                    b.HasKey("CredentialId");
-
-                    b.HasIndex("FactorId")
-                        .IsUnique()
-                        .HasDatabaseName("IX_wrapped_account_keys_factor_id");
+                    b.HasKey("FactorId")
+                        .HasName("PK_wrapped_account_keys");
 
                     b.HasIndex("CredentialId", "UserId", "CredentialType")
                         .HasDatabaseName("IX_wrapped_account_keys_credential_id_user_id_credential_type");

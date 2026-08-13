@@ -49,10 +49,15 @@ of any narrative field are all later work.
   browser's key store.
 - **Wrapped key** — the versioned envelope of §5.3 over a 32-byte key. Exactly 61 bytes. This is the
   only one of the four that ever reaches the server.
-- **Factor identifier** — the `factor_id` of the `wrapped_account_keys` row, minted by the client.
-  It is the value the associated data binds a wrapped key to. It is deliberately **not** the
-  credential id; [ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
+- **Factor identifier** — the `factor_id` of the `wrapped_account_keys` row, minted by the client and
+  the table's **primary key**. It is the value the associated data binds a wrapped key to. It is
+  deliberately **not** the credential id;
+  [ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
   gives the reason.
+- **Factor** — one secret that can derive a key-encryption key, which is **not** the same as one
+  credential. A passkey is one factor and one credential. A set of recovery codes is one credential
+  and **ten** factors, because each code is a secret of its own. That distinction is what the primary
+  key records: `credential_id` is an ordinary column and repeats ten times for a set.
 
 Deliberately **absent** from anything this module produces: any representation of an unwrapped key
 on the wire, any key-encryption key outside the browser, any PRF output, and any recovery code.
@@ -63,11 +68,12 @@ hands a code to a caller that could transmit it.
 erDiagram
     ACCOUNT ||--|| CONTENT_KEY : owns
     ACCOUNT ||--|| INDEX_KEY : owns
-    ACCOUNT ||--o{ RECOVERY_FACTOR : "is reachable through"
-    RECOVERY_FACTOR ||--|| WRAPPED_ACCOUNT_KEYS : "stores one row of"
+    ACCOUNT ||--o{ CREDENTIAL : "is reachable through"
+    CREDENTIAL ||--o{ FACTOR : "carries one, or ten"
+    FACTOR ||--|| WRAPPED_ACCOUNT_KEYS : "stores exactly one row of"
     WRAPPED_ACCOUNT_KEYS {
-        uuid credential_id PK
-        uuid factor_id UK "client-minted, the associated data"
+        uuid factor_id PK "client-minted, the associated data"
+        uuid credential_id "not unique — a set repeats it ten times"
         uuid user_id "tenancy"
         bytea wrapped_content_key "61 bytes"
         bytea wrapped_index_key "61 bytes"
@@ -96,12 +102,20 @@ erDiagram
   - **Enforced in**: the client. `account-keys.spec.ts` pins the two branches distinct, and pins the
     recovery-code key-encryption key distinct from the verifier derived from the same code.
 
-- **Both keys MUST be wrapped under every registered recovery factor.**
+- **Both keys MUST be wrapped under every recovery factor — every passkey, and every one of a set's
+  ten codes.**
   - **Why**: a factor that cannot open the account's keys is not a way back in, however well it
-    proves identity.
-  - **Enforced in**: the database — `wrapped_account_keys` carries `wrapped_content_key` and
-    `wrapped_index_key` both `NOT NULL`, one row per factor, so "both or neither" is a column
-    definition rather than a rule a handler keeps.
+    proves identity. At code granularity the failure is worse than useless: nine of ten redemptions
+    would open a session that unlocks nothing, and the person would meet that on the day they had
+    already lost their authenticator.
+  - **Enforced in**: two mechanisms, and they hold different halves, so read them apart.
+    `wrapped_content_key` and `wrapped_index_key` are both `NOT NULL` on a table keyed on
+    `factor_id`, so "a factor carries both keys or no row at all" is a column definition. **That the
+    row exists at all is not a schema fact** — one-to-optional is not expressible without a trigger,
+    and ADR 0002 forbids pushing procedural logic down to reach a lower layer. It is held by there
+    being exactly **two** write paths, each demanding the members and writing the row in the same
+    save as the credential. A third path would create a factor with no keys and redden nothing;
+    naming that here is what a future reader gets instead of a constraint.
 
 - **A wrapped key MUST be bound to its factor and to which of the two keys it is.**
   - **Why**: binding only the factor leaves the two copies distinguishable solely by which column
@@ -127,16 +141,25 @@ erDiagram
     can check the shape of and open none of.
 
 - **A factor identifier MUST be one spelling on the wire.** The two write paths accept a UUID in the
-  36-character hyphenated form and nothing else — not the braced, parenthesised or undashed
-  spellings `Guid.TryParse` would take, and not the all-zero UUID.
+  **lower-case** 36-character hyphenated form with no surrounding whitespace, and nothing else — not
+  the braced, parenthesised or undashed spellings `Guid.TryParse` would take, not upper-case or
+  mixed-case hex, not the same UUID with a leading or trailing space, and not the all-zero UUID. That
+  one spelling is what a `Guid` renders as, and therefore what every later read hands back.
   - **Why**: it is the value both envelopes were sealed against, so a client that sent one spelling
     and bound another finds its own envelopes unopenable, permanently and with no error naming the
     cause. The all-zero UUID is refused separately because it is what an unset field sends and it is
     the one value two accounts reach independently — on a unique index that spans the whole table,
     that turns a client bug into a cross-account collision.
-  - **Enforced in**: `CompleteRegistrationHandler` and `GenerateRecoveryCodesHandler`, both through
-    `Guid.TryParseExact(value, "D", …)`. The database refuses the empty UUID a second time, through
-    the entity.
+  - **Enforced in**: `CanonicalFactorId.TryParse`, one definition both `CompleteRegistrationHandler`
+    and `GenerateRecoveryCodesHandler` call, because they write the same column and a rule that
+    drifted on one would seal an account's keys under a spelling the other cannot reproduce. It
+    compares the supplied text **ordinally against what the parsed value renders as** —
+    `Guid.TryParseExact(value, "D", …)` on its own does *not* pin a spelling, since `"D"` is a format
+    rather than a spelling: it admits upper-case and mixed-case hex, and it trims leading and
+    trailing whitespace before it reads the format at all. A length check closes neither the case
+    folding nor the trim; a regular expression can be written to close both, but it is a second,
+    hand-maintained copy of a rendering this code does not own. The database refuses the empty UUID a
+    second time, through the entity.
 
 - **The key-encryption key MUST NOT be extractable.** It is imported with `extractable: false` and
   only `encrypt`/`decrypt` usages, so no later caller can export the bytes.
@@ -150,9 +173,11 @@ erDiagram
 
 ### The cryptographic contract
 
-A second client implements from this table.
+A second client implements from this table. **It is normative here rather than in any client's source:
+a second implementation cannot read another's test files, so anything stated only in code is not part
+of the contract.**
 
-| | Passkey factor | Recovery-code set |
+| | Passkey factor | **One** recovery code |
 |---|---|---|
 | Input keying material | the WebAuthn PRF output | UTF-8 of the **canonical** code |
 | PRF eval input | `budgetoid/passkey/prf-eval-input/v1` (UTF-8) | n/a |
@@ -160,9 +185,49 @@ A second client implements from this table.
 | `info` | `budgetoid/passkey/key-encryption-key/v1` | `budgetoid/recovery-code/key-encryption-key/v1` |
 | Output | 32 bytes → non-extractable `AES-GCM` `CryptoKey` | same |
 
-The canonical form of a recovery code is owned by `recovery-code-canonical.ts` and is the same rule
-the verifier derivation uses: upper-case, strip whitespace and hyphens, fold `I` and `L` to `1` and
-`O` to `0`, with `U` deliberately unmapped. One definition, imported by both branches.
+**The unit is one code, not one set, and this is the single most likely thing to get wrong.** A set
+is ten independent secrets, each deriving its own key-encryption key, so a set stores **ten**
+`wrapped_account_keys` rows — one per code, each with its own client-minted factor identifier and its
+own pair of envelopes. A person redeems whichever code they still have; if only one of the ten
+carried the keys, nine redemptions out of ten would open a session that unlocks nothing.
+
+Nothing links a code's `recovery_code_hashes` row to its `wrapped_account_keys` row, and that is
+deliberate rather than missing: the link would have to live on the hash table, which is exempt from
+row-level security and holds a pinned column set. A client that has just redeemed a code reads the
+account's wrapped rows and **tries each in turn** — the associated data binds each pair to its own
+factor, so exactly one opens and the rest fail to authenticate. Twenty AEAD attempts is a cost nobody
+can measure.
+
+**Empty salt** means the zero-length octet string. HKDF-Extract is HMAC keyed on the salt and HMAC
+pads a short key with zeros to the block size, so a library taking `nil`, `""` or 32 zero bytes all
+reach the same pseudo-random key. There is no per-account value a salt could be taken from anyway: a
+redemption arrives carrying a code and no identity at all.
+
+**The PRF eval input is the value handed to the extension, not the value the authenticator hashes.**
+WebAuthn's `prf` extension takes it as `eval.first` and the platform hashes
+`SHA-256("WebAuthn PRF" ‖ 0x00 ‖ input)` before the authenticator ever sees it. A client going
+through WebAuthn gets that for free; a client speaking CTAP `hmac-secret` directly must apply the
+prefix itself, or it derives a different key-encryption key from an authenticator that signs
+perfectly. Only `eval.first` is used; `eval.second` is not part of this contract.
+
+**The canonical form of a recovery code**, in full, because a pointer at a source file is not a
+specification:
+
+1. Upper-case, with the **invariant** mapping — never a locale-sensitive one. A Turkish locale maps
+   `i` to `İ`, which no later step recognises.
+2. Remove every hyphen-minus `U+002D`, and every character in exactly this set:
+   `U+0009`, `U+000A`, `U+000B`, `U+000C`, `U+000D`, `U+0020`, `U+00A0`, `U+1680`,
+   `U+2000`–`U+200A`, `U+2028`, `U+2029`, `U+202F`, `U+205F`, `U+3000`, `U+FEFF`.
+   Enumerated rather than named, because "whitespace" is a different set in every regular-expression
+   dialect — JavaScript's `\s` includes `U+FEFF` and excludes `U+0085`; .NET's excludes `U+FEFF` and
+   includes `U+0085`; Java's without the Unicode flag is ASCII only. Two honest implementers reading
+   the word would disagree, and the symptom is a code that will not redeem and keys that will not
+   unwrap, with nothing naming the cause.
+3. Fold `I` and `L` to `1`, and `O` to `0`. `U` is deliberately unmapped.
+
+The steps are ordered and the order matters: folding before upper-casing would leave `il o` as `ILO`
+rather than `110`. The same canonical form feeds the verifier the server stores; the two derivations
+differ only in HKDF's `info`.
 
 **Envelope** — the byte sequence stored in a column and carried on the wire as unpadded base64url:
 
@@ -174,6 +239,16 @@ Version `0x01` is AES-256-GCM with a 96-bit nonce and a 128-bit tag, and is the 
 defined. Over a 32-byte key the envelope is therefore exactly **61 bytes** — a width, not a cap,
 because AES-GCM ciphertext is the length of its plaintext.
 
+**Every nonce MUST be freshly drawn from a cryptographically secure random source, and this is a
+requirement of the contract rather than an implementation detail.** A counter starting at zero per
+factor is an ordinary, defensible choice for an implementer reading only the layout above — and it
+repeats immediately, because **both of a factor's envelopes are sealed under the same
+key-encryption key**. Two GCM ciphertexts under one (key, nonce) give
+`C_content ⊕ C_index = contentKey ⊕ indexKey`, which destroys the independence of the two account
+keys that this design's whole correctness argument rests on, and it hands out the GHASH subkey with
+it. Nothing observable goes wrong: both clients still open each other's envelopes, and every frozen
+vector below still passes. That is exactly why the rule is written here.
+
 **Associated data** of a wrapped key:
 
 ```
@@ -183,7 +258,10 @@ because AES-GCM ciphertext is the length of its plaintext.
 UTF-8. `0x1F` is the ASCII unit separator and cannot occur in any of the three fields, so no length
 prefixes are needed. The factor id is **normalised** before it is used: the client accepts the
 spellings a `Guid` can be written in and folds them to the lower-case hyphenated form, and refuses
-anything that is not a UUID.
+anything that is not a UUID. **The server normalises nothing** — it refuses any spelling but that one
+(see the MUST rule above), so the two sides agree on the bytes by the server never storing a value
+whose rendering differs from what it was sent. A client that normalises the other way, or not at all,
+is turned away at the write rather than discovering months later that its envelopes do not open.
 
 ### Frozen known-answer vectors
 
@@ -199,6 +277,26 @@ non-extractable:
 | plaintext | `202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f` |
 | associated data | `budgetoid/account-keys/spec/v1` |
 | envelope (61 bytes) | `01b0b1b2b3b4b5b6b7b8b9babbcc175362fa23e1b57690d974afd12fd44aa18baa1184ae370fa0fef7711ca912e1b77dc29b673f8035c130ca48b65505` |
+
+**Key-encryption key from one recovery code**, over the same code the verifier vector in
+[recovery-codes.md](recovery-codes.md) uses — deliberately, so the pair proves the two branches are
+separate on one input rather than merely different on two. The key itself is non-extractable, so it
+is observed through a seal:
+
+| | |
+|---|---|
+| code (already canonical) | `0123456789ABCDEFGHJKMNPQRS` |
+| `info` | `budgetoid/recovery-code/key-encryption-key/v1` |
+| derived key | `c0e5b232a2357e7af8f66b5a350c6c63bf90df1b8482f5e0e6adf2f9205e6875` |
+| nonce | `c0c1c2c3c4c5c6c7c8c9cacb` |
+| plaintext | `404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f` |
+| associated data | `budgetoid/recovery-code/spec/v1` |
+| envelope (61 bytes) | `01c0c1c2c3c4c5c6c7c8c9cacbc989999fa07877001b181630c519f634e2508f0244b66f6a5f691a79c01bee8dd8bfbb2649838e3cf8266e86fa021bf1` |
+
+The verifier derived from that same code under `budgetoid/recovery-code/verifier/v1` is
+`aGr2Qher4pOLKZ335Uwyi92Ti9GAZ-Ek5G_9Br5plNE`. The two share an HKDF-Extract and differ only in
+`info`; a client that computes one correctly and the other wrongly has swapped the labels, and
+holding both vectors is the only way to see that.
 
 **Associated data** for factor `c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6`, purpose `content`, 69 bytes:
 
@@ -238,11 +336,19 @@ reachable — the two routes refuse a request without it.
 4. **Unwrapping.** Each wire value is decoded and opened with the same associated data. A copy moved
    to another factor, or to the other purpose, fails to authenticate rather than returning wrong
    bytes.
-5. **Storing.** `POST /api/passkeys/registration` and `POST /api/me/recovery-codes` each carry
-   `factorId`, `wrappedContentKey` and `wrappedIndexKey`. Each handler checks the identifier's
-   spelling and each envelope's width and version, then writes the row **in the same `SaveChanges`**
-   as the credential — four rows on the passkey path, twelve on the recovery-code path. There is no
-   partial state in which a factor exists holding no share of the keys.
+5. **Storing.** `POST /api/passkeys/registration` carries one `factorId`, `wrappedContentKey` and
+   `wrappedIndexKey`. `POST /api/me/recovery-codes` carries **ten** submissions, each a code's
+   verifier beside that code's own factor identifier and envelope pair. Each handler checks every
+   identifier's spelling, every envelope's width and version, and — on the generation path — that no
+   two identifiers in the set repeat, then writes **in the same `SaveChanges`** as the credential:
+   four rows on the passkey path, twenty-two on the recovery-code path. There is no partial state in
+   which a factor exists holding no share of the keys.
+
+   The set's ten identifiers must differ, and that rule lives in the handler rather than being left
+   to the primary key: as a `23505` it would arrive *after* the previous set had already been deleted
+   inside the same transaction, and it would say "that factor identifier is already registered" about
+   a factor the client never registered. It is also the same evidence the verifier-distinctness rule
+   is — a client repeating an identifier within one set has randomness that is not what it claims.
 
 **Registration validates the wrapped keys after the `prf` gate, and the ordering is a rule.** A
 client that cannot do PRF cannot have produced a wrapped key either, so those members are very often
@@ -251,18 +357,30 @@ payload was malformed — sending somebody holding a device that genuinely lacks
 debug their client. Generation validates them after its re-authentication gate, for the reason that
 gate's own ordering already carries.
 
-**Replacing a set of recovery codes replaces its wrapped keys by the database's cascade**, never by
-the application: the role holds no `DELETE` on `wrapped_account_keys` at all, so a handler that
-materialised the replaced row would die with `42501` rather than quietly take it. That is the same
+**Replacing a set of recovery codes replaces all ten of its wrapped rows by the database's cascade**,
+never by the application: the role holds no `DELETE` on `wrapped_account_keys` at all, so a handler
+that materialised them would die with `42501` rather than quietly take them. That is the same
 never-materialise rule the recovery-code hashes already carry, binding a second table and failing
-the opposite way — loudly.
+the opposite way — loudly. At ten rows the reason is unchanged, because the mistake is a *read* and
+one read materialises all of them; what changes is the temptation, since "load the replaced set's
+envelopes so we can check we are replacing as many as we found" is a sentence nobody could write when
+there was one.
+
+**Redeeming a code deletes its hash row and leaves its wrapped row standing**, and that asymmetry is
+deliberate rather than overlooked. Consuming a code removes its ability to *authenticate*; it cannot
+remove its ability to *decrypt*, because the secret that opens the envelope is the code itself, which
+is written on a card this system has never seen. Deleting the row would need a `DELETE` grant this
+table withholds on purpose. Nothing is leaked that was not already reachable: whoever holds a spent
+code and a copy of the database could have decrypted with it before redeeming too.
 
 ## Decision Trees
 
 **Which branch derives the key-encryption key?**
 
 - the factor is a registered passkey → the PRF branch, over the authenticator's PRF output
-- the factor is a set of recovery codes → the recovery-code branch, over the canonical code
+- the factor is **one recovery code** → the recovery-code branch, over that code's canonical form.
+  Not "the set" and not "a code chosen from the set": each of the ten derives its own, and each gets
+  its own row.
 - the factor is the account's federated credential → **there is none.** OAuth has no PRF equivalent,
   so a provider gates registration and an email change and never holds keys. The database refuses
   such a row.

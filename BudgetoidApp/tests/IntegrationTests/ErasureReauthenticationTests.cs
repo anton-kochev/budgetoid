@@ -903,8 +903,8 @@ public sealed class ErasureReauthenticationTests
     /// This is also what puts the account's row in <c>wrapped_account_keys</c>: the route writes the
     /// factor's two envelopes in the same save as the credential, so no test here seeds that table out
     /// of band. <see cref="WrappedKeyFixture.Mint" /> is called per registration rather than once,
-    /// because <c>IX_wrapped_account_keys_factor_id</c> is unique across the whole table and one test
-    /// registers two devices.
+    /// because <c>factor_id</c> is the table's primary key — <c>PK_wrapped_account_keys</c> — unique
+    /// across the whole table, and one test registers two devices.
     /// </para>
     /// </remarks>
     /// <param name="client">The authenticated caller the passkey is filed under.</param>

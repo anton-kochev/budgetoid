@@ -755,8 +755,8 @@ public sealed class RlsIsolationTests
         // against it. Two owners because this table is isolated by user: a second factor under the
         // same owner would be invisible to this rule, and the foreign count would come back zero with
         // or without a policy. The handles differ, or IX_passkey_public_keys_webauthn_credential_id
-        // would refuse the second registration; the factor ids differ because
-        // IX_wrapped_account_keys_factor_id is unique across the whole table rather than per account.
+        // would refuse the second registration; the factor ids differ because factor_id is the table's
+        // primary key, PK_wrapped_account_keys, unique across the whole table rather than per account.
         await using RepositoryTestHost host = await StartHostAsync();
         (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
             await SeedTwoOwnersAsync(host);
@@ -824,10 +824,12 @@ public sealed class RlsIsolationTests
     public async Task Database_RefusesAWrappedKeyInsertNamingAnotherAccount()
     {
         // Arrange — a bare passkey credential for each owner, with no wrapped keys filed against it
-        // yet. Bare on purpose: credential_id is the primary key of this table, so a probe needs a
-        // credential whose slot is free, and each probe names its own owner's credential so the
-        // composite foreign key over (credential_id, user_id, credential_type) is satisfied by
-        // construction and the only thing wrong with the row is whose keys it is.
+        // yet. Not because the credential needs a free slot — credential_id is an ordinary, non-unique
+        // column of this table and a credential carries as many rows as it has factors, since the key
+        // is factor_id — but so that nothing already filed under it can be mistaken for what a probe
+        // wrote. Each probe names its own owner's credential, so the composite foreign key over
+        // (credential_id, user_id, credential_type) is satisfied by construction and the only thing
+        // wrong with the row is whose keys it is.
         await using RepositoryTestHost host = await StartHostAsync();
         (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
             await SeedTwoOwnersAsync(host);
@@ -841,7 +843,7 @@ public sealed class RlsIsolationTests
         // owner's wrapped keys says nothing about whether this session can file a pair in their name,
         // and a USING-only policy would let this through. A refused INSERT is loud, unlike a filtered
         // UPDATE — 42501, "new row violates row-level security policy". The two probes carry different
-        // factor ids, so IX_wrapped_account_keys_factor_id is never what refuses either.
+        // factor ids, so PK_wrapped_account_keys is never what refuses either.
         await using NpgsqlCommand forOther = BuildWrappedKeysInsertProbe(
             app, other.UserId, otherCredentialId, OtherAccountFactorId);
         PostgresException? refusal = await CaptureRefusalAsync(forOther);
@@ -1284,8 +1286,9 @@ public sealed class RlsIsolationTests
     /// <summary>
     /// The factor identifiers the two accounts' wrapped keys carry. Fixed rather than minted per call
     /// so a failure message names a value that can be found in this file, and <b>distinct</b> because
-    /// <c>IX_wrapped_account_keys_factor_id</c> is unique across the whole table rather than per
-    /// account: two accounts sharing one would collide on that index, and the <c>23505</c> would arrive
+    /// <c>factor_id</c> is the table's primary key — <c>PK_wrapped_account_keys</c> — unique across the
+    /// whole table rather than per account: two accounts sharing one would collide on that key, and the
+    /// <c>23505</c> would arrive
     /// during seeding instead of the refusal the probe is reading.
     /// </summary>
     private static readonly Guid SessionFactorId =

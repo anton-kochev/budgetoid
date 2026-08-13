@@ -151,7 +151,13 @@ erDiagram
     holds the *hash* width, which is a different claim about a different value and is not a second
     spelling of this one.
 
-- **An issued set MUST hold exactly ten verifiers, all distinct.**
+- **An issued set MUST hold exactly ten submissions, every verifier distinct and every factor
+  identifier distinct.** A submission is one code's verifier, that code's own client-minted factor
+  identifier, and the account's two keys wrapped under a key-encryption key derived from that code —
+  because each of the ten is a secret of its own and a person redeems whichever one they still have.
+  The factor-identifier rule is enforced in the handler rather than left to
+  `PK_wrapped_account_keys`, which would refuse *after* the previous set had already been deleted
+  inside the same transaction. See [account-keys.md](account-keys.md).
   - **Why**: too few leaves a person with fewer ways back than the screen told them they had; too many
     is a client the server no longer agrees with about what a set is; zero is the argument a handler is
     most likely to read as "nothing to do" and answer `200` to, having just replaced a live set with
@@ -241,8 +247,8 @@ erDiagram
 - **The set MUST NOT be requested without a proof, and no account may be named.**
   - **Why**: issuing *replaces*, so a chooseable account here would be a way to destroy a stranger's
     recovery codes.
-  - **Enforced in**: `GenerateRecoveryCodesCommand` carries the verifiers and the assertion and **no
-    field naming an account** — the identity comes from `IUserContext` and nowhere else.
+  - **Enforced in**: `GenerateRecoveryCodesCommand` carries the ten submissions and the assertion and
+    **no field naming an account** — the identity comes from `IUserContext` and nowhere else.
 - **No route in this area may carry `ProvisionsUser`, and none may ever gain it.**
   - **Why**: a provider id token stays valid for up to an hour after the account it names is erased,
     so a route that minted an account in order to answer a generation would let that stale token
@@ -379,8 +385,12 @@ erDiagram
     folded — it is excluded so that a draw cannot spell an obscenity, not because it is read back as
     something else — and a rule generous enough to rescue every typo would quietly shrink the code's
     130 bits.
-- **Enforced in**: `canonicalRecoveryCode` in the client's `recovery-codes.ts`, applied by
-  `recoveryCodeVerifier` before any derivation and covered by that module's spec. It uses
+- **Enforced in**: `canonicalRecoveryCode` in the client's `recovery-code-canonical.ts` — its own
+  module since the account-key derivation began sharing it — applied by `recoveryCodeVerifier` before
+  any derivation and covered by that module's spec. The rule itself is **normative in**
+  [account-keys.md](account-keys.md), character by character including the exact set of whitespace it
+  strips, because a second client cannot read this one's source and "whitespace" is a different set in
+  every regular-expression dialect. It uses
   `toUpperCase` and never `toLocaleUpperCase`, which maps `i` to `İ` under a Turkish locale and would
   make one typed code derive different verifiers on two phones. The refusal to derive from nothing runs
   *after* canonicalisation, so a field holding only the grouping the person was shown is the same
@@ -716,7 +726,7 @@ distinction is the whole of the grant matrix's argument and of the change-tracke
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → Issued | `POST /api/me/recovery-codes` | a fresh `reauthentication` assertion for a passkey registered to **this** account; then exactly ten verifiers, each decoding to exactly 32 bytes, all distinct |
+| → Issued | `POST /api/me/recovery-codes` | a fresh `reauthentication` assertion for a passkey registered to **this** account; then exactly ten submissions — each a verifier decoding to exactly 32 bytes, that code's own factor identifier, and its own pair of wrapped account keys — with every verifier distinct and every factor identifier distinct |
 | Issued → Replaced | `POST /api/me/recovery-codes` on an account that already holds a set | the same gate and the same validation; the previous set's sessions are revoked, then its credential is deleted and these rows cascade away |
 | Issued → Redeemed | `POST /api/recovery-codes/redemption` | the presented verifier is base64url text decoding to exactly 32 bytes, and `SHA-256` of it names a row that is still there — and still that account's — when the transaction re-reads it. Nothing else is validated, because nothing else was presented |
 
@@ -731,20 +741,21 @@ sequenceDiagram
     participant G as PasskeyReauthentication
     participant D as PostgreSQL
 
-    Note over C: ten codes minted, V = HKDF(canonical(code), …) derived for each
+    Note over C: ten codes minted; for each, V = HKDF(canonical(code), …) and a key-encryption key on the other branch
+    Note over C: the account keys wrapped ten times over, once under each code, each bound to its own factor id
     C->>O: authenticated
     O->>D: issue a reauthentication challenge (lives 5 minutes)
     O-->>C: challenge
     Note over C: the authenticator signs it
-    C->>A: ten verifiers + the assertion
+    C->>A: ten submissions + the assertion
     A->>H: GenerateRecoveryCodesCommand
     H->>G: VerifyAsync — OUTSIDE the transaction
     G->>D: consume the nonce, find the key by handle AND owner, verify, accept the counter
-    H->>H: decode and validate the ten verifiers
+    H->>H: decode and validate all ten submissions
     H->>D: BEGIN
     H->>D: revoke the previous set's sessions (explicitly) — n of them
-    H->>D: delete the previous set's credential — hashes cascade away
-    H->>D: insert the new credential and its ten hashes in ONE save
+    H->>D: delete the previous set's credential — hashes and wrapped keys cascade away
+    H->>D: insert the new credential, its ten hashes and its ten wrapped-key rows in ONE save
     H->>D: insert a full session over the NEW set — only when n > 0
     H->>D: COMMIT
     A-->>C: 200 {"sessionsEnded": n, "session": … or null}
@@ -942,7 +953,7 @@ ELSE                                                               ← first iss
   while the count is read by the settings screen on every visit — the generation control on screen is
   present and disabled, and `/api/recovery-codes/redemption` has no client route to be reached from
   at all. Read that the same way the disabled erasure control is read — the gate is built and the
-  surface in front of it is not. The route now **requires** a factor identifier and both wrapped
+  surface in front of it is not. The route now **requires**, per code, a factor identifier and both wrapped
   account keys, so the client that eventually calls it will have to derive them first;
   `keyEncryptionKeyFromRecoveryCode` in `+core/security/account-keys.ts` is what it will call, on an
   independent HKDF branch over the same canonical form this area's verifier uses. **That derivation

@@ -154,16 +154,14 @@ public sealed class CompleteRegistrationHandler(
         // these refusals are only reached once it has passed and the payload is the only thing left they
         // can be about.
         //
-        // One spelling of the identifier and no more. Guid.TryParse accepts five, and this value is the
-        // associated data both envelopes were sealed with: the browser needs back the exact bytes it
-        // bound, so a server taking four spellings would be storing a value one of its own clients
-        // cannot recognise as its own. The all-zero uuid parses in this format and is refused with it —
-        // it is what an unset field sends, and it is the one value two accounts reach independently,
-        // which would turn a table-wide unique index into a cross-account collision.
-        if (!Guid.TryParseExact(command.FactorId, "D", out Guid factorId) || factorId == Guid.Empty)
+        // One spelling of the identifier and no more, judged by CanonicalFactorId because this path and
+        // recovery-code generation write the same column and must not drift on what that spelling is.
+        // The rule is shared; this sentence is not — it is worded for the person registering a device.
+        if (!CanonicalFactorId.TryParse(command.FactorId, out Guid factorId))
         {
             throw Refused(
-                "factorId must be a uuid in the 36-character hyphenated form, and not the all-zero uuid.");
+                "factorId must be a uuid in the lower-case 36-character hyphenated form with no "
+                + "surrounding whitespace, and not the all-zero uuid.");
         }
 
         // ONE SENTENCE PER MEMBER, STATING THE WHOLE REQUIREMENT, the shape

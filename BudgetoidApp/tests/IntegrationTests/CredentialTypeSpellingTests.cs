@@ -483,21 +483,51 @@ public sealed class CredentialTypeSpellingTests
             PasskeyEncoding.ToUserHandle(userId),
             signCount: 0);
 
-        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
-
         return await client.PostAsJsonAsync(RecoveryCodesPath, new
         {
-            verifiers = Verifiers(),
+            codes = SubmissionsOf(Verifiers()),
             credentialId = assertion.CredentialIdBase64Url,
             clientDataJson = assertion.ClientDataJsonBase64Url,
             authenticatorData = assertion.AuthenticatorDataBase64Url,
             signature = assertion.SignatureBase64Url,
             userHandle = assertion.UserHandleBase64Url,
-            factorId = keys.FactorId,
-            wrappedContentKey = keys.WrappedContentKey,
-            wrappedIndexKey = keys.WrappedIndexKey,
         });
     }
+
+    /// <summary>
+    /// One whole submission per verifier, as the route spells a set: the verifier, a factor of its own,
+    /// and the pair of envelopes sealed under that code's key.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Ten submissions and never ten verifiers beside one factor and one pair.</b> A set is ten
+    /// separate secrets under a single <c>credentials</c> row and the client derives a key-encryption
+    /// key from each <em>code</em>, so one pair for the whole set would seal the account under whichever
+    /// code that pair belonged to and nine of the ten would open nothing.
+    /// </para>
+    /// <para>
+    /// Nothing in this file asserts anything about an envelope — every assertion here is about the token
+    /// a <c>type</c> column and a <c>type</c> member spell the credential with — so what these have to
+    /// be is well-formed, and fresh, because two codes of one set repeating a factor identifier is a
+    /// refusal of its own and <c>factor_id</c> is the table's primary key — <c>PK_wrapped_account_keys</c>
+    /// — so it is unique across the whole table.
+    /// </para>
+    /// </remarks>
+    private static object[] SubmissionsOf(IReadOnlyList<string> verifiers) =>
+    [
+        .. verifiers.Select(verifier =>
+        {
+            WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+            return new
+            {
+                verifier,
+                factorId = keys.FactorId,
+                wrappedContentKey = keys.WrappedContentKey,
+                wrappedIndexKey = keys.WrappedIndexKey,
+            };
+        }),
+    ];
 
     /// <summary>
     /// A well-formed set: <see cref="RequiredCodeCount" /> distinct verifiers of

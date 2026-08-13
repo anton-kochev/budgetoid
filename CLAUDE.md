@@ -136,10 +136,25 @@ Load-bearing rules, each explained there or in the linked decision:
   wrapped copy of both.** Deriving either from a credential would give a second passkey a second index
   key — two blind index values for one name, and a uniqueness constraint that appears to work while
   enforcing nothing. `wrapped_account_keys` is **policed** by `user_isolation`, not exempt: it is read
-  after the request has an identity. Registering a passkey and issuing a set of recovery codes each
-  **require** `factorId` and both envelopes and write the row in the **same** `SaveChanges` as the
-  credential, so a factor holding no share of the keys is unstorable. `factor_id` is client-minted and
+  after the request has an identity, and it is keyed on **`factor_id`** — a **factor is not a
+  credential**: a passkey is one factor, a set of recovery codes is **ten**, because each code derives
+  its own key-encryption key and a person redeems whichever one they still have. Registering a passkey
+  and issuing a set each **require** `factorId` and both envelopes **per factor**, written in the
+  **same** `SaveChanges` as the credential. Read what that buys precisely: the two `NOT NULL` envelope
+  columns make "a row carries both keys or neither" a schema fact, but **"every factor has a row" is
+  not one** — one-to-optional needs a trigger, which ADR 0002 forbids — it is held by there being
+  exactly two write paths, so a third would create a keyless factor and redden nothing.
+  `factor_id` is client-minted and
   deliberately **not** `credentials.id` — letting a client choose that id retires ADR 0014's first leg.
+  It arrives in **one spelling**: the lower-case 36-character hyphenated form, no surrounding
+  whitespace, which is what a `Guid` renders as and therefore what every later read hands back. Both
+  write paths call one `CanonicalFactorId.TryParse`, which compares the text **ordinally against
+  `parsed.ToString("D")`** — `Guid.TryParseExact(…, "D")` alone pins nothing, because it admits
+  upper-case and mixed-case hex and trims before it looks at the format. That comparison is not
+  redundant with the parse and is the whole rule: the value is the associated data both envelopes were
+  sealed with, so a client binding to the spelling it sent and handed back another has **both**
+  envelopes stop opening, permanently, with no error naming the cause. This repository's client is safe
+  only because it lower-cases before sealing; the contract is cross-client.
   Three consequences a reader will try to "fix": the role holds **no `UPDATE` and no `DELETE`** here,
   so a replaced set's row must leave by the cascade and `GenerateRecoveryCodesHandler`'s
   never-materialise rule now binds a second table that fails **loudly** with `42501`; the wrapped keys

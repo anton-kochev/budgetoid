@@ -461,14 +461,19 @@ public sealed class BudgetoidDbContextConstructionTests
         // file already sorts above, so advancing it while the window is open would be a second,
         // silent change to what the guard covers. It moves once, together with the window closing.
         //
-        // This literal moved again when wrapped_account_keys joined the schema: the baseline was
-        // regenerated under the open window (CON-002 — the production database holds no data), so the
-        // new table, its grants and its user_isolation policy land in one initial migration rather than
-        // in a chain nothing will ever replay step by step. The move is deliberate and it carries the
-        // same obligation every earlier one did: whoever regenerates the baseline resets production's
-        // __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3), or that deploy fails on the
-        // first CREATE TABLE against a database that already holds the schema.
-        const string frozenBaselineId = "20260813112541_InitialCreate";
+        // This literal moved again when wrapped_account_keys' key moved from credential_id to
+        // factor_id: a set of recovery codes is ten separate secrets under one credentials row and the
+        // client derives a key-encryption key from each CODE, so keying the table on the credential
+        // stored one pair of envelopes and refused the other nine. The primary key is now factor_id,
+        // credential_id is an ordinary non-unique column, and the separate unique index over factor_id
+        // is gone because the key carries that uniqueness alone. The baseline was regenerated under the
+        // open window (CON-002 — the production database holds no data), so the moved key, the dropped
+        // index and the table's grants and user_isolation policy land in one initial migration rather
+        // than in a chain nothing will ever replay step by step. The move is deliberate and it carries
+        // the same obligation every earlier one did: whoever regenerates the baseline resets
+        // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3), or that deploy
+        // fails on the first CREATE TABLE against a database that already holds the schema.
+        const string frozenBaselineId = "20260813205901_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

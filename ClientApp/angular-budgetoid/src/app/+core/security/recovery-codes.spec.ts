@@ -266,6 +266,22 @@ describe('the verifier derivation', () => {
     );
   });
 
+  it('names the key-encryption-key branch by value, the way the verifier branch is', () => {
+    // Arrange, Act, Assert
+    // Pinned by value for the same reason `RECOVERY_CODE_VERIFIER_INFO` is, and
+    // with a sharper edge: every other assertion this branch has is relative —
+    // different from the passkey branch, different from the verifier, equal to
+    // itself across two spellings of one code — and every one of them still
+    // passes when this string changes, because both sides of each comparison
+    // move together. What changes is the account's key-encryption key, so a card
+    // already printed keeps redeeming perfectly and stops unwrapping anything.
+    // Nobody else can catch it: the server sees opaque bytes, and a second
+    // client has no target to reproduce but this line and the doc it matches.
+    expect(RECOVERY_CODE_BRANCH_INFO.keyEncryptionKey).toBe(
+      'budgetoid/recovery-code/key-encryption-key/v1',
+    );
+  });
+
   it('keeps the key-encryption-key branch separate from the verifier branch', () => {
     // Arrange
     const infos = Object.values(RECOVERY_CODE_BRANCH_INFO);

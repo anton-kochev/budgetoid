@@ -745,8 +745,11 @@ public sealed class ErasureAtomicityTests
         // registration route writes a row of its own now, so this one is no longer the only thing
         // standing between that guard and a zero; it is kept for the reason the remarks give, which is
         // that this file's arrangement stays independent of any issuance route's shape. Filed against
-        // the passkey seeded just above rather than against the registered credential, because a
-        // second row hung off that credential would collide on PK_wrapped_account_keys. A passkey
+        // the passkey seeded just above rather than against the registered credential for that same
+        // reason and no other: a second row hung off that credential is perfectly storable — the key is
+        // factor_id, credential_id is an ordinary non-unique column, and a credential carries as many
+        // rows as it has factors — but naming that credential here would make this seed depend on the
+        // registration route having run, which is exactly the tie the remarks refuse. A passkey
         // rather than the recovery-code set below because a passkey is the factor whose PRF output
         // derives the key-encryption key in production; either is legal here, the federated credential
         // is not.
@@ -754,8 +757,9 @@ public sealed class ErasureAtomicityTests
             passkey,
 
             // Minted here rather than derived from the owner, which is what production does: the value
-            // is chosen by the client and its unique index is global. Nothing asserts on it, and a fresh
-            // one per call is what keeps two seeded accounts from colliding on that index.
+            // is chosen by the client and it is the table's primary key, so its uniqueness is global
+            // rather than per account. Nothing asserts on it, and a fresh one per call is what keeps two
+            // seeded accounts from colliding on that key.
             Guid.CreateVersion7(),
             Envelope(0xC0),
             Envelope(0x1D),
