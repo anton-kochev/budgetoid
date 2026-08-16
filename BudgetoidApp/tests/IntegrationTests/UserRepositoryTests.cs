@@ -562,6 +562,96 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
+    /// A refusal leaves the context usable: the next write through the same context saves what it was
+    /// handed, and nothing of the refused account rides along with it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The three detaches in <c>TryAddAsync</c>'s catch, which had no deterministic test until
+    /// now.</b> The tests above prove the refused rows never reach the database on <i>that</i> save;
+    /// none of them says anything about the save after it. Leave the entities <c>Added</c> and
+    /// <c>SaveChangesAsync</c> issues them a second time, because it flushes everything the
+    /// request-scoped context is tracking rather than only what the later call handed it — and the
+    /// later call's <c>when</c> clause was written about its own account.
+    /// </para>
+    /// <para>
+    /// <b>What that second insert hits depends on which entity was left behind, and none of the three
+    /// outcomes is one the caller can act on.</b> The refused user carries a free email in this
+    /// arrangement, so it simply lands: a <c>users</c> row with no credential resolving to it, which
+    /// is the orphan <see cref="TryAddAsync_WhenOnlyTheCredentialCollides_LeavesNoOrphanedUserRow" />
+    /// refuses, arriving one save later by another route. The refused credential still holds the
+    /// winner's provider identity, so it raises <c>23505</c> on a rule the next call's filter does
+    /// name — and a second account, beyond reproach, is refused for a collision that is not its own.
+    /// The refused budget references a user row that no longer exists, so it raises <c>23503</c>,
+    /// which nothing models at all: a 500 on a sign-in that should have succeeded.
+    /// </para>
+    /// <para>
+    /// <b>The assertions are outcomes rather than change-tracker state.</b> Reading
+    /// <c>db.ChangeTracker.Entries()</c> would restate the implementation line for line, and would
+    /// stay green if the detach moved somewhere that no longer helps. A later save that succeeds and
+    /// writes exactly its own rows is the property the caller needs, and it is the shape of what
+    /// provisioning does after a <see langword="false" />: re-read the winner, then keep writing
+    /// through the same scoped context. The rows are read back through a fresh context, so this
+    /// cannot pass by the second save quietly re-inserting the loser's rows and the assertions
+    /// reading them out of the tracker that put them there.
+    /// </para>
+    /// <para>
+    /// There is no longer a neighbour to copy this shape from, and the next reader will look for one:
+    /// <c>UpdateProfileAsync_AfterARejectedRefresh_LeavesTheContextUsable</c> made exactly this
+    /// argument for the profile-refresh path and went with that path when it was removed.
+    /// </para>
+    /// <para>
+    /// Written against the behaviour — a refusal leaves the context usable — rather than against
+    /// anything particular to this method's three rows, so the move onto the registration repository
+    /// that replaces <c>TryAddAsync</c> is a rename rather than a rewrite.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task TryAddAsync_AfterARefusedInsert_LeavesTheContextUsable()
+    {
+        // Arrange — a winning account holds this provider identity, and the loser arrives with an
+        // email of its own. Only the credential index can refuse it, which is what makes a leftover
+        // users row visible: with a colliding email it would refuse itself on the way out and the
+        // second save would report the wrong disease.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await host.SeedOwnerAsync("google-1", "winner@example.com");
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new UserRepository(db);
+
+        // Act — the refusal, and then the same context doing what the caller does next. A second
+        // provisioning attempt rather than an arbitrary write, because that is the real sequence: one
+        // request loses the race, the handler answers it, and the scoped context lives on.
+        bool refused = await repository.TryAddAsync(
+            NewUser("loser@example.com", out Guid loserId),
+            NewGoogleCredential(loserId, "google-1"),
+            NewDefaultBudget(loserId));
+        bool added = await repository.TryAddAsync(
+            NewUser("newcomer@example.com", out Guid newcomerId),
+            NewGoogleCredential(newcomerId, "google-2"),
+            NewDefaultBudget(newcomerId));
+
+        // Assert — the first insert was refused and the second was not. Nobody holds the newcomer's
+        // email and nobody holds its subject, so a false here is the refused account's leftovers
+        // being read as the newcomer's own collision, and a throw is the leftover budget's dangling
+        // foreign key.
+        await Assert.That(refused).IsFalse();
+        await Assert.That(added).IsTrue();
+
+        // The newcomer really landed — without this, a save that wrote nothing at all would satisfy
+        // everything below, since every remaining assertion is about a row being absent.
+        await using BudgetoidDbContext verify = CreateDb(host);
+        await Assert.That(await verify.Users.AnyAsync(user => user.Id == newcomerId)).IsTrue();
+
+        // And the refused account is still nowhere, one save later. Each row is looked for by the
+        // loser's own handle rather than by a count: the winner's three rows and the newcomer's three
+        // are both there, so a count would be answering a question about them instead.
+        await Assert.That(await verify.Users.AnyAsync(user => user.Id == loserId)).IsFalse();
+        await Assert.That(await verify.Credentials.AnyAsync(credential => credential.UserId == loserId))
+            .IsFalse();
+        await Assert.That(await verify.Budgets.AnyAsync(budget => budget.UserId == loserId)).IsFalse();
+    }
+
+    /// <summary>
     /// A unique violation this method does not model is not dressed up as a lost race.
     /// </summary>
     /// <remarks>
