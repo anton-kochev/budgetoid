@@ -126,6 +126,15 @@ public sealed class AppRoleGrantMatrixTests
         ("users", ["SELECT", "INSERT", "DELETE"]),
         ("credentials", ["SELECT", "INSERT", "DELETE"]),
         ("sessions", ["SELECT", "INSERT"]),
+        // The third table in this matrix with no DELETE, and it inherits the reason from the row above
+        // rather than arguing a new one: a token row is how a session is found, so a role that could
+        // remove one could sign a browser out leaving nothing that says when access ended — which is
+        // the opposite of what revocation is for, and revocation already has its own column on
+        // sessions. Rows leave here by the cascade from sessions, and through it from credentials and
+        // users, which is a deletion somebody asked for rather than one a bug can reach. It appears on
+        // no line of ExpectedUpdateColumnGrants either: all three columns are the row's identity, so
+        // the table holds no UPDATE of any shape — a re-issued handle is a new row, not an edited one.
+        ("session_tokens", ["SELECT", "INSERT"]),
         ("passkey_public_keys", ["SELECT", "INSERT"]),
         ("passkey_signature_counters", ["SELECT", "INSERT"]),
         ("webauthn_challenges", ["SELECT", "INSERT", "DELETE"]),
@@ -166,7 +175,8 @@ public sealed class AppRoleGrantMatrixTests
     /// The tables absent from this array hold no <c>UPDATE</c> grant of any shape —
     /// <c>currencies</c>, <c>credentials</c>, <c>passkey_public_keys</c>,
     /// <c>webauthn_challenges</c>, <c>budgets</c>, <c>recovery_code_hashes</c>,
-    /// <c>wrapped_account_keys</c> and <c>__EFMigrationsHistory</c> — and their absence is checked in
+    /// <c>wrapped_account_keys</c>, <c>session_tokens</c> and <c>__EFMigrationsHistory</c> — and their
+    /// absence is checked in
     /// the same direction as everything else: a column grant appearing on one of them has no entry to
     /// match and is reported as unexpected.
     /// </para>

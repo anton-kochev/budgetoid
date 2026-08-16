@@ -32,7 +32,7 @@ Enforced today:
   policed at all. Index, sequence, composite type and TOAST table stay out because they expose no
   rows of their own, which is the test any future narrowing must pass. That direction is the whole
   point and must not be inverted — a list of *policed* relations fails open, because the one nobody
-  added to it keeps the suite green. Exempt today, six of them: `credentials` (read to discover *who is
+  added to it keeps the suite green. Exempt today, seven of them: `credentials` (read to discover *who is
   asking*, so a policy keyed on the identity it resolves would refuse the query that resolves it),
   `passkey_public_keys` (read to decide whether an assertion's signature is genuine, which a WebAuthn
   ceremony must answer *before* it knows whose account it is), `recovery_code_hashes` (found by the
@@ -42,6 +42,14 @@ Enforced today:
   value it wants to compare against; it would refuse it *loudly*, because an unset setting reaches the
   policy as `''::uuid` and raises `22P02` —
   [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md)),
+  `session_tokens` (found by the `SHA-256` of the token a cookie presented — the same argument as
+  `recovery_code_hashes`, reached from the opposite end: not a person who has lost their
+  authenticator, but **every authenticated request there is**. A policy keyed on
+  `app.current_user_id` would refuse the query that produces the value it wants to compare against,
+  and would do it on every request rather than on a redemption. What that exemption is *not* is a
+  licence for the rest of the session: the expiry and the revocation instant are read after the
+  identity exists and stay on `sessions`, which is policed —
+  [ADR 0019](../decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md)),
   `webauthn_challenges` (a nonce
   belonging to a ceremony rather than to a person — the sign-in leg issues one before anybody has
   said who they are, so there is nobody for a policy to key on), `currencies` (reference data owned
@@ -81,8 +89,8 @@ Enforced today:
   grows, the second has its shape owned by EF.
 - **An exempt table scopes nothing, so the application is the only thing scoping access to it — and
   some of those accesses destroy rows.** On the exempt tables that carry an owner column —
-  `credentials`, `passkey_public_keys` and `recovery_code_hashes` — one query per table is allowed to
-  omit it, the one that discovers who is asking, and every other **read** must
+  `credentials`, `passkey_public_keys`, `recovery_code_hashes` and `session_tokens` — one query per
+  table is allowed to omit it, the one that discovers who is asking, and every other **read** must
   carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on `budgets`. **The
   destructive statements are an exception to that sentence and not to the rule**: EF issues each of
   them by primary key, with no owner predicate in the statement at all, and what scopes one is the
@@ -118,6 +126,9 @@ Enforced today:
   | `recovery_code_hashes` | `CountRemainingForUserAsync`, behind `GET /api/me/recovery-codes` and again at the end of a redemption | `where user_id` — the account's own on the read, the matched code's on the redemption |
   | `recovery_code_hashes` | **`DELETE`**, consuming the code a redemption spent | the owner-scoped read above it, in the same transaction, and nothing else — never the discovery lookup, whose answer is an account rather than a row to spend |
   | `recovery_code_hashes` | `INSERT` at generation | the credential it hangs off, written in the same save |
+  | `session_tokens` | `FindByTokenHashAsync`, the discovery lookup every authenticated request makes | **nothing, deliberately** — it runs before there is an identity to key a filter on, and the account it answers is the one the request then adopts. This is the table's *one* permitted unscoped query, and there is currently no other read of it to compare against, which is precisely when a rule is easiest to lose |
+  | `session_tokens` | `INSERT` when a session is established | the session it hangs off, written in the same save. The composite foreign key `(session_id, user_id) → sessions(id, user_id)` means a row whose owner disagreed with its session's is unstorable, so this one is scoped by the schema and not only by the caller |
+  | `session_tokens` | **no `DELETE` and no `UPDATE`, of any shape** | not applicable, and the absence is the point: rows leave by the cascade from `sessions`, which runs as the table owner. Without the grant, an EF change-tracker cascade into tracked copies dies loudly with `42501` instead of succeeding silently |
   | `webauthn_challenges` | issue, consume, sweep | **nothing, and there is nothing to scope by** — the row names no person |
 
   Where a row names a test, that test is what would notice the access losing its filter — no layer
@@ -202,9 +213,9 @@ Enforced today:
   the two that exist today and which a third must join rather than assume it is covered; a session and
   a passkey name no budget at all, so there is none to filter them by. That is a statement about the
   *read-side filter* only, and it no longer travels with the coverage exemption: `users`, `budgets`, `sessions`, `passkey_signature_counters` and `wrapped_account_keys` are
-  policed on the user, while `credentials`, `passkey_public_keys`, `recovery_code_hashes` and
-  `webauthn_challenges` are
-  exempt. The first three have to be — reading them is how a request discovers who is asking and
+  policed on the user, while `credentials`, `passkey_public_keys`, `recovery_code_hashes`,
+  `session_tokens` and `webauthn_challenges` are
+  exempt. The first four have to be — reading them is how a request discovers who is asking and
   whether it is really them, so they are the tables reached with no identity on the session at all
   ([ADR 0011](../decisions/0011-police-the-user-owned-tables.md),
   [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md),
@@ -249,9 +260,14 @@ into an RS0030 compile error.
 Tests that lock this: `tests/IntegrationTests/RlsIsolationTests.cs` (raw SQL on the application
 role, on both axes, every negative paired with the same statement against the session's own budget
 or own user — and, for each exemption resting on *"this is read before any identity exists"*
-(`credentials`, `passkey_public_keys`, `recovery_code_hashes`, `webauthn_challenges`), a **positive
+(`credentials`, `passkey_public_keys`, `recovery_code_hashes`, `session_tokens`,
+`webauthn_challenges`), a **positive
 control** proving the table
-is still readable on a connection naming nobody. On `recovery_code_hashes` that control is
+is still readable on a connection naming nobody. On `session_tokens` that control is
+`Database_ReadsASessionTokenWithNoUserOnTheSession`, and it is the one with the widest blast radius:
+a policy landing on that table would not surface as a failure anywhere near itself, but as **every
+request in the product answering 401**, with nothing in the response naming the cause. On
+`recovery_code_hashes` that control is
 `Database_LetsTheAppRoleDeleteAnyRecoveryCodeHash_OnASessionNamingNobody`, which states the unbounded
 half of its `DELETE` grant as well: it goes red the day somebody succeeds in policing that table. That direction needs its own test because coverage
 cannot supply it: an exemption says a policy is *not required*, never that one is *forbidden*, so

@@ -39,6 +39,14 @@ public sealed class BudgetoidDbContext(
     // RowLevelSecurityCoverage.Exemptions rather than policed. Nothing beneath this set scopes it: any
     // read or write of it other than the discovery lookup itself must carry its own user_id filter.
     //
+    // Session tokens are unfiltered for the strictest reason of all, and it is recovery_code_hashes'
+    // one arriving on the path every authenticated request takes. The row is found by the SHA-256 of
+    // the token a cookie presented, before anybody has said who they are — that lookup is what
+    // establishes the identity — so there is no budget to filter by and no identity a policy could be
+    // keyed on either, which is why the table is written down in
+    // RowLevelSecurityCoverage.Exemptions rather than policed. Nothing beneath this set scopes it, and
+    // the discovery lookup is the only read it has; a second one would owe its own user_id filter.
+    //
     // Wrapped account keys are unfiltered for the reason the passkey material is, and the reason is not
     // that a budget filter would be inconvenient: these envelopes belong to a recovery factor, and
     // through it to a person. They name no budget and could not — the content key they wrap is the
@@ -57,6 +65,7 @@ public sealed class BudgetoidDbContext(
     public DbSet<User> Users => Set<User>();
     public DbSet<Credential> Credentials => Set<Credential>();
     public DbSet<Session> Sessions => Set<Session>();
+    public DbSet<SessionToken> SessionTokens => Set<SessionToken>();
     public DbSet<PasskeyPublicKey> PasskeyPublicKeys => Set<PasskeyPublicKey>();
     public DbSet<PasskeySignatureCounter> PasskeySignatureCounters => Set<PasskeySignatureCounter>();
     public DbSet<RecoveryCodeHash> RecoveryCodeHashes => Set<RecoveryCodeHash>();

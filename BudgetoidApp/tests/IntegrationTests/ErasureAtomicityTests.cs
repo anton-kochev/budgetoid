@@ -707,10 +707,11 @@ public sealed class ErasureAtomicityTests
     }
 
     /// <summary>
-    /// Adds the passkey material, the session row, the set of recovery codes and the wrapped account
-    /// keys, so the whole-database enumeration has something to find in every user-owned table rather
-    /// than only in the two provisioning fills. Without it the non-vacuity guard fails on
-    /// <c>sessions</c> and on <c>recovery_code_hashes</c>, which is the point of the guard.
+    /// Adds the passkey material, the session row and the handle it is presented by, the set of
+    /// recovery codes and the wrapped account keys, so the whole-database enumeration has something to
+    /// find in every user-owned table rather than only in the two provisioning fills. Without it the
+    /// non-vacuity guard fails on <c>sessions</c>, on <c>session_tokens</c> and on
+    /// <c>recovery_code_hashes</c>, which is the point of the guard.
     /// <c>wrapped_account_keys</c> would survive it — <see cref="RegisterPasskeyAsync" /> writes a row
     /// of that route's own — and the seeded row is kept beside it for the reason below.
     /// </summary>
@@ -767,7 +768,22 @@ public sealed class ErasureAtomicityTests
 
         // Established against the passkey rather than the federated credential because
         // CK_sessions_kind_matches_credential ties the two together.
-        db.Sessions.Add(Session.Establish(passkey, SeedInstant, SeedInstant.AddDays(14)));
+        Session session = Session.Establish(passkey, SeedInstant, SeedInstant.AddDays(14));
+        db.Sessions.Add(session);
+
+        // The handle that session is presented by, in session_tokens — a table the enumeration
+        // discovers and the non-vacuity guard covers like any other, and one the guard was already
+        // reporting as a zero. Nothing in the product issues a token yet, which is exactly why the row
+        // has to be seeded here: a table that only ever holds zero rows would make every "nothing
+        // moved" and every "everything went" assertion about it vacuously true, and the guard refusing
+        // to count an empty relation is that refusal working rather than an obstacle.
+        //
+        // Through SessionToken.For and in the same SaveChangesAsync as the session, for the reason the
+        // remarks above give about every other row here: the factory is what keeps a seeded row the
+        // shape production writes, and a token committed without its session — or the reverse — is a
+        // state no write path can produce. The factory reads both ids off the loaded session, so
+        // nothing here can file a handle against another account's sign-in.
+        db.SessionTokens.Add(SessionToken.For(session, SessionTokenFor(userId)));
 
         // One credential for the whole set — IX_credentials_user_id_recovery_codes admits no second
         // one — carrying SeededRecoveryCodeCount codes rather than one. See that constant for why the
@@ -782,6 +798,31 @@ public sealed class ErasureAtomicityTests
         }
 
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// The token the seeded session is presented by: the owner's id, then zero padding, at the exact
+    /// width <see cref="SessionToken.TokenLength" /> names.
+    /// </summary>
+    /// <remarks>
+    /// Derived from the owner rather than random, so two accounts seeded in one database cannot hash
+    /// alike — <c>token_hash</c> is the primary key, and a shared token would make the second seeding
+    /// fail with a <c>23505</c> that has nothing to do with erasure. The width is read off the domain
+    /// because <see cref="SessionToken.For" /> refuses any other, from both sides.
+    /// </remarks>
+    private static byte[] SessionTokenFor(Guid userId)
+    {
+        byte[] token = new byte[SessionToken.TokenLength];
+
+        // The bool is the one failure this call has: a TokenLength shortened below the sixteen bytes of
+        // a Guid would leave a token with no owner in it, and two accounts would collide on the key.
+        if (!userId.TryWriteBytes(token))
+        {
+            throw new InvalidOperationException(
+                $"A token of {SessionToken.TokenLength} bytes has no room for an owner id.");
+        }
+
+        return token;
     }
 
     /// <summary>

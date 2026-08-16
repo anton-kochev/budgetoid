@@ -100,14 +100,14 @@ public sealed record AttributionCensus(
 /// <c>internal</c> translating type, or a repository moved to another namespace, is invisible to it —
 /// see <c>Discovery_IsBlindToARepositoryOutsideTheNamespace</c>, which is a permanent demonstration
 /// rather than a defect to fix by widening the scan. Widening only moves the blind spot; what covers
-/// it instead is <c>Discovery_FindsExactlyTheRepositoriesTheNamespaceDeclares</c>, which pins the ten
-/// names, so a repository that leaves the namespace goes red there rather than quietly leaving the
-/// census with nothing to count.
+/// it instead is <c>Discovery_FindsExactlyTheRepositoriesTheNamespaceDeclares</c>, which pins the
+/// eleven names, so a repository that leaves the namespace goes red there rather than quietly leaving
+/// the census with nothing to count.
 /// </para>
 /// <para>
 /// <b>A gap this recorded, and which is now closed.</b> Narrowing on
-/// <c>PostgresException.ConstraintName</c> is the house rule — nine of the ten repositories do it, and
-/// two of those spell it inside a helper rather than in the <c>when</c> clause. Having a narrowed
+/// <c>PostgresException.ConstraintName</c> is the house rule — nine of the eleven repositories do it,
+/// and two of those spell it inside a helper rather than in the <c>when</c> clause. Having a narrowed
 /// <c>catch</c> is not the same as having it <i>tested from both sides</i>, and
 /// <see cref="PinnedElsewhere" /> says per entry which halves exist. It said, for three entries, that
 /// the translation was pinned and there was <b>no mis-attribution control at all</b>:
@@ -119,18 +119,19 @@ public sealed record AttributionCensus(
 /// same defect as one that hides a gap it does have, and the second is only easier to notice.
 /// </para>
 /// <para>
-/// <b>What is not claimed is that the ten are now uniformly covered</b> — only that every entry says
+/// <b>What is not claimed is that the eleven are now uniformly covered</b> — only that every entry says
 /// which halves it holds. <c>SessionRepository</c> holds neither and says so, because it translates
-/// nothing; the five in <see cref="CoveredByAttributionTests" /> hold both by that file's own
-/// definition. The next repository to land here still has to be argued about by a person, which is the
+/// nothing, and <c>SessionTokenRepository</c> says the stronger version of that: it has no
+/// <c>catch</c> at all. The five in <see cref="CoveredByAttributionTests" /> hold both by that file's
+/// own definition. The next repository to land here still has to be argued about by a person, which is the
 /// property that survives every one of these lines being correct today.
 /// </para>
 /// <para>
 /// Sabotaged in four directions before it was believed, each on synthetic input so the proof is
 /// permanent rather than a sentence about a change that was reverted: a repository in neither set, one
 /// in both, a set naming a repository that does not exist, and — the control without which the first
-/// three could all pass while the real census checked nothing — the live ten classified against two
-/// <b>empty</b> sets, which must report all ten unlisted.
+/// three could all pass while the real census checked nothing — the live eleven classified against two
+/// <b>empty</b> sets, which must report all eleven unlisted.
 /// </para>
 /// <para>
 /// It lives in <c>UnitTests</c> because <c>UnitTests.csproj</c> already references Infrastructure, so
@@ -160,9 +161,10 @@ public sealed class RepositoryAttributionCensusTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Two of the five are
-    /// pinned in both directions on every narrowing they hold; one — <c>SessionRepository</c> — has
-    /// nothing to attribute at all, which is a different statement and says so; and the two that write
+    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Two of the six are
+    /// pinned in both directions on every narrowing they hold; two — <c>SessionRepository</c> and
+    /// <c>SessionTokenRepository</c> — have nothing to attribute at all, which is a different statement
+    /// and each says so in its own words; and the two that write
     /// <c>wrapped_account_keys</c> each gained a <c>factor_id</c> narrowing whose two halves are not
     /// both in the file named beside it.
     /// </para>
@@ -226,6 +228,19 @@ public sealed class RepositoryAttributionCensusTests
             + "carries no constraint name and no SQLSTATE for a filter to mis-read. "
             + "RevokeForCredentialAsync_RunTwice_KeepsTheFirstRevocationInstant pins the retry's "
             + "outcome"),
+        new(
+            nameof(SessionTokenRepository),
+            "SessionRepositoryTests",
+            "nothing to attribute, and it is the stronger form of the sentence SessionRepository's "
+            + "entry above makes: that one has a catch narrowed by no constraint name, this one has NO "
+            + "CATCH AT ALL and one member — a read. There is no violation for a filter to mis-read "
+            + "because the statement writes nothing. What IS pinned there, and is the reason this "
+            + "entry names a file rather than nothing, is the read itself: "
+            + "FindByTokenHashAsync_FindsOnlyTheSessionItsOwnTokenNames covers both directions of the "
+            + "bytea comparison the property's value converter produces, which is the one place a "
+            + "silent wrong-overload translation would surface — every session in the system would "
+            + "simply stop being found. The exemption that read rests on is pinned separately, by "
+            + "RlsIsolationTests.Database_ReadsASessionTokenWithNoUserOnTheSession"),
         new(
             nameof(TransactionRepository),
             "TransactionRepositoryTests",
@@ -347,6 +362,7 @@ public sealed class RepositoryAttributionCensusTests
             nameof(PayeeRepository),
             nameof(RecoveryCodeRepository),
             nameof(SessionRepository),
+            nameof(SessionTokenRepository),
             nameof(TransactionRepository),
             nameof(UserRepository),
         ];

@@ -439,12 +439,19 @@ public sealed class KeyMaterialSecrecyTests
     /// entry with no column is a red.
     /// </para>
     /// <para>
-    /// The six divide into three kinds, and the kinds are worth seeing. Two are the envelopes
+    /// The seven divide into three kinds, and the kinds are worth seeing. Two are the envelopes
     /// themselves — the only key-shaped thing this design lets cross the wire, and safe because the
     /// server holds nothing that opens them. Two are WebAuthn's own material, a handle that selects a
-    /// credential and a <i>public</i> key published by design. Two are one-way values, a hash and a
-    /// nonce, from which nothing is derived. No fourth kind exists, and a seventh column would have to
+    /// credential and a <i>public</i> key published by design. Three are one-way values, two hashes and
+    /// a nonce, from which nothing is derived. No fourth kind exists, and an eighth column would have to
     /// argue itself into one of the three or invent a fourth in writing.
+    /// </para>
+    /// <para>
+    /// <c>session_tokens.token_hash</c> is the newest of the one-way three and the one whose argument is
+    /// least like its neighbour's, which is why the two are written out separately rather than pointed at
+    /// each other. <c>recovery_code_hashes.verifier_hash</c> has to argue that a <i>sibling branch of the
+    /// same secret</i> is safe to hold; this one has to argue only that its input stands in no relation to
+    /// the key hierarchy at all.
     /// </para>
     /// </remarks>
     private static IReadOnlyList<BinaryColumnClassification> Classifications { get; } =
@@ -490,6 +497,16 @@ public sealed class KeyMaterialSecrecyTests
             + "the key from this column means inverting SHA-256 to reach the verifier and then "
             + "inverting HKDF to reach the code. That is the whole reason a hash of a verifier is "
             + "storable where a code is not"),
+        new(
+            "session_tokens",
+            "token_hash",
+            "SHA-256 of the 32-byte session token a cookie presents, and the identity of the row",
+            "it is one-way and it stands in no relation to the key hierarchy at all. The token it "
+            + "digests is a uniform value this server mints to name a session row; it is an input to "
+            + "no KDF, no PRF eval and no wrapping step, so inverting SHA-256 would yield a handle "
+            + "that opens a session and still not one byte a wrapped envelope could be unsealed with. "
+            + "That is a different argument from recovery_code_hashes' next door, which has to say "
+            + "why a sibling branch of the same secret is safe to store"),
         new(
             "webauthn_challenges",
             "challenge",

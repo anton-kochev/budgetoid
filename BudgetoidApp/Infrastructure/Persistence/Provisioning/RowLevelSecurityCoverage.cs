@@ -513,11 +513,11 @@ public static class RowLevelSecurityCoverage
     /// <para>
     /// An entry pins a <see cref="TableExemption.ColumnsTheReasonCovers" /> when its reason is an
     /// argument about what the listed columns hold, because then one more column is a reason nobody
-    /// has made yet: <c>credentials</c>, <c>passkey_public_keys</c>, <c>webauthn_challenges</c> and
-    /// <c>recovery_code_hashes</c> are of that kind. It pins nothing when its reason does not turn on
-    /// the table's shape: <c>currencies</c> belongs to no tenant whatever columns it grows, and EF
-    /// owns <c>__EFMigrationsHistory</c>'s shape, so pinning that one would turn an EF upgrade into a
-    /// red with nothing to decide.
+    /// has made yet: <c>credentials</c>, <c>passkey_public_keys</c>, <c>webauthn_challenges</c>,
+    /// <c>recovery_code_hashes</c> and <c>session_tokens</c> are of that kind. It pins nothing when
+    /// its reason does not turn on the table's shape: <c>currencies</c> belongs to no tenant whatever
+    /// columns it grows, and EF owns <c>__EFMigrationsHistory</c>'s shape, so pinning that one would
+    /// turn an EF upgrade into a red with nothing to decide.
     /// </para>
     /// <para>
     /// The pin on <c>credentials</c> is the whole of what keeps its exemption honest: the six
@@ -581,6 +581,24 @@ public static class RowLevelSecurityCoverage
     /// the column, never to append its name here. See <see cref="TableExemption" />.
     /// </para>
     /// <para>
+    /// <c>session_tokens</c> rests on that same "the request has no identity yet" argument, and it is
+    /// the one that reaches the largest number of requests: every authenticated request in the product
+    /// presents a token, and the row that token names is what says whose request it is. A policy keyed
+    /// on <c>app.current_user_id</c> would refuse the query that produces the value it wants to compare
+    /// against — loudly, as <c>''::uuid</c> and <c>22P02</c>, on every request rather than on a
+    /// redemption. It carries <c>user_id</c>, so the classifier reaches
+    /// <see cref="TableOwnership.UserOwned" /> from its columns and would demand
+    /// <see cref="UserIsolationPolicyName" /> of it with no rule added; the exemption is what stops a
+    /// green suite being bought with an API that fails on every request in production. The pin is the
+    /// whole of what the lookup needs before an identity exists — the digest the row is found by, and
+    /// the session and user the request adopts — and the split it draws is a real one rather than a
+    /// formality: a session's <b>expiry and revocation instant</b> are read <i>after</i> that answer
+    /// and stay on <c>sessions</c>, which is policed. That is why this table holds no timestamp, and a
+    /// last-used or expires-at column proposed here is the pin's first legitimate red. When it goes
+    /// red the fix is to move the column onto <c>sessions</c>, never to append its name here. See
+    /// <see cref="TableExemption" />.
+    /// </para>
+    /// <para>
     /// <c>webauthn_challenges</c> pins its columns even though it is
     /// <see cref="TableOwnership.None" />, and for a different reason than <c>currencies</c> skips
     /// the pin. <c>currencies</c> belongs to no tenant whatever columns it grows, so nothing its
@@ -632,6 +650,17 @@ public static class RowLevelSecurityCoverage
             + "by itself",
             TableOwnership.UserOwned,
             ["verifier_hash", "credential_id", "user_id", "credential_type", "created_at_utc"]),
+        new(
+            "session_tokens",
+            "found by the SHA-256 of the token a cookie presented, before the request has said who it "
+            + "is — a policy keyed on app.current_user_id would refuse the very query that establishes "
+            + "the identity, and refuse it loudly, because an unset setting reaches the policy as "
+            + "''::uuid and raises 22P02; the pinned columns are the whole of what that lookup needs "
+            + "before an identity exists — the digest it is found by, and the session and user the "
+            + "request then adopts — while everything read after that answer, the expiry and the "
+            + "revocation instant above all, stays on sessions, which the classifier polices by itself",
+            TableOwnership.UserOwned,
+            ["token_hash", "session_id", "user_id"]),
         new(
             "webauthn_challenges",
             "a nonce belonging to a ceremony rather than to a person — one of the three "

@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BudgetoidDbContext))]
-    [Migration("20260813205901_InitialCreate")]
+    [Migration("20260816212632_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -414,6 +414,9 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasAlternateKey("Id", "UserId")
+                        .HasName("AK_sessions_id_user_id");
+
                     b.HasIndex("CredentialId", "UserId", "CredentialType")
                         .HasDatabaseName("IX_sessions_credential_id_user_id_credential_type");
 
@@ -427,6 +430,31 @@ namespace Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("CK_sessions_kind_matches_credential", "(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))");
 
                             t.HasCheckConstraint("CK_sessions_lifetime", "expires_at_utc > created_at_utc");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Sessions.SessionToken", b =>
+                {
+                    b.Property<byte[]>("TokenHash")
+                        .HasColumnType("bytea")
+                        .HasColumnName("token_hash");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("TokenHash");
+
+                    b.HasIndex("SessionId", "UserId")
+                        .HasDatabaseName("IX_session_tokens_session_id_user_id");
+
+                    b.ToTable("session_tokens", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_session_tokens_token_hash_length", "length(token_hash) = 32");
                         });
                 });
 
@@ -797,7 +825,7 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.ToTable("webauthn_challenges", null, t =>
                         {
-                            t.HasCheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication', 'reauthentication')");
+                            t.HasCheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication', 'reauthentication', 'account_registration')");
 
                             t.HasCheckConstraint("CK_webauthn_challenges_length", "length(challenge) = 32");
 
@@ -877,6 +905,17 @@ namespace Infrastructure.Persistence.Migrations
                         .HasPrincipalKey("Id", "UserId", "Type")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Domain.Sessions.SessionToken", b =>
+                {
+                    b.HasOne("Domain.Sessions.Session", null)
+                        .WithMany()
+                        .HasForeignKey("SessionId", "UserId")
+                        .HasPrincipalKey("Id", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_session_tokens_sessions");
                 });
 
             modelBuilder.Entity("Domain.Transactions.Transaction", b =>

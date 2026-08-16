@@ -90,4 +90,74 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
             return sessions.Count;
         }
     }
+
+    /// <inheritdoc />
+    public async Task<bool> RevokeAsync(
+        Guid sessionId,
+        DateTime revokedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        // The id and the unrevoked predicate, and NO owner predicate — which is the opposite of the
+        // rule the exempt tables keep, for the opposite reason. sessions is POLICED by user_isolation,
+        // so PostgreSQL appends user_id = current_setting('app.current_user_id') to this read and to
+        // the update below: another person's session is not found here and could not be written if it
+        // were. Adding a filter above that would be a second source of tenancy able to disagree with
+        // the policy.
+        //
+        // The unrevoked half is where Session.Revoke's idempotence becomes an answer rather than a
+        // no-op: a session somebody already ended falls out of the predicate, so this call reports
+        // ending nothing instead of silently re-stamping — the same reading RevokeForCredentialAsync's
+        // count carries.
+        //
+        // SingleOrDefault rather than FirstOrDefault: id is the primary key, so a second row is a
+        // database that has lost that rule rather than a case to choose between.
+        Session? session = await dbContext.Sessions
+            .SingleOrDefaultAsync(
+                session => session.Id == sessionId && session.RevokedAtUtc == null,
+                cancellationToken);
+
+        if (session is null)
+        {
+            return false;
+        }
+
+        session.Revoke(revokedAtUtc);
+
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        // A concurrent revocation of the same session — a retried request, or this one racing the
+        // credential sweep above. revoked_at_utc is a concurrency token, so the loser's UPDATE carries
+        // "and revoked_at_utc is null", matches nothing and raises rather than overwriting the instant
+        // access actually ended. There is nothing to retry: the session IS revoked, by somebody else,
+        // and the honest answer is that this call ended nothing. That is why this catch returns where
+        // RevokeForCredentialAsync's re-reads — that one has to establish a COUNT across rows a winner
+        // may have taken some of, and this one has a single row whose fate the exception already
+        // settles.
+        //
+        // Narrowed BY THE ENTRIES, the shape every translated conflict in this folder uses:
+        // SaveChangesAsync flushes everything the scoped context is tracking, so a stranger's entity
+        // conflicting on the same save must propagate rather than be reported as an already-revoked
+        // session. The count test is not redundant — an exception EF could not attribute to any entry
+        // would otherwise satisfy the predicate vacuously.
+        catch (DbUpdateConcurrencyException exception) when (
+            exception.Entries.Count > 0
+            && exception.Entries.All(entry =>
+                entry.Entity is Session && entry.State == EntityState.Modified))
+        {
+            // The tracked instance holds a revocation instant the database has contradicted, and it is
+            // still Modified: leaving it there would make the next SaveChangesAsync on this scoped
+            // context replay the same failed UPDATE and throw again, in a caller that has nothing to do
+            // with revoking anything. Detaching is what confines the conflict to this call.
+            foreach (EntityEntry entry in exception.Entries)
+            {
+                entry.State = EntityState.Detached;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
 }

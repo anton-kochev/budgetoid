@@ -57,13 +57,23 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- IT IS THE ONLY TABLE ERASURE NEEDS A NEW GRANT ON, and the grants the cascade does without are a
 -- decision rather than an oversight. Every owned table hangs off this row by ON DELETE CASCADE —
 -- users → budgets → {payees, accounts, category_groups → categories}, and users → credentials →
--- {sessions, passkey_public_keys, passkey_signature_counters, recovery_code_hashes} — and
+-- {sessions → session_tokens, passkey_public_keys, passkey_signature_counters,
+-- recovery_code_hashes, wrapped_account_keys} — and
 -- PostgreSQL performs a
 -- referential action through internal triggers that run with the privileges of the REFERENCING
 -- table's owner, not of the role that issued the statement. So this one grant empties the
 -- structural graph and a grant on any child buys nothing.
 -- Database_AllowsDeletingAUserAndCascadesTheAccountAway is what says so: it deletes as this role
 -- and asserts every child table is empty afterwards.
+--
+-- EVERY is a claim rather than a flourish, and it has already been wrong once: wrapped_account_keys
+-- landed on the graph and was left out of this rendering, so the sentence read as complete while
+-- naming one table fewer than the schema held. A list that reads as complete and is not is worse
+-- than no list, because the next person decides whether a child needs a grant by consulting it. So
+-- a new table cascading from anything here joins this rendering, at the level ITS OWN foreign key
+-- names: session_tokens hangs off SESSIONS rather than off credentials, because
+-- (session_id, user_id) → sessions(id, user_id) is what a DELETE FROM sessions takes with it, and
+-- flattening it onto the credentials level would misstate that.
 --
 -- IT IS NOT SUFFICIENT ON ITS OWN, and reading it that way is the mistake this paragraph exists to
 -- stop. Five edges in the owned graph are Restrict rather than Cascade, and transactions is the
@@ -80,8 +90,11 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- the connection serving an authenticated request already names both the user for user_isolation
 -- and the budget for budget_isolation.
 --
--- The children holding no DELETE of any shape are budgets, payees, sessions, passkey_public_keys
--- and passkey_signature_counters, and two of those absences would cost something real to fill.
+-- The children holding no DELETE of any shape are budgets, payees, sessions, session_tokens,
+-- passkey_public_keys, passkey_signature_counters and wrapped_account_keys. That is a list of the
+-- same kind as the cascade rendering above and carries the same obligation — it is exhaustive or it
+-- is misleading, and this is the list somebody consults to decide whether a child needs a grant.
+-- Two of those absences would cost something real to fill.
 -- passkey_public_keys is exempt from row-level security — it is read before the request has an
 -- identity a policy could key on — so a DELETE there would be UNPOLICED, and one statement carrying
 -- the wrong id would remove somebody else's only way in with nothing to catch it. That is the exact
@@ -89,9 +102,12 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- beneath it, which is why that grant took an argument of its own rather than a precedent. On
 -- passkey_signature_counters a DELETE would reopen counter rewind: removing the row and
 -- re-inserting it at zero is what the deliberately single-column GRANT UPDATE (signature_counter)
--- exists to forbid. The cascade reaches all of them as the table owner, which is scoped by the row
--- it descends from rather than by a privilege. Do not "complete" this set: adding a grant to a
--- child widens the role's reach without extending what erasure can do.
+-- exists to forbid. The other absences are argued in their own blocks rather than here, and
+-- session_tokens' and wrapped_account_keys' share one sentence: with DELETE granted, an EF cascade
+-- into rows the change tracker happens to be holding succeeds SILENTLY, and without it the same
+-- mistake dies loudly with 42501. The cascade reaches all of them as the table owner, which is
+-- scoped by the row it descends from rather than by a privilege. Do not "complete" this set: adding
+-- a grant to a child widens the role's reach without extending what erasure can do.
 REVOKE ALL ON users FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON users TO budgetoid_app;
 GRANT UPDATE (email) ON users TO budgetoid_app;
@@ -181,6 +197,57 @@ GRANT SELECT, INSERT, DELETE ON credentials TO budgetoid_app;
 REVOKE ALL ON sessions FROM budgetoid_app;
 GRANT SELECT, INSERT ON sessions TO budgetoid_app;
 GRANT UPDATE (revoked_at_utc) ON sessions TO budgetoid_app;
+
+-- session_tokens: the SHA-256 of the handle one session is presented by, and the session it opens.
+-- The token itself never lands here, so a copy of this table — a backup, a replica, one unbounded
+-- read — yields digests of 256-bit uniform values and no cookie anybody can present.
+--
+-- EXEMPT from row-level security, and it is the sharpest instance of the argument credentials,
+-- passkey_public_keys and recovery_code_hashes already carry: the row is found BEFORE the request has
+-- an identity a policy could be keyed on, because finding it IS how the identity is established. The
+-- table it would otherwise have been a column on is sessions, one block above, which is policed by
+-- user_isolation keyed on app.current_user_id — exactly the value the lookup exists to produce. A
+-- column there would be read by a statement the policy refuses, and refuse it loudly: an unset setting
+-- reaches the policy as ''::uuid and raises 22P02, so it would fail on EVERY authenticated request
+-- rather than on one route. So the discovery key goes on its own exempt table and everything read
+-- after the answer — the expiry, the revocation instant — stays on the policed one. That split is
+-- docs/decisions/0012's, applied a fourth time.
+--
+-- NO UPDATE OF ANY SHAPE, and it is a property of the table rather than a column list somebody could
+-- widen. Every column is written whole when the session is established: a digest cannot be edited into
+-- another digest that means anything, and repointing session_id or user_id would hand one browser's
+-- cookie a different account. There is no column here an edit could reach, so there is no list — which
+-- is checkable in one statement, the way recovery_code_hashes' absent UPDATE is.
+--
+-- NO DELETE, AND THE ABSENCE IS LOAD-BEARING. Rows leave by the ON DELETE CASCADE from sessions, and
+-- through it from credentials and users, which runs with the referencing table owner's privileges
+-- rather than this role's. That asymmetry is what ADR 0017 argues for and ADR 0018 restates: with
+-- DELETE granted, an EF cascade into rows the change tracker happens to be holding succeeds SILENTLY
+-- and the rows leave by the application instead of by the database, with no SQLSTATE to say so;
+-- without it, the same mistake dies loudly with 42501. On this table the silent version would be
+-- worse than on either of those — it is the shape a "sign this browser out" path reaches for, and it
+-- would end access while leaving nothing that says when, which is the one thing the sessions block
+-- above exists to refuse. Signing out is stamping revoked_at_utc on the session, not removing its
+-- handle.
+--
+-- INSERT IS GRANTED FOR A WRITER NO APPLICATION CODE PROVIDES YET, and this file's header tells the
+-- next reader to grant only what a table needs, so the exception is stated rather than left to look
+-- like coverage — the same tension wrapped_account_keys states one block down about its SELECT. No
+-- path issues a token today: none of the three establishing responses carries a handle to the session
+-- it created, and the API still authenticates every request from the identity provider's token. The
+-- writer arrives with the route that mints one, and it will write the token in the SAME SaveChanges as
+-- its session, which is why there is no second port method for it and must not be one — a token row
+-- committed apart from its session names a session that may never exist.
+--
+-- Note what a column added here would land on, because it is the same mismatch as credentials': the
+-- exemption is granted to one QUERY and applied by PostgreSQL to the whole TABLE. The pinned column
+-- set in RowLevelSecurityCoverage holds it to its reason, and the columns it pins are what the lookup
+-- needs before an identity exists. A last-used instant is the one this table will be offered first,
+-- and an expiry is the second; both are read AFTER the token has answered who is asking, so both
+-- belong on sessions, which the coverage rule polices by itself. When the pin goes red the fix is to
+-- MOVE THE COLUMN, never to widen the pin.
+REVOKE ALL ON session_tokens FROM budgetoid_app;
+GRANT SELECT, INSERT ON session_tokens TO budgetoid_app;
 
 -- passkey_public_keys: everything on this table is read to decide whether the signature on an
 -- assertion is genuine, which a WebAuthn ceremony has to answer BEFORE it knows whose account it is.
@@ -458,6 +525,10 @@ GRANT SELECT ON "__EFMigrationsHistory" TO budgetoid_app;
 --                         app.current_user_id would refuse the very query that establishes the
 --                         identity, and refuse it loudly — an unset setting reaches the policy as
 --                         ''::uuid and raises 22P02
+--   session_tokens        found by the SHA-256 of the token a cookie presented, before the request
+--                         has said who it is — that lookup IS how the identity is established, so a
+--                         policy keyed on app.current_user_id would refuse it, and refuse it on every
+--                         authenticated request rather than on one route
 --   webauthn_challenges   a nonce belonging to a ceremony rather than to a person; the
 --                         authentication pool is issued before anybody has said who they are
 --   currencies            shared reference data belonging to no tenant
@@ -575,11 +646,13 @@ CREATE POLICY budget_isolation ON transactions FOR ALL TO budgetoid_app
 -- like everything else, and material attached to a session belongs there rather than on the exempt
 -- table.
 --
--- passkey_public_keys and recovery_code_hashes carry that same reason, each read before its request
--- has an identity: an assertion names a credential handle and nothing else, a redemption names a
--- verifier and nothing else. passkey_public_keys has the sharper illustration beside it — the
--- counter, policed — because that is the same before/after line drawn once more inside a single
--- ceremony. Read them together before proposing another exemption: the question is never "is this
+-- passkey_public_keys, recovery_code_hashes and session_tokens carry that same reason, each read
+-- before its request has an identity: an assertion names a credential handle and nothing else, a
+-- redemption names a verifier and nothing else, a request names a token and nothing else.
+-- passkey_public_keys has the sharper illustration beside it — the counter, policed — because that is
+-- the same before/after line drawn once more inside a single ceremony, and sessions is the same
+-- illustration for session_tokens: the handle is exempt, and everything the handle leads to stays
+-- here. Read them together before proposing another exemption: the question is never "is this
 -- sensitive" but "is this reachable before the request has an identity", and if the answer is no, a
 -- policy costs nothing.
 

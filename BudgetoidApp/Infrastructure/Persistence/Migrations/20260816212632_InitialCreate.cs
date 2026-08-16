@@ -58,7 +58,7 @@ public partial class InitialCreate : Migration
             constraints: table =>
             {
                 table.PrimaryKey("PK_webauthn_challenges", x => x.id);
-                table.CheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication', 'reauthentication')");
+                table.CheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication', 'reauthentication', 'account_registration')");
                 table.CheckConstraint("CK_webauthn_challenges_length", "length(challenge) = 32");
                 table.CheckConstraint("CK_webauthn_challenges_lifetime", "expires_at_utc > created_at_utc");
             });
@@ -280,6 +280,7 @@ public partial class InitialCreate : Migration
             constraints: table =>
             {
                 table.PrimaryKey("PK_sessions", x => x.id);
+                table.UniqueConstraint("AK_sessions_id_user_id", x => new { x.id, x.user_id });
                 table.CheckConstraint("CK_sessions_kind", "kind in ('full', 'locked')");
                 table.CheckConstraint("CK_sessions_kind_matches_credential", "(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))");
                 table.CheckConstraint("CK_sessions_lifetime", "expires_at_utc > created_at_utc");
@@ -348,6 +349,26 @@ public partial class InitialCreate : Migration
                     principalTable: "category_groups",
                     principalColumns: new[] { "id", "budget_id" },
                     onDelete: ReferentialAction.Restrict);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "session_tokens",
+            columns: table => new
+            {
+                token_hash = table.Column<byte[]>(type: "bytea", nullable: false),
+                session_id = table.Column<Guid>(type: "uuid", nullable: false),
+                user_id = table.Column<Guid>(type: "uuid", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_session_tokens", x => x.token_hash);
+                table.CheckConstraint("CK_session_tokens_token_hash_length", "length(token_hash) = 32");
+                table.ForeignKey(
+                    name: "FK_session_tokens_sessions",
+                    columns: x => new { x.session_id, x.user_id },
+                    principalTable: "sessions",
+                    principalColumns: new[] { "id", "user_id" },
+                    onDelete: ReferentialAction.Cascade);
             });
 
         migrationBuilder.CreateTable(
@@ -523,6 +544,11 @@ public partial class InitialCreate : Migration
             columns: new[] { "credential_id", "user_id", "credential_type" });
 
         migrationBuilder.CreateIndex(
+            name: "IX_session_tokens_session_id_user_id",
+            table: "session_tokens",
+            columns: new[] { "session_id", "user_id" });
+
+        migrationBuilder.CreateIndex(
             name: "IX_sessions_credential_id_user_id_credential_type",
             table: "sessions",
             columns: new[] { "credential_id", "user_id", "credential_type" });
@@ -594,7 +620,7 @@ public partial class InitialCreate : Migration
             name: "recovery_code_hashes");
 
         migrationBuilder.DropTable(
-            name: "sessions");
+            name: "session_tokens");
 
         migrationBuilder.DropTable(
             name: "transactions");
@@ -604,6 +630,9 @@ public partial class InitialCreate : Migration
 
         migrationBuilder.DropTable(
             name: "wrapped_account_keys");
+
+        migrationBuilder.DropTable(
+            name: "sessions");
 
         migrationBuilder.DropTable(
             name: "accounts");

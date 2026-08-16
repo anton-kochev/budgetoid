@@ -100,6 +100,21 @@ public sealed class SchemaConstraintSnapshotTests
             // Cascade for the reason the credentials -> users row above records: a session must never
             // be able to hold an account erasure up.
             "sessions.FK_sessions_credentials_credential_id_user_id_credential_type: FOREIGN KEY (credential_id, user_id, credential_type) REFERENCES credentials(id, user_id, type) ON DELETE CASCADE",
+            // The one composite on this schema that is not over the credential's three columns, and the
+            // composite is why the table can be trusted at all. session_tokens is EXEMPT from row-level
+            // security — a presented handle is looked up before the request has said who it is — so the
+            // user_id on this row is the one the request then adopts, with no policy underneath
+            // comparing it to anything. Shortened to session_id alone, a token naming another person's
+            // session would be storable, and presenting it would sign the caller into that account.
+            // Referencing sessions(id, user_id) through AK_sessions_id_user_id is what makes the two
+            // columns agree by construction rather than by a rule somebody remembers.
+            // Cascade for the reason the credentials -> users row above records, and for one of its
+            // own: a token whose session is gone names nothing, so the row it would leave behind is a
+            // handle resolving to a dangling id. Note what the cascade does NOT do — removing a token
+            // row is not revocation, and a path that deleted the token instead of stamping
+            // revoked_at_utc would sign the browser out while leaving nothing that says when access
+            // ended.
+            "session_tokens.FK_session_tokens_sessions: FOREIGN KEY (session_id, user_id) REFERENCES sessions(id, user_id) ON DELETE CASCADE",
             "transactions.FK_transactions_accounts_account_id_budget_id: FOREIGN KEY (account_id, budget_id) REFERENCES accounts(id, budget_id) ON DELETE RESTRICT",
             "transactions.FK_transactions_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE RESTRICT",
             "transactions.FK_transactions_categories_category_id_budget_id: FOREIGN KEY (category_id, budget_id) REFERENCES categories(id, budget_id) ON DELETE RESTRICT",
@@ -162,6 +177,14 @@ public sealed class SchemaConstraintSnapshotTests
             // whose they are — or, since type joined the key, about what opened the session.
             """CREATE UNIQUE INDEX "AK_credentials_id_user_id_type" ON public.credentials USING btree (id, user_id, type)""",
             """CREATE UNIQUE INDEX "AK_payees_id_budget_id" ON public.payees USING btree (id, budget_id)""",
+            // Redundant as a uniqueness claim — id is already the primary key of sessions, so
+            // (id, user_id) cannot repeat — and that is not what it is for. It is the referencable
+            // target the session_tokens composite foreign key needs: PostgreSQL accepts a foreign key
+            // only against a unique constraint covering exactly the referenced columns. Dropping it
+            // therefore reads as removing a duplicate index while it is the thing that stops a stored
+            // handle naming a session belonging to somebody else — and session_tokens is exempt from
+            // row-level security, so nothing underneath would notice.
+            """CREATE UNIQUE INDEX "AK_sessions_id_user_id" ON public.sessions USING btree (id, user_id)""",
             """CREATE UNIQUE INDEX "IX_accounts_budget_id_name" ON public.accounts USING btree (budget_id, name)""",
             // The trailing clause is the rule, not rendering noise. Without it PostgreSQL counts
             // every NULL as distinct, so both provisioning racers insert an unnamed (user_id, NULL)
@@ -233,6 +256,14 @@ public sealed class SchemaConstraintSnapshotTests
             // second row, so this line moving is not a rename to wave through.
             """CREATE UNIQUE INDEX "PK_recovery_code_hashes" ON public.recovery_code_hashes USING btree (verifier_hash)""",
             """CREATE UNIQUE INDEX "PK_sessions" ON public.sessions USING btree (id)""",
+            // The second primary key in this set that is not a surrogate id, and it is keyed on the
+            // digest for the reason PK_recovery_code_hashes is: the request arrives carrying a token
+            // and nothing else, so the hash is the only handle the lookup has. Being the key is also
+            // what makes two sessions sharing a token unstorable rather than a duplicate nothing would
+            // notice — and a duplicate here is two accounts reachable by one cookie, resolved by
+            // whichever row the read happened to return. A surrogate id added beside it would demote
+            // this to an ordinary unique index and quietly permit that second row.
+            """CREATE UNIQUE INDEX "PK_session_tokens" ON public.session_tokens USING btree (token_hash)""",
             """CREATE UNIQUE INDEX "PK_transactions" ON public.transactions USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_users" ON public.users USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_webauthn_challenges" ON public.webauthn_challenges USING btree (id)""",
@@ -398,10 +429,30 @@ public sealed class SchemaConstraintSnapshotTests
             // Separate from the vocabulary check rather than ANDed with it, so a row that breaches one
             // reports exactly the name that describes what is wrong with it.
             """CK_sessions_lifetime: sessions CHECK ((expires_at_utc > created_at_utc))""",
+            // Equality rather than a range, the same honesty CK_recovery_code_hashes_verifier_hash_length
+            // rests on: the value is a SHA-256 computed server-side, so it is 32 bytes or it is not a
+            // digest this table can have produced.
+            //
+            // What it deliberately cannot see, because a reader will credit it with more: it watches the
+            // DIGEST, which is 32 bytes whatever went into it, so a short token hashes to a perfectly
+            // well-formed row the database has no way to tell from a real one. The token's own width is
+            // SessionToken.TokenLength and SessionToken.For is the only place a bad one stops. This line
+            // is not the guard against a weak handle; it is the guard against the column holding
+            // something that is not a digest.
+            """CK_session_tokens_token_hash_length: session_tokens CHECK ((length(token_hash) = 32))""",
             """CK_transactions_amount: transactions CHECK ((abs(amount) <= (1000000000)::numeric))""",
-            // The three ceremonies a challenge can belong to. A nonce issued for one and spent on
+            // The four ceremonies a challenge can belong to. A nonce issued for one and spent on
             // another is the cross-ceremony replay this vocabulary refuses at the column.
-            """CK_webauthn_challenges_ceremony: webauthn_challenges CHECK (((ceremony)::text = ANY ((ARRAY['registration'::character varying, 'authentication'::character varying, 'reauthentication'::character varying])::text[])))""",
+            //
+            // 'account_registration' is a fourth POOL, not a qualifier on 'registration', and the two
+            // are not interchangeable in either direction: 'registration' is minted for somebody
+            // already signed in who is adding a device to an account that exists, while this one is
+            // minted for a caller holding a provider token and no account at all. A later commit
+            // derives the new account's id from a nonce in this pool, so sharing 'registration' would
+            // let an add-a-device nonce name a brand-new account. Snake case for the reason
+            // credentials.type spells recovery_codes: it is a two-word member, and camel case would
+            // produce a token that reads like a third thing.
+            """CK_webauthn_challenges_ceremony: webauthn_challenges CHECK (((ceremony)::text = ANY ((ARRAY['registration'::character varying, 'authentication'::character varying, 'reauthentication'::character varying, 'account_registration'::character varying])::text[])))""",
             // Exactly 32 bytes, not a range: a challenge shorter than the issuer emits is one the
             // issuer never emitted, so equality is the honest rule and a minimum would accept it.
             """CK_webauthn_challenges_length: webauthn_challenges CHECK ((length(challenge) = 32))""",

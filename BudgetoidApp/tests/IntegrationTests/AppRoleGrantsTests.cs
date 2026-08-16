@@ -647,6 +647,176 @@ public sealed class AppRoleGrantsTests
     }
 
     [Test]
+    public async Task Database_RefusesEveryUpdateOnASessionToken_WhileStillAllowingInsert()
+    {
+        // Arrange — one account, its federated credential, TWO live sessions on it, and one stored
+        // handle against the first. Both extras exist so a leaked grant would land its statement
+        // rather than trip something else and pass for the wrong reason: the second session is a real
+        // sessions row this account owns, so repointing session_id onto it satisfies the composite
+        // foreign key over (session_id, user_id) and collides with no unique rule — the primary key is
+        // token_hash, and session_id carries no uniqueness of its own. A second account gives the
+        // user_id statement a real owner to aim at.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid credentialId = (Guid)(await SelectScalarAsync(
+            admin, "select id from credentials where user_id = @id", userId))!;
+        Guid sessionId = await InsertSessionAsync(admin, userId, credentialId);
+        Guid otherSessionId = await InsertSessionAsync(admin, userId, credentialId);
+        await InsertSessionTokenAsync(admin, SeededTokenHash, sessionId, userId);
+
+        // A bare app-role connection — no user, no budget, nothing on the session at all — and, as in
+        // the credentials, passkey_public_keys and recovery_code_hashes tests above, that is the point
+        // rather than a leftover. session_tokens is the fourth table row-level security deliberately
+        // exempts, and it is the one whose exemption the most requests depend on: every authenticated
+        // request presents a token, and the row that token names is what says whose request it is, so a
+        // policy keyed on app.current_user_id would refuse the very query that produces the value it
+        // wants to compare against. Every statement below reaching its row on an anonymous session is
+        // the executable statement of that exemption. Do not "tidy" this into a configured connection.
+        await using NpgsqlConnection app = new(host.AppConnectionString);
+        await app.OpenAsync();
+
+        // Act — every column of session_tokens by name: token_hash, session_id, user_id. The rule is
+        // "no UPDATE of any shape — all three columns are the row's identity", and column-for-column is
+        // the only shape that absence can be pinned in: a table-wide GRANT UPDATE would let all three
+        // through, and so would a column list quietly added for a last-used timestamp nobody argued
+        // for. A re-issued handle is a NEW ROW, not an edited one.
+        //
+        // Each value is one the column itself would accept, which is what keeps every SQLSTATE below
+        // about the grant. The forged digest is exactly HashLength bytes, so
+        // CK_session_tokens_token_hash_length refuses nothing and a leaked grant lands it. user_id
+        // could not land even with a leak — the foreign key is composite over (session_id, user_id), so
+        // no value moves it alone — and what still makes it a measurement is the SQLSTATE: a leaked
+        // grant RUNS the statement and reports 23503, while a refused grant never runs it and reports
+        // 42501.
+        PostgresException hashRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update session_tokens set token_hash = @value where session_id = @id",
+            ForgedTokenHash,
+            sessionId);
+        PostgresException sessionRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update session_tokens set session_id = @value where session_id = @id",
+            otherSessionId,
+            sessionId);
+        PostgresException userRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update session_tokens set user_id = @value where session_id = @id",
+            otherUserId,
+            sessionId);
+
+        // Assert — rewriting token_hash is the attack the missing grant closes from the front: the row
+        // is found by that column and by nothing else, so a role that could edit it could file a handle
+        // of its own choosing against an existing session and then present it. Repointing session_id is
+        // the same door from the side — it moves a live cookie onto a different sign-in, one that may
+        // have a different expiry and a different revocation state — and repointing user_id is the
+        // worst of the three, because this table is unpoliced and the lookup adopts the owner it finds:
+        // a moved owner is a handover of an account rather than a misfiled row.
+        await Assert.That(hashRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(sessionRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+
+        // The success half of the pair (see the class remarks), and here it is an INSERT because there
+        // is no permitted column to update and there is not meant to be one. Establishing a session
+        // writes a handle, so that half of the table's lifecycle has to work for a role holding no
+        // UPDATE at all — which is what rules out the other way every refusal above could pass, the
+        // role reaching nothing on this table whatsoever. Onto the same account's second session with
+        // its own digest: same owner, so nothing but the grant stands between this statement and the
+        // row.
+        await using NpgsqlCommand insert = new(
+            "insert into session_tokens (token_hash, session_id, user_id) " +
+            "values (@token_hash, @session_id, @user_id)",
+            app);
+        insert.Parameters.AddWithValue("token_hash", IssuedTokenHash);
+        insert.Parameters.AddWithValue("session_id", otherSessionId);
+        insert.Parameters.AddWithValue("user_id", userId);
+        await Assert.That(await insert.ExecuteNonQueryAsync()).IsEqualTo(1);
+
+        // And the seeded row is untouched, column for column. A SQLSTATE says each statement was
+        // rejected; only this says none of them rewrote the row on its way to failing. The digest is
+        // read back as bytes rather than counted, because a replaced handle is the one change nothing
+        // else in this system could notice — the row would still be well-formed, still owned by the
+        // right account, and reachable only by whoever chose the new value.
+        await Assert.That(await SelectBytesAsync(
+                admin, "select token_hash from session_tokens where session_id = @id", sessionId))
+            .IsEquivalentTo(SeededTokenHash);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select user_id from session_tokens where session_id = @id", sessionId))
+            .IsEqualTo(userId);
+    }
+
+    [Test]
+    public async Task Database_RefusesADeleteOnASessionToken_WhileTheCascadeFromItsCredentialStillTakesIt()
+    {
+        // Arrange — one account, its federated credential, one live session and the handle that session
+        // is presented by. Nothing else: this test needs one chain and one child, and the whole of it is
+        // which link the role may remove.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid credentialId = (Guid)(await SelectScalarAsync(
+            admin, "select id from credentials where user_id = @id", userId))!;
+        Guid sessionId = await InsertSessionAsync(admin, userId, credentialId);
+        await InsertSessionTokenAsync(admin, SeededTokenHash, sessionId, userId);
+
+        // The bare app-role connection again, for the reason the test above gives: session_tokens is
+        // exempt, and every statement here reaching its row on a session that has named nobody is what
+        // that exemption means. credentials is exempt too, so the permitted delete below needs no
+        // identity either.
+        await using NpgsqlConnection app = new(host.AppConnectionString);
+        await app.OpenAsync();
+
+        // Act — the direct delete first.
+        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
+            app, "delete from session_tokens where session_id = @id", sessionId);
+
+        // Assert — 42501, and the row is still there. This is the half that says the absent DELETE grant
+        // is a real refusal rather than a privilege nobody happens to use.
+        await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from session_tokens where session_id = @id", sessionId))
+            .IsEqualTo(1L);
+
+        // Act — and now the same row, removed the way the product removes it. The parent named here is
+        // the CREDENTIAL rather than the session, and that is forced rather than chosen: the role holds
+        // no DELETE on sessions either, so a token row can only leave by a cascade that starts one link
+        // further up. Revoking a credential is exactly this statement, and erasure is the same chain one
+        // link further still — users -> credentials -> sessions -> session_tokens.
+        int credentialsDeleted = await ExecuteAsync(
+            app, "delete from credentials where id = @id", credentialId);
+
+        // Assert — the affected count first, because a delete matching nothing raises nothing and would
+        // make the zeros below mean "there was never a row" rather than "the cascade took it".
+        await Assert.That(credentialsDeleted).IsEqualTo(1);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from session_tokens where session_id = @id", sessionId))
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from sessions where id = @id", sessionId))
+            .IsEqualTo(0L);
+
+        // This pair is what makes the missing DELETE grant safe rather than merely narrow, and both
+        // halves are owed together: without the cascade the absence would be a product defect — a
+        // revoked credential leaving a live handle behind — and without the refusal the cascade would be
+        // one of two ways a token row can vanish. PostgreSQL runs ON DELETE CASCADE through
+        // referential-integrity triggers that execute with the privileges of the REFERENCING table's
+        // owner rather than of the current role, so the chain reaches this row while the role cannot
+        // issue the statement itself. Nothing the product needs is withheld.
+        //
+        // What the asymmetry buys is the direction the sessions row already argues one table over:
+        // removing a token is NOT revocation. Revocation stamps sessions.revoked_at_utc, which is the
+        // one column the role's UPDATE grant reaches, and leaves a row saying when access ended. A path
+        // that deleted the handle instead would sign the browser out and leave nothing accountable — and
+        // with DELETE granted here that path would be one line away and would succeed silently. Without
+        // it, the same mistake dies loudly with the 42501 above.
+    }
+
+    [Test]
     public async Task Database_RefusesToUpdateAnyColumnOfAPasskeyPublicKey()
     {
         // Arrange — one registered passkey, a second bare passkey credential on the same account for
@@ -1488,6 +1658,21 @@ public sealed class AppRoleGrantsTests
         [.. Enumerable.Repeat((byte)0x6D, 32)];
 
     /// <summary>
+    /// The three session-token digests these tests write, forge and issue. Every one is exactly
+    /// <c>SessionToken.HashLength</c> bytes, which is the whole content of
+    /// <c>CK_session_tokens_token_hash_length</c> — a value that check would refuse anyway makes its
+    /// refusal say nothing about the grant, for the same reason the passkey test forges a well-formed
+    /// handle. All three differ from each other, or the read-back asserting the seeded row is unchanged
+    /// would prove nothing and the permitted insert would collide with the seeded row on
+    /// <c>PK_session_tokens</c> rather than land.
+    /// </summary>
+    private static readonly byte[] SeededTokenHash = [.. Enumerable.Repeat((byte)0x71, 32)];
+
+    private static readonly byte[] ForgedTokenHash = [.. Enumerable.Repeat((byte)0x82, 32)];
+
+    private static readonly byte[] IssuedTokenHash = [.. Enumerable.Repeat((byte)0x93, 32)];
+
+    /// <summary>
     /// The nonce the challenge test writes. Exactly 32 bytes, which is the whole content of
     /// <c>CK_webauthn_challenges_length</c>.
     /// </summary>
@@ -1683,6 +1868,32 @@ public sealed class AppRoleGrantsTests
         command.Parameters.AddWithValue("expires_at_utc", SessionExpiryInstant);
         await command.ExecuteNonQueryAsync();
         return sessionId;
+    }
+
+    /// <summary>
+    /// Writes one stored handle against an existing session, on the superuser connection.
+    /// </summary>
+    /// <remarks>
+    /// Raw SQL rather than <c>SessionToken.For</c> for the reason every other seeding helper in
+    /// this file gives: these tests measure the application role's write surface, and seeding through
+    /// the domain would make the arrangement depend on a write path that is itself under test. The
+    /// digest is passed rather than derived because <c>token_hash</c> is the primary key, so a caller
+    /// writing two rows has to choose two values.
+    /// </remarks>
+    private static async Task InsertSessionTokenAsync(
+        NpgsqlConnection connection,
+        byte[] tokenHash,
+        Guid sessionId,
+        Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            "insert into session_tokens (token_hash, session_id, user_id) " +
+            "values (@token_hash, @session_id, @user_id)",
+            connection);
+        command.Parameters.AddWithValue("token_hash", tokenHash);
+        command.Parameters.AddWithValue("session_id", sessionId);
+        command.Parameters.AddWithValue("user_id", userId);
+        await command.ExecuteNonQueryAsync();
     }
 
     /// <summary>

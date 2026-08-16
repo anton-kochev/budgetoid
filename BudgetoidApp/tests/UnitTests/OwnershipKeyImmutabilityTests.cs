@@ -148,6 +148,17 @@ public sealed class OwnershipKeyImmutabilityTests
             // this one as carrying that weight for this property.
             "RecoveryCodeHash.UserId",
             "Session.UserId",
+            // The thirteenth key, and the one this rule is strictest about for the reason
+            // RecoveryCodeHash.UserId is, only more so. session_tokens is exempt from row-level
+            // security — the row is found by the digest of a presented token before anybody has said
+            // who they are — so nothing beneath the application re-checks whose row it is, and what the
+            // column is FOR is that the request adopts the owner it finds here. A settable UserId is
+            // not a row filed under the wrong owner; it is a handover of somebody else's account on
+            // every request the token is presented on, and no policy underneath would notice. What
+            // makes it unsettable is SessionToken.For reading both ids off the loaded Session rather
+            // than taking them as arguments, which is the same decision every other factory on this
+            // list makes.
+            "SessionToken.UserId",
             "Transaction.BudgetId",
             // The twelfth key, and the first one whose column has no table yet: WrappedAccountKeys is
             // Domain-only today, so the database half of the rule — the column's absence from every

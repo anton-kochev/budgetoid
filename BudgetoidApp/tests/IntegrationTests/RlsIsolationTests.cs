@@ -910,6 +910,59 @@ public sealed class RlsIsolationTests
     }
 
     [Test]
+    public async Task Database_ReadsASessionTokenWithNoUserOnTheSession()
+    {
+        // Arrange — two owners, one live session each, and a stored handle against each. Both, because
+        // the exemption is that this table is readable full stop: a policy narrowing it to one identity
+        // is exactly the change being guarded against, and a count of one row would pass under it. The
+        // bare app-role connection declares nobody, which every test above reads as a bug and this one
+        // reads as the requirement.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await SeedSessionAsync(admin, other.UserId);
+        await SeedSessionTokenAsync(admin, session.UserId, SessionTokenHash(0x71));
+        await SeedSessionTokenAsync(admin, other.UserId, SessionTokenHash(0x82));
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the read every authenticated request in the product begins with, on the connection it
+        // begins on: a cookie has arrived and nothing else has been established yet.
+        await using NpgsqlCommand read = new("select count(*) from session_tokens", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+        long visible = refusal is null
+            ? await CountKeyedRowsAsync(bare, "session_tokens", "user_id", session.UserId)
+                + await CountKeyedRowsAsync(bare, "session_tokens", "user_id", other.UserId)
+            : 0L;
+
+        // Assert — this is the positive control for the newest exemption and the most load-bearing test
+        // in this group, because it covers more requests than any of the others. A session token MUST be
+        // readable on a connection naming nobody: the request arrives carrying a token and nothing else,
+        // and this row is what turns that into a user id, so a policy keyed on app.current_user_id would
+        // refuse the very query that produces the value the policy wants to compare against — and refuse
+        // it loudly, as ''::uuid and 22P02, on EVERY authenticated request rather than on one path.
+        //
+        // The failure this test stands between the product and is a hardening pass adding user_isolation
+        // to session_tokens, which is a plausible and well-meant change — the table carries user_id, so
+        // it looks exactly like the tables that owe a policy. RlsCoverageTests does NOT go red under it:
+        // an exemption says a policy is not required, never that one is forbidden. Without this test the
+        // only symptom would be every request in the product answering 401, with the database reporting
+        // 22P02 from inside the one code path that runs before any identity exists, and nothing anywhere
+        // pointing at the cause. Do not "fix" this test by giving the connection a user: that is the one
+        // change that makes it agree with everything and measure nothing.
+        //
+        // The sibling half of the split is asserted next door rather than here, and it is what keeps the
+        // exemption honest: whether the session is live — unexpired, unrevoked — is a question about the
+        // sessions row, which IS policed, and Database_RefusesToReadSessionsWhenTheConnectionNamesNoUser
+        // is the test that says so. A token matching is not a session being open.
+        await Assert.That(refusal?.SqlState ?? "no error").IsEqualTo("no error");
+        await Assert.That(visible).IsEqualTo(2L);
+    }
+
+    [Test]
     public async Task Database_ReadsACredentialWithNoUserOnTheSession()
     {
         // Arrange — two owners, each with the federated credential provisioning gives them, and a
@@ -1187,6 +1240,48 @@ public sealed class RlsIsolationTests
         await using NpgsqlCommand command = BuildSessionInsertProbe(connection, userId, credentialId);
         await command.ExecuteNonQueryAsync();
     }
+
+    /// <summary>
+    /// Writes the stored handle one owner's seeded session is presented by, on the superuser
+    /// connection, and returns nothing: the digest a caller passed in is the only value worth holding
+    /// on to.
+    /// </summary>
+    /// <remarks>
+    /// The session id is read back rather than threaded through <see cref="SeedSessionAsync" />,
+    /// because the composite foreign key over <c>(session_id, user_id)</c> demands the pair agree and
+    /// the honest way to satisfy it is to take both off the row that exists. <paramref name="tokenHash"
+    /// /> is required for the reason <see cref="PasskeyHandle" />'s fill byte is: <c>token_hash</c> is
+    /// the primary key, so two owners seeded with "a token" would collide on it and the seeding would
+    /// fail before the probe ran.
+    /// </remarks>
+    private static async Task SeedSessionTokenAsync(
+        NpgsqlConnection connection,
+        Guid userId,
+        byte[] tokenHash)
+    {
+        await using NpgsqlCommand command = new(
+            "insert into session_tokens (token_hash, session_id, user_id) " +
+            "select @token_hash, id, user_id from sessions where user_id = @user_id",
+            connection);
+        command.Parameters.AddWithValue("token_hash", tokenHash);
+        command.Parameters.AddWithValue("user_id", userId);
+
+        // The affected count is the assertion this helper makes for itself: the select-from form writes
+        // as many rows as the inner query returns, so an owner with no seeded session would insert
+        // nothing at all and the probe above would read a zero it could not explain.
+        if (await command.ExecuteNonQueryAsync() != 1)
+        {
+            throw new InvalidOperationException(
+                $"Expected exactly one seeded session for owner '{userId}' to hang a token off.");
+        }
+    }
+
+    /// <summary>
+    /// A 32-byte session-token digest, every byte <paramref name="fill" />. Nothing here hashes
+    /// anything: the column holds a digest and cannot tell one from 32 bytes of anything else, and the
+    /// width is the whole of what <c>CK_session_tokens_token_hash_length</c> asks.
+    /// </summary>
+    private static byte[] SessionTokenHash(byte fill) => [.. Enumerable.Repeat(fill, 32)];
 
     /// <summary>
     /// Builds the INSERT probe for <c>sessions</c>, owned by <paramref name="ownerId" /> and

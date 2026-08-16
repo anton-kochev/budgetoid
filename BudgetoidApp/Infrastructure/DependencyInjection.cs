@@ -35,6 +35,7 @@ public static class DependencyInjection
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IBudgetRepository, BudgetRepository>();
         services.AddScoped<ISessionRepository, SessionRepository>();
+        services.AddScoped<ISessionTokenRepository, SessionTokenRepository>();
         services.AddScoped<IPasskeyRepository, PasskeyRepository>();
         services.AddScoped<IRecoveryCodeRepository, RecoveryCodeRepository>();
 

@@ -352,8 +352,16 @@ public sealed class BudgetoidDbContextConstructionTests
             // pools, not two: 'reauthentication' is minted only from an authenticated endpoint and is
             // the only one that authorizes account erasure, so a nonce from either of the other two
             // reaching that path would make the whole gate a formality.
+            // Four pools now, not three. 'account_registration' is a pool of its own rather than a
+            // qualifier on 'registration', because the two are minted for callers in different states
+            // — one is already signed in and adding a device, the other holds a provider token and no
+            // account at all — and a later commit derives the new account's id from a nonce in this
+            // pool. Sharing the pool would let an add-a-device nonce name a brand-new account, which
+            // is the cross-ceremony replay the vocabulary exists to refuse. Enumerated, so a fifth
+            // pool is a schema change somebody has to make here rather than a spelling that quietly
+            // becomes storable.
             "CK_webauthn_challenges_ceremony: webauthn_challenges ceremony in ('registration', "
-            + "'authentication', 'reauthentication')",
+            + "'authentication', 'reauthentication', 'account_registration')",
             // Equality, not a minimum: a challenge of any other length is one the issuer never
             // emitted, and a lower bound would accept it.
             "CK_webauthn_challenges_length: webauthn_challenges length(challenge) = 32",
@@ -425,6 +433,18 @@ public sealed class BudgetoidDbContextConstructionTests
             // separate constraint from the one above rather than an AND of both, because one defect
             // must report exactly one name.
             "CK_sessions_lifetime: sessions expires_at_utc > created_at_utc",
+            // Equality rather than a range, for the reason CK_recovery_code_hashes_verifier_hash_length
+            // gives: the value is a SHA-256 computed server-side, so it is 32 bytes or it is not a
+            // digest this table can have produced.
+            //
+            // What this bound cannot see is worth writing down beside it, because a reader will assume
+            // it covers more than it does. It watches the DIGEST, which is 32 bytes whatever went into
+            // it — a short token hashes to a perfectly well-formed row nothing downstream could tell
+            // from a real one. The token's own width is SessionToken.TokenLength and only
+            // SessionToken.For refuses it, from both sides. So this constraint is not the guard against
+            // a weak handle; it is the guard against a column holding something that is not a digest at
+            // all.
+            "CK_session_tokens_token_hash_length: session_tokens length(token_hash) = 32",
             "CK_transactions_amount: transactions abs(amount) <= 1000000000",
         ];
         await Assert.That(checkConstraints).IsEquivalentTo(expected);
@@ -473,7 +493,18 @@ public sealed class BudgetoidDbContextConstructionTests
         // the same obligation every earlier one did: whoever regenerates the baseline resets
         // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3), or that deploy
         // fails on the first CREATE TABLE against a database that already holds the schema.
-        const string frozenBaselineId = "20260813205901_InitialCreate";
+        //
+        // And it moved again for session_tokens: the table a presented handle is looked up on has to
+        // exist before any route can issue one, and it arrives with its own grants and its exemption
+        // from row-level security rather than with a policy. Regenerated under the same open window
+        // (CON-002 — the production database holds no data) so that this story's schema lands as one
+        // initial migration rather than as a chain nothing will ever replay step by step, and it
+        // carries the same obligation every earlier move did: whoever regenerates the baseline resets
+        // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3), or that
+        // deploy fails on the first CREATE TABLE against a database that already holds the schema.
+        // Editing this literal by hand is the checkpoint; deriving it from the migrations directory
+        // would waive it, which is what the first paragraph above is about.
+        const string frozenBaselineId = "20260816212632_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

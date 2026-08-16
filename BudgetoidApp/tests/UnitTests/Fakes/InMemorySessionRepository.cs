@@ -89,4 +89,33 @@ public sealed class InMemorySessionRepository : ISessionRepository
 
         return Task.FromResult(revoked);
     }
+
+    public Task<bool> RevokeAsync(
+        Guid sessionId,
+        DateTime revokedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        // Neither RevokeForCredentialCallCount nor LastRevokedAtUtc is touched. Both were added for
+        // the credential sweep and every assertion on them today is about that sweep; a second writer
+        // would make "the last call" mean two different things depending on which member ran.
+        Session? session = _sessions.SingleOrDefault(session => session.Id == sessionId);
+
+        // A session this does not hold is not a distinguishable answer from one already revoked, the
+        // reading the real repository's own predicate produces: it narrows on id AND revoked_at_utc is
+        // null, so never-established, already-revoked and belonging-to-somebody-else all fall out of
+        // it together and all report false.
+        if (session is null || session.RevokedAtUtc is not null)
+        {
+            return Task.FromResult(false);
+        }
+
+        // Session.Revoke keeps the first instant, so the answer has to be decided BEFORE the call
+        // rather than read off the entity afterwards — the entity looks identically revoked either
+        // way. That is the same reason RevokeForCredentialAsync above counts wasActive rather than
+        // matched rows: what is being reported is what THIS call ended, never what is true of the
+        // session afterwards.
+        session.Revoke(revokedAtUtc);
+
+        return Task.FromResult(true);
+    }
 }

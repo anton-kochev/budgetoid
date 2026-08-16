@@ -35,9 +35,15 @@ internal sealed class WebAuthnChallengeConfiguration : IEntityTypeConfiguration<
             // A CHECK rather than a native PostgreSQL enum type, exactly as on credentials.type and
             // sessions.kind: the conversion below already stores the member as text, so the check costs
             // nothing extra, while a PG enum turns adding a member into an ALTER TYPE dance.
+            //
+            // The vocabulary is ENUMERATED and grows by one token per pool, which is what makes a
+            // spelling nobody chose unstorable rather than merely undefined: 'account_registration'
+            // is here because WebAuthnCeremony grew AccountRegistration, and the check is the reason
+            // adding a member is a schema change rather than a code change alone.
             table.HasCheckConstraint(
                 CeremonyCheckName,
-                "ceremony in ('registration', 'authentication', 'reauthentication')");
+                "ceremony in ('registration', 'authentication', 'reauthentication', "
+                + "'account_registration')");
 
             // A challenge whose expiry is at or before its creation was never live for an instant, and
             // so was never a challenge. The bound matters more here than on most tables: the expiry is
@@ -120,6 +126,11 @@ internal sealed class WebAuthnChallengeConfiguration : IEntityTypeConfiguration<
         WebAuthnCeremony.Registration => "registration",
         WebAuthnCeremony.Authentication => "authentication",
         WebAuthnCeremony.Reauthentication => "reauthentication",
+
+        // Snake case, as credentials.type spells recovery_codes, because it is a two-word member and
+        // camel case would produce a token that reads like a third thing. It is a separate pool from
+        // 'registration' rather than a qualifier on it — see the member's own remarks.
+        WebAuthnCeremony.AccountRegistration => "account_registration",
         _ => throw new ArgumentOutOfRangeException(
             nameof(ceremony),
             ceremony,
@@ -135,6 +146,7 @@ internal sealed class WebAuthnChallengeConfiguration : IEntityTypeConfiguration<
         "registration" => WebAuthnCeremony.Registration,
         "authentication" => WebAuthnCeremony.Authentication,
         "reauthentication" => WebAuthnCeremony.Reauthentication,
+        "account_registration" => WebAuthnCeremony.AccountRegistration,
         _ => throw new InvalidOperationException(
             $"The webauthn_challenges.ceremony column holds '{value}', a value {CeremonyCheckName} "
             + "should have refused."),

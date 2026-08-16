@@ -16,6 +16,8 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
 
     private const string UserIdIndexName = "IX_sessions_user_id";
 
+    private const string IdUserIdAlternateKeyName = "AK_sessions_id_user_id";
+
     public void Configure(EntityTypeBuilder<Session> builder)
     {
         builder.ToTable("sessions", table =>
@@ -181,6 +183,30 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
             .HasForeignKey(session => new { session.CredentialId, session.UserId, session.CredentialType })
             .HasPrincipalKey(credential => new { credential.Id, credential.UserId, credential.Type })
             .OnDelete(DeleteBehavior.Cascade);
+
+        // Redundant as a uniqueness claim — id is already the primary key, so (id, user_id) cannot
+        // repeat — and that is not what it is for. It is the referencable target session_tokens
+        // needs, exactly as AK_credentials_id_user_id_type is the one this table needs of credentials:
+        // PostgreSQL will only accept a foreign key pointing at a unique constraint covering exactly
+        // the referenced columns, and session_tokens references (session_id, user_id) together so that
+        // a stored handle cannot name a session belonging to a different person.
+        //
+        // That composite matters more on session_tokens than the same idiom does anywhere else on this
+        // schema. session_tokens is EXEMPT from row-level security — the row is found before the
+        // request has said who it is — so the owner it carries is the one a request adopts, with no
+        // policy underneath checking it against anything. This key is what makes the two columns agree
+        // by construction.
+        //
+        // user_id joins the pair rather than being checked anywhere else because sessions.user_id is
+        // immutable — it is absent from the GRANT UPDATE column list, whose whole content is
+        // revoked_at_utc — so the copy session_tokens holds cannot drift away from this source.
+        //
+        // This adds a UNIQUE INDEX and no column. sessions is policed rather than exempt, so it carries
+        // no pinned column set for a new column to redden; the note is here because the neighbouring
+        // tables' do, and because "an index is not a column" is the sentence
+        // CredentialConfiguration had to write when it added the same thing.
+        builder.HasAlternateKey(session => new { session.Id, session.UserId })
+            .HasName(IdUserIdAlternateKeyName);
     }
 
     // The discard arm is unreachable from anything the domain can produce: it means a member was added

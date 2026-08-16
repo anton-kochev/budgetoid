@@ -21,7 +21,9 @@ provider cannot be taken back by this product — revoking access would mean ask
 revoke it — while a session row can be ended here, in one write, by the same role that serves every
 request. **Three things establish a session and there is no fourth**, all three open a `Full`
 session lasting 14 days, and **no session token is issued yet**, so a session authenticates nothing
-today; the first gotcha below carries what that means for every operation in this file.
+today; the first gotcha below carries what that means for every operation in this file. The *place* a
+token will be presented by now exists — `session_tokens`, below — but nothing writes a row there and
+nothing reads one, so the sentence above is unchanged by its arrival.
 
 ## Key Entities
 
@@ -39,15 +41,44 @@ today; the first gotcha below carries what that means for every operation in thi
 - **`Session.CredentialType`** — a copy of the establishing credential's type, carried on the row so
   the database can check the derivation. A `CHECK` sees only the row in front of it, so the fact
   `kind` is derived from has to be on that row for the derivation to be checkable at all.
+- **SessionToken** — the handle one session will be presented by, stored as `SHA-256(token)` and
+  never as anything the token can be recovered from. It carries the digest, the `SessionId` it opens
+  and the `UserId` that owns it, and **nothing else** — no timestamps, because the session row already
+  carries when it began, when it expires and whether it was revoked, and a second copy is a second set
+  of the same facts to keep in step.
 
-A session record deliberately carries **no** token, token hash, last-used instant, device name, IP
-address, or user agent. Each would be a column nothing reads today, and a column nothing reads is
-data held for no one — the same rule the minimal account row is built on.
+  **Why it is a table of its own, which is the whole of the decision.** A presented token has to be
+  looked up *before* the request has an identity, and `sessions` is policed by `user_isolation` keyed
+  on `app.current_user_id` — which is exactly the value the lookup exists to produce. A hash column on
+  `sessions` would therefore be read by a statement the policy refuses, and refuse it loudly: an unset
+  setting reaches the policy as `''::uuid` and raises `22P02`, on every request rather than on some
+  edge. So the discovery key goes on its own **exempt** table and everything read *after* the answer —
+  the expiry and the revocation instant above all — stays on the policed one. That is the split
+  [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
+  already argues for a passkey's material, and
+  [ADR 0019](../decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md) applies
+  it here.
+
+  **What the hash buys is not what a recovery code's hash buys.** A recovery code never reaches this
+  server at all; a session token does — this server mints it and reads it on every request presenting
+  it — so the digest is not a claim that the value is unknown here. It is a claim about what a *copy*
+  of the table is worth: a backup, a replica or one unbounded read yields digests, and a digest of a
+  256-bit uniform value cannot be turned back into the token a request would have to present.
+
+A session record deliberately carries **no** last-used instant, device name, IP address, or user
+agent. Each would be a column nothing reads today, and a column nothing reads is data held for no one
+— the same rule the minimal account row is built on.
+
+It carries no token and no token hash either, and that absence is a different decision from the four
+above rather than another instance of them: the hash exists, on `session_tokens`, and it is on its
+own table **because** it cannot be on this one. Read the entity below for why, and do not "tidy" the
+two back together.
 
 ```mermaid
 erDiagram
     USER ||--o{ CREDENTIAL : "signs in with"
     CREDENTIAL ||--o{ SESSION : establishes
+    SESSION ||--o{ SESSION_TOKEN : "is presented by"
     SESSION {
         guid Id
         guid UserId
@@ -58,7 +89,25 @@ erDiagram
         datetime ExpiresAtUtc
         datetime RevokedAtUtc
     }
+    SESSION_TOKEN {
+        bytea TokenHash
+        guid SessionId
+        guid UserId
+    }
 ```
+
+**`SESSION_TOKEN` is drawn one-to-many because that is what the schema holds**, and the gap between
+that and what the design intends is worth stating rather than drawing over. The primary key is the
+digest, so nothing stops a session from having several token rows, and nothing stops it from having
+none. One-to-one would need either a unique constraint on `session_id` — which would be a real rule
+and is simply not there — or a trigger for the "at least one" half, which
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing down.
+
+Today the point is moot in the least reassuring way: **nothing writes a row here at all.** When a
+write path lands it will write the token in the same save as the session it opens, and *that* — one
+write path, one save — will be the whole of what holds the pairing, exactly as it is the whole of what
+holds "every factor has wrapped keys". A second write path would be able to produce a session with
+two handles, or a token naming a session that never opened, and redden nothing.
 
 ## Constraints
 
@@ -331,9 +380,13 @@ enumerated spelling makes at the database — see the first rule above.
 ## Edge Cases & Known Gotchas
 
 - **No session token is issued, so every operation in this file is anticipatory.** The `sessions`
-  table, its entity, its isolation policy, its grant matrix entry, and the two operations —
-  establish one, revoke every session a credential established — exist and are tested. What still
-  does not exist is anything that *presents* a session. **Not one** of the three establishing
+  table, its entity, its isolation policy, its grant matrix entry, and the three operations —
+  establish one, revoke every session a credential established, revoke one by id — exist and are
+  tested. So, now, does `session_tokens`: the table, its exemption, its grants, its entity and its
+  lookup. **That changes nothing about this gotcha, and the temptation to read it as progress is
+  exactly what the gotcha is for.** A place to put a handle is not a handle. No path writes a row
+  there, no path reads one, and what still does not exist is anything that *presents* a
+  session. **Not one** of the three establishing
   responses carries a handle to the row it created, and all three withhold it for the same reason;
   the API still authenticates every other request from the Google ID token it is handed, exactly as
   [users-and-ownership.md](users-and-ownership.md) describes. So a recovery sign-in today opens a

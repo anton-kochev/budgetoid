@@ -95,7 +95,7 @@ public sealed class DeploymentProvisioningTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// All three carry <c>user_id</c>, so a query that asked only "does this table own rows" would
+    /// All four carry <c>user_id</c>, so a query that asked only "does this table own rows" would
     /// demand a policy none of them may have. <c>credentials</c> is read to answer "who is asking",
     /// and a policy keyed on that answer would refuse the question that produces it.
     /// <c>passkey_public_keys</c> is read to decide whether the signature on an assertion is genuine,
@@ -104,12 +104,15 @@ public sealed class DeploymentProvisioningTests
     /// request that has said nothing about who they are, and a policy keyed on
     /// <c>app.current_user_id</c> would refuse the very query that establishes the identity — refuse
     /// it loudly, because an unset setting reaches the policy as <c>''::uuid</c> and raises
-    /// <c>22P02</c>, so the failure would be every redemption in production rather than a leak. Each
-    /// is read before the request has an identity a policy could be keyed on; all three reasons are
-    /// argued in docs/decisions/0011 and docs/decisions/0012.
+    /// <c>22P02</c>, so the failure would be every redemption in production rather than a leak.
+    /// <c>session_tokens</c> is found by the SHA-256 of the token a cookie presented, on a request that
+    /// has said nothing about who it is, and a policy there would refuse the very query that produces
+    /// the identity it wants to compare against — on every authenticated request rather than on a
+    /// redemption. Each is read before the request has an identity a policy could be keyed on; all four
+    /// reasons are argued in docs/decisions/0011 and docs/decisions/0012.
     /// </para>
     /// <para>
-    /// The third name is written out above rather than cited, and the paragraph below is why that
+    /// The third and fourth names are written out above rather than cited, and the paragraph below is why that
     /// matters more than it looks. <c>RowLevelSecurityCoverage.Exemptions</c> also carries a reason for
     /// <c>recovery_code_hashes</c>; pointing at it — "excused because the shared list excuses it" —
     /// would make this entry an assertion about the code under test, which is the one thing this
@@ -133,7 +136,7 @@ public sealed class DeploymentProvisioningTests
     /// purpose. The failure asks for a decision rather than granting one.
     /// </para>
     /// <para>
-    /// Only tenant-owned exemptions belong in it, which is why there are three names here and six in
+    /// Only tenant-owned exemptions belong in it, which is why there are four names here and seven in
     /// the shared list. <c>currencies</c>, <c>webauthn_challenges</c> and <c>__EFMigrationsHistory</c>
     /// carry neither ownership column, so the query's own shape predicate already excludes them;
     /// naming them here would turn an independent statement into a copy of a list and invite somebody
@@ -143,12 +146,28 @@ public sealed class DeploymentProvisioningTests
     /// <para>
     /// The counts in the sentence above are a description, not a check. Nothing fails when they drift,
     /// and nothing should — a test that compared the two lengths would be reading the shared list
-    /// again by the back door. They are here because a reader arriving at three names and six
+    /// again by the back door. They are here because a reader arriving at four names and seven
     /// exemptions needs to know the gap is expected.
     /// </para>
     /// </remarks>
     private static readonly string[] UnpolicedUserOwnedTables =
-        ["credentials", "passkey_public_keys", "recovery_code_hashes"];
+    [
+        "credentials",
+        "passkey_public_keys",
+        "recovery_code_hashes",
+
+        // The fourth name, written out a second time by a person on purpose — the duplication above is
+        // the design, not a defect somebody should resolve by reading the shared list. Its own reason,
+        // stated here so that a wrong entry there and a wrong entry here stay two separate mistakes: a
+        // presented session token is looked up before the request has said who it is, and
+        // user_isolation is keyed on app.current_user_id, which is exactly the value that lookup
+        // exists to produce. A policy here would refuse the query it wants to compare against, and
+        // refuse it loudly — an unset setting reaches the policy as ''::uuid and raises 22P02 — so the
+        // failure would be every authenticated request in the product rather than a leak. It carries
+        // user_id, so without this name the discovery below would demand a policy of it and go red
+        // with nothing wrong.
+        "session_tokens",
+    ];
 
     /// <summary>
     /// The policy name a budget-owned table owes.

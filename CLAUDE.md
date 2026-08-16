@@ -67,10 +67,16 @@ Load-bearing rules, each explained there or in the linked decision:
   EF `BudgetIsolation` query filters turn a foreign row into the API's 404/400. Neither is
   duplication — do not delete either. See [ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md).
 - `users`, `budgets`, `sessions` and `passkey_signature_counters` are policed on the **user** by
-  `user_isolation`, not on a budget. `credentials`, `passkey_public_keys`, `webauthn_challenges` and
-  `recovery_code_hashes` are exempt, each because it is read *before* the request has an identity a
+  `user_isolation`, not on a budget. `credentials`, `passkey_public_keys`, `webauthn_challenges`,
+  `recovery_code_hashes` and `session_tokens` are exempt, each because it is read *before* the request
+  has an identity a
   policy could be keyed on — so the credential lookup must never join `users`, and a recovery code is
-  found by the hash of the verifier on a request that has said nothing about who is asking. **An
+  found by the hash of the verifier on a request that has said nothing about who is asking. The last
+  is the same argument reached from the opposite end: not somebody who lost their authenticator, but
+  **every authenticated request there is**, which is why the session's *discovery key* is split onto
+  its own exempt table while the expiry and revocation instant it decides nothing without stay on the
+  policed `sessions` row ([ADR 0019](docs/decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md)).
+  **An
   exempt table scopes nothing**: only the discovery lookup may omit an owner filter, and every other
   **read** of one must carry its own `where user_id = …`. The destructive statements are an exception
   to that sentence and not to the rule — EF emits each `DELETE` by primary key, so none of them
