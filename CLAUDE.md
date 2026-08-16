@@ -315,8 +315,14 @@ lowest capable layer, the doc describing it says why. See
   without it `azd provision` fails on an empty ARM resource name.
 - **The database has no standing firewall rule.** `az postgres flexible-server
   firewall-rule list` must come back empty outside a deploy.
-- **`budgetoid.app` is registered but not yet wired up.** The generated Azure hostnames are
-  still the live ones; treat any doc claiming otherwise as wrong.
+- **There is no production environment right now, and `budgetoid.app` is the name the next one
+  answers on.** `rg-budgetoid-prod` does not exist; only `rg-budgetoid-msi` and its pipeline
+  identity survive a teardown, by design. The repository already names the target — `budgetoid.app`
+  for the frontend, `api.budgetoid.app` for the API — and **`passkey-relying-party-id` is frozen at
+  `budgetoid.app`**, never a generated `*.azurestaticapps.net` hostname. That value is hashed into
+  every passkey an authenticator stores, so a later change invalidates all of them with no
+  migration; it is decided here rather than at cutover precisely so no account can be created under
+  a throwaway name. Binding the DNS is part of bringing the environment up, not a follow-up.
 - **The baseline migration is frozen, but its rebaseline window is open.** Schema changes are
   additive migrations and the `migrations-guard` CI job fails any edit to an existing migration
   file — except while `REBASELINE_WINDOW` in that job is `open`, which it is, because the

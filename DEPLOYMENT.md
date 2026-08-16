@@ -34,8 +34,8 @@ created once with one command.
 | Container App | `api`, in a Container Apps environment the AppHost owns and places on the virtual network below |
 | Database networking | The API reaches PostgreSQL over a **private endpoint**; the server carries **no standing firewall rule**. Public access stays enabled purely so this pipeline can open a two-minute window for one address. A private DNS zone makes the server's ordinary public hostname resolve to its private address inside the network, so no connection string mentions any of this. |
 | API database identity | `budgetoid_app`, the least-privilege role, bound by object id to the API's user-assigned managed identity; the password-free connection string is injected into the Container App as `ConnectionStrings__budgetoid` |
-| API URL | `https://api.gentlebay-c068f20b.northeurope.azurecontainerapps.io` — a Container Apps environment mints a new hostname every time it is recreated, so treat this as a lookup, not a constant: `az containerapp show -n api -g rg-budgetoid-prod --query properties.configuration.ingress.fqdn -o tsv` |
-| Frontend URL | `https://blue-island-06a7efa03.7.azurestaticapps.net` |
+| API URL | `https://api.budgetoid.app`. Underneath it a Container Apps environment mints a fresh generated hostname every time it is recreated, so that one is a lookup and never a constant: `az containerapp show -n api -g rg-budgetoid-prod --query properties.configuration.ingress.fqdn -o tsv`. The custom domain is the layer of indirection that keeps a regenerated hostname from being a four-place edit ([ADR 0010](docs/decisions/0010-serve-the-app-from-a-custom-domain.md)). |
+| Frontend URL | `https://budgetoid.app`, over a Static Web App whose generated `*.azurestaticapps.net` hostname is likewise private: `az staticwebapp show -n <name> -g rg-budgetoid-prod --query defaultHostname -o tsv` |
 
 ---
 
@@ -80,8 +80,8 @@ they land in the committed Bicep — no manual container-app edits):
 | Prompt | Value |
 |---|---|
 | `google-client-id` | your Google OAuth client id |
-| `frontend-origin` | the Static Web App URL from Step 1. It is injected twice — as the CORS allowed origin and as the passkey ceremony's allowed origin — because those are the same origin by definition. |
-| `passkey-relying-party-id` | the **registrable domain** of that origin (`budgetoid.app` for `https://budgetoid.app`; the generated `*.azurestaticapps.net` hostname while Step 6 is outstanding). **Permanent.** Every passkey an authenticator stores hashes this value into the credential, so changing it later does not re-point existing passkeys — it invalidates every one of them, and no migration repairs them. Choose the domain the app is meant to keep. |
+| `frontend-origin` | `https://budgetoid.app`. It is injected twice — as the CORS allowed origin and as the passkey ceremony's allowed origin — because those are the same origin by definition. Not the generated Static Web App URL from Step 1: that hostname is private, and an origin the ceremony accepts is an origin passkeys get registered against. |
+| `passkey-relying-party-id` | `budgetoid.app`, the registrable domain of that origin. **Frozen, and deliberately not a choice made here.** Every passkey an authenticator stores hashes this value into the credential, so changing it later does not re-point existing passkeys — it invalidates every one of them, and no migration repairs them. The generated `*.azurestaticapps.net` hostname is **never** an acceptable value, not even temporarily: an account created under it is an account whose passkeys die at cutover. Step 6 therefore binds the domain as part of bringing the environment up rather than after it. |
 | `pipeline-principal-id` | the **object id** of the service principal that will deploy. `azd pipeline config` in Step 5 creates it; on a first bootstrap use your own principal's object id and re-run `azd up` after Step 5. It is registered as a Microsoft Entra administrator of the Postgres server, which is the only identity that can migrate the schema. |
 | `pipeline-principal-name` | that principal's display name. Postgres needs a role name to log in as even though the token is what proves which principal it is. |
 
@@ -354,9 +354,16 @@ API's managed identity, and deploys — in that order. You can still trigger a m
 
 ## Step 6 — Custom domain (`budgetoid.app`)
 
-**Not done yet.** The deployment still answers on its generated Azure hostnames. The domain is
-registered at Cloudflare Registrar and the target layout is decided
-([ADR 0010](docs/decisions/0010-serve-the-app-from-a-custom-domain.md)); what follows is the cutover.
+**Not a cutover — part of the first provision.** There is no production environment today:
+`rg-budgetoid-prod` does not exist, and the generated hostnames earlier revisions of this document
+quoted answer nothing. The domain is registered at Cloudflare Registrar, its nameservers are live,
+and the target layout is decided ([ADR 0010](docs/decisions/0010-serve-the-app-from-a-custom-domain.md)),
+but the zone holds no records yet.
+
+That ordering is the point. `passkey-relying-party-id` is frozen at `budgetoid.app` before Step 2 is
+ever answered, so this step runs while the environment is still empty of accounts. Standing an
+environment up on its generated hostnames and moving the domain afterwards would register passkeys
+against a name that is about to stop existing, and no migration repairs those.
 
 | Name | Serves | Record |
 |---|---|---|
@@ -398,26 +405,31 @@ az staticwebapp hostname set -n budgetoid-web -g rg-budgetoid-prod \
 #   CNAME  @    <name>.azurestaticapps.net      (Cloudflare flattens this at the apex)
 ```
 
-Once both certificates are issued, update the four places that name a hostname. Missing any one of
-them leaves a deployment that looks healthy and is not:
+Once both certificates are issued, four places name a hostname and each has to agree. Missing any one
+of them leaves a deployment that looks healthy and is not:
 
-1. `ClientApp/angular-budgetoid/public/assets/app-config.json` — `apiBaseUrl` →
-   `https://api.budgetoid.app`, `auth.google.redirectUri` → `https://budgetoid.app`. Commit it.
+1. `ClientApp/angular-budgetoid/public/assets/app-config.json` — **already committed** with
+   `apiBaseUrl` → `https://api.budgetoid.app` and `auth.google.redirectUri` → `https://budgetoid.app`.
+   Nothing to do here unless somebody has pointed it back at a generated hostname.
 2. **The azd environment**, not just the repo: `azd env set AZURE_FRONTEND_ORIGIN
-   https://budgetoid.app`. This is what the next `azd provision` bakes into the container app as
-   `Cors__AllowedOrigins__0` **and** as `Authentication__Passkey__AllowedOrigins__0`. Forget it and
-   the browser reports a network failure that is really a CORS rejection.
-   `AZURE_PASSKEY_RELYING_PARTY_ID` does **not** move with it: passkeys registered under the old
-   relying party id cannot be re-pointed at `budgetoid.app`, so moving the domain after passkeys
-   exist means every one of them has to be registered again. Decide the relying party id before the
-   first passkey is created, not during this cutover.
+   https://budgetoid.app` and `azd env set AZURE_PASSKEY_RELYING_PARTY_ID budgetoid.app`. The first
+   is what the next `azd provision` bakes into the container app as `Cors__AllowedOrigins__0`
+   **and** as `Authentication__Passkey__AllowedOrigins__0`; forget it and the browser reports a
+   network failure that is really a CORS rejection. The second is set once and never again — a
+   passkey registered under one relying party id cannot be re-pointed at another, so the value is
+   frozen before the environment exists rather than reconsidered here.
 3. **Google Cloud console** → the OAuth 2.0 client → add `https://budgetoid.app` to **Authorized
    JavaScript origins** and **Authorized redirect URIs**. Nothing in this repository can verify this
    step; it is the one that breaks login while everything else reports success.
 4. `www.budgetoid.app` → a Cloudflare redirect rule to the apex. Without a record it is `NXDOMAIN`.
 
-Keep the old Azure hostnames in the OAuth client and in `Cors__AllowedOrigins` until the new domain
-is confirmed working, then remove them in a follow-up — that is the rollback.
+**There is no dual-origin rollback, and that is deliberate.** Keeping the generated hostnames
+alongside the new domain "until it is confirmed working" is the obvious safety net and it is a trap:
+`frontend-origin` is injected into `Cors__AllowedOrigins__0` **and**
+`Authentication__Passkey__AllowedOrigins__0` from one parameter, so an origin kept for rollback is an
+origin the passkey ceremony accepts — and a passkey registered there is bound to a relying party id
+that is about to stop existing. The rollback is to fix the DNS, not to widen the origin list. A
+second Google redirect URI is harmless and may stay; a second allowed origin may not.
 
 Auto-renew on the domain must stay **on**. An expired `.app` is a total outage with no partial
 failure to notice first.
