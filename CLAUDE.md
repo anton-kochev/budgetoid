@@ -95,6 +95,24 @@ Load-bearing rules, each explained there or in the linked decision:
 - **The passkey assertion path publishes the identity only after the signature verifies, and opens
   its transaction only after that.** A transaction opened earlier configures the connection while
   `app.current_user_id` is still empty, so every policed statement inside it fails with `22P02`.
+- **A request authenticates from the `__Host-budgetoid-session` cookie in three steps whose order is
+  the security property**, and `AuthenticateSessionHandler` owns all three: read the **exempt**
+  `session_tokens` row by the token's digest on a connection naming nobody, *then* `ResolveUser`,
+  *then* read the **policed** `sessions` row. Reversed, the policy meets `''::uuid` and every request
+  in the product answers `22P02`; **no transaction may wrap any of it**, for the same reason. The API
+  decodes the cookie and looks nothing up — `CompositionBoundaryTests` holds that line and this is the
+  path where crossing it costs most. `ResolveBudget` comes last because `ResolveUser` clears it. Three
+  further rules a reader will try to simplify: every request but `GET /health` must carry a non-empty
+  `X-Budgetoid-Client` header or answer **403** — the CSRF control, unchecked by value on purpose and
+  covering the **anonymous** routes because those are the ones that set a cookie; an **ended** session
+  authenticates on exactly one route, the one that ends sessions, marked with
+  `AcceptsEndedSessionAttribute` and reaching no ambient budget even there; and the default scheme is
+  a **temporary** `Budgetoid.Bridge` policy scheme forwarding to the cookie when it is present and to
+  `JwtBearer` otherwise, deleted when sign-in leaves the identity provider. `SessionCookie.Issue` has
+  **no caller** — the reading half ships ahead of the minting half, and the first writer must write
+  the token in the same `SaveChanges` as the session it opens. See
+  [sessions.md](docs/business-logic/sessions.md) and
+  [ADR 0019](docs/decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md).
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
   `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
 - **A credential type has exactly one spelling and it is written out, never derived from the member

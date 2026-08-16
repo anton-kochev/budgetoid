@@ -5,6 +5,38 @@ public interface ISessionRepository
     Task AddAsync(Session session, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The session named by <paramref name="sessionId"/>, or <see langword="null"/> when this request
+    /// can see none under that id.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>No owner predicate, for the reason <see cref="RevokeAsync"/> gives.</b> <c>sessions</c> is
+    /// <b>policed</b> by <c>user_isolation</c>, so PostgreSQL appends
+    /// <c>user_id = current_setting('app.current_user_id')</c> underneath this read: somebody else's
+    /// session is not found rather than found and then rejected. An owner filter above the policy would
+    /// be a second source of tenancy able to disagree with it, and the first disagreement is a request
+    /// that can read its own session through one and not the other.
+    /// </para>
+    /// <para>
+    /// <b>The caller must have published the identity before calling this, and that ordering is the
+    /// whole of ADR 0019.</b> The request arrives holding a cookie and nothing else, so the session id
+    /// comes from <see cref="ISessionTokenRepository.FindByTokenHashAsync"/> on the exempt table — a
+    /// read that runs before anyone is known — and only then is the owner it found published. Called
+    /// first, this read meets <c>''::uuid</c> in the policy and raises <c>22P02</c>; called inside a
+    /// transaction opened before the publication, so does every other policed statement in it.
+    /// </para>
+    /// <para>
+    /// <b>It returns the entity rather than a verdict.</b> Whether a session is live is
+    /// <see cref="Session.IsActiveAt"/>'s answer and it stays in the domain: a port member called
+    /// <c>IsLiveAsync</c> would put "revoked or expired" in a second place, and the copy that drifts is
+    /// the one deciding whether a request is authenticated. A <see langword="null"/> here is not a
+    /// distinguishable answer either — never established, and belonging to another account, arrive the
+    /// same way, which is what stops a caller learning that a session id is real but not theirs.
+    /// </para>
+    /// </remarks>
+    Task<Session?> FindByIdAsync(Guid sessionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Revokes, at <paramref name="revokedAtUtc"/>, only the sessions the credential named by
     /// <paramref name="credentialId"/> established, leaving every other credential's sessions on the
     /// same account alive. Returns how many sessions this call ended, which excludes any a

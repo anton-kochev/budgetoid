@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Application.Abstractions;
 using Application.Users.EnsureUser;
 using Microsoft.AspNetCore.Authorization;
 
@@ -49,6 +50,18 @@ namespace Api.Infrastructure;
 /// reason recorded in the users-and-ownership documentation.
 /// </para>
 /// <para>
+/// <b>Why a published identity ends the method before anything else does.</b> This middleware exists to
+/// turn a provider token into an account; a request that already has one has nothing here to do, and
+/// doing it anyway would resolve the identity a second time from a second source. The check is on the
+/// <em>state</em> — <see cref="IUserContext.ResolvedUserId" /> — rather than on which scheme
+/// authenticated, and that is what makes it structural: the session cookie publishes the account and the
+/// budget while authenticating, so a request that arrived on one cannot be re-provisioned by any edit
+/// short of deleting this arm, and the next scheme that publishes an identity inherits the rule without
+/// being named. Reading the scheme instead would be a list to keep in step with the schemes registered,
+/// and the day it fell behind the symptom would be a session request refused over claims a cookie has
+/// never carried.
+/// </para>
+/// <para>
 /// <b>What this does not fix.</b> A client that calls a <em>marked</em> endpoint on app boot still
 /// resurrects an erased account for as long as the provider's id token lives. That hole is pre-existing;
 /// it closes when registration becomes a consented act and the six markers collapse into one.
@@ -94,8 +107,19 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
         HttpContext httpContext,
         EnsureUserHandler ensureUserHandler,
         ResolveUserHandler resolveUserHandler,
-        IUserContextWriter userContextWriter)
+        IUserContextWriter userContextWriter,
+        IUserContext userContext)
     {
+        // Above everything, including the anonymous arm: an identity that is already published was
+        // published by the authentication that produced it, and this middleware has neither a better
+        // source for it nor any business naming a second one. See the class remarks for why the test is
+        // the published state rather than the scheme.
+        if (userContext.ResolvedUserId is not null)
+        {
+            await next(httpContext);
+            return;
+        }
+
         ClaimsPrincipal principal = httpContext.User;
         if (principal.Identity?.IsAuthenticated != true)
         {

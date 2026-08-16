@@ -1,6 +1,7 @@
 # ADR 0019 — Authenticate from a session cookie, and split its discovery key onto an exempt table
 
-- **Status:** Accepted — the schema is in place; nothing writes or reads a row yet.
+- **Status:** Accepted — the reading half is in place; nothing writes a row yet, so no cookie is
+  ever issued.
 - **Date:** 2026-08-16
 - **Area:** Persistence / Security (row-level security coverage, grant matrix, sessions)
 
@@ -145,7 +146,28 @@ before their callers. The window itself stays **open**: further schema work foll
 area, and closing it is a decision about whether the database has started holding data anyone wants
 back, not a consequence of a rebaseline.
 
-The visible cost is a commit in which the table exists and nothing touches it. That reads as an
-oversight, so [sessions.md](../business-logic/sessions.md) says plainly that a place to put a handle
-is not a handle, and the gotcha that says a session authenticates nothing is **unchanged** by this
-table's arrival.
+**The cookie needs a CSRF control, and the control has to start above authentication.** A browser
+attaches a `SameSite=Lax` cookie to a top-level cross-site navigation, so the cookie alone does not
+close request forgery. A required `X-Budgetoid-Client` header does, because no cross-site form can
+add one — and it has to cover the **anonymous** routes, because those are the ones that will set a
+cookie and login-CSRF is signing somebody into an account they do not own. That is a consequence of
+this decision rather than a separate one: a bearer token in an `Authorization` header was never
+attached by a browser on its own, so nothing before this needed the control at all.
+
+**The reading half ships before the writing half, and the asymmetry is the point.** A request
+presenting the cookie is authenticated from it and can end its own session; nothing hands a cookie
+out, and `SessionCookie.Issue` has no caller. The alternative was one commit that moved the whole
+product from bearer tokens to cookies at once — with the ceremonies, the registration gate and the
+client all inside it. Landing the reader first means every intermediate commit is shippable and the
+bridge scheme below is what buys that.
+
+**A temporary default scheme, and what removes it is named rather than left to a reader.** The
+application's default is a policy scheme forwarding to the cookie handler when the cookie is present
+and to `JwtBearer` otherwise. It goes when sign-in moves off the identity provider entirely, together
+with the `JwtBearer` registration and every claim gate that reads a provider token. Until then a
+request carrying both credentials is treated as a session request — the safe direction, because the
+cookie is the credential this product issued and can end.
+
+The visible cost is a commit in which a session can be presented and never issued. That reads as an
+oversight, so [sessions.md](../business-logic/sessions.md) says plainly which half is missing, and
+says that the gotcha about a session authenticating nothing has now half-closed rather than closed.

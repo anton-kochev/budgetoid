@@ -27,13 +27,39 @@ namespace IntegrationTests;
 /// <paramref name="appConnectionString" />, which suits the tests that run in Production
 /// (no startup migration, so no database is touched at all).
 /// </param>
+/// <param name="usesApplicationAuthentication">
+/// Leaves the application's own authentication defaults standing, instead of installing
+/// <see cref="TestAuthHandler" /> as the default authenticate and challenge scheme. Declared last,
+/// and optional, so every existing positional call site keeps compiling and keeps behaving exactly
+/// as it does today.
+/// </param>
+/// <remarks>
+/// <para>
+/// <b>Why <paramref name="usesApplicationAuthentication" /> exists.</b> The block below does not
+/// <em>add</em> a scheme beside the application's — it names <see cref="TestAuthHandler" /> as the
+/// <c>DefaultAuthenticateScheme</c> and the <c>DefaultChallengeScheme</c>, which is what makes a
+/// header-carrying client authenticate at all. That default is also what a request presenting a
+/// first-party session cookie would be authenticated by: the cookie handler would never be asked,
+/// so the cookie could not be read on any request in this suite, however correct the production
+/// code was. A factory that forces a test scheme as the default therefore makes cookie
+/// authentication <em>structurally</em> unreachable, and a test that 401s for that reason proves
+/// nothing about the feature it was written for — it reports the factory's own configuration back
+/// to itself.
+/// </para>
+/// <para>
+/// It is opt-in rather than the other way round because the whole existing suite authenticates
+/// through the test scheme, and a flag that changed the default would move every one of those tests
+/// onto a path they were never written against.
+/// </para>
+/// </remarks>
 public sealed class ApiFactory(
     string appConnectionString,
     string? defaultSubject = "test-subject",
     string environment = "Development",
     IReadOnlyDictionary<string, string?>? settings = null,
     Action<IServiceCollection>? configureServices = null,
-    string? adminConnectionString = null) : WebApplicationFactory<Program>
+    string? adminConnectionString = null,
+    bool usesApplicationAuthentication = false) : WebApplicationFactory<Program>
 {
     /// <summary>
     /// The relying party every host built here answers as. A real domain label rather than a made-up
@@ -123,18 +149,61 @@ public sealed class ApiFactory(
 
         builder.ConfigureTestServices(services =>
         {
-            services.AddAuthentication(options =>
-                {
-                    options.DefaultAuthenticateScheme = TestAuthHandler.SchemeName;
-                    options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
-                })
-                .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
+            // Skipped whole rather than registered-and-overridden: the scheme itself is harmless, and
+            // it is naming it as the default that takes the application's own handlers off the path.
+            // See the remarks on usesApplicationAuthentication.
+            if (!usesApplicationAuthentication)
+            {
+                services.AddAuthentication(options =>
+                    {
+                        options.DefaultAuthenticateScheme = TestAuthHandler.SchemeName;
+                        options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
+                    })
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
+            }
 
             // Runs last so a caller can replace anything the application registered, including the
             // test authentication above. Tests that need to fail a specific collaborator swap it here
             // rather than constructing a handler by hand, which would couple them to its constructor.
             configureServices?.Invoke(services);
         });
+    }
+
+    /// <summary>
+    /// Makes every client this factory hands out a first-party one, by naming itself in the header the
+    /// application's CSRF control requires.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why it is here and not in the <c>CreateAuthenticatedClient*</c> helpers.</b> Most of the suite
+    /// never calls one — it calls <see cref="WebApplicationFactory{TEntryPoint}.CreateClient()" />
+    /// directly, and a client without the header is answered <c>403</c> before it reaches the route it
+    /// was written about. This is the one seam every client the factory produces passes through,
+    /// whichever helper built it, so it is the only place that can carry the rule for all of them.
+    /// <c>base.ConfigureClient</c> runs first because it is what sets <c>BaseAddress</c> and everything
+    /// else the harness expects; adding the header is the whole of what is added on top.
+    /// </para>
+    /// <para>
+    /// <b>The trap: this makes the control invisible to the entire suite.</b> Every test here now sends
+    /// the header without ever mentioning it, so no test can fail because the control is missing — which
+    /// is precisely why <see cref="FirstPartyRequestTests" /> removes it again on its own clients rather
+    /// than trusting that the factory adds nothing. That removal is not defensive noise, and the two
+    /// lines are a pair: delete this override and the whole suite starts answering <c>403</c>; delete the
+    /// removal there and the three tests that exist to withhold the header start sending it and stay
+    /// green while proving the opposite of what they claim.
+    /// </para>
+    /// <para>
+    /// The name and value are taken from <see cref="FirstPartyRequestTests" /> rather than typed again.
+    /// One wire value with two spellings in one assembly is a disagreement waiting to happen, and the
+    /// disagreement would read as the control working.
+    /// </para>
+    /// </remarks>
+    protected override void ConfigureClient(HttpClient client)
+    {
+        base.ConfigureClient(client);
+        client.DefaultRequestHeaders.Add(
+            FirstPartyRequestTests.ClientHeader,
+            FirstPartyRequestTests.ClientHeaderValue);
     }
 
     /// <summary>

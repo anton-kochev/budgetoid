@@ -687,6 +687,8 @@ then `EnsureUserHandler` only where the route declares `ProvisionsUser`):
 ```mermaid
 stateDiagram-v2
     [*] --> Authenticated : request passes authentication
+    Authenticated --> AlreadyPublished : the identity is already resolved
+    AlreadyPublished --> [*] : nothing to do here, before every other arm
     Authenticated --> Rejected : missing sub or email claim
     Authenticated --> Rejected : email not asserted as verified
     Authenticated --> Anonymous : the endpoint carries IAllowAnonymous
@@ -710,6 +712,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
+| Authenticated → AlreadyPublished | `IUserContext.ResolvedUserId` is already set — which every request authenticated from the session cookie is, because that path publishes the account and the ambient budget while authenticating | none, and it sits **above every other arm including the anonymous one**. This middleware turns a provider token into an account; a request that already has one has nothing here to do, and doing it anyway would name a second source for the same fact. The test is the published **state** and never which scheme ran: a scheme list falls behind the schemes registered, and the day it did the symptom would be a cookie-borne request refused over claims a cookie has never carried. See [sessions.md](sessions.md) |
 | Authenticated → Rejected | Auth succeeds but claims missing | `sub` and `email` both required, else 401 "missing required claims" |
 | Authenticated → Rejected | Auth succeeds, claims present, `email_verified` does not assert verification | Absent, blank, `false` or unparseable, else 401 "email address is not asserted as verified". One state, two titles: the caller holds the token and can read the claim, so naming the reason leaks nothing |
 | Lookup → Existing | A federated credential holds this `(provider, subject)`; its user is the account | — |

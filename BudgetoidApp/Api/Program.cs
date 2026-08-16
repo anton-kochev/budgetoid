@@ -7,6 +7,7 @@ using Application.Users.EnsureUser;
 using Infrastructure;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Cors.Infrastructure;
@@ -88,7 +89,34 @@ builder.Services.AddScoped<IUserContextWriter, CurrentUserWriter>();
 // configuration rather than request state, and one instance per request would only add a way for the
 // two legs of one sign-in to disagree about which site they are.
 builder.Services.AddSingleton<IPasskeyCeremonyPolicy, ConfiguredPasskeyCeremonyPolicy>();
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+// TEMPORARY, and the thing that removes it is named rather than left to a reader: sign-in moves off
+// the identity provider entirely — the passkey and recovery-code ceremonies mint a session token and
+// set the cookie — and this bridge goes with it, together with the JwtBearer registration below and
+// every claim gate in UserProvisioningMiddleware that reads a provider token.
+//
+// Until then two schemes have to serve at once, because the whole existing surface still authenticates
+// with a Google bearer while the cookie path lands one commit at a time. A policy scheme is how that is
+// expressed without a request having to be authenticated twice: it authenticates nothing itself, it
+// only chooses which real scheme this request belongs to, and it chooses by the one thing that
+// distinguishes them — whether the request presents the cookie at all.
+//
+// A request carrying both a cookie and a bearer is a session request, and that precedence is the safe
+// direction rather than an arbitrary one: the cookie is a credential this product issued and can end,
+// the provider token is the one it cannot, and a client whose interceptor attaches the bearer to every
+// /api/ call would otherwise never be able to use the session it was just given.
+const string bridgeScheme = "Budgetoid.Bridge";
+
+builder.Services.AddAuthentication(bridgeScheme)
+    .AddPolicyScheme(bridgeScheme, bridgeScheme, options =>
+        options.ForwardDefaultSelector = context =>
+            context.Request.Cookies.ContainsKey(SessionCookie.Name)
+                ? SessionCookieAuthenticationHandler.SchemeName
+                : JwtBearerDefaults.AuthenticationScheme)
+    // No options of its own: everything this scheme reads is on the request, and the collaborator it
+    // needs is resolved per request from the container. See SessionCookieAuthenticationHandler.
+    .AddScheme<AuthenticationSchemeOptions, SessionCookieAuthenticationHandler>(
+        SessionCookieAuthenticationHandler.SchemeName,
+        _ => { })
     .AddJwtBearer(options =>
     {
         options.Authority = "https://accounts.google.com";
@@ -125,10 +153,20 @@ builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration>((options, c
 {
     string[] allowedOrigins = configuration
         .GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+    // AllowCredentials, because the session cookie is a credential and a browser drops a cross-origin
+    // response carrying one unless this header says true — silently: the request succeeded, the server
+    // wrote the Set-Cookie, and the cookie jar is simply empty afterwards. The allow-list is unchanged
+    // and stays the control; what this adds is that credentials may travel to the origins already
+    // argued for, and to no others.
+    //
+    // AllowAnyOrigin must never appear beside it. The two together are rejected at runtime by the CORS
+    // middleware, and the reason it refuses them is the reason not to reach for it: an origin
+    // wildcard plus credentials is every site on the internet reading this API as the signed-in user.
     options.AddDefaultPolicy(policy =>
         policy.WithOrigins(allowedOrigins)
             .AllowAnyHeader()
-            .AllowAnyMethod());
+            .AllowAnyMethod()
+            .AllowCredentials());
 });
 builder.Services.AddExceptionHandler<ValidationExceptionHandler>();
 builder.Services.AddExceptionHandler<BadRequestExceptionHandler>();
@@ -220,6 +258,13 @@ app.UseStatusCodePages(async statusCodeContext =>
     }
 });
 app.UseCors();
+
+// After CORS and before authentication, and both halves of that are load-bearing. After CORS, so a
+// preflight is answered by the CORS middleware and never reaches a check no OPTIONS request can
+// satisfy — a browser sends no custom header on a preflight. Before authentication, because the
+// control covers the anonymous routes too: those are the ones that set a cookie, and a control
+// starting at authentication would leave login-CSRF open on exactly them.
+app.UseMiddleware<FirstPartyRequestMiddleware>();
 app.UseAuthentication();
 app.UseMiddleware<UserProvisioningMiddleware>();
 app.UseAuthorization();
@@ -289,6 +334,7 @@ app.MapCredentialEndpoints();
 app.MapRecoveryCodeEndpoints();
 app.MapDataExportEndpoints();
 app.MapSignedInUserEndpoints();
+app.MapSessionEndpoints();
 
 await app.RunAsync();
 

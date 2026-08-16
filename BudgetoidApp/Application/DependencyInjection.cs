@@ -27,6 +27,8 @@ using Application.Payees.RenamePayee;
 using Application.RecoveryCodes.CountRecoveryCodes;
 using Application.RecoveryCodes.GenerateRecoveryCodes;
 using Application.RecoveryCodes.RedeemRecoveryCode;
+using Application.Sessions.AuthenticateSession;
+using Application.Sessions.RevokeSession;
 using Application.Sessions.RevokeSessionsForCredential;
 using Application.Transactions.CreateTransaction;
 using Application.Transactions.DeleteTransaction;
@@ -79,6 +81,8 @@ public static class DependencyInjection
         services.AddScoped<GetSignedInUserHandler>();
         services.AddScoped<ListCredentialsHandler>();
         services.AddScoped<RevokeSessionsForCredentialHandler>();
+        services.AddScoped<AuthenticateSessionHandler>();
+        services.AddScoped<RevokeSessionHandler>();
         services.AddScoped<BeginRegistrationHandler>();
         services.AddScoped<CompleteRegistrationHandler>();
         services.AddScoped<BeginAssertionHandler>();

@@ -5,6 +5,8 @@ namespace UnitTests.Fakes;
 public sealed class InMemorySessionRepository : ISessionRepository
 {
     private readonly List<Session> _sessions = [];
+    private readonly List<Guid> _identityWhenFindByIdWasEntered = [];
+    private RecordingUserContextWriter? _observedWriter;
 
     /// <summary>Every session this repository holds, in the order it was added.</summary>
     /// <remarks>
@@ -55,10 +57,76 @@ public sealed class InMemorySessionRepository : ISessionRepository
     public void RemoveForCredential(Guid credentialId) =>
         _sessions.RemoveAll(session => session.CredentialId == credentialId);
 
+    /// <summary>
+    /// Arms the recording of <see cref="IdentityWhenFindByIdWasEntered"/> against
+    /// <paramref name="writer"/>.
+    /// </summary>
+    /// <remarks>
+    /// Off unless a test asks for it, the shape
+    /// <see cref="InMemoryBudgetRepository.ObservePublicationsDuring"/> established: the ordinary tests
+    /// in this suite are not paying for a snapshot nothing reads, and a test that does read it has said
+    /// so in its own Arrange block.
+    /// </remarks>
+    public void ObservePublicationsDuring(RecordingUserContextWriter writer) => _observedWriter = writer;
+
+    /// <summary>
+    /// The identity the session carried at the instant each <see cref="FindByIdAsync"/> call was
+    /// entered — the last id published, or <see cref="Guid.Empty"/> when nothing had been published
+    /// yet. Empty list unless <see cref="ObservePublicationsDuring"/> armed it.
+    /// </summary>
+    /// <remarks>
+    /// <b><see cref="Guid.Empty"/> is not "no identity" — it is the request the database refuses.</b>
+    /// <c>sessions</c> is policed by <c>user_isolation</c>, and an unset <c>app.current_user_id</c>
+    /// reaches that policy as <c>''::uuid</c>, which raises <c>22P02</c> rather than matching nothing.
+    /// So a caller that read this table before publishing an identity does not get a quiet miss in
+    /// production; it gets a server fault on every authenticated request in the product, and this list
+    /// is what lets a unit test say so without a database.
+    /// </remarks>
+    public IReadOnlyList<Guid> IdentityWhenFindByIdWasEntered => _identityWhenFindByIdWasEntered;
+
     public Task AddAsync(Session session, CancellationToken cancellationToken = default)
     {
         _sessions.Add(session);
         return Task.CompletedTask;
+    }
+
+    public Task<Session?> FindByIdAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        // The id alone, which is the whole of the real repository's predicate too: sessions is POLICED
+        // by user_isolation, so the owner filter is appended by PostgreSQL underneath the read rather
+        // than written above it. The port therefore hands this method no owner id, and a fake that
+        // invented one — a "current user" property to narrow on — would be modelling a filter the
+        // production code deliberately does not have.
+        //
+        // What that costs, stated rather than hidden: this fake cannot refuse another account's
+        // session the way the policy does. Nothing reachable produces one — session_tokens carries a
+        // composite foreign key onto sessions(id, user_id), so a token naming a stranger's session is
+        // unstorable — and a unit test that wants "the handle names a session this request cannot see"
+        // arranges the absence, which is exactly what the policy leaves behind. RevokeAsync below makes
+        // the same trade for the same reason.
+        //
+        // SingleOrDefault rather than FirstOrDefault, matching the real read: id is the primary key, so
+        // two rows under one id is a broken store to throw over rather than a case to choose between.
+        //
+        // The snapshot is taken before the read, not after, for InMemoryBudgetRepository's reason: it
+        // stands in for the identity the statement would have run under, and a value sampled once the
+        // call had returned would include a publication the statement never saw.
+        if (_observedWriter is not null)
+        {
+            _identityWhenFindByIdWasEntered.Add(
+                _observedWriter.Published.Count > 0 ? _observedWriter.Published[^1] : Guid.Empty);
+        }
+
+        // A REVOKED OR EXPIRED SESSION IS RETURNED, not filtered out, and the difference from
+        // RevokeAsync three methods down is the point rather than an inconsistency. That one narrows on
+        // revoked_at_utc IS NULL because it reports what a call ended; this one hands the entity back
+        // and leaves "is it live" to Session.IsActiveAt, where the domain owns it. A fake that copied
+        // the revocation predicate here would answer null for a dead handle, and the authentication
+        // handler would then report an ended session as one nobody ever issued — signing out twice
+        // would answer 401 instead of 204.
+        Session? session = _sessions.SingleOrDefault(session => session.Id == sessionId);
+
+        return Task.FromResult(session);
     }
 
     public Task<int> RevokeForCredentialAsync(

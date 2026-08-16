@@ -18,6 +18,33 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
     }
 
     /// <inheritdoc />
+    public Task<Session?> FindByIdAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        // The id alone, and NO owner predicate — the rule RevokeAsync below spells out at length.
+        // sessions is policed by user_isolation, so the app.current_user_id the caller published a
+        // moment ago is appended to this read underneath. A session belonging to somebody else is not
+        // found here, and a connection that has published nobody does not read the wrong row: it fails
+        // with 22P02, because an unset setting reaches the policy as ''::uuid.
+        //
+        // SingleOrDefault rather than FirstOrDefault: id is the primary key, so a second row is a
+        // database that has lost that rule rather than a case to choose between.
+        //
+        // AsNoTracking, which is the exception in this folder and is the point rather than a habit
+        // borrowed from the read services. This read runs on EVERY authenticated request, before the
+        // handler the request was made for has started, and it writes nothing. Tracked, the entity
+        // would sit in the change tracker for the rest of the request and join whatever that request
+        // then saves — and the shape that costs is documented twice already: EF cascades into session
+        // rows it happens to be holding when a credential is removed, on a table granted no DELETE, so
+        // the request dies with 42501 naming a permission while the cause is the change tracker. Every
+        // path that removes a credential or an account clears the tracker immediately before the
+        // delete, so nothing is broken today; leaving this untracked is what keeps the next one from
+        // having to remember.
+        return dbContext.Sessions
+            .AsNoTracking()
+            .SingleOrDefaultAsync(session => session.Id == sessionId, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<int> RevokeForCredentialAsync(
         Guid credentialId,
         DateTime revokedAtUtc,

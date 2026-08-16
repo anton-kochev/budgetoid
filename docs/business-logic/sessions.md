@@ -19,11 +19,16 @@ without asking anyone. Identity — who a person is, and which credentials prove
 has answered that question. The distinction is the whole point: a token issued by an identity
 provider cannot be taken back by this product — revoking access would mean asking the provider to
 revoke it — while a session row can be ended here, in one write, by the same role that serves every
-request. **Three things establish a session and there is no fourth**, all three open a `Full`
-session lasting 14 days, and **no session token is issued yet**, so a session authenticates nothing
-today; the first gotcha below carries what that means for every operation in this file. The *place* a
-token will be presented by now exists — `session_tokens`, below — but nothing writes a row there and
-nothing reads one, so the sentence above is unchanged by its arrival.
+request. **Three things establish a session and there is no fourth**, and all three open a `Full`
+session lasting 14 days.
+
+**A session now authenticates a request, and no path issues one.** The reading half is complete: a
+request presenting the cookie is authenticated from it, the account and the ambient budget are
+published from it, and the request can end it. The minting half is not built — not one of the three
+establishing responses hands back a handle to the row it created — so no browser holds a cookie and
+every request in the product still arrives with the identity provider's ID token. The asymmetry is
+deliberate and is the shape this area ships in one commit at a time; the first gotcha below carries
+what it means for reading the rest of this file.
 
 ## Key Entities
 
@@ -103,11 +108,12 @@ none. One-to-one would need either a unique constraint on `session_id` — which
 and is simply not there — or a trigger for the "at least one" half, which
 [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing down.
 
-Today the point is moot in the least reassuring way: **nothing writes a row here at all.** When a
-write path lands it will write the token in the same save as the session it opens, and *that* — one
-write path, one save — will be the whole of what holds the pairing, exactly as it is the whole of what
-holds "every factor has wrapped keys". A second write path would be able to produce a session with
-two handles, or a token naming a session that never opened, and redden nothing.
+Today the point is moot in the least reassuring way: rows here are **read on every authenticated
+request and written by nothing at all.** When a write path lands it will write the token in the same
+save as the session it opens, and *that* — one write path, one save — will be the whole of what holds
+the pairing, exactly as it is the whole of what holds "every factor has wrapped keys". A second write
+path would be able to produce a session with two handles, or a token naming a session that never
+opened, and redden nothing.
 
 ## Constraints
 
@@ -318,6 +324,118 @@ two handles, or a token naming a session that never opened, and redden nothing.
   `Database_RemovesASessionWithTheUserThatOwnsIt` pin both hops.
 - **Source**: `[SOURCE: discussion]`
 
+---
+
+- **Rule**: A request authenticates from an opaque token in a first-party cookie, and the two reads
+  that turn it into an identity happen in **one order that cannot be rearranged**: the exempt
+  `session_tokens` lookup first, the identity published second, the policed `sessions` row third.
+- **Why**: this is the circularity [ADR 0019](../decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md)
+  exists for. `sessions` is policed by `user_isolation` keyed on `app.current_user_id`, which is
+  exactly the value the lookup exists to produce, so a session read issued before the publication
+  meets `''::uuid` and raises `22P02` — on **every** authenticated request, not on an edge. The
+  digest is what makes publishing on the strength of the lookup alone defensible: it is SHA-256 of a
+  256-bit value this server minted, so a caller presenting one it was never given is guessing it.
+- **Enforced in**: `AuthenticateSessionHandler`, in Application, where the order is the security
+  property; `SessionCookieAuthenticationHandler` in the API decodes the cookie and decides, and looks
+  nothing up — `CompositionBoundaryTests` holds the API to composing Infrastructure rather than
+  consuming it, and this is the path where that shortcut would cost the most.
+  `AuthenticateSessionHandlerTests` pins the order in both directions, over
+  `RecordingUserContextWriter`; `SessionCookieAuthenticationTests` drives the whole path over the
+  real least-privilege connection, which is the test that dies with `22P02` if anyone ever wraps it.
+  - **No transaction anywhere on this path**, which is the same trap from the other side: one opened
+    before the publication configures its connection while the setting is still empty, and every
+    policed statement inside it fails. `EnsureUserHandler`, `CompleteAssertionHandler` and
+    `RedeemRecoveryCodeHandler` each carry the same warning. Nothing here writes, so an atomic unit
+    would be protecting nothing.
+  - **Two round trips per authenticated request**, stated as the cost rather than hidden. Folding
+    them into one is what the "denormalise the expiry onto the exempt table" alternative in ADR 0019
+    proposes, and that decision refuses it.
+- **Example**: a well-formed 32-byte token whose digest matches a row publishes that row's account,
+  then reads the session it names, then publishes the account's first budget as the ambient tenant.
+- **Counterexample**: reading `sessions` first and publishing afterwards, which reads as the same
+  three steps in a tidier order and refuses every request in the product.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The handle travels in `__Host-budgetoid-session` — `HttpOnly`, `Secure`,
+  `SameSite=Lax`, `Path=/`, no `Domain` — and its expiry is **absolute, never sliding**.
+- **Why**: the `__Host-` prefix is a rule a browser enforces rather than a naming style: it refuses
+  the cookie unless it is `Secure`, `Path=/` and carries no `Domain`, which is what stops a
+  neighbouring host from setting one. `HttpOnly` is why no response body ever carries a session
+  identifier — the cookie is the handle precisely so that script is not. `Lax` suffices because the
+  frontend and the API share one registrable domain; a cross-site topology would have forced `None`,
+  which is the deployment argument [ADR 0010](../decisions/0010-serve-the-app-from-a-custom-domain.md)
+  and `DEPLOYMENT.md` Step 6 carry. A **sliding** expiry would need `GRANT UPDATE (expires_at_utc)`
+  on `sessions` — the column list this file argues is immutable by omission — and would write a row
+  on every request to buy it.
+- **Enforced in**: `SessionCookie`, which owns the name and builds the attributes once so the issue
+  and the clear cannot drift. `SessionCookieTests` pins each attribute.
+  - **The clear must match the issue attribute for attribute**, and this is the pin most worth
+    having: a browser silently keeps a cookie whose clear does not match, and the symptom is a
+    sign-out that appears to work and a session that comes back.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: Every request must name itself as first-party with a non-empty `X-Budgetoid-Client`
+  header. `GET /health` is the only exemption. A request without it is refused **403**, before
+  authentication.
+- **Why**: this is the CSRF control, and a cookie is what makes one necessary — a browser attaches a
+  `SameSite=Lax` cookie to a top-level cross-site navigation, and the header is the thing no
+  cross-site form can add and no cross-origin `fetch` can send without surviving a preflight. Two
+  halves a reader will want to weaken: the **value is deliberately unchecked**, because an attacker
+  who could set the header could set any value in it and a checked value would be a shared secret
+  shipped to every client; and the control **covers the anonymous routes**, because those are the
+  ones that *set* a cookie and login-CSRF is signing somebody into an account they do not own so that
+  what they record next is filed under it.
+- **Enforced in**: `FirstPartyRequestMiddleware`, registered **after** `UseCors` — so a preflight is
+  answered by the CORS middleware and never meets a check no `OPTIONS` request can satisfy — and
+  **before** `UseAuthentication`. `/health` is named from `ServiceDefaults.Extensions.HealthPath`
+  rather than typed again. `FirstPartyRequestTests` sweeps the route table and pins the exempt set
+  in both directions.
+  - **The suite cannot see this control**, because `ApiFactory` gives every client it hands out the
+    header — it stands in for the first-party web client. `FirstPartyRequestTests` therefore removes
+    the header again on its own clients, and the two are a pair: delete the factory's line and the
+    whole suite answers 403; delete the removal and the three tests that exist to withhold the header
+    start sending it and stay green while proving the opposite of what they claim.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: `POST /api/me/session/revocation` ends **only the caller's own session**, clears the
+  cookie, answers `204`, and answers `204` again on a second call.
+- **Why**: leaving people with no way out once sessions are real is worse than the route costs. The
+  caller names no session — the id comes from the claim its own authentication produced — so there is
+  no session id on the wire for anyone to substitute. Idempotence is what stops a dead cookie living
+  on the client forever: a `401` on the second call would leave the browser holding a handle nothing
+  will ever clear.
+- **Enforced in**: `SessionEndpoints` and `RevokeSessionHandler`, over
+  `ISessionRepository.RevokeAsync`, whose idempotence is `Session.Revoke`'s and is not restated.
+  `SignOutTests.SigningOut_LeavesAnotherDeviceSignedIn` is the negative control — without it, a
+  sign-out that revoked every session on the account passes every other test in the file.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: An **ended** session — revoked or expired — authenticates on exactly one route, the one
+  that ends sessions, and reaches **no ambient budget** even there.
+- **Why**: the idempotence above needs it. Signing out twice presents the same dead cookie twice, so
+  the second call has to authenticate far enough to answer `204`. What makes this narrow rather than
+  a hole is what it does *not* relax: the token still has to match, so it is a verdict about liveness
+  and never about the handle. And the tenant is published only on the live path, so a marked route is
+  structurally unable to reach budget-owned rows — a budget-scoped statement under an ended session
+  meets an unresolved budget and throws rather than being scoped to a stranger and matching nothing.
+- **Enforced in**: `AcceptsEndedSessionAttribute`, an **opt-in marker on the route**, read by
+  `SessionCookieAuthenticationHandler`. A marker rather than an authorization requirement because
+  `AuthorizationMiddleware` answers `403` where this needs `401`, and rather than `AllowAnonymous`
+  because that would widen the anonymous surface `AnonymousSurfaceTests` holds.
+  `AcceptsEndedSessionTests` pins the marked set at exactly one route, the way `AnonymousSurfaceTests`
+  pins the anonymous one, so a second marker goes red until somebody argues for it.
+- **Counterexample**: relaxing the *lookup* instead — admitting a request whose token matched nothing
+  so that sign-out "always works". That is an unauthenticated route with extra steps.
+- **Source**: `[SOURCE: discussion]`
+
 ## Workflows & State Transitions
 
 ```mermaid
@@ -332,10 +450,39 @@ stateDiagram-v2
 | Transition | Triggered by | Validations |
 |---|---|---|
 | → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, and from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
-| Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` and `GenerateRecoveryCodesHandler` each call before deleting a credential | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
+| Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached two ways: through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` and `GenerateRecoveryCodesHandler` each call before deleting a credential, and through `RevokeSessionHandler`, which `POST /api/me/session/revocation` calls to end the caller's own | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
 
 There is no transition back. Nothing un-revokes a session and nothing extends one.
+
+**A session is not a state machine a request advances**; presenting one changes no column. What a
+request does with a handle is read three rows in one order, and the order is the rule:
+
+```mermaid
+sequenceDiagram
+    participant Request
+    participant Cookie as SessionCookieAuthenticationHandler
+    participant Use as AuthenticateSessionHandler
+    participant Db as PostgreSQL
+
+    Request->>Cookie: __Host-budgetoid-session
+    Cookie->>Cookie: decode base64url, refuse anything but 32 bytes
+    Cookie->>Use: SHA-256 of the token, never the token
+    Use->>Db: session_tokens by digest — EXEMPT, no owner, nobody published
+    Db-->>Use: session id, user id
+    Use->>Use: ResolveUser — the identity is published here and nowhere earlier
+    Use->>Db: sessions by id — POLICED, works only because of the line above
+    Db-->>Use: expiry, revocation, kind
+    Use->>Db: the account's first budget
+    Use->>Use: ResolveBudget — second, because ResolveUser clears it
+    Use-->>Cookie: account, session, kind
+    Cookie-->>Request: sub, session_id, session_kind
+```
+
+The hash is computed at the boundary that decoded the cookie, so the live token stops in that method
+body: no command, no port and no log statement below it has a member the token could travel through.
+`SessionToken.For` takes a `ReadOnlySpan<byte>` for the same reason, and there the compiler enforces
+it rather than a reviewer.
 
 ## Decision Trees
 
@@ -371,6 +518,17 @@ enumerated spelling makes at the database — see the first rule above.
 - **`user_isolation`** — the same policy `users`, `budgets` and `passkey_signature_counters` carry,
   keyed on the same session setting. `sessions` is policed on the person rather than on a budget,
   like each of them.
+- **CORS** — the default policy gains `AllowCredentials()`, because a browser drops a cross-origin
+  response carrying a cookie unless the header says so, and drops it **silently**: the request
+  succeeded, the server wrote the `Set-Cookie`, and the jar is simply empty afterwards. The
+  configured allow-list is unchanged and stays the control. `AllowAnyOrigin` must never appear beside
+  it — the CORS middleware rejects the pair at runtime, and the reason it refuses them is the reason
+  not to want them: an origin wildcard plus credentials is every site on the internet reading this
+  API as the signed-in person.
+- **[Users & Ownership](users-and-ownership.md), on the pipeline order** — `FirstPartyRequestMiddleware`
+  runs after CORS and before authentication, then `UserProvisioningMiddleware` runs after
+  authentication and returns immediately for a request the cookie already spoke for. The provisioning
+  middleware and everything it reads are deleted when sign-in leaves the identity provider.
 - **`SessionContextInterceptor`** — **not** about a session in this file's sense. It writes
   `app.current_user_id` and `app.current_budget_id` onto each PostgreSQL connection the context
   opens; the PostgreSQL backend session and a `Domain.Sessions.Session` share a word and nothing
@@ -379,24 +537,49 @@ enumerated spelling makes at the database — see the first rule above.
 
 ## Edge Cases & Known Gotchas
 
-- **No session token is issued, so every operation in this file is anticipatory.** The `sessions`
-  table, its entity, its isolation policy, its grant matrix entry, and the three operations —
-  establish one, revoke every session a credential established, revoke one by id — exist and are
-  tested. So, now, does `session_tokens`: the table, its exemption, its grants, its entity and its
-  lookup. **That changes nothing about this gotcha, and the temptation to read it as progress is
-  exactly what the gotcha is for.** A place to put a handle is not a handle. No path writes a row
-  there, no path reads one, and what still does not exist is anything that *presents* a
-  session. **Not one** of the three establishing
-  responses carries a handle to the row it created, and all three withhold it for the same reason;
-  the API still authenticates every other request from the Google ID token it is handed, exactly as
-  [users-and-ownership.md](users-and-ownership.md) describes. So a recovery sign-in today opens a
-  session that authenticates nothing: what each response tells its caller is what that session *is*,
-  not something the caller can spend. Ending a session signs nobody out and opening one signs nobody
-  in. The operations are correct and they are **anticipatory** — they make the rules true of the
-  rows now, so that the day a session token does authenticate a request, revocation is already the
-  thing that ends access and a regeneration is already signing the person back in rather than out,
-  rather than either being a thing somebody has to remember to add. Saying otherwise — that revoking
-  a passkey signs that device out — would be describing the session token as if it shipped.
+- **A session token now authenticates a request, and nothing issues one — the half that is missing
+  is the half that mints.** Everything on the reading side exists and is tested: a request presenting
+  the cookie is authenticated from it, the account and the ambient budget are published from it, and
+  `POST /api/me/session/revocation` ends it. What does not exist is anything that ever *hands out* a
+  cookie. **Not one** of the three establishing responses carries a handle to the row it created, all
+  three withhold it for the same reason, and `SessionCookie.Issue` has no caller at all. So the API
+  still authenticates every other request from the Google ID token it is handed, exactly as
+  [users-and-ownership.md](users-and-ownership.md) describes, and a recovery sign-in today still
+  opens a session nobody can present: what each response tells its caller is what that session *is*,
+  not something the caller can spend.
+  - **What that costs the rest of this file, precisely.** Revoking a passkey still signs no device
+    out, because no device is holding a handle to sign out of. The operations remain **anticipatory**
+    — they make the rules true of the rows now, so that the day a token is issued, revocation is
+    already the thing that ends access and a regeneration is already signing the person back in
+    rather than out. What has changed is that the day the minting path lands, this whole area is
+    live at once, with no further decision to take.
+  - **Do not "complete" the pair by minting on a read path.** The token has to be written in the same
+    `SaveChanges` as the session it opens, by the path that established that session; anything else
+    can produce a handle to a session that was never committed.
+  - **The API's default authentication scheme is a temporary bridge**, `Budgetoid.Bridge`, a policy
+    scheme that forwards to the cookie handler when the cookie is present and to `JwtBearer`
+    otherwise. It exists so the whole existing surface keeps working while this area lands one commit
+    at a time, and it is deleted when sign-in moves off the identity provider entirely. A request
+    carrying both is treated as a session request, which is the safe direction rather than an
+    arbitrary one: the cookie is a credential this product issued and can end, the provider token is
+    the one it cannot.
+
+- **`sub` means two different things depending on how the request authenticated, and nothing brings
+  the two together.** On the cookie path it is this installation's own account id; on the bearer path
+  `UserProvisioningMiddleware` reads it as a provider subject. They stay apart because that
+  middleware returns immediately for a request whose identity is already published — and it tests the
+  **published state**, not which scheme ran, so the session path cannot be re-provisioned by any edit
+  short of deleting that arm, and the next scheme that publishes an identity inherits the rule
+  without being named. If the two ever did meet, the collision fails closed: a GUID resolves to no
+  federated credential and the request is refused rather than answered as somebody else.
+
+- **A refused request can leave an identity published behind it.** When a token's digest matches but
+  the session is dead, `app.current_user_id` names the account whose handle really did match, on a
+  request that then goes on to be refused. It reaches no budget — the tenant is published only on the
+  live path — and every route that runs without authenticating publishes its own identity after its
+  own proof, so today this residue changes no answer. It is written down because **the next anonymous
+  route added is where it would start to**, and because the only way to remove it is a "clear" member
+  on `IUserContextWriter`, which is a decision about that port rather than about this path.
 
 - **The cascade can satisfy "revoking a credential ends its sessions" by accident.** Because deleting
   a credential row deletes its sessions, a path that removes a credential without revoking first
