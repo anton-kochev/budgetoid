@@ -607,10 +607,11 @@ erDiagram
   the account's keys, a code the keys are wrapped under — now has its cryptography built **and the
   two write paths that store the result**: issuing a set requires a factor identifier and both
   wrapped keys, and files them in the same save as the set's credential. What is still missing is the
-  browser: the derivations in `+core/security/account-keys.ts` have no caller, this client cannot run
-  the ceremony that would obtain a PRF output, and no account outside the test suite has ever had a
-  key wrapped under either secret. So custody is what makes the rule durable rather than what makes
-  it true today — but the schema can no longer hold a factor that carries none.
+  browser. The client can now run the ceremony that obtains a PRF output — and the passkey derivation
+  in `+core/security/account-keys.ts` gained its one caller there — but no screen calls *that*, the
+  recovery-code derivation still has none, and no account outside the test suite has ever had a key
+  wrapped under either secret. So custody is what makes the rule durable rather than what makes it
+  true today — but the schema can no longer hold a factor that carries none.
   - **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule
     rather than a coincidence.** A set of codes is a secret its holder possesses exactly as an
     authenticator is, and reaches exactly as far, so a session that expired sooner here would
@@ -948,8 +949,9 @@ ELSE                                                               ← first iss
   `POST /api/recovery-codes/redemption` spends one code and signs its holder in. All of it is tested.
   What does **not** exist: **no browser mints a code and no screen redeems one.** The client holds
   the generator — it mints a code, derives its verifier, and is covered by its own spec — and nothing
-  calls it, because a generation is gated behind a WebAuthn ceremony this client cannot run; nothing
-  anywhere presents a verifier. So the generation and redemption routes are reached only by a test,
+  calls it, because a generation is gated behind a WebAuthn assertion that no screen runs — the
+  ceremony module now exists and has no caller of its own, so the gate moved one step closer and is
+  still shut; nothing anywhere presents a verifier. So the generation and redemption routes are reached only by a test,
   while the count is read by the settings screen on every visit — the generation control on screen is
   present and disabled, and `/api/recovery-codes/redemption` has no client route to be reached from
   at all. Read that the same way the disabled erasure control is read — the gate is built and the

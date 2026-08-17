@@ -167,10 +167,12 @@ erDiagram
   - **Enforced in**: `CompleteRegistrationHandler`, and nowhere lower — not because the rule sits
     above its lowest capable layer, but because **no layer is capable of it**. Storing the flag
     would let the database enforce "this column says true"; it would not let anything enforce
-    *the authenticator can derive a PRF secret*, which is the actual rule. That fact is not
-    observable to the database, the application, or the client — only asserted. ADR 0002 asks why a
-    rule sits where it does; here the answer is that there is nothing to push down, so no
-    constraint, grant or policy carries any part of it.
+    *the authenticator can derive a PRF secret*, which is the actual rule. That fact is observable
+    to exactly one party and it is the **client**, which now holds the output; to the database and
+    the application it is only ever asserted, and the assertion crosses the wire as a boolean nothing
+    signs. ADR 0002 asks why a rule sits where it does; here the answer is that the only layer that
+    could enforce it is the one layer this system does not control, so no constraint, grant or policy
+    carries any part of it and none can be made to.
 
 - **A challenge is single-use, and consuming one is deleting it.**
   - **Why**: these rows are nonces, and a row nobody can delete is a row swept by a path that does
@@ -352,6 +354,30 @@ erDiagram
     keys buy is a different and smaller thing: a factor that holds no share of the account keys is
     **unstorable**, so the failure this gate guesses at is at least no longer reachable by a client
     that simply omitted them. The gate stays, and stays a guess.
+  - **What `enabled: true` means has been sharpened, and the wire is unchanged.** It no longer means
+    "the authenticator advertised the extension"; it means **the client obtained a PRF output for
+    this credential**. That is a stronger claim and a client can only make it by having the bytes in
+    hand — which closes nothing on the server, for the reason above, but does mean this repository's
+    client cannot report `true` about a device it could not derive from. The server's rule, its
+    sentence, and all five of its pinned refusals are untouched; do not "align" them with this
+    paragraph.
+  - **A conforming client may need two ceremonies to satisfy it, and one of them goes nowhere.**
+    Many platform authenticators return no PRF output at creation and do at the first assertion, so
+    `webauthn-ceremony.service.ts` calls `create()` with the evaluation input, and — only if nothing
+    came back — runs **one local `navigator.credentials.get()`** against the credential it just made,
+    derives from that, and **discards the assertion; it is never sent anywhere.** Refusing after
+    `create()` alone would turn away capable devices at the one moment the person can still choose a
+    different one, which is the failure this whole rule exists to prevent.
+    - That local assertion carries `allowCredentials` naming the new credential, because WebAuthn
+      throws `NotSupportedError` when `evalByCredential` is present and the list is empty. It does
+      **not** contradict the sign-in rule that no `allowCredentials` is ever sent: that rule is about
+      the *server-issued* discoverable assertion and exists because naming an account's credentials
+      is an enumeration oracle. This list names a credential the client made a moment ago and never
+      leaves the browser.
+  - **The PRF output itself is never sent, and the payload projection is what stops it.**
+    `getClientExtensionResults()` carries `prf.results.first` — the output — so the client builds a
+    fresh `{ prf: { enabled } }` rather than forwarding the results object. See
+    [account-keys.md](account-keys.md) for why a filter or a spread is not an acceptable substitute.
 - **Enforced in**: `CompleteRegistrationHandler`, deliberately as the **last check on the ceremony
   response**, after `PasskeyRegistrationVerifier.Verify`. Checked earlier, a malformed, replayed or
   wrong-origin response would be told its authenticator cannot hold the keys, which is a lie about

@@ -33,11 +33,19 @@ under it and unwrap them again; the server refuses to register a passkey or issu
 codes unless the request carries a factor identifier and both wrapped keys, and files them in the
 same save as the credential.
 
-The two halves are not yet joined, and the gap is worth naming precisely: **this client cannot run a
-WebAuthn ceremony**, so nothing in the browser can obtain a PRF output from a real authenticator,
-and no screen calls the crypto module. The requests the server now demands wrapped keys on are made
-today only by the integration suite. Unlocking, the locked state, the blind index and the encryption
-of any narrative field are all later work.
+The two halves are not yet joined, and the gap is worth naming precisely. **The client can now run a
+WebAuthn ceremony** — `+core/security/webauthn-ceremony.service.ts` obtains a PRF output from a real
+authenticator and derives the key-encryption key from it — but **no screen calls it**, so the chain
+still ends one link short of a person. The requests the server demands wrapped keys on are made today
+only by the integration suite. Unlocking, the locked state, the blind index and the encryption of any
+narrative field are all later work.
+
+**The PRF output never leaves the ceremony module.** `createPasskey` and `assertPasskey` each derive
+through `keyEncryptionKeyFromPasskey` themselves and hand back a **non-extractable `CryptoKey`**,
+zero-filling the raw bytes behind them. That is the same custody rule this file already states about
+a key-encryption key, moved one layer out to the only code that ever sees the input to it: a module
+that returned the output and let a caller derive would put the value that unwraps the account's whole
+keyspace into a variable any screen could log.
 
 ## Key Entities
 
@@ -413,12 +421,27 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
 
 ## Edge Cases & Known Gotchas
 
-- **The client module has no caller, on purpose, while the server already demands its output.** That
-  asymmetry is the story's shape, not an oversight: the crypto follows `recovery-codes.ts` — a pure
-  module tested in place, shipped ahead of the ceremony that will use it, because its spec is the
-  only place several of these rules can be checked at all — and the write paths were closed in the
-  same change so that no factor can ever be registered without its share of the keys. Do not wire the
-  module into a screen to "finish" it, and do not relax the server's demand to make a screen work.
+- **The chain now has two links and still no caller, on purpose, while the server already demands its
+  output.** `keyEncryptionKeyFromPasskey` gained a caller — the ceremony service — and the ceremony
+  service has none. That asymmetry is the story's shape, not an oversight: the crypto follows
+  `recovery-codes.ts` — a pure module tested in place, shipped ahead of the screen that will use it,
+  because its spec is the only place several of these rules can be checked at all — and the write
+  paths were closed in the same change so that no factor can ever be registered without its share of
+  the keys. Do not wire the module into a screen to "finish" it, and do not relax the server's demand
+  to make a screen work.
+- **The PRF output is never sent, and one line is what stops it.** `getClientExtensionResults()`
+  carries `prf.results.first`, which *is* the PRF output. `toRegistrationPayload` therefore **projects**
+  — it builds a new `{ prf: { enabled } }` rather than passing the results object through, filtering
+  it, or spreading it with a member omitted. The two rejected shapes both start from the value they
+  are trying to be rid of, so the next member an authenticator invents arrives inside them. A
+  pass-through here would hand the operator every account key in the product, in a request that would
+  look ordinary in a log, a proxy and a review.
+- **Signing in derives a key-encryption key too, and that is a decision.** The cheaper reading — a
+  sign-in only has to prove who is asking, so ask for no PRF and derive nothing — is what a reader
+  will propose, and it is wrong for the day encryption lands: the wrapped account keys are opened
+  under exactly that value, so an assertion that derived nothing would authenticate the person and
+  leave every row on their account unreadable. Both ceremony legs ask for the input and both return a
+  key; a caller that only wants the assertion takes the payload and lets the key go.
 - **The client's base64url decoder is stricter than the server's, deliberately.** The client refuses
   padding; `PasskeyEncoding.TryDecode` accepts it, because `Base64Url` does and the looser bound is
   the one that never refuses a member a client legitimately encoded. Nothing is lost by the
@@ -426,10 +449,15 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
   same row. The strictness is a rule about what *this* client emits, not a claim about what the
   server admits, and a reader comparing the two decoders should not read the gap as a defect in
   either.
-- **The PRF eval input is unused today and still load-bearing.** Nothing derives from it, so its
-  pinned literal in the spec is the only thing that would notice it drifting — and a drifted eval
-  input locks every account out silently, because the key-encryption key it produces is simply a
-  different key.
+- **The PRF eval input is now read by the ceremony, and a drift in it is still silent.** Both legs
+  send it as the `prf` extension's evaluation input, so it decides what every authenticator hands
+  back — and a drifted value locks every account out with no error naming the cause, because the
+  key-encryption key it produces is simply a different key by a passkey that still authenticates
+  perfectly. Two things watch it, and neither is redundant: the pinned literal in
+  `account-keys.spec.ts` catches an edit to the constant, and `passkey-label-single-source.spec.ts`
+  scans the source tree for a `budgetoid/passkey/` literal outside the one module that owns it —
+  because a *second copy* equal to the constant passes every runtime assertion there is, and is
+  exactly the thing that drifts next.
 - **The empty salt is deliberate.** RFC 5869 permits it, and a redemption arrives carrying a code and
   no identity at all, so there is no per-account value the derivation could take a salt from. `info`
   already spells the domain separation.

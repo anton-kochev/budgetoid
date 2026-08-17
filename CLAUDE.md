@@ -184,8 +184,10 @@ Load-bearing rules, each explained there or in the linked decision:
   never-materialise rule now binds a second table that fails **loudly** with `42501`; the wrapped keys
   are **not** the verifiable PRF evidence `CompleteRegistrationHandler`'s remarks ask for, because the
   server cannot tell a key-encryption key derived through PRF from one derived out of a constant; and
-  the client crypto in `+core/security/account-keys.ts` **has no caller** while the server already
-  demands its output — that asymmetry is deliberate and argued in the decision log. See
+  the client crypto in `+core/security/account-keys.ts` reaches **no screen** while the server already
+  demands its output — `webauthn-ceremony.service.ts` calls the passkey derivation and has no caller
+  of its own, so the chain is one link longer and still ends short of a person; that asymmetry is
+  deliberate and argued in the decision log. See
   [account-keys.md](docs/business-logic/account-keys.md) and
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
 - **The schema carries no remnant of an erasure and the route table offers no way back** — no
@@ -296,6 +298,24 @@ Load-bearing rules, each explained there or in the linked decision:
   [erasure.md](docs/business-logic/erasure.md),
   [recovery-codes.md](docs/business-logic/recovery-codes.md) and the credential-list and
   recovery-codes chapters in [components.md](docs/design/components.md).
+- **The browser can run a WebAuthn ceremony, and no screen does.** `+core/security/webauthn-encoding.ts`
+  is pure translation between the API's base64url JSON and the browser's `BufferSource` shapes, over
+  the **strict** decoder in `base64url.ts` — a second, lenient decoder must never appear beside it.
+  `+core/security/webauthn-ceremony.service.ts` is the injectable seam, for the reason
+  `FileDownloadService` is one: the platform it calls does not exist under the test runner. Four rules
+  it carries, each silent when broken. **The PRF output never crosses the module boundary** — both
+  legs derive through `keyEncryptionKeyFromPasskey` themselves, return a non-extractable `CryptoKey`
+  and zero-fill the bytes, so no screen can log the value that unwraps the account. **The registration
+  payload projects** `getClientExtensionResults()` into a fresh `{prf:{enabled}}` — never forwards,
+  filters or spreads it, because that object carries the PRF output itself. **`create()` returning no
+  PRF output is not a refusal**: one *local* `get()` follows, carrying `allowCredentials` for the new
+  credential (WebAuthn throws `NotSupportedError` without it) and **discarded, never sent** — many
+  platform authenticators only derive from the first assertion. And **`isArrayBuffer` is a brand check,
+  never `instanceof`**: realms differ across an iframe, a worker and this test runner, and a narrowing
+  that silently goes false derives the key from zero bytes on every device alike. `assertPasskey` asks
+  for PRF too — the wrapped keys open under exactly that value. See
+  [passkeys.md](docs/business-logic/passkeys.md) and
+  [account-keys.md](docs/business-logic/account-keys.md).
 
 ## Documentation
 
