@@ -54,18 +54,44 @@ const themeServicePath = join(
   'theme.service.ts',
 );
 
-// The header names a route rule may never carry, lower-cased for the same reason the
-// header maps below are. Azure unions a route's `headers` with `globalHeaders` and lets
-// the route win per header name — and route rules are not applied at all to a request
-// that ends up in `navigationFallback`. A security header on a route is therefore a hole
-// shaped like a deep link: it silently replaces the global value on the paths it matches
-// and is absent on the paths it does not.
-const securityHeaderNames: readonly string[] = [
-  'content-security-policy',
-  'strict-transport-security',
-  'referrer-policy',
-  'x-content-type-options',
-];
+// Every header `globalHeaders` may name, each with the reason it is there — the same
+// written justification `allowedConnectSources` demands of an origin, and for a sharper
+// reason: `globalHeaders` is applied to every response the host serves from content, so an
+// entry added here is applied site-wide by whoever adds it. A table of names to sentences
+// is what stops a new header being greened by appending to an expected array; the editor
+// has to compose a defence of it. Nothing about that is limited to headers that look like
+// security: `Access-Control-Allow-Origin` does not, and is the one this closes.
+//
+// One table, two rules, and the second is why the names are lower-cased. Azure unions a
+// route's `headers` with `globalHeaders` and lets the route win per header name — and
+// route rules are not applied at all to a request that ends up in `navigationFallback`. A
+// header named here and re-declared on a route is therefore a hole shaped like a deep
+// link: it silently replaces the global value on the paths it matches and is absent on the
+// paths it does not. A second list of the same names could disagree with this one, so
+// there is one: a header joins both rules at once, or leaves both at once.
+const securityHeaders: ReadonlyMap<string, string> = new Map([
+  [
+    'content-security-policy',
+    'the origin boundary the browser enforces; the directives inside it carry their own ' +
+      'reviewed table in `policy`, and this entry is what keeps the header itself from ' +
+      'leaving',
+  ],
+  [
+    'strict-transport-security',
+    'the transport half of that boundary — without it a first request over `http://` is ' +
+      'answered before any policy the response carries can matter',
+  ],
+  [
+    'referrer-policy',
+    'an origin is still an identifier, and this app has no reason to tell any other ' +
+      'origin where a reader came from',
+  ],
+  [
+    'x-content-type-options',
+    'governs what a response is allowed to become, which no CSP directive does: a ' +
+      "sniffed same-origin response runs as a script `script-src 'self'` permits",
+  ],
+]);
 
 // Every source `connect-src` may name, each with the reason it is there. The value is a
 // written justification rather than a label, following `no-external-origins.spec.ts`: an
@@ -224,7 +250,7 @@ function routeSecurityHeaders(): readonly string[] {
     const name = typeof path === 'string' ? path : '(unnamed route)';
 
     return headerEntries(property(route, 'headers'))
-      .filter(([header]) => securityHeaderNames.includes(header))
+      .filter(([header]) => securityHeaders.has(header))
       .map(([header]) => `${name}: ${header}`);
   });
 }
@@ -473,6 +499,31 @@ describe('production build', () => {
       declared.size,
       `${location}: declares no global headers`,
     ).toBeGreaterThan(0);
+  });
+
+  // Set equality over the header *names*, which is the assertion the per-header tests
+  // below cannot make: each of them reads one name, so nothing they do constrains an
+  // *extra* entry. `globalHeaders` is applied to every response the host serves from
+  // content, so `"Access-Control-Allow-Origin": "*"` added beside the four would be
+  // applied site-wide and redden nothing — the header set has the same shape of hole as
+  // the directive list one level down, and `names exactly the reviewed directives` closes
+  // that one for the same reason: a policy is widened by addition, not only by edit.
+  //
+  // It catches a header going missing too, which is how `Referrer-Policy` would leave —
+  // there loudly rather than silently, since `sends no referrer` reddens beside it.
+  it('names exactly the reviewed global headers', () => {
+    // Arrange
+    const location = relative(browserDir, configPath);
+    const reviewed = [...securityHeaders.keys()].sort();
+
+    // Act
+    const shipped = [...globalHeaders().keys()].sort();
+
+    // Assert
+    expect(
+      shipped,
+      `${location}: every global header needs a reviewed entry in \`securityHeaders\``,
+    ).toEqual(reviewed);
   });
 
   // The condition is derived from the shipped policy rather than assumed: an inline

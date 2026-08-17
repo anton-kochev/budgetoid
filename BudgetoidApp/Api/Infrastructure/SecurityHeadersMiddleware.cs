@@ -45,8 +45,10 @@ namespace Api.Infrastructure;
 /// measured. <c>HttpResponse.Clear()</c> resets the status and the headers and does not touch the
 /// <c>OnStarting</c> callback list, which lives on the response feature and has no public API to reset: the
 /// middleware still runs, still registers the callback, and the callback still fires at flush, after the
-/// clear. The callback is <c>static</c> and takes the response as state so registering it allocates no
-/// closure.
+/// clear. Writing the four headers allocates nothing per response: the callback is <c>static</c> and takes
+/// the response as state, so registering it captures no closure, and <see cref="Headers" /> is declared as
+/// the concrete <see cref="FrozenDictionary{TKey,TValue}" />, so the <c>foreach</c> binds its struct
+/// enumerator instead of boxing one behind an interface.
 /// </para>
 /// <para>
 /// <b><c>/health</c> gets no exemption, unlike the first-party header control.</b> That exemption exists
@@ -107,15 +109,22 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
     /// <remarks>
     /// This dictionary is the wire contract: it is what the tests read, so a name or a value that drifts
     /// here drifts in one place rather than in two that can agree with each other while both being wrong.
+    /// The declared type is the concrete <see cref="FrozenDictionary{TKey,TValue}" /> rather than
+    /// <see cref="IReadOnlyDictionary{TKey,TValue}" />, which is what lets the callback's <c>foreach</c>
+    /// bind the struct enumerator; widening it back to the interface costs a boxed enumerator on every
+    /// response and nothing catches it. The comparer is <see cref="StringComparer.Ordinal" /> because this
+    /// is a fixed set pinned by exact bytes — <see cref="IHeaderDictionary" /> is already case-insensitive
+    /// on the write side, so nothing here needs to be.
     /// </remarks>
-    public static readonly IReadOnlyDictionary<string, string> Headers =
-        new Dictionary<string, string>(StringComparer.Ordinal)
+    public static readonly FrozenDictionary<string, string> Headers =
+        new KeyValuePair<string, string>[]
         {
-            ["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains",
-            ["Content-Security-Policy"] =
-                "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-            ["Referrer-Policy"] = "no-referrer",
-            ["X-Content-Type-Options"] = "nosniff",
+            new("Strict-Transport-Security", "max-age=63072000; includeSubDomains"),
+            new(
+                "Content-Security-Policy",
+                "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"),
+            new("Referrer-Policy", "no-referrer"),
+            new("X-Content-Type-Options", "nosniff"),
         }.ToFrozenDictionary(StringComparer.Ordinal);
 
     public Task InvokeAsync(HttpContext httpContext)
