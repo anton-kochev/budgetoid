@@ -250,7 +250,8 @@ Load-bearing rules, each explained there or in the linked decision:
   `X-Content-Type-Options` ship in
   `globalHeaders` of `public/staticwebapp.config.json` — never on a route rule, which Azure skips
   for every `navigationFallback` rewrite, i.e. every deep link. Critical-CSS inlining is **off**
-  (`"inlineCritical": false`, the whole `optimization` object spelled out) because it emits an
+  (`"inlineCritical": false`, which is the only reason the `optimization` object exists — its other
+  keys restate defaults) because it emits an
   inline `<style>`, an `onload=` handler and a `<noscript>` twin; the theme pre-paint therefore
   lives in `public/theme-prepaint.js`, loaded with no `defer` and no `type="module"`.
   `src/security-headers.spec.ts` reads the emitted config and `index.html`. See

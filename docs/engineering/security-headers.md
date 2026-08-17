@@ -10,19 +10,21 @@ the builder emitted, checked once at build time; these headers are the same boun
 agent that runs the code, on a document the builder no longer controls. A defect that injects markup
 at runtime is invisible to the first and refused by the second.
 
-**Only one of the two origins delivers them on *every* response, and the difference is not a
-detail.** The API writes its four from a middleware that runs on every request, so a 500, a 401 and a
-403 carry them exactly as a 200 does. The web application's four are `globalHeaders` in a static
-host's configuration, and Azure Static Web Apps applies `globalHeaders` to the responses it serves
-*from the content* — not to the ones it synthesizes. A request for a file that does not exist is the
-measured counterexample: `GET /does-not-exist.js` answers **404** with `Content-Type: text/html` and
-**none** of the four. `navigationFallback.exclude` is what creates those responses — it deliberately
-keeps `*.{json,css,js,…}` out of the SPA rewrite, so a missing asset 404s instead of being answered
-with `index.html`. Nothing in this repository can close that gap: there is no configuration key for
-the headers on a synthesized 404, and the body is a host-generated page rather than one of ours. It
-is recorded here rather than papered over, because "on every response" is what a reader will
-otherwise assume from the API half. The measurement comes from the Static Web Apps CLI, with the
-limits the next section gives.
+**Only one of the two origins is *known* to deliver them on every response, and the difference is not
+a detail.** The API writes its four from a middleware that runs on every request, so a 500, a 401 and
+a 403 carry them exactly as a 200 does. The web application's four are `globalHeaders` in a static
+host's configuration, and the only thing measured about those is the emulator: under the Static Web
+Apps CLI, `globalHeaders` reaches the responses served *from the content* and not the ones the host
+synthesizes — `GET /does-not-exist.js` answers **404** with `Content-Type: text/html` and **none** of
+the four. `navigationFallback.exclude` is what creates those responses — it deliberately keeps
+`*.{json,css,js,…}` out of the SPA rewrite, so a missing asset 404s instead of being answered with
+`index.html`. **Whether the managed runtime answers the same way is unmeasured**, and the first
+deploy is where it gets checked (`DEPLOYMENT.md`, step 5). **No fix is named here, deliberately:**
+nothing in this repository has seen the managed runtime attach a header to a response it synthesized,
+so naming the mechanism that would do it would be a guess dressed as a finding — and the measurement
+that would settle it costs one `curl`. The gap is recorded rather than papered over, because "on
+every response" is what a reader will otherwise assume from the API half — with the limits [the API
+section](#the-api) gives.
 
 ## The web application
 
@@ -193,44 +195,51 @@ script exists to beat; the rejected alternative, pinning a `'sha256-…'` of the
 policy, puts the hash and the snippet in two files that drift the first time either is edited, with
 a theme flash as the only symptom.
 
-### The `optimization` object is written out in full, and has to be
+### The `optimization` object exists for one key
 
-`optimization` was previously unset and defaulted to `true`. The builder's
-`normalize-optimization.js` reads `scripts: !!optimization.scripts`, so an `optimization` **object**
-that omits `scripts` normalizes to `scripts: false` and silently stops minifying — a production
-build that is larger and slower with nothing red anywhere.
+`optimization` was previously unset and defaulted to `true`, so writing an object is how
+`inlineCritical` is turned off. Every other key in it — `scripts: true`, `styles.minify`,
+`styles.removeSpecialComments`, `fonts.inline` — restates a default and changes nothing, and stays as
+written documentation of what the block leaves alone.
 
-**The sharp version, because "it defaults to false" is not what is happening.** `@angular/build`'s
-own `schema.json` declares `"scripts": { "default": true }` inside the `optimization` object. That
-default is never applied, because `optimization` is declared under a `oneOf` — the schema validator
-fills defaults for the matched branch's declared properties in the simple case, and this
-object-or-boolean union is the case where it does not, leaving `optimization.scripts` `undefined` for
-`!!` to read as `false`. So the configuration is stepping around a **divergence between Angular's
-schema and Angular's normalizer**, not around a documented default. That divergence is load-bearing
-today and **nothing in this repository pins it**: an upstream fix that made the schema default apply
-would make the explicit `"scripts": true` redundant rather than wrong, but an upstream change in the
-other direction would be invisible here. `scripts` is the key that makes the object have to be
-written out in full. See [ADR 0020](../decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md).
+**The trap this section used to describe is not there, and that is measured.** The builder's
+`normalize-optimization.js` does read `scripts: !!optimization.scripts`, which would take an omitted
+key for `false` — but nothing reaches it with the key omitted. `@angular/cli` registers
+`schema.transforms.addUndefinedDefaults` on the schema registry Architect validates builder options
+through (`@angular/cli/src/command-builder/architect-base-command-module.js:145`), and that transform
+fills the object branch's declared defaults — `"scripts": { "default": true }`, and the same on
+`styles` and `fonts` — before the build runs. A scratch production build omitting `scripts` and
+`fonts` emitted a byte-identical `main-*.js`, `index.html` and `styles-*.css`. The explicit keys buy
+documentation plus one line of insurance against a driver that validates these options without that
+transform; the `!!` is real and merely unreachable. `fonts.inline` is additionally a no-op here — it
+inlines external Google Fonts and Adobe Fonts stylesheets, which [no third-party
+origins](no-third-party-origins.md) forbids from existing. See [ADR
+0020](../decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md).
 
-### What the trade cost, measured
+### What the trade cost, and the part still unmeasured
 
 `index.html` fell from 12,819 B to 1,463 B. The 19,005 B `styles-*.css` became render-blocking
-instead of deferred. `main-*.js` is still hashed and still minified, and the production `initial`
-budget is unchanged at 403 kB. A cold first paint costs one extra round trip rather than two,
+instead of deferred. `main-*.js` is still hashed and still minified, and the production build's
+`initial` **total** is unchanged at 403 kB — a measurement, not a limit: the `initial` budget in
+`angular.json` is `maximumWarning: 600kB` and `maximumError: 1MB`. A cold first paint costs one extra
+round trip rather than two,
 because the script and the stylesheet are discovered in the same head parse and fetched in parallel
 on a connection that is already open.
 
-**Repeat visits do not clearly improve, and that is the number most likely to be overstated.** The
-document did shed 11 kB of critical CSS that previously rode along with every navigation. Against
-that, `theme-prepaint.js` is a new **parser-blocking** request — no `defer`, deliberately — served
-with the Static Web Apps default `Cache-Control: must-revalidate, max-age=30`; only `/fonts/*`
-carries `immutable`, from the one route rule. Past thirty seconds every visit therefore pays a
-blocking conditional request before first paint, which the inline version cost nothing. `immutable`
-cannot be set on the file, because its name carries no build hash and a wrong cached copy would be
-unfixable. Which way the net lands is unmeasured and depends on connection latency; the honest
-statement is that it is a trade in both directions, not a win. [ADR
-0020](../decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md) holds the same
-reasoning.
+**What repeat visits now cost is not measured, and no sentence here may claim it in either
+direction.** The document did shed 11 kB of critical CSS that previously rode along with every
+navigation. Against that, `theme-prepaint.js` is a new **parser-blocking** request — no `defer`,
+deliberately — and it is copied verbatim out of `public/`, so its name carries **no build hash**:
+`immutable` cannot honestly be set on it, because a wrong cached copy could not be displaced. That
+is why the contrast with `/fonts/*`, the one route rule that does carry `immutable`, is visible at
+all. So on any visit where the host asks the browser to revalidate the file, first paint waits on a
+conditional request the inline version never needed — but **how often the host asks is a property of
+the caching policy the managed runtime applies, and that is unmeasured**. The CLI serves
+`Cache-Control: must-revalidate, max-age=30` for it; it serves the same value for the content-hashed
+stylesheet and stamps a literal `ETag: "SWA-CLI-ETAG"`, so that number is the emulator applying one
+policy to everything, not Azure's. The first deploy records the real value (`DEPLOYMENT.md`, step 5).
+[ADR 0020](../decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md) holds the
+same reasoning.
 
 ## Silent refresh is refused, and that is not a regression
 
@@ -407,10 +416,11 @@ now calls the policy.
   what it is not](#what-the-cli-run-is-and-what-it-is-not). There is no production environment today,
   so nothing here has been observed in production. `DEPLOYMENT.md`'s verification step is where that
   gap is closed, by hand, per deploy.
-- **That the web application's headers reach a response Azure synthesizes.** `globalHeaders` covers
-  what the host serves from the content; a 404 for a missing asset was measured carrying none of the
-  four. The API has no equivalent gap, because its headers come from a middleware rather than from a
-  host's configuration.
+- **That the web application's headers reach a response Azure synthesizes — or that they do not.**
+  Under the CLI, `globalHeaders` covers what the host serves from the content and a 404 for a missing
+  asset carries none of the four; what the managed runtime does there is unmeasured, and the first
+  deploy is where it is checked. The API has no equivalent gap, because its headers come from a
+  middleware rather than from a host's configuration.
 - **That the policy is the right policy.** A directive set both files agree on is still a directive
   set, and a source added to both in one commit passes everything here except the reviewed policy
   table in the frontend spec — which does not judge the source either, only make somebody write a

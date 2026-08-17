@@ -1,7 +1,11 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { browserDir, expectProductionBuild } from './production-bundle';
+import {
+  browserDir,
+  expectProductionBuild,
+  listFiles,
+} from './production-bundle';
 
 // FR-036: the browser itself enforces the app's origin boundary, so that a defect in the
 // app cannot become an exfiltration channel. A `Content-Security-Policy` that admits only
@@ -357,17 +361,49 @@ function scriptPolicyViolations(html: string): readonly string[] {
   return violations;
 }
 
+// Every `<script>` start tag the document opens, counted whether or not it declares a
+// `src`. This is the positive control for `scriptSources`: a `src` pattern that stopped
+// matching a form the document uses reports no source for that tag and therefore no
+// unresolved source either, which is indistinguishable from a document whose scripts all
+// resolve. Counting the tags gives the pattern something it has to account for.
+function scriptStartTagCount(html: string): number {
+  return [...html.matchAll(/<script\b/gi)].length;
+}
+
 // Every `src` a `<script>` element in the document declares, in document order.
+//
+// It refuses to read only the quoted forms. `<script src=/theme-prepaint.js>` is valid
+// HTML — the attribute value needs no quotes until it contains whitespace — and while the
+// builder emits quotes, `index.html` is hand-edited and was hand-edited in the change this
+// test shipped with. A pattern blind to the unquoted form does not report a broken `src`;
+// it reports no `src` at all, which is why the count above exists.
+//
+// `(?<![-\w])` is load-bearing in the other direction: a bare `\bsrc` also matches the tail
+// of `data-src`, so on a tag carrying both, an unrelated attribute could supply the value
+// checked against the emitted files and redden a document that is correct.
 function scriptSources(html: string): readonly string[] {
   return [
-    ...html.matchAll(/<script\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/gi),
-  ].map(([, doubleQuoted, singleQuoted]) => doubleQuoted ?? singleQuoted ?? '');
+    ...html.matchAll(
+      /<script\b[^>]*?(?<![-\w])src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi,
+    ),
+  ].map(
+    ([, doubleQuoted, singleQuoted, unquoted]) =>
+      doubleQuoted ?? singleQuoted ?? unquoted ?? '',
+  );
 }
 
 // The emitted file a `src` names, or `undefined` when the build emitted none. An absolute
 // or scheme-relative URL resolves to nothing by construction — this build emits files, not
 // origins — so it fails here as well as in `no-external-origins.spec.ts`, which is the
 // direction to fail in.
+//
+// It refuses to ask the file system. `existsSync` answers a question the deploy target does
+// not: macOS matches a name case-insensitively, so `<script src="/Theme-Prepaint.js">`
+// against an emitted `theme-prepaint.js` is green here and a 404 on Azure Static Web Apps —
+// a guard that only works on Linux CI is no guard on the machine it runs on every day.
+// Comparing against the names the build actually emitted is case-sensitive on every
+// platform, and subsumes the two checks it replaces: `listFiles` yields files only, all of
+// them under the browser directory, so a `..` climbing out of the output matches nothing.
 function emittedFileFor(src: string): string | undefined {
   const [path] = src.split(/[?#]/);
 
@@ -379,26 +415,43 @@ function emittedFileFor(src: string): string | undefined {
   // against it and a document-relative one against the document beside it — the same
   // place, since `index.html` sits at that root.
   const resolved = resolve(browserDir, path.replace(/^\/+/, ''));
-  const inside =
-    resolved === browserDir || resolved.startsWith(`${browserDir}${sep}`);
+  const emitted = new Set(listFiles(browserDir));
 
-  return inside && existsSync(resolved) && statSync(resolved).isFile()
-    ? resolved
-    : undefined;
+  return emitted.has(resolved) ? resolved : undefined;
 }
 
 // The one storage key a file names, so that two files naming it can be compared instead of
 // both being retyped here. A file that names none throws rather than returning a default:
 // a silent `undefined` on both sides would compare equal and assert nothing.
+//
+// A file that names it more than once throws too, rather than taking the first match. The
+// first match is not the call the browser makes, it is the first *text* that looks like
+// one — and `theme-prepaint.js` already carries a ten-line comment block whose most natural
+// edit is to mention the key. Quote it there, rename the real `getItem`, and a first-match
+// read compares the comment against the service and passes while the pre-paint reads a dead
+// key. The same holds for a second `const STORAGE_KEY` in the service. Every occurrence is
+// collected regardless of the flags the caller passed, so the rule cannot be lost at a call
+// site by omitting `g`.
 function storageKeyIn(path: string, pattern: RegExp, expected: string): string {
   const source = existsSync(path) ? readFileSync(path, 'utf8') : '';
-  const key = pattern.exec(source)?.[1];
+  const everywhere = pattern.flags.includes('g')
+    ? pattern
+    : new RegExp(pattern.source, `${pattern.flags}g`);
+  const keys = [...source.matchAll(everywhere)].map(([, key]) => key);
 
-  if (key === undefined) {
+  if (keys.length === 0) {
     throw new Error(`${path}: ${expected}`);
   }
 
-  return key;
+  if (keys.length > 1) {
+    const named = keys.map((key) => `'${key}'`).join(', ');
+
+    throw new Error(
+      `${path}: names ${keys.length} keys (${named}) where the comparison needs exactly one`,
+    );
+  }
+
+  return keys[0];
 }
 
 describe('production build', () => {
@@ -464,6 +517,7 @@ describe('production build', () => {
     const html = readFileSync(indexPath, 'utf8');
 
     // Act
+    const tags = scriptStartTagCount(html);
     const sources = scriptSources(html);
     const unresolved = sources
       .filter((src) => emittedFileFor(src) === undefined)
@@ -477,6 +531,13 @@ describe('production build', () => {
       sources.length,
       `${location}: loads no script at all`,
     ).toBeGreaterThan(0);
+    // Every `<script>` in this document has a `src` — `contains nothing the script policy
+    // would block` forbids the other kind — so a tag whose `src` went unread is a tag this
+    // test silently stopped checking.
+    expect(
+      sources.length,
+      `${location}: ${tags} <script> start tags, ${sources.length} of them with a src this test could read`,
+    ).toBe(tags);
     expect(unresolved).toEqual([]);
   });
 

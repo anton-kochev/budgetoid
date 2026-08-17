@@ -56,41 +56,31 @@ pre-paint moves to `ClientApp/angular-budgetoid/public/theme-prepaint.js` and is
 `<head>` with **no `defer` and no `type="module"`** — either would postpone execution past first
 paint, which is the one thing the script exists to beat.
 
-The `optimization` object is written out in full rather than reduced to the one key that changed.
-`optimization` was previously unset, defaulting to `true`; the builder's `normalize-optimization.js`
-reads `scripts: !!optimization.scripts`, so an object that omits `scripts` normalizes to
-`scripts: false` and silently stops minifying. A production build that quietly grew and nothing red
-anywhere is a worse outcome than the one this ADR is about.
+**The `optimization` object exists for one key, and that key is `inlineCritical: false`.**
+`optimization` was previously unset and defaulted to `true`, so writing an object is simply how one
+flag inside it is turned off. `scripts: true`, `styles.minify`, `styles.removeSpecialComments` and
+`fonts.inline` each restate a default and change nothing; they stay as written documentation of what
+this block leaves alone.
 
-**The precise finding is sharper than "an object that omits `scripts` defaults to `false`", and the
-sharper form is the reason this is a decision.** `@angular/build`'s own `schema.json` declares
-`"scripts": { "default": true }` among the `optimization` object's properties — so the documented
-default and the applied default disagree. The declared default is not applied because `optimization`
-sits under a **`oneOf`** (an object branch and a boolean branch): the union is what stops the
-validator filling that default in, leaving `optimization.scripts` `undefined` for `!!` to read as
-`false`. Spelling `"scripts": true` out is therefore **stepping around a divergence between
-Angular's schema and Angular's normalizer**, not restating a default.
+**The trap a reader goes looking for here does not exist, and that is measured rather than
+reasoned.** The builder's `normalize-optimization.js` does read `scripts: !!optimization.scripts`,
+which would take an omitted key for `false` — but nothing reaches it with the key omitted.
+`@angular/cli` registers `schema.transforms.addUndefinedDefaults` on the schema registry Architect
+validates builder options through
+(`@angular/cli/src/command-builder/architect-base-command-module.js:145`), and that transform fills
+the object branch's own declared defaults — `"scripts": { "default": true }`, and the same on
+`styles` and `fonts` — before the build runs. A scratch production build omitting `scripts` and
+`fonts` emitted a byte-identical `main-*.js` at 128,843 B, the same 1,463 B `index.html` and the same
+19,005 B `styles-*.css`. The explicit keys are therefore documentation, plus one line of insurance
+against a driver that validates these options without that transform: the `!!` is real, and only
+unreachable.
 
-Two consequences. First, `scripts` is the key that makes writing the object out *in full* mandatory:
-`styles` was going to be written anyway, since `inlineCritical` is the change this ADR is about, and
-`fonts` is inert here for the reason below. Second, **nothing in this repository pins that
-divergence.** No test asserts that the emitted `main-*.js` is minified; the production `initial`
-budget at 403 kB is the only thing that would notice, and only if unminified output crossed it. An
-upstream fix that made the schema default apply would merely make the explicit key redundant, which
-is harmless; a change in the other direction, or a reader "tidying" the key away on the strength of
-the schema, would not be caught here.
-
-**`"fonts": { "inline": true }` is kept as the documented default, and it does nothing for this
-application.** It is spelled out only because the object is spelled out; the argument that every key
-earns its place by having an effect does not hold for this one. The builder's own schema says what
-`inline` does: it "reduce[s] render blocking requests by inlining external Google Fonts and Adobe
-Fonts CSS definitions". This application loads no external font stylesheet and, under [no
-third-party origins](../engineering/no-third-party-origins.md), may not — typefaces are served from
-`public/fonts/`. So the key is a no-op here, and would remain one under any configuration that
-invariant permits. It stays because writing the object out in full means writing it in full, and
-because `!!optimization.fonts` reads `undefined` as `false` exactly as `scripts` does — omitting it
-would silently turn a default off rather than leave it alone, which is the same class of edit this
-section exists to prevent, even where the setting is inert.
+**`"fonts": { "inline": true }` is inert twice over.** It restates a default like the others, and
+what it enables is a no-op for this application: the builder's schema says `inline` "reduce[s] render
+blocking requests by inlining external Google Fonts and Adobe Fonts CSS definitions", and under [no
+third-party origins](../engineering/no-third-party-origins.md) no such stylesheet may exist —
+typefaces are served from `public/fonts/`. It would stay a no-op under any configuration that
+invariant permits.
 
 **The stylesheet is now render-blocking, and that is the thing being bought and paid for.** It is
 not a side effect to be optimised away later by a different mechanism that reintroduces an inline
@@ -141,32 +131,37 @@ frontend deploy is a directory upload, to recover roughly one round trip on a co
   12,819 B to 1,463 B, and the 19,005 B `styles-*.css` is now render-blocking. The script and the
   stylesheet are discovered in the same head parse and fetched in parallel on the connection already
   open, so the cost is one round trip's latency rather than a serialised chain.
-- **Repeat visits are not a clear win, and this is the consequence most likely to be overstated.**
-  The gain is real: those 11 kB of critical CSS previously rode along with every navigation, because
-  the SPA shell served through `navigationFallback` cannot be cached hard, while the hashed
-  stylesheet can be cached forever. The cost is equally real and equally unmeasured.
-  `theme-prepaint.js` is a **new parser-blocking request** — no `defer`, by
-  construction, since beating first paint is the whole point of the file — and Azure Static Web Apps
-  serves it with the platform default `Cache-Control: must-revalidate, max-age=30`. The only route
-  rule in `staticwebapp.config.json` carries `immutable`, and it covers `/fonts/*` alone. So every
-  visit more than thirty seconds after the last one pays a **blocking conditional request before
-  first paint** — a round trip the inline snippet cost nothing at all. This is not a one-line fix:
-  `immutable` cannot honestly be set on this file, because its name carries no build hash, and a
-  cached copy of a wrong version could not be displaced. Whether the net is positive depends on
-  round-trip latency and on how often a reader returns; both directions are real and neither has been
-  measured, so the honest statement is that the trade runs both ways.
-- **The build's other outputs are unchanged.** `main-*.js` is still hashed and minified and the
-  production `initial` budget is unchanged at 403 kB, which is the check that the full
-  `optimization` object did not quietly disable something else.
+- **The effect on repeat visits is unmeasured, and asserting it in either direction is the recurring
+  error here.** What changed is stateable exactly: the inlined version put 11 kB of critical CSS on
+  every navigation, because the SPA shell served through `navigationFallback` cannot be cached hard,
+  while the hashed stylesheet can be cached forever. Against that, `theme-prepaint.js` is a **new
+  parser-blocking request** — no `defer`, by construction, since beating first paint is the whole
+  point of the file — and it is copied verbatim out of `public/`, so its name carries **no build
+  hash**. That is why it cannot honestly carry `immutable` the way `/fonts/*` does under the one
+  route rule in `staticwebapp.config.json`: a cached copy of a wrong version could not be displaced.
+  So on any visit where the host asks the browser to revalidate it, first paint waits on a
+  conditional request the inline snippet never needed. **Whether that happens, and how often, is a
+  property of the caching policy the managed runtime applies — and that policy is unmeasured.** The
+  Static Web Apps CLI serves `Cache-Control: must-revalidate, max-age=30`, but it serves the same
+  value for the content-hashed stylesheet and answers with a literal `ETag: "SWA-CLI-ETAG"`, so that
+  is the emulator applying one policy to everything and is evidence about nothing Azure does. The
+  first deploy is where the number becomes knowable (`DEPLOYMENT.md`, step 5).
+- **The build's other outputs are unchanged.** `main-*.js` is still hashed and minified, and the
+  production build's `initial` **total** is unchanged at 403 kB. That is a measurement, not a limit:
+  the `initial` budget in `angular.json` is `maximumWarning: 600kB` and `maximumError: 1MB`, so the
+  number is headroom rather than a tripwire, and nothing here fails on a bundle that merely grows.
 - **The rule is held by a test that never names `inlineCritical`.**
   `ClientApp/angular-budgetoid/src/security-headers.spec.ts` derives its condition from the shipped
   policy: if `script-src` withholds `'unsafe-inline'`, the emitted `index.html` contains no
   `<script>` without a `src` and no `on*=` attribute. Turning inlining back on reddens it through
   the markup rather than through the flag, which is what makes the guard survive a future builder
   that produces the same shape by another route.
-- **A public asset is now load-bearing.** `public/theme-prepaint.js` is copied verbatim into the
-  build output and referenced by path; deleting or renaming it fails nothing here, and shows up as a
-  404 in `<head>` and a theme flash. Its own comment carries the reason it is a file.
+- **A public asset is now load-bearing, and a second test holds it.** `public/theme-prepaint.js` is
+  copied verbatim into the build output and referenced by path, where a missing file is a 404 in
+  `<head>` and a theme flash that no policy assertion can see — a file the build never emitted is
+  still `'self'`. `security-headers.spec.ts`'s `loads every script from a file it emitted` resolves
+  every `<script src>` in the emitted document against the files the build emitted, so deleting or
+  renaming this one reddens rather than ships. Its own comment carries the reason it is a file.
 - **Re-enabling inlining for a first-paint score is the recurring temptation, and it has one honest
   form.** Not a hash, not a nonce: an inlining strategy that emits no script and no event handler at
   all. Until such a mechanism exists in the builder, the answer is no, and this record is what a
