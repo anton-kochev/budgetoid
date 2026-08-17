@@ -83,6 +83,20 @@ merely *busy* is a different case: it keeps its place in the tab order — Mater
 `disabledInteractive` renders the disabled appearance while leaving the element focusable —
 because a button that goes truly `disabled` under the finger drops focus to `<body>`.
 
+**A third case: a control waiting on the person, not on work.** A button gated on a choice the
+reader can make right now — ticking an acknowledgement a few pixels above it — is neither busy nor
+unavailable for the life of the screen. It takes `disabledInteractive`, for a different reason than
+the busy one: the press *has* an answer and the answer is one tab stop away, so a control that left
+the tab order would hide the gate from the only person who can open it. It needs no sentence beside
+it either — the thing it waits on is the visible control immediately above, and "waits on the
+checkbox above it" is noise, not help.
+
+**Where `disabledInteractive` is used, the gate is also in the handler, and that is not belt and
+braces.** Material's click-halt is applied to anchors only; on a `<button>` the DOM `disabled`
+property stays `false`, so the click reaches the component. A gate written only as an attribute is
+an ungated action wearing a disabled appearance — on the registration step, an account created for
+somebody who acknowledged nothing.
+
 **What renders today is not the table above.** No `MatButton` on any screen yet matches its
 radius, min-height, label style or surface: Material's M3 defaults are what ships, so
 `outlined` draws a pill with a `--mat-sys-primary` label rather than this book's Outline
@@ -430,7 +444,10 @@ browser minted them and that Budgetoid never receives one — a claim that would
 capability the client does not have if it shipped now. Second, the sequencing warning: a set can only
 be generated while the account still holds a working passkey, so codes protect only the person who
 generated them beforehand. That sentence is confusing beside a control nobody can press and honest
-beside one they can. Redeeming a code has no surface at all — there is no route to reach the anonymous
+beside one they can. **It is about *this* path and not about every path**: registration issues a set
+as part of creating the account, in the same act as the first passkey, so the account is never
+without one — read the sequencing rule as "a *replacement* set needs a working passkey", which is
+what makes it a warning rather than a description of how sets come to exist. Redeeming a code has no surface at all — there is no route to reach the anonymous
 redemption from — and it is a separate screen, not part of this section.
 
 ### Accessibility
@@ -453,6 +470,118 @@ generator that mints a code and derives its verifier from that code's canonical 
 own spec and called by nothing; the API service has no member that posts a set, because that route
 takes a fresh WebAuthn assertion this client cannot produce. Redeeming a code has no surface in the
 app at all.
+
+**The show-once surface now exists and this section is not where it lives.** It is the registration
+step below, built ahead of the flow that drives it. Nothing above changes: this section still shows
+no code and no part of one, and *What replaces this when generation lands* still describes what
+arrives **here** when the Settings path opens.
+
+## The recovery-code hand-off
+
+The one screen in the product that shows a secret, and the only time it is shown. Built as
+`register/steps/codes-step.component`, driven by an `input()`, with **no route and no caller** — the
+registration flow that supplies the codes is a later change.
+
+### Anatomy
+
+M3 base: **none**. A plain `<ol role="list">`, one `<li>` per code, `list-style: none`.
+
+- **Ordered, and the numbers are printed.** Ten near-identical 26-character strings is a screen
+  somebody loses their place in, and the number is what lets them put the pen down and say "seven of
+  ten". Without a visible index the `<ol>` is a `<ul>` wearing a different tag.
+- **The printed index is `aria-hidden`.** The list role already announces "7 of 10", so exposing the
+  number as well reads the position twice before every code. The number is for eyes; the role is for
+  ears; each says it once.
+- **`role="list"` is written out**, because under `list-style: none` Safari drops list semantics and
+  nobody hears the count at all.
+- **Not a card, not a `MatList`.** These are ten values, not ten interactive rows, and a
+  non-interactive line is not a 48px target.
+- **Grouped `XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX`.** Free, because `recovery-code-canonical.ts` strips
+  hyphens and whitespace before anything derives from a code — so the grouping is presentation and
+  the value is unchanged.
+- **Inter, `tabular-nums`, loosened tracking.** There is no monospace family in this system and none
+  may be added: a third face would have to be self-hosted and justified, for a string whose
+  confusable characters the code alphabet already excludes. `tabular-nums` is what makes ten stacked
+  codes align well enough to scan.
+- `user-select: all` per code, so a person copying one by hand selects a whole code and not a
+  fragment of it.
+- One column; two from `min-width: 600px`; **never three** — a third column at desktop widths puts
+  the codes far enough apart to lose the reading thread, and nothing is gained.
+
+### The two ways out, and they are not equals
+
+**Save to file** is Outline. **Copy** is **Ghost**, deliberately a step quieter: the clipboard is
+the worst storage on the device, the sentence beside the button says so, and two equal-weight
+controls would be telling the person the routes are equivalent while the copy underneath says they
+are not.
+
+The saved file is **bare** — the grouped codes and nothing else. No header, no caption, no product
+name. A label inside a file of recovery codes names the secret for whoever finds the disk; the
+filename pays that cost once already so somebody can find the file again, and the contents must not
+pay it twice. The printed index is **not** in the file or on the clipboard either, which is the trap
+the visible number creates: the obvious implementation builds the payload from the rendered line.
+
+A **failed copy gets a sentence** — `navigator.clipboard.writeText` rejects routinely, on an
+insecure origin, in an iframe, or in Safari without a user gesture — and the codes stay on screen
+behind it. Silence after a press is the defect the export control next door already argues against.
+
+### Announcements
+
+**The codes are never in a live region**, and this is the rule most likely to be "fixed". A
+`role="status"` holding a list narrates every entry as an event and puts ten secrets in a speech
+buffer, for no gain: they are content, and content is read in reading order. One `role="status"`
+region exists, in the DOM from first paint and empty at rest, and it carries the one-sentence
+outcomes — `Copied.` and the copy failure — and nothing else. The download is the accessible route.
+
+### The acknowledgement
+
+One required checkbox — M3 `MatCheckbox`, the first in this product — gating the Primary. **Not a
+typed word**: the typed word is reserved for destroying data that exists now, and nothing here is
+destroyed. This is a person accepting a future risk before anything is created at all.
+
+**The consequence is its own block above the checkbox, never the checkbox's label.** A label is
+announced as the control's name every time focus lands on it; a paragraph of consequence read that
+way becomes noise the reader learns to skip, which is the opposite of what it is for.
+
+The Primary is `disabledInteractive` until the box is ticked — the third disabled case in the
+Buttons chapter — and the gate is repeated in the click handler, for the reason stated there.
+
+### Copy
+
+> **Save your recovery codes**
+>
+> Your browser made these ten codes. Budgetoid never receives one, and this is the only time
+> they're shown.
+>
+> *(the ten codes)*
+>
+> Copying puts them on your clipboard, where other apps on this device can read them.
+>
+> Your passkey and these ten codes are the only ways into this account. Budgetoid keeps no copy of
+> either, so if you lose the passkey and every code, everything you record here stays locked — to
+> you, and to us. There's no way back, and no one to ask.
+>
+> ☐ I've saved these codes somewhere I can get to them.
+>
+> Nothing is saved until the last step.
+
+The last line stands on every step of registration: abandoning costs nothing, and the copy says so
+rather than a dialog implying otherwise. The consequence block is the requirement that the person be
+told, and be seen to accept, that losing every factor destroys the record — it is the reason the
+checkbox exists and not the other way round.
+
+### Accessibility
+
+One `h1`. The three controls are 48px targets; the code lines are not targets and are not padded to
+look like them. Nothing is communicated by colour alone — the copy failure reads the same with its
+colour removed.
+
+### What ships today
+
+The component, its file name, and the clipboard seam. **No route, no flow, nothing that mints a
+code, nothing that posts one.** It renders whatever ten codes it is handed. The type styles above —
+Inter, `tabular-nums`, the tracking — are the one part of this chapter no test holds: jsdom applies
+no styles, and a bundle-reading spec was judged not worth it here.
 
 ## Text fields and selects
 

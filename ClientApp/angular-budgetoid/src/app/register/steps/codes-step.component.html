@@ -1,0 +1,168 @@
+<!-- One `h1`, because a step of a flow is still a screen: a second one leaves
+     the document with two competing titles for anybody navigating by heading
+     level, and this step has nothing above it to be a subheading of. -->
+<h1 class="r-title">Save your recovery codes</h1>
+
+<!-- Above the codes, never beneath them. Somebody who reads to the first thing
+     that looks like a secret and stops has already been told where it came from
+     and that it will not be shown again — which is the whole of what they need
+     before they start writing.
+
+     "Your browser made these" is a claim this client could not honestly have
+     made before this screen existed, and it is the reader-facing half of ADR
+     0015: the code is minted here, only a verifier derived from it is sent, and
+     there is no member on the wire a code could travel in. -->
+<p class="r-lead">
+  Your browser made these ten codes. Budgetoid never receives one, and this is
+  the only time they&rsquo;re shown.
+</p>
+
+<!-- `ol`, not `ul`: the position of a code in the set is real information, and
+     the printed number below is what earns the element rather than making it a
+     `ul` wearing a different tag.
+
+     `role="list"` written out even though `ol` carries it implicitly —
+     `list-style: none` makes Safari drop list semantics, and without the
+     explicit role nobody hears "list, 10 items" and nobody hears "7 of 10"
+     either, which is the announcement the printed number is deliberately
+     silent for.
+
+     Outside every live region, and that is a rule rather than an accident: a
+     `role="status"` holding this list narrates ten secrets as ten events into a
+     speech buffer. The codes are content, met by reading.
+
+     `track $index` rather than `track code`. The list is a fixed snapshot that
+     never reorders and never grows, so identity buys nothing — and two equal
+     codes, which is the symptom of a broken generator and the one case worth
+     seeing, would throw NG0955 and replace the screen with an error instead of
+     showing the person what they were given. -->
+<ol class="r-codes" role="list">
+  @for (code of groupedCodes(); track $index) {
+    <li class="r-code-item">
+      <!-- For eyes only. The list role already announces the position, so
+           exposing the printed number as well reads it twice before every
+           code — and this is a screen where every extra syllable sits between
+           somebody and 26 characters they have to transcribe correctly. -->
+      <span class="r-code-index" aria-hidden="true">{{ $index + 1 }}.</span>
+      <!-- The code's own element, and the reason the file and the clipboard
+           can be assembled from anything other than this line. See the
+           `payload` comment in the component: a payload built from the `<li>`
+           carries the number into the file. -->
+      <span class="r-code">{{ code }}</span>
+    </li>
+  }
+</ol>
+
+<div class="r-actions">
+  <!-- Outline. Secondary to the act that ends the flow, but a real route out
+       with the codes, and the better of the two offered here. -->
+  <button class="r-button" mat-stroked-button type="button" (click)="save()">
+    Save to file
+  </button>
+
+  <!-- Ghost, one step below the Outline beside it and deliberately not level
+       with it. The sentence underneath says the clipboard is readable by every
+       other app on the device; rendering the two controls at the same weight
+       tells the eye the routes are equivalent while the copy says they are not,
+       and the eye is faster. The treatment has to agree with the prose or one
+       of them is decoration. -->
+  <button class="r-button" mat-button type="button" (click)="copy()">
+    Copy
+  </button>
+</div>
+
+<!-- Visible prose beside the control it is about, never a `title` and never an
+     `aria-describedby`: a tooltip reaches neither a keyboard user nor a touch
+     user, and this is the cheapest control on the screen with the consequence
+     nobody expects. Stated as a fact rather than as a warning — the voice
+     chapter bans that word as a label. -->
+<p class="r-prose">
+  Copying puts them on your clipboard, where other apps on this device can read
+  them.
+</p>
+
+<!-- The one live region on this screen, in the DOM from first paint and empty
+     at rest. A region created at the moment it gains content is announced
+     unreliably or not at all, and a region that always holds a line would tell
+     somebody who has pressed nothing that their codes are saved.
+
+     `status`, never `alert`: every sentence in here is the outcome of an act
+     the person asked for, and assertive is reserved for a failure to save
+     something they typed. One region rather than two, so the outcome of the
+     last press is in one place and nobody has to know where to look for bad
+     news as opposed to good — and a `@switch` rather than three `@if`s, so a
+     new outcome replaces the old instead of stacking under it. -->
+<div class="r-outcome" role="status">
+  @switch (outcome()) {
+    @case ('saved') {
+      <p class="r-prose">Saved.</p>
+    }
+    @case ('copied') {
+      <p class="r-prose">Copied.</p>
+    }
+    @case ('copy-failed') {
+      <p class="r-error">
+        Couldn&rsquo;t copy them. Save them to a file instead.
+      </p>
+    }
+  }
+</div>
+
+<!-- NFR-020, and the most important sentence in this commit. It is its own
+     block, above the checkbox, and it is **not** the checkbox's label. The
+     tempting shape — make the consequence the label, so nobody can tick the box
+     without having been shown it — is the one this refuses: a label is read
+     every time focus lands on the control and re-read by every announcement of
+     its state, so a three-sentence label puts three sentences between a
+     keyboard user and knowing whether the box is ticked.
+
+     Content, not a live region. A consequence announced once is read to whoever
+     happened to be listening and is furniture to everybody else; this one has
+     to be there to be re-read by somebody who came back to the screen unsure. -->
+<p class="r-consequence">
+  Your passkey and these ten codes are the only ways into this account.
+  Budgetoid keeps no copy of either, so if you lose the passkey and every code,
+  everything you record here stays locked &mdash; to you, and to us.
+  There&rsquo;s no way back, and no one to ask.
+</p>
+
+<!-- Short, first-person, and immediately before the control it releases, so a
+     reader moving forward meets the condition before the thing it conditions
+     and is one tab stop away from it when they do. No `aria-labelledby`
+     pointing at the block above: that is the long-label defect written a
+     different way and moves no text on the screen. -->
+<mat-checkbox
+  class="r-acknowledgement"
+  (change)="acknowledged.set($event.checked)"
+>
+  I&rsquo;ve saved these codes somewhere I can get to them.
+</mat-checkbox>
+
+<!-- The one Primary on the screen, and it is the act that ends the flow. The
+     filled treatment arriving on Save or Copy as well would make two of three
+     buttons read as the thing to press next, on the one screen where pressing
+     the wrong one loses the codes.
+
+     `disabledInteractive` is load-bearing and is not the guard. It renders the
+     unavailable appearance and sets `aria-disabled` while leaving the DOM
+     `disabled` property false, so the control keeps its place in the tab order:
+     a truly disabled button leaves the tab order entirely, and a keyboard user
+     tabbing the screen would never meet it, never be told it is waiting on
+     anything, and have no way to discover that the gate is the checkbox they
+     just passed. The cost is that the press still arrives — see the guard at
+     the top of `createAccount`, which is what actually refuses it. -->
+<button
+  class="r-button"
+  mat-flat-button
+  type="button"
+  [disabled]="!acknowledged()"
+  [disabledInteractive]="true"
+  (click)="createAccount()"
+>
+  Create account
+</button>
+
+<!-- A standing fact about the flow rather than something that just happened, so
+     it is content and not something the region announces. Without it a person
+     who saved the file and walked away believes they have an account. -->
+<p class="r-prose">Nothing is saved until the last step.</p>

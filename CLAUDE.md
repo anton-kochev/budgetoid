@@ -316,6 +316,23 @@ Load-bearing rules, each explained there or in the linked decision:
   for PRF too — the wrapped keys open under exactly that value. See
   [passkeys.md](docs/business-logic/passkeys.md) and
   [account-keys.md](docs/business-logic/account-keys.md).
+- **The recovery-code hand-off is the one screen that shows a secret, and it has no route.**
+  `register/steps/codes-step.component` takes ten codes through an `input()`, shows them once, and
+  mints and posts nothing. Four rules, each silent when broken. **The codes never enter a live
+  region** — a `role="status"` holding a list narrates ten secrets as events; one region exists for
+  the one-sentence outcomes and is in the DOM from first paint. **What is saved or copied is the
+  grouped codes and nothing else** — not the printed 1-based index beside them (the obvious
+  implementation builds the payload from the rendered line) and no header naming the product inside
+  a file of secrets. **The acknowledgement gate is in the click handler, not only in the attribute**
+  — Material's click-halt is anchors only, so on a `<button>` `disabledInteractive` leaves DOM
+  `disabled` false and the click arrives; an attribute-only gate creates an account for somebody who
+  acknowledged nothing. And **the consequence is its own block, never the checkbox's label**, which
+  would announce a paragraph as the control's name on every focus. Copy is **Ghost** beside an
+  Outline Save, deliberately quieter, because the clipboard is the worst storage on the device and
+  the sentence beside it says so. See the recovery-code hand-off chapter in
+  [components.md](docs/design/components.md), "A secret shown once" in
+  [voice.md](docs/design/voice.md), and
+  [recovery-codes.md](docs/business-logic/recovery-codes.md).
 
 ## Documentation
 

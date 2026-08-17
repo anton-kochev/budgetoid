@@ -951,7 +951,16 @@ ELSE                                                               ← first iss
   the generator — it mints a code, derives its verifier, and is covered by its own spec — and nothing
   calls it, because a generation is gated behind a WebAuthn assertion that no screen runs — the
   ceremony module now exists and has no caller of its own, so the gate moved one step closer and is
-  still shut; nothing anywhere presents a verifier. So the generation and redemption routes are reached only by a test,
+  still shut; nothing anywhere presents a verifier.
+  - **A screen that can *show* a set now exists too, and it is handed its codes rather than minting
+    them.** `register/steps/codes-step.component` renders ten codes once, saves or copies them, and
+    takes the acknowledgement that losing every factor destroys the record — with **no route, no
+    caller, and nothing that mints or posts a code**. So the count of things that exist grew again
+    and the count of things a person can reach did not. Two rules it holds that a later flow must
+    not undo: what it saves and copies is the codes and nothing else — not the printed position
+    beside them, and no header naming the product inside a file of secrets — and the codes never
+    enter a live region. See the recovery-code hand-off chapter in
+    [components.md](../design/components.md). So the generation and redemption routes are reached only by a test,
   while the count is read by the settings screen on every visit — the generation control on screen is
   present and disabled, and `/api/recovery-codes/redemption` has no client route to be reached from
   at all. Read that the same way the disabled erasure control is read — the gate is built and the

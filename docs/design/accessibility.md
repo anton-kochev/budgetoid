@@ -24,6 +24,13 @@ traps); this chapter is what the system adds and what every component must satis
   light, mint on dark) so the ring always clears 3:1 against paper.
 - Fields signal focus through their 2px primary border instead of an outer ring; that
   border must remain the only exception.
+- **A checkbox is not a second exception, it is the rule applied to the right element.**
+  Material renders the real `<input type="checkbox">` at `opacity: 0`, stretched over the
+  visible box, so the global `:focus-visible` ring is painted on something nobody can
+  see — the control looks unfocused while being focused. The ring moves to the visible
+  box with `:has(:focus-visible)`, at the same 2px and the same offset. It is the same
+  ring in the same place to a sighted keyboard user; what changes is which node draws it.
+  The same will be true of any control Material builds this way.
 - Focus is never hidden, never `outline: none` without replacement, and never trapped
   outside overlays. Dialogs and sheets trap focus while open and restore it on close
   (Material behavior — do not disable it).
@@ -66,6 +73,12 @@ Figures are visually compressed; their accessible names are not.
   `assertive` except a failed save of user-entered data.
 - The kinetic sentence on Welcome is `aria-live="off"` — decorative narrative, not an
   announcement stream; its static reduced-motion rendering is the accessible baseline.
+- **Secrets are content, not announcements.** The ten recovery codes are a semantic list
+  in reading order and never inside a live region. A `role="status"` holding a list
+  narrates every entry as an event and puts ten secrets into a speech buffer, which buys
+  nothing a reader could not get by reading — the list role already announces the count,
+  and the download is the route that does not require hearing any of them. Only the
+  one-sentence outcomes of the save and copy controls go in the region.
 
 ## Language
 

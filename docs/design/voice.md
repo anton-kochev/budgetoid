@@ -77,6 +77,33 @@ figures, not to copy that could just say the number).
   with no sentence beside it reads as a bug, and the person cannot tell a limitation from
   a failure.
 
+## A secret shown once
+
+The recovery-code hand-off is the only screen that shows a secret, and it has to do three
+things no other screen does: say where the value came from, say that it will not be shown
+again, and state a loss nobody can reverse — without any of it reading as alarm.
+
+- **Say who made it and who never sees it, in that order.** "Your browser made these ten
+  codes. Budgetoid never receives one, and this is the only time they're shown." The
+  provenance is the reassurance; the finality is the instruction.
+- **State the loss as a fact about the system, not a threat to the reader.** "Budgetoid
+  keeps no copy of either, so if you lose the passkey and every code, everything you
+  record here stays locked — to you, and to us." The clause *to you, and to us* is doing
+  the work: it says the operator is in the same position, which is the whole design and
+  the only thing that makes the sentence honest rather than a disclaimer.
+- **No label above it.** Not "Warning", not "Important", not an icon standing in for one.
+  The sentence carries its own weight and a label tells the reader to brace instead of to
+  read.
+- **Name what a convenience costs, beside the convenience.** "Copying puts them on your
+  clipboard, where other apps on this device can read them." Not a hidden footnote and
+  not a confirmation dialog — a plain sentence next to the button, so the person chooses
+  with the cost in view.
+- **The acknowledgement is what the person did, not what they promise.** "I've saved
+  these codes somewhere I can get to them." — past tense, about an act. "I understand the
+  risk" asks for a feeling, which is not checkable and not what is wanted.
+- **Say what is not yet true, on every step.** "Nothing is saved until the last step."
+  removes the reason to be afraid of leaving, so no dialog has to ask.
+
 ## Marketing voice (Welcome and public surfaces)
 
 Currency-free, no feature lists, no trust-claim lists, no gimmick lines. The shipped

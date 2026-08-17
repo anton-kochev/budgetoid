@@ -1,0 +1,139 @@
+// The step owns its own inset: the flow shell adds no padding.
+:host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-6);
+  align-content: start;
+  box-sizing: border-box;
+  padding: var(--bud-space-6) var(--bud-gutter) var(--bud-space-9);
+  background: var(--mat-sys-background);
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+}
+
+// `title` role. Every size and line height in this file is a literal for the
+// reason `settings.component.scss` gives at its own: the book names no
+// type-scale token, so there is nothing to reference yet.
+.r-title {
+  margin: 0;
+  font-family: var(--bud-font-display);
+  font-weight: 500;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+// `body`, capped at the reading measure.
+.r-prose,
+.r-lead {
+  margin: 0;
+  max-width: 65ch;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Colour is never the message: the line reads as a sentence with the colour
+// removed.
+.r-error {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--bud-over);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// The consequence carries weight through the rule and the tracking, not through
+// colour — a red block would read as a failure that has already happened, and
+// nothing here has gone wrong yet.
+.r-consequence {
+  margin: 0;
+  max-width: 65ch;
+  border-inline-start: 2px solid var(--bud-hairline);
+  padding-inline-start: var(--bud-space-4);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+// One column on a phone, two from 600px, **never three**: a third takes each
+// code below the width its 26 characters need, and the return sweep across
+// three columns of near-identical strings is the error grouping exists to stop.
+.r-codes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-2);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  // Which is why the template writes `role="list"` out: Safari drops list
+  // semantics with the markers.
+  list-style: none;
+}
+
+.r-code-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--bud-space-3);
+  align-items: baseline;
+  border: 1px solid var(--bud-hairline);
+  border-radius: var(--bud-radius-sm);
+  padding: var(--bud-space-2) var(--bud-space-3);
+}
+
+// Muted and small: the number is a counting aid for somebody transcribing, not
+// part of the secret, and it must never compete with the code beside it.
+.r-code-index {
+  color: var(--bud-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+// Inter with tabular figures and widened tracking, and **no monospace family**:
+// nothing here loads from another origin, so there is no mono face to reach for
+// and none may be added. Tabular figures line the groups up down the column;
+// the tracking keeps `0`/`O` and `1`/`l` from arguing with each other on the
+// one screen where a misread character costs an account. `anywhere` because a
+// grouped code holds no space to break at.
+.r-code {
+  font-size: 0.9375rem;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  overflow-wrap: anywhere;
+}
+
+// Stacked on a phone, side by side once there is room. Both start-aligned: a
+// full-width button at phone width reads as the screen's own action, which is
+// the Create control's job and not theirs.
+.r-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-3);
+  justify-items: start;
+}
+
+// Holds its box while empty, so the screen does not shift under the reader when
+// the outcome of a press arrives.
+.r-outcome {
+  display: grid;
+  gap: var(--bud-space-2);
+  justify-items: start;
+  min-height: 1lh;
+}
+
+// Material's M3 button is shorter than the system's touch minimum. The checkbox
+// is not listed here: Material renders its own 48px target element for it.
+.r-button {
+  min-height: var(--bud-touch-target);
+}
+
+@media (min-width: 600px) {
+  .r-codes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .r-actions {
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    justify-content: start;
+  }
+}
