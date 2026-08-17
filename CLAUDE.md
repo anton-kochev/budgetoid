@@ -220,6 +220,11 @@ Load-bearing rules, each explained there or in the linked decision:
 - **In production the app role has no password** — the missing `Password=` is what makes
   Aspire fetch an Entra token for the API's managed identity. Do not "complete" it.
   See [ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md).
+- **The four security headers are written from `Response.OnStarting`, never before `await next(…)`** —
+  the exception handler's `Response.Clear()` discards a direct write, so a 500 would ship bare. The
+  registration sits **above** `FirstPartyRequestMiddleware`, which answers 403 without calling `next`;
+  ordering against `UseExceptionHandler()` decides nothing. `SecurityHeaderTests` holds both. See
+  [security headers](docs/engineering/security-headers.md).
 
 ## Frontend Architecture
 
@@ -241,7 +246,8 @@ Load-bearing rules, each explained there or in the linked decision:
   swaps for an empty module — a runtime `isDevMode()` branch leaves the code in the bundle.
   `src/no-devtools.spec.ts` reads the bundle and fails if it comes back.
 - **The browser is told what the app may load, and `script-src 'self'` is literal.** The
-  `Content-Security-Policy`, `Strict-Transport-Security` and `Referrer-Policy` ship in
+  `Content-Security-Policy`, `Strict-Transport-Security`, `Referrer-Policy` and
+  `X-Content-Type-Options` ship in
   `globalHeaders` of `public/staticwebapp.config.json` — never on a route rule, which Azure skips
   for every `navigationFallback` rewrite, i.e. every deep link. Critical-CSS inlining is **off**
   (`"inlineCritical": false`, the whole `optimization` object spelled out) because it emits an

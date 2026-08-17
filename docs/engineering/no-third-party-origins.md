@@ -67,7 +67,8 @@ ending the dependency on a federated identity provider. Until then the page load
 
 And this covers what the build emits, not what the browser permits. The
 `Content-Security-Policy` that enforces the same rule at runtime ships in `globalHeaders` of
-`public/staticwebapp.config.json`, and its `connect-src` names exactly the two fetches above and
-nothing else; [security headers](security-headers.md) owns it. It and this test are two halves of
+`public/staticwebapp.config.json`. Its `connect-src` names **four** sources — `'self'`, the API, and
+the two Google origins above — so the two gaps are the only third parties in it, and nothing else is;
+[security headers](security-headers.md) owns it. It and this test are two halves of
 one guarantee: build-time absence cannot see markup a defect injects at runtime, and a runtime
 policy cannot see a CDN URL that no browser has been asked to fetch yet.

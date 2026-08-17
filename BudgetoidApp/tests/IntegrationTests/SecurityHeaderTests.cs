@@ -21,11 +21,17 @@ namespace IntegrationTests;
 /// part of the pipeline wrote the response</em> rather than by which header is being checked.
 /// </para>
 /// <para>
-/// <b>The exception-handler case is first because it is the one an ordering mistake breaks silently.</b>
-/// ASP.NET Core's exception-handler middleware clears the response — headers included — before it hands
-/// the exception to the registered handlers, so headers set <em>inside</em> it are discarded and never
-/// reach the wire. The register-it-outside-the-handler ordering is therefore not a stylistic preference
-/// and no comment in <c>Program.cs</c> can hold it; only a request that actually throws can.
+/// <b>The exception-handler case is first because it is the one a wrong <em>write technique</em> breaks
+/// silently.</b> ASP.NET Core's exception-handler middleware calls <c>HttpResponse.Clear()</c> — headers
+/// included — before it hands the exception to the registered handlers, so four headers written straight
+/// onto the response before <c>await next(...)</c> are discarded and never reach the wire, wherever the
+/// middleware writing them is registered. Writing them from a <c>Response.OnStarting</c> callback is what
+/// survives, because the callback fires at flush, after any such clear. No comment in
+/// <c>SecurityHeadersMiddleware</c> can hold that; only a request that actually throws can. What this case
+/// does <em>not</em> pin is the registration's position — measured, all four headers ship on a 500 with the
+/// middleware registered either side of <c>UseExceptionHandler()</c>. The position is pinned by
+/// <see cref="ARefusedNonFirstPartyRequest_CarriesTheHeaders" />, against a middleware that answers
+/// without calling <c>next</c> at all.
 /// </para>
 /// <para>
 /// <b>There is deliberately no <c>X-Frame-Options</c> assertion.</b> Every browser that can reach this
@@ -34,14 +40,16 @@ namespace IntegrationTests;
 /// unable to change any outcome. <see cref="Framing_IsForbidden" /> is what holds that rule instead.
 /// </para>
 /// <para>
-/// <b>The header values are read from <see cref="SecurityHeadersMiddleware.Headers" />, not retyped.</b>
-/// The dictionary is the wire contract; a test that wrote its own copy of the names would go on passing
-/// against a middleware that had stopped emitting one of them under a different name. The one written-out
-/// literal in this file is <see cref="ExpectedHeaderLines" />, and it is the <em>answer</em> rather than
-/// the input — which is why <see cref="EveryResponse_CarriesTheHeaderSetExactly" /> also pins the count.
+/// <b>The header names a response is read by come from <see cref="SecurityHeadersMiddleware.Headers" />,
+/// not from a copy.</b> The dictionary is the wire contract; a test that wrote its own copy of the names
+/// would go on passing against a middleware that had stopped emitting one of them under a different name.
+/// The <em>values</em> are written out, once, in <see cref="ExpectedHeaderLines" />, where they are the
+/// <em>answer</em> rather than the input. Two names are written out as well — <see cref="HstsHeader" />
+/// and <see cref="ContentSecurityPolicyHeader" /> — and each says in its own remarks why the test reading
+/// it must not be able to agree with the dictionary about which header carries the rule.
 /// </para>
 /// <para>
-/// Every host here runs in <c>Production</c> against a connection string pointing at nothing, the way
+/// Every host here runs in <c>Production</c> against a connection string nothing here ever opens, the way
 /// <see cref="CorsTests" /> does: Production skips the Development-only startup migration, and none of
 /// the six paths below reaches a handler that opens a connection. A header test that needed a database
 /// would be a header test nobody runs.
@@ -58,12 +66,23 @@ public sealed class SecurityHeaderTests
     /// <see cref="SecurityHeadersMiddleware.Headers" />.
     /// </summary>
     /// <remarks>
-    /// <see cref="HstsMaxAge_IsAtLeastOneYear" /> is the one test here that must not be able to agree
-    /// with the dictionary about anything, including which header carries the directive. See its own
-    /// remarks.
+    /// <see cref="HstsMaxAge_IsAtLeastOneYear" /> must not be able to agree with the dictionary about
+    /// anything: not about the value, which it measures against the floor the requirement names rather
+    /// than against what ships, and not about which header carries the directive. See its own remarks.
+    /// <see cref="ContentSecurityPolicyHeader" /> is written out for the second half of that reason
+    /// only — the policy's exact bytes are pinned against the dictionary elsewhere.
     /// </remarks>
     private const string HstsHeader = "Strict-Transport-Security";
 
+    /// <summary>
+    /// The <c>Content-Security-Policy</c> header name as a literal, deliberately not read off
+    /// <see cref="SecurityHeadersMiddleware.Headers" />.
+    /// </summary>
+    /// <remarks>
+    /// Same argument as <see cref="HstsHeader" />: <see cref="Framing_IsForbidden" /> is named after a
+    /// requirement, and a rename in the dictionary must fail it rather than redirect it to whichever
+    /// header the dictionary now calls the policy.
+    /// </remarks>
     private const string ContentSecurityPolicyHeader = "Content-Security-Policy";
 
     /// <summary>
@@ -88,11 +107,14 @@ public sealed class SecurityHeaderTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>The most important test in the file.</b> ASP.NET Core's exception-handler middleware clears
-    /// the response before invoking the handlers, so a security-headers middleware registered
-    /// <em>inside</em> it writes four headers that are thrown away — on exactly the responses whose
-    /// contents nobody chose. Nothing else in this file can see that mistake: the other five paths write
-    /// their response without ever clearing it.
+    /// <b>The most important test in the file, and what it discriminates is the write technique.</b>
+    /// ASP.NET Core's exception-handler middleware calls <c>HttpResponse.Clear()</c> before invoking the
+    /// handlers, which resets the status and every header already on the response. A middleware writing
+    /// the four headers straight onto <c>Response.Headers</c> before <c>await next(...)</c> therefore
+    /// writes four headers that are thrown away — on exactly the responses whose contents nobody chose —
+    /// and no registration position repairs that. Writing them from a <c>Response.OnStarting</c> callback
+    /// does, because the callback fires at flush, after the clear. Nothing else in this file can see the
+    /// mistake: the other five paths write their response without ever clearing it.
     /// </para>
     /// <para>
     /// <b>The lever.</b> <c>BeginAssertionHandler</c>'s registration is replaced with one that throws on
@@ -123,9 +145,10 @@ public sealed class SecurityHeaderTests
             .SendAsync(new HttpRequestMessage(HttpMethod.Post, AssertionOptionsPath));
 
         // Assert — the status first, so a green bar cannot mean "some other refusal also carries them".
-        // Smallest production change that turns this red: registering the middleware with
-        // app.UseMiddleware<SecurityHeadersMiddleware>() *after* app.UseExceptionHandler() instead of
-        // before it.
+        // Smallest production change that turns this red: writing the four headers straight onto
+        // Response.Headers before `await next(...)` instead of from the Response.OnStarting callback.
+        // Moving the registration below app.UseExceptionHandler() does not — measured: Clear() resets the
+        // status and the headers but not the OnStarting callback list, so all four still ship on the 500.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.InternalServerError);
         await Assert.That(HeaderLines(response)).IsEqualTo(ExpectedHeaderLines);
     }
@@ -135,9 +158,17 @@ public sealed class SecurityHeaderTests
     /// respelled.
     /// </summary>
     /// <remarks>
-    /// The count assertion is the non-vacuity guard. The comparison is satisfied by an empty projection
-    /// against an empty literal, so a <see cref="SecurityHeadersMiddleware.Headers" /> emptied to nothing
-    /// would pass every string comparison in this file while the application emitted no header at all.
+    /// <b>The count assertion catches one narrow mutation the string comparison cannot — and it is not an
+    /// emptied dictionary on its own.</b> <see cref="ExpectedHeaderLines" /> is a non-empty <c>const</c>,
+    /// so a <see cref="SecurityHeadersMiddleware.Headers" /> emptied to nothing projects to <c>""</c> and
+    /// fails the equality first; the count never gets a say. What it catches is the commit that empties
+    /// the dictionary <em>and</em> rewrites <see cref="ExpectedHeaderLines" /> to match it — the equality
+    /// then compares <c>""</c> against <c>""</c> and goes green while the application emits no header at
+    /// all. That is the same cannot-be-silenced-by-the-same-edit argument
+    /// <see cref="HstsMaxAge_IsAtLeastOneYear" /> makes, in a weaker form: the third line of that same
+    /// edit is <c>4</c> to <c>0</c> here, and then this guard is silenced too. It costs one line and
+    /// raises the price of the mistake; it does not make the mistake impossible, and no assertion reading
+    /// the same dictionary the middleware writes from could.
     /// </remarks>
     [Test]
     public async Task EveryResponse_CarriesTheHeaderSetExactly()
@@ -256,13 +287,26 @@ public sealed class SecurityHeaderTests
     /// That nothing may frame this API's responses.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Deliberately separate from <see cref="EveryResponse_CarriesTheHeaderSetExactly" />, where the
     /// directive is one clause inside a literal that reads as a formatting detail. Clickjacking is a
     /// named requirement, and a future edit that "modernises" the policy — collapsing it to a
     /// <c>default-src</c>, or relaxing it so an embed can be demonstrated — should have to argue with a
     /// test named after the requirement rather than with a string somebody may assume is stale.
-    /// <c>Contains</c> rather than equality, on purpose: this test's subject is the one directive, and
-    /// the exact policy is the other test's job.
+    /// Collapsing it is the concrete hazard: <c>frame-ancestors</c> has no <c>default-src</c> fallback,
+    /// so a policy that folded it into one would permit framing while still reading as locked down.
+    /// </para>
+    /// <para>
+    /// <b>It parses the directive out and compares the whole source list, rather than searching the
+    /// policy for a substring.</b> <c>Contains("frame-ancestors 'none'")</c> passes unchanged against
+    /// <c>frame-ancestors 'none' https://evil.example</c> — and widening is half of what this test is
+    /// named for, so the substring form gave that half away. Comparing the source list is what fails on
+    /// an added source; a directive that is absent altogether parses to <see langword="null" /> and
+    /// fails the same assertion. The comparison is ordinal, so a respelled <c>'NONE'</c> fails too even
+    /// though the grammar calls it the same policy: the value ships as a literal in one dictionary whose
+    /// exact bytes <see cref="EveryResponse_CarriesTheHeaderSetExactly" /> already pins, so this makes
+    /// nothing brittle that was not pinned already. The rest of the policy stays that test's job.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Framing_IsForbidden()
@@ -274,11 +318,13 @@ public sealed class SecurityHeaderTests
         HttpResponseMessage response = await factory.CreateClient()
             .SendAsync(new HttpRequestMessage(HttpMethod.Get, HealthPath));
         string? policy = HeaderValue(response, ContentSecurityPolicyHeader);
+        string? frameAncestors = DirectiveSources(policy, "frame-ancestors");
 
         // Assert — smallest production change that turns this red: dropping the frame-ancestors
-        // directive from the Content-Security-Policy value, or widening it past 'none'.
+        // directive from the Content-Security-Policy value, or widening it past 'none' by adding a
+        // source to it.
         await Assert.That(policy).IsNotNull();
-        await Assert.That(policy!).Contains("frame-ancestors 'none'");
+        await Assert.That(frameAncestors).IsEqualTo("'none'");
     }
 
     /// <summary>
@@ -316,6 +362,39 @@ public sealed class SecurityHeaderTests
         return response.Content.Headers.TryGetValues(name, out IEnumerable<string>? contentValues)
             ? string.Join(", ", contentValues)
             : null;
+    }
+
+    /// <summary>
+    /// One Content-Security-Policy directive's source list, its tokens rejoined with single spaces, or
+    /// <see langword="null" /> when the policy is absent or names no such directive.
+    /// </summary>
+    /// <remarks>
+    /// The directive name is matched as a whole token rather than by prefix, so a future
+    /// <c>frame-ancestors-something</c> cannot answer for <c>frame-ancestors</c>, and it is matched
+    /// case-insensitively because a directive name is ASCII case-insensitive in the grammar — the
+    /// <em>sources</em> are then the caller's to compare however strictly it means to. They are rejoined
+    /// rather than returned as a list so a failure prints the whole list on one line and the reader sees
+    /// what was added next to what was expected.
+    /// </remarks>
+    private static string? DirectiveSources(string? policy, string directiveName)
+    {
+        if (policy is null)
+        {
+            return null;
+        }
+
+        foreach (string directive in policy.Split(
+                     ';',
+                     StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            string[] tokens = directive.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (tokens is [var name, ..] && name.Equals(directiveName, StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Join(' ', tokens.Skip(1));
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

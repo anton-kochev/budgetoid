@@ -461,21 +461,32 @@ failure to notice first.
    the traffic went private: the public path would have refused it.
 4. Frontend: open the SWA URL, sign in with Google (redirect accepted), create/list/edit/delete a
    transaction — no CORS errors in the browser console.
-5. Security headers, on both origins and on a **deep link** as well as the root:
+5. Security headers, on both origins and on a **deep link** as well as the root. Use whichever
+   hostnames this environment actually answers on — the generated ones before Step 6 has bound the
+   domain, the custom ones after:
 
    ```sh
-   for url in https://budgetoid.app/ https://budgetoid.app/app/settings \
-              https://api.budgetoid.app/health; do
+   FRONTEND=https://<swa-url>     # the SWA URL from Step 1, or https://budgetoid.app after Step 6
+   API=https://<api-url>          # the API URL from Step 2, or https://api.budgetoid.app after Step 6
+
+   for url in "$FRONTEND/" "$FRONTEND/app/settings" "$API/health"; do
      echo "== $url"
      curl -sI "$url" | grep -iE \
        '^(content-security-policy|strict-transport-security|referrer-policy|x-content-type-options):'
    done
    ```
 
-   The two frontend URLs must each answer with all three headers, and the API with four
-   (`X-Content-Type-Options: nosniff` is the API's alone). **The deep link is the one that matters:**
-   Azure applies no route rule to a request `navigationFallback` rewrote, so headers moved out of
-   `globalHeaders` onto a `/*` route are present on the root and absent on every URL a person lands
-   on. Nothing in this repository can check any of this — `src/security-headers.spec.ts` and
-   `SecurityHeaderTests` prove the configuration and the middleware ship with these values, not that
-   Azure emits them ([security headers](docs/engineering/security-headers.md)).
+   **Substitute the hostnames before running this.** A literal `budgetoid.app` against an environment
+   whose domain is not bound yet answers `NXDOMAIN`, and `grep` then prints nothing — indistinguishable
+   from "the headers did not ship", which is the failure this step exists to catch.
+
+   All three URLs must answer with **four** headers each; both origins carry the same set. **The deep
+   link is the one that matters:** Azure applies no route rule to a request `navigationFallback`
+   rewrote, so headers moved out of `globalHeaders` onto a `/*` route are present on the root and
+   absent on every URL a person lands on. Nothing in this repository can check any of this —
+   `src/security-headers.spec.ts` and `SecurityHeaderTests` prove the configuration and the middleware
+   ship with these values, not that Azure emits them
+   ([security headers](docs/engineering/security-headers.md)). Two known gaps that are **not**
+   defects to chase: a request for a missing static file answers 404 with none of the four, because
+   `globalHeaders` does not reach a response the host synthesizes; and the frontend may carry extra
+   headers this repository never set. Both are recorded in that document.

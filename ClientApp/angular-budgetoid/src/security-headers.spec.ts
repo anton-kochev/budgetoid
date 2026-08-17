@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { browserDir, expectProductionBuild } from './production-bundle';
 
@@ -21,11 +21,34 @@ import { browserDir, expectProductionBuild } from './production-bundle';
 // reordering, and the cheapest way to green it is to paste the actual value over the
 // expected one — at which point the test asserts only that the header equals itself.
 //
+// The whole policy is held by one reviewed table rather than by a test per directive. A
+// test per directive reads only the directives somebody thought to name, which leaves
+// three ways to widen the policy in silence: add a directive nobody reads
+// (`script-src-attr 'unsafe-inline'` re-permits exactly the inline handlers this app
+// disabled critical-CSS inlining to refuse, and `report-uri` is an exfiltration channel
+// spelled as a diagnostic), widen a directive nobody reads (`base-uri`, `form-action`,
+// `object-src`), or repeat a directive so the two readers disagree — CSP Level 3 has the
+// browser keep the *first* occurrence, so a parser where the last wins reads a policy the
+// browser does not enforce. The table closes all three: the shipped directive *names* must
+// equal its keys, each key's sources must equal its list, no name may appear twice, and
+// the parser is first-wins for the same reason the browser is. Widening anything here
+// costs a written justification, the same friction `allowedConnectSources` already
+// applies to an origin.
+//
 // Requires a production build: `npm run build && npm test`.
 
 const configPath = join(browserDir, 'staticwebapp.config.json');
 const indexPath = join(browserDir, 'index.html');
 const appConfigPath = join(browserDir, 'assets', 'app-config.json');
+const prepaintPath = join(browserDir, 'theme-prepaint.js');
+const themeServicePath = join(
+  process.cwd(),
+  'src',
+  'app',
+  '+core',
+  'services',
+  'theme.service.ts',
+);
 
 // The header names a route rule may never carry, lower-cased for the same reason the
 // header maps below are. Azure unions a route's `headers` with `globalHeaders` and lets
@@ -37,6 +60,7 @@ const securityHeaderNames: readonly string[] = [
   'content-security-policy',
   'strict-transport-security',
   'referrer-policy',
+  'x-content-type-options',
 ];
 
 // Every source `connect-src` may name, each with the reason it is there. The value is a
@@ -56,6 +80,104 @@ const allowedConnectSources = new Map<string, string>([
   [
     'https://www.googleapis.com',
     'the JWKS the discovery document points at; removed with federated sign-in',
+  ],
+]);
+
+// The whole reviewed policy: every directive the header may name, the exact sources it may
+// name, and why. Adding a key, removing one, or changing a source list is a security
+// decision and reads like one — the `why` is what the next editor has to overwrite, and an
+// entry nobody can defend in a sentence does not belong in the policy.
+const policy: ReadonlyMap<
+  string,
+  { readonly sources: readonly string[]; readonly why: string }
+> = new Map([
+  [
+    'default-src',
+    {
+      sources: ["'self'"],
+      why:
+        'what makes the directives below a boundary rather than a coincidence: a fetch ' +
+        'destination none of them covers — a worker, a media element, a manifest — ' +
+        'falls back here instead of being unconstrained',
+    },
+  ],
+  [
+    'script-src',
+    {
+      sources: ["'self'"],
+      why:
+        "`'unsafe-inline'`, `'unsafe-eval'`, `'unsafe-hashes'`, a hash, a nonce or a " +
+        'host each re-opens the injection path the header exists to close',
+    },
+  ],
+  [
+    'style-src',
+    {
+      sources: ["'self'", "'unsafe-inline'"],
+      why:
+        "`'unsafe-inline'` is deliberate: Angular Material writes component styles " +
+        "into the document at runtime, so dropping it breaks the app's appearance in " +
+        'production and nothing else in the suite would notice',
+    },
+  ],
+  [
+    'img-src',
+    {
+      sources: ["'self'"],
+      why:
+        '`data:` is the source a reader adds to make one inlined icon work; it also ' +
+        'admits every attacker-controlled byte string as an image',
+    },
+  ],
+  [
+    'font-src',
+    {
+      sources: ["'self'"],
+      why: 'typefaces are served from `public/fonts` — see docs/engineering/no-third-party-origins.md',
+    },
+  ],
+  [
+    'connect-src',
+    {
+      sources: [...allowedConnectSources.keys()],
+      why:
+        'each origin carries its own written justification in `allowedConnectSources`; ' +
+        'widening the list means writing one there',
+    },
+  ],
+  [
+    'frame-ancestors',
+    {
+      sources: ["'none'"],
+      why:
+        'it has no `default-src` fallback, so removing it restores framing by any ' +
+        'origin, and a second source is a clickjacking surface',
+    },
+  ],
+  [
+    'base-uri',
+    {
+      sources: ["'self'"],
+      why:
+        'an injected `<base href>` repoints every relative URL in the document, ' +
+        "including the script sources `script-src 'self'` was meant to pin",
+    },
+  ],
+  [
+    'form-action',
+    {
+      sources: ["'self'"],
+      why:
+        'a form posted to another origin exfiltrates whatever the reader typed, ' +
+        'whatever `connect-src` says',
+    },
+  ],
+  [
+    'object-src',
+    {
+      sources: ["'none'"],
+      why: 'a plugin document is a script execution context `script-src` does not police',
+    },
   ],
 ]);
 
@@ -108,20 +230,40 @@ function routeSecurityHeaders(): readonly string[] {
 // sources are not lower-cased: a host source is case-sensitive, and every keyword this
 // app uses is written lower-case, so folding case here would hide a policy that says
 // something subtly different from what it appears to say.
-function contentSecurityPolicy(): ReadonlyMap<string, ReadonlySet<string>> {
+//
+// The header in declaration order, repeats included — the only reading from which
+// `names no directive twice` can see a repeat at all.
+function policyDirectives(): readonly {
+  readonly name: string;
+  readonly sources: readonly string[];
+}[] {
   const header = globalHeaders().get('content-security-policy') ?? '';
 
-  return new Map(
-    header
-      .split(';')
-      .map((directive) => directive.trim())
-      .filter((directive) => directive.length > 0)
-      .map((directive) => {
-        const [name, ...sources] = directive.split(/\s+/);
+  return header
+    .split(';')
+    .map((directive) => directive.trim())
+    .filter((directive) => directive.length > 0)
+    .map((directive) => {
+      const [name, ...sources] = directive.split(/\s+/);
 
-        return [name.toLowerCase(), new Set(sources)] as const;
-      }),
-  );
+      return { name: name.toLowerCase(), sources } as const;
+    });
+}
+
+// First occurrence wins, because that is what CSP Level 3 says a browser does with a
+// repeated directive. A map built the other way round reads the value the browser
+// ignores, which turns every assertion below into a statement about a policy nobody
+// enforces.
+function contentSecurityPolicy(): ReadonlyMap<string, ReadonlySet<string>> {
+  const enforced = new Map<string, ReadonlySet<string>>();
+
+  for (const { name, sources } of policyDirectives()) {
+    if (!enforced.has(name)) {
+      enforced.set(name, new Set(sources));
+    }
+  }
+
+  return enforced;
 }
 
 // Sorted rather than compared as a `Set` so a failure prints an ordered diff naming the
@@ -215,6 +357,50 @@ function scriptPolicyViolations(html: string): readonly string[] {
   return violations;
 }
 
+// Every `src` a `<script>` element in the document declares, in document order.
+function scriptSources(html: string): readonly string[] {
+  return [
+    ...html.matchAll(/<script\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/gi),
+  ].map(([, doubleQuoted, singleQuoted]) => doubleQuoted ?? singleQuoted ?? '');
+}
+
+// The emitted file a `src` names, or `undefined` when the build emitted none. An absolute
+// or scheme-relative URL resolves to nothing by construction — this build emits files, not
+// origins — so it fails here as well as in `no-external-origins.spec.ts`, which is the
+// direction to fail in.
+function emittedFileFor(src: string): string | undefined {
+  const [path] = src.split(/[?#]/);
+
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path) || path.startsWith('//')) {
+    return undefined;
+  }
+
+  // The deployed root is the browser directory, so a root-relative `src` is resolved
+  // against it and a document-relative one against the document beside it — the same
+  // place, since `index.html` sits at that root.
+  const resolved = resolve(browserDir, path.replace(/^\/+/, ''));
+  const inside =
+    resolved === browserDir || resolved.startsWith(`${browserDir}${sep}`);
+
+  return inside && existsSync(resolved) && statSync(resolved).isFile()
+    ? resolved
+    : undefined;
+}
+
+// The one storage key a file names, so that two files naming it can be compared instead of
+// both being retyped here. A file that names none throws rather than returning a default:
+// a silent `undefined` on both sides would compare equal and assert nothing.
+function storageKeyIn(path: string, pattern: RegExp, expected: string): string {
+  const source = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  const key = pattern.exec(source)?.[1];
+
+  if (key === undefined) {
+    throw new Error(`${path}: ${expected}`);
+  }
+
+  return key;
+}
+
 describe('production build', () => {
   it('is emitted into the browser output as a production build', () => {
     expectProductionBuild();
@@ -240,10 +426,17 @@ describe('production build', () => {
   // `<script>` or an `on*=` attribute is refused only because `script-src` withholds
   // `'unsafe-inline'`, so this reads the emitted policy and holds the document to what it
   // actually says. A policy that admitted `'unsafe-inline'` would leave nothing here to
-  // check, and that is deliberately not guarded a second time — `admits only the app
-  // origin as a script source` reddens on exactly that change, first and by name. A policy
-  // naming no `script-src` at all is scanned: it inherits `default-src`, and reading an
-  // absent directive as permission is the one reading that would ship a broken page.
+  // check, and that is deliberately not guarded a second time — `admits exactly the
+  // reviewed sources for script-src` reddens on exactly that change, first and by name. A
+  // policy naming no `script-src` at all is scanned: it inherits `default-src`, and
+  // reading an absent directive as permission is the one reading that would ship a broken
+  // page.
+  //
+  // `script-src-attr` would shadow this: `script-src-attr 'unsafe-inline'` re-permits
+  // every inline handler while `script-src` still reads `'self'`, so the condition below
+  // would go on scanning a document the browser no longer refuses. Nothing here can see
+  // that — what prevents it is `names exactly the reviewed directives`, because
+  // `script-src-attr` is not a key of the table.
   it('contains nothing the script policy would block', () => {
     // Arrange
     const html = readFileSync(indexPath, 'utf8');
@@ -259,6 +452,61 @@ describe('production build', () => {
 
     // Assert
     expect(blocked).toEqual([]);
+  });
+
+  // A `<script src>` pointing at nothing is a 404 in `<head>` that no policy assertion can
+  // see: the policy permits `'self'`, and a file the build never emitted is still `'self'`.
+  // Deleting `public/theme-prepaint.js` is the concrete case — the document keeps
+  // referencing it, the browser fetches nothing, and the only symptom is a theme flash.
+  it('loads every script from a file it emitted', () => {
+    // Arrange
+    const location = relative(browserDir, indexPath);
+    const html = readFileSync(indexPath, 'utf8');
+
+    // Act
+    const sources = scriptSources(html);
+    const unresolved = sources
+      .filter((src) => emittedFileFor(src) === undefined)
+      .map(
+        (src) =>
+          `${location}: <script src="${src}"> resolves to no emitted file`,
+      );
+
+    // Assert
+    expect(
+      sources.length,
+      `${location}: loads no script at all`,
+    ).toBeGreaterThan(0);
+    expect(unresolved).toEqual([]);
+  });
+
+  // The pre-paint exists to read the theme before Angular runs, which means it reads
+  // `localStorage` with a key `ThemeService` writes — the same literal in two files, in two
+  // languages, with nothing but this reconciling them. Rename it in the service and the
+  // pre-paint reads a dead key: no error, no failing build, just the flash of the wrong
+  // mode the script was added to beat. The key is read out of the service rather than
+  // retyped here, so this test cannot drift from it either.
+  it('pre-paints the theme from the key the theme service persists', () => {
+    // Arrange
+    const location = relative(browserDir, prepaintPath);
+    const persisted = storageKeyIn(
+      themeServicePath,
+      /const STORAGE_KEY = '([^']*)'/,
+      "declares no `const STORAGE_KEY = '…'` for the pre-paint to agree with",
+    );
+
+    // Act
+    const prepainted = storageKeyIn(
+      prepaintPath,
+      /localStorage\.getItem\(\s*'([^']*)'\s*\)/,
+      'reads no key from localStorage',
+    );
+
+    // Assert
+    expect(
+      prepainted,
+      `${location}: pre-paints from '${prepainted}', ThemeService persists '${persisted}'`,
+    ).toBe(persisted);
   });
 
   // The API origin lives in `assets/app-config.json` and the permission to reach it lives
@@ -318,104 +566,80 @@ describe('content security policy', () => {
     const location = relative(browserDir, configPath);
 
     // Act
-    const policy = contentSecurityPolicy();
-    const empty = [...policy]
+    const enforced = contentSecurityPolicy();
+    const empty = [...enforced]
       .filter(([, sources]) => sources.size === 0)
       .map(([name]) => `${location}: ${name} names no source`);
 
     // Assert
     expect(
-      policy.size,
+      enforced.size,
       `${location}: declares no Content-Security-Policy`,
     ).toBeGreaterThan(0);
     expect(empty).toEqual([]);
   });
 
-  // Exact set equality, so `'unsafe-inline'`, `'unsafe-eval'`, `'unsafe-hashes'`, a hash,
-  // a nonce or a host all redden — each of them re-opens the injection path the header
-  // exists to close.
-  it('admits only the app origin as a script source', () => {
+  // Set equality over the *names*, which is the assertion a per-directive test cannot
+  // make: a directive nobody thought to read is read here by existing. It catches the
+  // shadowing family — `script-src-elem`, `script-src-attr`, `style-src-elem`,
+  // `style-src-attr`, `frame-src`, `child-src`, `worker-src`, `manifest-src`,
+  // `media-src`, `prefetch-src`, `fenced-frame-src` — each of which overrides or fills in
+  // for a directive asserted below, and `report-uri`/`report-to`, which are an
+  // exfiltration channel in their own right. It also catches a directive going missing,
+  // which is how `base-uri` would leave.
+  it('names exactly the reviewed directives', () => {
     // Arrange
     const location = relative(browserDir, configPath);
+    const reviewed = [...policy.keys()].sort();
 
     // Act
-    const sources = sourceListOf('script-src');
-
-    // Assert
-    expect(sources, `${location}: script-src`).toEqual(["'self'"]);
-  });
-
-  // `'unsafe-inline'` is asserted by name and deliberately: Angular Material writes
-  // component styles into the document at runtime, so dropping it breaks the app's
-  // appearance in production and nothing else in the suite would notice.
-  it('admits only the app origin and inline declarations as a style source', () => {
-    // Arrange
-    const location = relative(browserDir, configPath);
-
-    // Act
-    const sources = sourceListOf('style-src');
+    const shipped = [
+      ...new Set(policyDirectives().map(({ name }) => name)),
+    ].sort();
 
     // Assert
     expect(
-      sources,
-      `${location}: style-src must keep 'unsafe-inline' — Angular Material ` +
-        'injects component styles at runtime',
-    ).toContain("'unsafe-inline'");
-    expect(sources, `${location}: style-src`).toEqual([
-      "'self'",
-      "'unsafe-inline'",
-    ]);
+      shipped,
+      `${location}: every directive needs a reviewed entry in \`policy\``,
+    ).toEqual(reviewed);
   });
 
-  // `data:` is the source a reader adds to make one inlined icon work; it also admits
-  // every attacker-controlled byte string as an image.
-  it('admits only the app origin as an image source', () => {
+  // One case per reviewed directive, so a failure names the directive and prints the
+  // justification the editor is overwriting. Set equality in both directions: a source
+  // added in place — `base-uri 'self' https://evil.example` — reddens exactly like a
+  // source removed, which a `toContain` assertion cannot do.
+  it.each([...policy].map(([name, reviewed]) => ({ name, ...reviewed })))(
+    'admits exactly the reviewed sources for $name',
+    ({ name, sources, why }) => {
+      // Arrange
+      const location = relative(browserDir, configPath);
+      const reviewed = [...sources].sort();
+
+      // Act
+      const shipped = sourceListOf(name);
+
+      // Assert
+      expect(shipped, `${location}: ${name} — ${why}`).toEqual(reviewed);
+    },
+  );
+
+  // Read from the raw header, not from the map: a map has one entry per name whichever
+  // occurrence it keeps, so a repeat is invisible there by construction. A repeated
+  // directive is how a policy says two different things at once — the browser enforces the
+  // first, a reader reads the last, and every assertion above becomes a statement about
+  // whichever one the parser happened to keep.
+  it('names no directive twice', () => {
     // Arrange
     const location = relative(browserDir, configPath);
 
     // Act
-    const sources = sourceListOf('img-src');
+    const names = policyDirectives().map(({ name }) => name);
+    const repeated = [
+      ...new Set(names.filter((name, index) => names.indexOf(name) !== index)),
+    ].map((name) => `${location}: Content-Security-Policy repeats ${name}`);
 
     // Assert
-    expect(sources, `${location}: img-src`).toEqual(["'self'"]);
-  });
-
-  it('admits only the app origin as a font source', () => {
-    // Arrange
-    const location = relative(browserDir, configPath);
-
-    // Act
-    const sources = sourceListOf('font-src');
-
-    // Assert
-    expect(sources, `${location}: font-src`).toEqual(["'self'"]);
-  });
-
-  // What makes the four directives above a boundary rather than a coincidence: without a
-  // `default-src` of `'self'`, a fetch destination none of them covers — a worker, a
-  // media element, a manifest — is unconstrained.
-  it('falls back to the app origin for every directive it does not name', () => {
-    // Arrange
-    const location = relative(browserDir, configPath);
-
-    // Act
-    const sources = sourceListOf('default-src');
-
-    // Assert
-    expect(sources, `${location}: default-src`).toEqual(["'self'"]);
-  });
-
-  // Its own test because `frame-ancestors` has no `default-src` fallback: removing it
-  // restores framing by any origin and reddens nothing else here.
-  it('forbids framing by any origin', () => {
-    // Arrange
-    const location = relative(browserDir, configPath);
-
-    // Act
-    const sources = sourceListOf('frame-ancestors');
-
-    // Assert
-    expect(sources, `${location}: frame-ancestors`).toEqual(["'none'"]);
+    expect(repeated).toEqual([]);
   });
 });
 
@@ -472,5 +696,23 @@ describe('referrer policy', () => {
 
     // Assert
     expect(declared, `${location}: Referrer-Policy`).toBe('no-referrer');
+  });
+});
+
+describe('content type options', () => {
+  // The policy governs what the document may load; this governs what a response is
+  // allowed to become. Without it a browser may sniff a response whose `Content-Type` it
+  // distrusts and execute a user-supplied upload or a JSON body as a script — a path
+  // `script-src 'self'` permits, because a same-origin response is `'self'` whatever its
+  // bytes say.
+  it('refuses content type sniffing', () => {
+    // Arrange
+    const location = relative(browserDir, configPath);
+
+    // Act
+    const declared = globalHeaders().get('x-content-type-options');
+
+    // Assert
+    expect(declared, `${location}: X-Content-Type-Options`).toBe('nosniff');
   });
 });

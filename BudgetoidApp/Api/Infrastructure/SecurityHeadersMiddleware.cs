@@ -7,14 +7,13 @@ namespace Api.Infrastructure;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>It is registered outermost, above the exception handler, because "every response" is the whole
-/// requirement.</b> Three kinds of response are written by something other than a route delegate — the
-/// one an <c>IExceptionHandler</c> writes, the one the authentication challenge writes, and the one a
-/// middleware that never calls <c>next</c> writes — and each of those is a response a browser renders.
-/// The last kind is what pins the position: <c>FirstPartyRequestMiddleware</c> refuses without invoking
-/// the rest of the pipeline, so anything registered below it never runs on a refused request and its 403
-/// ships bare. Outermost is the one position that runs on every request there is, whoever ends up writing
-/// the response.
+/// <b>What pins the registration is <c>FirstPartyRequestMiddleware</c>, and only that.</b> "Every response"
+/// is the whole requirement, and a response a browser renders is often written by something other than a
+/// route delegate. <c>FirstPartyRequestMiddleware</c> is the case that decides the position: it answers 403
+/// without invoking <c>next</c>, so anything registered below it never runs on a refused request and that
+/// 403 ships bare. Above it is the one position that runs on every request there is, whoever ends up
+/// writing the response. Ordering against <c>UseExceptionHandler()</c> is <em>not</em> part of this — it was
+/// measured to make no difference, for the reason the <c>OnStarting</c> paragraph gives.
 /// </para>
 /// <para>
 /// <b>The write is unconditional and does not go through <c>UseHsts()</c>.</b> That helper keys on
@@ -38,11 +37,16 @@ namespace Api.Infrastructure;
 /// before it hands the exception to the registered handlers, which resets the status and <em>every</em>
 /// header already on the response — measured, not assumed:
 /// <c>SecurityHeaderTests.AResponseFromAnExceptionHandler_CarriesTheHeaders</c> failed against the direct
-/// write with all four names present and every value empty, while the other five paths passed. Registering
-/// outermost does not help, because the clear happens below this middleware and after it has run.
-/// <c>OnStarting</c> fires after any such clear and just before the response flushes, which is the only
-/// point at which "on the wire" and "written" mean the same thing. The callback is <c>static</c> and takes
-/// the response as state so registering it allocates no closure.
+/// write with all four names present and every value empty, while the other five paths passed. What
+/// repaired it is the move to <c>OnStarting</c>, which fires after any such clear and just before the
+/// response flushes — the only point at which "on the wire" and "written" mean the same thing. Moving the
+/// registration is what does not repair it: with the write in <c>OnStarting</c>, registering this
+/// middleware <em>below</em> <c>UseExceptionHandler()</c> still delivers all four headers on a 500 —
+/// measured. <c>HttpResponse.Clear()</c> resets the status and the headers and does not touch the
+/// <c>OnStarting</c> callback list, which lives on the response feature and has no public API to reset: the
+/// middleware still runs, still registers the callback, and the callback still fires at flush, after the
+/// clear. The callback is <c>static</c> and takes the response as state so registering it allocates no
+/// closure.
 /// </para>
 /// <para>
 /// <b><c>/health</c> gets no exemption, unlike the first-party header control.</b> That exemption exists
@@ -52,10 +56,31 @@ namespace Api.Infrastructure;
 /// </para>
 /// <para>
 /// <b>The tripwire.</b> The day somebody adds a Swagger or Scalar UI, <c>default-src 'none'</c> blanks it —
-/// no script, no stylesheet, no font will load. The right answer is to override the header <em>on that one
-/// endpoint</em>, never to loosen the global policy so a documentation page can render. Today
-/// <c>MapOpenApi()</c> is Development-only and serves JSON, and the only OpenAPI package is
-/// <c>Microsoft.AspNetCore.OpenApi</c>, so no HTML UI exists here to break.
+/// no script, no stylesheet, no font will load. The answer is an opt-out read <em>inside this middleware's
+/// own callback</em>, off endpoint metadata: <c>((HttpResponse)state).HttpContext.GetEndpoint()</c> is
+/// available at flush time, so the callback can find a marker on the documentation endpoint and write that
+/// endpoint's policy instead — verified in a probe. Neither shape of "override it on that one endpoint"
+/// works, and both were measured. An endpoint assigning
+/// <c>Response.Headers.ContentSecurityPolicy</c> while it handles the request is overwritten, because
+/// <em>any</em> <c>OnStarting</c> callback runs later, at flush. An endpoint registering its own
+/// <c>OnStarting</c> loses too: Kestrel keeps these callbacks in a <c>Stack</c> and runs them LIFO —
+/// confirmed in a stack trace through
+/// <c>HttpProtocol.&lt;FireOnStarting&gt;g__ProcessEvents|240_0(HttpProtocol, Stack&lt;T&gt;)</c> — so this
+/// middleware's, registered first and outermost, runs <em>last</em> and overwrites the endpoint's. Metadata
+/// rather than <c>HttpContext.Items</c>, because metadata fails closed: <c>ExceptionHandlerMiddleware</c>
+/// nulls the endpoint, so a 500 can never inherit a documentation page's relaxed policy. Never loosen the
+/// global policy so a documentation page can render. Today <c>MapOpenApi()</c> is Development-only and
+/// serves JSON, and the only OpenAPI package is <c>Microsoft.AspNetCore.OpenApi</c>, so no HTML UI exists
+/// here to break.
+/// </para>
+/// <para>
+/// <b>The price the callback pays for firing last: a throw in any other <c>OnStarting</c> callback drops all
+/// four headers.</b> Kestrel's <c>ProcessEvents</c> holds its <c>try</c>/<c>catch</c> outside the pop loop,
+/// so the first throw abandons the rest of the stack, and LIFO puts this callback at the bottom of it —
+/// the most exposed position there is. Measured: a probe endpoint registering a throwing callback produced
+/// a bodyless 500 carrying none of the four headers. This application registers exactly one
+/// <c>OnStarting</c> callback today and it is this one, so nothing is broken; the day a second one appears,
+/// this one becomes conditional on it.
 /// </para>
 /// <para>
 /// <b>There is no <c>X-Frame-Options</c>.</b> Every browser that can reach this API honours
@@ -67,9 +92,11 @@ namespace Api.Infrastructure;
 /// <c>Cross-Origin-Resource-Policy</c>: <c>same-origin</c> breaks the frontend, which is a different origin
 /// from this API, and <c>same-site</c> is an amendment to the CORS story's argument rather than to this one.
 /// <c>Permissions-Policy</c>: a document header governing a browsing context this host never creates — it
-/// serves JSON to a client served from elsewhere. A global <c>Cache-Control: no-store</c>: cacheability is
-/// owned by the endpoints that know what they returned, and a blanket value would defeat any future
-/// conditional-GET work.
+/// serves JSON to a client served from elsewhere. A global <c>Cache-Control: no-store</c>: no endpoint in
+/// this application states its cacheability — <c>Cache-Control</c>, <c>[ResponseCache]</c> and output
+/// caching appear nowhere under <c>Api</c>, this sentence aside — so the question is open, not delegated,
+/// and a blanket value here would settle it in the one place that knows least about what was returned.
+/// Adding the header is a decision of its own and this class does not make it.
 /// </para>
 /// </remarks>
 public sealed class SecurityHeadersMiddleware(RequestDelegate next)
