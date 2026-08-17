@@ -972,11 +972,21 @@ ELSE                                                               ← first iss
   have ever satisfied the new requirement are the suite's — see
   [account-keys.md](account-keys.md). The server side of a recovery sign-in is whole, and the
   surface a person would reach it through is not.
-- **Both sessions this area opens are sessions nothing presents.** No session token is issued, and the
-  API still authenticates every other request from the provider ID token, so the row a redemption
-  writes — and the one a regeneration writes in place of the sessions it swept — ends access to nothing
-  and opens access to nothing today. Each response says what its session *is*, its kind and its expiry,
-  and a client cannot act on either yet. Read the re-establishment rule the same way: it is correct
-  about the rows now, so that the day a session token authenticates a request, a regeneration is
-  already signing the person back in rather than out. That is the same anticipatory shape
-  [sessions.md](sessions.md) records for revocation, read from the other end.
+- **Both sessions this area opens are now real, and both hand back a cookie.** A redemption sets one
+  for the code's owner; a regeneration sets one over the new set **only when its sweep ended a live
+  session**, and a first issue sets none — that condition is the rule rather than a detail, and a
+  handler minting unconditionally would pass every other test on this path. So the re-establishment
+  rule has stopped being anticipatory: a regeneration really does sign the person back in rather than
+  out.
+  - Neither response body carries the handle or a session id. The cookie is `HttpOnly` precisely so
+    that nothing else is a handle; each response still says only what its session *is*, its kind and
+    its expiry.
+  - **`session_tokens` is the third table this handler's never-materialise rule binds**, after
+    `recovery_code_hashes` and `wrapped_account_keys`, and it is the one that fails **loudly** — the
+    role holds no `DELETE` there, so a change-tracker cascade into rows it happens to be holding dies
+    with `42501` instead of succeeding. Do not answer that with a grant. Note also what the trap
+    needs: a read that *projects* materialises no entity and triggers nothing, so somebody turning a
+    read into a projection will find the rule stops biting and conclude it no longer applies.
+  - What is still missing is the **screen**, not the mechanism: nothing in the browser presents a
+    verifier or runs the assertion a generation is gated on, so these routes are reached today only
+    by the suite.

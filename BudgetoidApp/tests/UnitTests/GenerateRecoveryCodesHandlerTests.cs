@@ -308,7 +308,8 @@ public sealed class GenerateRecoveryCodesHandlerTests
         Fixture fixture = Fixture.Build();
 
         // Act
-        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+        RecoveryCodesGeneration generation =
+            (await fixture.Handler.HandleAsync(fixture.Command)).Value;
 
         // Assert
         await Assert.That(fixture.RecoveryCodes.DeleteSetCallCount).IsEqualTo(0);
@@ -601,7 +602,8 @@ public sealed class GenerateRecoveryCodesHandlerTests
             first.RevokedAtUtc is not null && second.RevokedAtUtc is not null;
 
         // Act
-        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+        RecoveryCodesGeneration generation =
+            (await fixture.Handler.HandleAsync(fixture.Command)).Value;
 
         // Assert — non-null first, because null says the delete never ran at all and false says the
         // credential was removed while the sessions it opened still looked live.
@@ -699,7 +701,8 @@ public sealed class GenerateRecoveryCodesHandlerTests
         await fixture.Sessions.AddAsync(swept);
 
         // Act
-        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+        RecoveryCodesGeneration generation =
+            (await fixture.Handler.HandleAsync(fixture.Command)).Value;
 
         // Assert — the number in the response, and the row it is a number about.
         await Assert.That(generation.SessionsEnded).IsEqualTo(1);
@@ -743,7 +746,8 @@ public sealed class GenerateRecoveryCodesHandlerTests
         await fixture.Sessions.AddAsync(Session.Establish(fixture.PreviousSet!, IssuedEarlier, UtcNow.AddHours(1)));
 
         // Act
-        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+        RecoveryCodesGeneration generation =
+            (await fixture.Handler.HandleAsync(fixture.Command)).Value;
 
         // Assert — what the caller is told.
         await Assert.That(generation.Session).IsNotNull();
@@ -783,7 +787,8 @@ public sealed class GenerateRecoveryCodesHandlerTests
         Fixture fixture = Fixture.Build();
 
         // Act
-        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+        RecoveryCodesGeneration generation =
+            (await fixture.Handler.HandleAsync(fixture.Command)).Value;
 
         // Assert
         await Assert.That(generation.Session).IsNull();
@@ -815,7 +820,8 @@ public sealed class GenerateRecoveryCodesHandlerTests
         Fixture fixture = Fixture.Build(seedPreviousSet: true);
 
         // Act
-        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+        RecoveryCodesGeneration generation =
+            (await fixture.Handler.HandleAsync(fixture.Command)).Value;
 
         // Assert
         await Assert.That(generation.SessionsEnded).IsEqualTo(0);
@@ -852,7 +858,8 @@ public sealed class GenerateRecoveryCodesHandlerTests
         await fixture.Sessions.AddAsync(ended);
 
         // Act
-        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+        RecoveryCodesGeneration generation =
+            (await fixture.Handler.HandleAsync(fixture.Command)).Value;
 
         // Assert — the sweep matched the row and ended nothing, so nothing is re-established.
         await Assert.That(generation.SessionsEnded).IsEqualTo(0);
@@ -1044,7 +1051,8 @@ public sealed class GenerateRecoveryCodesHandlerTests
         };
 
         // Act
-        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+        RecoveryCodesGeneration generation =
+            (await fixture.Handler.HandleAsync(fixture.Command)).Value;
 
         // Assert — the nonce was spent once, whatever the provider did to the transaction around it.
         await Assert.That(fixture.Challenges.ConsumeCallCount).IsEqualTo(1);
@@ -1127,7 +1135,8 @@ public sealed class GenerateRecoveryCodesHandlerTests
         };
 
         // Act
-        RecoveryCodesGeneration generation = await fixture.Handler.HandleAsync(fixture.Command);
+        RecoveryCodesGeneration generation =
+            (await fixture.Handler.HandleAsync(fixture.Command)).Value;
 
         // Assert — one set, and the surviving attempt's own sweep counted once rather than accumulated.
         await Assert.That(fixture.RecoveryCodes.Credentials.Count).IsEqualTo(1);

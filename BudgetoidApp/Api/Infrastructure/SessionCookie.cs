@@ -53,11 +53,21 @@ public static class SessionCookie
     /// Writes the handle onto the client, to be presented until <paramref name="expiresAtUtc"/>.
     /// </summary>
     /// <remarks>
-    /// <b>No caller yet, and that is the state of this commit rather than an oversight.</b> Nothing
-    /// mints a session token: the three establishing paths still answer with what the session <em>is</em>
-    /// rather than with something the caller can spend. This exists so that when one does, the cookie it
-    /// writes and the cookie <see cref="Clear"/> takes away are the same cookie by construction instead
-    /// of by two authors agreeing.
+    /// <para>
+    /// <b>Three callers, and each of them is an endpoint rather than a handler.</b> A verified passkey
+    /// assertion, a redeemed recovery code, and a regeneration that swept a live session: the three
+    /// paths that establish one. Each writes this <em>after</em> its handler returned, because every
+    /// refusal on those routes leaves by exception — a cookie written before the handler ran is a
+    /// cookie a refusal leaves behind on the client of whoever was guessing.
+    /// </para>
+    /// <para>
+    /// <b>Neither argument may be built here.</b> <paramref name="value"/> is the handle the handler
+    /// minted and filed the digest of, and <paramref name="expiresAtUtc"/> is the session row's own
+    /// instant; both arrive together on a <c>SessionHandoff</c>, which is what keeps a cookie from
+    /// carrying bytes no row was written for or an expiry computed from an interval. A caller
+    /// assembling either from something to hand produces a cookie that authenticates nothing, or one
+    /// that outlives the session it names — and neither is visible from a response or from a row.
+    /// </para>
     /// </remarks>
     /// <param name="response">The response the handle rides out on.</param>
     /// <param name="value">The token, encoded as the unpadded base64url a request presents it in.</param>

@@ -43,7 +43,7 @@ public sealed class GenerateRecoveryCodesHandler(
     RevokeSessionsForCredentialHandler revokeSessions,
     ISessionRepository sessionRepository,
     TimeProvider timeProvider)
-    : ICommandHandler<GenerateRecoveryCodesCommand, RecoveryCodesGeneration>
+    : ICommandHandler<GenerateRecoveryCodesCommand, Issued<RecoveryCodesGeneration>>
 {
     /// <summary>How many codes an issued set holds.</summary>
     /// <remarks>
@@ -62,7 +62,7 @@ public sealed class GenerateRecoveryCodesHandler(
     /// </remarks>
     public const int RequiredCodeCount = 10;
 
-    public async Task<RecoveryCodesGeneration> HandleAsync(
+    public async Task<Issued<RecoveryCodesGeneration>> HandleAsync(
         GenerateRecoveryCodesCommand command,
         CancellationToken cancellationToken = default)
     {
@@ -104,6 +104,18 @@ public sealed class GenerateRecoveryCodesHandler(
         // Read before the transaction, so a replayed attempt stamps the set with one instant rather
         // than with whenever the surviving attempt happened to run.
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
+
+        // AND THE HANDLE IS DRAWN HERE FOR THE SAME REASON THE CLOCK IS READ HERE: the delegate is
+        // replayed under a retrying execution strategy, so a mint inside it would be a different
+        // secret per attempt. Drawn once, the digest every attempt files is the same one, so the value
+        // handed back is the value the surviving attempt stored.
+        //
+        // UNCONDITIONALLY, EVEN THOUGH MOST CALLS TO THIS ROUTE ESTABLISH NOTHING. A first issue
+        // sweeps no session and re-establishes none, so this handle is never sealed, never encoded and
+        // never leaves the method — thirty-two bytes drawn and collected. The alternative is a mint
+        // inside the `if` far below, which puts the draw inside the replayed delegate to save that,
+        // and buys the subtler retry story this comment exists to avoid.
+        SessionHandle handle = SessionHandle.Mint();
 
         return await transactionalExecutor.ExecuteAsync(
             async token =>
@@ -200,6 +212,24 @@ public sealed class GenerateRecoveryCodesHandler(
                     // What ten does change is how a reader is tempted into it — "the replaced set had
                     // ten shares, let me load them and check I am replacing the same number" is a
                     // sentence nobody could have written while a set had one row.
+                    //
+                    // AND IT NOW BINDS A THIRD TABLE, WHICH FAILS THE LOUD WAY LIKE THE SECOND. Every
+                    // session the sweep above loaded is presented by a session_tokens row, and those
+                    // rows must never be materialised either. No read on this path loads one — the
+                    // sweep selects sessions, DeleteSetAsync takes the credential, and Session carries
+                    // no navigation to its handle — so the change tracker holds none, and they leave
+                    // by the database's own cascade twice over: credentials to sessions, sessions to
+                    // session_tokens. Were they tracked, EF would cascade into the copies it can see
+                    // and emit its own DELETE FROM session_tokens on a table granted SELECT and INSERT
+                    // and no DELETE of any shape, so the request would die with 42501 having removed
+                    // nothing — on a request that has already swept the set's sessions.
+                    //
+                    // Do not answer that SQLSTATE with a grant: it names a privilege and the cause is
+                    // the change tracker, and ADR 0019 records the absent DELETE as the thing that
+                    // makes the mistake loud rather than silent. The way in is an Include, a
+                    // navigation added to Session, or a "load the handles so we can revoke them"
+                    // read — and there is nothing to revoke there: a handle is not revocation,
+                    // revoked_at_utc on the session is, which the sweep has already stamped.
                     await recoveryCodes.DeleteSetAsync(previousSet, token);
                 }
 
@@ -314,6 +344,7 @@ public sealed class GenerateRecoveryCodesHandler(
                 // another — the correct end state, one set and one live session. "Never establish on a
                 // retry" would leave the person with nothing.
                 ReestablishedSession? reestablished = null;
+                SessionHandoff? handoff = null;
                 if (sessionsEnded > 0)
                 {
                     // Built from the Credential and never from a kind this handler names.
@@ -323,12 +354,29 @@ public sealed class GenerateRecoveryCodesHandler(
                     // call site name the kind and dissolve the rule. RedeemRecoveryCodeHandler opens
                     // its session the same way, for the same reason.
                     Session session = Session.Establish(set, now, now + SessionPolicy.Lifetime);
-                    await sessionRepository.AddAsync(session, token);
 
+                    // The session and the handle it is presented by, in ONE save — see
+                    // ISessionRepository.AddAsync. Re-establishing without a handle would be the
+                    // cruellest shape this route can take: the person is told they were signed back
+                    // in, in a body that says so, and the next request is a 401.
+                    await sessionRepository.AddAsync(session, handle.TokenFor(session), token);
+
+                    // BOTH ASSIGNED IN THIS ONE BRANCH, and that is why they are declared together
+                    // above rather than derived from one another at the endpoint. The body member
+                    // describing the session and the cookie carrying its handle are written on the
+                    // same condition, so "a cookie for a session the body never mentioned" — and its
+                    // mirror — are unwritable here rather than two conditions somebody has to keep in
+                    // step.
                     reestablished = new ReestablishedSession(session.Kind, session.ExpiresAtUtc);
+                    handoff = handle.IssuedFor(session);
                 }
 
-                return new RecoveryCodesGeneration(sessionsEnded, reestablished);
+                // The handoff travels BESIDE the result. RecoveryCodesGeneration is what the response
+                // says — a count and, sometimes, a session — and it names no handle, no code and no
+                // id, for the reason that record's own remarks give.
+                return new Issued<RecoveryCodesGeneration>(
+                    new RecoveryCodesGeneration(sessionsEnded, reestablished),
+                    handoff);
             },
             cancellationToken);
     }

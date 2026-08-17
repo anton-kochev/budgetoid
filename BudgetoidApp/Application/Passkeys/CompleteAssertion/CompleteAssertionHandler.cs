@@ -34,9 +34,9 @@ public sealed class CompleteAssertionHandler(
     IPasskeyCeremonyPolicy policy,
     ITransactionalExecutor transactionalExecutor,
     IPersistenceState persistenceState,
-    TimeProvider timeProvider) : ICommandHandler<CompleteAssertionCommand, EstablishedSession>
+    TimeProvider timeProvider) : ICommandHandler<CompleteAssertionCommand, Issued<EstablishedSession>>
 {
-    public async Task<EstablishedSession> HandleAsync(
+    public async Task<Issued<EstablishedSession>> HandleAsync(
         CompleteAssertionCommand command,
         CancellationToken cancellationToken = default)
     {
@@ -142,6 +142,21 @@ public sealed class CompleteAssertionHandler(
         // than drifting with each replay.
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
 
+        // AND THE HANDLE IS DRAWN HERE FOR THE SAME REASON THE CLOCK IS READ HERE. The delegate below
+        // is replayed by NpgsqlRetryingExecutionStrategy on a transient failure, so a mint inside it
+        // would be a different secret per attempt. Drawn once, every attempt files the digest of the
+        // same bytes against the session that attempt created, so the value returned to the client is
+        // the value the surviving attempt stored — whichever attempt that was. A handle minted inside
+        // the delegate would also be correct today, but only because the delegate's return value comes
+        // from the surviving attempt; that is a subtler property to rest a sign-in on, and a reader
+        // moving the line for tidiness would not know they were relying on it.
+        //
+        // Nothing about this handle has left the process at this point, and nothing will unless the
+        // transaction commits: the two members it offers are "file your digest against this session"
+        // and "state yourself for the client", and only the endpoint on the far side of a successful
+        // return can reach the second.
+        SessionHandle handle = SessionHandle.Mint();
+
         // 6. Only then is a transaction opened. This call site is load-bearing in its position: the
         //    transaction opens a connection, and opening a connection is when SessionContextInterceptor
         //    runs its set_config. Open it before ResolveUser above and app.current_user_id reaches the
@@ -198,9 +213,20 @@ public sealed class CompleteAssertionHandler(
                         "The passkey has a public key but no credential.");
 
                 Session session = Session.Establish(credential, now, now + SessionPolicy.Lifetime);
-                await sessionRepository.AddAsync(session, token);
 
-                return new EstablishedSession(session.Kind, session.ExpiresAtUtc);
+                // The session and the handle it is presented by, in ONE save. A session committed
+                // without its handle is a sign-in this person cannot present — they are told they are
+                // in and the very next request is a 401 — and there is no shape of this call that
+                // writes one of them. See ISessionRepository.AddAsync, which is where the argument
+                // lives and where the absence of a session-only member is the enforcement.
+                await sessionRepository.AddAsync(session, handle.TokenFor(session), token);
+
+                // The handle travels BESIDE the result and never inside it. EstablishedSession is what
+                // the response says, and the handle leaves the server in one place only — the cookie
+                // the endpoint writes, which is HttpOnly precisely so nothing else carries it.
+                return new Issued<EstablishedSession>(
+                    new EstablishedSession(session.Kind, session.ExpiresAtUtc),
+                    handle.IssuedFor(session));
             },
             cancellationToken);
     }

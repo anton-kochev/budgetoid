@@ -1,9 +1,11 @@
 using System.Text.Json;
+using Api.Infrastructure;
 using Application.Passkeys.BeginAssertion;
 using Application.Passkeys.BeginRegistration;
 using Application.Passkeys.CompleteAssertion;
 using Application.Passkeys.CompleteRegistration;
 using Application.Passkeys.Reauthentication;
+using Application.Sessions;
 
 namespace Api.Endpoints;
 
@@ -95,9 +97,10 @@ public static class PasskeyEndpoints
         anonymous.MapPost("/assertion", async (
             AssertionRequest request,
             CompleteAssertionHandler handler,
+            HttpResponse response,
             CancellationToken cancellationToken) =>
         {
-            EstablishedSession session = await handler.HandleAsync(
+            Issued<EstablishedSession> issued = await handler.HandleAsync(
                 new CompleteAssertionCommand(
                     request.CredentialId,
                     request.ClientDataJson,
@@ -105,6 +108,31 @@ public static class PasskeyEndpoints
                     request.Signature,
                     request.UserHandle),
                 cancellationToken);
+            EstablishedSession session = issued.Value;
+
+            // AFTER THE HANDLER RETURNED, AND THAT ORDERING IS THE WHOLE OF WHAT MAKES THIS COOKIE
+            // EVIDENCE OF A SIGN-IN. Every refusal on this leg leaves by exception — an unknown
+            // credential, a spent challenge, a signature that did not verify — so a cookie written
+            // before this line is a cookie a refusal leaves behind on the client of whoever was
+            // guessing. Nothing about it would look wrong: the handle names no session, so the next
+            // request is refused and the caller learns only that a value they were handed does not
+            // work.
+            //
+            // The handle comes from the handler and never from anything reachable here. This endpoint
+            // cannot mint one, cannot read the stored digest, and cannot compute the expiry: it
+            // destructures what the handler filed and writes it, which is what makes "the cookie
+            // carries the bytes whose digest was stored, and dies with the row" a property rather than
+            // a habit — see SessionHandle.
+            //
+            // The null arm is unreachable on this route: an assertion that returns has established a
+            // session. It is written as a pattern anyway, uniformly with the two recovery-code legs,
+            // because the alternative is a null-forgiving operator asserting a rule that lives in
+            // another project — and a missing cookie is a red test rather than a 500 on a sign-in that
+            // has already committed.
+            if (issued.Handoff is { } handoff)
+            {
+                SessionCookie.Issue(response, handoff.Token, handoff.ExpiresAtUtc);
+            }
 
             // The kind and the expiry, and deliberately no session id. The body has to say something
             // the behaviour can be observed through, and the kind is exactly the fact that matters —

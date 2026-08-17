@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Domain.Sessions;
 
 namespace UnitTests.Fakes;
@@ -5,6 +6,7 @@ namespace UnitTests.Fakes;
 public sealed class InMemorySessionRepository : ISessionRepository
 {
     private readonly List<Session> _sessions = [];
+    private readonly List<SessionToken> _tokens = [];
     private readonly List<Guid> _identityWhenFindByIdWasEntered = [];
     private RecordingUserContextWriter? _observedWriter;
 
@@ -14,6 +16,16 @@ public sealed class InMemorySessionRepository : ISessionRepository
     /// and no method on the interface hands them back.
     /// </remarks>
     public IReadOnlyList<Session> Sessions => _sessions;
+
+    /// <summary>
+    /// Every handle filed beside a session, in the order it was written.
+    /// </summary>
+    /// <remarks>
+    /// A second list rather than a pair, so the two can be counted independently: what the port
+    /// promises is that a session is never written without its handle, and a fake that stored them as
+    /// one value would make that promise true of itself rather than measurable.
+    /// </remarks>
+    public IReadOnlyList<SessionToken> Tokens => _tokens;
 
     /// <summary>How many times <see cref="RevokeForCredentialAsync"/> was asked to run.</summary>
     public int RevokeForCredentialCallCount { get; private set; }
@@ -36,7 +48,16 @@ public sealed class InMemorySessionRepository : ISessionRepository
     /// the replay, and both are still queued when the surviving attempt commits — one sign-in, two
     /// rows. Only a fake that keeps them both can show that.
     /// </remarks>
-    public void DiscardTrackedEntities() => _sessions.Clear();
+    public void DiscardTrackedEntities()
+    {
+        _sessions.Clear();
+
+        // The handles go with them, because they were queued by the same save. A discard that dropped
+        // the sessions and kept their tokens would model a store nothing can produce — a handle naming
+        // a session that was never written is exactly what one write path taking both exists to make
+        // impossible.
+        _tokens.Clear();
+    }
 
     /// <summary>
     /// Removes every session the credential established, which is what the database's own
@@ -84,11 +105,37 @@ public sealed class InMemorySessionRepository : ISessionRepository
     /// </remarks>
     public IReadOnlyList<Guid> IdentityWhenFindByIdWasEntered => _identityWhenFindByIdWasEntered;
 
-    public Task AddAsync(Session session, CancellationToken cancellationToken = default)
+    public Task AddAsync(
+        Session session,
+        SessionToken token,
+        CancellationToken cancellationToken = default)
     {
+        // Both, always, because the port has no shape that writes one of them. A fake that accepted a
+        // null handle would be modelling a call production cannot make.
+        ArgumentNullException.ThrowIfNull(token);
+
         _sessions.Add(session);
+        _tokens.Add(token);
+
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Seeds a session with a throwaway handle, for arrangements that are about what a revocation or a
+    /// lookup does to sessions and have no opinion about the handle beside them.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not on <see cref="ISessionRepository" />, and it must never be added there.</b> That port
+    /// deliberately offers no member taking a session alone: a session committed without its handle is
+    /// a sign-in nobody can present, and the absence of the overload is the enforcement. This one is a
+    /// convenience of the store, reachable only through the concrete type — a handler holds the
+    /// interface, so nothing under test can call it — and it mints its own handle so that what it
+    /// leaves behind is a state the real path could have produced.
+    /// </remarks>
+    public Task AddAsync(Session session) =>
+        AddAsync(
+            session,
+            SessionToken.For(session, RandomNumberGenerator.GetBytes(SessionToken.TokenLength)));
 
     public Task<Session?> FindByIdAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {

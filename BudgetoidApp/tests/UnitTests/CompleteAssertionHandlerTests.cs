@@ -44,7 +44,8 @@ public sealed class CompleteAssertionHandlerTests
         Ceremony ceremony = Ceremony.Build(reportedSignCount: AdvancedCounter, storedSignCount: 0);
 
         // Act
-        EstablishedSession established = await ceremony.Handler.HandleAsync(ceremony.Command);
+        EstablishedSession established =
+            (await ceremony.Handler.HandleAsync(ceremony.Command)).Value;
 
         // Assert — accepted twice, on a counter each pass read fresh, and the session it opens is the
         // full one a passkey earns.

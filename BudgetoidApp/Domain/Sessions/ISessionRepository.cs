@@ -2,7 +2,45 @@ namespace Domain.Sessions;
 
 public interface ISessionRepository
 {
-    Task AddAsync(Session session, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Opens <paramref name="session"/> and files the handle it is presented by, in one save.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It takes both, and there is deliberately no member taking a session alone.</b> A session
+    /// committed without its handle is a sign-in nobody can present — the person is told they are in
+    /// and the very next request is a 401 — and a handle committed without its session is a cookie
+    /// naming a row that never existed. Neither is visible from a response: both answer 200. What
+    /// makes the pairing hold is that there is no shape of this call that writes one of them, which is
+    /// a stronger thing than every caller remembering to make two calls in the right order inside one
+    /// transaction.
+    /// </para>
+    /// <para>
+    /// <b>It is also the whole of what makes the pairing one-to-one at all.</b> The schema does not:
+    /// <c>session_tokens</c> is keyed on the digest, so nothing there stops a session from having two
+    /// handles or none, and the <c>UNIQUE (session_id)</c> that would is simply not there — while "at
+    /// least one" needs a trigger, which
+    /// <c>docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md</c> forbids pushing down.
+    /// One write path taking both is the same shape that holds "every factor has a row of wrapped
+    /// account keys", and it carries the same warning: a second write path would produce the rows this
+    /// one cannot, and redden nothing.
+    /// </para>
+    /// <para>
+    /// <b>The handle goes here rather than onto <see cref="ISessionTokenRepository"/>, which stays
+    /// read-only.</b> That port's own remarks say why: a second member there would be a second way to
+    /// write a token, and the row it could produce is a token naming a session that was never
+    /// committed. This implementation saves on its own, so a caller writing the two through two ports
+    /// would be relying on an ambient transaction to make them one unit of work — and the failure when
+    /// somebody later forgot the transaction is exactly the split row described above.
+    /// </para>
+    /// <para>
+    /// <paramref name="token"/> is a <see cref="SessionToken"/> and never the raw handle: the entity
+    /// carries only the digest, so no persistence port has a member a live token can travel through.
+    /// <see cref="SessionToken.For"/> reads both ids off the session, which is what stops a caller
+    /// filing a handle against a different sign-in than the one it is passing here.
+    /// </para>
+    /// </remarks>
+    Task AddAsync(Session session, SessionToken token, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The session named by <paramref name="sessionId"/>, or <see langword="null"/> when this request

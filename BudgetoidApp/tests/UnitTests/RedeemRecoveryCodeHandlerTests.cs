@@ -117,7 +117,8 @@ public sealed class RedeemRecoveryCodeHandlerTests
         Fixture fixture = Fixture.Build();
 
         // Act
-        RedeemedRecoveryCode redeemed = await fixture.Handler.HandleAsync(fixture.CommandFor(0));
+        RedeemedRecoveryCode redeemed =
+            (await fixture.Handler.HandleAsync(fixture.CommandFor(0))).Value;
 
         // Assert — what the caller is told.
         await Assert.That(redeemed.Kind).IsEqualTo(SessionKind.Full);
@@ -161,7 +162,8 @@ public sealed class RedeemRecoveryCodeHandlerTests
         Fixture fixture = Fixture.Build();
 
         // Act
-        RedeemedRecoveryCode redeemed = await fixture.Handler.HandleAsync(fixture.CommandFor(0));
+        RedeemedRecoveryCode redeemed =
+            (await fixture.Handler.HandleAsync(fixture.CommandFor(0))).Value;
 
         // Assert — the number in the response, and the rows it is a number about.
         await Assert.That(redeemed.Remaining).IsEqualTo(CodesPerSet - 1);
@@ -311,7 +313,8 @@ public sealed class RedeemRecoveryCodeHandlerTests
         fixture.RollBackAbandonedAttempt = fixture.RestoreTheSpentCode(0);
 
         // Act
-        RedeemedRecoveryCode redeemed = await fixture.Handler.HandleAsync(fixture.CommandFor(0));
+        RedeemedRecoveryCode redeemed =
+            (await fixture.Handler.HandleAsync(fixture.CommandFor(0))).Value;
 
         // Assert — one sign-in, one session, however many times the transaction was attempted.
         await Assert.That(fixture.Sessions.Sessions.Count).IsEqualTo(1);

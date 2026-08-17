@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence;
@@ -295,8 +296,13 @@ public sealed class SessionSchemaTests
             Session session = Session.Establish(credential, SeedInstant, ExpiryInstant);
             sessionId = session.Id;
 
-            // Act
-            await new SessionRepository(db).AddAsync(session);
+            // Act — the handle goes in the same save, because the port offers no shape that writes a
+            // session alone. That widens what this one round trip measures rather than diluting it:
+            // the INSERT grant on session_tokens is now exercised here too, and a missing one would
+            // surface as the same 42501 a missing grant on sessions would.
+            await new SessionRepository(db).AddAsync(
+                session,
+                SessionToken.For(session, RandomNumberGenerator.GetBytes(SessionToken.TokenLength)));
         }
 
         // Assert — read back on a second app-role connection, the way a later request would. Two

@@ -10,9 +10,26 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
     private const int MaxRevocationAttempts = 3;
 
     /// <inheritdoc />
-    public async Task AddAsync(Session session, CancellationToken cancellationToken = default)
+    public async Task AddAsync(
+        Session session,
+        SessionToken token,
+        CancellationToken cancellationToken = default)
     {
+        // ONE SaveChangesAsync FOR BOTH ROWS, and that is the whole of what this method is for. EF
+        // sends the two inserts inside one transaction — its own when nothing else has opened one, the
+        // ambient one when a caller has — and orders them from the foreign key, so the session is
+        // written before the handle that references it whichever order they were added in. What the
+        // single save buys is the other direction: there is no window in which one of them is committed
+        // and the other is not, on any path, including one that throws between these two lines because
+        // neither has reached the database yet.
+        //
+        // The alternative a reader will reach for is a second repository call, and it fails on both
+        // shapes it can take. Two saves inside the caller's transaction are atomic by accident — they
+        // are atomic because somebody remembered the transaction, and the first caller who forgets
+        // leaves a session nobody can present or a handle naming nothing. Two saves without one are not
+        // atomic at all.
         dbContext.Sessions.Add(session);
+        dbContext.SessionTokens.Add(token);
 
         await dbContext.SaveChangesAsync(cancellationToken);
     }

@@ -1,8 +1,10 @@
 using System.Text.Json;
+using Api.Infrastructure;
 using Application.Passkeys.Reauthentication;
 using Application.RecoveryCodes.CountRecoveryCodes;
 using Application.RecoveryCodes.GenerateRecoveryCodes;
 using Application.RecoveryCodes.RedeemRecoveryCode;
+using Application.Sessions;
 
 namespace Api.Endpoints;
 
@@ -49,9 +51,10 @@ public static class RecoveryCodeEndpoints
         group.MapPost("/recovery-codes", async (
             RecoveryCodeGenerationRequest request,
             GenerateRecoveryCodesHandler handler,
+            HttpResponse response,
             CancellationToken cancellationToken) =>
         {
-            RecoveryCodesGeneration generation = await handler.HandleAsync(
+            Issued<RecoveryCodesGeneration> issued = await handler.HandleAsync(
                 new GenerateRecoveryCodesCommand(
                     request.Codes,
                     new ReauthenticationAssertion(
@@ -61,6 +64,22 @@ public static class RecoveryCodeEndpoints
                         request.Signature,
                         request.UserHandle)),
                 cancellationToken);
+            RecoveryCodesGeneration generation = issued.Value;
+
+            // A COOKIE ONLY WHEN A SESSION WAS RE-ESTABLISHED, WHICH IS ONLY WHEN THE REPLACED SET WAS
+            // CARRYING ONE. A first issue of recovery codes signs nobody in — nothing was swept, the
+            // codes have never opened a session — and a cookie handed over there is a sign-in somebody
+            // never made, at onboarding, indistinguishable from a compromise. That condition is the
+            // handler's and is not restated here: it hands back a handoff exactly when it wrote the
+            // session member below, on one branch, so this endpoint cannot get the two out of step.
+            //
+            // After the handler returned, for the reason the assertion leg writes out in full: every
+            // refusal on this route — an unproven caller above all — leaves by exception, so a cookie
+            // written earlier is a cookie a refusal leaves behind.
+            if (issued.Handoff is { } handoff)
+            {
+                SessionCookie.Issue(response, handoff.Token, handoff.ExpiresAtUtc);
+            }
 
             // 200 with a body rather than the erasure's 204: this act leaves an account standing, and
             // what it says about that account — how many sessions replacing the set ended — is the only
@@ -144,11 +163,23 @@ public static class RecoveryCodeEndpoints
         anonymous.MapPost("/redemption", async (
             RedemptionRequest request,
             RedeemRecoveryCodeHandler handler,
+            HttpResponse response,
             CancellationToken cancellationToken) =>
         {
-            RedeemedRecoveryCode redemption = await handler.HandleAsync(
+            Issued<RedeemedRecoveryCode> issued = await handler.HandleAsync(
                 new RedeemRecoveryCodeCommand(request.Verifier),
                 cancellationToken);
+            RedeemedRecoveryCode redemption = issued.Value;
+
+            // After the handler returned, and it carries more weight here than on any other route:
+            // this is the one people reach for when they cannot get in, so a cookie written before the
+            // verifier matched would be an anonymous caller handed a handle for whatever account the
+            // arrangement resolved. Every refusal below leaves by exception, so there is no shape of
+            // this delegate in which a refused redemption reaches this line.
+            if (issued.Handoff is { } handoff)
+            {
+                SessionCookie.Issue(response, handoff.Token, handoff.ExpiresAtUtc);
+            }
 
             // The kind, the expiry and what is left — and deliberately no session id, for the reason
             // AssertionResponse states: returning the row's id would hand the client a stable handle to

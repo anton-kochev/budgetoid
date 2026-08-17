@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence;
@@ -52,8 +53,8 @@ public sealed class SessionRepositoryTests
         var repository = new SessionRepository(db);
         Session sessionA = Session.Establish(credentialA, SeedInstant, ExpiryInstant);
         Session sessionB = Session.Establish(credentialB, SeedInstant, ExpiryInstant);
-        await repository.AddAsync(sessionA);
-        await repository.AddAsync(sessionB);
+        await repository.AddAsync(sessionA, AHandleFor(sessionA));
+        await repository.AddAsync(sessionB, AHandleFor(sessionB));
 
         // Act
         int revoked = await repository.RevokeForCredentialAsync(credentialA.Id, RevocationInstant);
@@ -94,7 +95,7 @@ public sealed class SessionRepositoryTests
             stored => stored.UserId == userId);
         var repository = new SessionRepository(db);
         Session session = Session.Establish(credential, SeedInstant, ExpiryInstant);
-        await repository.AddAsync(session);
+        await repository.AddAsync(session, AHandleFor(session));
 
         // Act
         int first = await repository.RevokeForCredentialAsync(credential.Id, RevocationInstant);
@@ -127,8 +128,8 @@ public sealed class SessionRepositoryTests
         var repository = new SessionRepository(db);
         Session ended = Session.Establish(credential, SeedInstant, ExpiryInstant);
         Session survivor = Session.Establish(credential, SeedInstant, ExpiryInstant);
-        await repository.AddAsync(ended);
-        await repository.AddAsync(survivor);
+        await repository.AddAsync(ended, AHandleFor(ended));
+        await repository.AddAsync(survivor, AHandleFor(survivor));
 
         // Act
         bool revoked = await repository.RevokeAsync(ended.Id, RevocationInstant);
@@ -157,7 +158,7 @@ public sealed class SessionRepositoryTests
         Credential credential = await db.Credentials.SingleAsync(stored => stored.UserId == userId);
         var repository = new SessionRepository(db);
         Session session = Session.Establish(credential, SeedInstant, ExpiryInstant);
-        await repository.AddAsync(session);
+        await repository.AddAsync(session, AHandleFor(session));
 
         // Act
         bool first = await repository.RevokeAsync(session.Id, RevocationInstant);
@@ -189,7 +190,7 @@ public sealed class SessionRepositoryTests
         Credential credential = await db.Credentials.SingleAsync(stored => stored.UserId == userId);
         var repository = new SessionRepository(db);
         Session session = Session.Establish(credential, SeedInstant, ExpiryInstant);
-        await repository.AddAsync(session);
+        await repository.AddAsync(session, AHandleFor(session));
 
         // Act
         bool revoked = await repository.RevokeAsync(Guid.CreateVersion7(), RevocationInstant);
@@ -278,6 +279,21 @@ public sealed class SessionRepositoryTests
     /// </remarks>
     private static byte[] SessionTokenBytes(byte fill) =>
         [.. Enumerable.Repeat(fill, SessionToken.TokenLength)];
+
+    /// <summary>
+    /// A throwaway handle for <paramref name="session" />, for the arrangements that are about a
+    /// revocation predicate and have no opinion about the handle beside the row.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ISessionRepository.AddAsync" /> takes both and offers no shape that writes a session
+    /// alone — a session committed without its handle is a sign-in nobody can present — so every
+    /// arrangement here has to mint one. Random rather than a fill byte, because the digest is the
+    /// primary key of <c>session_tokens</c> and several of these tests seed two sessions in one
+    /// arrangement: two handles that happened to be equal would be a duplicate-key failure with
+    /// nothing to do with what the test is about.
+    /// </remarks>
+    private static SessionToken AHandleFor(Session session) =>
+        SessionToken.For(session, RandomNumberGenerator.GetBytes(SessionToken.TokenLength));
 
     /// <summary>
     /// Expiry of every session established here. Strictly after <see cref="SeedInstant" />, which is

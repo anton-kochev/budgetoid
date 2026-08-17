@@ -171,12 +171,12 @@ public sealed class EstablishedSessionLifetimeTests
             new RecordingPersistenceState(() => 0),
             new FakeTimeProvider(new DateTimeOffset(UtcNow)));
 
-        EstablishedSession established = await handler.HandleAsync(new CompleteAssertionCommand(
+        EstablishedSession established = (await handler.HandleAsync(new CompleteAssertionCommand(
             assertion.CredentialIdBase64Url,
             assertion.ClientDataJsonBase64Url,
             assertion.AuthenticatorDataBase64Url,
             assertion.SignatureBase64Url,
-            assertion.UserHandleBase64Url));
+            assertion.UserHandleBase64Url))).Value;
 
         return established.ExpiresAtUtc;
     }
@@ -197,8 +197,8 @@ public sealed class EstablishedSessionLifetimeTests
             new RecordingPersistenceState(() => 0),
             new FakeTimeProvider(new DateTimeOffset(UtcNow)));
 
-        RedeemedRecoveryCode redeemed = await handler.HandleAsync(
-            new RedeemRecoveryCodeCommand(Base64UrlText.Encode(verifiers[0])));
+        RedeemedRecoveryCode redeemed = (await handler.HandleAsync(
+            new RedeemRecoveryCodeCommand(Base64UrlText.Encode(verifiers[0])))).Value;
 
         return redeemed.ExpiresAtUtc;
     }
@@ -266,7 +266,7 @@ public sealed class EstablishedSessionLifetimeTests
             sessions,
             clock);
 
-        RecoveryCodesGeneration generation = await handler.HandleAsync(new GenerateRecoveryCodesCommand(
+        RecoveryCodesGeneration generation = (await handler.HandleAsync(new GenerateRecoveryCodesCommand(
             // One whole submission per code, each with a fresh factor and a well-formed envelope pair
             // of its own, because this file is about the session's expiry and nothing else: a request
             // refused for its wrapped keys would never reach the establishment this method reads. See
@@ -277,7 +277,7 @@ public sealed class EstablishedSessionLifetimeTests
                 assertion.ClientDataJsonBase64Url,
                 assertion.AuthenticatorDataBase64Url,
                 assertion.SignatureBase64Url,
-                assertion.UserHandleBase64Url)));
+                assertion.UserHandleBase64Url)))).Value;
 
         return generation.Session?.ExpiresAtUtc
                ?? throw new InvalidOperationException(

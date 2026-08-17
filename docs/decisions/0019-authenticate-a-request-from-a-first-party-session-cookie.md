@@ -1,7 +1,6 @@
 # ADR 0019 — Authenticate from a session cookie, and split its discovery key onto an exempt table
 
-- **Status:** Accepted — the reading half is in place; nothing writes a row yet, so no cookie is
-  ever issued.
+- **Status:** Accepted and implemented on the server. No client screen reaches it yet.
 - **Date:** 2026-08-16
 - **Area:** Persistence / Security (row-level security coverage, grant matrix, sessions)
 
@@ -154,12 +153,24 @@ cookie and login-CSRF is signing somebody into an account they do not own. That 
 this decision rather than a separate one: a bearer token in an `Authorization` header was never
 attached by a browser on its own, so nothing before this needed the control at all.
 
-**The reading half ships before the writing half, and the asymmetry is the point.** A request
-presenting the cookie is authenticated from it and can end its own session; nothing hands a cookie
-out, and `SessionCookie.Issue` has no caller. The alternative was one commit that moved the whole
-product from bearer tokens to cookies at once — with the ceremonies, the registration gate and the
-client all inside it. Landing the reader first means every intermediate commit is shippable and the
-bridge scheme below is what buys that.
+**The reading half shipped one commit before the writing half, and the asymmetry was the point.** The
+alternative was one commit moving the whole product from bearer tokens to cookies at once — the
+ceremonies, the registration gate and the client all inside it. Landing the reader first meant every
+intermediate commit was shippable, and the bridge scheme below is what bought that.
+
+**One write path takes both rows, and the port's shape is what holds the pairing.**
+`ISessionRepository.AddAsync` takes the session *and* its token, with no overload taking a session
+alone, so a session cannot be written without its handle by construction; `ISessionTokenRepository`
+stays read-only, because a second way to write a token is a way to produce one naming a session that
+was never committed. The schema still permits several handles or none — closing that would need a
+unique constraint for one half and a trigger for the other, which
+[ADR 0002](0002-enforce-rules-at-the-lowest-capable-layer.md) refuses — so the application is where
+one-to-one actually lives, and this is the sentence that says so.
+
+**Neither the handle nor the session's id ever appears in a response body.** The cookie is `HttpOnly`
+precisely so nothing else is a handle, so the establishing handlers return the raw token *beside*
+their result, through a type the endpoint destructures and never serialises. A census over every type
+a route returns is what keeps that true of records added later.
 
 **A temporary default scheme, and what removes it is named rather than left to a reader.** The
 application's default is a policy scheme forwarding to the cookie handler when the cookie is present

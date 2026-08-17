@@ -22,13 +22,16 @@ revoke it — while a session row can be ended here, in one write, by the same r
 request. **Three things establish a session and there is no fourth**, and all three open a `Full`
 session lasting 14 days.
 
-**A session now authenticates a request, and no path issues one.** The reading half is complete: a
-request presenting the cookie is authenticated from it, the account and the ambient budget are
-published from it, and the request can end it. The minting half is not built — not one of the three
-establishing responses hands back a handle to the row it created — so no browser holds a cookie and
-every request in the product still arrives with the identity provider's ID token. The asymmetry is
-deliberate and is the shape this area ships in one commit at a time; the first gotcha below carries
-what it means for reading the rest of this file.
+**A session is now issued, presented and ended, and this file describes a working thing.** All three
+establishing paths mint a handle and set the cookie; a request presenting it is authenticated from
+it, publishing the account and the ambient budget; and `POST /api/me/session/revocation` ends it. The
+loop is closed on the server.
+
+What is still missing is on the **client**: nothing in the browser runs a passkey ceremony from a
+screen, so no person has been through this path — the requests that mint a cookie are made today only
+by the integration suite, and every request the app itself makes still carries the identity
+provider's ID token. The first gotcha below carries what that means for reading the rest of this
+file.
 
 ## Key Entities
 
@@ -108,12 +111,20 @@ none. One-to-one would need either a unique constraint on `session_id` — which
 and is simply not there — or a trigger for the "at least one" half, which
 [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing down.
 
-Today the point is moot in the least reassuring way: rows here are **read on every authenticated
-request and written by nothing at all.** When a write path lands it will write the token in the same
-save as the session it opens, and *that* — one write path, one save — will be the whole of what holds
-the pairing, exactly as it is the whole of what holds "every factor has wrapped keys". A second write
-path would be able to produce a session with two handles, or a token naming a session that never
-opened, and redden nothing.
+**What holds one-to-one is the port's shape, and it is stronger than it had to be.**
+`ISessionRepository.AddAsync` takes the session **and** its token, and there is no overload taking a
+session alone — so a session cannot be written without its handle by construction rather than by
+every caller remembering. `ISessionTokenRepository` stays read-only for the same reason, stated from
+the other side: a second way to write a token is a way to produce one naming a session that was never
+committed. One write path, one save, exactly as it is the whole of what holds "every factor has
+wrapped keys".
+
+The schema still permits what the application refuses — several tokens for one session, or none — and
+that gap is deliberate rather than an oversight. Closing it would need a unique constraint on
+`session_id` for one half and a trigger for the other, and
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing procedural
+logic down to satisfy "lowest layer". So the diagram is drawn one-to-many because that is what the
+database holds, and the sentence above is what makes it one-to-one in fact.
 
 ## Constraints
 
@@ -537,25 +548,33 @@ enumerated spelling makes at the database — see the first rule above.
 
 ## Edge Cases & Known Gotchas
 
-- **A session token now authenticates a request, and nothing issues one — the half that is missing
-  is the half that mints.** Everything on the reading side exists and is tested: a request presenting
-  the cookie is authenticated from it, the account and the ambient budget are published from it, and
-  `POST /api/me/session/revocation` ends it. What does not exist is anything that ever *hands out* a
-  cookie. **Not one** of the three establishing responses carries a handle to the row it created, all
-  three withhold it for the same reason, and `SessionCookie.Issue` has no caller at all. So the API
-  still authenticates every other request from the Google ID token it is handed, exactly as
-  [users-and-ownership.md](users-and-ownership.md) describes, and a recovery sign-in today still
-  opens a session nobody can present: what each response tells its caller is what that session *is*,
-  not something the caller can spend.
-  - **What that costs the rest of this file, precisely.** Revoking a passkey still signs no device
-    out, because no device is holding a handle to sign out of. The operations remain **anticipatory**
-    — they make the rules true of the rows now, so that the day a token is issued, revocation is
-    already the thing that ends access and a regeneration is already signing the person back in
-    rather than out. What has changed is that the day the minting path lands, this whole area is
-    live at once, with no further decision to take.
-  - **Do not "complete" the pair by minting on a read path.** The token has to be written in the same
-    `SaveChanges` as the session it opens, by the path that established that session; anything else
-    can produce a handle to a session that was never committed.
+- **The loop is closed on the server and open on the client, and that is now the whole of the gap.**
+  All three establishing paths mint a handle and set the cookie, a request presenting it is
+  authenticated from it, and sign-out ends it. Every operation in this file is live rather than
+  anticipatory: revoking a passkey really does end that device's access, and a regeneration that
+  swept a live session really does sign the person back in over the new set. What is missing is a
+  **screen**. No client code runs a passkey ceremony from a page, so the routes that mint a cookie
+  are reached today only by the integration suite, and the app itself still authenticates every
+  request from the Google ID token it is handed — exactly as
+  [users-and-ownership.md](users-and-ownership.md) describes.
+  - **The handle never appears in a response body.** The cookie is `HttpOnly` precisely so that
+    nothing else is a handle; no response record carries a token or a session id, and
+    `SessionTokenSecrecyTests` is a census over every type a route serialises so a record added later
+    is covered without anybody remembering. A caller learns *that* a session exists and when it
+    expires, and cannot spend that knowledge.
+  - **The cookie is written by the endpoint, on the handler's success, and never before it.** An
+    endpoint that wrote one unconditionally would leave a cookie behind on a refused ceremony. Note
+    what does *not* hold that rule: on these routes a refusal leaves as an exception and
+    `UseExceptionHandler` clears the response, so the framework would wipe such a cookie anyway. The
+    ordering is held by the positive tests, not by the refusal ones.
+  - **A first issue of recovery codes sets no cookie.** Only the branch that swept a live session
+    re-establishes one, and that condition is the rule rather than a detail — a handler minting
+    unconditionally passes every other test on that path.
+  - **The token is drawn outside the transactional delegate**, on all three paths. Both positions are
+    correct and no test distinguishes them, which is exactly why the choice is written down: outside
+    means one secret per request rather than one per retry attempt, and it means correctness does not
+    rest on the subtle property that the value a retried delegate returns belongs to the attempt that
+    survived.
   - **The API's default authentication scheme is a temporary bridge**, `Budgetoid.Bridge`, a policy
     scheme that forwards to the cookie handler when the cookie is present and to `JwtBearer`
     otherwise. It exists so the whole existing surface keeps working while this area lands one commit
@@ -610,6 +629,16 @@ enumerated spelling makes at the database — see the first rule above.
     there succeeds silently instead of raising `42501` — see
     [recovery-codes.md](recovery-codes.md). Read the two together: the `42501` on this table is a
     diagnostic the grant matrix buys, not an inconvenience it imposes.
+  - **`session_tokens` is the third table this binds, and it is the loudest.** A session now carries a
+    handle, so the cascade a tracked `Session` drags behind it reaches one more relation — and the
+    role holds no `DELETE` there either, so the same mistake dies with `42501` rather than removing a
+    row. `GenerateRecoveryCodesHandler` is where it bites, because that path revokes and then deletes
+    a credential; its never-materialise rule now names three tables.
+    - **The trap needs *both* links in the tracker, which is what makes it easy to lose.** A read
+      that projects — `Select(session => session.Id)` — materialises no entity, so EF has no cascade
+      to walk and nothing fails. Somebody "optimising" a read into a projection will therefore find
+      the rule stops biting, and will conclude it no longer applies. It does; the read simply stopped
+      being the shape that triggers it.
 - **Revoked and expired rows accumulate.** Nothing sweeps them, and the application role holds no
   `DELETE` grant to do it with. Not a defect at today's size; it becomes one before the product has
   many users, and the grant that a sweep needs is the one this file argues against adding.

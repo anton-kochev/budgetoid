@@ -39,9 +39,9 @@ public sealed class RedeemRecoveryCodeHandler(
     IUserContextWriter userContextWriter,
     ITransactionalExecutor transactionalExecutor,
     IPersistenceState persistenceState,
-    TimeProvider timeProvider) : ICommandHandler<RedeemRecoveryCodeCommand, RedeemedRecoveryCode>
+    TimeProvider timeProvider) : ICommandHandler<RedeemRecoveryCodeCommand, Issued<RedeemedRecoveryCode>>
 {
-    public async Task<RedeemedRecoveryCode> HandleAsync(
+    public async Task<Issued<RedeemedRecoveryCode>> HandleAsync(
         RedeemRecoveryCodeCommand command,
         CancellationToken cancellationToken = default)
     {
@@ -99,6 +99,13 @@ public sealed class RedeemRecoveryCodeHandler(
         // Read before the transaction opens so a retried attempt is stamped with one instant rather
         // than drifting with each replay.
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
+
+        // AND THE HANDLE IS DRAWN HERE FOR THE SAME REASON THE CLOCK IS READ HERE — the argument
+        // CompleteAssertionHandler states in full at the same point in its own sequence. The delegate
+        // is replayed on a transient failure, so a mint inside it is a different secret per attempt;
+        // drawn once, the digest every attempt files is the same one and the value returned matches
+        // whichever attempt committed.
+        SessionHandle handle = SessionHandle.Mint();
 
         // 4. Only then is a transaction opened, and this call site is load-bearing in its position: the
         //    transaction opens a connection, and opening a connection is when SessionContextInterceptor
@@ -198,7 +205,14 @@ public sealed class RedeemRecoveryCodeHandler(
                         "The matched code names a set whose credential is not there.");
 
                 Session session = Session.Establish(set, now, now + SessionPolicy.Lifetime);
-                await sessionRepository.AddAsync(session, token);
+
+                // The session and its handle in ONE save, which matters more on this route than on
+                // any other. The code was spent three lines above and inside this same unit of work:
+                // a handle that failed to store after the session committed would leave somebody who
+                // has just burned a line off the card holding a session they cannot present, and the
+                // card is what they reached for because they had nothing else. Both rows roll back
+                // together with the consume, or none of them does — see ISessionRepository.AddAsync.
+                await sessionRepository.AddAsync(session, handle.TokenFor(session), token);
 
                 // Counted after the consume, inside the same transaction, so the number is what the
                 // card is worth now rather than what it was worth when the request arrived.
@@ -208,7 +222,12 @@ public sealed class RedeemRecoveryCodeHandler(
                 // one names the owner, which is what scopes a read of a table no policy narrows.
                 int remaining = await readService.CountRemainingForUserAsync(code.UserId, token);
 
-                return new RedeemedRecoveryCode(session.Kind, session.ExpiresAtUtc, remaining);
+                // The handle travels BESIDE the result and never inside it: RedeemedRecoveryCode is
+                // what the response says, and the handle leaves the server only in the cookie the
+                // endpoint writes.
+                return new Issued<RedeemedRecoveryCode>(
+                    new RedeemedRecoveryCode(session.Kind, session.ExpiresAtUtc, remaining),
+                    handle.IssuedFor(session));
             },
             cancellationToken);
     }

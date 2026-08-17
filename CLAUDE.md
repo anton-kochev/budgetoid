@@ -108,9 +108,17 @@ Load-bearing rules, each explained there or in the linked decision:
   authenticates on exactly one route, the one that ends sessions, marked with
   `AcceptsEndedSessionAttribute` and reaching no ambient budget even there; and the default scheme is
   a **temporary** `Budgetoid.Bridge` policy scheme forwarding to the cookie when it is present and to
-  `JwtBearer` otherwise, deleted when sign-in leaves the identity provider. `SessionCookie.Issue` has
-  **no caller** — the reading half ships ahead of the minting half, and the first writer must write
-  the token in the same `SaveChanges` as the session it opens. See
+  `JwtBearer` otherwise, deleted when sign-in leaves the identity provider. All three establishing
+  paths now mint a handle and set the cookie, and three rules hold that: **`ISessionRepository.AddAsync`
+  takes the session *and* its token with no overload taking a session alone**, so a handle-less session
+  is unwritable and `ISessionTokenRepository` can stay read-only; **no response body carries the handle
+  or a session id** — the handlers return the token beside their result through a type the endpoint
+  never serialises, and a census over every type a route returns keeps that true of records added
+  later; and **a first issue of recovery codes sets no cookie**, only the branch whose sweep ended a
+  live session. `session_tokens` is also the **third** table `GenerateRecoveryCodesHandler`'s
+  never-materialise rule binds, and the only one where it fails loudly (`42501`) — but only when a read
+  materialises entities, so turning one into a projection makes the trap stop biting without making the
+  rule stop applying. See
   [sessions.md](docs/business-logic/sessions.md) and
   [ADR 0019](docs/decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md).
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
