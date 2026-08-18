@@ -41,8 +41,9 @@ is no preimage — nor derive the key, because the hash is on the wrong branch a
 Three properties fall out, and each is enforced by shape rather than by a check:
 
 1. **No member exists for a code to travel in.** `GenerateRecoveryCodesCommand` declares
-   `IReadOnlyList<string> Verifiers` beside the assertion that authorizes the issue, and no member a
-   code could travel in. There is no type for a code anywhere in the backend.
+   `IReadOnlyList<RecoveryCodeSubmission> Codes` beside the assertion that authorizes the issue —
+   each submission a `Verifier`, a `FactorId` and two wrapped-key envelopes, and no member a code
+   could travel in. There is no type for a code anywhere in the backend.
 2. **The hashing happens inside the entity.** `RecoveryCodeHash.From` takes the verifier and calls
    `RecoveryCodeHash.HashOf` itself. A factory taking a hash the caller computed would mean a raw
    verifier could be assigned to an object something can persist, and every call site would be a place

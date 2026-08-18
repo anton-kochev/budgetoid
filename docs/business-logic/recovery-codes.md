@@ -101,9 +101,10 @@ erDiagram
     `SHA-256(V)` can do neither thing: there is no preimage to redeem with, and the hash is on the
     wrong branch to derive a key from.
   - **Enforced in**: the type system, not a check. `GenerateRecoveryCodesCommand` declares
-    `IReadOnlyList<string> Verifiers` and no member a code could travel in;
-    `RecoveryCodeHash.From` takes a verifier and hashes it **internally**, so no shape of that call
-    stores an unhashed value and no call site is a place to get it wrong once. See
+    `IReadOnlyList<RecoveryCodeSubmission> Codes` — each submission a `Verifier`, a `FactorId` and
+    two wrapped-key envelopes, and no member a code could travel in; `RecoveryCodeHash.From` takes
+    a verifier and hashes it **internally**, so no shape of that call stores an unhashed value and
+    no call site is a place to get it wrong once. See
     [ADR 0015](../decisions/0015-mint-recovery-codes-on-the-client-and-store-only-a-hash-of-a-verifier.md).
 
 - **A code MUST carry at least 128 bits of entropy, and no layer of this system enforces it.** This is
@@ -146,7 +147,7 @@ erDiagram
     - **Refused, never truncated.** Truncating would store the hash of a prefix, and no code would
       ever redeem.
   - **Enforced in**: `RecoveryCodeHash.VerifierLength` and the equality test in `RecoveryCodeHash.From`,
-    restated on the decode in `GenerateRecoveryCodesHandler.DecodeAndValidate` so a malformed set is a
+    restated on the decode in `RecoveryCodeSetValidation.DecodeAndValidate` so a malformed set is a
     400 with a sentence rather than a domain throw. `CK_recovery_code_hashes_verifier_hash_length`
     holds the *hash* width, which is a different claim about a different value and is not a second
     spelling of this one.
@@ -155,7 +156,7 @@ erDiagram
   identifier distinct.** A submission is one code's verifier, that code's own client-minted factor
   identifier, and the account's two keys wrapped under a key-encryption key derived from that code —
   because each of the ten is a secret of its own and a person redeems whichever one they still have.
-  The factor-identifier rule is enforced in the handler rather than left to
+  The factor-identifier rule is enforced in the application rather than left to
   `PK_wrapped_account_keys`, which would refuse *after* the previous set had already been deleted
   inside the same transaction. See [account-keys.md](account-keys.md).
   - **Why**: too few leaves a person with fewer ways back than the screen told them they had; too many
@@ -165,13 +166,16 @@ erDiagram
     and left to the database it becomes a primary-key collision on `verifier_hash`, which is a `500`
     for a caller whose request was merely wrong, arriving *after* the previous set has already been
     deleted inside the same transaction.
-  - **Enforced in**: `GenerateRecoveryCodesHandler.RequiredCodeCount` and `DecodeAndValidate`, each
-    refusal carrying a sentence of its own. Ten is **product policy** and lives in Application for the
-    reason `SessionPolicy.Lifetime` does: a set of nine is not a malformed set, it is a smaller
-    quantity of a thing somebody chose, and a `CHECK` counting sibling rows cannot be written without
-    a trigger, which ADR 0002 refuses. It stays on the handler rather than joining that policy type,
-    and the asymmetry is the reason: how many codes a set holds is a number only this path has a use
-    for, while the lifetime is one three paths have to agree on.
+  - **Enforced in**: `RecoveryCodeSetValidation.RequiredCodeCount` and that type's
+    `DecodeAndValidate`, each refusal carrying a sentence of its own. Ten is **product policy** and
+    lives in Application for the reason `SessionPolicy.Lifetime` does: a set of nine is not a
+    malformed set, it is a smaller quantity of a thing somebody chose, and a `CHECK` counting sibling
+    rows cannot be written without a trigger, which ADR 0002 refuses. It sits beside the rule that
+    applies it rather than on the handler that calls it, and that placement is the same argument
+    rather than a second one: what a presented set has to be is not one route's decision, because
+    any write path accepting a set writes the same rows and the same key-custody columns, so a
+    count owned by one of them is a count another copies — and a copy is what drifts. That is the
+    shape `CanonicalFactorId` already holds for the factor identifier's spelling.
 
 - **An account MUST hold at most one set.**
   - **Why**: two sets are two remaining-counts with nothing saying which one binds. "You have three
@@ -206,7 +210,8 @@ erDiagram
       at all. Past the gate those sentences cost nothing, because the caller has proved possession
       of an authenticator registered to this account and there is nobody left to enumerate about.
   - **Enforced in**: `GenerateRecoveryCodesHandler`, which calls
-    `PasskeyReauthentication.VerifyAsync` as its first statement and `DecodeAndValidate` as its second.
+    `PasskeyReauthentication.VerifyAsync` as its first statement and
+    `RecoveryCodeSetValidation.DecodeAndValidate` as its second.
     The assertion is a **member of the command** rather than a separate call the endpoint makes, so
     issuing without proof is unreachable rather than merely uncustomary.
 
