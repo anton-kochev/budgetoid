@@ -33,6 +33,11 @@ namespace IntegrationTests;
 /// and optional, so every existing positional call site keeps compiling and keeps behaving exactly
 /// as it does today.
 /// </param>
+/// <param name="repointsProviderSchemeToTestHandler">
+/// Makes the identity provider's bearer scheme answer with <see cref="TestAuthHandler" /> inside this
+/// host, so a route whose own policy <b>names</b> that scheme can be driven from a test. Declared last,
+/// and optional, for the same reason as every parameter above it.
+/// </param>
 /// <remarks>
 /// <para>
 /// <b>Why <paramref name="usesApplicationAuthentication" /> exists.</b> The block below does not
@@ -51,6 +56,29 @@ namespace IntegrationTests;
 /// through the test scheme, and a flag that changed the default would move every one of those tests
 /// onto a path they were never written against.
 /// </para>
+/// <para>
+/// <b>Why <paramref name="repointsProviderSchemeToTestHandler" /> exists, and why naming the default
+/// scheme is not enough.</b> Naming <see cref="TestAuthHandler" /> as the default decides who
+/// authenticates a request that reaches <c>UseAuthentication()</c> — and nothing else.
+/// <c>AuthorizationMiddleware</c> <b>re-authenticates</b> against the schemes a policy names and
+/// replaces <c>HttpContext.User</c> with the result, so a route carrying
+/// <c>AddAuthenticationSchemes(ProviderAuthentication.SchemeName)</c> is answered by the real Google
+/// <c>JwtBearer</c> handler however the default is set. That handler sees a test subject header and no
+/// <c>Authorization</c> header, returns <c>NoResult</c>, and the route answers 401 — with no header a
+/// test can set changing it. Repointing the <b>scheme map's handler type</b> is what puts the test
+/// handler on the far side of that second authentication.
+/// </para>
+/// <para>
+/// It is indexed rather than looked up with <c>TryGetValue</c> on purpose: a scheme name this host does
+/// not register is a fixture that has drifted from <c>Program.cs</c>, and a silent no-op there would
+/// leave every test using the flag answering 401 for a reason no assertion names.
+/// </para>
+/// <para>
+/// Measured before it was written, on a host of this shape outside the suite: with the flag off a
+/// route whose policy names the provider scheme answers <c>401</c>, and with it on the same route
+/// answers <c>200</c> carrying the test principal — so the post-configuration does land before
+/// <c>AuthenticationSchemeProvider</c> reads the map.
+/// </para>
 /// </remarks>
 public sealed class ApiFactory(
     string appConnectionString,
@@ -59,7 +87,8 @@ public sealed class ApiFactory(
     IReadOnlyDictionary<string, string?>? settings = null,
     Action<IServiceCollection>? configureServices = null,
     string? adminConnectionString = null,
-    bool usesApplicationAuthentication = false) : WebApplicationFactory<Program>
+    bool usesApplicationAuthentication = false,
+    bool repointsProviderSchemeToTestHandler = false) : WebApplicationFactory<Program>
 {
     /// <summary>
     /// The relying party every host built here answers as. A real domain label rather than a made-up
@@ -162,6 +191,17 @@ public sealed class ApiFactory(
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
             }
 
+            // Only meaningful beside the block above, which is what registers TestAuthHandler in the
+            // container at all: the handler the scheme map names is resolved from services before
+            // ActivatorUtilities is reached, and a type nothing registered would be constructed per
+            // request instead. Both flags on at once is therefore a combination no caller should ask
+            // for, and none does.
+            if (repointsProviderSchemeToTestHandler)
+            {
+                services.Configure<AuthenticationOptions>(options =>
+                    options.SchemeMap[ProviderAuthentication.SchemeName].HandlerType = typeof(TestAuthHandler));
+            }
+
             // Runs last so a caller can replace anything the application registered, including the
             // test authentication above. Tests that need to fail a specific collaborator swap it here
             // rather than constructing a handler by hand, which would couple them to its constructor.
@@ -239,13 +279,31 @@ public sealed class ApiFactory(
     /// Raw value for the <c>email_verified</c> claim. Declared last, and optional, so existing
     /// positional call sites keep compiling. When omitted the handler emits its own default.
     /// </param>
-    public HttpClient CreateAuthenticatedClient(string? subject = null, string? email = null, string? emailVerified = null)
+    /// <param name="extraClaims">
+    /// Further claims the provider asserts beside the three this product reads — the <c>name</c>,
+    /// <c>picture</c> and <c>locale</c> a real token carries. Declared last, and optional, for the same
+    /// reason as every parameter above it. See <see cref="TestAuthHandler.ExtraClaimHeader" /> for why a
+    /// test asserting that a claim is <em>not</em> stored has to be able to send one.
+    /// </param>
+    public HttpClient CreateAuthenticatedClient(
+        string? subject = null,
+        string? email = null,
+        string? emailVerified = null,
+        IReadOnlyDictionary<string, string>? extraClaims = null)
     {
         HttpClient client = CreateSubjectClient(subject, out string resolvedSubject);
         client.DefaultRequestHeaders.Add(TestAuthHandler.EmailHeader, email ?? $"{resolvedSubject}@example.com");
         if (emailVerified is not null)
         {
             client.DefaultRequestHeaders.Add(TestAuthHandler.EmailVerifiedHeader, emailVerified);
+        }
+
+        if (extraClaims is not null)
+        {
+            foreach ((string type, string value) in extraClaims)
+            {
+                client.DefaultRequestHeaders.Add(TestAuthHandler.ExtraClaimHeader, $"{type}={value}");
+            }
         }
 
         return client;

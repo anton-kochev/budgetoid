@@ -13,10 +13,13 @@
 
 ## Purpose
 
-This area covers **who a user is** and how that identity comes to exist. Users are not registered
-through a form — they are provisioned transparently from their Google sign-in, on the first request
-they make **to a route that declares it may create an account**; every other authenticated route
-resolves an existing account or refuses, and never mints one. A user owns **Budgets** and nothing
+This area covers **who a user is** and how that identity comes to exist. There are **two ways in, and
+they are not equivalent.** `POST /api/registration` creates an account as one consented act, with its
+passkey and its card of recovery codes in the same save — that path has its own file,
+[registration.md](registration.md), and the invariant it establishes is stated below. Beside it, the
+older way is still live: users are provisioned transparently from their Google sign-in, on the first
+request they make **to a route that declares it may create an account**; every other authenticated
+route resolves an existing account or refuses, and never mints one. A user owns **Budgets** and nothing
 else. Everything else — accounts, category groups, categories, payees, transactions — belongs to a
 budget, so **the budget, not the user, is the unit of tenancy.** That invariant and the isolation
 rules for the money data live in [budgets.md](budgets.md); this area does not duplicate them. What it
@@ -40,8 +43,10 @@ scoped to a **user** rather than to a budget, and that rule has its canonical st
   which `google` is the only member today — and the provider's `Subject`, the OAuth `sub` claim,
   stable, non-empty and at most `Credential.MaxSubjectLength` = 255 characters. The other two carry
   neither. An account may hold more than one credential, but **at most one of type `federated`** and
-  **at most one of type `recovery_codes`**. Every account is created with exactly one federated
-  Google credential; a signed-in person may then register passkeys beside it, each carrying its own
+  **at most one of type `recovery_codes`**. Every account is created with a federated Google
+  credential; an account created by **registration** is created with all three at once — see the
+  invariant below — while one created by **provisioning** holds that federated credential alone. A
+  signed-in person may then register passkeys beside it, each carrying its own
   verification material on its own tables — see [passkeys.md](passkeys.md) — and may issue
   themselves one set of recovery codes. A signed-in person may **revoke a passkey**, proving
   presence with a fresh WebAuthn assertion, and an account's **last** passkey is refused. The
@@ -140,8 +145,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     `tests/IntegrationTests/RlsIsolationTests.cs` proves the isolation on both axes and
     `RlsCoverageTests.cs` fails any new table that owes a policy and has none.
 
-- **Only a route that declares `ProvisionsUser` may bring an account into existence.** Every other
-  authenticated route resolves an existing account or answers `401` and writes nothing.
+- **Only a route that declares `ProvisionsUser` may bring an account into existence *through the
+  middleware*.** Every other authenticated route resolves an existing account or answers `401` and
+  writes nothing — except the registration group, which declares `RegistersAccount` and creates the
+  account in its own handler, naming nobody on the way past.
   - **Why**: a Google ID token stays valid for up to an hour after the account it names is erased. A
     middleware that minted on *any* authenticated request would let one in-flight poll, one second
     tab, or one service-worker retry resurrect a `users` row carrying the person's email and a
@@ -174,7 +181,22 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
       provider sign-in, one request to a marked group, then the passkey. Today that ordering lives
       only in `ApiFactory.EstablishAccountAsync` and bites whoever builds the client's passkey flow,
       as a 401 at the first step. It disappears when account creation becomes a consented act and
-      the six markers collapse to one.
+      the six markers collapse to one. **`/api/registration` is the exception and it is the whole
+      point of that route**: it is reachable by an identity that has no account, and the account it
+      leaves behind needs no further ordering to be usable.
+    - **A third marker exists, `RegistersAccount`, and it is the fourth arm of the middleware.**
+      `UserProvisioningMiddleware` runs before the endpoint's own policy, so a provider principal
+      with no account would otherwise be refused `NoAccountTitle` before the registration handler was
+      ever entered. Its arm sits **below** the `sub`/`email` and `email_verified` claim gates — placed
+      above them, an account would be created for a caller whose address the provider explicitly
+      declines to assert — and **above** the resolve, because a caller about to register has by
+      definition no account to resolve. **It publishes no identity**, because the handler derives and
+      publishes the account id itself after the signature verifies. It is opt-in like its two
+      neighbours, and it must never appear on a route that also carries `ProvisionsUser`: the
+      middleware reads this one first and returns, so such a route would create nothing while
+      declaring that it may, invisibly to everyone who already has an account. See
+      [registration.md](registration.md) and
+      [ADR 0021](../decisions/0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md).
   - **Counterexample**: answering the unmarked-and-unresolved case with `204` on the erasure route, on
     the grounds that "no account" satisfies erasure's post-condition. It reads well and it is wrong: it
     creates a path through the erasure handler that reports success having verified nothing, which is
@@ -318,6 +340,48 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     one, never a 403.
 
 ## Business Rules & Invariants
+
+- **Rule**: An account created by **registration** holds **exactly one** `federated` credential, **at
+  least one** `passkey`, and **exactly one** `recovery_codes` set, from the instant it exists. An
+  account created by **provisioning** holds the federated credential alone, so the invariant is
+  **registration's** and is not true account-wide today.
+- **Why**: those three credentials are what make an account reachable, readable and recoverable, and
+  an account missing any of them is broken in a way no later request repairs. A `federated` credential
+  alone opens a session that reaches no budget content at all, so the account exists holding nothing
+  that can ever read it — and because erasure is gated on a fresh WebAuthn assertion, it cannot even
+  be emptied. A passkey with no card is an account whose keys leave with the device.
+  - **Why the database does not hold it, which is the statement
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) requires.** All three
+    are **cross-row** claims: no `CHECK` sees a sibling row, and no unique index expresses "at least
+    one". The two mechanisms that could reach them are both refused. A **trigger** is procedural logic
+    pushed down purely to satisfy "lowest layer", which ADR 0002 rules out. A **circular deferred
+    foreign key** — `users` pointing back at the credential that reaches it, `NOT NULL DEFERRABLE
+    INITIALLY DEFERRED` — would make the state unstorable, at the cost of a cycle in the owned graph
+    that the erasure cascade would then have to run against. The schema holds only the two *upper*
+    bounds, and those it holds properly: `IX_credentials_user_id_federated` and
+    `IX_credentials_user_id_recovery_codes`, each partial on its own `type`.
+  - **What holds it instead is that exactly one write path creates a `users` row and writes all three
+    credentials in the same save.** A second such path would create a credential-less account and
+    **redden nothing**. Naming that here is what a future reader gets instead of a constraint.
+  - **The schema still permits the state, and one test creates it on purpose.**
+    `RepositoryConstraintAttributionTests.AddBudget_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape`
+    tracks a bare `User.Create(…)` with no credential at all, because its subject is the email index
+    rather than identity resolution, and the comment beside it says so. That is not a hole in the
+    rule; it is the rule's own statement that the schema is not where it lives.
+- **Enforced in**: `RegisterAccountHandler` builds all five entities and hands them to
+  `IRegistrationRepository.RegisterAsync`, which adds and saves **once**; `Domain.Users.Registration`
+  is the record that makes "a registration without one of them" unspellable, since every member is
+  required and every member is an entity rather than the raw material it was built from. Above that,
+  the ladder refuses a request carrying no card or no wrapped keys before anything is written. See
+  [registration.md](registration.md).
+- **Counterexample**: adding a second route that creates an account — a support tool, a seed path, an
+  import. Every test in the suite stays green and the account it produces can never read itself.
+- **Note**: `UserProvisioningMiddleware` is still live and still creates accounts holding only a
+  federated credential on six route groups. Do not read this rule as a claim about every row in
+  `users`. The older path is removed in later work, and the invariant becomes account-wide then.
+- **Source**: `[SOURCE: user-story]`
+
+---
 
 - **Rule**: A user is provisioned idempotently on sign-in, keyed on the federated credential's
   `(provider, subject)`. What the provider reports on a **later** sign-in changes nothing about the
@@ -696,6 +760,8 @@ stateDiagram-v2
     Authenticated --> Rejected : email not asserted as verified
     Authenticated --> Anonymous : the endpoint carries IAllowAnonymous
     Anonymous --> [*] : continues with no identity, before the claim gate
+    Authenticated --> Registering : the endpoint carries RegistersAccount, after the claim gates
+    Registering --> [*] : continues naming nobody; the handler publishes the id it derives
     Authenticated --> Lookup : has sub + email + verified email
     Lookup --> Existing : user found by federated credential
     Lookup --> Refused : no credential, and the route does not declare ProvisionsUser
@@ -721,6 +787,7 @@ stateDiagram-v2
 | Lookup → Existing | A federated credential holds this `(provider, subject)`; its user is the account | — |
 | Lookup → Refused | No credential holds it and the endpoint carries no `ProvisionsUser` metadata | 401 ProblemDetails. The request stops before routing dispatches, so no handler runs and no row is written |
 | Authenticated → Anonymous | The endpoint carries `IAllowAnonymous` | None. The marker is read **before** the claim gate and the request continues with no identity at all, exactly as an unauthenticated one would. It never reaches the lookup, so a token attached by a client interceptor changes nothing about those routes — which is what lets a passkey sign-in complete on a token the claim gate would refuse |
+| Authenticated → Registering | The endpoint carries `RegistersAccount` | The two claim gates have already run — this arm is **below** them, so a registration is still refused for a missing claim or an unverified address. It is **above** the resolve, because the caller has no account to resolve. Nothing is published and nothing is written here; the ceremony behind it derives the account id from its own challenge and publishes it after the signature verifies. See [registration.md](registration.md) |
 | Existing → Resolved | Always, once the credential resolves | None. The branch reads and returns; whatever the token now says about this person is not applied |
 | Creating → Resolved | New user, its first credential **and its default budget** inserted in one save | `User.Create` validates email presence and both length bounds; `Credential.CreateFederated` validates provider and subject; `Budget.CreateDefault` validates the owner |
 | Creating → InsertRejected | A unique violation on the credential index, the email index, or both | `TryAddAsync` returns `false` without deciding which rule fired — the reported constraint name cannot say — and neither row is left behind |
@@ -746,6 +813,10 @@ ELSE IF the sub or email claim is missing or blank
   THEN 401 ProblemDetails "Authenticated principal is missing required claims."
 ELSE IF email_verified does not parse as true                ← absent, blank, "false" and "1" all fail
   THEN 401 ProblemDetails "Authenticated principal's email address is not asserted as verified."
+ELSE IF the endpoint carries RegistersAccount
+  THEN continue naming nobody                            ← below the gates, above the resolve; the
+                                                           ceremony derives and publishes the id
+                                                           itself, after the signature verifies
 ELSE IF a federated credential already holds that provider and sub
   THEN use its user                                      ← no write; the token's claims are not applied
 ELSE IF the endpoint does not declare ProvisionsUser
@@ -807,6 +878,14 @@ The budget branch that runs after this, on every path, is in
   `ProvisionsUser` — so a brand-new subject whose **first** authenticated request is this one is
   refused with `NoAccountTitle` rather than provisioned. A client must reach one of the six
   account-creating route groups before it reaches this one.
+- **[Registration](registration.md)**: the other way an account comes to exist, and the one that
+  creates it on purpose. Its two routes carry `RegistersAccount` and never `ProvisionsUser`, they are
+  the only routes in this application whose policy **names** an authentication scheme, and the account
+  they leave behind satisfies the three-credential invariant above from its first instant. The account
+  identifier they write is derived from the ceremony's own challenge rather than drawn by
+  `Guid.CreateVersion7()`, which is why `User` carries a second factory, `CreateWithId`, rather than an
+  optional parameter on `Create` — `OwnershipKeyImmutabilityTests` asks whether the key is written
+  once, not where the value came from, so widening the existing factory would have reddened nothing.
 - **[Recovery Codes](recovery-codes.md)**: the third credential type, and the second family of rows
   hanging off a `credentials` row. Its three routes — `POST` and `GET /api/me/recovery-codes`, and the
   anonymous `POST /api/recovery-codes/redemption` — carry no `ProvisionsUser` and may never gain one: a
@@ -843,6 +922,12 @@ The budget branch that runs after this, on every path, is in
   `UserRepositoryTests.TryAddAsync_WhenOnlyTheCredentialCollides_LeavesNoOrphanedUserRow` and
   `…TryAddAsync_WhenTheEmailCollides_LeavesNoUserCredentialOrBudgetRow` are what fail if someone
   splits it.
+
+  **Registration makes the same argument at ten times the size**, and the `22P02` half of it is
+  sharper there rather than merely repeated: that path writes roughly thirty rows across nine
+  relations in one save and takes **no** transaction, for exactly the reason above — the identity is
+  published inside the handler, so a wrap would configure the connection while `app.current_user_id`
+  was still empty. See [registration.md](registration.md).
 
   Two shapes were considered and rejected, both of which a later reader is likely to propose.
   **Wrapping the writes in `ITransactionalExecutor`** ([ADR 0003](../decisions/0003-wrap-multi-repository-writes-in-one-transaction.md))

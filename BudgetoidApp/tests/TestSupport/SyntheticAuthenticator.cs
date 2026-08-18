@@ -50,6 +50,27 @@ public sealed class SyntheticAuthenticator
     public byte[] CoseKey { get; }
 
     /// <summary>
+    /// The user handle this device kept from the last <c>webauthn.create</c> it ran, or null when that
+    /// ceremony was handed none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the whole of what a device knows about the account it was enrolled to.</b> A real
+    /// authenticator stores <c>publicKey.user.id</c> verbatim at registration and hands exactly those
+    /// bytes back as the assertion's <c>userHandle</c> — it never derives, recomputes or re-reads the
+    /// value, so a relying party that put one thing in the options and wrote another into its own
+    /// account row has locked the device out permanently and cannot find out from the device.
+    /// </para>
+    /// <para>
+    /// Modelling that storage here is what lets a test present the handle the <em>server</em> issued
+    /// instead of one the test derived for itself. A test that computes the handle from the challenge
+    /// and passes it to <see cref="Authenticate" /> agrees with the finish leg's derivation whatever
+    /// the options leg said, and so cannot see the two legs disagree.
+    /// </para>
+    /// </remarks>
+    public byte[]? StoredUserHandle { get; private set; }
+
+    /// <summary>
     /// Creates a P-256 device.
     /// </summary>
     public static SyntheticAuthenticator CreateEs256(string relyingPartyId, byte[]? credentialId = null)
@@ -141,6 +162,13 @@ public sealed class SyntheticAuthenticator
     /// Writes the attestation object's <c>authData</c> as a CBOR text string instead of bytes.
     /// </param>
     /// <param name="omitAuthData">Leaves <c>authData</c> out of the attestation object.</param>
+    /// <param name="userHandle">
+    /// The <c>publicKey.user.id</c> the relying party issued with these options, kept on
+    /// <see cref="StoredUserHandle" /> the way a real authenticator keeps it. Declared last, and
+    /// optional, so every existing call site keeps compiling and keeps behaving exactly as it does
+    /// today: nothing about the bytes this method returns depends on it, because a registration
+    /// response carries no user handle anywhere — the handle is stored, not signed.
+    /// </param>
     public AttestationResult Register(
         byte[] challenge,
         string origin,
@@ -157,10 +185,16 @@ public sealed class SyntheticAuthenticator
         ushort? declaredCredentialIdLengthOverride = null,
         int? truncateToLength = null,
         bool encodeAuthDataAsTextString = false,
-        bool omitAuthData = false)
+        bool omitAuthData = false,
+        byte[]? userHandle = null)
     {
         ArgumentNullException.ThrowIfNull(challenge);
         ArgumentException.ThrowIfNullOrEmpty(origin);
+
+        // Assigned unconditionally, including to null. A device holds one handle per credential and a
+        // fresh enrolment replaces it; a member that only ever widened would leave a second ceremony's
+        // device answering with the first ceremony's account.
+        StoredUserHandle = userHandle;
 
         byte[] clientDataJson = WebAuthnWireFormat.EncodeClientDataJson(
             CollectedClientData.RegistrationType,

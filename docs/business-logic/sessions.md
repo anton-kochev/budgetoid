@@ -19,10 +19,12 @@ without asking anyone. Identity — who a person is, and which credentials prove
 has answered that question. The distinction is the whole point: a token issued by an identity
 provider cannot be taken back by this product — revoking access would mean asking the provider to
 revoke it — while a session row can be ended here, in one write, by the same role that serves every
-request. **Three things establish a session and there is no fourth**, and all three open a `Full`
-session lasting 14 days.
+request. **Four things establish a session and there is no fifth**, and all four open a `Full`
+session lasting 14 days. The fourth is the newest and the earliest in a person's life with the
+product: **completing `POST /api/registration`**, which signs somebody in on the passkey the same
+request created — see [registration.md](registration.md).
 
-**A session is now issued, presented and ended, and this file describes a working thing.** All three
+**A session is now issued, presented and ended, and this file describes a working thing.** All four
 establishing paths mint a handle and set the cookie; a request presenting it is authenticated from
 it, publishing the account and the ambient budget; and `POST /api/me/session/revocation` ends it. The
 loop is closed on the server.
@@ -116,8 +118,17 @@ and is simply not there — or a trigger for the "at least one" half, which
 session alone — so a session cannot be written without its handle by construction rather than by
 every caller remembering. `ISessionTokenRepository` stays read-only for the same reason, stated from
 the other side: a second way to write a token is a way to produce one naming a session that was never
-committed. One write path, one save, exactly as it is the whole of what holds "every factor has
-wrapped keys".
+committed.
+
+**A second port now writes both rows, and the invariant is untouched because the pairing is what was
+pinned rather than the port.** `IRegistrationRepository.RegisterAsync` writes `sessions` and
+`session_tokens` itself, which is a deliberate departure argued on that port and in
+[registration.md](registration.md): there is no transaction on that path, so a second call to
+`ISessionRepository.AddAsync` — which saves on its own — would be a second transaction and the whole
+account would stop being atomic, silently. What keeps the rule literally true is that
+`Domain.Users.Registration` carries the session **and** its token as required members, so there is
+still no shape of any call in this system that writes one without the other. Read that as the reason
+a third writer is a decision rather than a refactor.
 
 The schema still permits what the application refuses — several tokens for one session, or none — and
 that gap is deliberate rather than an oversight. Closing it would need a unique constraint on
@@ -169,7 +180,7 @@ database holds, and the sentence above is what makes it one-to-one in fact.
     never live can only mislead whatever reads it.
   - **Enforced in**: `CK_sessions_lifetime` (`expires_at_utc > created_at_utc`), restated in
     `Session.Establish` so a bad call fails with a named field rather than a raw `23514`. No request
-    can reach it: each of the three establishing paths computes the expiry by adding the shared
+    can reach it: each of the four establishing paths computes the expiry by adding the shared
     lifetime to the instant it just read, so the pair is well-formed by construction and nothing
     renders the field error into a response. The restatement is a guard against a future caller
     that computes an expiry from something a request supplied, not a validation a client can trip
@@ -570,7 +581,10 @@ database holds, and the sentence above is what makes it one-to-one in fact.
     default and a route argues its way out.
 - **Enforced in**: `FullSessionRequirement` and its handler, carried on the fallback authorization
   policy in `Program.cs` beside `RequireAuthenticatedUser` — so it reaches every route declaring no
-  policy of its own, which is everything outside the anonymous surface. Routes opt out with
+  policy of its own, which is everything outside the anonymous surface and the **registration** group.
+  That group declares a policy naming the identity provider's scheme, which takes it out of the
+  fallback; the outcome is right rather than worked around, because a caller with no session at all
+  gives a requirement about session kinds nothing to judge. Routes opt out with
   `AllowsLockedSessionAttribute`; the opted-out set is exactly `POST /api/me/session/revocation`,
   read whole off the route table by `LockedSessionTests`, the way `AnonymousSurfaceTests` reads the
   anonymous one. The kind claim is judged by a **round trip** — parse, then compare the presented
@@ -618,7 +632,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, and from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
+| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `RegisterAccountHandler` once a registration ceremony verifies — over the **passkey** credential it just created, never the recovery-codes one — from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, and from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
 | Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached two ways: through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` and `GenerateRecoveryCodesHandler` each call before deleting a credential, and through `RevokeSessionHandler`, which `POST /api/me/session/revocation` calls to end the caller's own | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
 
@@ -677,6 +691,12 @@ enumerated spelling makes at the database — see the first rule above.
 - **[Users & Ownership](users-and-ownership.md)** — the credential that establishes a session, and
   the account it belongs to. A session adds nothing to identity; it records what a credential already
   proved.
+- **[Registration](registration.md)** — the **fourth** establishing path, and the only one that writes
+  `sessions` and `session_tokens` through a port other than `ISessionRepository`. It has no
+  transaction, so the session row and its handle ride on the same save as the account; the session is
+  opened over the **passkey** credential and never over the recovery-codes one, a mistake that
+  satisfies every constraint in the schema and changes only which credential a later revocation
+  sweeps.
 - **[Recovery Codes](recovery-codes.md)** — a set of codes opens a `Full` session, exactly as a passkey
   does, and `RedeemRecoveryCodeHandler` establishes one the way `CompleteAssertionHandler` establishes a
   passkey's. `GenerateRecoveryCodesHandler` calls the revocation sweep, as `RevokePasskeyHandler` does.
@@ -707,7 +727,7 @@ enumerated spelling makes at the database — see the first rule above.
 ## Edge Cases & Known Gotchas
 
 - **The loop is closed on the server and open on the client, and that is now the whole of the gap.**
-  All three establishing paths mint a handle and set the cookie, a request presenting it is
+  All four establishing paths mint a handle and set the cookie, a request presenting it is
   authenticated from it, and sign-out ends it. Every operation in this file is live rather than
   anticipatory: revoking a passkey really does end that device's access, and a regeneration that
   swept a live session really does sign the person back in over the new set. What is missing is a
@@ -727,12 +747,16 @@ enumerated spelling makes at the database — see the first rule above.
     ordering is held by the positive tests, not by the refusal ones.
   - **A first issue of recovery codes sets no cookie.** Only the branch that swept a live session
     re-establishes one, and that condition is the rule rather than a detail — a handler minting
-    unconditionally passes every other test on that path.
-  - **The token is drawn outside the transactional delegate**, on all three paths. Both positions are
-    correct and no test distinguishes them, which is exactly why the choice is written down: outside
-    means one secret per request rather than one per retry attempt, and it means correctness does not
-    rest on the subtle property that the value a retried delegate returns belongs to the attempt that
-    survived.
+    unconditionally passes every other test on that path. Registration is not an exception to it:
+    that route always sets a cookie, because it always establishes a session, and there is nothing
+    of the account's for it to have swept.
+  - **The token is drawn outside the transactional delegate**, on the three paths that have one.
+    Both positions are correct and no test distinguishes them, which is exactly why the choice is
+    written down: outside means one secret per request rather than one per retry attempt, and it
+    means correctness does not rest on the subtle property that the value a retried delegate returns
+    belongs to the attempt that survived. **Registration has no delegate at all** — no transaction
+    wraps its write, for the `22P02` reason [registration.md](registration.md) states — so there the
+    question does not arise.
   - **The API's default authentication scheme is a temporary bridge**, `Budgetoid.Bridge`, a policy
     scheme that forwards to the cookie handler when the cookie is present and to `JwtBearer`
     otherwise. It exists so the whole existing surface keeps working while this area lands one commit
@@ -814,11 +838,11 @@ enumerated spelling makes at the database — see the first rule above.
   - **Both callers reach it through the command handler rather than straight to `ISessionRepository`**,
     and that is deliberate: the handler is where the clock is read, so one decision to end access is
     stamped as one instant however many rows it touches.
-- **The expiry is decided by the caller, and the three callers read one value.**
+- **The expiry is decided by the caller, and the four callers read one value.**
   `Session.Establish` validates only that the expiry is after the creation instant; the number itself
   — **14 days** — is `SessionPolicy.Lifetime` in `Application/Sessions`, which
-  `CompleteAssertionHandler`, `RedeemRecoveryCodeHandler` and `GenerateRecoveryCodesHandler` each add
-  to the instant they read. It lives in Application rather than Domain because how long a session
+  `RegisterAccountHandler`, `CompleteAssertionHandler`, `RedeemRecoveryCodeHandler` and
+  `GenerateRecoveryCodesHandler` each add to the instant they read. It lives in Application rather than Domain because how long a session
   lasts is product policy, which
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) keeps above the
   invariants, and it is not on `IPasskeyCeremonyPolicy` because a session lifetime that varies per
@@ -831,10 +855,13 @@ enumerated spelling makes at the database — see the first rule above.
     caller cleared a passkey gate, which is stronger than whatever opened the session that path's
     sweep took, so the session it hands back must not be worth less than the one it ended. **Any two
     of them differing is a defect rather than a decision**, and sharing the value is the only shape in
-    which a single edit cannot separate them — a fourth establishing path inherits the interval by
-    construction rather than by somebody remembering the rule.
+    which a single edit cannot separate them — which is exactly what happened when the fourth path
+    arrived: `RegisterAccountHandler` inherited the interval by construction rather than by anybody
+    remembering the rule.
   - **What is shared is the interval and nothing else.** *When* each handler establishes its session —
-    after the signature verifies, after the code is spent, after the replacement set is saved — is a
-    security property that path owns, argued at its own call site and stated as its own rule in
-    [passkeys.md](passkeys.md) and [recovery-codes.md](recovery-codes.md). One lifetime is not licence
-    to lift those sequences into anything shared; they agree about a number and about nothing else.
+    after the signature verifies, after the code is spent, after the replacement set is saved, or
+    inside the one save that creates the whole account — is a security property that path owns, argued
+    at its own call site and stated as its own rule in [passkeys.md](passkeys.md),
+    [recovery-codes.md](recovery-codes.md) and [registration.md](registration.md). One lifetime is not
+    licence to lift those sequences into anything shared; they agree about a number and about nothing
+    else.

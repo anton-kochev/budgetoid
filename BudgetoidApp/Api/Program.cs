@@ -345,6 +345,7 @@ app.MapRecoveryCodeEndpoints();
 app.MapDataExportEndpoints();
 app.MapSignedInUserEndpoints();
 app.MapSessionEndpoints();
+app.MapRegistrationEndpoints();
 
 await app.RunAsync();
 

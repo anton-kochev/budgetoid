@@ -53,13 +53,17 @@ Auth is live Google OAuth.
 
 **The budget is the unit of tenancy.** `UserProvisioningMiddleware` resolves the Google
 `sub` (via `ResolveUserHandler`) into a user id and default budget id on the scoped
-`CurrentUser`; `IBudgetContext` exposes the ambient budget. **Only a route carrying
-`ProvisionsUser` metadata may create an account** — every other authenticated route resolves
-or answers 401 and writes nothing at all, so a token outliving an erasure cannot resurrect
-the row. An account, its first credential and its default budget are created in **one**
-`SaveChanges`; there is no heal, and a resolved account with no budget throws. The marker is
-opt-in on six route groups; adding it anywhere else needs the argument in
-[users-and-ownership.md](docs/business-logic/users-and-ownership.md). Read
+`CurrentUser`; `IBudgetContext` exposes the ambient budget. **Two paths create an account and
+they are not equivalent.** Through the middleware, **only a route carrying `ProvisionsUser`
+metadata may create one** — every other authenticated route resolves or answers 401 and writes
+nothing at all, so a token outliving an erasure cannot resurrect the row. An account, its first
+credential and its default budget are created in **one** `SaveChanges`; there is no heal, and a
+resolved account with no budget throws. That marker is opt-in on six route groups; adding it
+anywhere else needs the argument in
+[users-and-ownership.md](docs/business-logic/users-and-ownership.md). The other path is
+`POST /api/registration`, which creates nothing without a passkey and a card of recovery codes —
+see the registration bullet below and
+[registration.md](docs/business-logic/registration.md). Read
 [data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries.
 Load-bearing rules, each explained there or in the linked decision:
 
@@ -108,14 +112,20 @@ Load-bearing rules, each explained there or in the linked decision:
   authenticates on exactly one route, the one that ends sessions, marked with
   `AcceptsEndedSessionAttribute` and reaching no ambient budget even there; and the default scheme is
   a **temporary** `Budgetoid.Bridge` policy scheme forwarding to the cookie when it is present and to
-  `JwtBearer` otherwise, deleted when sign-in leaves the identity provider. All three establishing
+  `JwtBearer` otherwise, deleted when sign-in leaves the identity provider. All **four** establishing
   paths now mint a handle and set the cookie, and three rules hold that: **`ISessionRepository.AddAsync`
   takes the session *and* its token with no overload taking a session alone**, so a handle-less session
   is unwritable and `ISessionTokenRepository` can stay read-only; **no response body carries the handle
   or a session id** — the handlers return the token beside their result through a type the endpoint
   never serialises, and a census over every type a route returns keeps that true of records added
-  later; and **a first issue of recovery codes sets no cookie**, only the branch whose sweep ended a
-  live session. `session_tokens` is also the **third** table `GenerateRecoveryCodesHandler`'s
+  later; and on `POST /api/me/recovery-codes` **a first issue sets no cookie**, only the branch whose
+  sweep ended a live session — registration issues a first set *and* sets one, which is not an
+  exception to that rule but a different route establishing a session of its own.
+  **`ISessionRepository` is no longer the only writer**: `IRegistrationRepository.RegisterAsync` writes
+  both rows itself, because `AddAsync` saves on its own and registration has no transaction, so two
+  calls would be two transactions. What was pinned is the *pairing*, not the port, and it survives —
+  `Registration` carries the session **and** its token. A third writer is a decision, not a detail.
+  `session_tokens` is also the **third** table `GenerateRecoveryCodesHandler`'s
   never-materialise rule binds, and the only one where it fails loudly (`42501`) — but only when a read
   materialises entities, so turning one into a projection makes the trap stop biting without making the
   rule stop applying. See
@@ -123,7 +133,8 @@ Load-bearing rules, each explained there or in the linked decision:
   [ADR 0019](docs/decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md).
 - **A session opened by a federated credential reaches one route, and the gate is opt-out.**
   `FullSessionRequirement` rides the **fallback** authorization policy beside `RequireAuthenticatedUser`,
-  so it covers every route declaring no policy of its own — everything outside the anonymous surface —
+  so it covers every route declaring no policy of its own — everything outside the anonymous surface
+  and the registration group, which declares one naming the provider scheme and nothing else —
   and a route escapes with `AllowsLockedSessionAttribute`. The opted-out set is exactly
   `POST /api/me/session/revocation`, read whole off the route table. **Opt-out, unlike its two
   neighbours**: `ProvisionsUser` and `AcceptsEndedSession` are opt-in because a forgotten marker there
@@ -141,6 +152,26 @@ Load-bearing rules, each explained there or in the linked decision:
   bearer request working and leaves with the `Budgetoid.Bridge` scheme. Nothing establishes a locked
   session today, so the gate is unreachable from any live route and is held entirely by tests that seed
   one through the database, each pairing its refusal with a `Full` session on the same account.
+- **Registration is one act and one transaction, and the account id is derived rather than chosen.**
+  Two routes under `/api/registration`, authenticated by the **provider scheme and nothing else** —
+  not anonymous, because an account may not exist without a completed provider exchange. They escape
+  `UserProvisioningMiddleware`'s 401 through a **third** marker, `RegistersAccountAttribute`, whose arm
+  sits **below** the `sub`/`email` and `email_verified` gates and **above** the resolve and publishes
+  no identity. The finish leg writes ~30 rows across nine relations in **one `SaveChanges`** — three
+  credentials, eleven wrapped-key rows, the session and its token — and **no
+  `ITransactionalExecutor` may wrap it**, for the `22P02` reason `EnsureUserHandler` states at three
+  rows. `RegistrationAccountId.For(challenge)` is called by **both** legs over the same nonce, because
+  `user.id` in the creation options is the WebAuthn user handle and the assertion path compares it
+  byte-for-byte against `users.id`: disagree, and every later sign-in from that authenticator is
+  refused permanently with no error naming the cause. It is derived **after** `ConsumeAsync`, never
+  before — the finish leg's only source for those bytes is the client's own `clientDataJSON`, so an
+  earlier derivation is an account id the caller chose. Three more a reader will simplify: the ladder's
+  order is the rule (consume before verify, prf gate after verification, key-custody payload after the
+  prf gate); the passkey's factor id must differ from all ten codes', a rule the primary key would
+  otherwise answer with a sentence naming a factor nobody registered; and the session opens over the
+  **passkey** credential, never the recovery-codes one, which changes nothing a constraint can see and
+  everything a later revocation sweeps. See [registration.md](docs/business-logic/registration.md) and
+  [ADR 0021](docs/decisions/0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md).
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
   `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
 - **A credential type has exactly one spelling and it is written out, never derived from the member
@@ -190,12 +221,16 @@ Load-bearing rules, each explained there or in the linked decision:
   enforcing nothing. `wrapped_account_keys` is **policed** by `user_isolation`, not exempt: it is read
   after the request has an identity, and it is keyed on **`factor_id`** — a **factor is not a
   credential**: a passkey is one factor, a set of recovery codes is **ten**, because each code derives
-  its own key-encryption key and a person redeems whichever one they still have. Registering a passkey
-  and issuing a set each **require** `factorId` and both envelopes **per factor**, written in the
-  **same** `SaveChanges` as the credential. Read what that buys precisely: the two `NOT NULL` envelope
-  columns make "a row carries both keys or neither" a schema fact, but **"every factor has a row" is
-  not one** — one-to-optional needs a trigger, which ADR 0002 forbids — it is held by there being
-  exactly two write paths, so a third would create a keyless factor and redden nothing.
+  its own key-encryption key and a person redeems whichever one they still have. Registering a passkey,
+  issuing a set, and registering an account each **require** `factorId` and both envelopes **per
+  factor**, written in the **same** `SaveChanges` as the credential — the third writes **eleven** rows
+  at once, the passkey's pair plus one per code. Read what that buys precisely: the two `NOT NULL`
+  envelope columns make "a row carries both keys or neither" a schema fact, but **"every factor has a
+  row" is not one** — one-to-optional needs a trigger, which ADR 0002 forbids. What holds it is a
+  property of the write surface rather than a count: **every path that creates a factor demands the
+  envelopes and writes them in the credential's own save**, so a path cannot half-comply. Three paths
+  satisfy it today; a fourth that did not would create a keyless factor and redden nothing, which is
+  why the property is the rule and the number is only a fact about today.
   `factor_id` is client-minted and
   deliberately **not** `credentials.id` — letting a client choose that id retires ADR 0014's first leg.
   It arrives in **one spelling**: the lower-case 36-character hyphenated form, no surrounding

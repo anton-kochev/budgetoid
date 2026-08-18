@@ -13,12 +13,19 @@ namespace IntegrationTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Why a census and not three assertions.</b> Three routes establish a session today and each has a
-/// test of its own pinning the members of its body whole. What none of them can do is cover the fourth
+/// <b>Why a census and not four assertions.</b> Four routes establish a session today and each has a
+/// test of its own pinning the members of its body whole. What none of them can do is cover the fifth
 /// route — the one added next, by somebody who has just read a handler that now has a raw token in scope
 /// and needs to get it to the client. The cookie is the handle and it is <c>HttpOnly</c> precisely so
 /// that nothing else is; a token echoed into a body is readable by every script on the page, and it works
 /// exactly as well as the cookie, so nothing downstream fails.
+/// </para>
+/// <para>
+/// <b>The fourth is registration, and it is the one this file was already waiting for.</b> The paragraph
+/// above said "the fourth route — the one added next" while nothing held that route to the rule, so when
+/// it landed the census walked it and said nothing about it. That is the failure this file exists to
+/// stop, running one level up: a surface that grows silently. Adding the route to the named set below is
+/// what turns a green that happened into a green that is checked.
 /// </para>
 /// <para>
 /// <b>The surface is derived from the route table rather than listed.</b> A written-down set of response
@@ -39,7 +46,7 @@ namespace IntegrationTests;
 /// <b>Names are what this can judge, and names are not what a value is.</b> A member called
 /// <c>continuation</c> holding a raw handle walks past every rule here, exactly as
 /// <c>UnwrappedKeyMaterialVocabulary</c> says a <c>bytea</c> called <c>payload</c> walks past its own. The
-/// three route tests beside this one are what close that gap from the other side: each compares the body
+/// four route tests beside this one are what close that gap from the other side: each compares the body
 /// it received against the cookie value it received, so a handle under any name at all is caught by the
 /// payload comparison rather than by a word.
 /// </para>
@@ -69,18 +76,28 @@ public sealed class SessionTokenSecrecyTests
 
         await Assert.That(surface.Count).IsGreaterThan(20);
 
-        // The three responses this rule is about, named by hand and by string because each is a private
+        // The four responses this rule is about, named by hand and by string because each is a private
         // nested record this project cannot write in a typeof. Between them they are every route that
         // establishes a session, so a derivation that stopped reaching endpoint return types reds here
         // rather than going quiet.
+        //
+        // RegistrationEndpoints.RegistrationResponse is THE FOURTH ROUTE THE CLASS REMARKS ABOVE WERE
+        // WRITTEN ABOUT, and naming it here is what stops it joining the surface silently. It arrived
+        // green — the census already walked it, because the surface is derived from the route table and
+        // not from this list — which is exactly the state that reads like coverage and is not: delete
+        // the derivation's reach into endpoint return types and every route above still reds while this
+        // one would not have.
         await Assert.That(reached).Contains("PasskeyEndpoints.AssertionResponse");
         await Assert.That(reached).Contains("RecoveryCodeEndpoints.RedemptionResponse");
         await Assert.That(reached).Contains("RecoveryCodeEndpoints.RecoveryCodeGenerationResponse");
+        await Assert.That(reached).Contains("RegistrationEndpoints.RegistrationResponse");
 
-        // The recursion's own control: this one is a member type of the response above it, so a walk
-        // that stopped at the top level would report green having never looked at the one nested
-        // response in the API — which is also the only place a re-established session is described.
+        // The recursion's own control: each of these is a member type of a response above it, so a walk
+        // that stopped at the top level would report green having never looked at either of the two
+        // nested responses in the API — which are also the only places a session opened by something
+        // other than a plain sign-in is described.
         await Assert.That(reached).Contains("RecoveryCodeEndpoints.ReestablishedSessionResponse");
+        await Assert.That(reached).Contains("RegistrationEndpoints.EstablishedSessionResponse");
     }
 
     [Test]

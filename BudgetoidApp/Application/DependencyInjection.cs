@@ -27,6 +27,7 @@ using Application.Payees.RenamePayee;
 using Application.RecoveryCodes.CountRecoveryCodes;
 using Application.RecoveryCodes.GenerateRecoveryCodes;
 using Application.RecoveryCodes.RedeemRecoveryCode;
+using Application.Registration;
 using Application.Sessions.AuthenticateSession;
 using Application.Sessions.RevokeSession;
 using Application.Sessions.RevokeSessionsForCredential;
@@ -92,6 +93,8 @@ public static class DependencyInjection
         services.AddScoped<GenerateRecoveryCodesHandler>();
         services.AddScoped<CountRecoveryCodesHandler>();
         services.AddScoped<RedeemRecoveryCodeHandler>();
+        services.AddScoped<BeginAccountRegistrationHandler>();
+        services.AddScoped<RegisterAccountHandler>();
 
         // Registered as the concrete type, because it has no interface and must not grow one: a
         // stubbable gate would let a test prove erasure works with the proof faked out.

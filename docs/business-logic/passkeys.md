@@ -13,10 +13,13 @@
 
 ## Purpose
 
-This area covers **the three WebAuthn ceremonies**: registering a passkey to an account, signing in
-with one, and re-proving possession of one before an action too destructive to take on a bearer token
-alone. It is one of the three paths that open a session — the other two are redeeming a recovery code
-and regenerating a set that was carrying live sessions, both in [recovery-codes.md](recovery-codes.md)
+This area covers **the four WebAuthn ceremonies**: creating an account with the passkey that will
+reach it, registering a further passkey to an account that already exists, signing in with one, and
+re-proving possession of one before an action too destructive to take on a bearer token alone. Two of
+the four paths that open a session run a ceremony here — an assertion, and the account registration
+whose own rules live in [registration.md](registration.md); the other two are redeeming a recovery
+code and regenerating a set that was carrying live sessions, both in
+[recovery-codes.md](recovery-codes.md)
 — and a passkey is one of the two credential types whose session reaches budget content, the other
 being the set of codes, a secret the holder possesses for the same reason; `federated` is the only
 type that can never, because an authorization exchange returns claims rather than a secret a client
@@ -44,9 +47,12 @@ covers the answering itself. What of it is built today and what is not is the fi
 - **`WebAuthnChallengeRow`** — a 32-byte nonce, the ceremony it was issued for, and its lifetime. A
   persistence-layer type rather than a domain entity: a protocol nonce is not a domain concept, it is
   a row the infrastructure keeps so a stateless protocol can be resumed. Its `ceremony` vocabulary is
-  `registration`, `authentication`, `reauthentication`, bounded by
+  `registration`, `authentication`, `reauthentication` and `account_registration`, bounded by
   `CK_webauthn_challenges_ceremony`. The row carries **no owner column** and must not gain one — see
-  the pinned column set below.
+  the pinned column set below. The fourth value is snake case for the reason `credentials.type`
+  spells `recovery_codes`: it is a two-word member, and camel case would produce a token reading like
+  a third thing. Adding a pool is therefore a **schema** change, which is the point — the vocabulary
+  is enumerated so that a spelling nobody chose is unstorable rather than merely undefined.
 
 Deliberately **absent**: AAGUID, transports, a last-used instant, backup-eligibility flags, and the
 attestation statement. Nothing in this design reads any of them — no `allowCredentials` is ever sent,
@@ -147,24 +153,30 @@ erDiagram
     twelve where an account holds two passkeys and a set. What it wants is the rows filed against
     `passkey` credentials.
   - **Enforced in**: `CompleteRegistrationHandler` for the shape, and `PasskeyRepository.TryAddAsync`
-    writing all four rows in **one** save. Read what each half holds: the two envelope columns are
+    writing all four rows in **one** save. `RegisterAccountHandler` demands the same three members on
+    the account-registration leg and writes its passkey's row in the same save as everything else.
+    Read what each half holds: the two envelope columns are
     `NOT NULL` on a table keyed on `factor_id`, so "a row carries both keys or neither" is a schema
     fact — but **"a passkey has a row" is not one**, because one-to-optional needs a trigger and
-    ADR 0002 forbids pushing that down. It is held by there being exactly two paths that write a
+    ADR 0002 forbids pushing that down. It is held by there being exactly **three** paths that write a
     factor at all. A passkey is one factor; a set of recovery codes is ten. See
     [account-keys.md](account-keys.md).
     - **The identifier has one spelling**, and `CanonicalFactorId.TryParse` is where that is held —
-      one definition both write paths call. The rule itself is normative in
+      one definition every write path calls. The rule itself is normative in
       [account-keys.md](account-keys.md) rather than here, because it is a cross-client contract and
       a second copy of it is a second thing to keep true. What this route adds: the identifier is the
       table's primary key, so a second registration reusing one is a 409 whose sentence is
       deliberately different from the "this authenticator is already registered" 409 beside it.
 
 - **A registration MUST NOT complete unless the client reports a `prf` extension result of true.**
+  Both registering legs carry it, at the same position in their own ladders.
   - **Why**: an authenticator that cannot derive a PRF secret cannot hold the account's keys. This is
     a product gate on a claim the server cannot verify, not a security control — see the rule below
-    for what it does and does not establish.
-  - **Enforced in**: `CompleteRegistrationHandler`, and nowhere lower — not because the rule sits
+    for what it does and does not establish. It matters most on the **account-registration** leg,
+    where the device being turned away is the only one the account will ever have.
+  - **Enforced in**: `CompleteRegistrationHandler` and `RegisterAccountHandler` — the second says the
+    first's sentence verbatim, because it is said to the same person about the same hardware — and
+    nowhere lower, not because the rule sits
     above its lowest capable layer, but because **no layer is capable of it**. Storing the flag
     would let the database enforce "this column says true"; it would not let anything enforce
     *the authenticator can derive a PRF secret*, which is the actual rule. That fact is observable
@@ -410,7 +422,7 @@ erDiagram
 
 ---
 
-- **Rule**: A nonce issued for one ceremony is **never** spendable in another, and the three pools are
+- **Rule**: A nonce issued for one ceremony is **never** spendable in another, and the four pools are
   kept apart by the `ceremony` value the finish leg is required to see — not merely by the nonce being
   live.
 - **Why**: the pools are minted under different conditions, so accepting the wrong one hands an
@@ -419,6 +431,15 @@ erDiagram
   WebAuthn prompt for this relying party can obtain a signed one — which must not authorize erasing an
   account. A `registration` nonce is minted for an already-signed-in person, which is exactly the
   stolen-session adversary re-authentication exists to stop.
+  - **`account_registration` is the fourth pool and it now has a route at each end.** It shipped one
+    commit ahead of its callers — spellable, storable and unreachable — so that the baseline migration
+    was regenerated once for the whole story rather than once per member of it. It is deliberately
+    **not** `registration`: that pool is minted for somebody already signed in who is adding a device
+    to an account that exists, this one for a caller who has an identity from a provider and nothing
+    else. Sharing them would matter more here than anywhere, because **the new account's identifier is
+    derived from these bytes** — an add-a-device nonce could then name a brand-new account, which is
+    the exact replay across a boundary the pools exist to refuse. See
+    [registration.md](registration.md).
   - **The ceremony is never a request member.** Each options leg hard-codes its own value, and no
     command carries one. A `ceremony` parameter on the anonymous assertion leg would let anybody
     mint a re-authentication nonce and would dissolve the separation in a single field.
@@ -429,7 +450,12 @@ erDiagram
   `…Assertion_BuiltOnAReauthenticationChallenge_…`,
   `…Registration_BuiltOnAnAssertionChallenge_…`, `…Registration_BuiltOnAReauthenticationChallenge_…`,
   and `ErasureReauthenticationTests.Erasure_OnAnAssertionChallenge_…` /
-  `…Erasure_OnARegistrationChallenge_…`.
+  `…Erasure_OnARegistrationChallenge_…`. Those six cells are the **three older** finish legs against
+  the three older pools; the registration finish leg carries the same `is not
+  WebAuthnCeremony.AccountRegistration` check and answers **one undifferentiated refusal** covering
+  six cases — never issued, already spent, expired, and issued for any of the other three pools.
+  Read the matrix as the shape rather than as a count: a fourth leg does not make the older cells
+  wrong, and a fifth pool would widen both.
 - **Counterexample**: testing `ConsumeAsync` for non-null. Every happy path passes, every ordinary
   refusal passes, and the one thing that breaks is the separation the pools exist for.
 - **Source**: `[SOURCE: user-story]`
@@ -458,6 +484,52 @@ erDiagram
 
 ---
 
+- **Rule**: On the **account-registration** options leg the `user.id` handed to the authenticator is
+  the account identifier the finish leg will write, **derived from that leg's own challenge**.
+- **Why**: an authenticator stores the handle it was given and presents it on every later assertion,
+  and the sign-in path compares that handle **byte-for-byte** against the account id with nothing to
+  look up first. So a `users.id` differing from the handle answers no assertion that device will ever
+  produce — **silently and permanently**, with no error naming the cause, on an account that otherwise
+  looks perfect. The two are therefore made equal by construction rather than by carrying a value
+  between two requests: both legs call `RegistrationAccountId.For` over the same 32 server-minted
+  bytes, which is the only thing the two requests share.
+  - **The other three ceremonies are unaffected.** `registration` attaches a passkey to an account
+    that already exists, so its options leg hands over the account id it read off the request; only
+    this one has no account to read.
+  - **Where the derivation may run is the whole of the rule** — see
+    [registration.md](registration.md), which owns it: on the finish leg the only source of the
+    challenge is the client's own `clientDataJSON`, so deriving before `ConsumeAsync` has answered is
+    deriving from a value the caller chose.
+- **Enforced in**: `BeginAccountRegistrationHandler`, which derives from the bytes the store returned
+  a line above, and `RegisterAccountHandler`, which derives from the bytes the store has just
+  confirmed it spent. `PasskeyEncoding.ToUserHandle` is the one translation between the two shapes.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The **account-registration** options leg sends an **empty** `excludeCredentials`, and it
+  stays empty.
+- **Why**: three reasons, and no one of them alone would settle it.
+  - **There is nothing to exclude.** The account does not exist, so it holds no credential an
+    authenticator could be asked to decline enrolling a second time.
+  - **The read that would produce a list has no acceptable shape.** Scoped to the derived account id
+    it is always empty — that account has no rows — and unscoped it is an enumeration of every handle
+    in the table, which is precisely what the `passkey_public_keys` row-level-security exemption was
+    argued as **not** permitting. The owner filter
+    `PasskeyRepository.ListWebAuthnCredentialIdsForUserAsync` carries exists for that reason.
+  - **A non-empty list would refuse a legitimate act.** A WebAuthn credential is keyed on (rpId, user
+    handle) and every registration mints a fresh handle, so somebody opening a second account from the
+    same laptop is doing something this product allows — and with an exclusion list they would be
+    turned away **at the authenticator**, by an error the server never sees and cannot explain.
+- **Enforced in**: `BeginAccountRegistrationHandler` setting `ExcludeCredentials = []`, with the three
+  reasons written beside it. Note the contrast with the **add-a-device** registration leg, which does
+  send a list and whose owner-scoped read is watched by
+  `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential`: the two legs differ because
+  one has an account to enumerate and the other does not.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
 - **Rule**: The assertion response carries the session's **kind and expiry, and no identifier**.
 - **Why**: the body has to say something the behaviour can be observed through, and the kind is
   exactly the fact that matters. Returning the row's id would hand the client a stable handle to a
@@ -476,6 +548,7 @@ stateDiagram-v2
     ChallengeIssued --> Consumed : finish leg, the nonce is deleted before anything is checked
     Consumed --> Verified : format, origin, relying party, flags, signature
     Verified --> Registered : registration — credential, key, counter and wrapped keys in one save
+    Verified --> AccountRegistered : account registration — the whole account in one save
     Verified --> SignedIn : assertion — counter accepted, then a Full session
     Verified --> Proved : re-authentication — counter accepted, nothing returned
     Consumed --> Refused : any check fails
@@ -486,10 +559,11 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → ChallengeIssued | `POST /api/passkeys/{registration,assertion,reauthentication}/options` | registration and re-authentication require a bearer token; assertion is anonymous |
+| → ChallengeIssued | `POST /api/passkeys/{registration,assertion,reauthentication}/options`, and `POST /api/registration/options` | registration and re-authentication require a bearer token; assertion is anonymous; account registration requires a bearer token on the **named** provider scheme and is the only leg reachable by a caller with no account |
 | ChallengeIssued → Consumed | any finish leg | the nonce must exist, be unexpired, and name the right ceremony |
 | Consumed → Verified | the verifier | client-data type; origin by **equality**; not cross-origin; `SHA-256(rpId)`; user present **and** verified; the signature |
 | Verified → Registered | `TryAddAsync` | attestation `none`; algorithm offered and supported; key strength; credential id 16–1023 bytes; the authenticator credential not already registered |
+| Verified → AccountRegistered | `IRegistrationRepository.RegisterAsync` | the same verification, then the `prf` gate, the factor identifier, both envelopes and the ten submissions — and then roughly thirty rows in one save. See [registration.md](registration.md) |
 | Verified → SignedIn | `Session.Establish` | the counter must advance, or both sides be zero |
 | Verified → Proved | `PasskeyReauthentication.VerifyAsync` returning | the key must be registered to the account the **request** is authenticated as; the counter must advance, or both sides be zero |
 
@@ -527,9 +601,12 @@ ELSE consume the row — from here every outcome has burnt the nonce
     THEN publish the identity, open the transaction, establish the Full session — 200
 ```
 
-The registration and re-authentication finish legs walk the same ladder with their own pools and
-their own final arms — see the transition table above; the PRF gate is registration's extra last
-check, after everything else has passed.
+The registration, account-registration and re-authentication finish legs walk the same ladder with
+their own pools and their own final arms — see the transition table above; the PRF gate is the extra
+check both registering legs carry, after everything else about the response has passed. Only the
+account-registration leg goes further, and what it adds is a card of recovery codes, an eleventh
+factor, and an account identifier derived from the challenge it just spent —
+[registration.md](registration.md) owns all three.
 
 ## Integration Points
 
@@ -554,6 +631,13 @@ check, after everything else has passed.
     there before the ceremony is entered. A brand-new identity must therefore reach one of the six
     data route groups before it can register a passkey; see
     [users-and-ownership.md](users-and-ownership.md).
+  - **The account-registration routes are the exception, and they escape by a marker of their own.**
+    `/api/registration` carries `RegistersAccount`, whose arm sits below the two claim gates and above
+    the resolve and **publishes nobody** — so a caller with no account proceeds, and the handler
+    derives and publishes the account id itself after the signature verifies. It is also the only
+    group in this application whose authorization policy **names** a scheme, which is what stops a
+    browser already holding a session from creating an account nobody's provider vouched for. See
+    [registration.md](registration.md).
 
 ## Edge Cases & Known Gotchas
 
@@ -564,8 +648,11 @@ check, after everything else has passed.
   `HttpOnly` precisely so that nothing else is a handle. What does **not** exist is a **screen**: no
   client code runs a ceremony from a page, so those routes are reached today only by the integration
   suite and the app itself still authenticates every request it makes from the Google ID token.
-  Registration is also not yet gated: an account exists before any passkey does, so a passkey is
-  something an already-signed-in person adds rather than something registration requires. A signed-in
+  **Account creation is now gated on a passkey — on one of the two paths.** `POST /api/registration`
+  creates the account and its passkey in the same save, so an account made that way has never existed
+  without one; `UserProvisioningMiddleware` is still live beside it and still mints accounts holding a
+  federated credential alone, and for those a passkey remains something an already-signed-in person
+  adds. See [registration.md](registration.md). A signed-in
   person can **list** every credential the account holds and **revoke** a passkey, the revocation
   gated by a fresh re-authentication exactly as erasure is. Nothing **replaces** a passkey, and
   nothing removes or replaces the **federated** credential — that is the email change, and it is not

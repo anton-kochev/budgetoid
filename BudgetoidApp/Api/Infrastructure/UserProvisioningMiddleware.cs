@@ -16,9 +16,13 @@ namespace Api.Infrastructure;
 /// that runs without a principal runs without an account, and those are the same statement. A route
 /// carrying both markers therefore mints nothing, which is why <c>UserProvisioningRouteTests</c> holds
 /// the two sets disjoint. Below that arm an authenticated request that clears both claim gates takes
-/// one of three ways:
+/// one of four ways:
 /// </para>
 /// <list type="bullet">
+/// <item>
+/// the endpoint declares <see cref="RegistersAccountAttribute" /> — proceed naming nobody, because the
+/// ceremony behind it derives and publishes the account identifier itself;
+/// </item>
 /// <item>the endpoint declares <see cref="ProvisionsUserAttribute" /> — find or create;</item>
 /// <item>it declares nothing and the credential resolves — publish the identity and the budget;</item>
 /// <item>it declares nothing and the credential resolves to no account — 401, and no row is written.</item>
@@ -156,6 +160,21 @@ public sealed class UserProvisioningMiddleware(RequestDelegate next)
                     title: UnverifiedEmailTitle,
                     statusCode: StatusCodes.Status401Unauthorized)
                 .ExecuteAsync(httpContext);
+            return;
+        }
+
+        // BELOW THE TWO CLAIM GATES AND ABOVE THE RESOLVE, and both halves of that are load-bearing.
+        // Above the gates — which reads like the tidier grouping, since all three arms test endpoint
+        // metadata — a registration route would stop being subject to them, and an account would be
+        // created for a caller whose address the provider explicitly declines to assert. Below the
+        // resolve, every registration would be answered NoAccountTitle: the caller has no account, which
+        // is the state the route exists to leave behind.
+        //
+        // It publishes NOBODY. The account identifier is derived from the ceremony's own challenge and
+        // published by the handler, after the signature verifies — see RegistersAccountAttribute.
+        if (endpoint?.Metadata.GetMetadata<RegistersAccountAttribute>() is not null)
+        {
+            await next(httpContext);
             return;
         }
 

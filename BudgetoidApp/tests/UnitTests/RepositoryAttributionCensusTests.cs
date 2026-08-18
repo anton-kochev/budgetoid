@@ -73,9 +73,9 @@ public sealed record AttributionCensus(
 /// <para>
 /// <b>Recognisably a sibling of <c>RowLevelSecurityCoverage</c>,</b> and for its reason. The subject is
 /// <i>discovered</i> from the live assembly and never written down; what is written down is the
-/// disposition. A list of the repositories that <i>are</i> covered fails open — the eleventh nobody
+/// disposition. A list of the repositories that <i>are</i> covered fails open — the twelfth nobody
 /// adds to it keeps the census green on the only day it matters. Requiring every discovered type to be
-/// claimed by exactly one set fails closed: the eleventh is claimed by neither, and it stays red until
+/// claimed by exactly one set fails closed: the twelfth is claimed by neither, and it stays red until
 /// a person decides. Do not "simplify" this into a written list of repository names; a written list is
 /// precisely the thing that just drifted.
 /// </para>
@@ -101,12 +101,12 @@ public sealed record AttributionCensus(
 /// see <c>Discovery_IsBlindToARepositoryOutsideTheNamespace</c>, which is a permanent demonstration
 /// rather than a defect to fix by widening the scan. Widening only moves the blind spot; what covers
 /// it instead is <c>Discovery_FindsExactlyTheRepositoriesTheNamespaceDeclares</c>, which pins the
-/// eleven names, so a repository that leaves the namespace goes red there rather than quietly leaving
+/// twelve names, so a repository that leaves the namespace goes red there rather than quietly leaving
 /// the census with nothing to count.
 /// </para>
 /// <para>
 /// <b>A gap this recorded, and which is now closed.</b> Narrowing on
-/// <c>PostgresException.ConstraintName</c> is the house rule — nine of the eleven repositories do it,
+/// <c>PostgresException.ConstraintName</c> is the house rule — ten of the twelve repositories do it,
 /// and two of those spell it inside a helper rather than in the <c>when</c> clause. Having a narrowed
 /// <c>catch</c> is not the same as having it <i>tested from both sides</i>, and
 /// <see cref="PinnedElsewhere" /> says per entry which halves exist. It said, for three entries, that
@@ -119,7 +119,7 @@ public sealed record AttributionCensus(
 /// same defect as one that hides a gap it does have, and the second is only easier to notice.
 /// </para>
 /// <para>
-/// <b>What is not claimed is that the eleven are now uniformly covered</b> — only that every entry says
+/// <b>What is not claimed is that the twelve are now uniformly covered</b> — only that every entry says
 /// which halves it holds. <c>SessionRepository</c> holds neither and says so, because it translates
 /// nothing, and <c>SessionTokenRepository</c> says the stronger version of that: it has no
 /// <c>catch</c> at all. The five in <see cref="CoveredByAttributionTests" /> hold both by that file's
@@ -130,8 +130,8 @@ public sealed record AttributionCensus(
 /// Sabotaged in four directions before it was believed, each on synthetic input so the proof is
 /// permanent rather than a sentence about a change that was reverted: a repository in neither set, one
 /// in both, a set naming a repository that does not exist, and — the control without which the first
-/// three could all pass while the real census checked nothing — the live eleven classified against two
-/// <b>empty</b> sets, which must report all eleven unlisted.
+/// three could all pass while the real census checked nothing — the live twelve classified against two
+/// <b>empty</b> sets, which must report all twelve unlisted.
 /// </para>
 /// <para>
 /// It lives in <c>UnitTests</c> because <c>UnitTests.csproj</c> already references Infrastructure, so
@@ -161,20 +161,25 @@ public sealed class RepositoryAttributionCensusTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Two of the six are
+    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Two of the seven are
     /// pinned in both directions on every narrowing they hold; two — <c>SessionRepository</c> and
     /// <c>SessionTokenRepository</c> — have nothing to attribute at all, which is a different statement
-    /// and each says so in its own words; and the two that write
+    /// and each says so in its own words; two of the three that write
     /// <c>wrapped_account_keys</c> each gained a <c>factor_id</c> narrowing whose two halves are not
-    /// both in the file named beside it.
+    /// both in the file named beside it; and the third of them —
+    /// <c>RegistrationRepository</c> — holds the translation half on all four of its narrowings and the
+    /// mis-attribution half on none.
     /// </para>
     /// <para>
     /// That split is stated rather than smoothed over, for the reason the class remarks give about the
     /// gap this member was added to expose: the mis-attribution control for the new filter is at that
-    /// layer on both — an unrelated <c>23505</c> reaching either <c>catch</c> would come back as a
-    /// conflict about a factor identifier nobody claimed — while on both the translation is pinned
-    /// only over HTTP, by the route that stages a duplicate identifier end to end. Both entries name
-    /// the test that does it.
+    /// layer on both of the first two — an unrelated <c>23505</c> reaching either <c>catch</c> would come
+    /// back as a conflict about a factor identifier nobody claimed — while on both the translation is
+    /// pinned only over HTTP, by the route that stages a duplicate identifier end to end. Both entries
+    /// name the test that does it. <c>RegistrationRepository</c> is the entry the other way up, and its
+    /// own line says why the missing control costs less there than it would anywhere else: every unique
+    /// rule it does <b>not</b> narrow is keyed on a <c>user_id</c> derived for that one registration, so
+    /// no row this save writes can breach one.
     /// </para>
     /// </remarks>
     private static readonly AttributionPin[] PinnedElsewhere =
@@ -220,6 +225,29 @@ public sealed class RepositoryAttributionCensusTests
             + "other two conflicts answer the same status and title. Nothing here stages a duplicate "
             + "factor identifier at this layer, exactly as on PasskeyRepository's copy of the same "
             + "catch"),
+        new(
+            nameof(RegistrationRepository),
+            "AccountRegistrationTests",
+            "the translation half on all four narrowings and the mis-attribution half on none of them, "
+            + "and that asymmetry is the whole of what this entry says. RegisterAsync filters on four "
+            + "index names — IX_credentials_provider_subject, IX_users_email, "
+            + "IX_passkey_public_keys_webauthn_credential_id and PK_wrapped_account_keys — and each is "
+            + "TRANSLATED over HTTP by one test that stages the collision end to end: "
+            + "Registration_WhenTheSubjectAlreadyHasAnAccount_Returns409AndChangesNothing, "
+            + "Registration_WhenTheEmailBelongsToAnotherAccount_Returns409 — which reads the DETAIL "
+            + "sentence, because it is the only thing separating it from the subject conflict once the "
+            + "handler's disambiguating re-read has run — "
+            + "Registration_WhenTheAuthenticatorIsAlreadyRegistered_Returns409 and "
+            + "Registration_WhenAFactorIdIsAlreadyRegistered_Returns409. Each also asserts that nothing "
+            + "was written, which is what a translation test on a save of roughly thirty rows owes. "
+            + "THERE IS NO MIS-ATTRIBUTION CONTROL, at this layer or over HTTP: nothing stages an "
+            + "unrelated unique violation reaching one of these four catches, so an unrelated 23505 "
+            + "dressed up as one of the four sentences would go unreported. Three of the four are "
+            + "narrower than they look — IX_budgets_user_id_name, IX_credentials_user_id_federated and "
+            + "IX_credentials_user_id_recovery_codes are all keyed on a user_id derived for this "
+            + "registration alone and cannot be breached by anything this save writes, which is what "
+            + "keeps the missing control from being the gap it would be on a repository whose rows share "
+            + "an owner with anybody"),
         new(
             nameof(SessionRepository),
             "SessionRepositoryTests",
@@ -361,6 +389,7 @@ public sealed class RepositoryAttributionCensusTests
             nameof(PasskeyRepository),
             nameof(PayeeRepository),
             nameof(RecoveryCodeRepository),
+            nameof(RegistrationRepository),
             nameof(SessionRepository),
             nameof(SessionTokenRepository),
             nameof(TransactionRepository),

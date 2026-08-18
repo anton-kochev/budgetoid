@@ -25,6 +25,14 @@ Identity — who a person is, and which credentials prove it — lives in
 lives in [sessions.md](sessions.md); this file covers the codes themselves. What of it is built
 today and what is not is the first gotcha below — read every rule here against it.
 
+**A set is now issued on two paths, and only one of them is in this file's name.**
+`POST /api/registration` mints the account's **first** set in the same act that creates the account,
+because an account whose only factor is one passkey is an account whose keys leave with that device —
+see [registration.md](registration.md). `POST /api/me/recovery-codes` is the other, and it is the one
+every rule below about **replacing**, about the re-authentication gate and about `sessionsEnded`
+belongs to. What the two share is the wire contract and the validation: the same member spelled
+`codes`, the same `RecoveryCodeSubmission`, the same `RecoveryCodeSetValidation`.
+
 ## Key Entities
 
 - **Recovery-code set** — a `Credential` of type `RecoveryCodes`, minted by
@@ -100,11 +108,15 @@ erDiagram
     the keys — would be false for every account that ever generated a set. A database reader holding
     `SHA-256(V)` can do neither thing: there is no preimage to redeem with, and the hash is on the
     wrong branch to derive a key from.
-  - **Enforced in**: the type system, not a check. `GenerateRecoveryCodesCommand` declares
-    `IReadOnlyList<RecoveryCodeSubmission> Codes` — each submission a `Verifier`, a `FactorId` and
+  - **Enforced in**: the type system, not a check. `GenerateRecoveryCodesCommand` and
+    `RegisterAccountCommand` each declare
+    `IReadOnlyList<RecoveryCodeSubmission> Codes` — the **same** record, reused rather than copied,
+    each submission a `Verifier`, a `FactorId` and
     two wrapped-key envelopes, and no member a code could travel in; `RecoveryCodeHash.From` takes
     a verifier and hashes it **internally**, so no shape of that call stores an unhashed value and
-    no call site is a place to get it wrong once. See
+    no call site is a place to get it wrong once. A copy of that record on the second write path
+    would be four declarations able to disagree with the first about which spellings a caller may
+    send, on the one member whose shape is a cryptographic binding rather than a convenience. See
     [ADR 0015](../decisions/0015-mint-recovery-codes-on-the-client-and-store-only-a-hash-of-a-verifier.md).
 
 - **A code MUST carry at least 128 bits of entropy, and no layer of this system enforces it.** This is
@@ -198,8 +210,13 @@ erDiagram
     `AK_credentials_id_user_id_type`, `ON DELETE CASCADE`, plus
     `CK_recovery_code_hashes_credential_type` pinning the column's own vocabulary.
 
-- **Generating a set MUST be authorized by a fresh WebAuthn assertion**, exactly as erasure and passkey
-  revocation are, and the gate MUST run before the presented set is validated.
+- **Generating a set on `POST /api/me/recovery-codes` MUST be authorized by a fresh WebAuthn
+  assertion**, exactly as erasure and passkey revocation are, and the gate MUST run before the
+  presented set is validated. **Registration is not an exception to this rule; it is outside it** —
+  that request carries a completed WebAuthn *registration* ceremony, verified before any of its
+  payload is judged, and the set it issues replaces nothing because the account does not exist yet.
+  There is no account to enumerate about and no live set to destroy, which are the two things this
+  gate protects.
   - **Why**:
     - **Why the gate**: a set of recovery codes is a **full-session** credential, so minting one on
       an unproven request hands the account to whoever holds a stolen bearer token — and, because
@@ -253,7 +270,11 @@ erDiagram
   - **Why**: issuing *replaces*, so a chooseable account here would be a way to destroy a stranger's
     recovery codes.
   - **Enforced in**: `GenerateRecoveryCodesCommand` carries the ten submissions and the assertion and
-    **no field naming an account** — the identity comes from `IUserContext` and nowhere else.
+    **no field naming an account** — the identity comes from `IUserContext` and nowhere else. The
+    second half holds on the registration path too, by a different mechanism and for a different
+    reason: `RegisterAccountCommand` names no account either, but there the identity comes from a
+    value **derived** from the ceremony's own challenge rather than from an ambient one, because there
+    is no account yet to be ambient. See [registration.md](registration.md).
 - **No route in this area may carry `ProvisionsUser`, and none may ever gain it.**
   - **Why**: a provider id token stays valid for up to an hour after the account it names is erased,
     so a route that minted an account in order to answer a generation would let that stale token
@@ -430,7 +451,8 @@ erDiagram
 ---
 
 - **Rule**: Issuing **replaces**; it never adds. `POST /api/me/recovery-codes` answers `200 OK` on a
-  first issue and on a regeneration alike, with the same body.
+  first issue and on a regeneration alike, with the same body. `POST /api/registration` answers `201`,
+  and that is not an inconsistency: the resource it created is the **account**, not the set.
 - **Why**:
   - **Why replace rather than add**: a handler that only inserted would leave the codes on a card the
     person has already thrown away still working, which is the one outcome regeneration exists to
@@ -733,6 +755,7 @@ distinction is the whole of the grant matrix's argument and of the change-tracke
 | Transition | Triggered by | Validations |
 |---|---|---|
 | → Issued | `POST /api/me/recovery-codes` | a fresh `reauthentication` assertion for a passkey registered to **this** account; then exactly ten submissions — each a verifier decoding to exactly 32 bytes, that code's own factor identifier, and its own pair of wrapped account keys — with every verifier distinct and every factor identifier distinct |
+| → Issued | `POST /api/registration` | the account's **first** set, in the same save as the account. A verified `account_registration` ceremony stands in for the gate; then the same ten submissions judged by the same `RecoveryCodeSetValidation`, plus one rule this path alone has — the passkey's own factor identifier must differ from all ten. See [registration.md](registration.md) |
 | Issued → Replaced | `POST /api/me/recovery-codes` on an account that already holds a set | the same gate and the same validation; the previous set's sessions are revoked, then its credential is deleted and these rows cascade away |
 | Issued → Redeemed | `POST /api/recovery-codes/redemption` | the presented verifier is base64url text decoding to exactly 32 bytes, and `SHA-256` of it names a row that is still there — and still that account's — when the transaction re-reads it. Nothing else is validated, because nothing else was presented |
 
@@ -837,7 +860,11 @@ ELSE                                                               ← first iss
   is the **third** spender of that nonce pool, beside erasure and passkey revocation, and it needs no
   new ceremony value: all three are destructive acts reachable only by the account holder, and a proof
   of presence is a proof of presence.
-- **[Sessions](sessions.md)** — this area holds **two** of the three paths that establish a session: a
+- **[Registration](registration.md)** — the **other** write path that accepts a set, and the one that
+  issues an account's first. It replaces nothing, sweeps nothing and reports no `sessionsEnded`,
+  because there is nothing of the account's yet to end. What it adds beyond this file's validation is
+  a rule of its own: the passkey's factor identifier must differ from all ten codes'.
+- **[Sessions](sessions.md)** — this area holds **two** of the four paths that establish a session: a
   redemption, and a regeneration that swept any. Each opens a `Full` session lasting the same 14 days,
   and a redemption is the only establishing path in the product that runs no WebAuthn ceremony at all —
   `CompleteAssertionHandler` completes one, and a regeneration consumes a re-authentication somebody
@@ -885,9 +912,12 @@ ELSE                                                               ← first iss
   would mint a **persistent** factor that survives token rotation and password-style remediation
   entirely, which is a worse position than the one the codes were meant to improve. The consequence is
   a requirement on the client — it must push generation at or near passkey registration, when the
-  person still has the authenticator in their hand — and that work belongs to a later story. Until it
-  ships, an account can hold a passkey and no codes indefinitely: the settings screen states the count,
-  so somebody who goes looking is told, and nobody who does not is ever prompted.
+  person still has the authenticator in their hand — and **on the registration path that requirement
+  is now met by the server**: `POST /api/registration` refuses without ten submissions, so an account
+  created there has never existed without a card. The gap survives on the other path. An account
+  minted by `UserProvisioningMiddleware` can hold a passkey and no codes indefinitely: the settings
+  screen states the count, so somebody who goes looking is told, and nobody who does not is ever
+  prompted.
 - **`CK_credentials_type_shape`'s `recovery_codes` arm is byte-identical to its `passkey` arm**, so
   that constraint **no longer discriminates between those two types**. That is deliberate: both are
   self-contained credentials with no issuer and no provider subject, so from that constraint's point of
@@ -979,10 +1009,14 @@ ELSE                                                               ← first iss
   surface a person would reach it through is not.
 - **Both sessions this area opens are now real, and both hand back a cookie.** A redemption sets one
   for the code's owner; a regeneration sets one over the new set **only when its sweep ended a live
-  session**, and a first issue sets none — that condition is the rule rather than a detail, and a
-  handler minting unconditionally would pass every other test on this path. So the re-establishment
-  rule has stopped being anticipatory: a regeneration really does sign the person back in rather than
-  out.
+  session**, and a first issue *on this route* sets none — that condition is the rule rather than a
+  detail, and a handler minting unconditionally would pass every other test on this path. So the
+  re-establishment rule has stopped being anticipatory: a regeneration really does sign the person
+  back in rather than out.
+  - **A set issued by registration always comes with a session, and that is not a counterexample.**
+    That request establishes one unconditionally, over the **passkey** it created and never over the
+    recovery-codes credential — so there is no sweep, no condition, and nothing for this rule to be
+    keyed on. See [registration.md](registration.md).
   - Neither response body carries the handle or a session id. The cookie is `HttpOnly` precisely so
     that nothing else is a handle; each response still says only what its session *is*, its kind and
     its expiry.

@@ -27,11 +27,13 @@ two index keys produce two blind index values for one name, the uniqueness const
 colliding, and a person signing in from a second device silently accumulates duplicate payees while
 the constraint appears to work.
 
-**What is built today is the cryptography, and the two write paths that store its output.** The
+**What is built today is the cryptography, and the three write paths that store its output.** The
 client can generate the keys, derive a key-encryption key from either kind of factor, wrap both keys
-under it and unwrap them again; the server refuses to register a passkey or issue a set of recovery
-codes unless the request carries a factor identifier and both wrapped keys, and files them in the
-same save as the credential.
+under it and unwrap them again; the server refuses to register a passkey, issue a set of recovery
+codes, **or create an account** unless the request carries a factor identifier and both wrapped keys
+for every factor it brings into existence, and files them in the same save as the credential. The
+third path is the newest and the widest: `POST /api/registration` writes **eleven** rows — the
+passkey's pair and one pair per code — inside the one save that creates the whole account.
 
 The two halves are not yet joined, and the gap is worth naming precisely. **The client can now run a
 WebAuthn ceremony** — `+core/security/webauthn-ceremony.service.ts` obtains a PRF output from a real
@@ -120,10 +122,17 @@ erDiagram
     `wrapped_content_key` and `wrapped_index_key` are both `NOT NULL` on a table keyed on
     `factor_id`, so "a factor carries both keys or no row at all" is a column definition. **That the
     row exists at all is not a schema fact** — one-to-optional is not expressible without a trigger,
-    and ADR 0002 forbids pushing procedural logic down to reach a lower layer. It is held by there
-    being exactly **two** write paths, each demanding the members and writing the row in the same
-    save as the credential. A third path would create a factor with no keys and redden nothing;
-    naming that here is what a future reader gets instead of a constraint.
+    and ADR 0002 forbids pushing procedural logic down to reach a lower layer.
+    - **What holds it is a property of the write surface, and the property is the rule rather than
+      the count.** *Every* path that can bring a recovery factor into existence demands the members
+      and writes the row in the **same `SaveChanges`** as the credential. There are three of them
+      today — registering a passkey, issuing a set of recovery codes, and creating an account — and
+      the third arrived without weakening anything, which is what the property being the rule looks
+      like from the outside. Stated as a count it would have been wrong the day the count changed,
+      and the bump would have read as bookkeeping rather than as the check it actually is: a **fourth**
+      path that keeps the property costs nothing, and a fourth that does not creates a factor holding
+      no share of the keys and **reddens nothing**. Naming that here is what a future reader gets
+      instead of a constraint.
 
 - **A wrapped key MUST be bound to its factor and to which of the two keys it is.**
   - **Why**: binding only the factor leaves the two copies distinguishable solely by which column
@@ -144,9 +153,11 @@ erDiagram
   - **Why**: the operator holding the database and every backup must recover nothing. A key-encryption
     key on the wire would hand over the account.
   - **Enforced in**: the shape of the request surface — no member of any endpoint's request type can
-    hold one — and by there being no server-side type for any of them. What *does* cross is three
-    members on each of two routes: a factor identifier and two envelopes, each of which the server
-    can check the shape of and open none of.
+    hold one — and by there being no server-side type for any of them. What *does* cross is the same
+    three members on each of three routes: a factor identifier and two envelopes, each of which the
+    server can check the shape of and open none of. On `POST /api/registration` that triple arrives
+    eleven times over — once at the top level for the passkey, and once inside each of the ten
+    submissions.
 
 - **A factor identifier MUST be one spelling on the wire.** The two write paths accept a UUID in the
   **lower-case** 36-character hyphenated form with no surrounding whitespace, and nothing else — not
@@ -158,9 +169,12 @@ erDiagram
     cause. The all-zero UUID is refused separately because it is what an unset field sends and it is
     the one value two accounts reach independently — on a unique index that spans the whole table,
     that turns a client bug into a cross-account collision.
-  - **Enforced in**: `CanonicalFactorId.TryParse`, one definition both `CompleteRegistrationHandler`
-    and `GenerateRecoveryCodesHandler` call, because they write the same column and a rule that
-    drifted on one would seal an account's keys under a spelling the other cannot reproduce. It
+  - **Enforced in**: `CanonicalFactorId.TryParse`, one definition `CompleteRegistrationHandler`,
+    `GenerateRecoveryCodesHandler` and `RegisterAccountHandler` all call, because they write the same
+    column and a rule that drifted on one would seal an account's keys under a spelling the others
+    cannot reproduce. The third caller is where a copy would have been easiest to justify and worst
+    to hold — it parses eleven identifiers on one request, ten of them through the shared set
+    validation and one on its own. It
     compares the supplied text **ordinally against what the parsed value renders as** —
     `Guid.TryParseExact(value, "D", …)` on its own does *not* pin a spelling, since `"D"` is a format
     rather than a spelling: it admits upper-case and mixed-case hex, and it trims leading and
@@ -333,7 +347,7 @@ and lives in the associated data.
 ## Workflows & State Transitions
 
 Steps 1–4 are the client module; no screen reaches them today. Step 5 is the server, and it is
-reachable — the two routes refuse a request without it.
+reachable — all three routes refuse a request without it.
 
 1. **Minting an account's keys.** 64 bytes are drawn in one call and split into two independent
    copies. No further state exists — the keys live only in memory.
@@ -346,11 +360,14 @@ reachable — the two routes refuse a request without it.
    bytes.
 5. **Storing.** `POST /api/passkeys/registration` carries one `factorId`, `wrappedContentKey` and
    `wrappedIndexKey`. `POST /api/me/recovery-codes` carries **ten** submissions, each a code's
-   verifier beside that code's own factor identifier and envelope pair. Each handler checks every
-   identifier's spelling, every envelope's width and version, and — on the generation path — that no
-   two identifiers in the set repeat, then writes **in the same `SaveChanges`** as the credential:
-   four rows on the passkey path, and twenty-one on the recovery-code path — the credential, ten
-   hash rows and ten wrapped-key rows. There is no partial state in which a factor exists holding
+   verifier beside that code's own factor identifier and envelope pair. `POST /api/registration`
+   carries **both shapes at once** — the passkey's triple at the top level and ten submissions
+   beside it — because it brings **eleven** factors into existence in one act. Each handler checks
+   every identifier's spelling, every envelope's width and version, and — wherever a set is
+   presented — that no two identifiers in the set repeat, then writes **in the same `SaveChanges`**
+   as the credential: four rows on the passkey path, twenty-one on the recovery-code path — the
+   credential, ten hash rows and ten wrapped-key rows — and roughly thirty on the registration path,
+   of which eleven are wrapped-key rows. There is no partial state in which a factor exists holding
    no share of the keys.
 
    The set's ten identifiers must differ, and that rule lives in the handler rather than being left
@@ -359,11 +376,22 @@ reachable — the two routes refuse a request without it.
    a factor the client never registered. It is also the same evidence the verifier-distinctness rule
    is — a client repeating an identifier within one set has randomness that is not what it claims.
 
-**Registration validates the wrapped keys after the `prf` gate, and the ordering is a rule.** A
-client that cannot do PRF cannot have produced a wrapped key either, so those members are very often
-absent on exactly the requests the gate is for. Judged first, such a request would be told its
-payload was malformed — sending somebody holding a device that genuinely lacks the extension off to
-debug their client. Generation validates them after its re-authentication gate, for the reason that
+   **Registration adds an eleventh comparison the other two paths have no need of**, and it is not
+   the set's own distinctness check restated: the passkey's identifier is compared against the ten,
+   because those eleven land on one primary key in one save. Left to `PK_wrapped_account_keys` the
+   refusal arrives mid-save with the same misleading sentence — an identifier already registered,
+   naming a factor nobody registered — on a request that was merely wrong. Its rows are also
+   **projected from the one validated list** rather than zipped from three, so a code's verifier and
+   a code's envelopes cannot come apart: pairing one code's verifier with another's envelopes
+   satisfies every constraint the database holds and is discovered by somebody who redeemed a code,
+   was handed a session, and found the account still locked. See
+   [registration.md](registration.md).
+
+**Both registering paths validate the wrapped keys after the `prf` gate, and the ordering is a
+rule.** A client that cannot do PRF cannot have produced a wrapped key either, so those members are
+very often absent on exactly the requests the gate is for. Judged first, such a request would be told
+its payload was malformed — sending somebody holding a device that genuinely lacks the extension off
+to debug their client. Generation validates them after its re-authentication gate, for the reason that
 gate's own ordering already carries.
 
 **Replacing a set of recovery codes replaces all ten of its wrapped rows by the database's cascade**,
@@ -407,6 +435,9 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
 
 - **`recovery-codes.md`** — the code a key-encryption key is derived from, and why it never reaches
   the server. The verifier branch and this one are separated only by HKDF's `info`.
+- **`registration.md`** — the **third** write path, and the only one that writes eleven rows in one
+  save. It is also where the passkey factor's identifier is compared against the card's ten, a rule
+  no other path needs and none of them could hold.
 - **`passkeys.md`** — the ceremony that will supply a PRF output, and the three members registration
   now carries. The registration path refuses an authenticator that reports no enabled `prf` result;
   that check is a product gate on an unverifiable claim, and a wrapped key is **not** the evidence
