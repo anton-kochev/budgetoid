@@ -95,7 +95,15 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 
 ## User roles
 
-There is exactly **one role: the authenticated owner.** Within their ambient budget a user manages
+There is exactly **one role — the authenticated owner — reached by two tiers of session.** Everything
+below describes an owner signed in on a **full** session, which is what a passkey or a redeemed
+recovery code opens. A **locked** session, which only a federated sign-in opens, is the same person
+with the same ownership and reaches exactly one route: ending itself. Every other route answers
+`403`, including the export and the erasure. That is not a second role — nothing is scoped
+differently and nobody else is admitted anywhere — it is the same owner whose credential cannot hold
+the account's keys. See [sessions.md](sessions.md).
+
+Within their ambient budget a user manages
 Accounts, Category Groups, and Categories; records, lists, edits and deletes Transactions; lists
 Payees, creates them implicitly by naming one on a transaction, and renames them; and reads global
 Currencies. The budget itself is not manageable — it is provisioned, never configured. The same

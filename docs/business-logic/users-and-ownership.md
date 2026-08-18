@@ -394,7 +394,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   column through the existing `IUserAccountReadService.FindEmailAsync`; `user_isolation` on `users`
   is what makes another account's id answer nothing rather than answer theirs, so the id predicate is
   an index seek rather than the thing doing the scoping. The route declares no authorization metadata
-  of its own — the application's fallback policy authenticates it — and **no `ProvisionsUser`**, so a
+  of its own, which is now what *gates* it rather than what leaves it open: the application's fallback
+  policy both authenticates the request and refuses a session that reads no budget content, so a
+  federated sign-in is answered `403` here — see [sessions.md](sessions.md). And **no
+  `ProvisionsUser`**, so a
   provider token outliving an erasure is refused rather than minting an empty shell;
   `UserProvisioningRouteTests` already lists `/api/me` under the prefixes where minting is forbidden
   and covers this route with no edit to that list. `SignedInUserEndpointTests` carries the pair that

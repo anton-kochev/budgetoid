@@ -558,18 +558,20 @@ check, after everything else has passed.
 ## Edge Cases & Known Gotchas
 
 - **What is built today and what is not.** Both ceremonies exist as endpoints, a verified assertion
-  establishes a `Full` session, and all of it is tested. What does **not** exist: the API still
-  authenticates every other request from the Google ID token it is handed. **No session token is
-  issued and none is presented** — the assertion response deliberately carries no handle to the
-  session it created. Registration is also not yet gated: an account exists before any passkey does,
-  so a passkey is something an already-signed-in person adds rather than something registration
-  requires. A signed-in person can **list** every credential the account holds and **revoke** a
-  passkey, the revocation gated by a fresh re-authentication exactly as erasure is. Nothing
-  **replaces** a passkey, and nothing removes or replaces the **federated** credential — that is the
-  email change, and it is not built. Read the revocation against [sessions.md](sessions.md) before
-  deciding what it is worth: it ends the passkey's sessions, but no session authenticates a request
-  today, so what revocation actually takes away is the ability to sign in again with that
-  authenticator.
+  establishes a `Full` session, **the assertion response sets the session cookie, and a request
+  presenting that cookie authenticates from it** — the loop is closed on the server. The response
+  still carries no handle in its body, which is a different rule and an intact one: the cookie is
+  `HttpOnly` precisely so that nothing else is a handle. What does **not** exist is a **screen**: no
+  client code runs a ceremony from a page, so those routes are reached today only by the integration
+  suite and the app itself still authenticates every request it makes from the Google ID token.
+  Registration is also not yet gated: an account exists before any passkey does, so a passkey is
+  something an already-signed-in person adds rather than something registration requires. A signed-in
+  person can **list** every credential the account holds and **revoke** a passkey, the revocation
+  gated by a fresh re-authentication exactly as erasure is. Nothing **replaces** a passkey, and
+  nothing removes or replaces the **federated** credential — that is the email change, and it is not
+  built. Revocation is now worth what it says on the tin: it ends the passkey's live sessions, and
+  because a session authenticates requests, that really does take the device's access away rather
+  than only its ability to sign in again. See [sessions.md](sessions.md).
 - **The exempt table scopes nothing, so the application is the only thing scoping access to it.** The
   discovery lookup is the one query allowed to read `passkey_public_keys` without naming an owner.
   Every other read must carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on

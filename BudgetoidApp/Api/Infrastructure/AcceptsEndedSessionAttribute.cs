@@ -26,7 +26,9 @@ namespace Api.Infrastructure;
 /// <c>AnonymousSurfaceTests</c>' set — a request with no cookie is challenged like any other. And
 /// <see cref="SessionCookieAuthenticationHandler" /> publishes <b>no ambient budget</b> for an ended
 /// session, so a route carrying this marker structurally cannot reach budget content: the first
-/// budget-scoped statement under it meets an unresolved budget and throws.
+/// budget-scoped statement under it meets an unresolved budget and throws. It says nothing either about
+/// what a live session may reach — <see cref="AllowsLockedSessionAttribute" /> owns that, and the
+/// sign-out route carries both markers because it needs both answers, not because one implies the other.
 /// </para>
 /// <para>
 /// Read purely as endpoint metadata, like <see cref="ProvisionsUserAttribute" />, and read by the

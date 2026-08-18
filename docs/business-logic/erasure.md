@@ -580,6 +580,9 @@ How a request to `POST /api/me/erasure` is answered:
 ```
 IF the request carries no valid token                        ← arms are mutually exclusive
   THEN 401 from the fallback policy
+ELSE IF the caller's session reads no budget content         ← a federated sign-in; the route
+  THEN 403 from the fallback policy's                          carries no opt-out marker
+       FullSessionRequirement, before the handler runs
 ELSE IF the token's subject resolves to no account           ← including a just-erased one
   THEN 401 from UserProvisioningMiddleware — the route carries no ProvisionsUser,
        so nothing is minted on the way past
@@ -638,11 +641,16 @@ reached anyway completes with `204` — see the never-`404` rule above.
   creation becomes a consented act. Do not read the rule above as making erasure durable against a
   live token — it makes the erasure path itself, and every identity-bearing route beside it, write
   nothing.
-- **The request's own session row is deleted mid-request.** Nothing in the request path reads a
-  `sessions` row today — the API authenticates with a bearer token from the identity provider — so
-  the row cascades away and the response completes normally. The moment a session-bearing token
-  authenticates a request, this endpoint will be deleting the row that authorizes the request it is
-  running inside, and that is worth checking then rather than assuming.
+- **The request's own session row is deleted mid-request, and that is now real rather than
+  anticipated.** A request carrying the session cookie reads its `session_tokens` row and then its
+  `sessions` row to authenticate at all, so this endpoint deletes — by cascade, from `users` through
+  `credentials` — the rows that authorized the request it is running inside. It completes normally,
+  and the reason is ordering rather than luck: both reads finish before the route delegate starts,
+  and nothing downstream re-reads them. What the route does **not** do is clear the cookie. The
+  browser is left holding a handle that names nothing, every later request answers `401`, and the
+  client's expiry interceptor takes it from there — which is the correct outcome and not a gap, since
+  a cleared cookie would be one more thing to get right on a path whose whole point is that it leaves
+  nothing behind.
 - **`archived_at` is permitted by the schema scan and forbidden on `users` by a different test.**
   Two rules meet here and neither one alone is the whole answer, so somebody reading only the
   vocabulary sees a gap and widens the pattern — which takes a plausible product feature down with

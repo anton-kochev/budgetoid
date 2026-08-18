@@ -133,9 +133,16 @@ builder.Services.AddAuthentication(bridgeScheme)
             ValidateIssuerSigningKey = true
         };
     });
+// The fallback policy carries two rules now: authenticated at all, and a session that reads the
+// account's budget content. It applies to every route that declares no policy of its own, which is
+// everything outside the AllowAnonymous surface — so the second rule reaches the routes nobody thought
+// about, and a route that must admit a locked session declares AllowsLockedSessionAttribute and says
+// why. See that attribute for the polarity argument and FullSessionRequirement for the decision.
+builder.Services.AddSingleton<IAuthorizationHandler, FullSessionRequirementHandler>();
 builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
+        .AddRequirements(new FullSessionRequirement())
         .Build());
 builder.Services.ConfigureHttpJsonOptions(options =>
 {

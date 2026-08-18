@@ -36,7 +36,12 @@ public sealed class Session
     public DateTime? RevokedAtUtc { get; private set; }
 
     /// <summary>Whether this session may reach the account's budget content.</summary>
-    public bool ReadsBudgetContent => Kind == SessionKind.Full;
+    /// <remarks>
+    /// Delegated to <see cref="SessionKindReach" /> rather than compared here, because the API asks the
+    /// same question of a claim and never of an entity. See that type for what a second copy of the
+    /// comparison would cost.
+    /// </remarks>
+    public bool ReadsBudgetContent => Kind.ReadsBudgetContent();
 
     public static Session Establish(Credential credential, DateTime createdAtUtc, DateTime expiresAtUtc)
     {

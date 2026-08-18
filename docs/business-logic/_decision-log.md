@@ -1393,7 +1393,8 @@ sentence naming an obstacle the system gave the user no way to clear.
 
 **Decision:** Ship `DELETE /api/transactions/{id:guid}` — 204 on success, and 404 for an unknown id
 and for one belonging to another budget alike, because the `BudgetIsolation` filter makes that row
-invisible and this API deliberately has no 403 path — and **sharpen the rule to: money movement is
+invisible and this API deliberately answers no **tenancy** refusal with 403 — a foreign row is a row
+that is not there, not a row you may not have — and **sharpen the rule to: money movement is
 never discarded as a side effect, only ever by explicit intent.** That clarifies "A budget holding
 transactions cannot be deleted; its empty structure still cascades" (2026-07-26) rather than
 reversing it. **The schema does not move.** `transactions.budget_id → budgets.id` stays `Restrict`

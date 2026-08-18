@@ -343,6 +343,10 @@ How a request to `GET /api/me/export` is answered:
 ```
 IF the request carries no valid token                       ← arms are mutually exclusive
   THEN 401 from the fallback policy (title "Unauthorized")
+ELSE IF the caller's session reads no budget content        ← a federated sign-in. This route is
+  THEN 403 from the fallback policy's FullSessionRequirement   the reason the rule cannot be keyed
+                                                               on the ambient budget: it reads
+                                                               budgets by user_id
 ELSE IF the token's subject resolves to no account
   THEN 401 from UserProvisioningMiddleware (its own NoAccountTitle)
 ELSE IF the set of budgets the user owns ≠ { the ambient budget }   — either direction
@@ -413,6 +417,11 @@ is the completeness rule above.
   valid token naming no account is answered by `UserProvisioningMiddleware` with its own
   `NoAccountTitle`. A test asserting only the status cannot tell a route that lost its authorization
   from one that lost the middleware.
+  - **And a 403 beside them, from the same policy as the first 401.** A session that reads no budget
+    content is refused here — that arm is in the tree above — and its body carries *no* title at all,
+    which is what tells it from the first-party control's 403 on this same route. So the family this
+    route can answer is four refusals across two statuses, and only one of the four is silent. Read
+    the count in bold above as "the two 401s", never as a census of what this route refuses.
 - **A refusal in Development carries the stack trace.** `GlobalExceptionHandler` writes `detail`,
   `exceptionType` and the full `stackTrace` when the environment is Development — Staging gets
   neither — and the stack trace contains the message. Anything put in

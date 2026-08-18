@@ -189,13 +189,24 @@ database holds, and the sentence above is what makes it one-to-one in fact.
     `sessions` — pinned by `Database_RefusesToDeleteASession`.
 
 - **No policy on `sessions` may read `kind`.**
-  - **Why**: whether a session reaches budget content is answered by `budget_isolation` on the
-    budget-owned tables, which a locked session never satisfies because it resolves no ambient
-    budget. A predicate here consulting `kind` would invent a third isolation axis beside the two
-    the schema already carries, and which rows a person could see would then depend on which of the
-    three fired last.
+  - **Why**: the two policies the schema carries answer *whose* a row is. The kind answers something
+    else — how far into their own account a person's own credential reaches — and a predicate here
+    consulting it would invent a third isolation axis beside those two, so which rows somebody could
+    see would depend on which of the three fired last. It is also the wrong table: the rule has to
+    refuse reads of `accounts`, `transactions` and the rest, and a policy on `sessions` governs
+    `sessions`.
+    - **A correction worth reading, because the obvious repair rests on it.** This entry once
+      argued that a locked session satisfies `budget_isolation` nowhere *because it resolves no
+      ambient budget*. That was never true. `AuthenticateSessionHandler` publishes the tenant for
+      every **live** session whatever its kind — only an *ended* one is left with no budget — so a
+      locked session reaching a budget-scoped route was reaching it with its own budget resolved and
+      being answered normally. The database was never refusing this; nothing was, until the
+      requirement below.
   - **Enforced in**: the `user_isolation` policy on `sessions` in `app-role-grants.sql` compares
-    `user_id` alone, and no other policy exists on the table.
+    `user_id` alone, and no other policy exists on the table. What the kind *is* enforced by is the
+    application's fallback authorization policy — see the rule below, which carries the
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) statement for why it
+    sits there.
 
 ## Business Rules & Invariants
 
@@ -529,6 +540,69 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   pins the anonymous one, so a second marker goes red until somebody argues for it.
 - **Counterexample**: relaxing the *lookup* instead — admitting a request whose token matched nothing
   so that sign-out "always works". That is an unauthenticated route with extra steps.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: A session whose kind reads no budget content reaches **one** route — the one that ends
+  sessions. Every other route answers `403`, and every one of those refusals is the same answer.
+- **Why**: this is FR-109 made to happen rather than merely derived. The kind has been on the row
+  since sessions existed and on the request's claims since a cookie authenticated one, and until now
+  **nothing read either**: a locked session was answered normally by every route in the product,
+  ambient budget and all. What the rule protects is the thing a federated credential cannot do — an
+  authorization exchange returns claims, not a secret the account's keys can be wrapped under — so a
+  provider sign-in reaching budget content would be the provider's holder reading rows they hold no
+  key for.
+  - **Why the application and not the database**, which
+    [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) requires stating.
+    `budget_isolation` cannot express it: the ambient budget is resolved from the *user*, and a live
+    locked session resolves one like any other. A policy on `sessions` cannot express it either — see
+    the MUST NOT above. And `GET /api/me/export` reads user-owned `budgets`, so even a budget-keyed
+    rule would let the largest single disclosure in the product through. No declarative database rule
+    reaches it, which makes the application the lowest capable layer; within the application, an
+    authorization policy is the declarative mechanism the framework provides and the only one a
+    route-table test can read whole.
+  - **Opt-out, and the polarity is the argument.** `ProvisionsUser` and `AcceptsEndedSession` are
+    opt-**in** because a forgotten marker there refuses something — loud, and filed within a day. Here
+    both directions are loud, but only one is loud in the *right* direction: a forgotten opt-out is a
+    `403` on a route that should have worked, while an opt-**in** gate whose marker was forgotten
+    hands budget content to a locked session with nothing going red. So the gate covers everything by
+    default and a route argues its way out.
+- **Enforced in**: `FullSessionRequirement` and its handler, carried on the fallback authorization
+  policy in `Program.cs` beside `RequireAuthenticatedUser` — so it reaches every route declaring no
+  policy of its own, which is everything outside the anonymous surface. Routes opt out with
+  `AllowsLockedSessionAttribute`; the opted-out set is exactly `POST /api/me/session/revocation`,
+  read whole off the route table by `LockedSessionTests`, the way `AnonymousSurfaceTests` reads the
+  anonymous one. The kind claim is judged by a **round trip** — parse, then compare the presented
+  text ordinally against what the parsed member renders as — because `Enum.TryParse` admits `"full"`
+  under its case-insensitive overload and `"1"` under *every* overload, and the claim is written by
+  `SessionKind.ToString()`, which produces exactly one spelling. `SessionKindReach.ReadsBudgetContent`
+  is the single definition of the rule; `Session.ReadsBudgetContent` calls it rather than restating
+  the comparison, so a kind added later cannot be admitted by one caller and refused by the other.
+  - **The gate is unreachable from any live route today**, which is exactly how one ships broken and
+    green: nothing establishes a locked session, because the only credential type that opens one is
+    `Federated` and the federated path mints no cookie. Every test seeds the session and its handle
+    directly through the database, and each refusal is paired with a `Full` session on the same
+    account against the same route — without that arm, a policy refusing everybody passes.
+  - **One temporary hole, deliberate and pinned.** A principal that authenticated on any scheme but
+    the cookie's satisfies the requirement, claim or no claim. Sign-in still runs through the identity
+    provider, so every request arriving on a Google bearer comes in through the `Budgetoid.Bridge`
+    scheme carrying no session and therefore no kind; a requirement refusing what it did not find
+    would refuse the whole product. It is not a new hole — that surface is exactly as reachable as
+    before — and it leaves with the bridge, at which point
+    `FullSessionRequirementTests.APrincipalFromAnotherScheme_Succeeds` goes red and that redness is
+    the reminder.
+- **Example**: `POST /api/me/session/revocation` answers `204` to a locked session; `GET
+  /api/accounts`, `GET /api/me`, `GET /api/me/export`, `GET /api/me/credentials` and `POST
+  /api/me/erasure` each answer `403` with a body identical to the others and naming no session,
+  credential or kind. Two 403s live on this path and they must stay distinguishable to a reader:
+  the first-party control's carries its own title, this one carries none.
+- **Counterexample**: refusing a locked session by publishing no ambient budget for it. It looks
+  equivalent and is not — the export reads `budgets` by `user_id`, so it would sail through, and
+  every other route would fail with a raw exception rather than a refusal.
+- **Note**: `SessionKind.Locked` is *meant* to reach one more thing — requesting the account's
+  erasure, the release valve for somebody holding nothing but a provider sign-in. That is later work,
+  and the enum's own doc says so; today the erasure route is refused like everything else.
 - **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions

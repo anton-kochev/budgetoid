@@ -24,7 +24,12 @@ public static class SessionEndpoints
         // No ProvisionsUserAttribute, and it must never gain one: signing out is the last request that
         // should be able to bring an account into existence. No AllowAnonymous either — the handle still
         // has to name a real session — and no RequireAuthorization, because the application's fallback
-        // policy already covers every route that declares nothing.
+        // policy already covers every route that declares nothing. That last sentence is now the reason
+        // this route has to say something: the fallback policy refuses a session that reads no budget
+        // content, so without the opt-out below a person signed in through the identity provider could
+        // not sign out. Signing out is not a read — the route reaches no budget content and no account
+        // data at all — and refusing it would leave a locked session with no way to shed its cookie but
+        // waiting out the expiry, on a client already showing a signed-in shell.
         group.MapPost("/revocation", async (
                 HttpContext httpContext,
                 RevokeSessionHandler handler,
@@ -61,7 +66,11 @@ public static class SessionEndpoints
             })
             // The one route in the application that may be reached with a handle whose session has
             // already ended. Read the attribute before adding a second.
-            .WithMetadata(new AcceptsEndedSessionAttribute());
+            .WithMetadata(new AcceptsEndedSessionAttribute())
+            // And the one route a session that reads no budget content may reach. The two markers are
+            // independent and this route happens to need both: the first is about a handle that is no
+            // longer good, the second about a credential that never opened the account's keys.
+            .WithMetadata(new AllowsLockedSessionAttribute());
 
         return endpoints;
     }

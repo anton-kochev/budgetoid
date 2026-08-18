@@ -121,6 +121,26 @@ Load-bearing rules, each explained there or in the linked decision:
   rule stop applying. See
   [sessions.md](docs/business-logic/sessions.md) and
   [ADR 0019](docs/decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md).
+- **A session opened by a federated credential reaches one route, and the gate is opt-out.**
+  `FullSessionRequirement` rides the **fallback** authorization policy beside `RequireAuthenticatedUser`,
+  so it covers every route declaring no policy of its own — everything outside the anonymous surface —
+  and a route escapes with `AllowsLockedSessionAttribute`. The opted-out set is exactly
+  `POST /api/me/session/revocation`, read whole off the route table. **Opt-out, unlike its two
+  neighbours**: `ProvisionsUser` and `AcceptsEndedSession` are opt-in because a forgotten marker there
+  refuses something and is loud, while a forgotten opt-*in* here would hand budget content to a locked
+  session with nothing going red. It sits in the application because no declarative database rule
+  reaches it — `budget_isolation` cannot, since a live locked session resolves an ambient budget like
+  any other, and `GET /api/me/export` reads user-owned `budgets` anyway — which is the
+  [ADR 0002](docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) statement the rule owes.
+  Three things a reader will simplify away: the kind claim is judged by a **round trip** (parse, then
+  compare the text ordinally against what the parsed member renders as) because `Enum.TryParse` admits
+  `"full"` case-insensitively and `"1"` under every overload; `SessionKindReach.ReadsBudgetContent` is
+  the **one** definition and `Session.ReadsBudgetContent` calls it, so a kind added later cannot be
+  admitted by one caller and refused by the other; and a principal that authenticated on any scheme
+  **but** the cookie's satisfies the requirement outright — a deliberate, pinned hole that keeps every
+  bearer request working and leaves with the `Budgetoid.Bridge` scheme. Nothing establishes a locked
+  session today, so the gate is unreachable from any live route and is held entirely by tests that seed
+  one through the database, each pairing its refusal with a `Full` session on the same account.
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
   `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
 - **A credential type has exactly one spelling and it is written out, never derived from the member

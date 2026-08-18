@@ -74,10 +74,13 @@ public sealed class SessionCookieAuthenticationHandler(
     /// <see cref="SessionKind" /> spells it.
     /// </summary>
     /// <remarks>
-    /// Carried because it is the fact the next commits decide on — a locked session may sign in and
-    /// nothing more — and carried as a claim rather than re-read per request so that the answer a
-    /// request acts on is the one its own authentication reached. Nothing enforces it yet, and this
-    /// remark is what stops its presence being read as enforcement.
+    /// Read by <see cref="FullSessionRequirement" />'s handler, on the application's fallback policy and
+    /// therefore on every route that declares nothing: a session whose kind does not read budget content
+    /// is answered 403 unless the route carries <see cref="AllowsLockedSessionAttribute" />. Carried as a
+    /// claim rather than re-read per request so that the answer a request acts on is the one its own
+    /// authentication reached. An identity that authenticated on this scheme and carries no such claim
+    /// reaches nothing — the requirement refuses what it cannot find, because a missing claim is a
+    /// session nobody proved anything about rather than a session with nothing to prove.
     /// </remarks>
     public const string SessionKindClaimType = "session_kind";
 

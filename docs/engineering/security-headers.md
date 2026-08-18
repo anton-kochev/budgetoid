@@ -388,7 +388,12 @@ a `max-age` below one year.
 pipeline wrote the response**, not by which header is checked, because the responses a header test
 usually misses are the ones no route delegate wrote: an `IExceptionHandler` 500, a `/health` 200, a
 401 from the authentication challenge, and a 403 from a middleware that never calls `next`. Each of
-its six tests names the smallest production change that turns it red.
+its six tests names the smallest production change that turns it red. There is now a **second** 403,
+written by the authorization policy after authentication succeeded rather than by a middleware before
+it ran; no test names it, and none is owed — `SecurityHeadersMiddleware` is outermost and writes from
+`OnStarting`, so it reaches that response by the same mechanism as the 401 and the first 403, both of
+which are covered. What the list above enumerates is pipeline *positions* worth a test, not every
+status this API can answer.
 
 **One of those levers is not what it looks like, and it is the one a reader most reliably gets
 wrong.** `AResponseFromAnExceptionHandler_CarriesTheHeaders` discriminates the **write technique**,
