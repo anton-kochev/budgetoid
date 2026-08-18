@@ -1,4 +1,3 @@
-import { HTTP_INTERCEPTORS } from '@angular/common/http';
 import {
   APP_INITIALIZER,
   EnvironmentProviders,
@@ -9,7 +8,6 @@ import { ConfigurationService } from '@app-core/services/configuration.service';
 import { AccountApiService } from './api/account-api.service';
 import { PayeesApiService } from './api/payees-api.service';
 import { TransactionsApiService } from './api/transactions-api.service';
-import { AuthInterceptor } from './interceptors/auth.interceptor';
 
 export const provideAppCore = (): EnvironmentProviders =>
   makeEnvironmentProviders([
@@ -27,11 +25,6 @@ export const provideAppCore = (): EnvironmentProviders =>
           await auth.initialize();
         },
       deps: [ConfigurationService, AuthService],
-      multi: true,
-    },
-    {
-      provide: HTTP_INTERCEPTORS,
-      useClass: AuthInterceptor,
       multi: true,
     },
   ]);

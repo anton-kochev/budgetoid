@@ -414,6 +414,33 @@ database holds, and the sentence above is what makes it one-to-one in fact.
 
 ---
 
+- **Rule**: The web client decides **once** whether a request is going to this product's API, and
+  that one answer carries **three** effects: `withCredentials: true`, the `X-Budgetoid-Client`
+  header, and — until sign-in leaves the identity provider — the `Authorization: Bearer` header. The
+  decision compares **origins**, never a string prefix.
+- **Why**: the three effects share a predicate because two predicates drift, and the drift is
+  silent in both directions. Drop the cookie and every request arrives unauthenticated; drop the
+  header and every request answers 403; widen the predicate and the browser hands this app's
+  credentials to somebody else's host. That last one is not hypothetical:
+  `url.startsWith(apiBaseUrl)` — the shape the bearer-only interceptor shipped with — admits
+  `https://api.budgetoid.app.attacker.example`, a name anybody can register. The cookie itself is
+  safe there, because a browser scopes `__Host-` cookies to the registrable domain that set them;
+  the **bearer** is not, and it is a token this app volunteers. Two further halves a reader will
+  fold together: the bearer is conditional on holding an id token and the other two are **not**,
+  because the browser that has a session cookie and no id token is every browser after the provider
+  drops out of sign-in; and an empty `apiBaseUrl` — which is what the config holds until it
+  loads — classifies **nothing** as this API, because `''` is a prefix of every string on earth and
+  failing open there hands credentials to every request the app makes.
+- **Enforced in**: `apiCredentialsInterceptor` in `+core/interceptors/`, the only interceptor the
+  application registers. Its spec calls the function directly and therefore cannot see whether
+  anybody registered it, so `app.config.spec.ts` stands up the real provider list with only the HTTP
+  backend swapped and goes red on an emptied `withInterceptors([…])`. Without that second spec the
+  registration can be deleted with the whole suite green and the product answering 403 to
+  everything.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
 - **Rule**: `POST /api/me/session/revocation` ends **only the caller's own session**, clears the
   cookie, answers `204`, and answers `204` again on a second call.
 - **Why**: leaving people with no way out once sessions are real is worse than the route costs. The

@@ -1,12 +1,13 @@
 import {
   provideHttpClient,
   withFetch,
-  withInterceptorsFromDi,
+  withInterceptors,
 } from '@angular/common/http';
 import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideRouter } from '@angular/router';
 import { provideAppCore } from '@app-core/core.providers';
+import { apiCredentialsInterceptor } from '@app-core/interceptors/api-credentials.interceptor';
 import * as authenticationEffects from '@app-state/authentication/authentication.effects';
 import { provideEffects } from '@ngrx/effects';
 import { provideStore } from '@ngrx/store';
@@ -17,7 +18,10 @@ import { devtoolsProviders } from './devtools.providers';
 export const appConfig: ApplicationConfig = {
   providers: [
     provideZoneChangeDetection({ eventCoalescing: true }),
-    provideHttpClient(withFetch(), withInterceptorsFromDi()),
+    provideHttpClient(
+      withFetch(),
+      withInterceptors([apiCredentialsInterceptor]),
+    ),
     provideRouter(routes),
     provideOAuthClient(),
     provideStore(),

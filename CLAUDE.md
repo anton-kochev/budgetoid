@@ -247,6 +247,19 @@ Load-bearing rules, each explained there or in the linked decision:
 - Path aliases: `@app-core/*`, `@app-shared/*`, `@app-state/*` (baseUrl is `./src`)
 - Auth: Google OAuth via `angular-oauth2-oidc`
 - UI: Angular Material + Angular CDK, styled with SCSS
+- **One interceptor, one predicate, three effects.** `apiCredentialsInterceptor` is the only
+  interceptor the app registers, and it answers "is this going to our API?" **once**, then
+  attaches `withCredentials: true`, the `X-Budgetoid-Client` header, and (until sign-in leaves
+  the identity provider) the bearer. A second interceptor would mean a second copy of that
+  predicate, and the copies drift silently. The predicate compares **origins** —
+  `url.startsWith(apiBaseUrl)` admits `https://api.budgetoid.app.attacker.example`, a name
+  anybody can register, and hands it this app's bearer. The bearer is conditional on holding an
+  id token; the cookie and the header are **not**, because a browser holding a session and no id
+  token is every browser after the provider drops out. An empty `apiBaseUrl` classifies nothing
+  as this API. The interceptor's own spec calls the function directly and so cannot see the
+  registration at all — `src/app/app.config.spec.ts` is what goes red on an emptied
+  `withInterceptors([…])`, and without it the registration is deletable with a green suite and a
+  product answering 403 to everything. See [sessions.md](docs/business-logic/sessions.md).
 - **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, or
   image, and no identity-provider profile picture. Typefaces live in `public/fonts/`.
   `src/no-external-origins.spec.ts` reads the production bundle, so `npm test` needs a
