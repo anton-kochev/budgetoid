@@ -1,0 +1,247 @@
+import {
+  HttpContext,
+  HttpErrorResponse,
+  HttpRequest,
+  HttpResponse,
+  type HttpEvent,
+  type HttpHandlerFn,
+} from '@angular/common/http';
+import { TestBed } from '@angular/core/testing';
+import { ConfigurationService } from '@app-core/services/configuration.service';
+import { SessionService } from '@app-core/session/session.service';
+import { Router } from '@angular/router';
+import { of, throwError } from 'rxjs';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  EXPECTS_UNAUTHENTICATED,
+  sessionExpiryInterceptor,
+} from './session-expiry.interceptor';
+
+// The same two origins `api-credentials.interceptor.spec.ts` uses, and for the
+// same reason: the predicate that decides which of them this interceptor may
+// act on is meant to be one predicate shared by both files, so the two specs
+// have to be able to disagree about it.
+const API_BASE_URL = 'https://api.budgetoid.app';
+const API_URL = `${API_BASE_URL}/api/me`;
+const OTHER_ORIGIN_URL =
+  'https://accounts.google.com/.well-known/openid-configuration';
+
+const WELCOME = 'welcome';
+
+interface RunOptions {
+  // What the rest of the chain answers with. An `HttpErrorResponse` is thrown
+  // to the interceptor; anything else is delivered as a response.
+  readonly answer?: HttpErrorResponse | HttpResponse<unknown>;
+  readonly apiBaseUrl?: string;
+}
+
+interface Outcome {
+  // Whether the session was declared over, and where the browser was sent.
+  // Both, on every test, because the two halves fail apart: an interceptor that
+  // navigates without calling `ended()` leaves the guard on `/welcome` reading
+  // `'authenticated'` and bouncing the visitor straight back.
+  readonly ended: boolean;
+  readonly destination: string | null;
+  readonly errors: readonly unknown[];
+  readonly events: readonly HttpEvent<unknown>[];
+}
+
+function refusal(status: number, url: string): HttpErrorResponse {
+  return new HttpErrorResponse({ status, url });
+}
+
+// Reads the destination out of whichever `Router` method the implementation
+// reached for, normalized to a path with no leading slash. Deliberately not a
+// pin on `navigateByUrl` over `navigate`: "the browser leaves for /welcome" is
+// the behaviour, and which of the two states it is a choice this spec has no
+// business making for the implementation.
+function pathOf(argument: unknown): string {
+  const raw = Array.isArray(argument) ? argument.join('/') : String(argument);
+
+  return raw.replace(/^\/+/, '');
+}
+
+// A functional interceptor is a plain function, so it is called directly inside
+// an injection context with a `next` that answers however the test asked, which
+// is the harness `api-credentials.interceptor.spec.ts` already uses. It is the
+// right one here for the extra reason that `HttpTestingController` runs the
+// whole client, and the subject of these tests is what the interceptor does
+// with an error on its way *back* through the chain.
+function outcomeOf(
+  request: HttpRequest<unknown>,
+  options: RunOptions = {},
+): Outcome {
+  const { answer = refusal(401, request.url), apiBaseUrl = API_BASE_URL } =
+    options;
+
+  // Reset first, so a test may run the interceptor more than once: the first
+  // `runInInjectionContext` instantiates the injector, after which a second
+  // `configureTestingModule` throws.
+  TestBed.resetTestingModule();
+
+  const ended = vi.fn((): void => undefined);
+  const navigateByUrl = vi.fn(
+    (url: string): Promise<boolean> => Promise.resolve(true),
+  );
+  const navigate = vi.fn(
+    (commands: readonly string[]): Promise<boolean> => Promise.resolve(true),
+  );
+  const configuration: Pick<ConfigurationService, 'getConfig'> = {
+    getConfig: () => ({ apiBaseUrl, auth: {} }),
+  };
+
+  TestBed.configureTestingModule({
+    providers: [
+      { provide: ConfigurationService, useValue: configuration },
+      { provide: SessionService, useValue: { ended } },
+      { provide: Router, useValue: { navigateByUrl, navigate } },
+    ],
+  });
+
+  const next: HttpHandlerFn = () =>
+    answer instanceof HttpErrorResponse ? throwError(() => answer) : of(answer);
+
+  const events: HttpEvent<unknown>[] = [];
+  const errors: unknown[] = [];
+
+  TestBed.runInInjectionContext(() =>
+    sessionExpiryInterceptor(request, next),
+  ).subscribe({
+    next: (event) => events.push(event),
+    error: (error: unknown) => errors.push(error),
+  });
+
+  const [byUrl] = navigateByUrl.mock.calls;
+  const [byCommands] = navigate.mock.calls;
+  const destination =
+    byUrl !== undefined
+      ? pathOf(byUrl[0])
+      : byCommands !== undefined
+        ? pathOf(byCommands[0])
+        : null;
+
+  return {
+    ended: ended.mock.calls.length > 0,
+    destination,
+    errors,
+    events,
+  };
+}
+
+function apiGet(context?: HttpContext): HttpRequest<unknown> {
+  return new HttpRequest<unknown>('GET', API_URL, context ? { context } : {});
+}
+
+describe('sessionExpiryInterceptor', () => {
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+  });
+
+  // The one thing this interceptor exists for. Without it a session that lapsed
+  // mid-visit leaves the browser on a screen whose every read now fails, with
+  // `SessionService` still saying `'authenticated'` and nothing on the page
+  // saying why the numbers stopped arriving.
+  it('ends the session and leaves for the welcome screen when the API answers 401', () => {
+    // Arrange
+    const request = apiGet();
+
+    // Act
+    const outcome = outcomeOf(request);
+
+    // Assert
+    expect(outcome.ended).toBe(true);
+    expect(outcome.destination).toBe(WELCOME);
+  });
+
+  // An observer, not a handler. Swallowed here, a 401 reaches no caller's
+  // `catchError`, so the screen that made the request renders neither its
+  // outcome nor its failure — it sits on its loading line forever, under a
+  // navigation that may itself be cancelled by a guard.
+  it('re-throws the error rather than swallowing it', () => {
+    // Arrange
+    const answer = refusal(401, API_URL);
+
+    // Act
+    const outcome = outcomeOf(apiGet(), { answer });
+
+    // Assert
+    expect(outcome.errors).toEqual([answer]);
+  });
+
+  // The anonymous ceremony routes answer 401 as their own verdict — a passkey
+  // that did not verify, a recovery code that matched nothing — and none of
+  // those is a session ending, because there is no session yet. Carried on the
+  // request rather than in a list of URLs here: a URL list would be a second
+  // definition of the anonymous surface, kept in the client, drifting from the
+  // server's the first time a route moves.
+  //
+  // The services that set this token arrive in later commits, so the request is
+  // built with it directly. That is the mechanism shipping one commit ahead of
+  // its caller, which is deliberate.
+  it('leaves a request that expects a refusal alone', () => {
+    // Arrange
+    const context = new HttpContext().set(EXPECTS_UNAUTHENTICATED, true);
+    const request = apiGet(context);
+
+    // Act
+    const outcome = outcomeOf(request);
+
+    // Assert
+    expect(outcome.ended).toBe(false);
+    expect(outcome.destination).toBeNull();
+    // Still re-thrown: the ceremony's own handler is what renders "that code
+    // didn't match", and it only ever sees the error if this passes it on.
+    expect(outcome.errors).toHaveLength(1);
+  });
+
+  // The negative control for the shared predicate. This app talks to the
+  // identity provider through the same `HttpClient`, and a 401 from Google's
+  // discovery endpoint is a statement about a token this product does not
+  // issue. Signing somebody out of Budgetoid over it is a sign-out caused by a
+  // third party.
+  it('signs nobody out when another origin answers 401', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>('GET', OTHER_ORIGIN_URL);
+    const answer = refusal(401, OTHER_ORIGIN_URL);
+
+    // Act
+    const outcome = outcomeOf(request, { answer });
+
+    // Assert
+    expect(outcome.ended).toBe(false);
+    expect(outcome.destination).toBeNull();
+    expect(outcome.errors).toHaveLength(1);
+  });
+
+  // 403 is the CSRF refusal — a request that arrived without the client header
+  // — and the locked-session refusal. Both are answered to a browser whose
+  // session is intact, so acting on one ends a live session over a bug in the
+  // request builder.
+  it('leaves a 403 alone', () => {
+    // Arrange
+    const answer = refusal(403, API_URL);
+
+    // Act
+    const outcome = outcomeOf(apiGet(), { answer });
+
+    // Assert
+    expect(outcome.ended).toBe(false);
+    expect(outcome.destination).toBeNull();
+  });
+
+  // The control for every test above: an interceptor that called `ended()` on
+  // its way past each response would satisfy the 401 case perfectly and sign
+  // out every visitor on their first successful read.
+  it('leaves a successful response alone', () => {
+    // Arrange
+    const answer = new HttpResponse<unknown>({ status: 200, url: API_URL });
+
+    // Act
+    const outcome = outcomeOf(apiGet(), { answer });
+
+    // Assert
+    expect(outcome.ended).toBe(false);
+    expect(outcome.destination).toBeNull();
+    expect(outcome.events).toEqual([answer]);
+  });
+});

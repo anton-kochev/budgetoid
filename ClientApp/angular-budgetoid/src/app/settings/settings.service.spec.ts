@@ -100,7 +100,7 @@ describe('SettingsService', () => {
     expect(download.save).not.toHaveBeenCalled();
   });
 
-  it('reports a lapsed session as unauthenticated', () => {
+  it('reports a lapsed session as the ordinary failure', () => {
     // Arrange
     api.getExport.mockReturnValue(
       throwError(() => new HttpErrorResponse({ status: 401 })),
@@ -110,11 +110,14 @@ describe('SettingsService', () => {
     service.export();
 
     // Assert
-    // Paired with the 500 case below: each is the other's control, because a
-    // service returning one constant failure passes exactly one of them. The
-    // distinction is load-bearing for the screen — a lapsed session sends the
-    // user to sign in again, a refused build does not.
-    expect(service.exportFailure()).toBe('unauthenticated');
+    // The one status this service used to read, kept as an input precisely
+    // because it is the one a reader will special-case again. 401 is
+    // `sessionExpiryInterceptor`'s to answer — it declares the session over and
+    // takes the browser to `/welcome` — so by the time this handler runs there
+    // is no screen left to say a second sentence on, and the state it records
+    // is the same one every other failure records. Deleting this test and
+    // leaving the 500 case below would let a reinstated arm pass unnoticed.
+    expect(service.exportFailure()).toBe('failed');
   });
 
   it('reports a refused export build as failed', () => {

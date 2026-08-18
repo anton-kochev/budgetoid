@@ -247,19 +247,37 @@ Load-bearing rules, each explained there or in the linked decision:
 - Path aliases: `@app-core/*`, `@app-shared/*`, `@app-state/*` (baseUrl is `./src`)
 - Auth: Google OAuth via `angular-oauth2-oidc`
 - UI: Angular Material + Angular CDK, styled with SCSS
-- **One interceptor, one predicate, three effects.** `apiCredentialsInterceptor` is the only
-  interceptor the app registers, and it answers "is this going to our API?" **once**, then
-  attaches `withCredentials: true`, the `X-Budgetoid-Client` header, and (until sign-in leaves
-  the identity provider) the bearer. A second interceptor would mean a second copy of that
-  predicate, and the copies drift silently. The predicate compares **origins** —
-  `url.startsWith(apiBaseUrl)` admits `https://api.budgetoid.app.attacker.example`, a name
-  anybody can register, and hands it this app's bearer. The bearer is conditional on holding an
-  id token; the cookie and the header are **not**, because a browser holding a session and no id
-  token is every browser after the provider drops out. An empty `apiBaseUrl` classifies nothing
-  as this API. The interceptor's own spec calls the function directly and so cannot see the
-  registration at all — `src/app/app.config.spec.ts` is what goes red on an emptied
-  `withInterceptors([…])`, and without it the registration is deletable with a green suite and a
-  product answering 403 to everything. See [sessions.md](docs/business-logic/sessions.md).
+- **Two interceptors, one predicate.** `apiCredentialsInterceptor` answers "is this going to our
+  API?" **once** and attaches three things: `withCredentials: true`, the `X-Budgetoid-Client`
+  header, and (until sign-in leaves the identity provider) the bearer. `sessionExpiryInterceptor`
+  reads the same question on the way back. The predicate is **exported from the first and
+  imported by the second** — never restated — because two copies of "is this our API?" drift, and
+  the drift is silent in both directions. It compares **origins**: `url.startsWith(apiBaseUrl)`
+  admits `https://api.budgetoid.app.attacker.example`, a name anybody can register, and hands it
+  this app's bearer. The bearer is conditional on holding an id token; the cookie and the header
+  are **not**, because a browser holding a session and no id token is every browser after the
+  provider drops out. An empty `apiBaseUrl` classifies nothing as this API. **Neither
+  interceptor's own spec can see whether it is registered** — both call their function directly —
+  so `src/app/app.config.spec.ts` carries one pin per interceptor, and each reddens on its own
+  half only. Without them either registration is deletable with a green suite: the first costs
+  403 on every route, the second costs a lapsed session that never navigates anywhere.
+  See [sessions.md](docs/business-logic/sessions.md).
+- **The client learns who it is by asking, once, before the first route activates.** The session
+  cookie is `HttpOnly`, so nothing in the browser can read it. `SessionService.probe()` runs in
+  the `APP_INITIALIZER` **after** `config.load()` — `BaseApiService` reads `apiBaseUrl` in its
+  constructor — and is **awaited**, which is what keeps every guard synchronous and means no
+  guard ever runs against `'unknown'`. `status` is **four-valued and the fourth is the one a
+  reader will collapse**: 401/403 → `anonymous`, but a network failure, a 500 or a timeout →
+  `unreachable`, and **both guards admit `unreachable` and `unknown`**. Only `anonymous` may
+  bounce anybody. Reading silence as a refusal throws a person holding a good session out of
+  their own account over one blinked request, onto a page served by the same server they could
+  not reach — the `null`-is-not-`0` rule of `SettingsService`, one screen over.
+  `sessionExpiryInterceptor` is the **single owner of "the session ended"**, which is why the
+  Settings export no longer has a word of its own for it; it acts on **401 only** (403 is the
+  CSRF and locked-session refusal, answered to a browser whose session is intact), always
+  re-throws, and skips any request carrying the `EXPECTS_UNAUTHENTICATED` context token — a
+  token, not a URL list, because a URL list is a second definition of the anonymous surface kept
+  client-side. See [sessions.md](docs/business-logic/sessions.md).
 - **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, or
   image, and no identity-provider profile picture. Typefaces live in `public/fonts/`.
   `src/no-external-origins.spec.ts` reads the production bundle, so `npm test` needs a

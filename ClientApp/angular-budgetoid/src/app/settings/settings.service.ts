@@ -1,4 +1,3 @@
-import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, Signal, inject, signal } from '@angular/core';
 import {
   MeApiService,
@@ -8,7 +7,22 @@ import { FileDownloadService } from '@app-core/services/file-download.service';
 import { EMPTY, catchError, finalize } from 'rxjs';
 import { exportFilename } from './export-filename';
 
-export type ExportFailure = 'unauthenticated' | 'failed';
+// One member now that `sessionExpiryInterceptor` owns "the session ended" for
+// every request the application makes: a 401 on the export is noticed there,
+// declares the session over and takes the browser to `/welcome`, so by the time
+// this service's `catchError` runs there is no screen left to say a second
+// sentence on. What is left is the one failure that keeps the reader where they
+// are — the server refused to build the file.
+//
+// `loadCredentials` below argues that a discriminant nothing discriminates on is
+// a second thing to keep in step with the template, and by that argument this
+// could now be a boolean. It stays a named literal because the change is a
+// *removal*: dropping the arm the interceptor took over leaves every reader of
+// `exportFailure` — the outcome region, its tests — reading the same state with
+// one fewer value in it, where renaming the member to a flag would be a rewrite
+// of the screen's outcome contract for no behaviour. A word also reads better
+// than `true` at the point where a failure is recorded.
+export type ExportFailure = 'failed';
 
 // Deliberately not `providedIn: 'root'`: every signal below is the state of one
 // visit to the settings screen, not of the application, so `SettingsComponent`
@@ -215,8 +229,8 @@ export class SettingsService {
     this.api
       .getExport()
       .pipe(
-        catchError((error: unknown) => {
-          this.exportFailureSignal.set(SettingsService.failureFor(error));
+        catchError(() => {
+          this.exportFailureSignal.set('failed');
           return EMPTY;
         }),
         finalize(() => this.exportingSignal.set(false)),
@@ -234,23 +248,16 @@ export class SettingsService {
       });
   }
 
-  // A discriminant, not a sentence: the copy belongs to the template, and only
-  // the two cases the screen acts on differently are distinguished. A lapsed
-  // session sends the user to sign in again; nothing else does. The server
-  // cannot say more than this even if we wanted it to — the two 500s reachable
-  // on this route are indistinguishable to a client, and so are the two 401s.
+  // `failureFor` used to sit here and read the status off the error. It is gone
+  // rather than reduced to a function returning one constant: every way this
+  // read can fail — a refused build, a 500, an unreachable server — now ends in
+  // the same sentence, and the one status that ended somewhere else is answered
+  // before this handler runs.
   //
-  // Nothing is logged here, departing from the neighbouring
+  // The error itself is still not logged, departing from the neighbouring
   // `accounts.service.ts`, which writes the error object to the console before
   // swallowing it. This route answers with the user's own data, and in
   // Development its error body carries a stack trace; copying either into the
   // console puts it somewhere with a different audience than the response.
   // Setting the signal is the handling.
-  private static failureFor(error: unknown): ExportFailure {
-    if (error instanceof HttpErrorResponse && error.status === 401) {
-      return 'unauthenticated';
-    }
-
-    return 'failed';
-  }
 }

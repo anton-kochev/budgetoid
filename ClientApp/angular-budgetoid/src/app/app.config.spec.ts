@@ -4,9 +4,13 @@ import {
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { Router } from '@angular/router';
+import { MeApiService } from '@app-core/api/me-api.service';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
+import { SessionService } from '@app-core/session/session.service';
 import { OAuthService } from 'angular-oauth2-oidc';
+import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { appConfig } from './app.config';
 
@@ -25,9 +29,19 @@ describe('appConfig', () => {
     // spec exists for exactly that half, and emptying the `withInterceptors([…])`
     // array in `app.config.ts` is what it goes red on.
     // `TestBed.inject` finalizes the test module, which runs the `APP_INITIALIZER`
-    // from `core.providers.ts`. Both of its dependencies are stubbed for that
-    // reason as much as for the request: the real pair fetches `app-config.json`
-    // and then Google's discovery document over the network.
+    // from `core.providers.ts`, whose real dependencies fetch `app-config.json`,
+    // then Google's discovery document, and ask `GET /api/me` who the visitor
+    // is. The probe needs silencing for a second reason on top — it asks the
+    // very URL this spec asserts on, so the real one leaves `expectOne` looking
+    // at two matching requests.
+    //
+    // It is silenced at `MeApiService` rather than at `SessionService`, which
+    // is what a reader will expect. `SessionService` is the application's single
+    // owner of "the session ended", and the second test below watches the real
+    // one make that transition; stubbing it would leave that test asserting a
+    // value written by this file. Cutting the probe off at the API service
+    // removes the request just as completely — `getMe()` never reaches
+    // `HttpClient` — so the first test still sees exactly one request.
     const configuration: Pick<ConfigurationService, 'getConfig' | 'load'> = {
       getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
       load: () => Promise.resolve(true),
@@ -35,8 +49,21 @@ describe('appConfig', () => {
     const auth: Pick<AuthService, 'initialize'> = {
       initialize: () => Promise.resolve(),
     };
+    const me: Pick<MeApiService, 'getMe'> = {
+      getMe: () => of({ email: 'visitor@budgetoid.app' }),
+    };
     const oAuth: Pick<OAuthService, 'getIdToken'> = {
       getIdToken: () => '',
+    };
+    // The real `Router` would run a real navigation out of a test that has no
+    // application on screen. Both methods are stubbed, not just the one the
+    // interceptor happens to call today: which of them takes the browser to
+    // `/welcome` is a choice `session-expiry.interceptor.spec.ts` deliberately
+    // leaves to the implementation, and a stub missing the other one would turn
+    // that free choice into a `TypeError` here.
+    const router: Pick<Router, 'navigate' | 'navigateByUrl'> = {
+      navigate: () => Promise.resolve(true),
+      navigateByUrl: () => Promise.resolve(true),
     };
 
     TestBed.configureTestingModule({
@@ -50,7 +77,9 @@ describe('appConfig', () => {
         // red for a reason that has nothing to do with registration.
         { provide: ConfigurationService, useValue: configuration },
         { provide: AuthService, useValue: auth },
+        { provide: MeApiService, useValue: me },
         { provide: OAuthService, useValue: oAuth },
+        { provide: Router, useValue: router },
       ],
     });
 
@@ -84,5 +113,37 @@ describe('appConfig', () => {
     // the very absence it is here to catch.
     expect(clientHeader).not.toBeNull();
     expect(clientHeader?.trim()).not.toBe('');
+  });
+
+  // The other half of the same hole. Dropping `sessionExpiryInterceptor` from
+  // the `withInterceptors([…])` array costs the application its only owner of
+  // "the session ended" — no 401 anywhere declares the session over or leaves
+  // for `/welcome` — and nothing else notices, because both
+  // `session-expiry.interceptor.spec.ts` and `session.service.spec.ts` call
+  // their functions directly.
+  //
+  // The assertion is on the real `SessionService`'s state rather than on a
+  // navigation, for two reasons. The destination and the `Router` method that
+  // reaches it are the sibling spec's business, and it declines to pin the
+  // method on purpose — restating either here would make a free implementation
+  // choice fail this file. And the state is written by production code: a spied
+  // `ended()` or a hand-rolled fake would have this file supply the value it
+  // then asserts.
+  it('registers the session expiry interceptor with HttpClient', () => {
+    // Arrange
+    const client = TestBed.inject(HttpClient);
+    const session = TestBed.inject(SessionService);
+
+    // Act
+    // The interceptor re-throws, so the 401 arrives at this subscriber. Without
+    // an error handler it would surface as an unhandled rejection and fail the
+    // test for a reason that is not the subject.
+    client.get(API_URL).subscribe({ error: () => undefined });
+    httpMock
+      .expectOne(API_URL)
+      .flush(null, { status: 401, statusText: 'Unauthorized' });
+
+    // Assert
+    expect(session.status()).toBe('anonymous');
   });
 });

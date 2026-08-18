@@ -1,20 +1,30 @@
 import { provideLocationMocks } from '@angular/common/testing';
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
-import { AuthService } from '@app-core/services/auth-service';
+import {
+  SessionService,
+  type SessionStatus,
+} from '@app-core/session/session.service';
 import { describe, expect, it } from 'vitest';
 import { routes } from './app.routes';
 
 // No `<router-outlet>` is rendered here, so navigation resolves and guards run but no
 // routed component is instantiated — nothing reaches the network.
-function routerFor(isAuthenticated: boolean): Router {
+//
+// The status is stubbed rather than the identity provider: both guards read the
+// one answer `SessionService` holds, and the probe that fills it is an
+// `APP_INITIALIZER` this module does not register. The two statuses below are
+// the two these routes discriminate on; the other two admit everywhere and are
+// pinned in each guard's own spec.
+function routerFor(status: SessionStatus): Router {
   TestBed.configureTestingModule({
     providers: [
       provideRouter(routes),
       provideLocationMocks(),
       {
-        provide: AuthService,
-        useValue: { isAuthenticated: () => isAuthenticated },
+        provide: SessionService,
+        useValue: { status: signal(status).asReadonly() },
       },
     ],
   });
@@ -25,7 +35,7 @@ function routerFor(isAuthenticated: boolean): Router {
 describe('app routes', () => {
   it('lands a signed-in visitor on the transactions screen', async () => {
     // Arrange
-    const router = routerFor(true);
+    const router = routerFor('authenticated');
 
     // Act
     await router.navigateByUrl('/app');
@@ -38,7 +48,7 @@ describe('app routes', () => {
   // /welcome, where guestGuard sends a signed-in visitor back into the app.
   it('no longer resolves the removed home route', async () => {
     // Arrange
-    const router = routerFor(true);
+    const router = routerFor('authenticated');
 
     // Act
     await router.navigateByUrl('/app/home');
@@ -49,7 +59,7 @@ describe('app routes', () => {
 
   it('sends an anonymous visitor to the welcome screen', async () => {
     // Arrange
-    const router = routerFor(false);
+    const router = routerFor('anonymous');
 
     // Act
     await router.navigateByUrl('/app');
@@ -62,7 +72,7 @@ describe('app routes', () => {
   // by one navigation, not by landing somewhere else and drilling in.
   it('reaches the settings screen in one navigation', async () => {
     // Arrange
-    const router = routerFor(true);
+    const router = routerFor('authenticated');
 
     // Act
     await router.navigateByUrl('/app/settings');
@@ -73,7 +83,7 @@ describe('app routes', () => {
 
   it('sends an anonymous visitor from settings to the welcome screen', async () => {
     // Arrange
-    const router = routerFor(false);
+    const router = routerFor('anonymous');
 
     // Act
     await router.navigateByUrl('/app/settings');

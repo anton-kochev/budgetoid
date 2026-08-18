@@ -431,12 +431,69 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   drops out of sign-in; and an empty `apiBaseUrl` — which is what the config holds until it
   loads — classifies **nothing** as this API, because `''` is a prefix of every string on earth and
   failing open there hands credentials to every request the app makes.
-- **Enforced in**: `apiCredentialsInterceptor` in `+core/interceptors/`, the only interceptor the
-  application registers. Its spec calls the function directly and therefore cannot see whether
-  anybody registered it, so `app.config.spec.ts` stands up the real provider list with only the HTTP
-  backend swapped and goes red on an emptied `withInterceptors([…])`. Without that second spec the
-  registration can be deleted with the whole suite green and the product answering 403 to
-  everything.
+- **Enforced in**: `apiCredentialsInterceptor` in `+core/interceptors/`. The predicate is
+  **exported from there and imported** by `sessionExpiryInterceptor`, which needs the same answer
+  on the way back; it is one definition with two callers rather than one interceptor, and that is
+  what keeps "one predicate" literally true. The interceptor's spec calls the function directly and
+  therefore cannot see whether anybody registered it, so `app.config.spec.ts` stands up the real
+  provider list with only the HTTP backend swapped and goes red on an emptied
+  `withInterceptors([…])`. Without that second spec the registration can be deleted with the whole
+  suite green and the product answering 403 to everything.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: On a cold load the client asks the server who the visitor is, **once**, before the
+  first route activates. The answer has **four** values: `authenticated`, `anonymous`,
+  `unreachable`, and `unknown` before the question has been answered. **Only `anonymous` may
+  bounce anybody** — both guards admit `unreachable` and `unknown`.
+- **Why**: the cookie is `HttpOnly`, so there is no local evidence to read and asking is the only
+  way to know. The four values exist because **an answer that never arrived is not evidence about
+  the visitor**. Collapsed into `anonymous`, one blinked request during the cold load signs a
+  person holding a perfectly good session out of their own account and drops them on a page served
+  by the same server they could not reach, where nothing they do fixes it. It is the same defect as
+  collapsing `null` into `0` on the recovery-code count, one screen over: a claim about the account
+  manufactured out of a failure to ask. `403` joins `401` as `anonymous` — neither describes an
+  authenticated visitor and the next step is the same — while a 500, a timeout and a status-`0`
+  network failure all read `unreachable`. `unknown` is the same argument before the first ask
+  rather than after a failed one; it should be unobservable, and admitting it means a deleted
+  initializer costs a redundant state rather than every visitor bounced on every cold load.
+- **Enforced in**: `SessionService` in `+core/session/`, probed from the `APP_INITIALIZER` in
+  `core.providers.ts` **after** `config.load()` and **awaited**. The ordering is not stylistic:
+  `BaseApiService` reads `apiBaseUrl` in its constructor and the config holds `''` until `load()`
+  resolves, so an earlier probe sends `GET /api/me` to this app's own origin. The **await** is what
+  keeps every guard synchronous — bootstrapping cannot finish while the answer is outstanding — and
+  `core.providers.spec.ts` pins both halves separately, because a `void probe()` satisfies one and
+  fails the other. `probe()` resolves however the read ends and **never rejects**; a rejection is
+  not a failed probe but an application that never finishes starting.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: A `401` answered to a request this app made to its own API ends the session client-side
+  and sends the browser to `/welcome`. A `403`, another origin's `401`, and any request carrying the
+  `EXPECTS_UNAUTHENTICATED` context token are all left alone. The error is **always re-thrown**.
+- **Why**: a session ending is an application-wide fact — every screen's reads start failing at
+  once — so it is noticed in one place rather than in each caller. That single ownership is why the
+  Settings export no longer carries a word of its own for a lapsed session; the sentence it used to
+  render described a screen the visitor is no longer on. Three exclusions, each silent when wrong.
+  **`403`** is the first-party refusal and the locked-session refusal, both answered to a browser
+  whose session is intact, so acting on one ends a live session over a bug in the request builder.
+  **Another origin's `401`** is a statement about a token this product does not issue — the app
+  reaches the identity provider through the same `HttpClient`, so a sign-out would be caused by a
+  third party. And the **anonymous ceremony routes answer `401` as their own verdict**: a passkey
+  that did not verify, a recovery code that matched nothing. None of those is a session ending,
+  because there is no session yet. The **re-throw** is what keeps this an observer rather than a
+  handler; swallowed, the error reaches no caller's `catchError` and the screen that made the
+  request sits on its loading line forever, under a navigation a guard may itself cancel.
+- **Enforced in**: `sessionExpiryInterceptor`, registered after `apiCredentialsInterceptor` so the
+  unwinding puts it nearest the backend. The exclusion is carried on the **request**, as an
+  `HttpContextToken`, and deliberately **not** as a list of anonymous URLs held in the client: a
+  list is a second definition of the anonymous surface, and the first route to move leaves it
+  ending the session of somebody who mistyped a recovery code. The services that set the token
+  arrive with the screens that call those routes, so the mechanism ships ahead of its caller.
+  `app.config.spec.ts` carries a registration pin for this interceptor too, independent of the
+  credentials one.
 - **Source**: `[SOURCE: discussion]`
 
 ---

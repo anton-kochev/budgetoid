@@ -589,26 +589,14 @@ describe('SettingsComponent', () => {
     const text = normalize(sectionFor(host, 'export-heading'));
 
     // Assert
-    // Paired with the unauthenticated case below: each is the other's control,
-    // because one rendered constant cannot satisfy both. Without the negative
-    // half, a template that printed every failure sentence at once — or that
-    // ignored the discriminant — would pass both positives.
+    // The negative half is no longer this test's control — it is the pin that
+    // the session sentence stays gone. `sessionExpiryInterceptor` owns "the
+    // session ended" for every request the application makes, and answers it by
+    // navigating to `/welcome`, so a screen that also said it would be talking
+    // to a reader who is no longer there. Reinstating that arm here is the
+    // tempting way to "explain" a 401 on the export, and this line refuses it.
     expect(text).toContain(EXPORT_BUILD_FAILURE);
     expect(text).not.toContain(EXPORT_SESSION_FAILURE);
-  });
-
-  it('explains a lapsed session in place', () => {
-    // Arrange
-    service.exportFailure.set('unauthenticated');
-
-    // Act
-    fixture.detectChanges();
-    // Same scope as the case above, for the same reason.
-    const text = normalize(sectionFor(host, 'export-heading'));
-
-    // Assert
-    expect(text).toContain(EXPORT_SESSION_FAILURE);
-    expect(text).not.toContain(EXPORT_BUILD_FAILURE);
   });
 
   // NFR-026.

@@ -22,7 +22,14 @@ function originOf(url: string): string | null {
 // Not `url.startsWith(apiBaseUrl)`: with a base of `https://api.budgetoid.app`
 // that admits `https://api.budgetoid.app.attacker.example`, a host anybody can
 // register, and hands it the cookie and the bearer. Origins compare whole.
-function isApiRequest(url: string, apiBaseUrl: string): boolean {
+//
+// Exported because `sessionExpiryInterceptor` asks the same question and must
+// get the same answer. One definition with two importers rather than two
+// definitions, because the drift is silent in both directions: a copy that
+// widens signs the visitor out of this app over a 401 from somebody else's
+// origin, and a copy that narrows leaves a lapsed session on screen with every
+// read failing under it.
+export function isApiRequest(url: string, apiBaseUrl: string): boolean {
   // Fail closed. `apiBaseUrl` is empty until `ConfigurationService.load()`
   // resolves, and an empty base must classify nothing as our API. `new URL('')`
   // throws, so the origin comparison below already answers false — this states
