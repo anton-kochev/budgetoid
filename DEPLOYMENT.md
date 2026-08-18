@@ -461,3 +461,63 @@ failure to notice first.
    the traffic went private: the public path would have refused it.
 4. Frontend: open the SWA URL, sign in with Google (redirect accepted), create/list/edit/delete a
    transaction — no CORS errors in the browser console.
+5. Security headers, on both origins and on a **deep link** as well as the root. Use whichever
+   hostnames this environment actually answers on — the generated ones before Step 6 has bound the
+   domain, the custom ones after:
+
+   ```sh
+   FRONTEND=https://<swa-url>     # the SWA URL from Step 1, or https://budgetoid.app after Step 6
+   API=https://<api-url>          # the API URL from Step 2, or https://api.budgetoid.app after Step 6
+
+   for url in "$FRONTEND/" "$FRONTEND/app/settings" "$API/health"; do
+     echo "== $url"
+     curl -sI "$url" | grep -iE \
+       '^(content-security-policy|strict-transport-security|referrer-policy|x-content-type-options):'
+   done
+   ```
+
+   **Substitute the hostnames before running this.** A literal `budgetoid.app` against an environment
+   whose domain is not bound yet answers `NXDOMAIN`, and `grep` then prints nothing — indistinguishable
+   from "the headers did not ship", which is the failure this step exists to catch.
+
+   All three URLs must answer with **four** headers each; both origins carry the same set. **The deep
+   link is the one that matters:** Azure applies no route rule to a request `navigationFallback`
+   rewrote, so headers moved out of `globalHeaders` onto a `/*` route are present on the root and
+   absent on every URL a person lands on. Nothing in this repository can check any of this —
+   `src/security-headers.spec.ts` and `SecurityHeaderTests` prove the configuration and the middleware
+   ship with these values, not that Azure emits them
+   ([security headers](docs/engineering/security-headers.md)).
+
+   Then record the **cache policy on the unhashed pre-paint script**, which is the number
+   [ADR 0020](docs/decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md) and
+   [security headers](docs/engineering/security-headers.md) both leave open:
+
+   ```sh
+   curl -sI "$FRONTEND/theme-prepaint.js" | grep -iE '^(cache-control|etag):'
+   ```
+
+   `public/theme-prepaint.js` is copied verbatim into the build output, so its name carries **no build
+   hash** and it cannot carry `immutable` the way `/fonts/*` does; it is also parser-blocking by
+   design. Whatever comes back decides how often a repeat visit waits on a conditional request before
+   first paint, and nothing in this repository knows it. The CLI's `must-revalidate, max-age=30` is
+   **not** the answer — the emulator serves that for content-hashed assets too, and stamps a literal
+   `ETag: "SWA-CLI-ETAG"`. Record what the managed runtime actually sends and update both documents
+   with it.
+
+   Then check a **missing static file**, which is the one response nobody has ever seen Azure answer:
+
+   ```sh
+   curl -sI "$FRONTEND/does-not-exist.js" | grep -iE \
+     '^(HTTP/|content-security-policy|strict-transport-security|referrer-policy|x-content-type-options)'
+   ```
+
+   The Static Web Apps CLI answers that with a 404 carrying **none** of the four, because
+   `globalHeaders` reaches what the host serves from the content and not what it synthesizes. Whether
+   the managed runtime does the same is **unmeasured, and this is the deploy that measures it** —
+   record what comes back either way, and update
+   [security headers](docs/engineering/security-headers.md) with what it was. If the four are missing
+   there too, that is a finding to record and then research; no mechanism is named here, because
+   nobody has yet seen the managed runtime attach a header to a response it synthesized.
+
+   One known gap is **not** a defect to chase: the frontend may carry extra headers this repository
+   never set. It is recorded in that document.

@@ -245,6 +245,9 @@ foreach (string allowedOrigin in allowedOrigins)
     RequireCeremonyOrigin(allowedOrigin, relyingPartyId);
 }
 
+// Outermost, above the exception handler, so the headers reach every response including the ones no
+// route delegate wrote. SecurityHeadersMiddleware holds the argument.
+app.UseMiddleware<SecurityHeadersMiddleware>();
 app.UseExceptionHandler();
 app.UseStatusCodePages(async statusCodeContext =>
 {

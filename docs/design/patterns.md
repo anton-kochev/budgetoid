@@ -85,8 +85,9 @@ when the person asks.
 
 Both themes are first-class. Default follows the OS (`color-scheme`). `ThemeService`
 already resolves, applies and persists a chosen mode to `localStorage['budgetoid-theme']`,
-and `index.html` applies it before first paint — but **no UI calls it**: the Settings
-screen carries no theme control, so the override exists in code and nowhere on screen.
+and `public/theme-prepaint.js`, loaded from `index.html`, applies it before first
+paint — but **no UI calls it**: the Settings screen carries no theme control, so the
+override exists in code and nowhere on screen.
 Every new surface is designed and reviewed in both themes before shipping.
 
 ## Data ownership

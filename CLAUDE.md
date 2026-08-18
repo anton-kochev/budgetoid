@@ -220,6 +220,11 @@ Load-bearing rules, each explained there or in the linked decision:
 - **In production the app role has no password** — the missing `Password=` is what makes
   Aspire fetch an Entra token for the API's managed identity. Do not "complete" it.
   See [ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md).
+- **The four security headers are written from `Response.OnStarting`, never before `await next(…)`** —
+  the exception handler's `Response.Clear()` discards a direct write, so a 500 would ship bare. The
+  registration sits **above** `FirstPartyRequestMiddleware`, which answers 403 without calling `next`;
+  ordering against `UseExceptionHandler()` decides nothing. `SecurityHeaderTests` holds both. See
+  [security headers](docs/engineering/security-headers.md).
 
 ## Frontend Architecture
 
@@ -240,6 +245,18 @@ Load-bearing rules, each explained there or in the linked decision:
   in `src/app/devtools.providers.ts`, which the production `fileReplacements` in `angular.json`
   swaps for an empty module — a runtime `isDevMode()` branch leaves the code in the bundle.
   `src/no-devtools.spec.ts` reads the bundle and fails if it comes back.
+- **The browser is told what the app may load, and `script-src 'self'` is literal.** The
+  `Content-Security-Policy`, `Strict-Transport-Security`, `Referrer-Policy` and
+  `X-Content-Type-Options` ship in
+  `globalHeaders` of `public/staticwebapp.config.json` — never on a route rule, which Azure skips
+  for every `navigationFallback` rewrite, i.e. every deep link. Critical-CSS inlining is **off**
+  (`"inlineCritical": false`, which is the only reason the `optimization` object exists — its other
+  keys restate defaults) because it emits an
+  inline `<style>`, an `onload=` handler and a `<noscript>` twin; the theme pre-paint therefore
+  lives in `public/theme-prepaint.js`, loaded with no `defer` and no `type="module"`.
+  `src/security-headers.spec.ts` reads the emitted config and `index.html`. See
+  [security headers](docs/engineering/security-headers.md) and
+  [ADR 0020](docs/decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md).
 - **No button shows a focus ring unless `src/styles.scss` puts one there.** Material sets
   `outline: none` on `.mdc-button`, so the book's `2px solid var(--bud-focus-ring)` at
   `outline-offset: 2px` lives in one global `:focus-visible` block — element selectors, not
@@ -292,9 +309,11 @@ Load-bearing rules, each explained there or in the linked decision:
   before modifying business rules; if none exists for the domain area, create one following
   the structure of the others.
 - **Engineering invariants** — [data isolation](docs/engineering/data-isolation.md),
-  [migrations](docs/engineering/migrations.md), and
-  [no third-party origins](docs/engineering/no-third-party-origins.md). Each names the tests
-  that lock it: removing a `HasQueryFilter` line, a policy, or a self-hosted font must fail one.
+  [migrations](docs/engineering/migrations.md),
+  [no third-party origins](docs/engineering/no-third-party-origins.md), and
+  [security headers](docs/engineering/security-headers.md). Each names the tests that lock it:
+  removing a `HasQueryFilter` line, a policy, a self-hosted font, or a directive from the
+  shipped `Content-Security-Policy` must fail one.
 - A change to a design rule, business rule, or invariant updates the owning doc **in the
   same commit**.
 - **`docs/` documents only what is true today.** Agreed-but-unbuilt design lives in the
