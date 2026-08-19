@@ -645,9 +645,15 @@ factor, and an account identifier derived from the challenge it just spent —
   establishes a `Full` session, **the assertion response sets the session cookie, and a request
   presenting that cookie authenticates from it** — the loop is closed on the server. The response
   still carries no handle in its body, which is a different rule and an intact one: the cookie is
-  `HttpOnly` precisely so that nothing else is a handle. What does **not** exist is a **screen**: no
-  client code runs a ceremony from a page, so those routes are reached today only by the integration
-  suite and the app itself still authenticates every request it makes from the Google ID token.
+  `HttpOnly` precisely so that nothing else is a handle. **One of the four ceremonies now has a
+  screen and three do not.** The `/register` flow runs the **account-registration** ceremony from a
+  page — `createPasskey` on `+core/security/webauthn-ceremony.service.ts` is called there, and a
+  person's own authenticator produces the credential and the PRF output. The **assertion** leg has
+  none: `assertPasskey` ships with a spec and no caller, so nothing signs in with a passkey, nothing
+  runs the re-authentication the erasure, revocation and recovery-code-generation gates need, and
+  nothing registers a further passkey to an account that exists. Those three routes are reached today
+  only by the integration suite, and every request the app makes outside registration still carries
+  the Google ID token.
   **Account creation is now gated on a passkey — on one of the two paths.** `POST /api/registration`
   creates the account and its passkey in the same save, so an account made that way has never existed
   without one; `UserProvisioningMiddleware` is still live beside it and still mints accounts holding a

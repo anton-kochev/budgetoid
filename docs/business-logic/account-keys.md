@@ -35,12 +35,14 @@ for every factor it brings into existence, and files them in the same save as th
 third path is the newest and the widest: `POST /api/registration` writes **eleven** rows — the
 passkey's pair and one pair per code — inside the one save that creates the whole account.
 
-The two halves are not yet joined, and the gap is worth naming precisely. **The client can now run a
-WebAuthn ceremony** — `+core/security/webauthn-ceremony.service.ts` obtains a PRF output from a real
-authenticator and derives the key-encryption key from it — but **no screen calls it**, so the chain
-still ends one link short of a person. The requests the server demands wrapped keys on are made today
-only by the integration suite. Unlocking, the locked state, the blind index and the encryption of any
-narrative field are all later work.
+**The two halves are joined on one path.** `register.service.ts` — the `/register` flow — obtains a
+PRF output from a real authenticator, draws the account's keys, mints the card, derives eleven
+key-encryption keys and posts eleven pairs of envelopes, so an account created there really does own
+a content key and an index key that no server has seen. The other two write paths are still reached
+only by the integration suite: nothing in the browser registers a further passkey or issues a
+replacement set. Unwrapping outside a spec, the locked state, the blind index and the encryption of
+any narrative field are all later work — no screen in this product decrypts anything, because nothing
+is encrypted yet.
 
 **The PRF output never leaves the ceremony module.** `createPasskey` and `assertPasskey` each derive
 through `keyEncryptionKeyFromPasskey` themselves and hand back a **non-extractable `CryptoKey`**,
@@ -336,6 +338,47 @@ holding both vectors is the only way to see that.
 | associated data | `budgetoid/key-envelope/spec/v1` |
 | envelope (61 bytes) | `01a0a1a2a3a4a5a6a7a8a9aaab6699feaec14e8438eaec0d588bf74e51e03dcb830622d4fb0497bc1de336eb9e21d4cc389d668944133ecec0a071274d` |
 
+### The one client that produces them
+
+There is exactly one place in this product where an account's keys exist in the clear, and it is the
+registration flow. Four rules govern what it does with them, and each is invisible when broken.
+
+**The account keys are drawn once for the whole set, and wiped as soon as the eleven wraps are
+done.** One `generateAccountKeys()` call sits outside every loop; the two buffers are zero-filled in
+a `finally`, so a wrap that rejects halfway does not leave them alive. Drawing a pair **per factor**
+is the mistake worth naming: it satisfies every type, every count, every round trip and every
+constraint the database holds, and it gives the second factor a second, incompatible account — the
+same failure this file's opening argues about deriving from a credential, reached from the other
+side. Keeping the keys "for the encryption epic" is the other temptation and has no upside at all:
+nothing on this client encrypts anything yet, every path that retries re-draws them, and the epic
+that needs them will unwrap them from an envelope as every later session must.
+
+**The eleven key-encryption keys are locals and never touch the service instance.** Each is an
+expression handed straight to the wrap, so none of them outlives the method whatever a later reader
+adds to the class. That is belt *and* braces with the non-extractable import above, deliberately, and
+neither half rests on the other. The wider rule the flow keeps: **a value is a signal only if a
+template renders it**, because a signal on an injectable is one `effect()` away from being logged by
+somebody debugging a re-render. The ten codes are the one secret published that way, because the
+screen that shows them has to read them from somewhere.
+
+**One code's four submitted members are produced in one scope, from one code** — its verifier, its
+factor identifier and its two envelopes, pushed together. The obvious implementation derives ten
+key-encryption keys into an array, wraps ten times into a second, and zips those against the
+verifiers at post time; it pairs one code's verifier with another code's envelopes the first time
+anybody reorders anything, and **nothing on either side of the wire can see it**. The set validates,
+the account is created, a session is handed over, and it is found by somebody who redeemed a code
+months later and met an account still locked. It is the client-side twin of the projection rule
+[registration.md](registration.md) states for the server's eleven rows.
+
+**The factor identifier is minted by `+core/security/factor-id.ts` and by nothing else**, in the one
+canonical spelling — `crypto.randomUUID()` lower-cased. The `toLowerCase` is not redundant even
+though the platform is specified to emit lower-case hex: it costs one call and it is the single line
+between this client and envelopes that never open again, on a contract this module does not own. Its
+companion predicate **reports and does not fold**: a caller wanting a canonical value mints one. That
+is the deliberate counterpart to `account-keys.ts` tolerating several spellings and folding them —
+folding defends against values arriving from elsewhere, while emitting one spelling is a property of
+the values this client creates.
+
 ### What the database can and cannot hold to account
 
 `wrapped_account_keys` refuses an envelope that is not 61 bytes and one whose leading byte is not
@@ -346,8 +389,8 @@ and lives in the associated data.
 
 ## Workflows & State Transitions
 
-Steps 1–4 are the client module; no screen reaches them today. Step 5 is the server, and it is
-reachable — all three routes refuse a request without it.
+Steps 1–4 are the client module. The registration flow reaches all four; nothing else in the browser
+reaches any of them. Step 5 is the server, and all three routes refuse a request without it.
 
 1. **Minting an account's keys.** 64 bytes are drawn in one call and split into two independent
    copies. No further state exists — the keys live only in memory.
@@ -438,8 +481,8 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
 - **`registration.md`** — the **third** write path, and the only one that writes eleven rows in one
   save. It is also where the passkey factor's identifier is compared against the card's ten, a rule
   no other path needs and none of them could hold.
-- **`passkeys.md`** — the ceremony that will supply a PRF output, and the three members registration
-  now carries. The registration path refuses an authenticator that reports no enabled `prf` result;
+- **`passkeys.md`** — the ceremony that supplies the PRF output, and the three members registration
+  carries. The registration path refuses an authenticator that reports no enabled `prf` result;
   that check is a product gate on an unverifiable claim, and a wrapped key is **not** the evidence
   that replaces it — the server cannot tell a key-encryption key derived through PRF from one derived
   out of a constant. What the wrapped keys buy is narrower and real: a factor holding no share of the
@@ -452,14 +495,14 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
 
 ## Edge Cases & Known Gotchas
 
-- **The chain now has two links and still no caller, on purpose, while the server already demands its
-  output.** `keyEncryptionKeyFromPasskey` gained a caller — the ceremony service — and the ceremony
-  service has none. That asymmetry is the story's shape, not an oversight: the crypto follows
-  `recovery-codes.ts` — a pure module tested in place, shipped ahead of the screen that will use it,
-  because its spec is the only place several of these rules can be checked at all — and the write
-  paths were closed in the same change so that no factor can ever be registered without its share of
-  the keys. Do not wire the module into a screen to "finish" it, and do not relax the server's demand
-  to make a screen work.
+- **The chain reaches a person on one path and stops short on the other two.** `/register` runs the
+  whole of it — ceremony, keys, card, eleven wraps, one request — so `generateAccountKeys`,
+  `wrapAccountKeys`, `keyEncryptionKeyFromPasskey` and `keyEncryptionKeyFromRecoveryCode` all have
+  live callers now. `unwrapAccountKeys` does **not**: nothing in this product opens an envelope
+  outside a spec, because nothing is encrypted yet, and the day that changes is the day the locked
+  state and the blind index arrive with it. Registering a further passkey and issuing a replacement
+  set are still server-only. Do not relax the server's demand for the envelopes to make one of those
+  screens easier to write later.
 - **The PRF output is never sent, and one line is what stops it.** `getClientExtensionResults()`
   carries `prf.results.first`, which *is* the PRF output. `toRegistrationPayload` therefore **projects**
   — it builds a new `{ prf: { enabled } }` rather than passing the results object through, filtering

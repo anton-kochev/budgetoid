@@ -29,11 +29,12 @@ establishing paths mint a handle and set the cookie; a request presenting it is 
 it, publishing the account and the ambient budget; and `POST /api/me/session/revocation` ends it. The
 loop is closed on the server.
 
-What is still missing is on the **client**: nothing in the browser runs a passkey ceremony from a
-screen, so no person has been through this path — the requests that mint a cookie are made today only
-by the integration suite, and every request the app itself makes still carries the identity
-provider's ID token. The first gotcha below carries what that means for reading the rest of this
-file.
+**One of the four paths has a screen; three do not.** `/register` runs its ceremony from a page, so a
+person really does complete it, receive the cookie and go on to be authenticated from it. The other
+three are reached today only by the integration suite — nothing in the browser signs in with a
+passkey, redeems a code, or regenerates a set — and every request the app makes outside registration
+still carries the identity provider's ID token. The first gotcha below carries what that means for
+reading the rest of this file.
 
 ## Key Entities
 
@@ -488,6 +489,21 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   `core.providers.spec.ts` pins both halves separately, because a `void probe()` satisfies one and
   fails the other. `probe()` resolves however the read ends and **never rejects**; a rejection is
   not a failed probe but an application that never finishes starting.
+  - **The reading also moves twice mid-visit, and both moves are a *set* rather than a re-probe.**
+    `ended()` is called by `sessionExpiryInterceptor` on a `401`; `established()` is called by the
+    registration flow on the `201`. Each time the server has just said what it thinks, in the same
+    breath as the cookie it set or the refusal it answered, so asking again would replace an answer
+    with a guess over a network that may itself be the problem. On the establishing side there is a
+    second reason: a re-probe costs a round trip at the happiest moment of the flow and can come back
+    `unreachable`, which is a **third** reading of a fact already stated — and `unreachable` is
+    admitted by both guards, so it would not even refuse anybody, only make the app unable to say
+    what it already knows.
+  - **The order at the end of registration is the requirement, not the tidiness.** The session is
+    published **before** the navigation to `/app`; published after, the guard judges that address
+    against a stale `anonymous` and bounces the person straight out of the account they have just
+    created — a defect that reproduces every time and reads as a routing problem.
+    `register.component.spec.ts` records the reading at the instant the navigation is asked for,
+    which is the only way to see the ordering at all.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -512,10 +528,19 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   unwinding puts it nearest the backend. The exclusion is carried on the **request**, as an
   `HttpContextToken`, and deliberately **not** as a list of anonymous URLs held in the client: a
   list is a second definition of the anonymous surface, and the first route to move leaves it
-  ending the session of somebody who mistyped a recovery code. The services that set the token
-  arrive with the screens that call those routes, so the mechanism ships ahead of its caller.
+  ending the session of somebody who mistyped a recovery code.
   `app.config.spec.ts` carries a registration pin for this interceptor too, independent of the
   credentials one.
+  - **The token has its first two callers, and they are both legs of registration.**
+    `RegistrationApiService` sets it on the options call and on the request that creates the account,
+    each on a **fresh** `HttpContext` because that object is mutable and a shared one would be read
+    and written by every registration request in the visit. Both are made by a browser holding no
+    session of this product's, so a `401` from either is the server's verdict on *that request* — a
+    provider token that has expired, a challenge that was never issued — and not a session ending.
+    What the token buys is concrete rather than tidy: without it, a `401` on the second leg navigates
+    the person to `/welcome` mid-flow, away from a screen showing ten recovery codes they may already
+    have written down, with no way back to them. It is reachable rather than theoretical, because a
+    provider id token lives an hour and somebody can sit on the codes step for longer than that.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -726,15 +751,17 @@ enumerated spelling makes at the database — see the first rule above.
 
 ## Edge Cases & Known Gotchas
 
-- **The loop is closed on the server and open on the client, and that is now the whole of the gap.**
-  All four establishing paths mint a handle and set the cookie, a request presenting it is
-  authenticated from it, and sign-out ends it. Every operation in this file is live rather than
-  anticipatory: revoking a passkey really does end that device's access, and a regeneration that
-  swept a live session really does sign the person back in over the new set. What is missing is a
-  **screen**. No client code runs a passkey ceremony from a page, so the routes that mint a cookie
-  are reached today only by the integration suite, and the app itself still authenticates every
-  request from the Google ID token it is handed — exactly as
-  [users-and-ownership.md](users-and-ownership.md) describes.
+- **The loop is closed on the server, and on the client it is closed for exactly one path.** All four
+  establishing paths mint a handle and set the cookie, a request presenting it is authenticated from
+  it, and sign-out ends it. Every operation in this file is live rather than anticipatory: revoking a
+  passkey really does end that device's access, and a regeneration that swept a live session really
+  does sign the person back in over the new set. **Registration now reaches a person**: `/register`
+  runs the ceremony from a page, the response sets the cookie, the client publishes the session
+  itself rather than asking again, and every later request that browser makes to this API is
+  authenticated from the cookie. The other three establishing routes still have no screen — nothing
+  runs a passkey assertion, presents a recovery code, or regenerates a set — so they are reached only
+  by the integration suite, and every request the app makes on any other path still carries the
+  Google ID token it is handed, as [users-and-ownership.md](users-and-ownership.md) describes.
   - **The handle never appears in a response body.** The cookie is `HttpOnly` precisely so that
     nothing else is a handle; no response record carries a token or a session id, and
     `SessionTokenSecrecyTests` is a census over every type a route serialises so a record added later

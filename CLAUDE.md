@@ -247,10 +247,13 @@ Load-bearing rules, each explained there or in the linked decision:
   never-materialise rule now binds a second table that fails **loudly** with `42501`; the wrapped keys
   are **not** the verifiable PRF evidence `CompleteRegistrationHandler`'s remarks ask for, because the
   server cannot tell a key-encryption key derived through PRF from one derived out of a constant; and
-  the client crypto in `+core/security/account-keys.ts` reaches **no screen** while the server already
-  demands its output — `webauthn-ceremony.service.ts` calls the passkey derivation and has no caller
-  of its own, so the chain is one link longer and still ends short of a person; that asymmetry is
-  deliberate and argued in the decision log. See
+  the client crypto in `+core/security/account-keys.ts` now reaches a person — `register.service.ts`
+  draws the account's keys **once**, wraps them under the passkey's key-encryption key and under one
+  derived from each of the ten codes, and writes eleven pairs of envelopes into a single request. Two
+  custody rules ride on that method rather than on a type: the eleven key-encryption keys are locals
+  that never touch the service instance, and the account keys are zero-filled in a `finally` behind
+  the wrap loop. What is still uncalled is the *unwrapping*, because no route hands
+  `wrapped_account_keys` back. See
   [account-keys.md](docs/business-logic/account-keys.md) and
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
 - **The schema carries no remnant of an erasure and the route table offers no way back** — no
@@ -385,14 +388,16 @@ Load-bearing rules, each explained there or in the linked decision:
   pluralisation as three template branches because `I18nPluralPipe` would pin plural rules to
   `en-US` the way `DatePipe` pins days. Generate is present and **disabled**: generation is gated
   on a fresh passkey assertion. `+core/security/recovery-codes.ts` mints codes and derives
-  verifiers with Web Crypto and **has no caller** — its spec is the only place in the system that
-  can check the 128-bit entropy rule, because the server sees fixed-width opaque bytes. Key
+  verifiers with Web Crypto, and its **one caller is registration** — this screen still has none, so
+  a set can be issued only while an account is being created. Its spec stays the only place in the
+  system that can check the 128-bit entropy rule, because the server sees fixed-width opaque
+  bytes. Key
   rotation and email change render nothing today and are owned by later stories — do not
   "complete" the screen. See [export.md](docs/business-logic/export.md),
   [erasure.md](docs/business-logic/erasure.md),
   [recovery-codes.md](docs/business-logic/recovery-codes.md) and the credential-list and
   recovery-codes chapters in [components.md](docs/design/components.md).
-- **The browser can run a WebAuthn ceremony, and no screen does.** `+core/security/webauthn-encoding.ts`
+- **The browser runs the registration ceremony and only that one.** `+core/security/webauthn-encoding.ts`
   is pure translation between the API's base64url JSON and the browser's `BufferSource` shapes, over
   the **strict** decoder in `base64url.ts` — a second, lenient decoder must never appear beside it.
   `+core/security/webauthn-ceremony.service.ts` is the injectable seam, for the reason
@@ -407,12 +412,14 @@ Load-bearing rules, each explained there or in the linked decision:
   platform authenticators only derive from the first assertion. And **`isArrayBuffer` is a brand check,
   never `instanceof`**: realms differ across an iframe, a worker and this test runner, and a narrowing
   that silently goes false derives the key from zero bytes on every device alike. `assertPasskey` asks
-  for PRF too — the wrapped keys open under exactly that value. See
+  for PRF too — the wrapped keys open under exactly that value — and is the member with **no caller**:
+  `createPasskey` is reached from `register.service.ts`, signing in with a passkey is a later story. See
   [passkeys.md](docs/business-logic/passkeys.md) and
   [account-keys.md](docs/business-logic/account-keys.md).
-- **The recovery-code hand-off is the one screen that shows a secret, and it has no route.**
-  `register/steps/codes-step.component` takes ten codes through an `input()`, shows them once, and
-  mints and posts nothing. Four rules, each silent when broken. **The codes never enter a live
+- **The recovery-code hand-off is the one screen that shows a secret, and it still mints and posts
+  nothing.** `register/steps/codes-step.component` takes ten codes through an `input()`, shows them
+  once and raises an output; `RegisterService` is what mints them and what posts. It is reachable as
+  the third step of `/register` and by **no URL of its own**. Four rules, each silent when broken. **The codes never enter a live
   region** — a `role="status"` holding a list narrates ten secrets as events; one region exists for
   the one-sentence outcomes and is in the DOM from first paint. **What is saved or copied is the
   grouped codes and nothing else** — not the printed 1-based index beside them (the obvious
@@ -427,6 +434,32 @@ Load-bearing rules, each explained there or in the linked decision:
   [components.md](docs/design/components.md), "A secret shown once" in
   [voice.md](docs/design/voice.md), and
   [recovery-codes.md](docs/business-logic/recovery-codes.md).
+- **Registration is one screen, one route and one request.** `/register` carries `guestGuard` and
+  declares **no `children`**: the step is a signal inside `register.component.ts`, so `/register/codes`
+  is not a URL — a child route would make Back land on a step whose in-memory state is gone and would
+  deep-link a screen whose whole premise is that ten codes were minted moments ago.
+  `RegisterService` is **component-provided**, which is custody rather than lifetime: the account
+  keys, the eleven key-encryption keys and the ten codes die with the screen, and the component spec
+  pulls the service out of `fixture.debugElement.injector` so deleting the `providers` array reddens.
+  Six rules a reader will simplify. **The device agrees before anything is minted** — cancelling the
+  system sheet is the common case, and minting first leaves ten live codes in a browser for a flow
+  that ended. **One code's four submitted members are built in one scope from one code**, never zipped
+  from parallel arrays: a mispairing satisfies every type, count and round trip, and is discovered by
+  somebody who redeemed a code and found the account still locked. **There is no retry of the POST,
+  only a restart of the whole ceremony**, because the challenge is spent before anything is verified.
+  **`refused`/`conflict` and `unknown` are never collapsed** — a 400 and a 409 are
+  certainly-not-created so the codes on screen are certainly dead, while a lost answer may have
+  committed all thirty rows, and telling that person to discard their codes discards the only key to
+  an account they cannot make more codes for. **A 409 has two readings and `restarted` is the only
+  thing that can tell them apart**: the server sends four distinct sentences in `ProblemDetails.Detail`
+  under an identical `Title` with no machine-readable code, so matching on the text is forbidden and
+  the client renders two states, not four. And **no `canDeactivate`, no `beforeunload`** — abandoning
+  costs nothing and a confirm dialog would say otherwise. Both requests carry
+  `EXPECTS_UNAUTHENTICATED`, its first two callers, or a 401 mid-flow navigates away and destroys ten
+  codes already written down. The provider `redirectUri` points at `/register`, and **the matching
+  entry in the Google Cloud console is part of the change no test can catch**. See
+  [registration.md](docs/business-logic/registration.md) and the Registration chapter in
+  [components.md](docs/design/components.md).
 
 ## Documentation
 

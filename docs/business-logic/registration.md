@@ -28,12 +28,18 @@ Identity itself — who a person is, and which credentials prove it — lives in
 opens once it has answered lives in [sessions.md](sessions.md). This file covers **the act**: its two
 routes, the order its checks run in, and the one value it derives rather than chooses.
 
-**Two things are true today that a reader must hold together.** The path is whole on the server and is
-reached by nothing but the integration suite — **no browser screen runs this ceremony**. And the older
-way in is still live: `UserProvisioningMiddleware` still mints an account from any authenticated
-request reaching one of six marked route groups, and an account minted that way holds one federated
-credential and no way to read itself. Every invariant below is stated as what **this path**
-establishes. See the first gotcha.
+**Two things are true today that a reader must hold together.** The path is whole on both sides: the
+`/register` screen runs the ceremony, draws the account's keys, mints the card, wraps both keys under
+all eleven factors and posts the account, and a person who completes it is signed in on the session
+that request opened. And the older way in is still live: `UserProvisioningMiddleware` still mints an
+account from any authenticated request reaching one of six marked route groups, and an account minted
+that way holds one federated credential and no way to read itself. Every invariant below is stated as
+what **this path** establishes. See the first gotcha.
+
+The client's half of this act — the order it does things in, what it does with each answer, and the
+one refusal it cannot tell apart — is the run of rules at the end of *Business Rules & Invariants*.
+What the screen looks like is the **Registration** chapter of
+[components.md](../design/components.md).
 
 ## Key Entities
 
@@ -365,6 +371,120 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
   caller's own request and says nothing about what is stored.
 - **Source**: `[SOURCE: discussion]`
 
+---
+
+- **Rule**: **The device agrees before anything secret is minted.** On the client the order is: ask
+  for the creation options, run the WebAuthn ceremony, and only then draw the account keys, mint the
+  ten codes and wrap eleven times.
+- **Why**: this departs from the obvious order — mint the card first, then run the ceremony — and the
+  departure is the point. **Cancelling the system passkey sheet is the most common thing that happens
+  on that screen.** Minting first leaves that browser holding ten live recovery codes for a flow that
+  ended: secrets created for an account that does not exist, on a page whose whole premise is that
+  the ten values on it are the account's. It costs nothing to reorder, because the challenge is
+  already spent either way — the options leg ran before the sheet opened, and no refusal below it
+  gives the nonce back.
+  - **The one thing that happens even earlier**: whether the browser can run a ceremony at all is
+    asked **before** the options call, which is the only position that costs nothing. A browser that
+    was never going to finish would otherwise spend a challenge on its way to being told so — and on
+    this route the challenge is also what the account identifier is derived from.
+- **Enforced in**: the statement order in `RegisterService.mintUnder`, argued at each line, and by
+  `register.service.spec.ts` driving a refusing authenticator and asserting that nothing was
+  published, no request was made and no code exists.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **There is no retry of the POST — only a restart of the whole ceremony.** A refused
+  registration offers *Start again*, never *Try again*, and the assembled body is discarded on every
+  outcome.
+- **Why**: the challenge is consumed at rung 4, before anything is verified, so a second POST of the
+  same body meets the undifferentiated challenge refusal with certainty. A retry control would look
+  like a way out and be a way to be told no twice — and it would re-send a whole card of key custody
+  to do it. A restart re-draws **everything**: a new challenge, a new passkey, new account keys, ten
+  new codes and eleven new factor identifiers. Nothing from the abandoned attempt is reused, and
+  nothing could be — the nonce is spent and the account keys were wiped.
+- **Enforced in**: `RegisterService.create` clearing the pending body on the `201` and on every
+  failure alike, `RegisterService.restart` re-entering at the passkey step, and the screen offering
+  no control that re-posts. `refuses to post the same registration twice` and `starts over with a
+  different set of codes` hold both halves.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **A refusal and a lost answer are separate readings, and they may never be collapsed.**
+  A `400`, a `401`, a `403` and a `409` mean *certainly not created*; a network failure, a timeout
+  and every `5xx` mean *cannot be told*.
+- **Why**: every `400` leaves the handler by exception before the save is reached, a `401` and a
+  `403` are refused before the handler is entered at all, and a `409` refuses this request against an
+  account that already stands — so on all four the ten codes on screen open nothing, and saying so is
+  a kindness. A request that got **no answer** is not evidence: it may have arrived, committed all
+  thirty rows and had its `201` lost on the way back. Telling that person their codes are worthless
+  tells them to discard the only key to an account they cannot make more codes for, because
+  `POST /api/me/recovery-codes` has no caller in this client. It is
+  [sessions.md](sessions.md)'s four-valued reading of a probe, on the one screen where collapsing it
+  costs an account nobody can ever open again.
+- **Enforced in**: `RegisterService.failureOf`, a `switch` on the status with the two groups written
+  out and a `default` arm that reads status `0`, every `5xx` and anything a proxy invents as *cannot
+  be told*; the screen renders a different heading, a different sentence and a different control for
+  each. Four tests drive `400`, `409`, status `0` and `500`, and the component spec pins the two
+  sentences whole and asserts they are not the same string.
+- **Counterexample**: `error.status >= 400 ? 'refused' : 'unknown'`, which is the shape a reader
+  reaches for and which files every `5xx` and every dropped connection under *your account was not
+  created*.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The client renders one conflict state, and the server's four distinct `409` sentences
+  are not reachable from it.** This is a gap with a named cause, not a simplification.
+- **Why**: `ConflictExceptionHandler` writes an identical `Title` for every conflict in the product
+  and puts the distinguishing sentence in `Detail` as free text. There is no machine-readable
+  discriminant — no code member, no problem `type` per cause — so the only way for a client to tell
+  *the subject is taken* from *this authenticator is already registered* is to match on `Detail`,
+  which is a second copy of the server's copy held across the wire with nothing to redden when the
+  two drift. One wrong sentence here is worse than a general one: it would send somebody to sign in
+  with a passkey the account does not hold. The client therefore says the one thing true of all four
+  — an account already exists for this address, nothing was created here, sign in instead — and
+  closing the gap means giving the server a discriminant, not teaching the client to read prose.
+- **Enforced in**: `RegisterService.failureOf` mapping `409` to a single word, and the shell
+  rendering one conflict state for it.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The `duplicate` ceremony refusal is unreachable from this route today, and the client
+  handles it anyway.**
+- **Why**: that refusal is the authenticator declining a credential named in `excludeCredentials`,
+  and this leg sends an **empty** list by design — there is nothing to exclude, because the account
+  does not exist. So the arm cannot fire from `/register` as the flow stands. It is handled because
+  the ceremony's failure union is closed and mapped exhaustively: a swallowed arm is a screen showing
+  a spinner or an empty region with no sentence on it, and the day a second ceremony reaches this
+  service the compiler is what carries the decision rather than a reviewer.
+- **Enforced in**: `BeginAccountRegistrationHandler` setting `ExcludeCredentials = []`;
+  `RegisterService.ceremonyFailureOf`, a `switch` over the closed union so a sixth word fails to
+  compile; and the passkey step's own map from every one of the flow's words to a sentence.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The identity provider's redirect lands on `/register`, and the matching entry in the
+  Google Cloud console's authorized redirect URIs is part of that change.**
+- **Why**: the registration screen is the only surface that can do anything with a fresh provider
+  token — it reads the asserted address off the id token, and both legs of this act authenticate as
+  the provider scheme and nothing else. The site root is where the redirect used to land, and that is
+  the address the app reads as *somebody arriving with a session*, which a person consenting in order
+  to **create** an account does not have.
+  - **No test in this repository can see the other half.** A mismatch is refused by Google with
+    `redirect_uri_mismatch` before a single line of this application runs: the browser never comes
+    back, so nothing here is reached to fail. Changing the value without changing the console entry
+    takes provider sign-in down for everybody, and the only thing that goes red is a person's
+    browser.
+- **Enforced in**: `auth.google.redirectUri` in the shipped `app-config.json`, pinned by
+  `src/registration-redirect-uri.spec.ts`, which reads the **emitted build** rather than the source
+  file and also fails when the key is renamed or dropped. The console entry is enforced by nothing
+  and is named here so it is read as part of the change rather than as a follow-up.
+- **Source**: `[SOURCE: discussion]`
+
 ## Workflows & State Transitions
 
 ```mermaid
@@ -478,16 +598,46 @@ ELSE consume the nonce — from here every outcome has burnt it
 - **`FirstPartyRequestMiddleware`** — both routes require a non-empty `X-Budgetoid-Client` header like
   every route but `GET /health`. That control covers this surface for the reason it covers the
   anonymous one: these are routes that **set a cookie**.
+- **The `/register` screen** — the caller for all of it. Its anatomy, its passkey refusal sentences
+  and its four post-request states are the **Registration** chapter of
+  [components.md](../design/components.md); why it is a linear sequence of full screens rather than a
+  checklist is in [patterns.md](../design/patterns.md). Both of its requests carry the
+  `EXPECTS_UNAUTHENTICATED` context token, so a `401` from either is read as this request's verdict
+  rather than as a session ending — see [sessions.md](sessions.md).
 
 ## Edge Cases & Known Gotchas
 
-- **What is built and what is not.** Both routes exist, the whole write is tested, and the response
-  really does sign a person in. **No browser screen runs this ceremony**, so the routes are reached
-  today only by the integration suite, and the app still authenticates every request it makes from the
-  provider's ID token. And the older way in is **still live**: `UserProvisioningMiddleware` still mints
-  an account from any authenticated request to one of six marked route groups, and such an account
-  holds one federated credential, no passkey and no codes. Read every invariant in this file as what
-  *this path* establishes, never as a claim about every account in the schema.
+- **What is built and what is not.** Both routes exist, the whole write is tested, and a person can
+  reach them: `/register` runs the ceremony and posts the account, and the response really does sign
+  them in. What is **not** built beside it is the rest of the client's passkey surface — nothing signs
+  in with a passkey, nothing registers a second one, and nothing runs the fresh assertion the erasure,
+  revocation and recovery-code-generation gates need — so every other request the app makes still
+  carries the provider's ID token. And the older way in is **still live**:
+  `UserProvisioningMiddleware` still mints an account from any authenticated request to one of six
+  marked route groups, and such an account holds one federated credential, no passkey and no codes.
+  Read every invariant in this file as what *this path* establishes, never as a claim about every
+  account in the schema.
+- **Somebody who already has an account is walked all the way to a `409`, and that is the accepted
+  cost of not having an oracle.** Until passkey sign-in ships, the provider button is the only way in
+  from the welcome screen, so an existing account holder who presses it lands on `/register` and is
+  taken through a system passkey sheet and a card of ten codes before the server tells them the
+  account exists. The client cannot check first: **no route answers "does this subject have an
+  account?"**, deliberately, because one would be an enumeration oracle for anybody holding a provider
+  token. The `409` itself discloses nothing — it is answered to somebody who has just proved control
+  of that address — and the sentence on screen sends them to sign in rather than to try again. The
+  passkey they created on the way is a credential their authenticator keeps and this product never
+  saw.
+- **After a lost answer and a restart, the live codes are the *first* attempt's.** The *cannot be
+  told* state offers *Start again* precisely because a second attempt settles the question: if the
+  first request did commit, the second meets the `409` and says so plainly. But the account it names
+  is the one the first attempt created, locked under the first attempt's keys — so somebody who
+  discarded that first card and kept the second holds a passkey and no codes and no way to make more,
+  since `POST /api/me/recovery-codes` has no caller in this client. The screen's sentence therefore
+  says **keep** the codes you saved, and the `409` that follows a restart says the same thing from the
+  other end: it names the first attempt as the one that worked and the codes on screen as the dead
+  ones. The client tells the two readings of a `409` apart by whether *Start again* was pressed and
+  **never** by the `Detail` text, because all four conflict sentences ship under one identical title
+  with no machine-readable code.
 - **Moving the derivation up is the one edit that turns a function into a vulnerability.** Rung 12 sits
   after rung 4 and nothing about the code's shape says so — `clientData.Challenge` is in scope from
   rung 3, so hoisting the derivation beside the parse compiles, reads tidier, and passes every test in

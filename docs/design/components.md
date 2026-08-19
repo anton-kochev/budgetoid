@@ -290,11 +290,13 @@ list semantics — without it nobody hears "list, 2 items".
 **What ships today.** The list renders every kind the union carries, the recovery-code set's row
 included, and renders one it does not as **Sign-in method**, captioned **Added** and carrying no
 action. **Register a passkey** (below the list) and **Revoke** (on the revocable rows, which is the
-passkeys) are both Outline and **disabled**, because both need a WebAuthn ceremony the client cannot
-run yet. One sentence covers both and sits **above** the list rather than beside each button: per
-row, a screen reader would read the same explanation once per entry. When the ceremony lands, the
-sentence goes and the controls become live — Revoke keeps its Outline until a confirmation exists
-for it, per the destructive-action rule above.
+passkeys) are both Outline and **disabled**, because no screen on this path runs the ceremony either
+of them needs: registration is a WebAuthn creation ceremony, which the client now runs only inside
+the registration flow, and Revoke is gated on a fresh assertion, which nothing in the browser runs at
+all. One sentence covers both and sits **above** the list rather than beside each button: per row, a
+screen reader would read the same explanation once per entry. When those ceremonies reach this
+screen, the sentence goes and the controls become live — Revoke keeps its Outline until a
+confirmation exists for it, per the destructive-action rule above.
 
 ## Recovery codes section
 
@@ -466,21 +468,205 @@ written.
 **Generate recovery codes** is present and disabled with its sentence above it. That is the specified
 state, not an unfinished one, and *What replaces this when generation lands* above is the whole of what
 arrives with the button — nothing here asks for it to be made live on its own. The client holds the
-generator that mints a code and derives its verifier from that code's canonical form, covered by its
-own spec and called by nothing; the API service has no member that posts a set, because that route
-takes a fresh WebAuthn assertion this client cannot produce. Redeeming a code has no surface in the
-app at all.
+generator that mints a code and derives its verifier from that code's canonical form, and the
+registration flow is its one caller; nothing on **this** screen calls it, and the API service has no
+member that posts a set, because that route takes a fresh WebAuthn assertion nothing in the browser
+runs. Redeeming a code has no surface in the app at all.
 
-**The show-once surface now exists and this section is not where it lives.** It is the registration
-step below, built ahead of the flow that drives it. Nothing above changes: this section still shows
-no code and no part of one, and *What replaces this when generation lands* still describes what
-arrives **here** when the Settings path opens.
+**The show-once surface exists and this section is not where it lives.** It is the last step of the
+registration flow below, and that flow drives it: somebody creating an account is shown ten codes
+once, and posts the account from that step. Nothing above changes: this section still shows no code
+and no part of one, and *What replaces this when generation lands* still describes what arrives
+**here** when the Settings path opens.
+
+## Registration
+
+The flow that creates an account: three steps behind one address, ending in a session and the app.
+It is the only surface in the product that holds the account's keys in the clear, and the only one
+that shows a secret.
+
+### The flow shell
+
+One screen at `/register`, which turns away anybody already holding a session — there is nothing
+here for them, and reaching the second step would spend a challenge and a passkey to find that out.
+The identity provider's redirect lands on this address, so a person who pressed **Continue with
+Google** comes back to the screen that uses what they consented to.
+
+- **The steps are not routes and get no URL of their own.** A step is in-memory state — the account
+  keys, the ten codes and the eleven sealed envelopes live in a service the screen provides — so
+  `/register/codes` would be an address whose state is already gone, and a link somebody could be
+  sent to a screen whose whole premise is that ten codes were minted moments ago. One URL; the step
+  is a signal behind it.
+- **The shell owns the page and nothing inside it.** It sets the surface a short step sits on —
+  background, ink, `min-height: 100dvh` — and adds **no padding of its own**, because each step sets
+  its own inset.
+- **Nothing asks on the way out.** No confirmation dialog and no unload prompt. Until the last press
+  nothing has been created and the ten codes on screen are inert verifiers no server has ever seen,
+  so a dialog would imply the opposite of what is true. Every step carries the standing line
+  **"Nothing is saved until the last step."** instead, which is what removes the reason to be afraid
+  of leaving.
+- **One `h1` per step, and never one on the shell.** A heading in both places gives every step two
+  competing titles; a heading on the shell alone leaves each step titled by the one before it.
+
+### The step caption
+
+Every step opens with **`Step n of 3`** — `caption`, `--bud-text-muted` — above its `h1`, the two
+set as one block at `--bud-space-2` rather than at the step's own `--bud-space-6` rhythm, so a line
+does not float away from the title it belongs to.
+
+**The caption belongs to the step and not to the shell**, and that is structural rather than a
+preference: each step's `:host` owns its inset and the shell adds none, so a caption rendered up
+there would sit outside every step's padding and align with nothing on the screen. By the third step
+it is also doing more than orientation — somebody being asked to transcribe ten 26-character strings
+by hand cannot answer *is there more of this afterwards?* from anything else on the display.
+
+### Step 1 — the introduction
+
+The only step that asks for nothing: it states which account is about to be created and offers the
+way on. Title **Create your Budgetoid account**.
+
+- **Holding a provider token**, it shows the asserted address back — `body`, with the address itself
+  at weight 600, tabular figures and `overflow-wrap: anywhere` for a long one on a 320px screen —
+  then one line naming what the next two steps are, then one Primary **Continue**. A person with a
+  personal Google account and a work one has no other way to learn which of them this browser is
+  still signed in to, and the cost of guessing wrong is not a wasted click: the next step spends a
+  challenge, and the account that results is bound to whichever address was asserted.
+- **Holding none**, it shows no address and no **Continue**. One line saying this browser is not
+  holding a Google address, and an **Outline** **Continue with Google** — the treatment the book
+  gives that control wherever it appears, in the welcome screen's own words so that somebody bounced
+  here meets the control they already pressed once. A browser arrives in this state routinely: a
+  bookmark, a reload an hour later, an exchange that never completed. A **Continue** from there
+  would reach a refusal with nothing useful to say about why.
+
+### Step 2 — the passkey
+
+The step that spends the challenge, and the one screen in the flow with seven ways to end badly.
+Title **Create your passkey**, then two lines: what the device is about to ask for, and that the same
+authenticator holds the keys the records are locked with.
+
+- **One `role="status"` region**, in the DOM from first paint, empty at rest, holding its box
+  (`min-height: 1lh`) so the screen does not shift when a sentence arrives. It carries the busy line
+  and the refusal alike, so the second **replaces** the first instead of stacking under it. `status`
+  and never `alert`: nothing is typed on this screen, and every sentence that lands there is the
+  outcome of an act the person asked for.
+- **One control, under one of two names, and sometimes none at all.** At rest, a Primary **Create a
+  passkey**. While the ceremony runs, the same Primary held exactly where it was with
+  `disabledInteractive` — the *busy* case in the Buttons chapter, not the acknowledgement case — with
+  **"Waiting for your device."** in the region above it. After a refusal worth another press, **Try
+  again**.
+- **Two of the seven refusals render no control at all**, and that is the whole of the rule. Whether a
+  press could help is a property of the refusal rather than a default, and *no* is not a smaller
+  version of *yes*: where the browser cannot run the ceremony, or the authenticator cannot derive the
+  value the account's keys are wrapped under, leaving **Create a passkey** on the screen is a retry
+  that does not admit to being one — it reads as a way forward, costs another system sheet to
+  disprove, and ends in the same sentence.
+
+The sentences are the specification, not an example of them. None is a synonym of another: folded
+into one, the screen tells somebody whose browser cannot run WebAuthn at all to try again, and tells
+somebody who simply closed the system sheet that their device is unsupported.
+
+| Refusal | Copy | Offers another press |
+| --- | --- | --- |
+| The browser cannot run a ceremony | "This browser can't create a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can." | No |
+| The system sheet was closed, or timed out | "The passkey wasn't created. Nothing has been saved, and nothing was sent — try again whenever you're ready." | Yes |
+| The authenticator already holds a credential it was asked to decline | "This device already holds a passkey Budgetoid can't reuse. Try again with a different device or security key." | Yes |
+| The device cannot hold the account's keys | "This device can't hold your account's keys, and Budgetoid won't create an account it can't lock. Try a different phone, laptop or security key." | No |
+| The ceremony did not finish | "Your device didn't finish creating the passkey. Nothing has been saved." | Yes |
+| The server never issued a challenge | "Budgetoid couldn't reach the server to start. Nothing has been saved." | Yes |
+| Something nobody predicted, between the challenge arriving and the codes being ready | "Budgetoid didn't finish, and nothing has been saved. Try again." | Yes |
+
+Three of them are worth reading twice.
+
+- **The sixth is the only one on this screen about the *server* rather than the device**, and the
+  sentence has to say so: a person told their device failed will go and buy a security key for a
+  problem a reload would have fixed.
+- **The third is unreachable from this flow today** — the account-registration options leg sends an
+  empty `excludeCredentials`, so there is nothing for an authenticator to decline against — and it is
+  specified anyway, because a refusal the screen has no sentence for is a screen that says nothing at
+  all. See [registration.md](../business-logic/registration.md).
+- **The seventh shares a cause with the shell's "no answer" state and must not share its words.**
+  Nothing has been posted on this step, so this sentence can say plainly that nothing was created;
+  the shell's cannot, because there a request really did leave. Same failure, two screens, two
+  truthful sentences.
+
+### Step 3 — the codes
+
+Specified in full in [the recovery-code hand-off](#the-recovery-code-hand-off) below. What the flow
+adds around it is an input and an output: the ten codes it has just minted, and the press that posts
+the account.
+
+### The four post-request states
+
+The registration request answers in one of four ways, and three of those words **replace the codes
+step** rather than sitting under it. There are four states behind the three words, because the
+conflict is read two ways. Each carries **its own `h1`** — a document with the codes gone and no
+heading of its own is a document titled by a step that is no longer on it — and the ten codes leave
+the screen in all four.
+
+| State | Copy | Control |
+| --- | --- | --- |
+| Refused | **Registration was refused** — "Your account wasn't created and nothing was saved. The ten codes you were just shown open nothing — start again to get a new set." | Primary **Start again** |
+| An account already exists, on a first attempt | **You already have an account** — "An account already exists for this Google address. Nothing was created here, and the ten codes you were just shown open nothing — sign in from the Budgetoid home page instead." | none |
+| An account already exists, after a restart | **Your first attempt worked** — "Your first attempt did create your account — its answer just didn't reach this browser. Sign in with the passkey you made on that attempt. The ten codes you were shown a moment ago open nothing; the ten from the first attempt are the ones that work." | none |
+| No answer came back | **Budgetoid didn't hear back** — "Budgetoid didn't get an answer, so we can't tell you whether your account was created. Keep the ten codes you saved: if it was, they're part of the only way back into it." | Primary **Start again** |
+
+- **The first two say the codes are dead; the last must never.** A judged request was read and left
+  the server before a row was written, so saying the ten codes open nothing is a kindness — it tells
+  somebody to throw away a piece of paper that is worthless, and it stops ten worthless secrets
+  standing in front of a person about to be handed ten real ones. A request that got **no answer**
+  says nothing about whether the account exists: it may have arrived, committed and lost its
+  response. Telling that person their codes are worthless tells them to discard the only key to an
+  account they cannot make more codes for. The two sentences are the requirement; collapsing them is
+  the defect.
+- **The two conflicts are the same status code and opposite facts**, and the screen may only tell
+  them apart by whether **Start again** has been pressed. The server sends four distinct sentences
+  under one identical title with no machine-readable code, so the copy above must never be chosen by
+  matching the server's text. On a first attempt the 409 is a stranger at the front door and nothing
+  was created here. After a restart it is the person's *own* first attempt answering: that POST
+  committed and lost its 201, so the account exists, the passkey that opens it is the first
+  attempt's, and the live codes are the first attempt's ten. Showing the first sentence there is
+  false on every clause and costs the account — somebody who throws the first card away holds a
+  passkey, no codes, and no way to make more.
+- **Neither conflict carries a control.** On a first attempt, starting again spends another challenge
+  and another passkey to be told the same thing. After a restart the same is true and a **Sign in**
+  control would be worse than useless: `/welcome` offers **Continue with Google**, which returns to
+  `/register` and is refused again, and nothing in the browser can run a passkey assertion yet. The
+  way forward is the sentence until a sign-in surface exists to point at.
+- **Start again re-draws everything**: a new challenge, a new passkey, new account keys, ten new
+  codes and eleven new factor identifiers. It returns to step 2, and the set on screen when the flow
+  next reaches step 3 is a different set.
+- **There is no Retry, and there may not be one.** The challenge is consumed before anything is
+  verified, so re-sending the same body is a guaranteed refusal — a control that looks like a way out
+  and is only a way to be told no twice. See [registration.md](../business-logic/registration.md).
+
+### Accessibility
+
+One `h1` on every step and on each of the four post-request states; no level skipped. Both live
+regions are `role="status"`, polite, in the DOM from first paint and empty at rest — and the ten
+codes are never in one, per the hand-off chapter. Colour is never the message: every refusal reads
+the same sentence with `--bud-over` removed. Every control is a 48px target.
+
+### What ships today
+
+The whole of the above renders: three steps, the caption, both branches of the introduction, every
+passkey sentence with its control, the hand-off, and all four post-request states. The flow runs
+the ceremony, draws the account keys, mints the card and eleven factor identifiers, wraps every
+factor's copy, posts the account, publishes the session and hands the person to `/app`. The record
+that an attempt was abandoned is read on exactly one surface — the conflict, where it decides which
+of two opposite sentences is true — and nowhere else.
+
+**One departure, named rather than tidied away.** Outside that conflict, **no step says an attempt
+was abandoned**: after **Start again**, nothing on the passkey or codes step tells a person that the
+ten codes they may have written down a minute ago belong to nothing. Those two steps are where a
+person is still standing rather than being told an outcome, and the sentence that would sit there is
+work rather than a rule this chapter is retiring.
 
 ## The recovery-code hand-off
 
 The one screen in the product that shows a secret, and the only time it is shown. Built as
-`register/steps/codes-step.component`, driven by an `input()`, with **no route and no caller** — the
-registration flow that supplies the codes is a later change.
+`register/steps/codes-step.component`, driven by an `input()`, and rendered as the last step of the
+registration flow above — which mints the codes, hands them here, and posts the account when this
+step raises its one output.
 
 ### Anatomy
 
@@ -578,10 +764,13 @@ colour removed.
 
 ### What ships today
 
-The component, its file name, and the clipboard seam. **No route, no flow, nothing that mints a
-code, nothing that posts one.** It renders whatever ten codes it is handed. The type styles above —
-Inter, `tabular-nums`, the tracking — are the one part of this chapter no test holds: jsdom applies
-no styles, and a bundle-reading spec was judged not worth it here.
+All of it, and the flow that reaches it: a person creating an account is shown ten codes on this
+screen, saves or copies them, acknowledges the consequence, and presses the control that creates the
+account. **This component still mints nothing and posts nothing** — the codes arrive through its
+input and the press leaves through its output, which is what stops a set being re-minted by every
+re-render of the step. The type styles above — Inter, `tabular-nums`, the tracking — are the one part
+of this chapter no test holds: jsdom applies no styles, and a bundle-reading spec was judged not
+worth it here.
 
 ## Text fields and selects
 

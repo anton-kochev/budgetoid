@@ -1,0 +1,89 @@
+<!-- The caption belongs to the step, inside the step's own inset, and this one
+     is doing more than orientation: a person who has just been shown a system
+     sheet is entitled to know it is not the last thing being asked of them. -->
+<div class="r-heading">
+  <p class="r-step">Step 2 of 3</p>
+  <h1 class="r-title">Create your passkey</h1>
+</div>
+
+<p class="r-lead">
+  Your device will ask you to confirm &mdash; a fingerprint, your face, a PIN,
+  or a security key. The passkey never leaves the device, and Budgetoid only
+  ever sees the half that cannot sign anything.
+</p>
+
+<p class="r-prose">
+  It also holds the keys your records are locked with, which is why Budgetoid
+  asks for a device that can keep them.
+</p>
+
+<!-- The one live region on this screen, in the DOM from first paint and empty
+     at rest. A region created at the moment it gains content is announced
+     unreliably or not at all, and a region that always holds a line would tell
+     somebody who has pressed nothing that their device refused.
+
+     `status`, never `alert`: nothing is typed on this screen, and every
+     sentence that lands here is the outcome of an act the person asked for.
+     Assertive is reserved for a failure to save something they typed.
+
+     One region rather than two, so the busy line and the refusal that follows
+     it are in the same place and the second replaces the first instead of
+     stacking under it. -->
+<div class="r-outcome" role="status">
+  @if (register.busy()) {
+    <p class="r-prose">Waiting for your device.</p>
+  } @else if (refusal(); as shown) {
+    <!-- Colour is never the message: the line reads as a sentence with the
+         colour removed. -->
+    <p class="r-error">{{ shown.sentence }}</p>
+  }
+</div>
+
+<!-- One control, under one of two names, and sometimes none at all.
+
+     `busy` keeps the Primary exactly where it was with `disabledInteractive` —
+     the *busy* case in the buttons chapter, not the acknowledgement case. A
+     control that goes truly `disabled` under the finger drops focus to
+     `<body>`, and the live region above is what says why it cannot be pressed.
+
+     `none` renders nothing, and that is the whole of the rule the two refusals
+     without a retry exist for. Leaving `Create a passkey` on the screen there
+     is a retry that does not admit to being one. -->
+@switch (control()) {
+  @case ('create') {
+    <button
+      class="r-button"
+      mat-flat-button
+      type="button"
+      (click)="register.createPasskey()"
+    >
+      Create a passkey
+    </button>
+  }
+  @case ('busy') {
+    <button
+      class="r-button"
+      mat-flat-button
+      type="button"
+      [disabled]="true"
+      [disabledInteractive]="true"
+    >
+      Create a passkey
+    </button>
+  }
+  @case ('retry') {
+    <button
+      class="r-button"
+      mat-flat-button
+      type="button"
+      (click)="register.createPasskey()"
+    >
+      Try again
+    </button>
+  }
+}
+
+<!-- The standing line, on this step as on the other two. Truer here than
+     anywhere: the challenge is spent and a passkey may exist on the device, and
+     neither of those is an account. -->
+<p class="r-prose">Nothing is saved until the last step.</p>

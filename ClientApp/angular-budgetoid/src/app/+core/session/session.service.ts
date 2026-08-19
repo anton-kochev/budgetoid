@@ -55,6 +55,17 @@ export class SessionService {
     this.statusSignal.set('anonymous');
   }
 
+  // The mirror of `ended()`, called when a leg that establishes a session has
+  // just answered — registration is the first. A set rather than a re-probe for
+  // the reason stated four lines above: the server has said what it thinks, and
+  // asking again replaces an answer with a guess. Here it would also cost a
+  // round trip at the happiest moment of the flow and could come back
+  // `unreachable`, which is a third reading of a fact the server has already
+  // stated in the same breath as the cookie it set.
+  public established(): void {
+    this.statusSignal.set('authenticated');
+  }
+
   private static readingOf(error: unknown): SessionStatus {
     // 401 is the server saying it knows who is asking and the answer is nobody;
     // 403 is the CSRF refusal and the locked-session refusal. Neither describes

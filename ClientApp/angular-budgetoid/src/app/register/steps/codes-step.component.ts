@@ -19,16 +19,17 @@ import { recoveryCodesFilename } from '../recovery-codes-filename';
 // re-derive them, and the server has no member one could travel back in.
 // Everything else about this component follows from that single fact.
 //
-// **It ships with no flow, no route and no caller**, exactly as
-// `+core/security/account-keys.ts` and the WebAuthn modules already do — the
-// capability lands ahead of the screen that drives it. The codes arrive through
-// a required input and `create` is an output; this component mints nothing,
-// posts nothing and navigates nowhere. The registration flow that mints a set,
-// wraps the account keys under each code and commits the account is a later
-// commit, and it is the thing that will supply both. Do not "finish" this by
-// calling `mintRecoveryCodeSet` in here: a set minted by the screen that
-// displays it would be re-minted by every re-render of the step, and the codes
-// a person wrote down would stop being the codes the account was created with.
+// **It has a flow now, and still no state of its own.** `RegisterService` mints
+// the set, wraps the account keys under each code and commits the account;
+// `register.component` renders this step as the last of three. The codes still
+// arrive through a required input and `create` is still an output, and this
+// component still mints nothing, posts nothing and navigates nowhere. Do not
+// "finish" it by calling `mintRecoveryCodeSet` in here: a set minted by the
+// screen that displays it would be re-minted by every re-render of the step,
+// and the codes a person wrote down would stop being the codes the account was
+// created with. That rule is now satisfied by the flow owning the mint rather
+// than by there being no flow at all, which makes it easier to break, not
+// harder.
 
 // The outcomes a press can have.
 //
@@ -58,6 +59,7 @@ const GROUP_SIZE = 4;
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [MatButtonModule, MatCheckboxModule],
+  selector: 'app-codes-step',
   styleUrls: ['./codes-step.component.scss'],
   templateUrl: './codes-step.component.html',
 })

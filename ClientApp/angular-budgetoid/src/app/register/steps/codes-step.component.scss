@@ -11,6 +11,22 @@
   font-family: var(--bud-font-ui);
 }
 
+// The caption and the title are one block, so the step's own rhythm does not
+// open 24px between a line and the title it belongs to.
+.r-heading {
+  display: grid;
+  gap: var(--bud-space-2);
+}
+
+// `caption`, muted. It orients and never announces, so it is the smallest type
+// on the screen and sits above the thing it is about.
+.r-step {
+  margin: 0;
+  color: var(--bud-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 // `title` role. Every size and line height in this file is a literal for the
 // reason `settings.component.scss` gives at its own: the book names no
 // type-scale token, so there is nothing to reference yet.

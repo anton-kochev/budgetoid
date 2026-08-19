@@ -67,6 +67,17 @@ of orientation, one action.
 
 The bead may breathe once on an empty state ([motion](motion.md)).
 
+**Registration is not first run, and the two take opposite shapes on purpose.** First run is what
+somebody who already has an account meets inside the app: nothing is required of them, they may do
+the four things in any order or none, and the screens they land on are ordinary screens with nothing
+in them yet — which is why the rule above forbids a checklist. Registration is the opposite animal.
+It is one **ordered, atomic transaction**: three things happen in one sequence, none of them is
+optional, and until the last press nothing exists. So it is a **linear sequence of full screens**,
+one step at a time, each with a plain **`Step 2 of 3`** caption above its own heading — the caption
+belongs to the step, per [components](components.md). Not a checklist, which would offer an order
+that is not available, and not `MatStepper`, which draws a header a person can navigate and implies
+they may go back to a step whose state is gone.
+
 ## Budget-state feedback
 
 The three states from [color](color.md), applied with plain words and calm thresholds:
@@ -109,22 +120,24 @@ The product publicly promises: the user only and always owns their data.
 **Today's Settings screen** is `/app/settings`. It has no entry in the bottom bar or the
 rail and is reached by typing the URL — a later epic gives it one. It renders the account's
 email address, a working Export that saves the server's response bytes unread, and an Erase
-control that is present and **disabled**, because erasure has to be confirmed with a passkey
-the client cannot yet register. It states in plain words what the operator can read, and
-that erased rows survive in point-in-time backups for up to seven days.
+control that is present and **disabled**, because erasure has to be confirmed with a fresh
+passkey assertion and nothing in the browser runs one. It states in plain words what the
+operator can read, and that erased rows survive in point-in-time backups for up to seven days.
 
 It also lists **every way of signing in** — each entry its type in words and the day behind
 it, and nothing more. A recovery-code set is one of those entries, because redeeming a code
 opens a full session the way the other kinds do. Registering and revoking are present and
-**disabled**, for the same reason Erase is: both need a passkey ceremony the client cannot
-run. One sentence above the list explains it, rather than one beside each row, so a screen
-reader hears it once instead of once per entry. An entry nothing can ever revoke carries no
-button at all, not even a disabled one.
+**disabled**: no screen on this path runs the ceremony either needs — the client runs a
+creation ceremony only inside registration, and an assertion nowhere at all. One sentence
+above the list explains it, rather than one beside each row, so a screen reader hears it once
+instead of once per entry. An entry nothing can ever revoke carries no button at all, not even
+a disabled one.
 
 Between that list and Export sits **Recovery codes**, which says how many are left and
 nothing more — no code, no part of one, no identifier, no date. It reads and never writes:
-its Generate control is present and **disabled** on the argument the others use, so
-generating a set, showing the codes once and redeeming one are unbuilt, as are key rotation,
-the email-change action and the erasure confirmation dialog. The section sits there and
+its Generate control is present and **disabled** on the argument the others use, so generating
+a set **from here** and redeeming one are unbuilt, as are key rotation, the email-change action
+and the erasure confirmation dialog. Showing a set once is built and lives elsewhere — the last
+step of registration, where the account's first set is issued. The section sits there and
 nowhere else because Export and Erase are a pair and nothing goes between them. The bullets
 above stay as written because they are the target, not a description of what shipped.

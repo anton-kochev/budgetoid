@@ -631,14 +631,14 @@ erDiagram
   authenticator holds one and the person wrote the other down, so each is a secret in the holder's
   own possession that a client can derive from. That is the whole of the reason today, and it is
   already enough. The key custody those two secrets are meant to carry — an authenticator holding
-  the account's keys, a code the keys are wrapped under — now has its cryptography built **and the
-  two write paths that store the result**: issuing a set requires a factor identifier and both
-  wrapped keys, and files them in the same save as the set's credential. What is still missing is the
-  browser. The client can now run the ceremony that obtains a PRF output — and the passkey derivation
-  in `+core/security/account-keys.ts` gained its one caller there — but no screen calls *that*, the
-  recovery-code derivation still has none, and no account outside the test suite has ever had a key
-  wrapped under either secret. So custody is what makes the rule durable rather than what makes it
-  true today — but the schema can no longer hold a factor that carries none.
+  the account's keys, a code the keys are wrapped under — now has its cryptography built, the write
+  paths that store the result, **and one browser flow that produces it**: `/register` derives a
+  key-encryption key from each of the ten codes it mints and files eleven wrapped pairs in the same
+  save as the account, so an account created there really does have its keys wrapped under both kinds
+  of secret. What is still missing is every other browser surface — nothing signs in with a passkey,
+  nothing redeems a code, nothing issues a replacement set — and an account minted by provisioning
+  has no wrapped keys at all. So custody is what makes the rule durable rather than what makes it
+  true of every account today; the schema can no longer hold a factor that carries none.
   - **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule
     rather than a coincidence.** A set of codes is a secret its holder possesses exactly as an
     authenticator is, and reaches exactly as far, so a session that expired sooner here would
@@ -976,37 +976,35 @@ ELSE                                                               ← first iss
   rollback. So a caller who loses the race, or presents a malformed set, has to run the ceremony again.
   That is correct rather than a defect, and it must **not** be answered by moving the gate inside the
   transaction; [erasure.md](erasure.md) owns the argument.
-- **The client can neither generate a set nor present a code, and the settings screen shows the count
-  and nothing more.** The schema exists: a third `CredentialType`, one `credentials` row per issued
-  **set**, and a `recovery_code_hashes` table holding one row per unredeemed code. Three routes
-  exist — `POST /api/me/recovery-codes` issues or replaces the account's set behind a fresh WebAuthn
+- **A browser mints codes on exactly one path, and neither of this file's own two write routes is
+  it.** The schema exists: a third `CredentialType`, one `credentials` row per issued **set**, and a
+  `recovery_code_hashes` table holding one row per unredeemed code. Three routes exist —
+  `POST /api/me/recovery-codes` issues or replaces the account's set behind a fresh WebAuthn
   assertion, `GET /api/me/recovery-codes` answers how many are left, and the **anonymous**
   `POST /api/recovery-codes/redemption` spends one code and signs its holder in. All of it is tested.
-  What does **not** exist: **no browser mints a code and no screen redeems one.** The client holds
-  the generator — it mints a code, derives its verifier, and is covered by its own spec — and nothing
-  calls it, because a generation is gated behind a WebAuthn assertion that no screen runs — the
-  ceremony module now exists and has no caller of its own, so the gate moved one step closer and is
-  still shut; nothing anywhere presents a verifier.
-  - **A screen that can *show* a set now exists too, and it is handed its codes rather than minting
-    them.** `register/steps/codes-step.component` renders ten codes once, saves or copies them, and
-    takes the acknowledgement that losing every factor destroys the record — with **no route, no
-    caller, and nothing that mints or posts a code**. So the count of things that exist grew again
-    and the count of things a person can reach did not. Two rules it holds that a later flow must
-    not undo: what it saves and copies is the codes and nothing else — not the printed position
-    beside them, and no header naming the product inside a file of secrets — and the codes never
-    enter a live region. See the recovery-code hand-off chapter in
-    [components.md](../design/components.md). So the generation and redemption routes are reached only by a test,
-  while the count is read by the settings screen on every visit — the generation control on screen is
-  present and disabled, and `/api/recovery-codes/redemption` has no client route to be reached from
-  at all. Read that the same way the disabled erasure control is read — the gate is built and the
-  surface in front of it is not. The route now **requires**, per code, a factor identifier and both wrapped
-  account keys, so the client that eventually calls it will have to derive them first;
-  `keyEncryptionKeyFromRecoveryCode` in `+core/security/account-keys.ts` is what it will call, on an
-  independent HKDF branch over the same canonical form this area's verifier uses. **That derivation
-  still has no caller**, nothing in the browser generates account keys, and the only requests that
-  have ever satisfied the new requirement are the suite's — see
-  [account-keys.md](account-keys.md). The server side of a recovery sign-in is whole, and the
-  surface a person would reach it through is not.
+  - **What has a caller.** `mintRecoveryCodeSet` and `keyEncryptionKeyFromRecoveryCode` are both
+    called by the registration flow, which is the client's **first-issue** path: ten codes are minted
+    in the browser, ten verifiers are derived from them, ten key-encryption keys are derived on the
+    independent branch over the same canonical form, and the account's two keys are wrapped under
+    each. So a person's browser really does mint codes this server never sees, and the show-once
+    screen really does show them. See [registration.md](registration.md) and
+    [account-keys.md](account-keys.md).
+  - **What has none.** `POST /api/me/recovery-codes` — a generation is gated on a fresh passkey
+    assertion, no screen runs one, and the settings control is therefore present and disabled — and
+    `POST /api/recovery-codes/redemption`, which has no client route to be reached from at all:
+    nothing anywhere canonicalises a typed code or presents a verifier. Read the disabled control the
+    way the disabled erasure control is read: the gate is built and the surface in front of it is not.
+    The count is the one thing the settings screen reads, on every visit.
+  - **The show-once screen has a flow now, and it still mints nothing.**
+    `register/steps/codes-step.component` takes its ten codes through a required input and raises one
+    output; the flow above it owns the mint. Do not "finish" it by minting inside it — a set minted by
+    the screen that displays it is re-minted by every re-render of the step, and the codes a person
+    wrote down stop being the codes the account was created with. That rule is now kept by the flow
+    owning the mint rather than by there being no flow at all, which makes it easier to break rather
+    than harder. Two more it holds that the flow must not undo: what it saves and copies is the codes
+    and nothing else — not the printed position beside them, and no header naming the product inside
+    a file of secrets — and the codes never enter a live region. See the recovery-code hand-off
+    chapter in [components.md](../design/components.md).
 - **Both sessions this area opens are now real, and both hand back a cookie.** A redemption sets one
   for the code's owner; a regeneration sets one over the new set **only when its sweep ended a live
   session**, and a first issue *on this route* sets none — that condition is the rule rather than a

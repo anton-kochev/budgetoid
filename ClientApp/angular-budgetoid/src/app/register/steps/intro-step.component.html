@@ -1,0 +1,62 @@
+<!-- The caption belongs to the step and not to the shell, so it sits inside the
+     step's own inset. One `h1` here, as on every other step: the shell renders
+     one step at a time and each of them titles itself. -->
+<div class="r-heading">
+  <p class="r-step">Step 1 of 3</p>
+  <h1 class="r-title">Create your Budgetoid account</h1>
+</div>
+
+@if (register.email(); as email) {
+  <!-- The address the provider asserted, shown back before anything is spent.
+       A person with a personal Google account and a work one has no other way
+       to find out which of them this browser is still signed in to, and the
+       cost of guessing wrong is not a wasted click: the next step spends a
+       challenge and asks an authenticator for a passkey, and the account that
+       results is bound to whichever address was asserted. -->
+  <p class="r-lead">
+    Your account will be created under
+    <span class="r-email">{{ email }}</span
+    >.
+  </p>
+
+  <p class="r-prose">
+    Next, your device makes a passkey. After that, Budgetoid shows ten recovery
+    codes to write down &mdash; they&rsquo;re the only other way in, and
+    they&rsquo;re shown once.
+  </p>
+
+  <!-- The one Primary on this step, and the only act it offers. -->
+  <button
+    class="r-button"
+    mat-flat-button
+    type="button"
+    (click)="register.begin()"
+  >
+    Continue
+  </button>
+} @else {
+  <!-- No token means no `sub`, no asserted address, and nothing for either
+       registration leg to authenticate as — both are declared on the provider
+       scheme and nothing else. A `Continue` from here would reach a 401 and a
+       screen with nothing useful to say about why, so the way on is the
+       provider itself. A browser arrives in this state routinely: a bookmarked
+       address, a reload an hour later, an exchange that never completed. -->
+  <p class="r-lead">
+    Budgetoid creates your account under a Google address, and this browser
+    isn&rsquo;t holding one right now.
+  </p>
+
+  <p class="r-prose">
+    Continue with Google and you&rsquo;ll come straight back to this page.
+  </p>
+
+  <!-- Outline, which is the treatment the book gives the Google sign-in
+       control wherever it appears. -->
+  <button class="r-button" mat-stroked-button type="button" (click)="signIn()">
+    Continue with Google
+  </button>
+}
+
+<!-- The standing line, on this step as on the other two. It is what removes the
+     reason to be afraid of leaving, so no dialog has to ask on the way out. -->
+<p class="r-prose">Nothing is saved until the last step.</p>

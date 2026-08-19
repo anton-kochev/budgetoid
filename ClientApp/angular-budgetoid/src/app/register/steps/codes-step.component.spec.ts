@@ -48,6 +48,10 @@ const CONSEQUENCE =
   'Your passkey and these ten codes are the only ways into this account. Budgetoid keeps no copy of either, so if you lose the passkey and every code, everything you record here stays locked — to you, and to us. There’s no way back, and no one to ask.';
 const ACKNOWLEDGEMENT = 'I’ve saved these codes somewhere I can get to them.';
 const STANDING_LINE = 'Nothing is saved until the last step.';
+// The caption that says how much of the flow is left. Pinned as the whole
+// phrase, because both numbers matter: the second is the promise that this is
+// the end of it, and the first is what makes that promise checkable.
+const STEP_CAPTION = 'Step 3 of 3';
 const COPY_COST =
   'Copying puts them on your clipboard, where other apps on this device can read them.';
 const SAVE_BUTTON = 'Save to file';
@@ -706,6 +710,20 @@ describe('CodesStepComponent', () => {
     // with two competing titles for a reader navigating by heading level.
     expect(host.querySelectorAll('h1').length).toBe(1);
     expect(normalize(host.querySelector('h1'))).toBe(HEADING);
+  });
+
+  it('names its position in the flow', () => {
+    // Act
+    const shown = collapse(host.textContent ?? '');
+
+    // Assert
+    // The last of three, and on this screen the number is doing more than
+    // orientation. A person is being asked to transcribe ten 26-character
+    // strings by hand, and the one question they cannot answer from anything
+    // else on the display is whether there is more of this after it. There is
+    // not — the only thing left is the press that creates the account — and
+    // saying so is what makes the transcription feel finite.
+    expect(shown).toContain(STEP_CAPTION);
   });
 
   it('offers exactly one primary control', () => {

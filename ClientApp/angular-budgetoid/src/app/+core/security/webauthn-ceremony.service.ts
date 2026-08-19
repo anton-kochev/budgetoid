@@ -20,13 +20,15 @@
 // blaming the authenticator. When no output arrives at creation, one **local**
 // assertion is run against the credential just created and then discarded.
 //
-// **This module ships with a spec and no caller**, exactly as `account-keys.ts`
-// and `recovery-codes.ts` do, and for the same reason: the screens that run
-// these ceremonies — registering a passkey, signing in with one, generating a
-// recovery-code set behind a fresh assertion — are later stories. The spec is
-// meanwhile the only place the custody rules above can be observed at all: a
-// non-extractable key has no other witness, and "the bytes were cleared" is a
-// claim about a buffer nobody else can hold.
+// **This module has one caller and `createPasskey` is the only member it
+// reaches.** `register.service.ts` runs the creation ceremony on the passkey
+// step of the registration flow. `assertPasskey` still ships with a spec and
+// nothing else, for the reason `account-keys.ts` and `recovery-codes.ts` give:
+// the screens that sign in with a passkey and that generate a recovery-code set
+// behind a fresh assertion are later stories. The spec also remains the only
+// place the custody rules above can be observed at all: a non-extractable key
+// has no other witness, and "the bytes were cleared" is a claim about a buffer
+// nobody else can hold.
 //
 // It takes no `HttpClient` and no other dependency. That is structural rather
 // than tidy: a ceremony holding no way to reach the network cannot post the

@@ -1,0 +1,52 @@
+// The shell owns the page and nothing inside it. Each step sets its own inset,
+// which is what `codes-step.component.scss` says at its own `:host`, so the
+// only thing left here is the surface a step that is shorter than the viewport
+// sits on.
+:host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  background: var(--mat-sys-background);
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+}
+
+// The one block this component renders itself. It repeats the inset a step
+// would have given it rather than inheriting one that does not exist — it
+// stands in a step's place, so it has to stand where a step stands.
+.r-failure {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-6);
+  align-content: start;
+  box-sizing: border-box;
+  padding: var(--bud-space-6) var(--bud-gutter) var(--bud-space-9);
+}
+
+// `title` role. Every size and line height in this file is a literal for the
+// reason `codes-step.component.scss` gives at its own: the book names no
+// type-scale token, so there is nothing to reference yet.
+.r-title {
+  margin: 0;
+  font-family: var(--bud-font-display);
+  font-weight: 500;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+// Colour is never the message: each of the three sentences reads the same with
+// the colour removed, which is the whole of what tells them apart.
+.r-error {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--bud-over);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Material's M3 button is shorter than the system's touch minimum.
+.r-button {
+  min-height: var(--bud-touch-target);
+}

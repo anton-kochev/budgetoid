@@ -164,4 +164,29 @@ describe('SessionService', () => {
     // Assert
     expect(service.status()).toBe('anonymous');
   });
+
+  // The mirror of the transition above, and the half a reader will implement as
+  // a re-probe. Arranged from `'anonymous'` reached by a real refusal, because
+  // an implementation that only ever sets `'authenticated'` from `'unknown'`
+  // would pass a test that started at rest.
+  it('publishes an established session without asking again', async () => {
+    // Arrange
+    api.getMe.mockReturnValue(throwError(() => refusal(401)));
+    await service.probe();
+    expect(service.status()).toBe('anonymous');
+    api.getMe.mockClear();
+
+    // Act
+    service.established();
+
+    // Assert
+    expect(service.status()).toBe('authenticated');
+    // The no-request half is the point rather than an incidental. The 201 that
+    // established the session set the cookie in the same breath, so a re-probe
+    // asks the server to restate a fact it has just stated — at a round trip's
+    // cost, at the happiest moment of the flow, and with `'unreachable'` among
+    // its answers. A person who just created an account would then be shown a
+    // client that is not sure they exist.
+    expect(api.getMe).not.toHaveBeenCalled();
+  });
 });

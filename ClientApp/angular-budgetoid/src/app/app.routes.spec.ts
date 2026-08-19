@@ -95,4 +95,45 @@ describe('app routes', () => {
     // who types the URL.
     expect(router.url).toBe('/welcome');
   });
+
+  it('keeps a signed-in visitor off the registration screen', async () => {
+    // Arrange
+    // The control, and without it this test is green on an application that has
+    // no registration screen at all: `/register` matching nothing falls through
+    // to `**` → `/welcome`, where `guestGuard` sends this same visitor to this
+    // same address for a completely different reason. Read as a route-table
+    // statement rather than as a second navigation, because `routerFor`
+    // instantiates the testing module and a test cannot configure two.
+    const router = routerFor('authenticated');
+
+    // Act
+    await router.navigateByUrl('/register');
+
+    // Assert
+    expect(routes.map((route) => route.path)).toContain('register');
+    // Somebody holding a session has an account, so the registration flow has
+    // nothing to offer them — and it would spend a challenge and a passkey
+    // finding that out. `/app` resolves on to the transactions screen, which is
+    // where `guestGuard`'s redirect lands.
+    expect(router.url).toBe('/app/transactions');
+  });
+
+  // A pin rather than a discovery: it is green the moment the register route
+  // exists, and it exists to fail on the edit that would follow. The mutation
+  // it refuses is a `children: [{ path: 'codes', … }]` array on that route —
+  // the obvious way to give each step an address. Two things break at once. A
+  // step is in-memory state, so Back lands on `/register/passkey` with the
+  // service that held the ceremony's result already gone; and `/register/codes`
+  // becomes a link somebody can open, or be sent, on a screen whose entire
+  // premise is that ten codes were minted moments ago and are on it.
+  it('does not resolve a step as a route of its own', async () => {
+    // Arrange
+    const router = routerFor('anonymous');
+
+    // Act
+    await router.navigateByUrl('/register/codes');
+
+    // Assert
+    expect(router.url).toBe('/welcome');
+  });
 });

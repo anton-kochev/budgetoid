@@ -1,0 +1,138 @@
+<!-- One step at a time, from one reading. The steps are not routes and get no
+     URL of their own: a step is in-memory state — the account keys, the ten
+     codes and the eleven envelopes live in a service this component provides —
+     so an address for one would be an address whose state is already gone. -->
+@switch (register.step()) {
+  @case ('intro') {
+    <app-intro-step />
+  }
+  @case ('passkey') {
+    <app-passkey-step />
+  }
+  @case ('codes') {
+    <!-- The post-request states replace the codes step rather than sitting
+         under it, which is why each of them carries its own `h1`: a document
+         with the codes gone and no heading of its own is a document titled by
+         the step that is no longer on it.
+
+         And the codes go with it, in all four — three words, and the 409 is
+         two states because `restarted` splits it. Two of the four say the
+         codes on screen are dead, and leaving ten worthless secrets in front
+         of somebody who is about to be handed ten real ones is the one thing
+         this screen must not do. One says nothing can be told either way, and
+         a person who kept them has them; a person who did not cannot get them
+         back from here, which is what the sentence says instead of pretending
+         otherwise. The fourth says both at once: these ten are dead and an
+         earlier ten are the only way back. -->
+    @if (postRequestFailure(); as failure) {
+      <div class="r-failure">
+        @switch (failure) {
+          @case ('refused') {
+            <!-- A 400, a 401 and a 403 are judgements: the request was read and
+                 every one of them leaves the handler before a row is written.
+                 Nothing was created, so the ten codes open nothing, and saying
+                 so is a kindness — it tells somebody to throw away a piece of
+                 paper that is worthless. -->
+            <h1 class="r-title">Registration was refused</h1>
+            <p class="r-error">
+              Your account wasn&rsquo;t created and nothing was saved. The ten
+              codes you were just shown open nothing &mdash; start again to get
+              a new set.
+            </p>
+            <button
+              class="r-button"
+              mat-flat-button
+              type="button"
+              (click)="register.restart()"
+            >
+              Start again
+            </button>
+          }
+          @case ('conflict') {
+            <!-- **One 409, read two ways, and `restarted` is the only thing
+                 that can tell them apart.** The server sends four distinct
+                 sentences in `ProblemDetails.Detail` under an identical title
+                 with no machine-readable code
+                 (`ConflictExceptionHandler.cs:21-26`), so the client cannot
+                 tell those four apart and must never match on the text. What it
+                 does know is whether *this* browser has already posted once,
+                 and that is exactly the fork that matters.
+
+                 On a first attempt the 409 means what it says: somebody who
+                 already has an account walked back into the front door. Nothing
+                 was created here, the ten codes open nothing, and starting
+                 again would spend another challenge and another passkey to be
+                 told the same thing.
+
+                 After a restart it means the opposite of all three. The first
+                 POST committed its thirty rows and lost the 201 coming back —
+                 which is why the person was told Budgetoid could not tell and
+                 to keep their codes — they pressed `Start again`, and this 409
+                 is that first account answering. So the account exists, the
+                 passkey that opens it is the first attempt's, and the live
+                 codes are the first attempt's ten. Saying "nothing was created
+                 here and those codes open nothing" to that person is false on
+                 the first clause and lethal on the second: they throw away the
+                 first card, keep a passkey, and hold no codes and no way to
+                 make more, because `POST /api/me/recovery-codes` has no caller
+                 in this client. -->
+            @if (register.restarted()) {
+              <h1 class="r-title">Your first attempt worked</h1>
+              <p class="r-error">
+                Your first attempt did create your account &mdash; its answer
+                just didn&rsquo;t reach this browser. Sign in with the passkey
+                you made on that attempt. The ten codes you were shown a moment
+                ago open nothing; the ten from the first attempt are the ones
+                that work.
+              </p>
+              <!-- No control, for a harder reason than the branch below.
+                   `Start again` walks into this same 409 a third time, and
+                   every address this client could send somebody to leads back
+                   here as well: `/welcome` offers `Continue with Google`, which
+                   redirects to `/register`, which posts and is refused again.
+                   Nothing in this browser can run a passkey assertion yet, so a
+                   `Sign in` control would be a promise no route can keep — and
+                   on the one screen where a wrong way forward costs the account
+                   itself, the honest offer is the sentence and no button. -->
+            } @else {
+              <h1 class="r-title">You already have an account</h1>
+              <p class="r-error">
+                An account already exists for this Google address. Nothing was
+                created here, and the ten codes you were just shown open nothing
+                &mdash; sign in from the Budgetoid home page instead.
+              </p>
+            }
+          }
+          @case ('unknown') {
+            <!-- A status 0, a timeout and a 5xx say nothing about whether the
+                 account exists: the request may have arrived, committed all
+                 thirty rows and had its 201 lost coming back. Telling that
+                 person their codes are dead is telling them to discard the only
+                 key to an account they cannot make more codes for, and this
+                 client has no caller for `POST /api/me/recovery-codes`.
+
+                 Start again is still offered, and it is the only thing that can
+                 settle the question: if the account was created, the next
+                 attempt meets the 409 above and says so plainly. -->
+            <h1 class="r-title">Budgetoid didn&rsquo;t hear back</h1>
+            <p class="r-error">
+              Budgetoid didn&rsquo;t get an answer, so we can&rsquo;t tell you
+              whether your account was created. Keep the ten codes you saved: if
+              it was, they&rsquo;re part of the only way back into it.
+            </p>
+            <button
+              class="r-button"
+              mat-flat-button
+              type="button"
+              (click)="register.restart()"
+            >
+              Start again
+            </button>
+          }
+        }
+      </div>
+    } @else if (register.codes(); as codes) {
+      <app-codes-step [codes]="codes" (create)="register.create()" />
+    }
+  }
+}

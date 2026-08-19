@@ -3,7 +3,7 @@
   "auth": {
     "google": {
       "clientId": "618255022627-7rh7dn1po7ovnopb1lp3jcnm4ft7oeb5.apps.googleusercontent.com",
-      "redirectUri": "https://budgetoid.app",
+      "redirectUri": "https://budgetoid.app/register",
       "scope": "openid email"
     }
   }
