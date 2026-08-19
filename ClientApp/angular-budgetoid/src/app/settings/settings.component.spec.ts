@@ -1,13 +1,23 @@
-import { HttpErrorResponse } from '@angular/common/http';
-import { signal } from '@angular/core';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
+import { signal, type Provider } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
+import { Router, provideRouter, type UrlTree } from '@angular/router';
 import {
   MeApiService,
   type CredentialSummary,
   type MeDto,
 } from '@app-core/api/me-api.service';
+import { ConfigurationService } from '@app-core/services/configuration.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
+import {
+  SessionService,
+  type SessionStatus,
+} from '@app-core/session/session.service';
 import { of, throwError, type Observable } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { credentialRegistrationDate } from './credential-registration-date';
@@ -24,8 +34,79 @@ const ERASE_BUTTON = 'Erase everything';
 const EXPORT_BUTTON = 'Export';
 const BACKUP_WINDOW =
   'Erased data stays in point-in-time database backups for up to 7 days, and in no other place.';
-const PASSKEY_EXPLANATION =
-  'Erasing has to be confirmed with a passkey, and Budgetoid can’t register passkeys yet. The button stays off until it can.';
+// The two sentences this screen uses to explain a control it cannot offer yet,
+// in the shape `voice.md`'s "not built yet" pattern sets: name the missing
+// piece and what it waits on, in the same breath as the control it disables.
+// Declared here so the component author has one place to copy from.
+//
+// **Two, not one, and the difference is the whole point.** Three controls on
+// this screen used to say the browser cannot run a passkey ceremony. It can:
+// `/register` creates one and `/welcome` asserts one, so every copy of that
+// sentence is now telling a person their browser cannot do something it just
+// did. But the four disabled controls are not blocked by the same thing:
+//
+//   - **Register a passkey** and **Generate recovery codes** are genuinely
+//     blocked. Each has to hand a *new factor* its own wrapped copy of the
+//     account's content key and index key, and wrapping needs those keys
+//     unwrapped — which nothing hands back. `account-keys.md` calls unlocking
+//     them later work.
+//   - **Erase everything** and the per-row **Revoke** are blocked by nothing
+//     technical. `POST /api/me/erasure` and
+//     `POST /api/me/credentials/{id}/revocation` both exist, and the assertion
+//     that authorizes them is a ceremony this client now runs. They are simply
+//     not wired to this screen, and the destructive act still needs the
+//     confirmation flow `components.md` specifies.
+//
+// One sentence pasted over all three sites would replace one falsehood with
+// another, which is what the tests below are shaped to refuse.
+const ACCOUNT_KEYS_EXPLANATION =
+  'This gives a new way to sign in its own copy of your account’s keys, and Budgetoid can’t unlock those keys in the browser yet. The button stays off until it can.';
+const ERASURE_EXPLANATION =
+  'Erasing has to be confirmed with a passkey, and this screen doesn’t ask for one yet. The button stays off until it does.';
+
+// The load-bearing halves of each, and not every word. The wording above is a
+// starting point somebody may improve; a version that drops any of these says
+// something else. Each is free of punctuation a template author would
+// reasonably write as an entity, so it is matched against what the browser
+// renders rather than against what the file happens to contain.
+const ACCOUNT_KEYS_PHRASES = [
+  'its own copy of your account’s keys',
+  'can’t unlock those keys in the browser yet',
+] as const;
+const ERASURE_PHRASES = [
+  'has to be confirmed with a passkey',
+  'this screen doesn’t ask for one yet',
+] as const;
+
+// The two claims those sentences replace, kept as fragments on purpose — the
+// defect *is* the fragment, and a rewrite that keeps either clause inside a
+// longer sentence is the same lie. Asserted absent rather than merely not
+// asserted present: a template that left the old paragraph standing beside the
+// new one satisfies every `toContain` in this file.
+const STALE_CEREMONY_CLAIM = 'can’t run a passkey check in the browser';
+const STALE_REGISTRATION_CLAIM = 'can’t register passkeys yet';
+
+// The one control on this screen that works, and the route behind it. A verb in
+// sentence case, per `voice.md`.
+const SIGN_OUT_BUTTON = 'Sign out';
+// The origin the sign-out block configures, and the two addresses derived from
+// it. One origin, never two copies of a URL: a second literal drifts, and a
+// drifted one makes `expectOne` report "no request" for a request that went out
+// to the wrong place — the least informative way this can fail.
+const API_ORIGIN = 'https://api.test';
+const SIGN_OUT_URL = `${API_ORIGIN}/api/me/session/revocation`;
+// Where a signed-out person lands. The screen `sessionExpiryInterceptor` sends
+// anybody whose session ended, so a sign-out ending anywhere else would give
+// the product two answers to one question.
+const WELCOME_ROUTE = '/welcome';
+
+// `ConfigurationService` is not `providedIn: 'root'`, and `BaseApiService`
+// reads `apiBaseUrl` out of it in its constructor. `getConfig()` is the whole of
+// what anything under this screen reads.
+const CONFIGURATION_STUB = {
+  provide: ConfigurationService,
+  useValue: { getConfig: () => ({ apiBaseUrl: API_ORIGIN }) },
+} satisfies Provider;
 const EXPORT_BUILD_FAILURE =
   'The export couldn’t be built, so nothing was saved — Budgetoid sends the whole file or none of it. Try again in a few minutes.';
 const EXPORT_SESSION_FAILURE =
@@ -38,8 +119,6 @@ const OPERATOR_READABLE =
 const CREDENTIALS_HEADING = 'Ways to sign in';
 const REGISTER_BUTTON = 'Register a passkey';
 const REVOKE_BUTTON = 'Revoke';
-const CEREMONY_EXPLANATION =
-  'Registering and revoking both have to be confirmed with a passkey, and Budgetoid can’t run a passkey check in the browser yet. The buttons stay off until it can.';
 // The class the screen's own stylesheet hangs `min-height:
 // var(--bud-touch-target)` on, because Material's M3 button is shorter than the
 // 48px minimum `accessibility.md` sets and `components.md` restates. jsdom
@@ -81,8 +160,6 @@ const RECOVERY_MANY = 'You have 5 recovery codes left.';
 // this one comes back from a stubbed response through the real service, and a
 // shared constant would let a copy-paste between the two blocks pass unnoticed.
 const RECOVERY_TEN = 'You have 10 recovery codes left.';
-const GENERATE_EXPLANATION =
-  'Generating a set has to be confirmed with a passkey, and Budgetoid can’t run a passkey check in the browser yet. The button stays off until it can.';
 
 // Two entries far enough apart to be told apart on screen, which the section's
 // own rules make a requirement rather than a convenience: the row shows the
@@ -270,7 +347,13 @@ describe('SettingsComponent', () => {
     // Control for the test above. Without it a helper that ignored the name
     // and handed back the first button it found would be green on any page
     // that happened to render two buttons.
-    expect(buttonNamed(host, 'Sign out')).toBeNull();
+    //
+    // The name is not idle. `Sign out` used to stand here and cannot any more —
+    // this screen now carries one — so the absent control is the one
+    // `erasure.md` says the product will never offer: nothing restores,
+    // undeletes or reactivates an account, and no route on the server would
+    // answer a button named this.
+    expect(buttonNamed(host, 'Restore account')).toBeNull();
   });
 
   it('exports when the export control is activated', () => {
@@ -380,7 +463,90 @@ describe('SettingsComponent', () => {
     expect(eraseButton?.disabled).toBe(true);
     // The disabled attribute alone leaves a dead control with no account of
     // itself; the sentence is what makes the state legible.
-    expect(normalize(section)).toContain(PASSKEY_EXPLANATION);
+    expect(normalize(section)).toContain(ERASURE_EXPLANATION);
+    // And it is legible about the *right* thing. The browser registers a
+    // passkey on `/register`, so the sentence this replaces was telling a
+    // person their browser cannot do something it just did — and the honest
+    // reason is narrower and less flattering: the route and the ceremony both
+    // exist, and this screen has not been wired to them.
+    expect(normalize(section)).not.toContain(STALE_REGISTRATION_CLAIM);
+  });
+
+  it("says the two blocked controls wait on unlocking the account's keys", () => {
+    // Act
+    const credentials = normalize(sectionFor(host, 'credentials-heading'));
+    const recovery = normalize(sectionFor(host, 'recovery-heading'));
+
+    // Assert
+    // These two are the genuinely blocked pair, and they are blocked by the
+    // same missing thing: each creates a factor, every factor stores its own
+    // wrapped copy of the account's content key and index key, and wrapping
+    // needs those keys unwrapped. No route hands `wrapped_account_keys` back,
+    // so there is nothing on this device to wrap with.
+    for (const phrase of ACCOUNT_KEYS_PHRASES) {
+      expect(
+        credentials,
+        `the credentials section does not say "${phrase}".`,
+      ).toContain(phrase);
+      expect(
+        recovery,
+        `the recovery-codes section does not say "${phrase}".`,
+      ).toContain(phrase);
+    }
+
+    // And neither says the browser cannot run a ceremony, because it can. Both
+    // halves matter: without the negative, a section carrying the new sentence
+    // *and* the old paragraph beside it passes the loop above while still
+    // telling a person their browser cannot do what it did on the way in.
+    expect(credentials).not.toContain(STALE_CEREMONY_CLAIM);
+    expect(recovery).not.toContain(STALE_CEREMONY_CLAIM);
+    expect(credentials).not.toContain(STALE_REGISTRATION_CLAIM);
+    expect(recovery).not.toContain(STALE_REGISTRATION_CLAIM);
+  });
+
+  it('says erasing is not wired to this screen yet, not that the browser cannot do it', () => {
+    // Arrange
+    // The guard that makes the comparison below able to fail. The two sentences
+    // are different strings, so a screen carrying one of them in both places is
+    // a screen that fails one of the two assertions after it — and if a later
+    // edit collapsed the constants into one value, every such assertion would
+    // pass on a screen saying the same thing three times, which is the exact
+    // implementation this test exists to refuse.
+    expect(
+      ERASURE_EXPLANATION,
+      'the erasure sentence and the account-keys sentence are the same string.',
+    ).not.toBe(ACCOUNT_KEYS_EXPLANATION);
+
+    // Act
+    const erase = normalize(sectionFor(host, 'erase-heading'));
+    const recovery = normalize(sectionFor(host, 'recovery-heading'));
+
+    // Assert
+    // Erasure waits on this screen, not on the browser. `POST /api/me/erasure`
+    // exists and the assertion that authorizes it is a ceremony this client
+    // runs; what is missing is the confirmation flow `components.md` specifies
+    // and the wiring behind this button.
+    for (const phrase of ERASURE_PHRASES) {
+      expect(erase, `the erasure section does not say "${phrase}".`).toContain(
+        phrase,
+      );
+    }
+    expect(erase).not.toContain(STALE_REGISTRATION_CLAIM);
+    expect(erase).not.toContain(STALE_CEREMONY_CLAIM);
+
+    // The comparison that is the test. The cheapest wrong implementation is one
+    // sentence pasted at all three sites, and it passes every `toContain` on
+    // this screen: erasure is not waiting on the account's keys — nothing about
+    // deleting rows needs one unwrapped — and the two blocked controls are not
+    // waiting on a confirmation this screen could add tomorrow.
+    expect(
+      erase,
+      'the erasure section explains itself with the account-keys sentence.',
+    ).not.toContain(ACCOUNT_KEYS_EXPLANATION);
+    expect(
+      recovery,
+      'the recovery-codes section explains itself with the erasure sentence.',
+    ).not.toContain(ERASURE_EXPLANATION);
   });
 
   it('leaves the export control available before an export starts', () => {
@@ -1167,16 +1333,20 @@ describe('SettingsComponent', () => {
 
     // Assert
     // Present, so the section is honest about what it will eventually do, and
-    // disabled, because registering a passkey needs a ceremony this client
-    // cannot run. The sentence is what makes that state legible; the two tests
-    // below hold the parts of it that this assertion cannot — how many times it
-    // is said, and where.
+    // disabled, because registering a passkey has to hand the new factor its
+    // own wrapped copy of the account's keys and nothing unwraps them yet. The
+    // sentence is what makes that state legible; the two tests below hold the
+    // parts of it that this assertion cannot — how many times it is said, and
+    // where.
     expect(registerButton).not.toBeNull();
     expect(registerButton?.disabled).toBe(true);
-    expect(normalize(section)).toContain(CEREMONY_EXPLANATION);
+    expect(normalize(section)).toContain(ACCOUNT_KEYS_EXPLANATION);
+    // The ceremony is no longer the blocker and the sentence may not say it is.
+    // This client runs one on `/welcome` and another on `/register`.
+    expect(normalize(section)).not.toContain(STALE_CEREMONY_CLAIM);
   });
 
-  it('says the ceremony explanation once, not once per row', () => {
+  it('says the account-keys explanation once, not once per row', () => {
     // Arrange
     // Two rows, because the mutation this catches is the tempting one: moving
     // the sentence beside each control it explains. With the list empty there
@@ -1192,7 +1362,7 @@ describe('SettingsComponent', () => {
     // once per entry by a screen reader in browse mode and is three paragraphs
     // of the same words on an account with three credentials — which is the
     // reason it sits above the list, and which a `toContain` cannot see.
-    expect(occurrencesOf(section, CEREMONY_EXPLANATION)).toBe(1);
+    expect(occurrencesOf(section, ACCOUNT_KEYS_EXPLANATION)).toBe(1);
   });
 
   it('says it before the controls it explains', () => {
@@ -1202,7 +1372,7 @@ describe('SettingsComponent', () => {
     // Act
     fixture.detectChanges();
     const section = sectionFor(host, 'credentials-heading');
-    const explanation = elementSaying(section, CEREMONY_EXPLANATION);
+    const explanation = elementSaying(section, ACCOUNT_KEYS_EXPLANATION);
     const firstInert = firstInertControl(section);
 
     // Assert
@@ -1853,13 +2023,17 @@ describe('SettingsComponent', () => {
     // for the whole life of the screen.
     expect(generate).not.toBeNull();
     expect(generate?.disabled).toBe(true);
-    expect(normalize(section)).toContain(GENERATE_EXPLANATION);
+    // Generating a set is ten factors at once — each code derives its own
+    // key-encryption key — so it waits on the same thing registering a passkey
+    // does, and on nothing else.
+    expect(normalize(section)).toContain(ACCOUNT_KEYS_EXPLANATION);
+    expect(normalize(section)).not.toContain(STALE_CEREMONY_CLAIM);
   });
 
   it('says why the generate control is off before offering it', () => {
     // Act
     const section = sectionFor(host, 'recovery-heading');
-    const explanation = elementSaying(section, GENERATE_EXPLANATION);
+    const explanation = elementSaying(section, ACCOUNT_KEYS_EXPLANATION);
     const generate = buttonNamed(host, GENERATE_BUTTON);
 
     // Assert
@@ -1936,6 +2110,197 @@ describe('SettingsComponent', () => {
     return normalize(
       sectionFor(host, 'recovery-heading')?.querySelector('.s-count') ?? null,
     );
+  }
+});
+
+// Sign-out is the one control on this screen that does something, so this block
+// drives a **real** `HttpClient` over the testing backend, the **real**
+// `SessionService` and the **real** `Router` rather than stubbing the flow. The
+// three tests below are each about the seam between two of those — the request
+// that goes out, the order two of them are updated in, and what happens when the
+// first never answers — and a stub in the middle would be the thing under test
+// answering the question about itself.
+//
+// `SettingsService` is deliberately not replaced either: the screen provides it,
+// and the block above shows what a module-level provider costs. The three reads
+// `ngOnInit` starts are answered in `beforeEach` so nothing is mid-flight when
+// the sign-out request is matched.
+describe('SettingsComponent signing out', () => {
+  let http: HttpTestingController;
+  let session: SessionService;
+  let fixture: ComponentFixture<SettingsComponent>;
+  let host: HTMLElement;
+  // Where the router was asked to go, and what the session was saying **at that
+  // instant**. Recorded as a pair rather than read afterwards, and that is the
+  // whole mechanism: read afterwards, both statements have already run
+  // whichever order they are in, and the recording cannot tell the two orders
+  // apart. `welcome.component.spec.ts` records the same pair at the same instant
+  // for the same reason, and the reason it had to is that two other screens
+  // replaced the router with a recorder that made the ordering unobservable.
+  let asked: { readonly url: string; readonly status: SessionStatus }[];
+
+  beforeEach(async () => {
+    asked = [];
+
+    await TestBed.configureTestingModule({
+      imports: [SettingsComponent],
+      providers: [
+        provideNoopAnimations(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        CONFIGURATION_STUB,
+      ],
+    }).compileComponents();
+
+    http = TestBed.inject(HttpTestingController);
+    session = TestBed.inject(SessionService);
+
+    const router = TestBed.inject(Router);
+
+    // The real router with its one outward call recorded rather than run: a
+    // router with no declared routes rejects `/welcome` into a promise nothing
+    // awaits, and the rejection surfaces as an unrelated failure two tests
+    // later. `navigate` and `routerLink` both land here — each calls
+    // `navigateByUrl` on this instance — so the recording says where the screen
+    // goes without saying how the author wrote the control.
+    vi.spyOn(router, 'navigateByUrl').mockImplementation(
+      (url: string | UrlTree): Promise<boolean> => {
+        asked.push({
+          url: typeof url === 'string' ? url : router.serializeUrl(url),
+          status: session.status(),
+        });
+
+        return Promise.resolve(true);
+      },
+    );
+
+    fixture = TestBed.createComponent(SettingsComponent);
+    host = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+
+    // The three reads the screen starts on its own, answered so that the only
+    // request outstanding below is the one each test is about.
+    for (const request of http.match(`${API_ORIGIN}/api/me`)) {
+      request.flush({ email: OWNER_EMAIL } satisfies MeDto);
+    }
+    for (const request of http.match(`${API_ORIGIN}/api/me/credentials`)) {
+      request.flush([PASSKEY]);
+    }
+    for (const request of http.match(`${API_ORIGIN}/api/me/recovery-codes`)) {
+      request.flush({ remaining: 3 });
+    }
+
+    fixture.detectChanges();
+  });
+
+  it('signs out when the sign-out control is activated', () => {
+    // Arrange
+    const signOut = buttonNamed(host, SIGN_OUT_BUTTON);
+
+    // Assert (the half that is about the control at rest)
+    // Enabled, and both readings of it. Every other control on this screen is
+    // off and says why; this one is the way out, and a person who cannot leave
+    // an account is in a worse position than one who cannot register a second
+    // passkey. The `aria-disabled` half is not redundant: a button held with
+    // `[disabled]` plus `[disabledInteractive]` — the pattern the Export button
+    // on this very screen uses — never sets the DOM `disabled` property at all,
+    // so `.disabled === false` is green on a control nothing can press.
+    expect(
+      signOut,
+      `the settings screen offers no control named "${SIGN_OUT_BUTTON}".`,
+    ).not.toBeNull();
+    expect(signOut?.disabled).toBe(false);
+    expect(signOut?.getAttribute('aria-disabled')).not.toBe('true');
+
+    // Act
+    signOut?.click();
+    fixture.detectChanges();
+
+    // Assert
+    // The route `sessions.md` names, and a POST. Asserted as a request over the
+    // wire rather than as a call on a stubbed port, so the test says nothing
+    // about which service the author puts it behind — and would catch a URL
+    // built against the wrong base, which a port stub cannot see.
+    const request = http.expectOne(SIGN_OUT_URL);
+    expect(request.request.method).toBe('POST');
+
+    request.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('ends the session before it leaves the screen', async () => {
+    // Arrange
+    // Nothing has asked the server who this is, so the client is holding no
+    // reading at all. Stated outright so the assertion at the end is a change
+    // rather than something that was already true before the flow ran.
+    expect(session.status()).toBe('unknown');
+
+    // Act
+    buttonNamed(host, SIGN_OUT_BUTTON)?.click();
+    fixture.detectChanges();
+
+    http
+      .expectOne(SIGN_OUT_URL)
+      .flush(null, { status: 204, statusText: 'No Content' });
+
+    await eventually(() => asked[0] ?? null, 'the navigation to /welcome');
+    await settle();
+
+    // Assert
+    // One navigation, to `/welcome`, and the session already ended when the
+    // router was asked to make it. **The order is the requirement.** Navigate
+    // first and the guard on `/welcome` judges it against a stale
+    // `'authenticated'`, which sends the person straight back into the app they
+    // just left — holding a cookie the server has already revoked, so the next
+    // request they make is a 401 and the screen they land on says nothing,
+    // because nothing failed.
+    expect(
+      asked,
+      'the settings screen left for /welcome before the session was ended.',
+    ).toEqual([{ url: WELCOME_ROUTE, status: 'anonymous' }]);
+    expect(session.status()).toBe('anonymous');
+  });
+
+  it('signs out even when the server never answers', async () => {
+    // Arrange
+    expect(session.status()).toBe('unknown');
+
+    // Act
+    buttonNamed(host, SIGN_OUT_BUTTON)?.click();
+    fixture.detectChanges();
+
+    // Status `0`: nothing reached a server. The request that gets no answer is
+    // the honest failure here — a 500 would do as well, and the point is that
+    // neither is a statement the client can act on.
+    http
+      .expectOne(SIGN_OUT_URL)
+      .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown' });
+
+    await eventually(() => asked[0] ?? null, 'the navigation to /welcome');
+    await settle();
+
+    // Assert
+    // The same outcome as the answered case, and deliberately so. A cookie the
+    // server did not clear is `HttpOnly` — this browser cannot read it, cannot
+    // clear it, and cannot tell whether it is still live — so there is nothing
+    // the client could do differently with the knowledge. What it can do is
+    // stop claiming to be signed in, and leave. The alternative is somebody
+    // stranded on a signed-in screen, pressing a button that keeps failing,
+    // because one request did not land.
+    //
+    // This is not the same as `SessionService`'s `unreachable` rule, which
+    // refuses to read silence as a *refusal*. Here silence is not evidence
+    // about the visitor at all: the visitor has already said what they want.
+    expect(
+      asked,
+      'a sign-out whose request failed left the person on the settings screen.',
+    ).toEqual([{ url: WELCOME_ROUTE, status: 'anonymous' }]);
+    expect(session.status()).toBe('anonymous');
+  });
+
+  async function settle(): Promise<void> {
+    await fixture.whenStable();
+    fixture.detectChanges();
   }
 });
 
@@ -2229,6 +2594,28 @@ async function visitWithApi(
   fixture.detectChanges();
 
   return fixture;
+}
+
+// Waits for a public reading to arrive. The sign-out flow is driven by a `void`
+// method over a promise, so there is no promise to await from outside; polling a
+// reading claims nothing about how many awaits the implementation contains
+// today, and a flow that never arrives fails with a sentence naming what never
+// came rather than with a null dereference.
+async function eventually<TValue>(
+  read: () => TValue | null | undefined,
+  what: string,
+): Promise<TValue> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const value = read();
+
+    if (value !== null && value !== undefined) {
+      return value;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  throw new Error(`Timed out waiting for ${what}.`);
 }
 
 // Collapses the whitespace an HTML template introduces. Without it every

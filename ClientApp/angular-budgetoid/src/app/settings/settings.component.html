@@ -22,6 +22,27 @@
       </p>
     }
   </div>
+
+  <!-- The one control on this screen that works, and it belongs under Account
+       rather than under Ways to sign in: that section is about what is attached
+       to the account, and this is about the browser holding it right now.
+
+       Outline, per the book's table: a secondary action. Not Primary — Export is
+       this screen's one main action — and not Destructive, because nothing is
+       lost. Signing in again restores everything, which is exactly what the
+       erasure control below cannot say.
+
+       No sentence beside it and no disabled state: it is the way out, and a
+       person who cannot leave an account is in a worse position than one who
+       cannot register a second passkey. -->
+  <button
+    class="s-button"
+    mat-stroked-button
+    type="button"
+    (click)="settings.signOut()"
+  >
+    Sign out
+  </button>
 </section>
 
 <section class="s-section" aria-labelledby="credentials-heading">
@@ -34,16 +55,38 @@
        render a loading line above a list that had arrived in between. -->
   @let credentials = credentialRows();
 
-  <!-- Above the list, not beside either control, and as visible prose rather
-       than a title or aria-describedby. Both controls this explains are
-       disabled, so they are out of the tab order and skipped by screen readers
-       — anything hung on them is read to nobody. Per row it would also be read
-       once per entry, which is the same sentence three times on an account with
-       three credentials. -->
+  <!-- Two sentences, because the two dead controls in this section are not
+       waiting on the same thing, and one sentence covering both would replace a
+       falsehood with a falsehood.
+
+       **Register a passkey** waits on the account's keys. A new passkey is a new
+       *factor*, and every factor stores its own wrapped copy of the account's
+       content key and index key — so registering one means wrapping those keys,
+       which needs them unwrapped. No route hands `wrapped_account_keys` back, so
+       there is nothing on this device to wrap with. It is emphatically **not**
+       the ceremony: this browser creates a passkey on `/register` and asserts one
+       on `/welcome`, so a sentence saying it cannot would be telling a person
+       their browser cannot do what it did on the way in.
+
+       **Revoke** waits on this screen. `POST /api/me/credentials/{id}/revocation`
+       exists, the assertion that authorizes it is a ceremony this client runs,
+       and nothing here asks for one — the same shape the erasure section is in,
+       which is why it is written in the erasure section's words rather than in
+       these.
+
+       Both above the list and both as visible prose rather than a title or an
+       aria-describedby: the controls they explain are disabled, so they are out
+       of the tab order and anything hung on them is read to nobody. Said per row
+       instead, either sentence would be read once per entry — the same paragraph
+       three times on an account with three credentials. -->
   <p class="s-prose">
-    Registering and revoking both have to be confirmed with a passkey, and
-    Budgetoid can&rsquo;t run a passkey check in the browser yet. The buttons
-    stay off until it can.
+    This gives a new way to sign in its own copy of your account&rsquo;s keys,
+    and Budgetoid can&rsquo;t unlock those keys in the browser yet. The button
+    stays off until it can.
+  </p>
+  <p class="s-prose">
+    Revoking has to be confirmed with a passkey, and this screen doesn&rsquo;t
+    ask for one yet. Those buttons stay off until it does.
   </p>
 
   <!-- Both lines arrive after the first paint, so they land inside a region
@@ -123,12 +166,13 @@
 
             <!-- Only on a row something can actually revoke, and a null label
                  is that statement. A disabled control elsewhere on this screen
-                 is a promise — the ceremony lands, the sentence above the list
+                 is a promise — the wiring lands, the sentence above the list
                  goes, and the button starts working. A recovery-code set has no
                  revocation to enable at all (it is replaced by generating
                  again, and the route behind Revoke is scoped to passkeys by
-                 type), and a federated credential is replaced by an email
-                 change rather than removed. A button on either row promises a
+                 type), and a federated credential opens no session that reads
+                 budget content any more, so there is nothing on that row to
+                 revoke even in principle. A button on either row promises a
                  release that is not coming, which is worse than not offering
                  it.
 
@@ -236,13 +280,25 @@
     </p>
   </div>
 
-  <!-- Visible prose above the control, never a title, a tooltip or an
+  <!-- Word for word the sentence above the credential list, and that is the
+       point rather than a copy-paste: generating a set is *ten* factors at once
+       — each code derives its own key-encryption key — so it waits on exactly
+       what registering a passkey waits on, the account's content key and index
+       key unwrapped on this device, and on nothing else. The sentence names no
+       specific action for the same reason it can be repeated here at all.
+
+       It does not say the browser cannot run a passkey check, because it can:
+       `/register` creates a credential and `/welcome` asserts one. The
+       assertion this route also needs is the half this client can already
+       produce.
+
+       Visible prose above the control, never a title, a tooltip or an
        aria-describedby: the button is disabled, so it is out of the tab order
        and anything hung on it is read to nobody. -->
   <p class="s-prose">
-    Generating a set has to be confirmed with a passkey, and Budgetoid
-    can&rsquo;t run a passkey check in the browser yet. The button stays off
-    until it can.
+    This gives a new way to sign in its own copy of your account&rsquo;s keys,
+    and Budgetoid can&rsquo;t unlock those keys in the browser yet. The button
+    stays off until it can.
   </p>
 
   <!-- Outline rather than Destructive even though generating replaces an
@@ -332,12 +388,24 @@
     no other place.
   </p>
 
-  <!-- Visible prose, immediately before the control, because the control is
+  <!-- Nothing technical blocks this one, and the sentence says so. Both halves
+       exist: `POST /api/me/erasure` is live, and the fresh assertion that
+       authorizes it is a ceremony this client runs on `/welcome`. What is
+       missing is the confirmation flow the design book specifies and the wiring
+       behind this button — which is a smaller and less flattering reason than
+       the one this replaces, and the honest one.
+
+       Deliberately **not** the sentence the two sections above use. Erasing
+       waits on nothing about the account's keys — deleting rows needs no key
+       unwrapped — and pasting one sentence at all three sites would swap one
+       falsehood for another.
+
+       Visible prose, immediately before the control, because the control is
        disabled: it is out of the tab order and skipped by screen readers, so a
        title or aria-describedby on it would be read to nobody. -->
   <p class="s-prose">
-    Erasing has to be confirmed with a passkey, and Budgetoid can&rsquo;t
-    register passkeys yet. The button stays off until it can.
+    Erasing has to be confirmed with a passkey, and this screen doesn&rsquo;t
+    ask for one yet. The button stays off until it does.
   </p>
 
   <button class="s-button" mat-stroked-button type="button" disabled>

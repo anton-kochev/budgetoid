@@ -989,11 +989,16 @@ ELSE                                                               ← first iss
     each. So a person's browser really does mint codes this server never sees, and the show-once
     screen really does show them. See [registration.md](registration.md) and
     [account-keys.md](account-keys.md).
-  - **What has none.** `POST /api/me/recovery-codes` — a generation is gated on a fresh passkey
-    assertion, no screen runs one, and the settings control is therefore present and disabled — and
+  - **What has none, and the reason has moved.** `POST /api/me/recovery-codes` is still uncalled, but
+    no longer because of the assertion: this client runs one on `/welcome`, so the five assertion
+    members are within reach. What blocks it is the sixth member — ten whole submissions, each
+    carrying its own wrapped copy of the account's content key and index key. Wrapping them needs
+    them unwrapped, and no route hands `wrapped_account_keys` back, so there is nothing on the device
+    to wrap with. **That is a different block from the erasure control's**, and the settings screen
+    now says so in different words: erasing waits on a confirmation flow this screen has not been
+    given, generating waits on the keys. Also uncalled is
     `POST /api/recovery-codes/redemption`, which has no client route to be reached from at all:
-    nothing anywhere canonicalises a typed code or presents a verifier. Read the disabled control the
-    way the disabled erasure control is read: the gate is built and the surface in front of it is not.
+    nothing anywhere canonicalises a typed code or presents a verifier.
     The count is the one thing the settings screen reads, on every visit.
   - **The show-once screen has a flow now, and it still mints nothing.**
     `register/steps/codes-step.component` takes its ten codes through a required input and raises one

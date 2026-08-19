@@ -655,13 +655,21 @@ reached anyway completes with `204` — see the never-`404` rule above.
   Two rules meet here and neither one alone is the whole answer, so somebody reading only the
   vocabulary sees a gap and widens the pattern — which takes a plausible product feature down with
   it. The remnant rule above states the division; read it before touching either side.
-- **A client surface describes an erasure; none can start one.** The account settings screen carries
-  an erasure section — what will be destroyed, that there is no undo, and the backup window above —
-  but its control is **disabled**, because confirming an erasure needs a fresh WebAuthn assertion
-  and the client cannot register a passkey yet. There is no dialog, no typed confirmation word and
-  no client-side ceremony, so `POST /api/me/erasure` remains reachable only by a caller that builds
-  the assertion itself. The wording of that copy is owned by [voice.md](../design/voice.md) rather
-  than by this file; what this file owns is the gate, and the gate is why the control is off.
+- **A client surface describes an erasure; none can start one, and nothing technical is in the way
+  any more.** The account settings screen carries an erasure section — what will be destroyed, that
+  there is no undo, and the backup window above — but its control is **disabled**. The reason used to
+  be that the browser could not run a WebAuthn ceremony. It can: this client creates a passkey on
+  `/register` and asserts one on `/welcome`, so both halves of the gate exist — the route is live and
+  the assertion that authorizes it is a ceremony this client runs. What is missing is narrower and
+  less flattering: the confirmation flow [components.md](../design/components.md) specifies, and the
+  wiring between this button and that assertion. There is still no dialog and no typed confirmation
+  word, so `POST /api/me/erasure` remains reachable only by a caller that builds the assertion
+  itself. The screen says so in its own words — *"Erasing has to be confirmed with a passkey, and
+  this screen doesn't ask for one yet."* — and that copy is deliberately **not** the sentence the
+  credential and recovery-code sections use: those two wait on unwrapping the account's keys, which
+  erasing an account needs nothing of. The wording is owned by
+  [voice.md](../design/voice.md) rather than by this file; what this file owns is the gate, and the
+  gate is why the control is off.
 - **A failed erasure still spends the assertion, and still advances the signature counter.** Both are
   the gate's writes, both were committed before the transaction opened, and neither returns with the
   rollback — so the person has to run the ceremony again to try once more. That is correct rather

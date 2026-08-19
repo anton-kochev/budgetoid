@@ -1,9 +1,11 @@
 import { Injectable, Signal, inject, signal } from '@angular/core';
+import { Router } from '@angular/router';
 import {
   MeApiService,
   type CredentialSummary,
 } from '@app-core/api/me-api.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
+import { SessionService } from '@app-core/session/session.service';
 import { EMPTY, catchError, finalize } from 'rxjs';
 import { exportFilename } from './export-filename';
 
@@ -39,6 +41,8 @@ export type ExportFailure = 'failed';
 export class SettingsService {
   private readonly api = inject(MeApiService);
   private readonly download = inject(FileDownloadService);
+  private readonly session = inject(SessionService);
+  private readonly router = inject(Router);
 
   private readonly emailSignal = signal<string | null>(null);
   private readonly emailFailedSignal = signal(false);
@@ -73,6 +77,14 @@ export class SettingsService {
   // This is `exporting`'s shape, on the section whose specification asks for
   // it.
   private readonly recoveryLoadingSignal = signal(false);
+  // In flight, and deliberately not published. Every other flag on this service
+  // is read by the template; this one is not, because the screen it would be
+  // rendered on is about to be replaced by `/welcome` either way. What it is
+  // for is the second press: `export`'s guard argues the same case for a
+  // request the server pays for, and here a second press would cost a second
+  // POST, a second `ended()` and a second navigation to a screen the first one
+  // is already on its way to.
+  private readonly signingOutSignal = signal(false);
 
   public readonly email: Signal<string | null> = this.emailSignal.asReadonly();
   public readonly emailFailed: Signal<boolean> =
@@ -246,6 +258,48 @@ export class SettingsService {
         this.download.save(blob, exportFilename(new Date()));
         this.exportedSignal.set(true);
       });
+  }
+
+  /**
+   * Ends the session and leaves for `/welcome`.
+   *
+   * **A failed sign-out still signs the person out locally, and the two branches
+   * below are identical on purpose.** The route is idempotent, and the cookie it
+   * clears is `HttpOnly` — this browser cannot read it, cannot clear it, and
+   * cannot tell whether it is still live — so there is nothing the client could
+   * do differently with the knowledge that the request did not land. What it can
+   * do is stop claiming to be signed in, and leave. The alternative is somebody
+   * stranded on a signed-in screen pressing a button that keeps failing, in
+   * front of whoever is at the keyboard.
+   *
+   * This is **not** the four-valued reading `SessionService` applies to its own
+   * probe, and a reader will try to make it one. That rule refuses to read
+   * silence as a *refusal*, because silence is not evidence about the visitor.
+   * Here silence is not evidence about the visitor either — but the visitor has
+   * already said what they want, so there is no verdict to withhold.
+   */
+  public signOut(): void {
+    if (this.signingOutSignal()) {
+      return;
+    }
+
+    this.signingOutSignal.set(true);
+    this.api.endSession().subscribe({
+      next: () => this.leave(),
+      error: () => this.leave(),
+    });
+  }
+
+  // **This order, and the pair is the reason.** Ending the session first is what
+  // lets the guard on `/welcome` judge the navigation below against
+  // `'anonymous'`. Navigate first and it reads a stale `'authenticated'` and
+  // sends the person straight back into the app they just left — holding a
+  // cookie the server has already revoked, so their next request is a 401 and
+  // the screen they land on says nothing, because nothing failed.
+  // `sign-in.service.ts` states the same rule in the other direction.
+  private leave(): void {
+    this.session.ended();
+    void this.router.navigateByUrl('/welcome');
   }
 
   // `failureFor` used to sit here and read the status off the error. It is gone

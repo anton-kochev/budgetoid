@@ -368,10 +368,17 @@ Load-bearing rules, each explained there or in the linked decision:
 - **`/app/settings` ships with no navigation entry** — reachable by URL only, on purpose; a
   later epic gives it one. It shows the email from `GET /api/me`, a working export that writes
   the response bytes to disk **unread** (`responseType: 'blob'` — a JSON round-trip would turn
-  exact `numeric(14,4)` amounts into doubles), and an erasure control that is present and
-  **disabled** because the client cannot register a passkey yet. It also lists every credential
+  exact `numeric(14,4)` amounts into doubles), a working **Sign out**, and an erasure control that is
+  present and **disabled**. It also lists every credential
   from `GET /api/me/credentials` — **type and day only**, never an id or a provider subject —
-  with registration present and **disabled** for the same reason. **Revoke renders only on a row
+  with registration present and **disabled** too. **Two different reasons hold those two off and the
+  screen says both** — one sentence pasted over all of them would replace an old falsehood with a new
+  one. Registering a passkey and generating a set would each wrap the account's keys under a new
+  factor, which needs those keys **unwrapped**, and no route hands `wrapped_account_keys` back.
+  Erasing and revoking are blocked by **nothing technical** — `POST /api/me/erasure` and
+  `POST /api/me/credentials/{id}/revocation` both exist and are authorized by an assertion this client
+  now runs; this screen simply does not ask for one. Do not "correct" the erasure copy into saying the
+  browser is incapable: it is not, and it was that sentence which had to be replaced. **Revoke renders only on a row
   something can revoke**, which is the passkeys: a federated credential is replaced by an email
   change and a recovery-code set is unrevocable by construction, so neither draws even a disabled
   button. Every other disabled control on this screen promises a release; one that never could be
@@ -386,8 +393,9 @@ Load-bearing rules, each explained there or in the linked decision:
   somebody whose request failed that they have no way back — loading and failure in an
   unconditional `role="status"` region that is empty at rest, the count rendered outside it, and
   pluralisation as three template branches because `I18nPluralPipe` would pin plural rules to
-  `en-US` the way `DatePipe` pins days. Generate is present and **disabled**: generation is gated
-  on a fresh passkey assertion. `+core/security/recovery-codes.ts` mints codes and derives
+  `en-US` the way `DatePipe` pins days. Generate is present and **disabled**, and it waits on the
+  account's keys rather than on the assertion — the assertion is a ceremony this client now runs, and
+  a set is ten factors each wrapping those keys. `+core/security/recovery-codes.ts` mints codes and derives
   verifiers with Web Crypto, and its **one caller is registration** — this screen still has none, so
   a set can be issued only while an account is being created. Its spec stays the only place in the
   system that can check the 128-bit entropy rule, because the server sees fixed-width opaque

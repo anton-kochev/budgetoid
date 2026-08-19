@@ -166,6 +166,31 @@ and nothing in the render tells them which they have.
   (`min-height: 1lh`) so the page does not shift when a value arrives from the network.
 - A non-interactive row is not a 48px target. The rule applies to controls, not to text.
 
+### Sign out
+
+The one live control on the Settings screen, and it sits in the **Account** section under the
+label/value row — beside who the account belongs to, not under *Ways to sign in*, which is about
+what is attached to the account rather than about the browser holding it right now.
+
+- **Outline**, 48px target, visible label `Sign out`. Not Primary: Export is the screen's one main
+  action, and a screen with two is a screen with none. Not Destructive either — nothing is lost and
+  signing in again restores everything, which is precisely what the erasure control one section down
+  cannot say. Conflating the two treatments would spend the Destructive fill on the reversible act.
+- **Enabled, with no sentence beside it.** Every other control on this screen is off and explains
+  itself; this one is the way out, and a person who cannot leave an account is in a worse position
+  than one who cannot register a second passkey. The "not built yet" sentence pattern is for a
+  control that refuses a press, and this one does not.
+- **It posts, ends the session, and then navigates to `/welcome`** — that order, because the guard on
+  the way out reads the session status the moment the router is asked. It shows no busy state and no
+  confirmation: the screen it would render one on is replaced within the same tick.
+- **A failed request signs the person out anyway.** The route is idempotent and its cookie is
+  `HttpOnly`, so this browser cannot read it, clear it, or tell whether it is still live — there is
+  nothing to do differently with the knowledge. Leaving somebody stranded on a signed-in screen,
+  pressing a button that keeps failing in front of whoever is at the keyboard, is the worse outcome.
+  This is the one place on this screen that deliberately does not apply the four-valued reading of a
+  request that got no answer, because here silence is not evidence about the visitor: the visitor has
+  already said what they want.
+
 ## Credential list and row
 
 M3 base: **none** — a plain semantic list, `<ul role="list">` with one `<li>` per entry, for the
@@ -290,13 +315,33 @@ list semantics — without it nobody hears "list, 2 items".
 **What ships today.** The list renders every kind the union carries, the recovery-code set's row
 included, and renders one it does not as **Sign-in method**, captioned **Added** and carrying no
 action. **Register a passkey** (below the list) and **Revoke** (on the revocable rows, which is the
-passkeys) are both Outline and **disabled**, because no screen on this path runs the ceremony either
-of them needs: registration is a WebAuthn creation ceremony, which the client now runs only inside
-the registration flow, and Revoke is gated on a fresh assertion, which nothing in the browser runs at
-all. One sentence covers both and sits **above** the list rather than beside each button: per row, a
-screen reader would read the same explanation once per entry. When those ceremonies reach this
-screen, the sentence goes and the controls become live — Revoke keeps its Outline until a
-confirmation exists for it, per the destructive-action rule above.
+passkeys) are both Outline and **disabled** — and **they are not waiting on the same thing**, which
+is why the section carries two sentences and not one. The ceremony is not what either of them waits
+on: this client creates a passkey on `/register` and asserts one on `/welcome`.
+
+- **Register a passkey** waits on the account's keys. A passkey is a *factor*, every factor stores
+  its own wrapped copy of the account's content key and index key, and wrapping them needs them
+  unwrapped — which no route hands back. Its sentence names no specific action, because the recovery
+  codes section below is blocked by exactly the same thing and says exactly the same words:
+
+  > This gives a new way to sign in its own copy of your account's keys, and Budgetoid can't unlock
+  > those keys in the browser yet. The button stays off until it can.
+
+- **Revoke** waits on this screen. `POST /api/me/credentials/{id}/revocation` is live and the fresh
+  assertion that authorizes it is a ceremony this client runs; nothing here asks for one. That is
+  the erasure section's position, so it is said in the erasure section's words, plural for the
+  per-row buttons:
+
+  > Revoking has to be confirmed with a passkey, and this screen doesn't ask for one yet. Those
+  > buttons stay off until it does.
+
+Both sentences sit **above** the list rather than beside each button: per row, a screen reader would
+read the same explanation once per entry. The account-keys one is also **above the list** and not
+merely above the Register control it explains, because the first inert control a reader meets in this
+section is a row's Revoke — below the rows the sentence is an apology, above them an instruction.
+When each block clears, its own sentence goes and its own control becomes live; neither release
+carries the other. Revoke keeps its Outline until a confirmation exists for it, per the
+destructive-action rule above.
 
 ## Recovery codes section
 
@@ -434,10 +479,18 @@ the credential registration and revocation controls already use on this screen.
   on the screen, so there is nothing to tell it apart from. No count in the label.
 - **The sentence sits above the button as visible prose** — never a `title`, a tooltip, or an
   `aria-describedby` on the disabled element, all of which are read to nobody once the control has
-  left the tab order:
+  left the tab order. It is **word for word** the sentence above the credential list, and that is
+  the specification rather than an accident: generating a set is ten factors at once — each code
+  derives its own key-encryption key — so it waits on precisely what registering a passkey waits on,
+  the account's content key and index key unwrapped on this device. The sentence names no specific
+  action so that it can be true in both places:
 
-  > Generating a set has to be confirmed with a passkey, and Budgetoid can't run a passkey check in
-  > the browser yet. The button stays off until it can.
+  > This gives a new way to sign in its own copy of your account's keys, and Budgetoid can't unlock
+  > those keys in the browser yet. The button stays off until it can.
+
+  It does **not** say the browser cannot run a passkey check. It can: `/register` creates a
+  credential and `/welcome` asserts one, and the assertion this route also demands is the half the
+  client already produces.
 
 **What replaces this when generation lands**, so that nobody "completes" the section early: the
 sentence above goes, the button becomes live, and two things arrive with it that are deliberately
@@ -470,8 +523,11 @@ state, not an unfinished one, and *What replaces this when generation lands* abo
 arrives with the button — nothing here asks for it to be made live on its own. The client holds the
 generator that mints a code and derives its verifier from that code's canonical form, and the
 registration flow is its one caller; nothing on **this** screen calls it, and the API service has no
-member that posts a set, because that route takes a fresh WebAuthn assertion nothing in the browser
-runs. Redeeming a code has no surface in the app at all.
+member that posts a set. **The reason is no longer the assertion.** That route takes six members —
+five of a fresh WebAuthn assertion, which this client can produce, and ten whole code submissions,
+each carrying its own wrapped copy of the account's two keys. It is the wrapping that nothing here
+can do, because nothing hands the keys back to unwrap. Redeeming a code has no surface in the app at
+all.
 
 **The show-once surface exists and this section is not where it lives.** It is the last step of the
 registration flow below, and that flow drives it: somebody creating an account is shown ten codes

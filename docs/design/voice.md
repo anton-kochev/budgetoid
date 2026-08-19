@@ -72,10 +72,16 @@ figures, not to copy that could just say the number).
 - **Errors**: what happened + what to do: "Couldn't save — you're offline. It will
   retry." Never blame the person; the subject of an error sentence is the system.
 - **Not built yet**: name the missing piece and what it waits on, in the same breath as
-  the control it disables: "Erasing has to be confirmed with a passkey, and Budgetoid
-  can't register passkeys yet. The button stays off until it can." A disabled control
+  the control it disables: "Erasing has to be confirmed with a passkey, and this screen
+  doesn't ask for one yet. The button stays off until it does." A disabled control
   with no sentence beside it reads as a bug, and the person cannot tell a limitation from
   a failure.
+- **Name the piece that is actually missing.** The sentence above once said Budgetoid
+  couldn't register passkeys, and it went on saying it after the browser started
+  registering them — a screen telling a person it cannot do what it did on the way in.
+  Two controls blocked by two different things get two sentences: one sentence pasted
+  across a screen replaces an old falsehood with a new one, and reads as an apology
+  nobody wrote for this control.
 
 ## A secret shown once
 

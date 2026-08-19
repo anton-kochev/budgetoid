@@ -49,11 +49,18 @@ export interface KindPresentation {
   // date path is a second place for a UTC day to leak back in.
   readonly dateCaption: string;
   // Whether anything can ever revoke this row, not whether it can be revoked
-  // today. A passkey's Revoke is disabled because the ceremony is missing; a
-  // set has no revocation at all — the route behind one is scoped to passkeys
-  // by type, so pointing it at a set answers the 404 an unknown id answers, and
-  // a set is *replaced* by generating again. A federated credential is likewise
-  // replaced by an email change rather than removed.
+  // today. A passkey's Revoke is disabled because the settings screen does not
+  // ask for the assertion that authorizes it — the route and the ceremony both
+  // exist. A set has no revocation at all: the route behind one is scoped to
+  // passkeys by type, so pointing it at a set answers the 404 an unknown id
+  // answers, and a set is *replaced* by generating again.
+  //
+  // A federated credential's answer is the strongest of the three and no longer
+  // rests on the email change alone. It is the one credential type that cannot
+  // open a session reaching budget content — an authorization exchange returns
+  // claims, not a secret this client can derive a key from — so there is nothing
+  // on that row to revoke even in principle. Revoking it would take away a way
+  // in that is already refused everything a way in is for.
   readonly revocable: boolean;
 }
 

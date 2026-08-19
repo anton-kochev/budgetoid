@@ -125,11 +125,16 @@ export class MeApiService extends BaseApiService {
   // consumes this must therefore keep `0` and "no answer yet" apart itself;
   // collapsing them is the one defect this whole path is shaped to prevent.
   //
-  // There is deliberately **no** counterpart that generates a set.
-  // `POST /api/me/recovery-codes` takes five members of a fresh WebAuthn
-  // assertion this client cannot produce, so a method for it would be API
-  // surface no test could execute — a signature that compiles, is called by
-  // nothing, and is wrong in a way nothing on the screen would show.
+  // There is deliberately **no** counterpart that generates a set, and the
+  // reason has moved. `POST /api/me/recovery-codes` takes six members: the five
+  // of a fresh WebAuthn assertion, which this client *can* now produce —
+  // `webauthn-ceremony.service.ts` runs one — and ten whole code submissions,
+  // each carrying its own wrapped copy of the account's content key and index
+  // key. It is that sixth member nothing here can build: wrapping the account's
+  // keys needs them unwrapped, and no route hands `wrapped_account_keys` back.
+  // A method for it would be API surface no test could execute — a signature
+  // that compiles, is called by nothing, and is wrong in a way nothing on the
+  // screen would show.
   public getRecoveryCodes(): Observable<number> {
     return this.get<unknown>('api/me/recovery-codes').pipe(
       map((body) => {
@@ -142,5 +147,24 @@ export class MeApiService extends BaseApiService {
         return body.remaining;
       }),
     );
+  }
+
+  // Ends the caller's own session. There is nothing to send and nothing to
+  // read: the session is named by the request's own cookie rather than by
+  // anything in a body or a URL, and the answer is 204 with the `Set-Cookie`
+  // that clears the handle. `Observable<void>` states that — a declared body
+  // here would be a shape the route does not have, and one a caller could be
+  // tempted to publish a session state from.
+  //
+  // **No `EXPECTS_UNAUTHENTICATED`, and that is a decision rather than an
+  // omission.** The token marks a request whose 401 is the *route's own
+  // verdict* — a passkey that did not verify, a recovery code that matched
+  // nothing — made by a browser holding no session to lose. This request is the
+  // opposite: it is made by an authenticated person, so a 401 means the session
+  // it carried had already ended, which is exactly the fact
+  // `sessionExpiryInterceptor` owns. Suppressing it would claim a verdict this
+  // route never gives, and would suppress the one reading that is true.
+  public endSession(): Observable<void> {
+    return this.post<void>('api/me/session/revocation', null);
   }
 }
