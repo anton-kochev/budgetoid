@@ -479,6 +479,52 @@ once, and posts the account from that step. Nothing above changes: this section 
 and no part of one, and *What replaces this when generation lands* still describes what arrives
 **here** when the Settings path opens.
 
+## The welcome screen
+
+The one public surface, at `/welcome`, and the one screen written in marketing voice
+([voice](voice.md)). It states what the product is for and then offers the two ways into an account —
+and from the commit that gave it the second one, neither of them is the identity provider.
+
+- **One `h1`, and it is the hero line.** The screen carried an `<h2>` wearing the hero type style's
+  name, which left the first page anybody meets with no top-level heading at all. The element
+  changes; the class stays, because the class is what carries the type scale.
+- **Two calls to action and exactly one Primary.** **Create account** is the Primary and goes to the
+  registration flow. **Sign in with a passkey** is Outline and runs the assertion ceremony against
+  this product's own API. Two filled buttons side by side would ask a person to choose between two
+  things the design has already decided between: the screen is selling the first, and somebody
+  returning is looking for a control rather than being persuaded by one. Both are verbs in sentence
+  case, and both clear the 48px target.
+- **Mobile first**: the two stack full width in one grid column and sit side by side, each at its
+  label's width, from the 600px query this screen already uses.
+- **The outcome of a sign-in lands in one `role="status"` region, in the DOM from first paint and
+  empty at rest.** It is the "value read from the network" rule above applied to an act rather than a
+  read: the waiting line and the sentence that follows it share one region, so the second replaces
+  the first instead of stacking under it. `status` and never `alert` — nothing is typed here.
+- **Busy keeps the pressed control in place.** `disabledInteractive` while the ceremony runs, for the
+  buttons chapter's busy reason, with the live region saying why it cannot be pressed. The gate is in
+  the flow's own method as well, because Material's click-halt is applied to anchors only.
+- **Every refusal from the server says one thing, and it names no cause.** The route answers one
+  fixed `401` for an unknown credential, a bad signature, an untrusted origin, a spent challenge, a
+  counter regression and a user-handle mismatch alike, so that nobody can discover which handles are
+  registered. A screen that rendered a cause it was handed would put that oracle back in front of the
+  person. A refusal and an answer that never came are still different sentences: one says this
+  passkey does not work here and points at another way in, the other says the server could not be
+  reached and points at the same press a minute later.
+- **The provider line says what Google is for, in three facts and in this order**: an account starts
+  there, it happens once and only to check an address, and signing in afterwards never goes near it.
+  The order is the reassurance. The sentence it replaced — that the Google account is what signs you
+  in — stopped being true the moment the passkey control landed, and leaving it would have been worse
+  than leaving nothing: it is the sentence a cautious person reads before deciding whether to hand
+  over an address at all.
+- **The kinetic sentence is unchanged** and remains `aria-live="off"` decorative narrative
+  ([motion](motion.md), [accessibility](accessibility.md)).
+
+### What ships today
+
+All of the above. What does **not** ship is a way back in for somebody holding no passkey: redeeming
+a recovery code has no surface anywhere in the app, so this screen offers no third control and says
+nothing about one.
+
 ## Registration
 
 The flow that creates an account: three steps behind one address, ending in a session and the app.
@@ -627,11 +673,12 @@ the screen in all four.
   attempt's, and the live codes are the first attempt's ten. Showing the first sentence there is
   false on every clause and costs the account — somebody who throws the first card away holds a
   passkey, no codes, and no way to make more.
-- **Neither conflict carries a control.** On a first attempt, starting again spends another challenge
-  and another passkey to be told the same thing. After a restart the same is true and a **Sign in**
-  control would be worse than useless: `/welcome` offers **Continue with Google**, which returns to
-  `/register` and is refused again, and nothing in the browser can run a passkey assertion yet. The
-  way forward is the sentence until a sign-in surface exists to point at.
+- **Neither conflict carries a control, and after a restart that is now a gap rather than a rule.** On
+  a first attempt, starting again spends another challenge and another passkey to be told the same
+  thing, so the sentence is the whole offer. After a restart the sentence tells the person to sign in
+  with the passkey their first attempt created — and `/welcome` now does exactly that, so the screen
+  it names is a screen this state could point at. What ships carries no control there; adding one is
+  work, and until it lands this bullet records the departure rather than the reason.
 - **Start again re-draws everything**: a new challenge, a new passkey, new account keys, ten new
   codes and eleven new factor identifiers. It returns to step 2, and the set on screen when the flow
   next reaches step 3 is a different set.

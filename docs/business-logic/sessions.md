@@ -751,17 +751,19 @@ enumerated spelling makes at the database — see the first rule above.
 
 ## Edge Cases & Known Gotchas
 
-- **The loop is closed on the server, and on the client it is closed for exactly one path.** All four
+- **The loop is closed on the server, and on the client it is closed for two paths.** All four
   establishing paths mint a handle and set the cookie, a request presenting it is authenticated from
   it, and sign-out ends it. Every operation in this file is live rather than anticipatory: revoking a
   passkey really does end that device's access, and a regeneration that swept a live session really
-  does sign the person back in over the new set. **Registration now reaches a person**: `/register`
-  runs the ceremony from a page, the response sets the cookie, the client publishes the session
-  itself rather than asking again, and every later request that browser makes to this API is
-  authenticated from the cookie. The other three establishing routes still have no screen — nothing
-  runs a passkey assertion, presents a recovery code, or regenerates a set — so they are reached only
-  by the integration suite, and every request the app makes on any other path still carries the
-  Google ID token it is handed, as [users-and-ownership.md](users-and-ownership.md) describes.
+  does sign the person back in over the new set. **Registration and sign-in both reach a person**:
+  `/register` runs the creation ceremony from a page and `/welcome` runs the assertion, each response
+  sets the cookie, the client publishes the session itself rather than asking again, and every later
+  request that browser makes to this API is authenticated from the cookie. The two paths differ in
+  one way worth stating: sign-in touches the identity provider not at all. The other two establishing
+  routes still have no screen — nothing presents a recovery code or regenerates a set — so they are
+  reached only by the integration suite, and every request the app makes on any other path still
+  carries the Google ID token it is handed, as
+  [users-and-ownership.md](users-and-ownership.md) describes.
   - **The handle never appears in a response body.** The cookie is `HttpOnly` precisely so that
     nothing else is a handle; no response record carries a token or a session id, and
     `SessionTokenSecrecyTests` is a census over every type a route serialises so a record added later

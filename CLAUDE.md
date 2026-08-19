@@ -397,7 +397,7 @@ Load-bearing rules, each explained there or in the linked decision:
   [erasure.md](docs/business-logic/erasure.md),
   [recovery-codes.md](docs/business-logic/recovery-codes.md) and the credential-list and
   recovery-codes chapters in [components.md](docs/design/components.md).
-- **The browser runs the registration ceremony and only that one.** `+core/security/webauthn-encoding.ts`
+- **The browser runs both halves of the front door.** `+core/security/webauthn-encoding.ts`
   is pure translation between the API's base64url JSON and the browser's `BufferSource` shapes, over
   the **strict** decoder in `base64url.ts` — a second, lenient decoder must never appear beside it.
   `+core/security/webauthn-ceremony.service.ts` is the injectable seam, for the reason
@@ -411,9 +411,12 @@ Load-bearing rules, each explained there or in the linked decision:
   credential (WebAuthn throws `NotSupportedError` without it) and **discarded, never sent** — many
   platform authenticators only derive from the first assertion. And **`isArrayBuffer` is a brand check,
   never `instanceof`**: realms differ across an iframe, a worker and this test runner, and a narrowing
-  that silently goes false derives the key from zero bytes on every device alike. `assertPasskey` asks
-  for PRF too — the wrapped keys open under exactly that value — and is the member with **no caller**:
-  `createPasskey` is reached from `register.service.ts`, signing in with a passkey is a later story. See
+  that silently goes false derives the key from zero bytes on every device alike. **`assertPasskey`
+  asks for PRF too, and the sign-in screen lets the key go**: the wrapped keys open under exactly that
+  value, so a sign-in deriving nothing would authenticate the person and leave every row unreadable
+  the day encryption lands — but nothing on that screen has a use for it yet, and holding it would be
+  holding the account's master key for no reason. `createPasskey` is reached from
+  `register.service.ts` and `assertPasskey` from `welcome/sign-in.service.ts`. See
   [passkeys.md](docs/business-logic/passkeys.md) and
   [account-keys.md](docs/business-logic/account-keys.md).
 - **The recovery-code hand-off is the one screen that shows a secret, and it still mints and posts
@@ -459,6 +462,21 @@ Load-bearing rules, each explained there or in the linked decision:
   codes already written down. The provider `redirectUri` points at `/register`, and **the matching
   entry in the Google Cloud console is part of the change no test can catch**. See
   [registration.md](docs/business-logic/registration.md) and the Registration chapter in
+  [components.md](docs/design/components.md).
+- **Welcome carries two actions and exactly one of them is Primary.** `Create account` routes to
+  `/register`; `Sign in with a passkey` is an Outline running the assertion through a
+  component-provided `SignInService`. **The provider button is gone from this screen** — the provider
+  is contacted once, on the registration screen's introduction step, and the sentence saying Google
+  "is used only to sign you in" left with it. There is **no `/sign-in` route**: one control, no
+  fields, because the authenticator is the form. Two rules a reader will break. **The screen says one
+  thing however a sign-in was refused** — the server answers unknown credential, bad signature,
+  untrusted origin, spent challenge, counter regression and user-handle mismatch with one byte-identical
+  401 on purpose, so a client that varied its sentence would rebuild the credential-enumeration oracle
+  the server refuses to be. And **`refused` is not `unknown`**: a refusal means this passkey does not
+  work here and the person should try another way in, while an unreachable server means try again in a
+  minute. Both assertion legs are **anonymous** and both carry `EXPECTS_UNAUTHENTICATED`, or a 401 —
+  the route's own verdict — is read as a session that lapsed. See
+  [passkeys.md](docs/business-logic/passkeys.md) and the welcome-screen chapter in
   [components.md](docs/design/components.md).
 
 ## Documentation

@@ -1,7 +1,11 @@
 <div class="w-stack">
   <div class="w-hero">
     <app-brand-lockup class="lockup-c" />
-    <h2 class="w-h1">Always watching. Never judging.</h2>
+    <!-- The screen's one top-level heading. It was an `<h2>` wearing a type
+         style's name, which left the first page anybody meets with no heading at
+         all; `accessibility.md` asks every screen for exactly one `h1`. The
+         class is untouched — it is what carries the type scale. -->
+    <h1 class="w-h1">Always watching. Never judging.</h1>
   </div>
 
   <div class="kin-wrap">
@@ -20,8 +24,71 @@
   </div>
 
   <div class="w-cta">
-    <app-google-sign-in-button />
-    <p class="w-fine">Your Google account is used only to sign you in.</p>
+    <!-- Two acts, and one of them is Primary. Creating an account is what this
+         screen is selling; a returning person is looking for a control rather
+         than being persuaded by one, so signing in is Outline. Two filled
+         buttons side by side would ask somebody to choose between two things
+         the design has already decided between. -->
+    <div class="w-actions">
+      <button
+        class="w-button"
+        mat-flat-button
+        type="button"
+        (click)="createAccount()"
+      >
+        Create account
+      </button>
+
+      <!-- `disabledInteractive` while the ceremony runs, which is the *busy*
+           case in the buttons chapter: a control that goes truly `disabled`
+           under the finger drops focus to `<body>`, and the region below is
+           what says why it cannot be pressed. The gate is in
+           `SignInService.signIn` as well, because Material's click-halt is
+           applied to anchors only and the click still arrives here. -->
+      <button
+        class="w-button"
+        mat-stroked-button
+        type="button"
+        [disabled]="flow.busy()"
+        [disabledInteractive]="true"
+        (click)="flow.signIn()"
+      >
+        Sign in with a passkey
+      </button>
+    </div>
+
+    <!-- The one live region on this screen, in the DOM from first paint and
+         empty at rest. A region created at the moment it gains content is
+         announced unreliably or not at all, and a region that always holds a
+         line would tell somebody who has pressed nothing that something went
+         wrong.
+
+         `status`, never `alert`: nothing is typed on this screen, and every
+         sentence that lands here is the outcome of an act the person asked for.
+         Assertive interrupts whatever the reader was in the middle of.
+
+         One region rather than two, so the waiting line and the sentence that
+         follows it are in the same place and the second replaces the first
+         instead of stacking under it. -->
+    <div class="w-outcome" role="status">
+      @if (flow.busy()) {
+        <p class="w-prose">Waiting for your device.</p>
+      } @else if (refusal(); as sentence) {
+        <!-- Colour is never the message: the line reads as a sentence with the
+             colour removed. -->
+        <p class="w-error">{{ sentence }}</p>
+      }
+    </div>
+
+    <!-- Marketing voice, and three facts in this order because the order is the
+         reassurance: an account starts at Google, that happens once and only to
+         check an address, and signing in afterwards never goes near it. The
+         sentence this replaces said the Google account is what signs you in,
+         which stopped being true on the line above. -->
+    <p class="w-fine">
+      Creating an account starts with Google once, to check your email address.
+      After that you sign in with your passkey, and Google is never asked again.
+    </p>
   </div>
 </div>
 

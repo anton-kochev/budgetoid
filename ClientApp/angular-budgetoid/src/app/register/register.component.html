@@ -87,13 +87,18 @@
               </p>
               <!-- No control, for a harder reason than the branch below.
                    `Start again` walks into this same 409 a third time, and
-                   every address this client could send somebody to leads back
-                   here as well: `/welcome` offers `Continue with Google`, which
-                   redirects to `/register`, which posts and is refused again.
-                   Nothing in this browser can run a passkey assertion yet, so a
-                   `Sign in` control would be a promise no route can keep — and
-                   on the one screen where a wrong way forward costs the account
-                   itself, the honest offer is the sentence and no button. -->
+                   `/register` is the only address this screen could send
+                   somebody to that leads anywhere but back here.
+
+                   **The other half of this argument has expired and the control
+                   has not caught up.** It used to read that nothing in this
+                   browser could run a passkey assertion, so a `Sign in` control
+                   would be a promise no route could keep. `/welcome` now signs a
+                   returning person in with the passkey their first attempt
+                   created, which is exactly what this branch tells them to do —
+                   so the honest offer here is a way to that screen, and adding
+                   one is work this commit did not do. Until then the sentence
+                   carries it alone. -->
             } @else {
               <h1 class="r-title">You already have an account</h1>
               <p class="r-error">

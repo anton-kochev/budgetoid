@@ -112,8 +112,9 @@ Currencies. The budget itself is not manageable — it is provisioned, never con
 owner can download a complete copy of everything the server holds about them, can see the address
 the account is registered under, can issue themselves a set of recovery codes and ask how many are
 left, and can destroy the account outright; none of it is behind a support request.
-A visitor with no session reaches the welcome screen and the registration flow — the one surface that
-turns a provider sign-in into an account — and nothing else.
+A visitor with no session reaches the welcome screen — which both starts an account and signs a
+returning person in with their passkey, contacting no third party to do it — and the registration
+flow, the one surface that turns a provider sign-in into an account. Nothing else.
 
 ## Domain area map
 

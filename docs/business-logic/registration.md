@@ -609,8 +609,9 @@ ELSE consume the nonce — from here every outcome has burnt it
 
 - **What is built and what is not.** Both routes exist, the whole write is tested, and a person can
   reach them: `/register` runs the ceremony and posts the account, and the response really does sign
-  them in. What is **not** built beside it is the rest of the client's passkey surface — nothing signs
-  in with a passkey, nothing registers a second one, and nothing runs the fresh assertion the erasure,
+  them in. A returning person now signs in with that passkey from `/welcome`, and the provider is not
+  contacted on that path at all. What is **not** built beside it is the rest of the client's passkey
+  surface — nothing registers a second passkey, and nothing runs the fresh assertion the erasure,
   revocation and recovery-code-generation gates need — so every other request the app makes still
   carries the provider's ID token. And the older way in is **still live**:
   `UserProvisioningMiddleware` still mints an account from any authenticated request to one of six
@@ -618,15 +619,15 @@ ELSE consume the nonce — from here every outcome has burnt it
   Read every invariant in this file as what *this path* establishes, never as a claim about every
   account in the schema.
 - **Somebody who already has an account is walked all the way to a `409`, and that is the accepted
-  cost of not having an oracle.** Until passkey sign-in ships, the provider button is the only way in
-  from the welcome screen, so an existing account holder who presses it lands on `/register` and is
-  taken through a system passkey sheet and a card of ten codes before the server tells them the
-  account exists. The client cannot check first: **no route answers "does this subject have an
-  account?"**, deliberately, because one would be an enumeration oracle for anybody holding a provider
-  token. The `409` itself discloses nothing — it is answered to somebody who has just proved control
-  of that address — and the sentence on screen sends them to sign in rather than to try again. The
-  passkey they created on the way is a credential their authenticator keeps and this product never
-  saw.
+  cost of not having an oracle.** The welcome screen now offers two ways in, and **Create account** is
+  the Primary of the two, so an existing account holder who reaches for it rather than for **Sign in
+  with a passkey** lands on `/register` and is taken through a system passkey sheet and a card of ten
+  codes before the server tells them the account exists. The client cannot check first: **no route
+  answers "does this subject have an account?"**, deliberately, because one would be an enumeration
+  oracle for anybody holding a provider token. The `409` itself discloses nothing — it is answered to
+  somebody who has just proved control of that address — and the sentence on screen sends them to
+  sign in rather than to try again, which is now an address the client can offer. The passkey they
+  created on the way is a credential their authenticator keeps and this product never saw.
 - **After a lost answer and a restart, the live codes are the *first* attempt's.** The *cannot be
   told* state offers *Start again* precisely because a second attempt settles the question: if the
   first request did commit, the second meets the `409` and says so plainly. But the account it names
