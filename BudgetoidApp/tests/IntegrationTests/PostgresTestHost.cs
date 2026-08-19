@@ -237,7 +237,33 @@ internal static class SharedPostgresCluster
     }
 }
 
-public sealed class PostgresTestHost : IAsyncDisposable
+/// <param name="usesApplicationAuthentication">
+/// Leaves the application's own authentication defaults standing on <see cref="Factory" />, instead of
+/// naming <see cref="TestAuthHandler" /> the default authenticate and challenge scheme.
+/// </param>
+/// <param name="repointsProviderSchemeToTestHandler">
+/// Makes the identity provider's bearer scheme answer with <see cref="TestAuthHandler" /> inside
+/// <see cref="Factory" />, so the two registration routes can be driven from a test.
+/// </param>
+/// <remarks>
+/// <para>
+/// <b>Both default to off, so no existing caller changes at all</b>, and both exist because the factory
+/// this host builds is otherwise unreachable for a cookie: naming <see cref="TestAuthHandler" /> as the
+/// default is exactly what stops the cookie handler being asked, so a session-carrying client would 401
+/// on every one of the ~300 call sites here with nothing saying why. The flags are forwarded to
+/// <see cref="ApiFactory" /> unchanged and are argued for over there — restating either argument here
+/// would be a second opinion about a rule that already has an owner.
+/// </para>
+/// <para>
+/// They sit on the <b>host</b> rather than only on <see cref="CreateFactory" /> because
+/// <see cref="Factory" /> is what almost every test uses, and it is built by <see cref="StartAsync" />
+/// before any test line runs. A per-factory flag alone would mean a second host boot for every migrated
+/// test — a real cost against a shared cluster, and one paid ~300 times.
+/// </para>
+/// </remarks>
+public sealed class PostgresTestHost(
+    bool usesApplicationAuthentication = false,
+    bool repointsProviderSchemeToTestHandler = false) : IAsyncDisposable
 {
     /// <summary>
     /// Superuser connection string for this host's own database inside the shared cluster, or
@@ -316,6 +342,10 @@ public sealed class PostgresTestHost : IAsyncDisposable
     // assembly — and two boots racing on it fail with XX000. Serialising the boot at this seam would
     // miss the boots that never come through it, so the gate lives in ApiFactory instead. See
     // SharedPostgresCluster.UnderRoleGate.
+    //
+    // The two authentication flags come off the host rather than off this signature, so that `Factory`
+    // and every factory built beside it answer the same way. A caller that needed one host serving two
+    // authentication shapes would be a caller whose test spans two applications.
     public ApiFactory CreateFactory(
         string? defaultSubject = "test-subject",
         Action<IServiceCollection>? configureServices = null) =>
@@ -323,7 +353,9 @@ public sealed class PostgresTestHost : IAsyncDisposable
             AppConnectionString,
             defaultSubject,
             configureServices: configureServices,
-            adminConnectionString: ConnectionString);
+            adminConnectionString: ConnectionString,
+            usesApplicationAuthentication: usesApplicationAuthentication,
+            repointsProviderSchemeToTestHandler: repointsProviderSchemeToTestHandler);
 
     /// <summary>
     /// Releases the factory and then the database, and is safe on a host that never started.

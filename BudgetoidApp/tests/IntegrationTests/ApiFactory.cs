@@ -1,4 +1,6 @@
 using Api.Infrastructure;
+using Application.Registration;
+using Domain.Sessions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -6,6 +8,8 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -72,6 +76,17 @@ namespace IntegrationTests;
 /// It is indexed rather than looked up with <c>TryGetValue</c> on purpose: a scheme name this host does
 /// not register is a fixture that has drifted from <c>Program.cs</c>, and a silent no-op there would
 /// leave every test using the flag answering 401 for a reason no assertion names.
+/// </para>
+/// <para>
+/// <b>Both flags at once is a supported combination, and <see cref="RegisterAccountAsync" /> is what
+/// asks for it.</b> Registering an account needs a test principal on the provider scheme — nothing else
+/// authenticates <c>/api/registration/*</c>, whose policy names that scheme and nothing else — and the
+/// session the finish leg hands back is a cookie, which only the application's own handler can read. The
+/// two flags therefore had to stop being one decision: <see cref="TestAuthHandler" /> is <em>registered</em>
+/// whenever either flag wants it, and named as the <c>DefaultAuthenticateScheme</c> only by
+/// <paramref name="usesApplicationAuthentication" /> being off. A host with both on answers a
+/// header-carrying client on the provider scheme and a cookie-carrying one on the cookie scheme, which is
+/// exactly the pair one registration walks through.
 /// </para>
 /// <para>
 /// Measured before it was written, on a host of this shape outside the suite: with the flag off a
@@ -178,24 +193,31 @@ public sealed class ApiFactory(
 
         builder.ConfigureTestServices(services =>
         {
-            // Skipped whole rather than registered-and-overridden: the scheme itself is harmless, and
-            // it is naming it as the default that takes the application's own handlers off the path.
-            // See the remarks on usesApplicationAuthentication.
-            if (!usesApplicationAuthentication)
+            // Registering the scheme and naming it as the default are two decisions, split because the
+            // two flags need them in different combinations. Registration alone is harmless — a scheme
+            // nothing selects answers nothing — and it is naming it as the default that takes the
+            // application's own handlers off the path. The repointing block below needs the type in the
+            // container whether or not the default moves, because the handler a scheme map names is
+            // resolved from services before ActivatorUtilities is reached.
+            if (!usesApplicationAuthentication || repointsProviderSchemeToTestHandler)
             {
-                services.AddAuthentication(options =>
-                    {
-                        options.DefaultAuthenticateScheme = TestAuthHandler.SchemeName;
-                        options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
-                    })
+                services.AddAuthentication()
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
             }
 
-            // Only meaningful beside the block above, which is what registers TestAuthHandler in the
-            // container at all: the handler the scheme map names is resolved from services before
-            // ActivatorUtilities is reached, and a type nothing registered would be constructed per
-            // request instead. Both flags on at once is therefore a combination no caller should ask
-            // for, and none does.
+            // AddAuthentication(Action<AuthenticationOptions>) is AddAuthentication() followed by
+            // services.Configure(...), so splitting the two lines above and below preserves both the
+            // registrations and their order: this Configure still runs after the application's own, and
+            // the last one to run decides the default.
+            if (!usesApplicationAuthentication)
+            {
+                services.Configure<AuthenticationOptions>(options =>
+                {
+                    options.DefaultAuthenticateScheme = TestAuthHandler.SchemeName;
+                    options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
+                });
+            }
+
             if (repointsProviderSchemeToTestHandler)
             {
                 services.Configure<AuthenticationOptions>(options =>
@@ -245,6 +267,203 @@ public sealed class ApiFactory(
             FirstPartyRequestTests.ClientHeader,
             FirstPartyRequestTests.ClientHeaderValue);
     }
+
+    /// <summary>
+    /// An account that has been signed in, and the client already presenting its handle.
+    /// </summary>
+    /// <remarks>
+    /// The two ids ride along because nothing a signed-in request answers names either one, and the
+    /// tests that need them today dig them back out of <c>credentials</c> with raw SQL. Handing them
+    /// back from the call that wrote them removes that lookup — and with it the risk that a test which
+    /// seeded one account reads another's ids because its own query matched two rows.
+    /// </remarks>
+    public sealed record SignedInClient(HttpClient Client, Guid UserId, Guid BudgetId);
+
+    /// <summary>
+    /// Seeds one whole sign-in and hands back a client that already presents its cookie.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The session is seeded rather than established through a route</b>, because the routes that
+    /// establish one all require a passkey a synthetic authenticator has to sign for — three extra
+    /// requests, a device, and a ceremony, for a test whose subject is somewhere else entirely.
+    /// <see cref="RegisterAccountAsync" /> is the other end of that trade and exists for the tests that
+    /// really are about the ceremony.
+    /// </para>
+    /// <para>
+    /// <b>The handle rides on <c>DefaultRequestHeaders</c> rather than in a cookie container</b>, and the
+    /// difference is not stylistic. The cookie this application issues is <c>Secure</c> and
+    /// <c>__Host-</c> prefixed, and a <see cref="System.Net.CookieContainer" /> filled from a
+    /// <c>Set-Cookie</c> would refuse to send it back over the <c>http://localhost</c> the test server
+    /// answers on — silently, as a request carrying no cookie at all, which reads as a broken
+    /// authentication path. Nothing in this assembly uses a cookie container today; a caller that
+    /// reaches for one should expect exactly that failure and should keep sending the header instead.
+    /// </para>
+    /// </remarks>
+    /// <param name="subject">
+    /// The provider subject the seeded federated credential carries. It reaches no request here — the
+    /// cookie decides who is asking — but a test that also looks the account up by subject wants to name
+    /// it, and every test in the suite that does so today looks it up that way.
+    /// </param>
+    /// <param name="email">The address the account is created with; defaults as a bearer client's does.</param>
+    /// <param name="kind">
+    /// Which kind of session to open, which decides which credential opens it: a passkey for
+    /// <see cref="SessionKind.Full" />, the account's federated credential for
+    /// <see cref="SessionKind.Locked" />. The seeding throws if the domain derives the other one.
+    /// </param>
+    public async Task<SignedInClient> CreateSignedInClientAsync(
+        string? subject = null,
+        string? email = null,
+        SessionKind kind = SessionKind.Full,
+        CancellationToken cancellationToken = default)
+    {
+        RequireApplicationAuthentication(nameof(CreateSignedInClientAsync));
+
+        string resolvedSubject = subject ?? defaultSubject ?? "test-subject";
+        RepositoryTestHost.SignedInOwner owner = await RepositoryTestHost.SeedSignedInOwnerOnAsync(
+            SeedingConnectionString,
+            resolvedSubject,
+            email ?? $"{resolvedSubject}@example.com",
+            kind,
+            cancellationToken);
+
+        return new SignedInClient(
+            CreateCookieClient(Base64UrlText.Encode(owner.SessionToken)),
+            owner.UserId,
+            owner.BudgetId);
+    }
+
+    /// <summary>
+    /// Registers a whole account through both real legs of the ceremony and hands back the client the
+    /// <c>Set-Cookie</c> left behind.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Needs both authentication flags on.</b> The two <c>/api/registration</c> routes declare a
+    /// policy naming the provider scheme and nothing else, so the options leg has to be driven by a
+    /// principal on that scheme — which is what <c>repointsProviderSchemeToTestHandler</c> arranges — and
+    /// the session the finish leg hands back is a cookie only the application's own handler can read.
+    /// </para>
+    /// <para>
+    /// <b>The account identifier is derived, never read back.</b> <see cref="RegistrationAccountId.For" />
+    /// over the options leg's own challenge is what the two legs agree on, and reading <c>users</c>
+    /// instead would hand back whatever identifier the finish leg chose for itself — which is the one
+    /// failure the derivation exists to make impossible. The budget is read, because registration writes
+    /// exactly one and nothing derives it.
+    /// </para>
+    /// </remarks>
+    public async Task<SignedInClient> RegisterAccountAsync(
+        string? subject = null,
+        string? email = null,
+        CancellationToken cancellationToken = default)
+    {
+        RequireApplicationAuthentication(nameof(RegisterAccountAsync));
+        if (!repointsProviderSchemeToTestHandler)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(RegisterAccountAsync)} drives '{RegistrationCeremony.OptionsPath}', whose "
+                + "policy names the identity provider's scheme and nothing else — so the real JwtBearer "
+                + "handler answers, sees no Authorization header and refuses with 401. Build the factory "
+                + "with repointsProviderSchemeToTestHandler: true.");
+        }
+
+        using HttpClient provider = CreateAuthenticatedClient(subject, email);
+        RegistrationCeremonyResult registered = await RegistrationCeremony.RegisterAsync(
+            provider,
+            SyntheticAuthenticator.CreateEs256(PasskeyRelyingPartyId));
+        await RegistrationCeremony.EnsureOkAsync(registered.Response);
+
+        return new SignedInClient(
+            CreateCookieClient(RegistrationCeremony.SessionCookieValueOf(registered.Response)),
+            registered.AccountId,
+            await SoleBudgetIdAsync(registered.AccountId, cancellationToken));
+    }
+
+    /// <summary>
+    /// A client presenting <paramref name="cookieValue" /> as its session handle on every request.
+    /// </summary>
+    /// <remarks>
+    /// The cookie's name comes from <see cref="SessionCookieAuthenticationTests.CookieName" /> rather
+    /// than being typed again, for the reason <see cref="ConfigureClient" /> gives about the client
+    /// header: one wire value with two spellings in one assembly is a disagreement waiting to happen.
+    /// That constant is itself a literal rather than <c>SessionCookie.Name</c>, deliberately, and the
+    /// argument for that is stated where it is declared.
+    /// </remarks>
+    private HttpClient CreateCookieClient(string cookieValue)
+    {
+        HttpClient client = CreateClient();
+        client.DefaultRequestHeaders.Add(
+            "Cookie", $"{SessionCookieAuthenticationTests.CookieName}={cookieValue}");
+
+        return client;
+    }
+
+    /// <summary>
+    /// Refuses a cookie-carrying client on a host that named <see cref="TestAuthHandler" /> as its
+    /// default scheme.
+    /// </summary>
+    /// <remarks>
+    /// Such a host never asks the cookie handler anything, so every request the returned client made
+    /// would answer 401 with nothing in the response, the log or the assertion naming the cause — the
+    /// exact failure mode the remarks on <c>usesApplicationAuthentication</c> describe. Naming the fix in
+    /// the message is the whole point of throwing here rather than letting the requests fail.
+    /// </remarks>
+    private void RequireApplicationAuthentication(string member)
+    {
+        if (usesApplicationAuthentication)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"{member} hands out a client that authenticates from the session cookie, and this factory "
+            + $"names {TestAuthHandler.SchemeName} as the default authenticate scheme — so the cookie "
+            + "handler is never asked and every request would answer 401 for a reason no assertion "
+            + "names. Build the factory with usesApplicationAuthentication: true; through "
+            + $"{nameof(PostgresTestHost)}, pass it to the host's constructor.");
+    }
+
+    /// <summary>
+    /// The one budget <paramref name="userId" /> owns, read on the seeding connection.
+    /// </summary>
+    /// <remarks>
+    /// Refuses anything but exactly one row. A registration writes one budget, so two means this account
+    /// was reached twice and a caller taking "the first" would be scoped to whichever came back first;
+    /// none means the registration wrote nothing and every later assertion is about an account that does
+    /// not exist.
+    /// </remarks>
+    private async Task<Guid> SoleBudgetIdAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        await using NpgsqlConnection connection = new(SeedingConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using NpgsqlCommand command = new(
+            "select id from budgets where user_id = @userId", connection);
+        command.Parameters.AddWithValue("userId", userId);
+
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            throw new InvalidOperationException($"No budget is filed under account '{userId}'.");
+        }
+
+        Guid budgetId = reader.GetGuid(0);
+
+        return await reader.ReadAsync(cancellationToken)
+            ? throw new InvalidOperationException(
+                $"Account '{userId}' owns more than one budget; this lookup assumes exactly one.")
+            : budgetId;
+    }
+
+    /// <summary>
+    /// The connection every seeding and read-back here goes over: the elevated account, as all the
+    /// existing seeding uses.
+    /// </summary>
+    /// <remarks>
+    /// The application role is least-privilege on purpose — it holds no <c>INSERT</c> on half these
+    /// tables and is policed on the rest — and none of this is what a test is measuring. It falls back
+    /// to the application's own string for the same reason the constructor's parameter does.
+    /// </remarks>
+    private string SeedingConnectionString => adminConnectionString ?? appConnectionString;
 
     /// <summary>
     /// One route that is allowed to bring an account into existence. Named so that a test needing an

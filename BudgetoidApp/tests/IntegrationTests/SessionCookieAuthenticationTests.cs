@@ -2,8 +2,6 @@ using System.Net;
 using System.Text.Json.Nodes;
 using Domain.Sessions;
 using Domain.Users;
-using Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Time.Testing;
@@ -489,10 +487,11 @@ public sealed class SessionCookieAuthenticationTests
     /// would make that a refusal nobody could tell from a broken cookie.
     /// </para>
     /// <para>
-    /// The session and its handle go in one <c>SaveChangesAsync</c>, which is the shape the establishing
-    /// path writes them in: a handle committed without its session names nothing.
-    /// <see cref="SessionToken.For" /> reads both ids off the session, so nothing here can file a handle
-    /// against the wrong sign-in.
+    /// The writing itself lives on <see cref="RepositoryTestHost.SeedSessionAsync" />, which is the one
+    /// copy of it in this assembly. What stays here is the pairing above — which credential a session on
+    /// this file's account is opened over — and the kind it produces is named rather than assumed, so the
+    /// argument in the paragraph above is checked against what the domain derived instead of being taken
+    /// on trust.
     /// </para>
     /// </remarks>
     private static async Task<byte[]> SeedSessionAsync(
@@ -505,20 +504,8 @@ public sealed class SessionCookieAuthenticationTests
     {
         Guid credentialId = await host.SeedPasskeyAsync(userId, WebAuthnCredentialId(fill));
 
-        await using BudgetoidDbContext db = CreateDb(host);
-        Credential credential = await db.Credentials.SingleAsync(stored => stored.Id == credentialId);
-        Session session = Session.Establish(credential, createdAtUtc, expiresAtUtc);
-        if (revokedAtUtc is not null)
-        {
-            session.Revoke(revokedAtUtc.Value);
-        }
-
-        byte[] token = TokenBytes(fill);
-        db.Sessions.Add(session);
-        db.SessionTokens.Add(SessionToken.For(session, token));
-        await db.SaveChangesAsync();
-
-        return token;
+        return await host.SeedSessionAsync(
+            credentialId, fill, SessionKind.Full, createdAtUtc, expiresAtUtc, revokedAtUtc);
     }
 
     /// <summary>
@@ -529,7 +516,7 @@ public sealed class SessionCookieAuthenticationTests
     /// <c>session_tokens</c>, so two identical tokens would be one row and every test holding two handles
     /// would have nothing to choose wrongly between.
     /// </remarks>
-    private static byte[] TokenBytes(byte fill) => [.. Enumerable.Repeat(fill, SessionToken.TokenLength)];
+    private static byte[] TokenBytes(byte fill) => RepositoryTestHost.SessionTokenBytes(fill);
 
     /// <summary>
     /// The WebAuthn credential id a seeded passkey carries. Derived from the same fill byte as the
@@ -569,16 +556,6 @@ public sealed class SessionCookieAuthenticationTests
 
     private static async Task<string> EmailOfAsync(HttpResponseMessage response) =>
         (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!["email"]!.GetValue<string>();
-
-    /// <summary>
-    /// A context on the container superuser connection, with no ambient budget. Safe for what is seeded
-    /// through it — neither <c>Session</c>, <c>SessionToken</c> nor <c>Credential</c> carries a budget
-    /// query filter — and superuser because these rows are arranged, not measured.
-    /// </summary>
-    private static BudgetoidDbContext CreateDb(RepositoryTestHost host) => new(
-        new DbContextOptionsBuilder<BudgetoidDbContext>()
-            .UseNpgsql(host.ConnectionString)
-            .Options);
 
     /// <summary>
     /// The host every test here serves requests through: the application's own authentication left

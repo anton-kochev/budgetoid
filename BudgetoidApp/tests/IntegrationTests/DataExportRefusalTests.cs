@@ -33,8 +33,8 @@ namespace IntegrationTests;
 /// </para>
 /// <para>
 /// The second budget goes in out of band on the container superuser, because no endpoint creates a
-/// budget: provisioning writes the one default budget alongside the user, and nothing else in the
-/// product writes that table. It carries a <b>name</b>, and that is load-bearing rather than
+/// budget: an account is created with exactly one default budget, and nothing else in the product
+/// writes that table. It carries a <b>name</b>, and that is load-bearing rather than
 /// decorative — <c>IX_budgets_user_id_name</c> is <c>UNIQUE … NULLS NOT DISTINCT</c>, so a second
 /// nameless budget for one owner is refused by the index and the test would be measuring the index
 /// instead of the export. It is written through <c>BudgetoidDbContext</c> and the domain factory
@@ -42,15 +42,22 @@ namespace IntegrationTests;
 /// is one the application itself could have produced.
 /// </para>
 /// <para>
-/// <b>Its instant is derived from the provisioned budget's own <c>created_at_utc</c> and shifted
+/// <b>Its instant is derived from the first budget's own <c>created_at_utc</c> and shifted
 /// forward, never written here as a constant.</b> The property that has to hold is a relative one —
-/// seeded later than provisioned — because <c>IBudgetRepository.FindFirstForUserAsync</c> returns the
-/// <b>earliest</b> budget an owner holds, and an instant in the past would quietly make the empty
+/// later than the account's own budget — because <c>IBudgetRepository.FindFirstForUserAsync</c> returns
+/// the <b>earliest</b> budget an owner holds, and an instant in the past would quietly make the empty
 /// seeded row the ambient one. Every furnished id would then live in a budget the export never reads,
 /// and the eight-id body search below could not find one even against an implementation that
 /// truncates. Deriving it makes that true by construction rather than by an unstated assumption about
 /// where the system clock happens to be, and it keeps the seeded row one the application itself could
 /// have produced.
+/// </para>
+/// <para>
+/// <b>Both tests authenticate from a session cookie, over an account
+/// <see cref="ApiFactory.CreateSignedInClientAsync" /> seeded whole.</b> Nothing here is about how a
+/// request proves who is asking, and the export is a fallback-policy route like any other — what the
+/// cookie buys is that the ids the refusal must not leak come back from the call that wrote them
+/// instead of from a subject lookup that can match the wrong row.
 /// </para>
 /// <para>
 /// <see cref="Export_ForAnOwnerOfTheProvisionedBudgetAlone_IsAnswered" /> is the control, and it is
@@ -85,16 +92,14 @@ public sealed class DataExportRefusalTests
         // The furnishing is what gives the leak search something to find: an account, a category group,
         // a category, a payee and a transaction, each with an id no refusal may name.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        (HttpClient client, Guid userId, Guid budgetId) = signedIn;
 
         FurnishedIds furnished = await FurnishAccountAsync(host, client);
-        (Guid userId, Guid budgetId, DateTime provisionedBudgetCreatedAtUtc) =
-            await ResolveOwnerAsync(host, Subject);
         Guid secondBudgetId = await SeedSecondBudgetAsync(
             host,
             userId,
-            provisionedBudgetCreatedAtUtc.AddMinutes(1));
+            (await BudgetCreatedAtUtcAsync(host, budgetId)).AddMinutes(1));
 
         // Act
         HttpResponseMessage response = await client.GetAsync(ExportPath);
@@ -153,7 +158,7 @@ public sealed class DataExportRefusalTests
 
     /// <summary>
     /// The control for the refusal above: the same account, furnished the same way, owning only the
-    /// budget provisioning gave it.
+    /// budget it was created with.
     /// </summary>
     /// <remarks>
     /// Without it the refusal is untrustworthy. A seeding step that quietly created nothing, a subject
@@ -167,11 +172,10 @@ public sealed class DataExportRefusalTests
     {
         // Arrange — every line of the refusal's Arrange except the second budget.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        (HttpClient client, Guid userId, Guid budgetId) = signedIn;
 
         FurnishedIds furnished = await FurnishAccountAsync(host, client);
-        (Guid userId, Guid budgetId, _) = await ResolveOwnerAsync(host, Subject);
 
         // Act
         HttpResponseMessage response = await client.GetAsync(ExportPath);
@@ -314,51 +318,30 @@ public sealed class DataExportRefusalTests
     }
 
     /// <summary>
-    /// Reads back the user and default budget provisioning minted for <paramref name="subject" />,
-    /// with the instant that budget claims. Nothing the API returns names either id, so the lookup goes
-    /// through the credential the middleware resolved the request on.
+    /// The instant the sign-in's own budget claims.
     /// </summary>
     /// <remarks>
-    /// The creation instant comes back because the second budget's has to be derived from it rather
-    /// than written down: see <see cref="SeedSecondBudgetAsync" />. Reading it here also means a
-    /// provisioning step that wrote no budget fails loudly on the guards below instead of silently
-    /// handing the seeding a default instant.
+    /// The only thing still read back out of band here. Both ids come off
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" />, which wrote them, but the instant does not —
+    /// and the second budget's has to be derived from it rather than written down, for the reason
+    /// <see cref="SeedSecondBudgetAsync" /> gives. A row that is not there fails here rather than
+    /// silently handing the seeding a default instant.
     /// </remarks>
-    private static async Task<(Guid UserId, Guid BudgetId, DateTime BudgetCreatedAtUtc)> ResolveOwnerAsync(
-        PostgresTestHost host,
-        string subject)
+    private static async Task<DateTime> BudgetCreatedAtUtcAsync(PostgresTestHost host, Guid budgetId)
     {
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
-            """
-            select credentials.user_id, budgets.id, budgets.created_at_utc
-            from credentials
-            join budgets on budgets.user_id = credentials.user_id
-            where credentials.provider = 'google' and credentials.subject = @subject
-            """,
+            "select created_at_utc from budgets where id = @budgetId",
             connection);
-        command.Parameters.AddWithValue("subject", subject);
-        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        command.Parameters.AddWithValue("budgetId", budgetId);
 
-        if (!await reader.ReadAsync())
+        return await command.ExecuteScalarAsync() switch
         {
-            throw new InvalidOperationException(
-                $"Provisioning wrote no account for subject '{subject}'.");
-        }
-
-        (Guid userId, Guid budgetId, DateTime budgetCreatedAtUtc) =
-            (reader.GetGuid(0), reader.GetGuid(1), reader.GetDateTime(2));
-
-        // A second row here would mean the seeding already ran, which would silently scope the caller
-        // to whichever budget came back first.
-        if (await reader.ReadAsync())
-        {
-            throw new InvalidOperationException(
-                $"Subject '{subject}' owns more than one budget; this lookup assumes exactly one.");
-        }
-
-        return (userId, budgetId, budgetCreatedAtUtc);
+            DateTime createdAtUtc => createdAtUtc,
+            var unexpected => throw new InvalidOperationException(
+                $"No budget stands under id '{budgetId}', got '{unexpected ?? "null"}'."),
+        };
     }
 
     /// <summary>
@@ -393,9 +376,13 @@ public sealed class DataExportRefusalTests
         return json["id"]!.GetValue<Guid>();
     }
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every request
+    /// below authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
     private static async Task<PostgresTestHost> StartHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

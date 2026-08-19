@@ -4,10 +4,8 @@ using System.Text.Json.Nodes;
 using Api.Infrastructure;
 using Domain.Sessions;
 using Domain.Users;
-using Infrastructure.Persistence;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using TestSupport;
@@ -412,14 +410,9 @@ public sealed class LockedSessionTests
     private static async Task<byte[]> SeedLockedSessionAsync(
         RepositoryTestHost host,
         Guid userId,
-        byte fill)
-    {
-        await using BudgetoidDbContext db = CreateDb(host);
-        Credential federated = await db.Credentials.SingleAsync(stored =>
-            stored.UserId == userId && stored.Type == CredentialType.Federated);
-
-        return await SeedSessionAsync(host, federated.Id, fill, SessionKind.Locked);
-    }
+        byte fill) =>
+        await SeedSessionAsync(
+            host, await host.FederatedCredentialIdAsync(userId), fill, SessionKind.Locked);
 
     /// <summary>
     /// Seeds a live session opened by a freshly registered passkey — a <see cref="SessionKind.Full" />
@@ -435,16 +428,15 @@ public sealed class LockedSessionTests
     }
 
     /// <summary>
-    /// Establishes one session on an existing credential, files the handle it is presented by, and
-    /// returns the token itself — which exists nowhere but here and the cookie.
+    /// Establishes one live session on an existing credential and returns the handle it is presented by.
     /// </summary>
     /// <remarks>
-    /// The session and its handle go in one <c>SaveChangesAsync</c>, which is the shape the establishing
-    /// path writes them in: a handle committed without its session names nothing.
-    /// <paramref name="expectedKind" /> is checked against what the domain derived, so a seeding call
-    /// cannot quietly produce the opposite of the session the test asked for.
+    /// The writing lives on <see cref="RepositoryTestHost.SeedSessionAsync" />, which is the one copy of
+    /// it in this assembly and which is where <paramref name="expectedKind" /> is checked against what
+    /// the domain derived. What is left here is the window: live a minute ago, live for the next hour, so
+    /// nothing in this file is refused for an expiry it never meant to arrange.
     /// </remarks>
-    private static async Task<byte[]> SeedSessionAsync(
+    private static Task<byte[]> SeedSessionAsync(
         RepositoryTestHost host,
         Guid credentialId,
         byte fill,
@@ -452,32 +444,9 @@ public sealed class LockedSessionTests
     {
         DateTime now = DateTime.UtcNow;
 
-        await using BudgetoidDbContext db = CreateDb(host);
-        Credential credential = await db.Credentials.SingleAsync(stored => stored.Id == credentialId);
-        Session session = Session.Establish(credential, now.AddMinutes(-1), now.AddHours(1));
-        if (session.Kind != expectedKind)
-        {
-            throw new InvalidOperationException(
-                $"Seeding asked for a {expectedKind} session and the domain derived {session.Kind}.");
-        }
-
-        byte[] token = TokenBytes(fill);
-        db.Sessions.Add(session);
-        db.SessionTokens.Add(SessionToken.For(session, token));
-        await db.SaveChangesAsync();
-
-        return token;
+        return host.SeedSessionAsync(
+            credentialId, fill, expectedKind, now.AddMinutes(-1), now.AddHours(1));
     }
-
-    /// <summary>
-    /// A token of <see cref="SessionToken.TokenLength" /> bytes, every one of them <paramref name="fill" />.
-    /// </summary>
-    /// <remarks>
-    /// The fill byte is required rather than defaulted: the digest is the primary key of
-    /// <c>session_tokens</c>, so two identical tokens would be one row and a test holding both a locked
-    /// and a full handle would have nothing to choose wrongly between.
-    /// </remarks>
-    private static byte[] TokenBytes(byte fill) => [.. Enumerable.Repeat(fill, SessionToken.TokenLength)];
 
     /// <summary>
     /// The WebAuthn credential id a seeded passkey carries. Derived from the same fill byte as the token,
@@ -554,14 +523,4 @@ public sealed class LockedSessionTests
     }
 
     private const string TraceIdMember = "traceId";
-
-    /// <summary>
-    /// A context on the container superuser connection, with no ambient budget. Safe for what is seeded
-    /// through it — neither <c>Session</c>, <c>SessionToken</c> nor <c>Credential</c> carries a budget
-    /// query filter — and superuser because these rows are arranged, not measured.
-    /// </summary>
-    private static BudgetoidDbContext CreateDb(RepositoryTestHost host) => new(
-        new DbContextOptionsBuilder<BudgetoidDbContext>()
-            .UseNpgsql(host.ConnectionString)
-            .Options);
 }

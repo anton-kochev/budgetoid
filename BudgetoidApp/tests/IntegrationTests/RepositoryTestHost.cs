@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using Domain.Budgets;
+using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
@@ -181,15 +183,225 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// <c>Budget</c> deliberately carries no global query filter — its owner scoping is explicit at
     /// every call site instead.
     /// </remarks>
-    public async Task<SeededOwner> SeedOwnerAsync(string googleSubject, string email)
+    public Task<SeededOwner> SeedOwnerAsync(string googleSubject, string email) =>
+        SeedOwnerOnAsync(ConnectionString, googleSubject, email);
+
+    /// <summary>
+    /// The seeding itself, over a connection string rather than over a host.
+    /// </summary>
+    /// <remarks>
+    /// Every seeder here splits this way, and the split has one caller in mind: <see cref="ApiFactory" />
+    /// holds an admin connection string and no <see cref="RepositoryTestHost" />, so a member that could
+    /// only be reached through an instance would leave it with a copy of the seeding rather than a call
+    /// to it. Three copies of session seeding is the state this replaced, and a fourth was the
+    /// alternative.
+    /// </remarks>
+    internal static async Task<SeededOwner> SeedOwnerOnAsync(
+        string connectionString,
+        string googleSubject,
+        string email,
+        CancellationToken cancellationToken = default)
     {
-        Guid userId = await SeedUserAsync(googleSubject, email);
-        await using var db = CreateSeedingDbContext();
+        Guid userId = await SeedUserOnAsync(connectionString, googleSubject, email, cancellationToken);
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
         Budget budget = Budget.CreateDefault(userId, SeedInstant);
         db.Budgets.Add(budget);
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
         return new SeededOwner(userId, budget.Id);
     }
+
+    /// <summary>
+    /// Establishes one session on an existing credential, files the handle it is presented by, and
+    /// returns the token itself — which exists nowhere but here and the cookie.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The session and its handle go in one <c>SaveChangesAsync</c>, which is the shape the establishing
+    /// path writes them in: a handle committed without its session names nothing.
+    /// <see cref="SessionToken.For" /> reads both ids off the session, so nothing here can file a handle
+    /// against the wrong sign-in.
+    /// </para>
+    /// <para>
+    /// <paramref name="expectedKind" /> is required and is checked against what the domain derived, not
+    /// asserted by the caller afterwards. <c>Session.Establish</c> takes the kind off the credential's
+    /// type, so a seeding call that named the wrong credential would quietly produce the opposite of the
+    /// session the test asked for and every assertion above it would go on passing.
+    /// </para>
+    /// <para>
+    /// <paramref name="fill" /> stays explicit rather than defaulted or randomised here: the digest is
+    /// the primary key of <c>session_tokens</c>, so two identical tokens would be one row and a test
+    /// holding two handles would have nothing to choose wrongly between. The callers that seed two
+    /// sessions on one host name two fills and read the difference.
+    /// </para>
+    /// </remarks>
+    public async Task<byte[]> SeedSessionAsync(
+        Guid credentialId,
+        byte fill,
+        SessionKind expectedKind,
+        DateTime createdAtUtc,
+        DateTime expiresAtUtc,
+        DateTime? revokedAtUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] token = SessionTokenBytes(fill);
+        await SeedSessionOnAsync(
+            ConnectionString,
+            credentialId,
+            token,
+            expectedKind,
+            createdAtUtc,
+            expiresAtUtc,
+            revokedAtUtc,
+            cancellationToken);
+
+        return token;
+    }
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task SeedSessionOnAsync(
+        string connectionString,
+        Guid credentialId,
+        byte[] token,
+        SessionKind expectedKind,
+        DateTime createdAtUtc,
+        DateTime expiresAtUtc,
+        DateTime? revokedAtUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        Credential credential = await db.Credentials
+            .SingleAsync(stored => stored.Id == credentialId, cancellationToken);
+        Session session = Session.Establish(credential, createdAtUtc, expiresAtUtc);
+        if (session.Kind != expectedKind)
+        {
+            throw new InvalidOperationException(
+                $"Seeding asked for a {expectedKind} session and the domain derived {session.Kind}.");
+        }
+
+        if (revokedAtUtc is not null)
+        {
+            session.Revoke(revokedAtUtc.Value);
+        }
+
+        db.Sessions.Add(session);
+        db.SessionTokens.Add(SessionToken.For(session, token));
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// A token of <see cref="SessionToken.TokenLength" /> bytes, every one of them
+    /// <paramref name="fill" />.
+    /// </summary>
+    public static byte[] SessionTokenBytes(byte fill) =>
+        [.. Enumerable.Repeat(fill, SessionToken.TokenLength)];
+
+    /// <summary>
+    /// One whole sign-in: the account, its default budget, the credential the asked-for kind requires,
+    /// the session that credential opened, and the handle a cookie presents it by.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The credential is chosen by the kind rather than named by the caller, because the two are the
+    /// same decision: <c>Session.Establish</c> derives <see cref="SessionKind.Full" /> from a passkey and
+    /// <see cref="SessionKind.Locked" /> from the federated credential, and a caller free to pair them
+    /// differently would be able to ask for a session the product cannot open.
+    /// <see cref="SeedSessionOnAsync" /> still checks what the domain derived, so the pairing below is
+    /// held by the domain rather than by this switch.
+    /// </para>
+    /// <para>
+    /// <b>The token bytes are random here, and the WebAuthn credential id with them.</b> Both columns are
+    /// unique — the token's digest is the primary key of <c>session_tokens</c>, and
+    /// <c>passkey_public_keys</c> refuses a repeated credential id — so a fixed filler would make the
+    /// second signed-in account anywhere in one database a <c>23505</c>. Callers that need to <em>name</em>
+    /// their bytes have <see cref="SeedSessionAsync" /> and its fill.
+    /// </para>
+    /// </remarks>
+    public Task<SignedInOwner> SeedSignedInOwnerAsync(
+        string googleSubject,
+        string email,
+        SessionKind kind = SessionKind.Full,
+        CancellationToken cancellationToken = default) =>
+        SeedSignedInOwnerOnAsync(ConnectionString, googleSubject, email, kind, cancellationToken);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<SignedInOwner> SeedSignedInOwnerOnAsync(
+        string connectionString,
+        string googleSubject,
+        string email,
+        SessionKind kind = SessionKind.Full,
+        CancellationToken cancellationToken = default)
+    {
+        SeededOwner owner =
+            await SeedOwnerOnAsync(connectionString, googleSubject, email, cancellationToken);
+
+        Guid credentialId = kind switch
+        {
+            SessionKind.Full => await SeedPasskeyOnAsync(
+                connectionString,
+                owner.UserId,
+                RandomNumberGenerator.GetBytes(WebAuthnCredentialIdLength),
+                cancellationToken: cancellationToken),
+            SessionKind.Locked =>
+                await FederatedCredentialIdOnAsync(connectionString, owner.UserId, cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(kind), kind, "No credential type opens a session of that kind."),
+        };
+
+        byte[] token = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        DateTime now = DateTime.UtcNow;
+        await SeedSessionOnAsync(
+            connectionString,
+            credentialId,
+            token,
+            kind,
+            now.AddMinutes(-1),
+            now.AddHours(1),
+            cancellationToken: cancellationToken);
+
+        return new SignedInOwner(owner.UserId, owner.BudgetId, token);
+    }
+
+    /// <summary>
+    /// The account, its default budget, and the handle one seeded sign-in is presented by.
+    /// </summary>
+    /// <remarks>
+    /// A <see langword="readonly" /> <see langword="record" /> <see langword="struct" /> for
+    /// <see cref="SeededOwner" />'s reason. The token is carried rather than the session id because the
+    /// id names nothing a request may present — a cookie carries the bytes, and the row stores only
+    /// their digest, so these bytes exist here and in the cookie and nowhere else.
+    /// </remarks>
+    public readonly record struct SignedInOwner(Guid UserId, Guid BudgetId, byte[] SessionToken);
+
+    /// <summary>
+    /// The <c>credentials.id</c> of the one federated credential an account holds.
+    /// </summary>
+    /// <remarks>
+    /// Read back rather than created, because an account holds exactly one and a second would be a state
+    /// provisioning cannot produce.
+    /// </remarks>
+    public Task<Guid> FederatedCredentialIdAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default) =>
+        FederatedCredentialIdOnAsync(ConnectionString, userId, cancellationToken);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    private static async Task<Guid> FederatedCredentialIdOnAsync(
+        string connectionString,
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+
+        return (await db.Credentials.SingleAsync(
+            stored => stored.UserId == userId && stored.Type == CredentialType.Federated,
+            cancellationToken)).Id;
+    }
+
+    /// <summary>
+    /// How many bytes a WebAuthn credential id carries here. Only the width and the distinctness matter:
+    /// nothing verifies a signature against a seeded passkey.
+    /// </summary>
+    private const int WebAuthnCredentialIdLength = 16;
 
     /// <summary>
     /// Persists a user together with its default budget and returns the <b>budget</b> id, so tests
@@ -211,14 +423,22 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// <paramref name="googleSubject"/> is still the caller's handle on the identity, which is why
     /// this signature outlived the column it used to write.
     /// </remarks>
-    public async Task<Guid> SeedUserAsync(string googleSubject, string email)
+    public Task<Guid> SeedUserAsync(string googleSubject, string email) =>
+        SeedUserOnAsync(ConnectionString, googleSubject, email);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<Guid> SeedUserOnAsync(
+        string connectionString,
+        string googleSubject,
+        string email,
+        CancellationToken cancellationToken = default)
     {
-        await using var db = CreateSeedingDbContext();
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
         User user = User.Create(email, SeedInstant);
         db.Users.Add(user);
         db.Credentials.Add(Credential.CreateFederated(
             user.Id, Credential.GoogleProvider, googleSubject, SeedInstant));
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
         return user.Id;
     }
 
@@ -245,22 +465,34 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// against production's own shape rather than against whatever column list a test typed out.
     /// </para>
     /// </remarks>
-    public async Task<Guid> SeedPasskeyAsync(
+    public Task<Guid> SeedPasskeyAsync(
         Guid userId,
         byte[] webAuthnCredentialId,
         byte[]? coseKey = null,
         CoseAlgorithm algorithm = CoseAlgorithm.Es256,
-        uint signatureCounter = 0)
+        uint signatureCounter = 0) =>
+        SeedPasskeyOnAsync(
+            ConnectionString, userId, webAuthnCredentialId, coseKey, algorithm, signatureCounter);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<Guid> SeedPasskeyOnAsync(
+        string connectionString,
+        Guid userId,
+        byte[] webAuthnCredentialId,
+        byte[]? coseKey = null,
+        CoseAlgorithm algorithm = CoseAlgorithm.Es256,
+        uint signatureCounter = 0,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(webAuthnCredentialId);
 
-        await using var db = CreateSeedingDbContext();
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
         Credential credential = Credential.CreatePasskey(userId, SeedInstant);
         db.Credentials.Add(credential);
         db.PasskeyPublicKeys.Add(PasskeyPublicKey.Register(
             credential, webAuthnCredentialId, coseKey ?? DefaultCoseKey, algorithm));
         db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(credential, signatureCounter));
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
         return credential.Id;
     }
 
@@ -294,18 +526,26 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// other test wants to meet by accident.
     /// </para>
     /// </remarks>
-    public async Task<Guid> SeedWrappedAccountKeysAsync(Guid credentialId, Guid factorId)
+    public Task<Guid> SeedWrappedAccountKeysAsync(Guid credentialId, Guid factorId) =>
+        SeedWrappedAccountKeysOnAsync(ConnectionString, credentialId, factorId);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<Guid> SeedWrappedAccountKeysOnAsync(
+        string connectionString,
+        Guid credentialId,
+        Guid factorId,
+        CancellationToken cancellationToken = default)
     {
-        await using var db = CreateSeedingDbContext();
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
         Credential credential = await db.Credentials
-            .SingleAsync(candidate => candidate.Id == credentialId);
+            .SingleAsync(candidate => candidate.Id == credentialId, cancellationToken);
         db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
             credential,
             factorId,
             WrappedKeyEnvelope(SeededContentKeyFiller),
             WrappedKeyEnvelope(SeededIndexKeyFiller),
             SeedInstant));
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
 
         return factorId;
     }
@@ -342,12 +582,20 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// Adds another budget to an existing owner and returns its id, so a test can exercise two
     /// tenants without inventing a second user.
     /// </summary>
-    public async Task<Guid> SeedAdditionalBudgetAsync(Guid userId, string name)
+    public Task<Guid> SeedAdditionalBudgetAsync(Guid userId, string name) =>
+        SeedAdditionalBudgetOnAsync(ConnectionString, userId, name);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<Guid> SeedAdditionalBudgetOnAsync(
+        string connectionString,
+        Guid userId,
+        string name,
+        CancellationToken cancellationToken = default)
     {
-        await using var db = CreateSeedingDbContext();
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
         Budget budget = Budget.Create(userId, name, SeedInstant);
         db.Budgets.Add(budget);
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
         return budget.Id;
     }
 
@@ -357,9 +605,14 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// </summary>
     private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
-    private BudgetoidDbContext CreateSeedingDbContext() => new(
+    /// <summary>
+    /// A context on the container superuser connection, with no ambient budget. Safe for everything
+    /// seeded through it — none of these entities carries a budget query filter, and <c>Budget</c>
+    /// deliberately carries none either — and superuser because these rows are arranged, not measured.
+    /// </summary>
+    private static BudgetoidDbContext CreateSeedingDbContext(string connectionString) => new(
         new DbContextOptionsBuilder<BudgetoidDbContext>()
-            .UseNpgsql(ConnectionString)
+            .UseNpgsql(connectionString)
             .Options);
 
     /// <summary>
