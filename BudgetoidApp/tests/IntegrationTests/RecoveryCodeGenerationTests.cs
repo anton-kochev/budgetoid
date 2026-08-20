@@ -222,10 +222,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -281,10 +280,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         // Act
         HttpResponseMessage response = await GenerateAsync(client, device, userId);
@@ -337,10 +335,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
 
         // Act
@@ -396,10 +393,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange — the first set, issued through the route it will be replaced through.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         HttpResponseMessage first = await GenerateAsync(client, device, userId);
         await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.OK);
@@ -461,10 +457,9 @@ public sealed class RecoveryCodeGenerationTests
         // Arrange — a real first set, whose share of the account keys is a fixture this test keeps, so
         // "still there" can be a comparison of values rather than of a count.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         WrappedKeyFixture[] issued = MintKeys(RequiredCodeCount);
         string[] verifiers = Verifiers();
@@ -544,10 +539,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         WrappedKeyFixture[] keys = MintKeys(RequiredCodeCount);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -613,10 +607,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         // Ten distinguishable submissions: ten factors, and twenty envelopes no two of which share a
         // byte pattern.
@@ -700,10 +693,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange — a first set, with ten shares of the account keys of its own.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         WrappedKeyFixture[] first = MintKeys(RequiredCodeCount);
         await Assert.That((await GenerateAsync(client, device, userId, verifiers: null, first)).StatusCode)
@@ -794,8 +786,9 @@ public sealed class RecoveryCodeGenerationTests
         // Arrange — a passkey registered under an identifier this test keeps, and a real set of codes
         // filed under one of its own, so the account holds two factors and only one of them is the one
         // the act replaces.
-        await using PostgresTestHost host = await StartHostAsync();
+        await using PostgresTestHost host = await StartBearerHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         WrappedKeyFixture claimed = WrappedKeyFixture.Mint();
         await RegisterPasskeyAsync(client, device, claimed);
@@ -913,8 +906,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange — a real first set of ten codes, each with a share of the account keys of its own,
         // plus the session it opened, so the refusal has a whole account state to fail to destroy.
-        await using PostgresTestHost host = await StartHostAsync();
+        await using PostgresTestHost host = await StartBearerHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
@@ -1023,10 +1017,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange — a real first set, so the refusal has something to fail to destroy.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         WrappedKeyFixture[] issued = MintKeys(RequiredCodeCount);
         string[] verifiers = Verifiers();
@@ -1083,10 +1076,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange — a real first set, so the refusal has something to fail to destroy.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         WrappedKeyFixture[] issued = MintKeys(RequiredCodeCount);
         string[] verifiers = Verifiers();
@@ -1171,10 +1163,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange — a real first set, so the refusal has something to fail to destroy.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         WrappedKeyFixture[] issued = MintKeys(RequiredCodeCount);
         string[] verifiers = Verifiers();
@@ -1252,10 +1243,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange — a real first set, then one live session hanging off it.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         HttpResponseMessage first = await GenerateAsync(client, device, userId);
         await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.OK);
@@ -1323,8 +1313,9 @@ public sealed class RecoveryCodeGenerationTests
     public async Task Generation_WhenTheReplacedSetHadALiveSession_OpensOneOverTheNewSet()
     {
         // Arrange — a real first set, and one live session hanging off it.
-        await using PostgresTestHost host = await StartHostAsync();
+        await using PostgresTestHost host = await StartBearerHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
@@ -1381,8 +1372,9 @@ public sealed class RecoveryCodeGenerationTests
     public async Task Generation_ForAnAccountWithNoPreviousSet_WritesNoSession()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
+        await using PostgresTestHost host = await StartBearerHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
@@ -1443,10 +1435,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         // Act, Assert — a first issue signs nobody back in, and says so with a member that is present and
         // null rather than with a member that is absent.
@@ -1511,15 +1502,13 @@ public sealed class RecoveryCodeGenerationTests
         // Arrange — two established accounts, each holding a set of its own.
         await using PostgresTestHost host = await StartHostAsync();
 
-        HttpClient alice = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient alice, Guid aliceId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator alicesDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(alice, alicesDevice);
-        Guid aliceId = await ResolveUserIdAsync(host, Subject);
 
-        HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        (HttpClient bob, Guid bobId, _) = await host.Factory.CreateSignedInClientAsync(OtherSubject);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(bob, bobsDevice);
-        Guid bobId = await ResolveUserIdAsync(host, OtherSubject);
 
         await Assert.That((await GenerateAsync(alice, alicesDevice, aliceId)).StatusCode)
             .IsEqualTo(HttpStatusCode.OK);
@@ -1602,15 +1591,14 @@ public sealed class RecoveryCodeGenerationTests
         // Arrange — an account with a passkey and a real set of codes, plus a bystander whose device is
         // one of the proofs below.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         HttpClient anonymous = host.Factory.CreateClient();
-        HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        HttpClient bob = (await host.Factory.CreateSignedInClientAsync(OtherSubject)).Client;
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator unregistered = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         await RegisterPasskeyAsync(bob, bobsDevice);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         byte[] userHandle = PasskeyEncoding.ToUserHandle(userId);
 
         await Assert.That((await GenerateAsync(client, device, userId)).StatusCode).IsEqualTo(HttpStatusCode.OK);
@@ -1765,9 +1753,8 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         // Act — neither request carries a proof; one carries a set the server would accept and one
         // carries a set it would refuse with a sentence.
@@ -1844,10 +1831,9 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange — a real set first, so the refusal has something to fail to destroy.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await Assert.That((await GenerateAsync(client, device, userId)).StatusCode).IsEqualTo(HttpStatusCode.OK);
 
@@ -1903,7 +1889,7 @@ public sealed class RecoveryCodeGenerationTests
     public async Task Generation_ForAnAuthenticatedSubjectWithNoAccount_IsRefusedAndCreatesNothing()
     {
         // Arrange — an authenticated client that has deliberately never called EstablishAccountAsync.
-        await using PostgresTestHost host = await StartHostAsync();
+        await using PostgresTestHost host = await StartBearerHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient("google-issuing-unprovisioned");
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -1951,7 +1937,7 @@ public sealed class RecoveryCodeGenerationTests
     public async Task Generation_ByAnUnauthenticatedCaller_IsRefusedWithATitleTheGateNeverWrites()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
+        await using PostgresTestHost host = await StartBearerHostAsync();
 
         // Act — no subject header, so nothing authenticates and the fallback policy decides.
         HttpResponseMessage response = await host.Factory
@@ -2305,11 +2291,10 @@ public sealed class RecoveryCodeGenerationTests
     /// answers to rather than material seeded out of band.
     /// </summary>
     /// <remarks>
-    /// The account is established first, on the one route group allowed to mint one. Neither passkey leg
-    /// provisions and neither does <c>/api/me/*</c>, so without this line the very first request is
-    /// refused with a 401 and every test here would be red for a reason it is not about. Written out here
-    /// rather than shared, because it is private to <c>CredentialRevocationTests</c> and that file makes
-    /// the same choice for the same reason.
+    /// The account already exists when this runs: every caller is handed a client by
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" />, which seeds the whole account behind it. The
+    /// few tests still reaching the route with a provider bearer establish theirs on the line above the
+    /// call, where the fact that they need one is visible.
     /// </remarks>
     /// <param name="wrappedKeys">
     /// The share of the account keys the passkey is to hold. Null mints a fresh one, which is what every
@@ -2322,8 +2307,6 @@ public sealed class RecoveryCodeGenerationTests
         SyntheticAuthenticator device,
         WrappedKeyFixture? wrappedKeys = null)
     {
-        await ApiFactory.EstablishAccountAsync(client);
-
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(
             challenge,
@@ -2600,8 +2583,8 @@ public sealed class RecoveryCodeGenerationTests
     private const string FactorIdMember = "FactorId";
 
     /// <summary>
-    /// Reads back the user provisioning minted for <paramref name="subject" />. Nothing the API returns
-    /// names it, so the lookup goes through the credential the middleware resolved on.
+    /// Reads back the account filed under <paramref name="subject" />. Nothing the API returns names it,
+    /// so the lookup goes through that account's federated credential.
     /// </summary>
     private static async Task<Guid> ResolveUserIdAsync(PostgresTestHost host, string subject)
     {
@@ -2616,7 +2599,7 @@ public sealed class RecoveryCodeGenerationTests
         {
             Guid userId => userId,
             var unexpected => throw new InvalidOperationException(
-                $"Provisioning wrote no account for subject '{subject}', got '{unexpected ?? "null"}'."),
+                $"No account is filed under subject '{subject}', got '{unexpected ?? "null"}'."),
         };
     }
 
@@ -2863,7 +2846,28 @@ public sealed class RecoveryCodeGenerationTests
                 $"Expected a count from '{command.CommandText}', got '{unexpected ?? "null"}'."),
         };
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because almost every
+    /// request below authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
     private static async Task<PostgresTestHost> StartHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// The host the few tests that still authenticate with a provider bearer are built on.
+    /// </summary>
+    /// <remarks>
+    /// <b>They are the tests that count <c>sessions</c> rows across the whole database</b>, plus the two
+    /// about what the middleware answers a principal holding no account. Seeding a sign-in writes a
+    /// session, so "this account has exactly one live session" and "no session row exists at all" both
+    /// change value the moment such a client is handed out — which makes moving them a decision about
+    /// what those counts should say rather than a change of client.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartBearerHostAsync()
     {
         PostgresTestHost host = new();
         await host.StartAsync();

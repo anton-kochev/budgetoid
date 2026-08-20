@@ -130,16 +130,15 @@ public sealed class CredentialTypeSpellingTests
     [Test]
     public async Task Credentials_ASetOfRecoveryCodes_ArrivesAsTheSchemasOwnToken()
     {
-        // Arrange — an established account holding a passkey, then a set issued past the gate that
-        // passkey clears.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        // Arrange — a signed-in account holding a passkey, then a set issued past the gate that passkey
+        // clears.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
-        Guid userId = await ResolveUserIdAsync(admin, Subject);
 
         HttpResponseMessage issued = await IssueRecoveryCodesAsync(client, device, userId);
 
@@ -212,6 +211,7 @@ public sealed class CredentialTypeSpellingTests
         // row for every remaining member of the enum.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -549,14 +549,14 @@ public sealed class CredentialTypeSpellingTests
     /// answers to rather than material seeded out of band.
     /// </summary>
     /// <remarks>
-    /// The account is established first, on the one route group allowed to mint one. Neither passkey leg
-    /// provisions and neither does <c>/api/me/*</c>, so without that line the very first request is
-    /// refused with a 401 and every test here would be red for a reason it is not about.
+    /// The account already exists when this runs, and the two ways it got there are both above the call:
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" /> seeds the whole account behind the client it
+    /// hands out, and the test still reaching the route with a provider bearer establishes its own on the
+    /// line above. Neither passkey leg mints one and neither does <c>/api/me/*</c>, so a client arriving
+    /// here without an account is refused with a 401 for a reason no test here is about.
     /// </remarks>
     private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
     {
-        await ApiFactory.EstablishAccountAsync(client);
-
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(
             challenge,
@@ -606,6 +606,25 @@ public sealed class CredentialTypeSpellingTests
     private static async Task<PostgresTestHost> StartHostAsync()
     {
         PostgresTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because the test above
+    /// authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for
+    /// <see cref="Credentials_EveryCredentialTypeArrivesSpelledTheWayItsColumnIsSpelled" />: its
+    /// arrangement asserts the account holds exactly one credential per declared member, and a seeded
+    /// sign-in writes a passkey of its own beside the one the ceremony registers. Two passkeys is a
+    /// second row for one member, so moving that test would be a decision about what the comparison
+    /// should say rather than a change of client.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

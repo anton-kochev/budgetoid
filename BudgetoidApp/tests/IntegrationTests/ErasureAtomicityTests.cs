@@ -122,9 +122,9 @@ public sealed class ErasureAtomicityTests
         await using PostgresTestHost host = await StartHostAsync();
         DeleteAttempts attempts = new();
         await using ApiFactory factory = host.CreateFactory(configureServices: FailTheUserDelete(attempts));
-        HttpClient client = factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        (Guid userId, _) = await FurnishAccountAsync(host, client, Subject);
+        await FurnishAccountAsync(host, client, Subject);
         await RegisterPasskeyAsync(client, device);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -199,9 +199,9 @@ public sealed class ErasureAtomicityTests
         // Arrange — no decorator here; this is the ordinary path through the real repository, on the
         // host's own factory.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        (Guid userId, _) = await FurnishAccountAsync(host, client, Subject);
+        await FurnishAccountAsync(host, client, Subject);
         await RegisterPasskeyAsync(client, device);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -275,9 +275,9 @@ public sealed class ErasureAtomicityTests
         await using PostgresTestHost host = await StartHostAsync();
         DeleteAttempts attempts = new();
         await using ApiFactory factory = host.CreateFactory(configureServices: FailTheUserDelete(attempts));
-        HttpClient client = factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        (Guid userId, _) = await FurnishAccountAsync(host, client, Subject);
+        await FurnishAccountAsync(host, client, Subject);
         await RegisterPasskeyAsync(client, device);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -562,17 +562,14 @@ public sealed class ErasureAtomicityTests
     /// could never verify and every test here would be refused before it reached the handler.
     /// </para>
     /// <para>
-    /// The <c>EstablishAccountAsync</c> call is not what mints the account: every caller runs
-    /// <see cref="FurnishAccountAsync" /> first, whose <c>POST /api/accounts</c> carries
-    /// <c>ProvisionsUser</c> and has already minted it. The call stays because it is idempotent and
-    /// cheap, and it is what lets this helper be called in either order — neither passkey leg
-    /// provisions anything, so without it a caller that skipped the furnishing would be refused.
+    /// This mints no account and needs none minted here: every caller is handed its client by
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" />, which seeds the whole account behind it.
+    /// Neither passkey leg provisions anything, so a client arriving without an account is refused with
+    /// a 401 for a reason no test here is about.
     /// </para>
     /// </remarks>
     private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
     {
-        await ApiFactory.EstablishAccountAsync(client);
-
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
@@ -921,9 +918,20 @@ public sealed class ErasureAtomicityTests
         return envelope;
     }
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every request
+    /// in this file authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
+    /// <remarks>
+    /// The whole-database enumeration is unaffected by what the seeding adds: every count here is read
+    /// twice and compared against its own earlier value, or — in
+    /// <see cref="Erasure_WhenNothingFails_RemovesEveryOwnedRow" /> — against zero, which the seeded
+    /// session and its handle reach through the cascade from <c>credentials</c> like everything else the
+    /// account owns.
+    /// </remarks>
     private static async Task<PostgresTestHost> StartHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

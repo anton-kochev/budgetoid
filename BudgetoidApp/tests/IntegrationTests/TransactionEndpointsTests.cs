@@ -11,7 +11,7 @@ public sealed class TransactionEndpointsTests
     public async Task PostValidTransaction_ReturnsCreatedLocationAndCamelCaseDto()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
 
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
@@ -37,7 +37,7 @@ public sealed class TransactionEndpointsTests
     public async Task PostInvalidTransaction_ReturnsValidationProblemDetails()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
 
         // The invalid amount has more decimal places than the account's USD allows. A zero amount
@@ -60,7 +60,7 @@ public sealed class TransactionEndpointsTests
     public async Task PostTransaction_WithoutDescription_ReturnsCreatedWithEmptyDescription()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
 
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
@@ -80,7 +80,7 @@ public sealed class TransactionEndpointsTests
     public async Task GetTransactions_WithoutDescription_ReturnsEmptyDescription()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         await client.PostAsJsonAsync("/api/transactions",
             new { amount = 1m, date = "2026-06-12", accountId, description = "" });
@@ -94,7 +94,8 @@ public sealed class TransactionEndpointsTests
     public async Task PostMalformedJson_ReturnsBadRequest()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpResponseMessage response = await host.Factory.CreateAuthenticatedClient().PostAsync(
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        HttpResponseMessage response = await client.PostAsync(
             "/api/transactions",
             new StringContent("{", Encoding.UTF8, "application/json"));
 
@@ -105,7 +106,7 @@ public sealed class TransactionEndpointsTests
     public async Task GetTransactions_ReturnsNewestFirst()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         await client.PostAsJsonAsync("/api/transactions",
             new { amount = 1m, date = "2026-06-11", accountId, description = "Older" });
@@ -123,8 +124,8 @@ public sealed class TransactionEndpointsTests
     public async Task GetTransactions_WhenEmpty_ReturnsEmptyItemsArray()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        JsonNode? json =
-            await JsonNode.ParseAsync(await host.Factory.CreateAuthenticatedClient().GetStreamAsync("/api/transactions"));
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        JsonNode? json = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
 
         await Assert.That(json!["items"]!.AsArray().Count).IsEqualTo(0);
     }
@@ -133,7 +134,7 @@ public sealed class TransactionEndpointsTests
     public async Task PostThenGet_PreservesDecimalDateAndAccountProjection()
     {
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         await client.PostAsJsonAsync("/api/transactions",
             new { amount = -42.50m, date = "2026-06-12", accountId, description = "Groceries" });
@@ -153,7 +154,7 @@ public sealed class TransactionEndpointsTests
         // Arrange — the transaction names a payee and a category so the delete has something to
         // wrongly cascade into. Without them the test could not tell a scoped delete from a greedy one.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid categoryGroupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, categoryGroupId, "Groceries");
@@ -186,7 +187,7 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
 
         // Act
         HttpResponseMessage delete = await client.DeleteAsync($"/api/transactions/{Guid.CreateVersion7()}");
@@ -200,12 +201,9 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange — two budgets over one database. The budget query filter is what makes A's
         // transaction invisible to B; there is deliberately no 403 path in this API.
-        await using PostgresTestHost host = new();
-        await host.StartAsync();
-        await using ApiFactory factoryA = host.CreateFactory("google-a");
-        await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient clientA = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient clientB = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
         Guid accountA = await CreateAccountAsync(clientA);
         Guid transactionA = await CreateTransactionAsync(clientA, accountA);
 
@@ -230,7 +228,7 @@ public sealed class TransactionEndpointsTests
         // Arrange — an account pinned by one transaction. DeleteAccountHandler refuses it, and until
         // transactions could be deleted that refusal was a dead end with no way out.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid transactionId = await CreateTransactionAsync(client, accountId);
 
@@ -255,7 +253,7 @@ public sealed class TransactionEndpointsTests
         // than the patch will name, so no assertion below can pass because the value happened to
         // match already.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid checkingId = await CreateAccountAsync(client);
         Guid savingsId = await CreateAccountAsync(client, "Savings");
         Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
@@ -300,7 +298,7 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, groupId, "Groceries");
@@ -326,7 +324,7 @@ public sealed class TransactionEndpointsTests
         // explicit null as "absent" passes this one and fails that. Only the two together pin down
         // the three-state contract: absent means leave alone, null means clear.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, groupId, "Groceries");
@@ -354,7 +352,7 @@ public sealed class TransactionEndpointsTests
         // Arrange — the other half of the pair described on
         // PatchTransaction_WithOnlyAmount_LeavesEveryOtherFieldUntouched. Read them together.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, groupId, "Groceries");
@@ -384,7 +382,7 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid transactionId = await CreateTransactionAsync(client, accountId);
 
@@ -407,7 +405,7 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange — one transaction already owns the payee "Starbucks"; a second one has none.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         await CreateTransactionAsync(client, accountId, "Starbucks");
         Guid transactionId = await CreateTransactionAsync(client, accountId);
@@ -431,7 +429,7 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
 
         // Act
         HttpResponseMessage patch = await client.PatchAsJsonAsync(
@@ -447,12 +445,9 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange — two budgets over one database. The budget query filter is what makes A's
         // transaction invisible to B; there is deliberately no 403 path in this API.
-        await using PostgresTestHost host = new();
-        await host.StartAsync();
-        await using ApiFactory factoryA = host.CreateFactory("google-a");
-        await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient clientA = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient clientB = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
         Guid accountA = await CreateAccountAsync(clientA);
         Guid transactionA = await CreateTransactionAsync(clientA, accountA);
 
@@ -484,12 +479,9 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange — B's account is a real, existing row; it is only out of reach because it belongs to
         // another budget. Moving a transaction into it would put one budget's money in another's ledger.
-        await using PostgresTestHost host = new();
-        await host.StartAsync();
-        await using ApiFactory factoryA = host.CreateFactory("google-a");
-        await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient clientA = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient clientB = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
         Guid accountA = await CreateAccountAsync(clientA);
         Guid accountB = await CreateAccountAsync(clientB, "Checking B");
         Guid transactionA = await CreateTransactionAsync(clientA, accountA);
@@ -511,7 +503,7 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid transactionId = await CreateTransactionAsync(client, accountId);
 
@@ -534,7 +526,7 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange — the account is in USD, which admits two decimal places.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid transactionId = await CreateTransactionAsync(client, accountId);
 
@@ -554,7 +546,7 @@ public sealed class TransactionEndpointsTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid transactionId = await CreateTransactionAsync(client, accountId);
 
@@ -642,9 +634,13 @@ public sealed class TransactionEndpointsTests
         return json["id"]!.GetValue<Guid>();
     }
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every
+    /// request below authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
     private static async Task<PostgresTestHost> StartHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

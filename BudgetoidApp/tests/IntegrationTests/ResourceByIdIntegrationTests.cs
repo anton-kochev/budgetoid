@@ -19,7 +19,7 @@ public sealed class ResourceByIdIntegrationTests
     {
         // Arrange — one of each resource whose creation returns a Location. There are exactly four.
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
         HttpResponseMessage createGroup = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryGroupId = await ReadIdAsync(createGroup);
         HttpResponseMessage createCategory =
@@ -87,12 +87,12 @@ public sealed class ResourceByIdIntegrationTests
     public async Task AccountById_IsHiddenFromAnotherBudgetButVisibleToItsOwner()
     {
         // Arrange
-        await using PostgresTestHost host = new();
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         await using ApiFactory factoryA = host.CreateFactory("google-a");
         await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        (HttpClient clientA, _, _) = await factoryA.CreateSignedInClientAsync();
+        (HttpClient clientB, _, _) = await factoryB.CreateSignedInClientAsync();
         HttpResponseMessage create = await CreateAccountAsync(clientA, "Checking A");
         Guid accountId = await ReadIdAsync(create);
 
@@ -116,12 +116,12 @@ public sealed class ResourceByIdIntegrationTests
     public async Task TransactionById_IsHiddenFromAnotherBudgetButVisibleToItsOwner()
     {
         // Arrange
-        await using PostgresTestHost host = new();
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         await using ApiFactory factoryA = host.CreateFactory("google-a");
         await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        (HttpClient clientA, _, _) = await factoryA.CreateSignedInClientAsync();
+        (HttpClient clientB, _, _) = await factoryB.CreateSignedInClientAsync();
         Guid accountId = await ReadIdAsync(await CreateAccountAsync(clientA, "Checking A"));
         HttpResponseMessage create = await CreateTransactionAsync(clientA, accountId);
         Guid transactionId = await ReadIdAsync(create);
@@ -204,9 +204,13 @@ public sealed class ResourceByIdIntegrationTests
     private static async Task<JsonNode> ReadJsonAsync(HttpResponseMessage response) =>
         (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every request
+    /// in this file authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
     private static async Task<PostgresTestHost> StartApiHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

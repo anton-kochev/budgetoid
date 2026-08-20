@@ -97,7 +97,7 @@ public sealed class BudgetIsolationTests
     [Test]
     public async Task GetTransactions_DoesNotReturnAnotherBudgetsTransactions()
     {
-        await using PostgresTestHost host = new();
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         const string userA = "google-a";
         const string userB = "google-b";
@@ -106,7 +106,7 @@ public sealed class BudgetIsolationTests
         await using ApiFactory factoryA = host.CreateFactory(userA);
         await using ApiFactory factoryB = host.CreateFactory(userB);
 
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
+        (HttpClient clientA, _, _) = await factoryA.CreateSignedInClientAsync();
         Guid accountId = await CreateAccountAsync(clientA);
         HttpResponseMessage created = await clientA.PostAsJsonAsync("/api/transactions", new
         {
@@ -118,7 +118,7 @@ public sealed class BudgetIsolationTests
         await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
 
         // Budget B must not see budget A's transaction.
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        (HttpClient clientB, _, _) = await factoryB.CreateSignedInClientAsync();
         HttpResponseMessage listB = await clientB.GetAsync("/api/transactions");
         await Assert.That(listB.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode? jsonB = await JsonNode.ParseAsync(await listB.Content.ReadAsStreamAsync());

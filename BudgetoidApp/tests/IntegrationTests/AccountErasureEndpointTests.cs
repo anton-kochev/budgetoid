@@ -135,14 +135,12 @@ public sealed class AccountErasureEndpointTests
     [Test]
     public async Task Erase_ForAnAuthenticatedUserWithAFreshAssertion_ReturnsNoContent()
     {
-        // Arrange — nothing seeded beyond what account provisioning itself creates, plus the passkey
-        // the ceremony needs. The bare case is worth its own test: it is the only one that fails if
-        // the route is simply missing.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        // Arrange — nothing seeded beyond the account itself, plus the passkey the ceremony needs. The
+        // bare case is worth its own test: it is the only one that fails if the route is simply missing.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        (Guid userId, _) = await ResolveOwnerAsync(host, Subject);
 
         // Act
         HttpResponseMessage response = await EraseAsync(client, device, userId);
@@ -188,10 +186,10 @@ public sealed class AccountErasureEndpointTests
         // transactions is the child of four RESTRICT edges — to budgets, accounts, categories and
         // payees — so an erasure that leant on the cascade, or that deleted in the wrong order,
         // answers 23503 here.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        (Guid userId, _) = await FurnishAccountAsync(host, client, Subject);
+        await FurnishAccountAsync(host, client, Subject);
         await RegisterPasskeyAsync(client, device);
 
         // Act
@@ -205,10 +203,10 @@ public sealed class AccountErasureEndpointTests
     public async Task Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        (Guid userId, Guid budgetId) = await FurnishAccountAsync(host, client, Subject);
+        await FurnishAccountAsync(host, client, Subject);
         await RegisterPasskeyAsync(client, device);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -260,8 +258,8 @@ public sealed class AccountErasureEndpointTests
     public async Task Erase_ForAnAccountWithCategoriesAndNoTransaction_LeavesNoneOfEither()
     {
         // Arrange — a categorised budget with no movement in it at all.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid categoryGroupId = await CreateAsync(client, "/api/category-groups", new
@@ -275,7 +273,6 @@ public sealed class AccountErasureEndpointTests
             description = (string?)null,
             categoryGroupId,
         });
-        (Guid userId, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -299,14 +296,15 @@ public sealed class AccountErasureEndpointTests
         // the database would satisfy every other assertion in this file.
         const string erasedSubject = "google-erased";
         const string survivorSubject = "google-survivor";
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient erased = host.Factory.CreateAuthenticatedClient(erasedSubject);
-        HttpClient survivor = host.Factory.CreateAuthenticatedClient(survivorSubject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient erased, Guid erasedUserId, _) =
+            await host.Factory.CreateSignedInClientAsync(erasedSubject);
+        (HttpClient survivor, Guid survivorUserId, Guid survivorBudgetId) =
+            await host.Factory.CreateSignedInClientAsync(survivorSubject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        (Guid erasedUserId, _) = await FurnishAccountAsync(host, erased, erasedSubject);
+        await FurnishAccountAsync(host, erased, erasedSubject);
         await RegisterPasskeyAsync(erased, device);
-        (Guid survivorUserId, Guid survivorBudgetId) =
-            await FurnishAccountAsync(host, survivor, survivorSubject);
+        await FurnishAccountAsync(host, survivor, survivorSubject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -440,17 +438,15 @@ public sealed class AccountErasureEndpointTests
     /// file would fail for a reason that has nothing to do with what it measures.
     /// </para>
     /// <para>
-    /// The account is established first, on a route that is allowed to mint one. Neither passkey leg
-    /// provisions any more — only the data route groups do — so a registration is the second
-    /// authenticated request an account makes, never the first. Placed here rather than at each call
-    /// site because every test in this file that needs a passkey needs an account under it, and the two
-    /// tests that furnish an account beforehand reach an idempotent read.
+    /// The account already exists when this runs, and never because of this call. Neither passkey leg
+    /// mints one — only the data route groups do — so a registration is the second authenticated request
+    /// an account makes, never the first. Every caller above is either handed a client by
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" />, which seeds the whole account behind it, or
+    /// furnishes an account first through a route that is allowed to mint one.
     /// </para>
     /// </remarks>
     private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
     {
-        await ApiFactory.EstablishAccountAsync(client);
-
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
@@ -867,6 +863,24 @@ public sealed class AccountErasureEndpointTests
     private static async Task<PostgresTestHost> StartHostAsync()
     {
         PostgresTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because almost every
+    /// request above authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for the two tests that assert
+    /// something about how a request proves who is asking:
+    /// <see cref="Erase_WithoutAuthentication_IsRefused" />, and
+    /// <see cref="Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount" />, whose whole subject is a
+    /// provider token still valid an hour after the account it names is gone.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

@@ -115,13 +115,11 @@ public sealed class DataExportCompletenessTests
     [Test]
     public async Task Export_CarriesTheUserRecordWithEveryPersistedColumn()
     {
-        // Arrange — a bare established account. The user row is provisioning's own work, so nothing
-        // needs furnishing to make it real.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        // Arrange — a bare signed-in account. The user row comes into being with the account, so
+        // nothing needs furnishing to make it real.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
 
-        (Guid userId, _) = await ResolveOwnerAsync(host, Subject);
         IReadOnlyDictionary<Guid, DateTime> created = await ReadCreationInstantsAsync(host, "users");
 
         // Act
@@ -241,11 +239,10 @@ public sealed class DataExportCompletenessTests
     public async Task Export_CarriesTheOwnedBudgetWithEveryPersistedColumn()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        (HttpClient client, Guid userId, Guid budgetId) = signedIn;
 
-        (Guid userId, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
         IReadOnlyDictionary<Guid, DateTime> created = await ReadCreationInstantsAsync(host, "budgets");
 
         // Act
@@ -288,12 +285,10 @@ public sealed class DataExportCompletenessTests
     {
         // Arrange — two accounts, deliberately differing in every column a projection could confuse:
         // two types, two currencies and two opening balances, one of them zero.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         SeededBudget seeded = await FurnishTwoOfEachAsync(client);
-        (_, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
         IReadOnlyDictionary<Guid, DateTime> created = await ReadCreationInstantsAsync(host, "accounts");
 
         // Act
@@ -335,12 +330,10 @@ public sealed class DataExportCompletenessTests
     public async Task Export_CarriesEveryCategoryGroupOfTheBudget()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         SeededBudget seeded = await FurnishTwoOfEachAsync(client);
-        (_, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
         IReadOnlyDictionary<Guid, DateTime> created =
             await ReadCreationInstantsAsync(host, "category_groups");
 
@@ -387,12 +380,10 @@ public sealed class DataExportCompletenessTests
         // categoryGroupId is not the same value on every row. Two rows carrying the same value for a
         // column say nothing about whether the column was read per row or filled in once, and with
         // only the first two seeded a projection taking categoryGroupId off the first row would pass.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         SeededBudget seeded = await FurnishTwoOfEachAsync(client);
-        (_, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
         IReadOnlyDictionary<Guid, DateTime> created =
             await ReadCreationInstantsAsync(host, "categories");
 
@@ -458,12 +449,10 @@ public sealed class DataExportCompletenessTests
         // Arrange — two payees means two transactions naming different payees, because nothing else
         // writes that table: there is no payee endpoint that creates one, and a payee exists only
         // because a transaction named it.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         SeededBudget seeded = await FurnishTwoOfEachAsync(client);
-        (_, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
         IReadOnlyDictionary<string, Guid> payeeIds = await ReadPayeeIdsAsync(host);
         IReadOnlyDictionary<Guid, DateTime> created = await ReadCreationInstantsAsync(host, "payees");
 
@@ -504,12 +493,10 @@ public sealed class DataExportCompletenessTests
     {
         // Arrange — the two transactions differ in account, category, payee, amount, date and
         // description, so no column can be right for both by accident.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         SeededBudget seeded = await FurnishTwoOfEachAsync(client);
-        (_, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
         IReadOnlyDictionary<string, Guid> payeeIds = await ReadPayeeIdsAsync(host);
         IReadOnlyDictionary<Guid, DateTime> created =
             await ReadCreationInstantsAsync(host, "transactions");
@@ -589,9 +576,8 @@ public sealed class DataExportCompletenessTests
     {
         // Arrange — one of each, every optional column deliberately left empty. The transaction names
         // no payee, so nothing writes the payees table at all.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         Guid accountId = await CreateAsync(client, "/api/accounts", new
         {
@@ -665,12 +651,9 @@ public sealed class DataExportCompletenessTests
     [Test]
     public async Task Export_CarriesTheUnnamedBudgetWithANullName()
     {
-        // Arrange — nothing but the account provisioning mints, which is precisely the point.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
-
-        (_, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
+        // Arrange — nothing but the budget an account is created with, which is precisely the point.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         // Act
         JsonNode document = await GetExportAsync(client);
@@ -730,9 +713,8 @@ public sealed class DataExportCompletenessTests
     {
         // Arrange — one account, then one transaction per row. Nothing distinguishes the rows from one
         // another because nothing needs to: the claim is about how many came back, and which.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         Guid accountId = await CreateAsync(client, "/api/accounts", new
         {
@@ -808,13 +790,11 @@ public sealed class DataExportCompletenessTests
     [Test]
     public async Task Export_OrdersEachCollectionByCreationRatherThanByInsertionOrder()
     {
-        // Arrange — an established account, then three rows in every collection whose creation instants
+        // Arrange — a signed-in account, then three rows in every collection whose creation instants
         // run backwards against the order they are written in.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
 
-        (_, Guid budgetId) = await ResolveOwnerAsync(host, Subject);
         InvertedSeed seeded = await SeedWithCreationOrderInvertedAsync(host, budgetId);
 
         // Act
@@ -1232,9 +1212,8 @@ public sealed class DataExportCompletenessTests
     }
 
     /// <summary>
-    /// Reads back the user and default budget provisioning minted for <paramref name="subject" />.
-    /// Nothing the API returns names either id, so the lookup goes through the credential the
-    /// middleware resolved the request on.
+    /// Reads back the user and default budget filed under <paramref name="subject" />. Nothing the API
+    /// returns names either id, so the lookup goes through the credential the request resolved on.
     /// </summary>
     private static async Task<(Guid UserId, Guid BudgetId)> ResolveOwnerAsync(
         PostgresTestHost host,
@@ -1348,6 +1327,22 @@ public sealed class DataExportCompletenessTests
     private static async Task<PostgresTestHost> StartHostAsync()
     {
         PostgresTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every request
+    /// below authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it:
+    /// <see cref="Export_ForASubjectWhoseProviderAddressChanged_CarriesTheStoredAddress" /> is about a
+    /// provider token whose <c>email</c> claim moved, and a cookie carries no claim for it to move.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

@@ -10,7 +10,7 @@ public sealed class AccountIntegrationTests
     public async Task AccountsCrud_WorksThroughApiAndUsesStringEnum()
     {
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
 
         HttpResponseMessage create = await client.PostAsJsonAsync("/api/accounts", new
         {
@@ -50,12 +50,12 @@ public sealed class AccountIntegrationTests
     [Test]
     public async Task UserCannotCreateTransactionWithAnotherUsersAccountId()
     {
-        await using PostgresTestHost host = new();
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         await using ApiFactory factoryA = host.CreateFactory("google-a");
         await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        (HttpClient clientA, _, _) = await factoryA.CreateSignedInClientAsync();
+        (HttpClient clientB, _, _) = await factoryB.CreateSignedInClientAsync();
         Guid accountA = await CreateAccountAsync(clientA, "Checking A");
 
         HttpResponseMessage response = await clientB.PostAsJsonAsync("/api/transactions", new
@@ -75,7 +75,7 @@ public sealed class AccountIntegrationTests
     public async Task DeleteAccount_WithTransactions_IsRejected()
     {
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
         Guid accountId = await CreateAccountAsync(client, "Checking");
         await CreateTransactionAsync(client, accountId);
 
@@ -92,7 +92,7 @@ public sealed class AccountIntegrationTests
     public async Task CreateAccount_WithDuplicateName_IsRejected()
     {
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
         await CreateAccountAsync(client, "Checking");
 
         // Different case: the case_insensitive collation makes "checking" collide with "Checking".
@@ -113,7 +113,7 @@ public sealed class AccountIntegrationTests
     public async Task RenameAccount_ToExistingName_IsRejected()
     {
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
         await CreateAccountAsync(client, "Checking");
         Guid savingsId = await CreateAccountAsync(client, "Savings");
 
@@ -155,9 +155,13 @@ public sealed class AccountIntegrationTests
         response.EnsureSuccessStatusCode();
     }
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every request
+    /// in this file authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
     private static async Task<PostgresTestHost> StartApiHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

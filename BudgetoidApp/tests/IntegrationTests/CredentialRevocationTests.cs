@@ -127,13 +127,12 @@ public sealed class CredentialRevocationTests
     public async Task Revocation_AfterAFreshReauthentication_RemovesTheCredentialAndItsKeyAndCounter()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator revoked = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, proving);
         await RegisterPasskeyAsync(client, revoked);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -203,13 +202,12 @@ public sealed class CredentialRevocationTests
     {
         // Arrange — two passkeys again, so the later "never the last one" rule cannot turn this into a
         // refusal about something other than what it measures.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator spare = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, proving);
         await RegisterPasskeyAsync(client, spare);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -268,14 +266,13 @@ public sealed class CredentialRevocationTests
     public async Task Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient alice = host.Factory.CreateAuthenticatedClient(Subject);
-        HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient alice, Guid aliceId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        (HttpClient bob, _, _) = await host.Factory.CreateSignedInClientAsync(OtherSubject);
         SyntheticAuthenticator alicesDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(alice, alicesDevice);
         await RegisterPasskeyAsync(bob, bobsDevice);
-        Guid aliceId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -287,7 +284,7 @@ public sealed class CredentialRevocationTests
         await AssertPasskeyIsWholeAsync(admin, alicesCredentialId);
         await AssertPasskeyIsWholeAsync(admin, bobsCredentialId);
 
-        // Act — Alice's bearer token, Alice's own authenticator answering a nonce issued to her, and
+        // Act — Alice's session, Alice's own authenticator answering a nonce issued to her, and
         // her own user handle. Nothing about the proof is stale, foreign or malformed; the only thing
         // that belongs to somebody else is the credentials.id in the route.
         HttpResponseMessage response = await RevokeAsync(alice, alicesDevice, aliceId, bobsCredentialId);
@@ -339,13 +336,12 @@ public sealed class CredentialRevocationTests
     public async Task Revocation_OfTheFederatedCredential_IsRefusedAndRemovesNothing()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator spare = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, proving);
         await RegisterPasskeyAsync(client, spare);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -521,13 +517,12 @@ public sealed class CredentialRevocationTests
     {
         // Arrange — two passkeys, so the "never the last one" floor cannot turn this into a refusal,
         // and the sessions all hang off the one that goes.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator revoked = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, proving);
         await RegisterPasskeyAsync(client, revoked);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -590,13 +585,12 @@ public sealed class CredentialRevocationTests
     {
         // Arrange — two passkeys, so the "never the last one" floor cannot turn this into a refusal
         // whose problem-details body would satisfy no member comparison at all.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator revoked = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, proving);
         await RegisterPasskeyAsync(client, revoked);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -643,13 +637,12 @@ public sealed class CredentialRevocationTests
     public async Task Revocation_LeavesTheAccountsOtherSessionsAlive()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator revoked = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, proving);
         await RegisterPasskeyAsync(client, revoked);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -705,15 +698,14 @@ public sealed class CredentialRevocationTests
     public async Task RevokingOneOfTwoPasskeys_LeavesTheOtherFactorsWrappedKeys_AndRewritesNone()
     {
         // Arrange — two passkeys, and two distinguishable shares of the same two account keys.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator revoked = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         WrappedKeyFixture survivingKeys = WrappedKeyFixture.Mint();
         WrappedKeyFixture revokedKeys = WrappedKeyFixture.Mint();
         await RegisterPasskeyAsync(client, proving, survivingKeys);
         await RegisterPasskeyAsync(client, revoked, revokedKeys);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -785,13 +777,12 @@ public sealed class CredentialRevocationTests
     public async Task Revocation_WhenTheCredentialHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator revoked = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, proving);
         await RegisterPasskeyAsync(client, revoked);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -876,17 +867,16 @@ public sealed class CredentialRevocationTests
     {
         // Arrange — two passkeys on this account, so nothing here is refused by the last-passkey floor,
         // and the one named in the route is the one the proofs do not come from.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         HttpClient anonymous = host.Factory.CreateClient();
-        HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        (HttpClient bob, _, _) = await host.Factory.CreateSignedInClientAsync(OtherSubject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator target = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         await RegisterPasskeyAsync(client, target);
         await RegisterPasskeyAsync(bob, bobsDevice);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         byte[] userHandle = PasskeyEncoding.ToUserHandle(userId);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -1088,13 +1078,35 @@ public sealed class CredentialRevocationTests
     }
 
     /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every
+    /// authenticated request below authenticates from a session cookie rather than from a provider
+    /// bearer.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for two tests that cannot
+    /// use it. <see cref="Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing" />
+    /// needs an account holding exactly one passkey and the sign-in harness seeds one of its own, so
+    /// the floor it measures would never fire; and
+    /// <see cref="Revocation_ByAnUnauthenticatedCaller_IsRefusedWithATitleTheGateNeverWrites" /> is
+    /// about which refusal answers a caller carrying nothing.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
     /// Runs both authenticated legs of a registration, so the account really holds a passkey a
     /// signature answers to rather than material seeded out of band.
     /// </summary>
     /// <remarks>
-    /// The account is established first, on the one route group allowed to mint one. Neither passkey
-    /// leg provisions and neither does <c>/api/me/*</c>, so without this line the very first request
-    /// is refused with a 401 and every test here would be red for a reason it is not about.
+    /// The establishing call is kept for the one test still driven by a provider bearer —
+    /// <see cref="Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing" /> —
+    /// whose account has to hold exactly one passkey and therefore cannot come from
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" />, which seeds one of its own. On a
+    /// cookie-carrying client the account already exists and the call is a read that changes nothing.
     /// </remarks>
     /// <param name="wrappedKeys">
     /// The share of the account keys this factor is to hold. Null mints a fresh one, which is what

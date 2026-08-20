@@ -16,7 +16,7 @@ public sealed class CategoryIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid essentialsId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid lifestyleId = await CreateCategoryGroupAsync(client, "Lifestyle");
         Guid groceriesId = await CreateCategoryAsync(client, essentialsId, "Groceries");
@@ -69,7 +69,7 @@ public sealed class CategoryIntegrationTests
         // to shift. One group per operation would leave the reindex loops running over lists of one,
         // where an off-by-one and a correct result are the same answer.
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid essentialsId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid lifestyleId = await CreateCategoryGroupAsync(client, "Lifestyle");
         Guid sinkingId = await CreateCategoryGroupAsync(client, "Sinking Funds");
@@ -133,7 +133,7 @@ public sealed class CategoryIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid categoryGroupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, categoryGroupId, "Groceries");
 
@@ -156,7 +156,7 @@ public sealed class CategoryIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         await CreateCategoryGroupAsync(client, "Essentials");
 
         // Act
@@ -178,7 +178,7 @@ public sealed class CategoryIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid essentialsId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid lifestyleId = await CreateCategoryGroupAsync(client, "Lifestyle");
         await CreateCategoryAsync(client, essentialsId, "Groceries");
@@ -203,7 +203,7 @@ public sealed class CategoryIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid categoryGroupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, categoryGroupId, "Groceries");
@@ -233,7 +233,7 @@ public sealed class CategoryIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid essentialsId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid lifestyleId = await CreateCategoryGroupAsync(client, "Lifestyle");
@@ -272,12 +272,9 @@ public sealed class CategoryIntegrationTests
     public async Task CategoryResources_AreIsolatedByBudgetAndLegacyGroupsRouteIsGone()
     {
         // Arrange
-        await using PostgresTestHost host = new();
-        await host.StartAsync();
-        await using ApiFactory factoryA = host.CreateFactory("google-a");
-        await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient clientA = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient clientB = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
         Guid categoryGroupA = await CreateCategoryGroupAsync(clientA, "Essentials");
         await CreateCategoryAsync(clientA, categoryGroupA, "Groceries");
 
@@ -397,8 +394,8 @@ public sealed class CategoryIntegrationTests
             .IsEquivalentTo(Enumerable.Range(0, expectedMemberIds.Length));
     }
 
-    // No budget predicate on either read below: the API host provisions a single user, so the
-    // container holds exactly one budget and every row in these tables belongs to it. The `order by`
+    // No budget predicate on either read below: the API host holds a single signed-in account, so
+    // the container holds exactly one budget and every row in these tables belongs to it. The `order by`
     // is there only so a failure dump reads well; the assertions are order-insensitive.
     private static async Task<IReadOnlyList<CategoryGroupRow>> ReadCategoryGroupRowsAsync(
         PostgresTestHost host)
@@ -485,9 +482,13 @@ public sealed class CategoryIntegrationTests
     private static DateTime UtcNow() =>
         new(2026, 7, 14, 10, 0, 0, DateTimeKind.Utc);
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every
+    /// request below authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
     private static async Task<PostgresTestHost> StartApiHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

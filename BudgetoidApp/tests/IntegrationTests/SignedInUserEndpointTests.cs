@@ -94,13 +94,8 @@ public sealed class SignedInUserEndpointTests
         // the factory's default, so the assertion below compares against a value this test chose. A
         // test that re-derived the expected address the same way the client did would agree with
         // itself no matter which account answered.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient("google-owner", OwnerAddress);
-
-        // Required, not ceremony: nothing under /api/me provisions an account, so a client that
-        // skipped this has a valid token and no account row behind it — which is a refusal case, not
-        // this one.
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync("google-owner", OwnerAddress);
 
         // Act
         HttpResponseMessage response = await client.GetAsync(MePath);
@@ -139,13 +134,10 @@ public sealed class SignedInUserEndpointTests
         // whichever row was written first: with A ahead of B, B asking for itself is answered with A's
         // address and the test goes red. Seed B first and the same broken handler answers B correctly,
         // and the test passes for a reason that has nothing to do with the feature.
-        await using PostgresTestHost host = await StartHostAsync();
+        await using PostgresTestHost host = await StartSignedInHostAsync();
 
-        HttpClient first = host.Factory.CreateAuthenticatedClient("google-first", FirstAddress);
-        await ApiFactory.EstablishAccountAsync(first);
-
-        HttpClient second = host.Factory.CreateAuthenticatedClient("google-second", SecondAddress);
-        await ApiFactory.EstablishAccountAsync(second);
+        (HttpClient first, _, _) = await host.Factory.CreateSignedInClientAsync("google-first", FirstAddress);
+        (HttpClient second, _, _) = await host.Factory.CreateSignedInClientAsync("google-second", SecondAddress);
 
         // Act — both callers ask, because one of them alone cannot distinguish a resolved address from
         // a constant. Asking as A as well as B is also what would catch a handler that had simply been
@@ -301,9 +293,8 @@ public sealed class SignedInUserEndpointTests
     public async Task Me_ResponseCarriesTheEmailAndNothingElse()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
 
         // Act
         HttpResponseMessage response = await client.GetAsync(MePath);
@@ -422,6 +413,24 @@ public sealed class SignedInUserEndpointTests
     private static async Task<PostgresTestHost> StartHostAsync()
     {
         PostgresTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because the requests
+    /// above authenticate from a session cookie rather than from a provider bearer.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it. Three tests still need a
+    /// provider bearer and could not say what they say without one: the two refusals are about how a
+    /// request proves who is asking, and
+    /// <see cref="Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress" /> is about a
+    /// token whose <c>email</c> claim moved, which a cookie carries no claim for.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

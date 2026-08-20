@@ -226,6 +226,7 @@ public sealed class RecoveryCodeRedemptionTests
         // Arrange — a real account, a real passkey, a real set issued through the real route.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
@@ -322,6 +323,7 @@ public sealed class RecoveryCodeRedemptionTests
         // Arrange — an account, a set, and one code already spent through the real route.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
@@ -437,11 +439,10 @@ public sealed class RecoveryCodeRedemptionTests
     {
         // Arrange — an account holding a real set, and one code of it already spent so the
         // already-redeemed arm is a value that really was live a moment ago.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
         await IssueSetAsync(client, device, userId, verifiers);
 
@@ -565,6 +566,7 @@ public sealed class RecoveryCodeRedemptionTests
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
@@ -622,6 +624,7 @@ public sealed class RecoveryCodeRedemptionTests
         await using PostgresTestHost host = await StartHostAsync();
 
         HttpClient alice = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(alice);
         SyntheticAuthenticator alicesDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(alice, alicesDevice);
         Guid aliceId = await ResolveUserIdAsync(host, Subject);
@@ -629,6 +632,7 @@ public sealed class RecoveryCodeRedemptionTests
         await IssueSetAsync(alice, alicesDevice, aliceId, alicesVerifiers);
 
         HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        await ApiFactory.EstablishAccountAsync(bob);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(bob, bobsDevice);
         Guid bobId = await ResolveUserIdAsync(host, OtherSubject);
@@ -750,6 +754,7 @@ public sealed class RecoveryCodeRedemptionTests
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
         Guid userId = await ResolveUserIdAsync(host, Subject);
@@ -922,16 +927,17 @@ public sealed class RecoveryCodeRedemptionTests
     /// answers to rather than material seeded out of band.
     /// </summary>
     /// <remarks>
-    /// The account is established first, on the one route group allowed to mint one. Neither passkey leg
-    /// provisions and neither does <c>/api/me/*</c>, so without this line the very first request is
-    /// refused with a 401 and every test here would be red for a reason it is not about. Written out here
-    /// rather than shared, because <c>RecoveryCodeGenerationTests</c> and <c>CredentialRevocationTests</c>
-    /// each make the same choice for the same reason.
+    /// The account already exists when this runs, and the two ways it got there are both above the call:
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" /> seeds the whole account behind the client it
+    /// hands out, and the tests still reaching the route with a provider bearer establish theirs on the
+    /// line above, where the fact that they need one is visible. Neither passkey leg mints an account and
+    /// neither does <c>/api/me/*</c>, so a client arriving here without one is refused with a 401 for a
+    /// reason no test here is about. Written out in this file rather than shared, because
+    /// <c>RecoveryCodeGenerationTests</c> and <c>CredentialRevocationTests</c> each make the same choice
+    /// for the same reason.
     /// </remarks>
     private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
     {
-        await ApiFactory.EstablishAccountAsync(client);
-
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(
             challenge,
@@ -1177,6 +1183,26 @@ public sealed class RecoveryCodeRedemptionTests
     private static async Task<PostgresTestHost> StartHostAsync()
     {
         PostgresTestHost host = new();
+        await host.StartAsync();
+
+        return host;
+    }
+
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because the one test
+    /// above that arranges its account through a session cookie needs the cookie handler to be asked.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, and the reason is
+    /// <see cref="ReadSessionsAsync" />. Every other test here counts <c>sessions</c> rows across the
+    /// whole database — deliberately, since a session written for the wrong account is what
+    /// <see cref="Redemption_TakesTheAccountFromTheCode_NotFromTheBearerToken" /> is looking for — and
+    /// seeding a sign-in writes one, so those counts change value the moment such a client is handed out.
+    /// That is a decision about what the counts should say rather than a change of client.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
 
         return host;

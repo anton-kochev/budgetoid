@@ -20,12 +20,12 @@ public sealed class TransactionAtomicityTests
     {
         // Arrange — the transaction repository is the last collaborator the handler touches, so
         // failing it lets everything before it, including the payee write, run for real first.
-        await using PostgresTestHost host = new();
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         await using ApiFactory factory = host.CreateFactory(configureServices: services =>
             services.Replace(ServiceDescriptor
                 .Scoped<ITransactionRepository, FailingTransactionRepository>()));
-        HttpClient client = factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await factory.CreateSignedInClientAsync();
         Guid accountId = await CreateAccountAsync(client);
 
         // Act
@@ -52,9 +52,9 @@ public sealed class TransactionAtomicityTests
     public async Task PostTransaction_WhenItSucceeds_CommitsBothTheTransactionAndThePayee()
     {
         // Arrange — no stub here; this is the ordinary path through the real repository.
-        await using PostgresTestHost host = new();
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
         Guid accountId = await CreateAccountAsync(client);
 
         // Act

@@ -63,11 +63,10 @@ public sealed class DataExportEndpointTests
     [Test]
     public async Task Export_ForAnAuthenticatedOwner_RespondsWithApplicationJson()
     {
-        // Arrange — an established account and nothing furnished inside it. The bare case is the one
-        // that fails if the route is simply missing, which is the whole job of a control.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
-        await ApiFactory.EstablishAccountAsync(client);
+        // Arrange — a signed-in account and nothing furnished inside it. The bare case is the one that
+        // fails if the route is simply missing, which is the whole job of a control.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
 
         // Act
         HttpResponseMessage response = await client.GetAsync(ExportPath);
@@ -150,11 +149,10 @@ public sealed class DataExportEndpointTests
     [Test]
     public async Task Export_CarriesSchemaVersionOne()
     {
-        // Arrange — an established account and nothing furnished inside it. The version is a property
-        // of the document rather than of its contents, so the bare case is the honest one.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
-        await ApiFactory.EstablishAccountAsync(client);
+        // Arrange — a signed-in account and nothing furnished inside it. The version is a property of
+        // the document rather than of its contents, so the bare case is the honest one.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
 
         // Act
         HttpResponseMessage response = await client.GetAsync(ExportPath);
@@ -382,6 +380,30 @@ public sealed class DataExportEndpointTests
     private static async Task<PostgresTestHost> StartHostAsync()
     {
         PostgresTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because the two tests
+    /// above authenticate from a session cookie rather than from a provider bearer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for two different reasons.
+    /// The two refusals assert how a request proves who is asking, which is what the bearer path is.
+    /// </para>
+    /// <para>
+    /// The two filename tests are the less obvious half: a seeded sign-in stamps its session's lifetime
+    /// from the real wall clock, and both of those replace the application's
+    /// <see cref="TimeProvider" /> with a fixed instant — so whether the seeded session is live at all is
+    /// decided by which instant the test chose. <see cref="NewYearsEveInstant" /> is months past the
+    /// seeded expiry, which would refuse the request before the filename was ever written.
+    /// </para>
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

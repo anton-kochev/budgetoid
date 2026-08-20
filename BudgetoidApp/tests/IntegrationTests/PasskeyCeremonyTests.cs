@@ -567,9 +567,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
 
         // Act
         JsonNode options = await PostForJsonAsync(authenticated, RegistrationOptionsPath);
@@ -586,9 +585,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
 
         // Act
         JsonNode options = await PostForJsonAsync(authenticated, RegistrationOptionsPath);
@@ -606,9 +604,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
 
         // Act
         JsonNode options = await PostForJsonAsync(authenticated, RegistrationOptionsPath);
@@ -707,9 +704,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act — a genuine ceremony in every respect except what the device says about the extension.
@@ -754,9 +750,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act — a genuine ceremony carrying a prf object with the enabled member left out.
@@ -801,9 +796,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act — a genuine ceremony carrying a prf object whose enabled member is an explicit null.
@@ -846,9 +840,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act — a genuine ceremony carrying the empty object a device without PRF support produces.
@@ -898,9 +891,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act — two faults in one response, so only the order of the checks can decide which is named.
@@ -959,9 +951,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
 
@@ -1130,9 +1121,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterAsync(authenticated, authenticator);
 
@@ -1783,6 +1773,34 @@ public sealed class PasskeyCeremonyTests
     /// </summary>
     private static ApiFactory CreateApiFactory(RepositoryTestHost host) =>
         new(host.AppConnectionString, adminConnectionString: host.ConnectionString);
+
+    /// <summary>
+    /// The same factory with the application's own authentication left standing, so
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" /> can hand out a client the cookie handler
+    /// really answers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It stands beside <see cref="CreateApiFactory" /> rather than replacing it, and the split is
+    /// about what a signed-in client costs a test that counts rows.</b> Seeding a sign-in writes an
+    /// account, a passkey — credential, public key and signature counter — and a session. Every test in
+    /// this file that counts <c>sessions</c>, <c>passkey_public_keys</c> or the passkey rows of
+    /// <c>credentials</c> counts them <b>unscoped</b>, on purpose: the claim is that a refused ceremony
+    /// wrote nothing <em>anywhere</em>, which a count filtered to one account cannot make. Those tests
+    /// therefore still authenticate the way they were written to, and moving them is a decision about
+    /// what those counts should say rather than a mechanical change of client.
+    /// </para>
+    /// <para>
+    /// What migrated is every authenticated test whose assertions are about a <em>response</em> — a
+    /// status, a validation sentence, the shape of an options document — because a seeded passkey and a
+    /// seeded session change none of those.
+    /// </para>
+    /// </remarks>
+    private static ApiFactory CreateSignedInApiFactory(RepositoryTestHost host) =>
+        new(
+            host.AppConnectionString,
+            adminConnectionString: host.ConnectionString,
+            usesApplicationAuthentication: true);
 
     private static async Task<RepositoryTestHost> StartRepositoryHostAsync()
     {

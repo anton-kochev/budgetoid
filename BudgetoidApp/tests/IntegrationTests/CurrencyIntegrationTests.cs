@@ -11,7 +11,7 @@ public sealed class CurrencyIntegrationTests
     public async Task GetCurrencies_ReturnsSeededList()
     {
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
 
         JsonNode json = (await JsonNode.ParseAsync(await client.GetStreamAsync("/api/currencies")))!;
         JsonArray items = json["items"]!.AsArray();
@@ -38,7 +38,7 @@ public sealed class CurrencyIntegrationTests
     public async Task SeededCurrencies_AllSatisfyInvariants()
     {
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
 
         JsonNode json = (await JsonNode.ParseAsync(await client.GetStreamAsync("/api/currencies")))!;
 
@@ -56,7 +56,7 @@ public sealed class CurrencyIntegrationTests
     public async Task CreateAccount_WithUnknownCurrency_IsRejected()
     {
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
 
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
         {
@@ -71,9 +71,17 @@ public sealed class CurrencyIntegrationTests
         await Assert.That(problem!["errors"]!["CurrencyCode"] is not null).IsTrue();
     }
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every
+    /// authenticated request in this file arrives with a session cookie rather than a provider bearer.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="GetCurrencies_RequiresAuth" /> rides on it unchanged: its client carries nothing at
+    /// all, which is refused by the fallback policy whichever scheme would have answered it.
+    /// </remarks>
     private static async Task<PostgresTestHost> StartApiHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

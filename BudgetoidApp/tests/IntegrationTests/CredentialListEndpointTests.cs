@@ -118,10 +118,11 @@ public sealed class CredentialListEndpointTests
     [Test]
     public async Task Credentials_ForAnAuthenticatedOwner_ListTheFederatedCredentialAndEveryPasskey()
     {
-        // Arrange — registering a passkey establishes the account first, which is what mints the
-        // federated credential this list must also carry. Nothing under /api/me provisions anything.
+        // Arrange — the account is established first, which is what mints the federated credential this
+        // list must also carry. Nothing under /api/me provisions anything.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
@@ -177,6 +178,7 @@ public sealed class CredentialListEndpointTests
         await using PostgresTestHost host = await StartHostAsync();
 
         HttpClient first = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(first);
         await RegisterPasskeyAsync(first, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
         HttpClient second = host.Factory.CreateAuthenticatedClient(OtherSubject);
@@ -235,6 +237,7 @@ public sealed class CredentialListEndpointTests
         // Arrange — one federated credential and one passkey, so both shapes of entry are inspected.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
         // Act
@@ -284,8 +287,8 @@ public sealed class CredentialListEndpointTests
     {
         // Arrange — the account registers under a subject chosen so that finding it in the payload can
         // only mean the endpoint put it there.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(DistinctiveSubject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync(DistinctiveSubject);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
         // The subject really is what the credential stores, or the search below is looking for a value
@@ -324,9 +327,10 @@ public sealed class CredentialListEndpointTests
     [Test]
     public async Task Credentials_TypeIsSpelledTheWaySchemaSpellsIt()
     {
-        // Arrange — one credential of each type, since a spelling can only be checked where it appears.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        // Arrange — at least one credential of each type, since a spelling can only be checked where it
+        // appears.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
         // Act
@@ -383,6 +387,7 @@ public sealed class CredentialListEndpointTests
         // passkeys, each separated by a real HTTP round trip.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await ApiFactory.EstablishAccountAsync(client);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
@@ -580,16 +585,16 @@ public sealed class CredentialListEndpointTests
     /// answers to rather than material seeded out of band.
     /// </summary>
     /// <remarks>
-    /// The account is established first, on the one route group allowed to mint one. Neither passkey leg
-    /// provisions and neither does <c>/api/me/*</c>, so without that line the very first request is
-    /// refused with a 401 and every test here would be red for a reason it is not about. Written out here
-    /// rather than shared, because it is private to <c>CredentialRevocationTests</c> and that file makes
-    /// the same choice for the same reason.
+    /// The account already exists when this runs, and the two ways it got there are both above the call:
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" /> seeds the whole account behind the client it
+    /// hands out, and the tests still reaching the route with a provider bearer establish theirs on the
+    /// line above, where the fact that they need one is visible. Neither passkey leg provisions and
+    /// neither does <c>/api/me/*</c>, so a client arriving here with no account is refused with a 401 for
+    /// a reason no test in this file is about. Written out here rather than shared, because it is private
+    /// to <c>CredentialRevocationTests</c> and that file makes the same choice for the same reason.
     /// </remarks>
     private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
     {
-        await ApiFactory.EstablishAccountAsync(client);
-
         HttpResponseMessage options = await client.PostAsync(RegistrationOptionsPath, content: null);
         options.EnsureSuccessStatusCode();
         JsonNode issued = (await JsonNode.ParseAsync(await options.Content.ReadAsStreamAsync()))!;
@@ -720,6 +725,25 @@ public sealed class CredentialListEndpointTests
     private static async Task<PostgresTestHost> StartHostAsync()
     {
         PostgresTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because the two tests
+    /// above authenticate from a session cookie rather than from a provider bearer.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, and the reason is the count in
+    /// four of the tests here. Seeding a sign-in writes a passkey beside the federated credential, so
+    /// "one federated row and two passkeys" or "exactly two credentials" stops being what the account
+    /// holds the moment such a client is handed out — which makes moving those a decision about what the
+    /// counts should say rather than a change of client. The two refusals stay for the other reason:
+    /// what they assert is how a request proves who is asking.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

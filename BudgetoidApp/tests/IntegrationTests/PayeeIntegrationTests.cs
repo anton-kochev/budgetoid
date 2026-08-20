@@ -52,10 +52,10 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
 
         // Act
-        JsonNode? json = await JsonNode.ParseAsync(
-            await host.Factory.CreateAuthenticatedClient().GetStreamAsync("/api/payees"));
+        JsonNode? json = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/payees"));
 
         // Assert
         await Assert.That(json!["items"]!.AsArray().Count).IsEqualTo(0);
@@ -66,7 +66,7 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
 
         // Act
         Guid accountId = await CreateAccountAsync(client);
@@ -94,7 +94,7 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
 
         // Act
         JsonNode first = await PostTransactionAsync(client, "Starbucks");
@@ -112,7 +112,7 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         await PostTransactionAsync(client, "Zoo");
         await PostTransactionAsync(client, "Apple");
         await PostTransactionAsync(client, "Mango");
@@ -135,7 +135,7 @@ public sealed class PayeeIntegrationTests
         // Arrange — no application code path deletes a payee, so raw SQL is the only way to
         // exercise the constraint.
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         JsonNode created = await PostTransactionAsync(client, "Starbucks");
         Guid payeeId = created["payeeId"]!.GetValue<Guid>();
 
@@ -173,7 +173,7 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         JsonNode created = await PostTransactionAsync(client, "Starbucks");
 
         // Act
@@ -190,7 +190,7 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
 
         // Act
         JsonNode[] created = await Task.WhenAll(Enumerable.Range(0, 6)
@@ -207,17 +207,15 @@ public sealed class PayeeIntegrationTests
     public async Task Payees_AreIsolatedPerUser()
     {
         // Arrange
-        await using PostgresTestHost host = new();
-        await host.StartAsync();
-        await using ApiFactory factoryA = host.CreateFactory("google-a");
-        await using ApiFactory factoryB = host.CreateFactory("google-b");
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient clientA = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient clientB = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
 
         // Act
-        await PostTransactionAsync(factoryA.CreateAuthenticatedClient(), "Starbucks");
-        JsonNode? payeesB = await JsonNode.ParseAsync(
-            await factoryB.CreateAuthenticatedClient().GetStreamAsync("/api/payees"));
+        await PostTransactionAsync(clientA, "Starbucks");
+        JsonNode? payeesB = await JsonNode.ParseAsync(await clientB.GetStreamAsync("/api/payees"));
         JsonNode? transactionsB = await JsonNode.ParseAsync(
-            await factoryB.CreateAuthenticatedClient().GetStreamAsync("/api/transactions"));
+            await clientB.GetStreamAsync("/api/transactions"));
 
         // Assert
         await Assert.That(payeesB!["items"]!.AsArray().Count).IsEqualTo(0);
@@ -229,7 +227,7 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         JsonNode created = await PostTransactionAsync(client, "Starbux");
         Guid payeeId = created["payeeId"]!.GetValue<Guid>();
 
@@ -253,7 +251,7 @@ public sealed class PayeeIntegrationTests
         // Arrange — the payee is created lower-case by the transaction that first named it, which is
         // exactly how a payee acquires the casing its owner later wants to fix.
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         JsonNode created = await PostTransactionAsync(client, "starbucks");
         Guid payeeId = created["payeeId"]!.GetValue<Guid>();
 
@@ -279,7 +277,7 @@ public sealed class PayeeIntegrationTests
         // Arrange — two payees in one budget. The second one is the subject; the first one owns the
         // name it will try to take.
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         await PostTransactionAsync(client, "Starbucks");
         JsonNode created = await PostTransactionAsync(client, "Costco");
         Guid costcoId = created["payeeId"]!.GetValue<Guid>();
@@ -311,7 +309,7 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         JsonNode created = await PostTransactionAsync(client, "Starbucks");
         Guid payeeId = created["payeeId"]!.GetValue<Guid>();
 
@@ -345,7 +343,7 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         JsonNode created = await PostTransactionAsync(client, "Starbux");
         Guid payeeId = created["payeeId"]!.GetValue<Guid>();
 
@@ -373,12 +371,9 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange — two budgets over one database. The budget query filter is what makes A's payee
         // invisible to B; there is deliberately no 403 path in this API.
-        await using PostgresTestHost host = new();
-        await host.StartAsync();
-        await using ApiFactory factoryA = host.CreateFactory("google-a");
-        await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient clientA = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient clientB = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
         JsonNode created = await PostTransactionAsync(clientA, "Starbucks");
         Guid payeeId = created["payeeId"]!.GetValue<Guid>();
 
@@ -415,12 +410,9 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange — the unique index is on (budget_id, name), so two budgets may each hold a payee
         // called "Starbucks". Budget A's rename must not be judged against budget B's rows.
-        await using PostgresTestHost host = new();
-        await host.StartAsync();
-        await using ApiFactory factoryA = host.CreateFactory("google-a");
-        await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient clientA = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient clientB = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
         JsonNode createdA = await PostTransactionAsync(clientA, "Starbux");
         await PostTransactionAsync(clientB, "Starbucks");
         Guid payeeA = createdA["payeeId"]!.GetValue<Guid>();
@@ -446,7 +438,7 @@ public sealed class PayeeIntegrationTests
     {
         // Arrange — two past transactions pointing at the same payee.
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         JsonNode first = await PostTransactionAsync(client, "Starbux");
         JsonNode second = await PostTransactionAsync(client, "Starbux");
         Guid payeeId = first["payeeId"]!.GetValue<Guid>();
@@ -503,9 +495,13 @@ public sealed class PayeeIntegrationTests
         return json["id"]!.GetValue<Guid>();
     }
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every
+    /// request below authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
     private static async Task<PostgresTestHost> StartApiHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

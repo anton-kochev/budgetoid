@@ -85,11 +85,10 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_OnAnAssertionChallenge_IsRefusedAndErasesNothing()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -118,11 +117,10 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_OnARegistrationChallenge_IsRefusedAndErasesNothing()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -155,11 +153,10 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_AfterAFreshReauthentication_ReturnsNoContent()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -207,12 +204,11 @@ public sealed class ErasureReauthenticationTests
     [Test]
     public async Task ReauthenticationOptions_ForAnAuthenticatedCaller_IssueAChallenge()
     {
-        // Arrange — the account is established on a route that may mint one, because this leg no longer
-        // does. Without that first request the challenge would be refused for having no account behind
-        // it, and the refusal above would look like it held for a caller who really was authenticated.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        // Arrange — a signed-in account, because this leg mints none. Without one behind the request
+        // the challenge would be refused for having no account, and the refusal above would look like
+        // it held for a caller who really was authenticated.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         // Act
         HttpResponseMessage response = await client.PostAsync(ReauthenticationOptionsPath, content: null);
@@ -263,16 +259,11 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient alice = host.Factory.CreateAuthenticatedClient(Subject);
-        HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient alice, Guid aliceId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        (HttpClient bob, Guid bobId, _) = await host.Factory.CreateSignedInClientAsync(OtherSubject);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(bob, bobsDevice);
-
-        // Alice signs in too, so she owns rows an erasure could take.
-        (await alice.GetAsync("/api/accounts")).EnsureSuccessStatusCode();
-        Guid aliceId = await ResolveUserIdAsync(host, Subject);
-        Guid bobId = await ResolveUserIdAsync(host, OtherSubject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -280,10 +271,11 @@ public sealed class ErasureReauthenticationTests
         IReadOnlyDictionary<string, long> bobBefore = await CountOwnedRowsAsync(admin, bobId);
 
         // Alice's two counts are named one by one rather than run through the seeded check, because
-        // she never registers a passkey here: registration is what writes the passkey material and the
-        // wrapped keys, so three of her six counts are legitimately zero. No assertion below asks any
-        // of them to be non-zero — her zero before is compared against her zero after like every other
-        // count. Bob registered, so his whole row of the graph is there to be checked.
+        // she never registers a passkey here: the sign-in harness seeds her passkey material but not
+        // its wrapped keys, which only the registration route writes, so her wrapped-key count is
+        // legitimately zero. No assertion below asks it to be non-zero — her zero before is compared
+        // against her zero after like every other count. Bob registered, so his whole row of the graph
+        // is there to be checked.
         await Assert.That(aliceBefore["users"]).IsGreaterThan(0L);
         await Assert.That(aliceBefore["budgets"]).IsGreaterThan(0L);
         await AssertEverythingIsSeededAsync(bobBefore);
@@ -321,10 +313,8 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_WithNoAssertionMembers_IsRefused()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        (await client.GetAsync("/api/accounts")).EnsureSuccessStatusCode();
-        Guid userId = await ResolveUserIdAsync(host, Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -332,7 +322,7 @@ public sealed class ErasureReauthenticationTests
         await Assert.That(before["users"]).IsGreaterThan(0L);
         await Assert.That(before["budgets"]).IsGreaterThan(0L);
 
-        // Act — a valid bearer token and an empty object, which is every member absent.
+        // Act — a valid session cookie and an empty object, which is every member absent.
         HttpResponseMessage response = await client.PostAsJsonAsync(ErasurePath, new { });
 
         // Assert
@@ -353,10 +343,8 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_ByTheOldDeleteRoute_IsNotRouted()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        (await client.GetAsync("/api/accounts")).EnsureSuccessStatusCode();
-        Guid userId = await ResolveUserIdAsync(host, Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -379,11 +367,10 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_WithATamperedSignature_IsRefusedAndErasesNothing()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -438,17 +425,15 @@ public sealed class ErasureReauthenticationTests
     {
         // Arrange — Alice, who erases, and Bob, who replays her spent nonce and must come through it
         // whole.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient alice = host.Factory.CreateAuthenticatedClient(Subject);
-        HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient alice, Guid aliceId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        (HttpClient bob, Guid bobId, _) = await host.Factory.CreateSignedInClientAsync(OtherSubject);
         SyntheticAuthenticator alicesDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         // Each registration writes a wrapped-key row of its own: Alice's is what her successful erasure
         // has to carry away through the cascade, and Bob's is what the replay must not touch.
         await RegisterPasskeyAsync(alice, alicesDevice);
         await RegisterPasskeyAsync(bob, bobsDevice);
-        Guid aliceId = await ResolveUserIdAsync(host, Subject);
-        Guid bobId = await ResolveUserIdAsync(host, OtherSubject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -500,11 +485,10 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_WhenVerificationFails_StillConsumesTheChallenge()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         byte[] userHandle = PasskeyEncoding.ToUserHandle(userId);
         byte[] challenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
 
@@ -552,10 +536,10 @@ public sealed class ErasureReauthenticationTests
     public async Task EveryReachableErasureRefusal_ProducesTheIdenticalResponse()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         HttpClient anonymous = host.Factory.CreateClient();
-        HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        (HttpClient bob, _, _) = await host.Factory.CreateSignedInClientAsync(OtherSubject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
@@ -567,7 +551,6 @@ public sealed class ErasureReauthenticationTests
         await RegisterPasskeyAsync(client, device);
         await RegisterPasskeyAsync(client, regressedDevice, RegisteredCounterAboveAnyAssertion);
         await RegisterPasskeyAsync(bob, bobsDevice);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         byte[] userHandle = PasskeyEncoding.ToUserHandle(userId);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -718,11 +701,10 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_OnAChallengeOlderThanTheWindow_IsRefusedAndErasesNothing()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -756,11 +738,10 @@ public sealed class ErasureReauthenticationTests
     public async Task Erasure_OnALiveChallengeInsertedTheSameWay_ReturnsNoContent()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -808,12 +789,11 @@ public sealed class ErasureReauthenticationTests
     [Test]
     public async Task Erasure_SendsNoTimestampAndReadsNone()
     {
-        // Arrange — the account is established on a route that may mint one. The options leg below no
-        // longer provisions, so without this the challenge request is refused for having no account
-        // behind it and the shape this test pins would never be issued.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        // Arrange — a signed-in account. The options leg below mints none, so without an account
+        // behind the request the challenge is refused and the shape this test pins would never be
+        // issued.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         Type[] timeTypes =
         [
             typeof(DateTime), typeof(DateTime?),
@@ -888,16 +868,33 @@ public sealed class ErasureReauthenticationTests
     }
 
     /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every
+    /// authenticated request below authenticates from a session cookie rather than from a provider
+    /// bearer.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it:
+    /// <see cref="ReauthenticationOptions_Return401WithoutAuthentication" /> is about which refusal
+    /// answers a caller carrying nothing, and moving it here would change the scheme that produced the
+    /// 401 whose title it reads.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
     /// Runs both authenticated legs of a registration, so the account really holds a passkey the gate
     /// can verify against — rather than material seeded out of band that no signature answers to.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The account is established first, on a route that is allowed to mint one. Neither passkey leg
-    /// provisions any more — only the data route groups do — so a registration is the second
-    /// authenticated request an account makes, never the first. Every refusal this file drives comes
-    /// from an account that exists, which is what keeps them all the ceremony's own 401 rather than
-    /// provisioning's.
+    /// The account already exists when this runs — <see cref="ApiFactory.CreateSignedInClientAsync" />
+    /// seeds it whole, together with the session the client presents — so every refusal this file
+    /// drives comes from an account that exists, which is what keeps them all the ceremony's own 401
+    /// rather than a refusal about who is asking.
     /// </para>
     /// <para>
     /// This is also what puts the account's row in <c>wrapped_account_keys</c>: the route writes the
@@ -919,8 +916,6 @@ public sealed class ErasureReauthenticationTests
         SyntheticAuthenticator device,
         uint signCount = 0)
     {
-        await ApiFactory.EstablishAccountAsync(client);
-
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(
             challenge,
