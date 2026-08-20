@@ -40,7 +40,17 @@ public static class RegistrationEndpoints
             .WithMetadata(new RegistersAccountAttribute())
             .RequireAuthorization(policy => policy
                 .RequireAuthenticatedUser()
-                .AddAuthenticationSchemes(ProviderAuthentication.SchemeName));
+                .AddAuthenticationSchemes(ProviderAuthentication.SchemeName))
+            // THE SAME ARGUMENT AS THE POLICY ABOVE, ONE STEP FURTHER IN. The policy says which scheme
+            // may speak for this caller; the gate says what that scheme has to have said. An account
+            // may not exist without a completed provider exchange, and it may not exist under an
+            // address that exchange declines to vouch for — the second half is this filter, and it is
+            // declared here, on the route table, for the reason RegistrationClaimGate argues at
+            // length: an authorization requirement would answer 403 with no title and collapse two
+            // refusals a caller acts on differently, and a scheme event or a new marker would move the
+            // rule off the route and out of a reader's way. It runs on both legs because the options
+            // leg is the one that mints the challenge the account identifier is derived from.
+            .AddEndpointFilter<RegistrationClaimGate>();
 
         // POST, not GET, for the reason both other options legs are: it mints a nonce and persists it, so
         // it is neither safe nor idempotent, and a GET would be cacheable and prefetchable — both of which

@@ -29,12 +29,26 @@ namespace Application.Registration;
 /// re-deriving it — two copies of an argument are two things to keep in step.
 /// </para>
 /// <para>
-/// <b>Three rungs of the ladder are not here, and they are the first three.</b> That the request carries
-/// a live provider token, that the principal has a <c>sub</c> and an <c>email</c>, and that the provider
-/// asserts the address as verified are all judged by <c>UserProvisioningMiddleware</c>, above this
-/// handler and above the route's own policy — which is why the two claim members arrive on the command
-/// rather than being re-read here. Those three come down into this layer in the commit that deletes the
-/// middleware, and they will land at the top of this method, above everything below.
+/// <b>Three rungs of the ladder are not here, they are the first three, and they are not coming.</b>
+/// That the request carries a live provider token is judged by the route's own policy, which names the
+/// identity provider's scheme and nothing else. That the principal has a <c>sub</c> and an <c>email</c>,
+/// and that the provider asserts the address as verified, are judged by <c>RegistrationClaimGate</c>, an
+/// endpoint filter on that same group — which is why the two claim members arrive on the command rather
+/// than being re-read here. <c>UserProvisioningMiddleware</c> judges the last two as well for as long as
+/// it stands; the two copies run together for one commit, and the filter is what survives it.
+/// </para>
+/// <para>
+/// <b>An earlier version of these remarks promised those three would come down into this ring, and that
+/// promise is corrected rather than kept.</b> Judging <c>email_verified</c> here needs one of two
+/// things and may have neither: a <c>ClaimsPrincipal</c> in this project, against the rule the
+/// registration endpoint states where it reads the two claim members off the principal at the call site
+/// — the rule that keeps <c>System.Security.Claims</c> out of this ring altogether — or a member on
+/// <see cref="RegisterAccountCommand"/> for the answer to land in, which the users-and-ownership
+/// documentation argues against by name: the verified-email claim is read and never stored, and the
+/// command carries only the subject and the address precisely so there is nowhere for it to go. The
+/// gates therefore stay at the boundary that already holds the principal.
+/// <c>RegistrationClaimGate</c> carries the whole argument, including why an authorization requirement
+/// and a scheme event were each refused.
 /// </para>
 /// <para>
 /// <b>No <see cref="ITransactionalExecutor"/> wraps the write, and that is a correctness ruling rather
