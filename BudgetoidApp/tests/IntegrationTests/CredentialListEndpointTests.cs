@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Api.Infrastructure;
+using Domain.Users;
 using Npgsql;
 using TestSupport;
 
@@ -49,10 +50,28 @@ namespace IntegrationTests;
 /// <c>ProhibitedColumnVocabulary</c> refuses. Do not add coverage suggesting otherwise.
 /// </para>
 /// <para>
-/// No test here names a production type. They address the route over HTTP and read the wire body, so
-/// while the endpoint is unmapped they fail on the status assertion against a real 404 rather than
-/// failing to compile — which is the difference between a red test that is telling us something and one
-/// that is telling us nothing.
+/// <b>Every test here that needs an account signs in over a set of recovery codes, and that is a
+/// decision about counting rather than about authentication.</b> The sign-in harness's default opens a
+/// full session with a passkey, which files a <c>credentials</c> row, a <c>passkey_public_keys</c> row
+/// and a <c>passkey_signature_counters</c> row — so the account would hold one more passkey than the
+/// test arranged, and <c>federated == 1</c> beside <c>passkey == 2</c> would be reading the seeding
+/// instead of the act. A set of recovery codes opens the same full session while writing a single
+/// <c>credentials</c> row and touching neither passkey table, which is what lets those two assertions go
+/// on saying exactly what they were written to say. The consequence every arrangement here carries is
+/// that an account holds a <b>third</b> type of credential it did not used to, so nothing in this file
+/// may count entries in the absolute any more: what an entry count used to claim — "the ones I arranged
+/// and no others" — is now said directly, by comparing against the account's own rows read on the
+/// container superuser.
+/// </para>
+/// <para>
+/// No test here names a type the endpoint declares — no request record, no response record, no handler.
+/// They address the route over HTTP and read the wire body, so while the endpoint is unmapped they fail
+/// on the status assertion against a real 404 rather than failing to compile — which is the difference
+/// between a red test that is telling us something and one that is telling us nothing. What the
+/// arrangements do name is <see cref="CredentialType" />, to say which credential opens the seeded
+/// session, and <see cref="UserProvisioningMiddleware.NoAccountTitle" />, to tell this route's two
+/// refusals apart. Neither belongs to this endpoint's contract, so naming either cannot make a test
+/// agree with the thing it measures.
 /// </para>
 /// </remarks>
 public sealed class CredentialListEndpointTests
@@ -88,12 +107,23 @@ public sealed class CredentialListEndpointTests
     private const string EntryMembers = "createdAtUtc, id, type";
 
     /// <summary>
-    /// The two spellings of <c>type</c>, as the schema itself spells them, joined ordinally.
+    /// The <b>three</b> spellings of <c>type</c>, as the schema itself spells them, joined ordinally.
     /// </summary>
-    private const string SchemaTypeSpellings = "federated, passkey";
+    /// <remarks>
+    /// <b>It used to say two, and adding the third is a correction rather than a concession.</b> The
+    /// endpoint has to spell every declared <see cref="CredentialType" /> the way its column is spelled,
+    /// and <c>recovery_codes</c> is the member that makes that a rule rather than a coincidence — it is
+    /// the two-word one, the one a camel-case policy over the member name renders as <c>recoveryCodes</c>
+    /// where the column says <c>recovery_codes</c>. This test could not see it before, for the plain
+    /// reason that the account it listed never held a set. Now that the session is opened over one, it
+    /// can, and the constant says so. Nothing was widened to keep a green test green: the assertion is
+    /// the same shape it was, over one more spelling than it used to be able to reach.
+    /// </remarks>
+    private const string SchemaTypeSpellings = "federated, passkey, recovery_codes";
 
     /// <summary>
-    /// The happy path: one federated credential and <b>two</b> passkeys, and all three arrive.
+    /// The happy path: one federated credential and <b>two</b> passkeys, and every credential the
+    /// account holds arrives.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -104,9 +134,9 @@ public sealed class CredentialListEndpointTests
     /// projection that took the first passkey it found would pass.
     /// </para>
     /// <para>
-    /// Both types are asserted by count rather than the total alone: a read that returned three
-    /// credentials of one type — three passkeys, or the federated row three times through a join — has
-    /// the right length and the wrong content, and the length on its own could not see it.
+    /// Both types are asserted by count rather than the total alone: a read that returned the account's
+    /// credentials as rows of one type — every one a passkey, or the federated row repeated through a
+    /// join — has the right length and the wrong content, and a length on its own could not see it.
     /// </para>
     /// <para>
     /// This test is also the control for the two refusals below. A route that was never mapped refuses
@@ -118,13 +148,20 @@ public sealed class CredentialListEndpointTests
     [Test]
     public async Task Credentials_ForAnAuthenticatedOwner_ListTheFederatedCredentialAndEveryPasskey()
     {
-        // Arrange — the account is established first, which is what mints the federated credential this
-        // list must also carry. Nothing under /api/me provisions anything.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        // Arrange — the sign-in harness seeds the whole account, which is what mints the federated
+        // credential this list must also carry. Opened over a set of recovery codes, so the seeding files
+        // no passkey of its own and the two below are the only two there are.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+
+        // The container superuser, never the application role — the expected ids have to be read without
+        // the endpoint's own owner predicate standing between the query and the rows.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        IReadOnlyList<Guid> ownIds = await ListCredentialIdsAsync(admin, userId);
 
         // Act
         HttpResponseMessage response = await client.GetAsync(CredentialsPath);
@@ -135,9 +172,19 @@ public sealed class CredentialListEndpointTests
         await Assert.That(response.Content.Headers.ContentType!.MediaType).IsEqualTo("application/json");
 
         JsonArray entries = await ReadArrayAsync(response);
-        await Assert.That(entries.Count).IsEqualTo(3);
 
-        // Counted per type, so three rows of the wrong kind cannot pass as the right three.
+        // This used to read `entries.Count == 3`, and the number was only ever shorthand for "the ones I
+        // arranged and no others" — which is what it now says outright, against the ids the account
+        // really holds. The number had to go rather than move to 4: the arrangement's credential count is
+        // a consequence of how the sign-in harness seeds, so a pin on it would go red the next time the
+        // seeding changed shape and would say nothing about this endpoint. The comparison is strictly the
+        // stronger claim — a dropped row, a duplicated row and a stranger's row are each named in the
+        // failure message rather than showing up as a length that moved. This is the shape
+        // Credentials_ForASecondAccount_ListThatAccountsCredentialsAndNotTheFirsts already had.
+        await Assert.That(ArrivedIds(entries)).IsEqualTo(JoinIds(ownIds));
+
+        // Unchanged, and deliberately so: opening the session over a set of recovery codes is what keeps
+        // both of these true of the account this test arranged. One federated row, two passkeys.
         await Assert.That(CountOfType(entries, "federated")).IsEqualTo(1);
         await Assert.That(CountOfType(entries, "passkey")).IsEqualTo(2);
     }
@@ -164,9 +211,9 @@ public sealed class CredentialListEndpointTests
     /// would satisfy B alone.
     /// </para>
     /// <para>
-    /// The two accounts hold different numbers of credentials on purpose — A has a passkey beside its
-    /// federated row and B has only its federated row — so a read returning the whole table is visible in
-    /// the count as well as in the ids. Each response is checked against its account's ids as a set and
+    /// The two accounts hold different numbers of credentials on purpose — A has a passkey beside the
+    /// federated row and the seeded set that B also has — so a read returning the whole table is visible
+    /// in the count as well as in the ids. Each response is checked against its account's ids as a set and
     /// against the other's as raw text, the shape <c>SignedInUserEndpointTests</c> uses: an extra member
     /// carrying a stranger's identifier is a leak whether or not the member this test reads is correct.
     /// </para>
@@ -174,27 +221,32 @@ public sealed class CredentialListEndpointTests
     [Test]
     public async Task Credentials_ForASecondAccount_ListThatAccountsCredentialsAndNotTheFirsts()
     {
-        // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
+        // Arrange — A whole first, so an unfiltered read hands B the row that was written first. Both
+        // sessions open over a set of recovery codes, which writes no passkey beside the one A registers.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
 
-        HttpClient first = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(first);
+        (HttpClient first, Guid firstUserId, _) = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
         await RegisterPasskeyAsync(first, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
-        HttpClient second = host.Factory.CreateAuthenticatedClient(OtherSubject);
-        await ApiFactory.EstablishAccountAsync(second);
+        (HttpClient second, Guid secondUserId, _) = await host.Factory.CreateSignedInClientAsync(
+            OtherSubject, opensWith: CredentialType.RecoveryCodes);
 
         // The container superuser, never the application role — the expected ids have to be read
         // without the very predicate under test standing between the query and the rows.
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
-        IReadOnlyList<Guid> firstIds = await ListCredentialIdsAsync(admin, await ResolveUserIdAsync(admin, Subject));
-        IReadOnlyList<Guid> secondIds =
-            await ListCredentialIdsAsync(admin, await ResolveUserIdAsync(admin, OtherSubject));
+        IReadOnlyList<Guid> firstIds = await ListCredentialIdsAsync(admin, firstUserId);
+        IReadOnlyList<Guid> secondIds = await ListCredentialIdsAsync(admin, secondUserId);
 
-        // The arrangement itself, or every assertion below is a claim about rows nothing wrote.
-        await Assert.That(firstIds.Count).IsEqualTo(2);
-        await Assert.That(secondIds.Count).IsEqualTo(1);
+        // The arrangement itself, or every assertion below is a claim about rows nothing wrote. This used
+        // to read `firstIds.Count == 2` and `secondIds.Count == 1`; neither number was the claim, and both
+        // were only there to say the two accounts hold different amounts, so that a read of the whole
+        // table shows up in the length and not just in the ids. Said against each other, that argument
+        // survives intact and stops depending on how many rows the sign-in harness happens to seed — which
+        // is exactly the reason the absolute numbers had to go rather than be bumped to 3 and 2.
+        await Assert.That(secondIds).IsNotEmpty();
+        await Assert.That(firstIds.Count).IsNotEqualTo(secondIds.Count);
 
         // Act — B first, since it is the caller the ordering above was arranged to trap.
         HttpResponseMessage secondResponse = await second.GetAsync(CredentialsPath);
@@ -227,18 +279,25 @@ public sealed class CredentialListEndpointTests
     /// reader to work out which member arrived, while the joined string names it in the failure message.
     /// </para>
     /// <para>
-    /// Both entry types are present, because a widening is as likely to land on the passkey branch of a
-    /// projection as on the federated one, and a test reading one entry would see only half of it.
+    /// Every entry type is present, because a widening is as likely to land on one branch of a projection
+    /// as on another, and a test reading a single entry would see only part of it. The account holds one
+    /// credential of each declared type here: the federated row, the set the session was opened over, and
+    /// the passkey the ceremony registers.
     /// </para>
     /// </remarks>
     [Test]
     public async Task Credentials_EntryCarriesTheIdTheTypeAndTheDateAndNothingElse()
     {
-        // Arrange — one federated credential and one passkey, so both shapes of entry are inspected.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        // Arrange — a federated credential, a set of recovery codes and a passkey, so every shape of
+        // entry the endpoint can emit is inspected.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        IReadOnlyList<Guid> ownIds = await ListCredentialIdsAsync(admin, userId);
 
         // Act
         HttpResponseMessage response = await client.GetAsync(CredentialsPath);
@@ -248,18 +307,35 @@ public sealed class CredentialListEndpointTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
         JsonArray entries = await ReadArrayAsync(response);
-        await Assert.That(entries.Count).IsEqualTo(2);
+
+        // This used to read `entries.Count == 2`, and the number's only job was to say that every entry
+        // the account can produce was put in front of the shape assertion below — a list of one would
+        // otherwise leave the other branches of the projection uninspected. Said against the account's own
+        // ids, that is the same claim without a number in it, and a stronger one: it also names an entry
+        // that arrived under an id this account does not own.
+        await Assert.That(ArrivedIds(entries)).IsEqualTo(JoinIds(ownIds));
 
         // Each entry's members ordered before joining, so a fourth member produces the same message
         // whichever order the serializer emitted it in — a red that reads differently between runs is a
         // red people stop trusting.
-        string shapes = string.Join(
-            " | ",
-            entries.Select(entry => string.Join(
+        string[] shapes =
+        [
+            .. entries.Select(entry => string.Join(
                 ", ",
-                AsObject(entry).Select(member => member.Key).Order(StringComparer.Ordinal))));
+                AsObject(entry).Select(member => member.Key).Order(StringComparer.Ordinal))),
+        ];
 
-        await Assert.That(shapes).IsEqualTo($"{EntryMembers} | {EntryMembers}");
+        // This used to compare against `"{EntryMembers} | {EntryMembers}"` — the member list written down
+        // once per entry, which made it a count of entries wearing the shape assertion's clothes. Reduced
+        // to the distinct shapes, it says the thing it always meant: every entry carries exactly these
+        // members, however many entries there are. It cannot pass on an empty list — nothing joins to the
+        // empty string but nothing — and a widened branch still prints its own member list beside the
+        // right one, which is the failure message the old form was chosen for.
+        string distinctShapes = string.Join(
+            " | ",
+            shapes.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+
+        await Assert.That(distinctShapes).IsEqualTo(EntryMembers);
     }
 
     /// <summary>
@@ -306,8 +382,8 @@ public sealed class CredentialListEndpointTests
     }
 
     /// <summary>
-    /// That <c>type</c> is spelled <c>passkey</c> and <c>federated</c> — the schema's own vocabulary —
-    /// and never <c>Passkey</c> or <c>Federated</c>.
+    /// That <c>type</c> is spelled <c>passkey</c>, <c>federated</c> and <c>recovery_codes</c> — the
+    /// schema's own vocabulary — and never <c>Passkey</c>, <c>Federated</c> or <c>recoveryCodes</c>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -319,18 +395,22 @@ public sealed class CredentialListEndpointTests
     /// and this follows that rather than inventing a third spelling.
     /// </para>
     /// <para>
-    /// Both spellings are asserted together, ordered and joined, rather than one being read out of the
-    /// first entry: the two arrive from different branches of the same projection and a fix applied to
-    /// one of them is exactly the half-fix this pins.
+    /// All three spellings are asserted together, ordered and joined, rather than one being read out of
+    /// the first entry: they arrive from different branches of the same projection and a fix applied to
+    /// one of them is exactly the half-fix this pins. <c>recovery_codes</c> is the branch that makes the
+    /// pin bite — see the remarks on <see cref="SchemaTypeSpellings" /> — and until this account was
+    /// signed in over a set, no entry here carried it.
     /// </para>
     /// </remarks>
     [Test]
     public async Task Credentials_TypeIsSpelledTheWaySchemaSpellsIt()
     {
-        // Arrange — at least one credential of each type, since a spelling can only be checked where it
-        // appears.
+        // Arrange — one credential of each declared type, since a spelling can only be checked where it
+        // appears. Opening the session over a set of recovery codes is what puts the third one on the
+        // wire: the harness's default would open it with a passkey and leave that branch unreachable.
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
         // Act
@@ -364,36 +444,51 @@ public sealed class CredentialListEndpointTests
     /// </para>
     /// <para>
     /// <b>The arrangement is what makes an unordered read visible, and without it this test could not
-    /// fail.</b> Credentials are inserted in the order they are created — the federated row at
-    /// provisioning, then each passkey — so physical order and chronological order agree, and a read with
+    /// fail.</b> Credentials are inserted in the order they are created — the federated row and the seeded
+    /// set first, then each passkey — so physical order and chronological order agree, and a read with
     /// no <c>ORDER BY</c> returns the right answer by accident. The federated row is therefore moved to
     /// the end of the heap before the act, by a <b>no-op</b> update on the superuser connection: PostgreSQL
     /// does not detect that the value is unchanged, so it writes a new tuple version at the end of the
     /// page and a sequential scan returns that row last. Nothing in the database is different afterwards
     /// — no value is rewritten, and in particular no instant is fabricated — only where the row sits. An
-    /// unsorted read then answers passkey, passkey, federated, and the ascent fails.
+    /// unsorted read then answers set, passkey, passkey, federated, and the ascent fails.
     /// </para>
     /// <para>
-    /// That shuffle rests on the read being a sequential scan, which it is at this size — four rows on one
-    /// page, where an index scan costs more than reading the page. If a future index made the planner
-    /// choose otherwise the test would weaken to what a natural arrangement gives (it would still catch a
-    /// descending read, or one ordered by <c>type</c>) rather than become wrong.
+    /// <b>The seeded rows share an instant, and that is checked rather than assumed.</b> The sign-in
+    /// harness stamps everything it seeds with one fixed instant, so the federated credential and the set
+    /// the session opens over carry the same <c>created_at_utc</c> — only the two passkeys, each written
+    /// by a real HTTP round trip, have instants of their own. That is enough for the ascent to be
+    /// falsifiable, since the row moved to the end of the heap is one of the earliest, but "enough" is not
+    /// something a reader should have to work out: the arrangement asserts outright that the account's
+    /// instants span more than one value, so a seeding change that collapsed them all onto one instant
+    /// fails here instead of quietly making the ascent below vacuous.
+    /// </para>
+    /// <para>
+    /// That shuffle rests on the read being a sequential scan, which it is at this size — a handful of
+    /// rows on one page, where an index scan costs more than reading the page. If a future index made the
+    /// planner choose otherwise the test would weaken to what a natural arrangement gives (it would still
+    /// catch a descending read, or one ordered by <c>type</c>) rather than become wrong.
     /// </para>
     /// </remarks>
     [Test]
     public async Task Credentials_AreOrderedByRegistrationInstant()
     {
-        // Arrange — three credentials with three distinct instants: the federated row first, then two
-        // passkeys, each separated by a real HTTP round trip.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        // Arrange — the seeded account, then two passkeys separated by real HTTP round trips.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
-        Guid userId = await ResolveUserIdAsync(admin, Subject);
+        IReadOnlyList<Guid> ownIds = await ListCredentialIdsAsync(admin, userId);
+        IReadOnlyList<DateTimeOffset> ownInstants = await ListCredentialInstantsAsync(admin, userId);
+
+        // The arrangement really spans more than one instant, or the ascent below holds of any read at
+        // all. Read from the database rather than from the response, so a broken read fails as a broken
+        // read further down and never as "the arrangement is degenerate".
+        await Assert.That(ownInstants.First()).IsNotEqualTo(ownInstants.Last());
 
         // The chronologically first row, moved to the end of the heap so that "the order the rows happen
         // to be stored in" and "the order they were created in" stop agreeing. See the remarks.
@@ -406,7 +501,13 @@ public sealed class CredentialListEndpointTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
         JsonArray entries = await ReadArrayAsync(response);
-        await Assert.That(entries.Count).IsEqualTo(3);
+
+        // This used to read `entries.Count == 3`. The number said "the rows I arranged and no others",
+        // which is what the ids say outright — and say better, because a dropped row, a duplicated row and
+        // a stranger's row each arrive named in the failure message. It could not simply become 4: the
+        // arrangement's length now follows from how the sign-in harness seeds, and pinning that here would
+        // redden for a change in the seeding rather than in the ordering this test is about.
+        await Assert.That(ArrivedIds(entries)).IsEqualTo(JoinIds(ownIds));
 
         List<DateTimeOffset> arrived =
             [.. entries.Select(entry => AsObject(entry)["createdAtUtc"]!.GetValue<DateTimeOffset>())];
@@ -415,10 +516,16 @@ public sealed class CredentialListEndpointTests
         // whole and a reader can see which pair is out of order instead of only that one index differs.
         await Assert.That(Join(arrived)).IsEqualTo(Join([.. arrived.Order()]));
 
-        // And the same three rows arrived, so a read that "ordered" by dropping one — or by returning a
-        // row twice — cannot pass the ascent above.
-        await Assert.That(arrived.Distinct().Count()).IsEqualTo(3);
-        await Assert.That((await ListCredentialIdsAsync(admin, userId)).Count).IsEqualTo(3);
+        // This pair used to read `arrived.Distinct().Count() == 3` and
+        // `(await ListCredentialIdsAsync(...)).Count == 3`. Between them they claimed that the same rows
+        // arrived and that the ascent above was not passing on a sequence of repeats — both by counting,
+        // and the first of the two also happened to be false the moment two seeded rows shared an instant,
+        // which is why bumping it to 4 was never available. Comparing the arriving instants against the
+        // account's own instants in ascending order says both at once and neither by number: the arriving
+        // sequence is exactly the instants the account holds, in order. Instants rather than ids on this
+        // side on purpose — the endpoint promises no tiebreak between rows sharing one, and two sequences
+        // of instants compare equal however a tie was broken.
+        await Assert.That(Join(arrived)).IsEqualTo(Join(ownInstants));
     }
 
     /// <summary>
@@ -527,17 +634,31 @@ public sealed class CredentialListEndpointTests
 
         // Sorted on both sides and joined whole, so the failure names the id that arrived rather than
         // reporting that a count moved.
-        string arrived = string.Join(
-            ", ",
-            entries.Select(entry => AsObject(entry)["id"]!.GetValue<Guid>()).Select(Format).Order(StringComparer.Ordinal));
-        string expected = string.Join(", ", ownIds.Select(Format).Order(StringComparer.Ordinal));
-        await Assert.That(arrived).IsEqualTo(expected);
+        await Assert.That(ArrivedIds(entries)).IsEqualTo(JoinIds(ownIds));
 
         foreach (Guid otherId in otherIds)
         {
             await Assert.That(payload).DoesNotContain(Format(otherId));
         }
     }
+
+    /// <summary>
+    /// The <c>id</c> of every entry in a response body, sorted and joined — the arriving half of every
+    /// "exactly these credentials and no others" comparison in this file.
+    /// </summary>
+    /// <remarks>
+    /// <b>Sorted, so it is a set comparison and not an order one.</b> The endpoint orders by registration
+    /// instant and promises no tiebreak between rows sharing one, so a caller that compared arriving ids
+    /// in arrival order would be pinning a tie-break the contract deliberately leaves open — and
+    /// <see cref="Credentials_AreOrderedByRegistrationInstant" /> is where the ordering claim belongs
+    /// anyway. Joined rather than counted, so a failure names the id that arrived or went missing.
+    /// </remarks>
+    private static string ArrivedIds(JsonArray entries) =>
+        JoinIds(entries.Select(entry => AsObject(entry)["id"]!.GetValue<Guid>()));
+
+    /// <summary>The expected half of the same comparison, rendered the same way.</summary>
+    private static string JoinIds(IEnumerable<Guid> ids) =>
+        string.Join(", ", ids.Select(Format).Order(StringComparer.Ordinal));
 
     private static string Format(Guid id) => id.ToString("D", CultureInfo.InvariantCulture);
 
@@ -585,13 +706,12 @@ public sealed class CredentialListEndpointTests
     /// answers to rather than material seeded out of band.
     /// </summary>
     /// <remarks>
-    /// The account already exists when this runs, and the two ways it got there are both above the call:
+    /// The account already exists when this runs, and there is now one way it got there:
     /// <see cref="ApiFactory.CreateSignedInClientAsync" /> seeds the whole account behind the client it
-    /// hands out, and the tests still reaching the route with a provider bearer establish theirs on the
-    /// line above, where the fact that they need one is visible. Neither passkey leg provisions and
-    /// neither does <c>/api/me/*</c>, so a client arriving here with no account is refused with a 401 for
-    /// a reason no test in this file is about. Written out here rather than shared, because it is private
-    /// to <c>CredentialRevocationTests</c> and that file makes the same choice for the same reason.
+    /// hands out. Neither passkey leg provisions and neither does <c>/api/me/*</c>, so a client arriving
+    /// here with no account is refused with a 401 for a reason no test in this file is about. Written out
+    /// here rather than shared, because it is private to <c>CredentialRevocationTests</c> and that file
+    /// makes the same choice for the same reason.
     /// </remarks>
     private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
     {
@@ -686,6 +806,44 @@ public sealed class CredentialListEndpointTests
     }
 
     /// <summary>
+    /// The <c>created_at_utc</c> of every credential of one account, ascending, read on the container
+    /// superuser so that the endpoint's own ordering is not what produced the expectation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Instants alone, without the ids they belong to, and that is deliberate rather than lazy. Two rows
+    /// may share an instant — the sign-in harness stamps everything it seeds with one — and the endpoint
+    /// promises nothing about how such a tie breaks, so a sequence of <c>(id, instant)</c> pairs would
+    /// pin a tie-break that neither side owes the other. A sequence of instants compares equal whichever
+    /// way both sides happened to order the tied rows, which is exactly the strength the contract has.
+    /// </para>
+    /// <para>
+    /// Read as <see cref="DateTimeOffset" /> so that it renders through <see cref="Join" /> identically to
+    /// the value the wire carries. <c>timestamptz</c> comes back at zero offset, and the endpoint's
+    /// <c>createdAtUtc</c> is a UTC <see cref="DateTime" /> the serializer writes with a <c>Z</c>, so the
+    /// two parse to the same offset and the comparison is between instants rather than between renderings.
+    /// </para>
+    /// </remarks>
+    private static async Task<IReadOnlyList<DateTimeOffset>> ListCredentialInstantsAsync(
+        NpgsqlConnection admin,
+        Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            "select created_at_utc from credentials where user_id = @userId order by created_at_utc",
+            admin);
+        command.Parameters.AddWithValue("userId", userId);
+
+        List<DateTimeOffset> instants = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            instants.Add(reader.GetFieldValue<DateTimeOffset>(0));
+        }
+
+        return instants;
+    }
+
+    /// <summary>
     /// Rewrites one row to its own current value, which moves it to the end of the heap without changing
     /// anything it holds.
     /// </summary>
@@ -722,6 +880,16 @@ public sealed class CredentialListEndpointTests
         };
     }
 
+    /// <summary>
+    /// A host on the provider-bearer path, which is now the two refusals and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// Its remaining callers are <see cref="Credentials_ForAnAuthenticatedSubjectWithNoAccount_IsRefusedAndCreatesNothing" />
+    /// and <see cref="Credentials_WithoutAuthentication_IsRefusedWithUnauthorized" />, and they stay here
+    /// because what each of them asserts <em>is</em> how a request proves who is asking — an authenticated
+    /// principal with no account behind it, and no principal at all. They go with the bearer path in the
+    /// commit that removes provisioning, not before.
+    /// </remarks>
     private static async Task<PostgresTestHost> StartHostAsync()
     {
         PostgresTestHost host = new();
@@ -730,16 +898,16 @@ public sealed class CredentialListEndpointTests
     }
 
     /// <summary>
-    /// A host whose factory leaves the application's own authentication standing, because the two tests
-    /// above authenticate from a session cookie rather than from a provider bearer.
+    /// A host whose factory leaves the application's own authentication standing, because every test here
+    /// that needs an account authenticates from a session cookie rather than from a provider bearer.
     /// </summary>
     /// <remarks>
-    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, and the reason is the count in
-    /// four of the tests here. Seeding a sign-in writes a passkey beside the federated credential, so
-    /// "one federated row and two passkeys" or "exactly two credentials" stops being what the account
-    /// holds the moment such a client is handed out — which makes moving those a decision about what the
-    /// counts should say rather than a change of client. The two refusals stay for the other reason:
-    /// what they assert is how a request proves who is asking.
+    /// The counts that used to keep four tests off this helper are gone: each of them now compares the
+    /// entries against the account's own rows instead of against a number, so a seeded credential can no
+    /// longer move an expectation. What still cannot move is <c>federated == 1</c> beside
+    /// <c>passkey == 2</c>, and what keeps those still is the <c>opensWith</c> every arrangement here
+    /// passes — a set of recovery codes opens the same full session while writing no passkey. See the
+    /// remarks on the class.
     /// </remarks>
     private static async Task<PostgresTestHost> StartSignedInHostAsync()
     {

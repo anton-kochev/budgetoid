@@ -427,6 +427,14 @@ public sealed class CredentialTypeSpellingTests
     /// Reads back the user provisioning minted for <paramref name="subject" />. Nothing the API returns
     /// names it, so the lookup goes through the credential the middleware resolved on.
     /// </summary>
+    /// <remarks>
+    /// <b>Nothing calls this any more, and it is left standing on purpose</b>, beside
+    /// <see cref="StartHostAsync" /> and for the same reason. Both tests here now take their account id
+    /// from <see cref="ApiFactory.CreateSignedInClientAsync" />, which hands back the id it seeded rather
+    /// than leaving a test to find it — a lookup by provider subject that matched two rows would scope a
+    /// whole test to the wrong account. It goes with the bearer path in the commit that removes
+    /// provisioning.
+    /// </remarks>
     private static async Task<Guid> ResolveUserIdAsync(NpgsqlConnection admin, string subject)
     {
         await using NpgsqlCommand command = new(
