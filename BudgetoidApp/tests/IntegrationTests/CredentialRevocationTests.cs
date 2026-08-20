@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Api.Infrastructure;
 using Application.Passkeys;
+using Domain.Users;
 using Npgsql;
 using TestSupport;
 
@@ -386,12 +387,19 @@ public sealed class CredentialRevocationTests
     /// <remarks>
     /// <para>
     /// <b>The floor is one <i>passkey</i>, not one credential, and this account is the case that tells
-    /// the two apart.</b> It also holds the federated Google credential provisioning minted for it, so
-    /// a count over <c>credentials</c> with no type predicate reads <b>two</b> here, lets the last
-    /// passkey go, and this test goes red on the status alone. What the account would be left with is
-    /// not a lesser account: a passkey is the only credential type that opens a session reaching budget
-    /// content, so the person could still sign in with Google, still could not reach their own money,
-    /// and could not even prove presence for an erasure.
+    /// the two apart.</b> It also holds the federated Google credential its registration minted and the
+    /// set of recovery codes its session was opened over, so a count over <c>credentials</c> with no type
+    /// predicate reads <b>three</b> here, lets the last passkey go, and this test goes red on the status
+    /// alone. What the account would be left with is not a lesser account: a passkey is the only
+    /// credential type <em>a device</em> can present, so the person could still redeem a code, still
+    /// could not prove presence for an erasure, and would be one card away from nothing.
+    /// </para>
+    /// <para>
+    /// <b>The session is opened over the recovery-code set rather than over a passkey, and that is the
+    /// arrangement rather than a detail of the harness.</b> Both credential types open a
+    /// <c>SessionKind.Full</c> session, and the sign-in harness's default seeds a whole passkey beside
+    /// the session — so an account signed in that way holds <b>two</b> passkeys before this test
+    /// registers anything, the floor never fires, and the 409 below becomes a 200.
     /// </para>
     /// <para>
     /// <b>409 and not 400, and not 404.</b> The body is well-formed, the proof is fresh and genuine,
@@ -428,11 +436,12 @@ public sealed class CredentialRevocationTests
     [Test]
     public async Task Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing()
     {
-        // Arrange — one passkey, and one is the whole arrangement. Registration also establishes the
-        // account, so the federated Google credential is there beside it; that second credential is
-        // what makes an untyped count read two.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        // Arrange — one passkey, and one is the whole arrangement. The account is signed in over its set
+        // of recovery codes, so the session costs no passkey; the federated Google credential is there
+        // beside both, and those two are what make an untyped count read three.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
         SyntheticAuthenticator onlyDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, onlyDevice);
 
@@ -441,12 +450,13 @@ public sealed class CredentialRevocationTests
         // load-bearing. Without it this account's only passkey is also the only passkey in the table,
         // so a count that lost `user_id` reads the same one and this test stays green over a floor that
         // could never fire for anyone. With it, that count reads two, the floor says nothing, and the
-        // route deletes — a status assertion away. Do not remove it as unused setup.
+        // route deletes — a status assertion away. Do not remove it as unused setup. It is signed in
+        // over a set of its own for the same reason this account is: a bystander seeded with a passkey
+        // would push the unscoped count to two on its own and hide the very defect it is here to expose.
         await RegisterPasskeyAsync(
-            host.Factory.CreateAuthenticatedClient(OtherSubject),
+            (await host.Factory.CreateSignedInClientAsync(
+                OtherSubject, opensWith: CredentialType.RecoveryCodes)).Client,
             SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
-
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -1083,12 +1093,14 @@ public sealed class CredentialRevocationTests
     /// bearer.
     /// </summary>
     /// <remarks>
-    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for two tests that cannot
-    /// use it. <see cref="Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing" />
-    /// needs an account holding exactly one passkey and the sign-in harness seeds one of its own, so
-    /// the floor it measures would never fire; and
-    /// <see cref="Revocation_ByAnUnauthenticatedCaller_IsRefusedWithATitleTheGateNeverWrites" /> is
-    /// about which refusal answers a caller carrying nothing.
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for the one test that cannot
+    /// use it: <see cref="Revocation_ByAnUnauthenticatedCaller_IsRefusedWithATitleTheGateNeverWrites" />
+    /// is about which refusal answers a caller carrying nothing, and a host serving cookies would answer
+    /// it with the cookie handler's challenge rather than with the one that test names.
+    /// <see cref="Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing" /> used to
+    /// be the other one — it needs an account holding exactly <em>one</em> passkey, and the sign-in
+    /// harness's default seeds one of its own — and it is here now because that harness will open a full
+    /// session over a set of recovery codes instead, which writes no passkey at all.
     /// </remarks>
     private static async Task<PostgresTestHost> StartSignedInHostAsync()
     {
@@ -1102,11 +1114,11 @@ public sealed class CredentialRevocationTests
     /// signature answers to rather than material seeded out of band.
     /// </summary>
     /// <remarks>
-    /// The establishing call is kept for the one test still driven by a provider bearer —
-    /// <see cref="Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing" /> —
-    /// whose account has to hold exactly one passkey and therefore cannot come from
-    /// <see cref="ApiFactory.CreateSignedInClientAsync" />, which seeds one of its own. On a
-    /// cookie-carrying client the account already exists and the call is a read that changes nothing.
+    /// Every caller now hands over a client whose account already exists, so there is no establishing
+    /// call in front of the ceremony. The last one that needed it was
+    /// <see cref="Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing" />, whose
+    /// account has to hold exactly one passkey; it takes its session over a set of recovery codes now,
+    /// which <see cref="ApiFactory.CreateSignedInClientAsync" /> opens without seeding a passkey.
     /// </remarks>
     /// <param name="wrappedKeys">
     /// The share of the account keys this factor is to hold. Null mints a fresh one, which is what
@@ -1119,8 +1131,6 @@ public sealed class CredentialRevocationTests
         SyntheticAuthenticator device,
         WrappedKeyFixture? wrappedKeys = null)
     {
-        await ApiFactory.EstablishAccountAsync(client);
-
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(
             challenge,

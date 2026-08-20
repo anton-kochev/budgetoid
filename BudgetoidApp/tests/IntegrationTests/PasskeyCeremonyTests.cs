@@ -28,13 +28,17 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        await RegisterAsync(authenticated, authenticator);
+        await RegisterAsync(owner.Client, authenticator);
 
-        // Act — the two anonymous legs, on a client carrying no token at all, which is the state a
+        // Every session standing before the act, so what is counted afterwards is what this sign-in
+        // opened rather than what the arrangement was handed.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
+        // Act — the two anonymous legs, on a client carrying no credential at all, which is the state a
         // sign-in actually arrives in.
         HttpClient anonymous = factory.CreateClient();
         AssertionResult assertion = await BuildAssertionAsync(anonymous, authenticator, owner.UserId);
@@ -48,11 +52,11 @@ public sealed class PasskeyCeremonyTests
         // Read through the seeding connection, because the response deliberately carries no session
         // id: the row is the only place the established session is observable at all.
         Guid credentialId = await FindPasskeyCredentialIdAsync(host, authenticator.CredentialId);
-        IReadOnlyList<SessionRow> sessions = await ReadSessionsAsync(host);
-        await Assert.That(sessions.Count).IsEqualTo(1);
-        await Assert.That(sessions[0].UserId).IsEqualTo(owner.UserId);
-        await Assert.That(sessions[0].CredentialId).IsEqualTo(credentialId);
-        await Assert.That(sessions[0].Kind).IsEqualTo("full");
+        IReadOnlyList<SessionRow> opened = await SessionsOpenedSinceAsync(host, before);
+        await Assert.That(opened.Count).IsEqualTo(1);
+        await Assert.That(opened[0].UserId).IsEqualTo(owner.UserId);
+        await Assert.That(opened[0].CredentialId).IsEqualTo(credentialId);
+        await Assert.That(opened[0].Kind).IsEqualTo("full");
     }
 
     [Test]
@@ -92,8 +96,9 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
         RepositoryTestHost.SeededOwner bystander = await host.SeedOwnerAsync(OtherSubject, OtherEmail);
         SyntheticAuthenticator registered = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await host.SeedPasskeyAsync(owner.UserId, registered.CredentialId, registered.CoseKey, registered.Algorithm);
@@ -109,8 +114,12 @@ public sealed class PasskeyCeremonyTests
             signatureCounter: SeededCounter);
         SyntheticAuthenticator unknown = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         HttpClient anonymous = factory.CreateClient();
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = owner.Client;
         byte[] ownerHandle = PasskeyEncoding.ToUserHandle(owner.UserId);
+
+        // Every session standing before the act, so the count below is what these refusals opened
+        // rather than what the arrangement was handed.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
 
         // Act
         List<(string Reason, HttpResponseMessage Response)> refusals = [];
@@ -199,7 +208,7 @@ public sealed class PasskeyCeremonyTests
         await Assert.That(refusals[0].Response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(first.Contains(PasskeyVerificationExceptionHandler.Title, StringComparison.Ordinal))
             .IsTrue();
-        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+        await Assert.That((await SessionsOpenedSinceAsync(host, before)).Count).IsEqualTo(0);
     }
 
     /// <summary>
@@ -266,15 +275,19 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
         HttpClient anonymous = factory.CreateClient();
 
+        // Every session standing before the act, so the count below is what this attempt opened rather
+        // than what the arrangement was handed.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
         // Act — a live, unspent challenge in every respect except the ceremony it was issued for.
-        byte[] registrationChallenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        byte[] registrationChallenge = await BeginCeremonyAsync(owner.Client, RegistrationOptionsPath);
         AssertionResult assertion = authenticator.Authenticate(
             registrationChallenge,
             ApiFactory.PasskeyOrigin,
@@ -284,7 +297,7 @@ public sealed class PasskeyCeremonyTests
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await ReadTitleAsync(response)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
-        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+        await Assert.That((await SessionsOpenedSinceAsync(host, before)).Count).IsEqualTo(0);
     }
 
     /// <summary>
@@ -296,9 +309,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act
@@ -327,15 +339,19 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
         HttpClient anonymous = factory.CreateClient();
 
+        // Every session standing before the act, so the count below is what this attempt opened rather
+        // than what the arrangement was handed.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
         // Act — a live, unspent challenge in every respect except the ceremony it was issued for.
-        byte[] reauthenticationChallenge = await BeginCeremonyAsync(authenticated, ReauthenticationOptionsPath);
+        byte[] reauthenticationChallenge = await BeginCeremonyAsync(owner.Client, ReauthenticationOptionsPath);
         AssertionResult assertion = authenticator.Authenticate(
             reauthenticationChallenge,
             ApiFactory.PasskeyOrigin,
@@ -345,7 +361,7 @@ public sealed class PasskeyCeremonyTests
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await ReadTitleAsync(response)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
-        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+        await Assert.That((await SessionsOpenedSinceAsync(host, before)).Count).IsEqualTo(0);
     }
 
     /// <summary>
@@ -358,9 +374,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act
@@ -631,14 +646,19 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+
+        // Signed in over a set of recovery codes, so the account holds exactly the one passkey seeded
+        // below rather than that one and the harness's own — which would make the count read two and
+        // say nothing about whose credentials came back.
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
         RepositoryTestHost.SeededOwner other = await host.SeedOwnerAsync(OtherSubject, OtherEmail);
         SyntheticAuthenticator ownersDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         SyntheticAuthenticator othersDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await host.SeedPasskeyAsync(owner.UserId, ownersDevice.CredentialId, ownersDevice.CoseKey, ownersDevice.Algorithm);
         await host.SeedPasskeyAsync(other.UserId, othersDevice.CredentialId, othersDevice.CoseKey, othersDevice.Algorithm);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = owner.Client;
 
         // Act
         JsonNode options = await PostForJsonAsync(authenticated, RegistrationOptionsPath);
@@ -1003,9 +1023,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act
@@ -1051,9 +1070,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act
@@ -1088,9 +1106,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
 
@@ -1151,9 +1168,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act — a genuine ceremony whose device reports the extension, so the prf gate is passed and
@@ -1210,9 +1226,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
 
@@ -1261,9 +1276,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
 
@@ -1336,9 +1350,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
 
@@ -1387,9 +1400,10 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        HttpClient authenticated = owner.Client;
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
 
@@ -1439,9 +1453,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator registered = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         WrappedKeyFixture claimed = WrappedKeyFixture.Mint();
         await RegisterAsync(authenticated, registered, claimed);
@@ -1598,9 +1611,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act — a real ceremony in every respect except the size of the one member under test.
@@ -1657,9 +1669,8 @@ public sealed class PasskeyCeremonyTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
-        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
 
         // Act — a real ceremony in every respect except the size of the one member under test.
@@ -1764,7 +1775,13 @@ public sealed class PasskeyCeremonyTests
     /// One <c>sessions</c> row, read out of the database rather than out of a response, because the
     /// assertion response deliberately carries no session id.
     /// </summary>
-    private readonly record struct SessionRow(Guid UserId, Guid CredentialId, string Kind);
+    /// <remarks>
+    /// The id is carried for one purpose and no assertion reads it: it is what
+    /// <see cref="SessionsOpenedSinceAsync" /> tells an existing row from a new one by. The three
+    /// columns beside it repeat across rows — one account signing in twice produces two identical
+    /// triples — so a difference computed without the key would report one session where there are two.
+    /// </remarks>
+    private readonly record struct SessionRow(Guid Id, Guid UserId, Guid CredentialId, string Kind);
 
     /// <summary>
     /// Hosts the API over the repository host's container: that host is the one with the passkey
@@ -1781,19 +1798,22 @@ public sealed class PasskeyCeremonyTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>It stands beside <see cref="CreateApiFactory" /> rather than replacing it, and the split is
-    /// about what a signed-in client costs a test that counts rows.</b> Seeding a sign-in writes an
-    /// account, a passkey — credential, public key and signature counter — and a session. Every test in
-    /// this file that counts <c>sessions</c>, <c>passkey_public_keys</c> or the passkey rows of
-    /// <c>credentials</c> counts them <b>unscoped</b>, on purpose: the claim is that a refused ceremony
-    /// wrote nothing <em>anywhere</em>, which a count filtered to one account cannot make. Those tests
-    /// therefore still authenticate the way they were written to, and moving them is a decision about
-    /// what those counts should say rather than a mechanical change of client.
+    /// <b>It stands beside <see cref="CreateApiFactory" /> rather than replacing it, and what is left
+    /// over there is exactly the tests whose subject is the provider bearer itself</b> —
+    /// <see cref="Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner" />
+    /// and <see cref="AnAccountReachedByItsGoogleTokenAlone_HasNoSessionRow" /> — plus the anonymous
+    /// tests, which authenticate as nobody and need no factory flag either way.
     /// </para>
     /// <para>
-    /// What migrated is every authenticated test whose assertions are about a <em>response</em> — a
-    /// status, a validation sentence, the shape of an options document — because a seeded passkey and a
-    /// seeded session change none of those.
+    /// <b>What used to keep the counting tests over there, and what closed it.</b> Seeding a sign-in
+    /// wrote an account, a whole passkey — credential, public key and signature counter — and a session,
+    /// while every count here is deliberately <b>unscoped</b>: the claim is that a refused ceremony wrote
+    /// nothing <em>anywhere</em>, which a count filtered to one account cannot make. The passkey half is
+    /// gone, because <see cref="SignedInOverRecoveryCodesAsync" /> opens the same full session over a set
+    /// of recovery codes and files no passkey row of any kind. The session half is not gone and cannot
+    /// be — a session is what a sign-in harness is for — so the four tests that count sessions read the
+    /// table before the act and assert what the act changed. Both moves keep the claim unscoped, which
+    /// is the property that mattered.
     /// </para>
     /// </remarks>
     private static ApiFactory CreateSignedInApiFactory(RepositoryTestHost host) =>
@@ -2242,18 +2262,64 @@ public sealed class PasskeyCeremonyTests
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
-            "select user_id, credential_id, kind from sessions order by created_at_utc",
+            "select id, user_id, credential_id, kind from sessions order by created_at_utc",
             connection);
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
 
         List<SessionRow> rows = [];
         while (await reader.ReadAsync())
         {
-            rows.Add(new SessionRow(reader.GetGuid(0), reader.GetGuid(1), reader.GetString(2)));
+            rows.Add(new SessionRow(
+                reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetString(3)));
         }
 
         return rows;
     }
+
+    /// <summary>
+    /// Every <c>sessions</c> row in the database that was not there when <paramref name="before" /> was
+    /// read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A difference, and deliberately not a count scoped to an account.</b> What the callers claim is
+    /// that an act opened one session, or none, <em>anywhere</em> — including on somebody else's
+    /// account, which is the row a handler that took the wrong owner writes and which a scoped count
+    /// would never see. The unscoped absolute those assertions used to be said the same thing only while
+    /// the arrangement left the table empty, which stopped being true the day the account under test was
+    /// signed in rather than provisioned.
+    /// </para>
+    /// <para>
+    /// It re-reads the whole table rather than filtering in SQL on the ids it already holds, because the
+    /// query is the one <see cref="ReadSessionsAsync" /> already owns and a second, subtly different
+    /// one would be a second definition of "every session there is". Still on the container superuser
+    /// connection, for the reason that member gives.
+    /// </para>
+    /// </remarks>
+    private static async Task<IReadOnlyList<SessionRow>> SessionsOpenedSinceAsync(
+        RepositoryTestHost host,
+        IReadOnlyList<SessionRow> before)
+    {
+        HashSet<Guid> standing = [.. before.Select(row => row.Id)];
+
+        return [.. (await ReadSessionsAsync(host)).Where(row => !standing.Contains(row.Id))];
+    }
+
+    /// <summary>
+    /// A client already signed in as the owner account, over a set of recovery codes.
+    /// </summary>
+    /// <remarks>
+    /// <b>The credential is named rather than left to the kind, and every caller depends on it.</b> A
+    /// full session opens over a passkey or over a set of recovery codes alike, and the sign-in harness
+    /// defaults to the passkey — which files a <c>credentials</c> row, a <c>passkey_public_keys</c> row
+    /// and a <c>passkey_signature_counters</c> row the tests below are counting. Over a set, the
+    /// arrangement writes one <c>credentials</c> row and touches neither passkey table, so every "no
+    /// passkey was filed", "exactly one was" and "one credential was excluded" assertion here reads the
+    /// act rather than the seeding.
+    /// </remarks>
+    private static async Task<HttpClient> SignedInOverRecoveryCodesAsync(ApiFactory factory) =>
+        (await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes)).Client;
 
     private static async Task<Guid> FindPasskeyCredentialIdAsync(
         RepositoryTestHost host,

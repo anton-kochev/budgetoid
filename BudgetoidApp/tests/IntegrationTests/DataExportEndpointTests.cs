@@ -199,14 +199,15 @@ public sealed class DataExportEndpointTests
     [Test]
     public async Task Export_NamesTheFileWithTheRequestInstantInUtc()
     {
-        // Arrange — the clock fixed before the host is built, so provisioning and the export read the
-        // same instant and the filename can be written down here in full.
-        await using PostgresTestHost host = await StartHostAsync();
+        // Arrange — the clock fixed before the host is built, so the export reads the instant the filename
+        // is written down against. The session is seeded at that same instant: the cookie is judged
+        // against the fake clock, so one stamped from the wall clock would be months expired here.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
         await using ApiFactory factory = host.CreateFactory(
             configureServices: services => services.Replace(
                 ServiceDescriptor.Singleton<TimeProvider>(new FakeTimeProvider(RequestInstant))));
-        HttpClient client = factory.CreateAuthenticatedClient();
-        await ApiFactory.EstablishAccountAsync(client);
+        (HttpClient client, _, _) =
+            await factory.CreateSignedInClientAsync(issuedAtUtc: RequestInstant.UtcDateTime);
 
         // Act
         HttpResponseMessage response = await client.GetAsync(ExportPath);
@@ -276,7 +277,7 @@ public sealed class DataExportEndpointTests
         // which puts local time a day and a year ahead of the instant it reports: without that, local
         // and UTC are the same value on a FakeTimeProvider and the "in UTC" half of the claim is
         // unmeasurable.
-        await using PostgresTestHost host = await StartHostAsync();
+        await using PostgresTestHost host = await StartSignedInHostAsync();
         FakeTimeProvider clock = new(NewYearsEveInstant);
         clock.SetLocalTimeZone(TimeZoneInfo.FindSystemTimeZoneById(FurthestAheadTimeZoneId));
 
@@ -284,8 +285,8 @@ public sealed class DataExportEndpointTests
             configureServices: services => services.Replace(
                 ServiceDescriptor.Singleton<TimeProvider>(clock)));
         factory.Server.PreserveExecutionContext = true;
-        HttpClient client = factory.CreateAuthenticatedClient();
-        await ApiFactory.EstablishAccountAsync(client);
+        (HttpClient client, _, _) =
+            await factory.CreateSignedInClientAsync(issuedAtUtc: NewYearsEveInstant.UtcDateTime);
 
         // A calendar whose year is 543 ahead of the Gregorian one, so a format call that reads the
         // ambient culture produces a filename no reader could date.
@@ -390,15 +391,16 @@ public sealed class DataExportEndpointTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for two different reasons.
-    /// The two refusals assert how a request proves who is asking, which is what the bearer path is.
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for the two refusals: they
+    /// assert how a request proves who is asking, which is what the bearer path is.
     /// </para>
     /// <para>
-    /// The two filename tests are the less obvious half: a seeded sign-in stamps its session's lifetime
-    /// from the real wall clock, and both of those replace the application's
-    /// <see cref="TimeProvider" /> with a fixed instant — so whether the seeded session is live at all is
-    /// decided by which instant the test chose. <see cref="NewYearsEveInstant" /> is months past the
-    /// seeded expiry, which would refuse the request before the filename was ever written.
+    /// The two filename tests used to be the other half, and the reason is worth keeping because it is
+    /// still a trap. A seeded sign-in stamps its session's lifetime from the wall clock, and both of them
+    /// replace the application's <see cref="TimeProvider" /> with a fixed instant —
+    /// <see cref="NewYearsEveInstant" /> is months past the wall-clock expiry, so the request would be
+    /// refused before the filename was ever written. They name that same instant as the session's
+    /// <c>issuedAtUtc</c> now, which puts the window back around the request.
     /// </para>
     /// </remarks>
     private static async Task<PostgresTestHost> StartSignedInHostAsync()

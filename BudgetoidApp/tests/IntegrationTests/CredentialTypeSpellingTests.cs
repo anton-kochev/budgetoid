@@ -207,16 +207,18 @@ public sealed class CredentialTypeSpellingTests
     [Test]
     public async Task Credentials_EveryCredentialTypeArrivesSpelledTheWayItsColumnIsSpelled()
     {
-        // Arrange — an established account (which mints the federated row) holding a passkey, then one
-        // row for every remaining member of the enum.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        // Arrange — an account signed in over a set of recovery codes, which is the arm of the sign-in
+        // harness that writes one credentials row and no passkey. So the account holds its federated row,
+        // that set, and the one passkey the ceremony below registers: one credential per declared member,
+        // reached without seeding a second row for any of them. The seeder still runs, and still has to,
+        // because what has to be covered is the enum rather than the three members that exist today.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
         await RegisterPasskeyAsync(client, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
-        Guid userId = await ResolveUserIdAsync(admin, Subject);
         await SeedEveryMissingCredentialTypeAsync(admin, userId);
 
         // The arrangement itself: the account holds one credential per declared member, so the
@@ -603,6 +605,18 @@ public sealed class CredentialTypeSpellingTests
         await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()) as JsonArray
         ?? throw new InvalidOperationException("The endpoint answered something other than a JSON array.");
 
+    /// <summary>
+    /// A host on the provider-bearer path.
+    /// </summary>
+    /// <remarks>
+    /// <b>Nothing calls this any more, and it is left standing on purpose.</b> Its last caller was
+    /// <see cref="Credentials_EveryCredentialTypeArrivesSpelledTheWayItsColumnIsSpelled" />, whose
+    /// arrangement asserts the account holds exactly one credential per declared member — and the sign-in
+    /// harness's default writes a passkey of its own beside the one the ceremony registers, which is a
+    /// second row for one member. Opening that session over a set of recovery codes instead writes one
+    /// <c>credentials</c> row, of the member the arrangement was seeding by hand anyway, so the count per
+    /// member is unchanged. It goes with the bearer path in the commit that removes provisioning.
+    /// </remarks>
     private static async Task<PostgresTestHost> StartHostAsync()
     {
         PostgresTestHost host = new();
@@ -611,17 +625,9 @@ public sealed class CredentialTypeSpellingTests
     }
 
     /// <summary>
-    /// A host whose factory leaves the application's own authentication standing, because the test above
+    /// A host whose factory leaves the application's own authentication standing, because every test here
     /// authenticates from a session cookie rather than from a provider bearer.
     /// </summary>
-    /// <remarks>
-    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for
-    /// <see cref="Credentials_EveryCredentialTypeArrivesSpelledTheWayItsColumnIsSpelled" />: its
-    /// arrangement asserts the account holds exactly one credential per declared member, and a seeded
-    /// sign-in writes a passkey of its own beside the one the ceremony registers. Two passkeys is a
-    /// second row for one member, so moving that test would be a decision about what the comparison
-    /// should say rather than a change of client.
-    /// </remarks>
     private static async Task<PostgresTestHost> StartSignedInHostAsync()
     {
         PostgresTestHost host = new(usesApplicationAuthentication: true);

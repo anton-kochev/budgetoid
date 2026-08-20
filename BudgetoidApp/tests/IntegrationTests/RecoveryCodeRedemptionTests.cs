@@ -224,12 +224,10 @@ public sealed class RecoveryCodeRedemptionTests
     public async Task Redemption_WithAValidCode_OpensAFullSessionAndReportsWhatIsLeft()
     {
         // Arrange — a real account, a real passkey, a real set issued through the real route.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
         await IssueSetAsync(client, device, userId, verifiers);
 
@@ -237,10 +235,12 @@ public sealed class RecoveryCodeRedemptionTests
         await admin.OpenAsync();
         Guid setId = await ResolveSetCredentialIdAsync(admin, userId);
 
-        // No session before the act, or the row counted afterwards is one the arrangement produced.
-        await Assert.That((await ReadSessionsAsync(admin)).Count).IsEqualTo(0);
+        // Every session standing before the act. The arrangement signs this account in to issue the set
+        // at all, so the table is not empty and the row this redemption wrote has to be told from the
+        // arrangement's by difference rather than by there being only one.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(admin);
 
-        // Act — a client carrying no token at all, which is the state a recovery sign-in arrives in.
+        // Act — a client carrying no credential at all, which is the state a recovery sign-in arrives in.
         HttpResponseMessage response = await RedeemAsync(host.Factory.CreateClient(), verifiers[0]);
 
         // Assert — the status first, so a body missing because the request was refused reads as the
@@ -261,9 +261,9 @@ public sealed class RecoveryCodeRedemptionTests
         await Assert.That(body[RemainingMember]!.GetValue<int>()).IsEqualTo(RequiredCodeCount - 1);
         await Assert.That(ExpiryOf(body)).IsGreaterThan(DateTime.UtcNow);
 
-        // One session, on the account the code belongs to, opened by the set's own credential — which is
+        // One session opened, on the account the code belongs to, by the set's own credential — which is
         // what CK_sessions_kind_matches_credential makes 'full' checkable against.
-        IReadOnlyList<SessionRow> sessions = await ReadSessionsAsync(admin);
+        IReadOnlyList<SessionRow> sessions = await SessionsOpenedSinceAsync(admin, before);
         await Assert.That(sessions.Count).IsEqualTo(1);
         await Assert.That(sessions[0].UserId).IsEqualTo(userId);
         await Assert.That(sessions[0].CredentialId).IsEqualTo(setId);
@@ -321,21 +321,23 @@ public sealed class RecoveryCodeRedemptionTests
     public async Task Redemption_WithTheSameCodeTwice_IsRefusedTheSecondTime()
     {
         // Arrange — an account, a set, and one code already spent through the real route.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
         await IssueSetAsync(client, device, userId, verifiers);
 
-        HttpResponseMessage first = await RedeemAsync(host.Factory.CreateClient(), verifiers[0]);
-        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.OK);
-
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
-        await Assert.That((await ReadSessionsAsync(admin)).Count).IsEqualTo(1);
+
+        // Read before the first redemption, so both counts below are what the two redemptions between
+        // them opened rather than what the arrangement's own sign-in left standing.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(admin);
+
+        HttpResponseMessage first = await RedeemAsync(host.Factory.CreateClient(), verifiers[0]);
+        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await SessionsOpenedSinceAsync(admin, before)).Count).IsEqualTo(1);
 
         // Act — the same value again, on a client that knows nothing about the first exchange.
         HttpResponseMessage second = await RedeemAsync(host.Factory.CreateClient(), verifiers[0]);
@@ -343,8 +345,8 @@ public sealed class RecoveryCodeRedemptionTests
         // Assert
         await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
 
-        // Still one session, so the replay opened nothing.
-        await Assert.That((await ReadSessionsAsync(admin)).Count).IsEqualTo(1);
+        // Still the one session the first redemption opened, so the replay opened nothing.
+        await Assert.That((await SessionsOpenedSinceAsync(admin, before)).Count).IsEqualTo(1);
 
         // And it took nothing else with it: the nine live codes are the nine the client still holds.
         await Assert.That(await StoredHashesAsync(admin, userId))
@@ -564,17 +566,19 @@ public sealed class RecoveryCodeRedemptionTests
     public async Task Redemption_WhenRefused_WritesNoSessionAndSpendsNoCode()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
         await IssueSetAsync(client, device, userId, verifiers);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
+
+        // Every session standing before the act, so "no session was written" is a claim about this
+        // request rather than about the sign-in the arrangement needed to issue the set.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(admin);
 
         // Act — a verifier of exactly the right shape that names no row.
         HttpResponseMessage response = await RedeemAsync(host.Factory.CreateClient(), Verifiers(1)[0]);
@@ -587,7 +591,7 @@ public sealed class RecoveryCodeRedemptionTests
         await Assert.That(title).IsNotEqualTo(StatusCodeOnlyTitle);
         await Assert.That(title).IsNotEqualTo(PasskeyVerificationExceptionHandler.Title);
 
-        await Assert.That((await ReadSessionsAsync(admin)).Count).IsEqualTo(0);
+        await Assert.That((await SessionsOpenedSinceAsync(admin, before)).Count).IsEqualTo(0);
         await Assert.That(await StoredHashesAsync(admin, userId)).IsEquivalentTo(ExpectedHashesOf(verifiers));
         await Assert.That(await CountSetsAsync(admin, userId)).IsEqualTo(1L);
     }
@@ -600,11 +604,11 @@ public sealed class RecoveryCodeRedemptionTests
     /// <para>
     /// <b>This is <c>CompleteAssertionHandler</c>'s own property, restated on the route that inherits
     /// it</b>, and it is the reason that handler never reads <c>IUserContext</c> for the account. The
-    /// route is anonymous, so user provisioning returns on the route's marker and publishes nobody
-    /// whatever token arrived — but a handler that reached for the request's identity anyway would find
-    /// nothing on a genuine sign-in and <em>something</em> here, and the something is the wrong account.
-    /// A client interceptor that attaches a bearer to every request is enough to arrange that by
-    /// accident.
+    /// route is anonymous — but the caller below is carrying a live session cookie of her own, so an
+    /// identity <em>is</em> published on this request, and a handler that reached for it would find
+    /// nothing on a genuine recovery sign-in and <em>something</em> here, and the something is the wrong
+    /// account. A browser that still holds a working session and is redeeming a code for a second
+    /// account, or simply a client that sends its cookie on every request, arranges that by accident.
     /// </para>
     /// <para>
     /// <b>Both accounts hold a set, which is what makes the claim measurable at all.</b> With one set in
@@ -612,30 +616,26 @@ public sealed class RecoveryCodeRedemptionTests
     /// that took the account from anywhere else would still land on it.
     /// </para>
     /// <para>
-    /// <b>The presented token belongs to a real, established account</b> rather than to nobody: a token
-    /// naming an account that does not exist would be refused upstream for a reason that has nothing to
-    /// do with this rule, and the test would pass over the defect it was written for.
+    /// <b>The presented identity belongs to a real, established account</b> rather than to nobody: a
+    /// handle naming an account that does not exist would be refused upstream for a reason that has
+    /// nothing to do with this rule, and the test would pass over the defect it was written for.
     /// </para>
     /// </remarks>
     [Test]
-    public async Task Redemption_TakesTheAccountFromTheCode_NotFromTheBearerToken()
+    public async Task Redemption_TakesTheAccountFromTheCode_NotFromTheCallersOwnSession()
     {
-        // Arrange — two established accounts, each holding a set of its own.
-        await using PostgresTestHost host = await StartHostAsync();
+        // Arrange — two established accounts, each signed in and each holding a set of its own.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
 
-        HttpClient alice = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(alice);
+        (HttpClient alice, Guid aliceId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator alicesDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(alice, alicesDevice);
-        Guid aliceId = await ResolveUserIdAsync(host, Subject);
         string[] alicesVerifiers = Verifiers();
         await IssueSetAsync(alice, alicesDevice, aliceId, alicesVerifiers);
 
-        HttpClient bob = host.Factory.CreateAuthenticatedClient(OtherSubject);
-        await ApiFactory.EstablishAccountAsync(bob);
+        (HttpClient bob, Guid bobId, _) = await host.Factory.CreateSignedInClientAsync(OtherSubject);
         SyntheticAuthenticator bobsDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(bob, bobsDevice);
-        Guid bobId = await ResolveUserIdAsync(host, OtherSubject);
         string[] bobsVerifiers = Verifiers();
         await IssueSetAsync(bob, bobsDevice, bobId, bobsVerifiers);
 
@@ -643,13 +643,19 @@ public sealed class RecoveryCodeRedemptionTests
         await admin.OpenAsync();
         Guid bobsSetId = await ResolveSetCredentialIdAsync(admin, bobId);
 
-        // Act — Bob's code, presented on Alice's authenticated client.
+        // Every session standing before the act — one per account, since both had to sign in to issue a
+        // set. The count below is what this redemption opened, and it is still read across the whole
+        // table: a session written for the wrong account is the defect, and a scoped read would pass
+        // over it.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(admin);
+
+        // Act — Bob's code, presented on a client carrying Alice's own live session.
         HttpResponseMessage response = await RedeemAsync(alice, bobsVerifiers[0]);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
-        IReadOnlyList<SessionRow> sessions = await ReadSessionsAsync(admin);
+        IReadOnlyList<SessionRow> sessions = await SessionsOpenedSinceAsync(admin, before);
         await Assert.That(sessions.Count).IsEqualTo(1);
         await Assert.That(sessions[0].UserId).IsEqualTo(bobId);
         await Assert.That(sessions[0].CredentialId).IsEqualTo(bobsSetId);
@@ -752,18 +758,20 @@ public sealed class RecoveryCodeRedemptionTests
     public async Task Redemption_OfTheLastCode_LeavesTheSetStandingWithNothingLeft()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
         await IssueSetAsync(client, device, userId, verifiers);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         Guid setId = await ResolveSetCredentialIdAsync(admin, userId);
+
+        // Every session standing before the act, so the ten counted below are the ten these redemptions
+        // opened rather than those plus the sign-in that issued the set.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(admin);
 
         // Act — all ten, each on a client of its own, counting down as it goes.
         for (int spent = 0; spent < RequiredCodeCount; spent++)
@@ -783,7 +791,7 @@ public sealed class RecoveryCodeRedemptionTests
         await Assert.That(await CountSetsAsync(admin, userId)).IsEqualTo(1L);
         await Assert.That(await ResolveSetCredentialIdAsync(admin, userId)).IsEqualTo(setId);
 
-        IReadOnlyList<SessionRow> sessions = await ReadSessionsAsync(admin);
+        IReadOnlyList<SessionRow> sessions = await SessionsOpenedSinceAsync(admin, before);
         await Assert.That(sessions.Count).IsEqualTo(RequiredCodeCount);
         await Assert.That(sessions.All(session => session.CredentialId == setId)).IsTrue();
     }
@@ -843,9 +851,10 @@ public sealed class RecoveryCodeRedemptionTests
     /// Presents one verifier to the redemption route.
     /// </summary>
     /// <remarks>
-    /// The body carries one member and the client carries whatever token the caller gave it — usually
-    /// none, which is the state a recovery sign-in arrives in, and deliberately a real one in
-    /// <see cref="Redemption_TakesTheAccountFromTheCode_NotFromTheBearerToken" />.
+    /// The body carries one member and the client carries whatever credential the caller gave it —
+    /// usually none, which is the state a recovery sign-in arrives in, and deliberately a live session of
+    /// somebody else's in
+    /// <see cref="Redemption_TakesTheAccountFromTheCode_NotFromTheCallersOwnSession" />.
     /// </remarks>
     private static Task<HttpResponseMessage> RedeemAsync(HttpClient client, string verifier) =>
         client.PostAsJsonAsync(RedemptionPath, new Dictionary<string, string> { [VerifierMember] = verifier });
@@ -1056,9 +1065,15 @@ public sealed class RecoveryCodeRedemptionTests
         (await ReadJsonObjectAsync(response))["title"]!.GetValue<string>();
 
     /// <summary>
-    /// Reads back the user provisioning minted for <paramref name="subject" />. Nothing the API returns
-    /// names it, so the lookup goes through the credential the middleware resolved on.
+    /// Reads back the account filed under <paramref name="subject" />. Nothing the API returns names it,
+    /// so the lookup goes through the federated credential.
     /// </summary>
+    /// <remarks>
+    /// <b>Nothing calls this any more, and it is left standing on purpose.</b> Every arrangement here now
+    /// takes its account id from <see cref="ApiFactory.CreateSignedInClientAsync" />, which hands back the
+    /// id of the account it just wrote. It goes with the bearer path in the commit that removes
+    /// provisioning; deleting it here would put an unrelated deletion in a test-only change.
+    /// </remarks>
     private static async Task<Guid> ResolveUserIdAsync(PostgresTestHost host, string subject)
     {
         await using NpgsqlConnection connection = new(host.ConnectionString);
@@ -1121,8 +1136,8 @@ public sealed class RecoveryCodeRedemptionTests
     /// </summary>
     /// <remarks>
     /// Unscoped deliberately: a session written for the wrong account is exactly the defect
-    /// <see cref="Redemption_TakesTheAccountFromTheCode_NotFromTheBearerToken" /> is looking for, and a
-    /// read filtered to the expected account would pass straight over it. <c>sessions</c> carries
+    /// <see cref="Redemption_TakesTheAccountFromTheCode_NotFromTheCallersOwnSession" /> is looking for, and
+    /// a read filtered to the expected account would pass straight over it. <c>sessions</c> carries
     /// <c>user_isolation</c>, which is <c>FOR ALL</c>, so this cannot be read on the application role at
     /// all — a policed connection reports zero rows for a session that is there exactly as it does for one
     /// that is not.
@@ -1145,6 +1160,33 @@ public sealed class RecoveryCodeRedemptionTests
         }
 
         return sessions;
+    }
+
+    /// <summary>
+    /// Every session in the database that was not there when <paramref name="before" /> was read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A difference, and deliberately not a count scoped to an account.</b> Every claim made through
+    /// it is that one act opened one session, or none, or ten, <em>anywhere</em> — including on somebody
+    /// else's account, which is the row a handler taking the caller's identity instead of the code's
+    /// writes and which a scoped count would never see. The absolutes these replaced said the same thing
+    /// only while the arrangement left the table empty, and it stopped being empty the day the account
+    /// under test was signed in rather than provisioned from a bearer.
+    /// </para>
+    /// <para>
+    /// Keyed on the primary key rather than on the columns beside it: ten redemptions of one set produce
+    /// ten rows agreeing on owner, credential and kind, so a difference computed without the id would
+    /// report one.
+    /// </para>
+    /// </remarks>
+    private static async Task<IReadOnlyList<SessionRow>> SessionsOpenedSinceAsync(
+        NpgsqlConnection admin,
+        IReadOnlyList<SessionRow> before)
+    {
+        HashSet<Guid> standing = [.. before.Select(session => session.Id)];
+
+        return [.. (await ReadSessionsAsync(admin)).Where(session => !standing.Contains(session.Id))];
     }
 
     /// <summary>How many sets the account holds, which the product's own index bounds at one.</summary>
@@ -1189,16 +1231,17 @@ public sealed class RecoveryCodeRedemptionTests
     }
 
     /// <summary>
-    /// A host whose factory leaves the application's own authentication standing, because the one test
-    /// above that arranges its account through a session cookie needs the cookie handler to be asked.
+    /// A host whose factory leaves the application's own authentication standing, because every
+    /// authenticated arrangement here now signs in with a session cookie.
     /// </summary>
     /// <remarks>
-    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, and the reason is
-    /// <see cref="ReadSessionsAsync" />. Every other test here counts <c>sessions</c> rows across the
-    /// whole database — deliberately, since a session written for the wrong account is what
-    /// <see cref="Redemption_TakesTheAccountFromTheCode_NotFromTheBearerToken" /> is looking for — and
-    /// seeding a sign-in writes one, so those counts change value the moment such a client is handed out.
-    /// That is a decision about what the counts should say rather than a change of client.
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for the one test whose subject
+    /// is the provider bearer itself: <see cref="Redemption_ForASubjectWithNoAccount_CreatesNothing" />
+    /// asks what an authenticated principal with no account of its own gets from this route, which is a
+    /// question only a bearer can put. What used to keep the rest over there was
+    /// <see cref="ReadSessionsAsync" /> — every count here is across the whole database, deliberately,
+    /// and seeding a sign-in writes a row into it. They read the table before the act now and assert what
+    /// the act changed, which keeps the claim unscoped and stops it depending on an empty database.
     /// </remarks>
     private static async Task<PostgresTestHost> StartSignedInHostAsync()
     {

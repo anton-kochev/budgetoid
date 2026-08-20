@@ -786,13 +786,11 @@ public sealed class RecoveryCodeGenerationTests
         // Arrange — a passkey registered under an identifier this test keeps, and a real set of codes
         // filed under one of its own, so the account holds two factors and only one of them is the one
         // the act replaces.
-        await using PostgresTestHost host = await StartBearerHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         WrappedKeyFixture claimed = WrappedKeyFixture.Mint();
         await RegisterPasskeyAsync(client, device, claimed);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         WrappedKeyFixture[] issued = MintKeys(RequiredCodeCount);
         string[] verifiers = Verifiers();
@@ -815,6 +813,11 @@ public sealed class RecoveryCodeGenerationTests
         await Assert.That((await WrappedAccountKeysAsync(admin, userId)).Length)
             .IsEqualTo(1 + RequiredCodeCount);
         await Assert.That(await CountLiveSessionsAsync(admin, issuedSetId)).IsEqualTo(1L);
+
+        // Every live session of the account, read here so the survival below is about what the refusal
+        // left rather than about how many sessions the arrangement happened to need. This account is also
+        // signed in over its passkey, and no sweep aimed at a recovery-code credential touches that one.
+        SessionRow[] liveBefore = await LiveSessionsAsync(admin, userId);
 
         // Act — a fresh, genuine proof and a well-formed set of ten new verifiers, one of whose codes
         // claims the factor identifier the passkey already holds. The envelopes under it are this
@@ -857,12 +860,15 @@ public sealed class RecoveryCodeGenerationTests
         await Assert.That(Base64UrlText.Encode(ofPasskey[0].WrappedContentKey)).IsEqualTo(claimed.WrappedContentKey);
         await Assert.That(Base64UrlText.Encode(ofPasskey[0].WrappedIndexKey)).IsEqualTo(claimed.WrappedIndexKey);
 
-        // The sweep unwound too: the session the set opened is still the account's one live session, and
-        // it is still over the set the person is holding.
+        // The sweep unwound too: every live session the account had is still live and still the same row,
+        // and exactly one of them is over the set the person is holding.
         SessionRow[] live = await LiveSessionsAsync(admin, userId);
-        await Assert.That(live.Length).IsEqualTo(1);
-        await Assert.That(live[0].CredentialId).IsEqualTo(issuedSetId);
-        await Assert.That(live[0].CredentialType).IsEqualTo(RecoveryCodesCredentialType);
+        await Assert.That(live.Select(session => session.Id).Order())
+            .IsEquivalentTo(liveBefore.Select(session => session.Id).Order());
+
+        SessionRow[] sessionsOfSet = [.. live.Where(session => session.CredentialId == issuedSetId)];
+        await Assert.That(sessionsOfSet.Length).IsEqualTo(1);
+        await Assert.That(sessionsOfSet[0].CredentialType).IsEqualTo(RecoveryCodesCredentialType);
     }
 
     /// <summary>
@@ -906,12 +912,10 @@ public sealed class RecoveryCodeGenerationTests
     {
         // Arrange — a real first set of ten codes, each with a share of the account keys of its own,
         // plus the session it opened, so the refusal has a whole account state to fail to destroy.
-        await using PostgresTestHost host = await StartBearerHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         WrappedKeyFixture[] issued = MintKeys(RequiredCodeCount);
         string[] verifiers = Verifiers();
@@ -932,6 +936,11 @@ public sealed class RecoveryCodeGenerationTests
         await Assert.That(await StoredHashesAsync(admin, userId)).IsEquivalentTo(ExpectedHashesOf(verifiers));
         string[] before = FingerprintsOf(await WrappedAccountKeysAsync(admin, userId));
         await Assert.That(await CountLiveSessionsAsync(admin, issuedSetId)).IsEqualTo(1L);
+
+        // Every live session of the account, read here so the survival below is about what the refusal
+        // left rather than about how many sessions the arrangement happened to need. This account is also
+        // signed in over its passkey, and no sweep aimed at a recovery-code credential touches that one.
+        SessionRow[] liveBefore = await LiveSessionsAsync(admin, userId);
 
         // Act — a fresh, genuine proof and ten well-formed verifiers whose last code repeats the first
         // code's factor identifier. Every other member of every code is faultless, so the repeat is the
@@ -964,12 +973,15 @@ public sealed class RecoveryCodeGenerationTests
         // the set's ten and the passkey's one, none added, none taken, none rewritten.
         await Assert.That(FingerprintsOf(await WrappedAccountKeysAsync(admin, userId))).IsEquivalentTo(before);
 
-        // And the sweep unwound too: the session the set opened is still the account's one live
-        // session, and it is still over the set the person is holding.
+        // And the sweep unwound too: every live session the account had is still live and still the same
+        // row, and exactly one of them is over the set the person is holding.
         SessionRow[] surviving = await LiveSessionsAsync(admin, userId);
-        await Assert.That(surviving.Length).IsEqualTo(1);
-        await Assert.That(surviving[0].CredentialId).IsEqualTo(issuedSetId);
-        await Assert.That(surviving[0].CredentialType).IsEqualTo(RecoveryCodesCredentialType);
+        await Assert.That(surviving.Select(session => session.Id).Order())
+            .IsEquivalentTo(liveBefore.Select(session => session.Id).Order());
+
+        SessionRow[] ofSet = [.. surviving.Where(session => session.CredentialId == issuedSetId)];
+        await Assert.That(ofSet.Length).IsEqualTo(1);
+        await Assert.That(ofSet[0].CredentialType).IsEqualTo(RecoveryCodesCredentialType);
     }
 
     /// <summary>
@@ -1313,12 +1325,10 @@ public sealed class RecoveryCodeGenerationTests
     public async Task Generation_WhenTheReplacedSetHadALiveSession_OpensOneOverTheNewSet()
     {
         // Arrange — a real first set, and one live session hanging off it.
-        await using PostgresTestHost host = await StartBearerHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await Assert.That((await GenerateAsync(client, device, userId)).StatusCode).IsEqualTo(HttpStatusCode.OK);
 
@@ -1331,19 +1341,29 @@ public sealed class RecoveryCodeGenerationTests
         // happened — and a set carrying none is the arrangement the mirror test drives.
         await Assert.That(await CountLiveSessionsAsync(admin, replacedSetId)).IsEqualTo(1L);
 
+        // Every live session of the account, so what the act left is told from what it was handed. This
+        // account is also signed in over its passkey, and that session is untouched by a sweep aimed at a
+        // recovery-code credential.
+        SessionRow[] liveBefore = await LiveSessionsAsync(admin, userId);
+
         // Act
         HttpResponseMessage response = await GenerateAsync(client, device, userId);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
-        // Exactly one live session for the account — not two, which is what a handler that established one
-        // without sweeping would leave, and not zero, which is the defect.
-        SessionRow[] live = await LiveSessionsAsync(admin, userId);
+        // Exactly one live session opened — not zero, which is the defect this test exists for.
+        SessionRow[] live = await LiveSessionsOpenedSinceAsync(admin, userId, liveBefore);
         await Assert.That(live.Length).IsEqualTo(1);
 
-        // It is over the set the account is left holding, and it is a full session on a recovery-code
-        // credential — the three columns the composite foreign key and the kind check are about.
+        // And the replaced set's session is not live any more. Stated on its own because the count above
+        // is now a difference: a handler that established a session without sweeping adds exactly one row
+        // as well, and this is the half that tells the two apart.
+        await Assert.That(await CountLiveSessionsAsync(admin, replacedSetId)).IsEqualTo(0L);
+
+        // The one it opened is over the set the account is left holding, and it is a full session on a
+        // recovery-code credential — the three columns the composite foreign key and the kind check are
+        // about.
         Guid newSetId = await ResolveSetCredentialIdAsync(admin, userId);
         await Assert.That(newSetId).IsNotEqualTo(replacedSetId);
         await Assert.That(live[0].CredentialId).IsEqualTo(newSetId);
@@ -1372,18 +1392,19 @@ public sealed class RecoveryCodeGenerationTests
     public async Task Generation_ForAnAccountWithNoPreviousSet_WritesNoSession()
     {
         // Arrange
-        await using PostgresTestHost host = await StartBearerHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
-        await ApiFactory.EstablishAccountAsync(client);
+        await using PostgresTestHost host = await StartHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
 
-        // No session before the act, or every row counted afterwards is a row the arrangement produced.
-        await Assert.That(await ScalarAsync(admin, "select count(*) from sessions")).IsEqualTo(0L);
+        // Every session in the database before the act. The account is signed in to reach the route at
+        // all, so the table is not empty; what is claimed below is that this request added nothing to it,
+        // and it is still read across the whole table so a row filed under the wrong owner is caught here
+        // rather than reported as absent.
+        IReadOnlyList<Guid> before = await AllSessionIdsAsync(admin);
 
         // Act
         HttpResponseMessage response = await GenerateAsync(client, device, userId);
@@ -1400,7 +1421,7 @@ public sealed class RecoveryCodeGenerationTests
         await Assert.That(body.ContainsKey(SessionMember)).IsTrue();
         await Assert.That(body[SessionMember] is null).IsTrue();
 
-        await Assert.That(await ScalarAsync(admin, "select count(*) from sessions")).IsEqualTo(0L);
+        await Assert.That((await SessionsOpenedSinceAsync(admin, before)).Count).IsEqualTo(0);
     }
 
     /// <summary>
@@ -2586,6 +2607,12 @@ public sealed class RecoveryCodeGenerationTests
     /// Reads back the account filed under <paramref name="subject" />. Nothing the API returns names it,
     /// so the lookup goes through that account's federated credential.
     /// </summary>
+    /// <remarks>
+    /// <b>Nothing calls this any more, and it is left standing on purpose.</b> Every arrangement here now
+    /// takes its account id from <see cref="ApiFactory.CreateSignedInClientAsync" />, which hands back the
+    /// id of the account it just wrote. It goes with the bearer path in the commit that removes
+    /// provisioning; deleting it here would put an unrelated deletion in a test-only change.
+    /// </remarks>
     private static async Task<Guid> ResolveUserIdAsync(PostgresTestHost host, string subject)
     {
         await using NpgsqlConnection connection = new(host.ConnectionString);
@@ -2807,7 +2834,7 @@ public sealed class RecoveryCodeGenerationTests
     {
         await using NpgsqlCommand command = new(
             """
-            select credential_id, kind, credential_type
+            select id, credential_id, kind, credential_type
             from sessions
             where user_id = @userId and revoked_at_utc is null
             """,
@@ -2818,10 +2845,66 @@ public sealed class RecoveryCodeGenerationTests
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            rows.Add(new SessionRow(reader.GetGuid(0), reader.GetString(1), reader.GetString(2)));
+            rows.Add(new SessionRow(
+                reader.GetGuid(0), reader.GetGuid(1), reader.GetString(2), reader.GetString(3)));
         }
 
         return [.. rows];
+    }
+
+    /// <summary>
+    /// The account's live sessions that were not live when <paramref name="before" /> was read.
+    /// </summary>
+    /// <remarks>
+    /// <b>A difference, and it is what an absolute count used to be.</b> The arrangements here sign the
+    /// account in to reach the route at all, and that sign-in is a live session of its own which no sweep
+    /// aimed at a recovery-code credential touches — so "the account holds one live session" stopped
+    /// being a statement about the act. What the act owes is unchanged: it opened one, or none. Keyed on
+    /// the primary key, because the columns beside it repeat.
+    /// </remarks>
+    private static async Task<SessionRow[]> LiveSessionsOpenedSinceAsync(
+        NpgsqlConnection admin,
+        Guid userId,
+        IReadOnlyList<SessionRow> before)
+    {
+        HashSet<Guid> standing = [.. before.Select(session => session.Id)];
+
+        return [.. (await LiveSessionsAsync(admin, userId)).Where(session => !standing.Contains(session.Id))];
+    }
+
+    /// <summary>Every <c>sessions</c> row in the database, by id and scoped to nothing.</summary>
+    /// <remarks>
+    /// Unscoped deliberately: a row filed under the wrong owner is exactly what the caller is looking
+    /// for, and a read filtered to the expected account would report it as absent.
+    /// </remarks>
+    private static async Task<IReadOnlyList<Guid>> AllSessionIdsAsync(NpgsqlConnection admin)
+    {
+        await using NpgsqlCommand command = new("select id from sessions", admin);
+
+        List<Guid> ids = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            ids.Add(reader.GetGuid(0));
+        }
+
+        return ids;
+    }
+
+    /// <summary>
+    /// Every session in the database that was not there when <paramref name="before" /> was read.
+    /// </summary>
+    /// <remarks>
+    /// See <see cref="LiveSessionsOpenedSinceAsync" /> for why these are differences. This one stays
+    /// unscoped for <see cref="AllSessionIdsAsync" />'s reason on top of it.
+    /// </remarks>
+    private static async Task<IReadOnlyList<Guid>> SessionsOpenedSinceAsync(
+        NpgsqlConnection admin,
+        IReadOnlyList<Guid> before)
+    {
+        HashSet<Guid> standing = [.. before];
+
+        return [.. (await AllSessionIdsAsync(admin)).Where(id => !standing.Contains(id))];
     }
 
     private static async Task<long> ScalarAsync(NpgsqlConnection admin, string sql)
@@ -2861,11 +2944,12 @@ public sealed class RecoveryCodeGenerationTests
     /// The host the few tests that still authenticate with a provider bearer are built on.
     /// </summary>
     /// <remarks>
-    /// <b>They are the tests that count <c>sessions</c> rows across the whole database</b>, plus the two
-    /// about what the middleware answers a principal holding no account. Seeding a sign-in writes a
-    /// session, so "this account has exactly one live session" and "no session row exists at all" both
-    /// change value the moment such a client is handed out — which makes moving them a decision about
-    /// what those counts should say rather than a change of client.
+    /// <b>They are exactly the two about what a caller holding no account of its own is answered</b> —
+    /// one authenticated principal the provisioning middleware cannot resolve, and one carrying nothing
+    /// at all — which is a question only a bearer host can put. What used to keep the counting tests here
+    /// as well was that every one of them read <c>sessions</c> as an absolute against an empty database,
+    /// and seeding a sign-in writes a row into it; they read the table before the act now and assert what
+    /// the act changed, which keeps each claim unscoped and stops it depending on an empty table.
     /// </remarks>
     private static async Task<PostgresTestHost> StartBearerHostAsync()
     {
@@ -2879,9 +2963,12 @@ public sealed class RecoveryCodeGenerationTests
     /// much of the account it reaches, and what type that credential is.
     /// </summary>
     /// <remarks>
-    /// The id and the two instants are deliberately absent. Nothing here asks when a session was created —
-    /// the interval is product policy pinned against a fixed clock in
-    /// <c>GenerateRecoveryCodesHandlerTests</c> — and a row's identifier answers no question this file has.
+    /// The two instants are deliberately absent: nothing here asks when a session was created — the
+    /// interval is product policy pinned against a fixed clock in
+    /// <c>GenerateRecoveryCodesHandlerTests</c>. The id is carried for one purpose and no assertion reads
+    /// its value: it is what a live session standing before an act is told from one the act opened by.
+    /// The three columns beside it repeat across rows, so a difference computed without the key would
+    /// report one session where there are two.
     /// </remarks>
-    private sealed record SessionRow(Guid CredentialId, string Kind, string CredentialType);
+    private sealed record SessionRow(Guid Id, Guid CredentialId, string Kind, string CredentialType);
 }

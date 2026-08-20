@@ -1,6 +1,7 @@
 using Api.Infrastructure;
 using Application.Registration;
 using Domain.Sessions;
+using Domain.Users;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -307,15 +308,43 @@ public sealed class ApiFactory(
     /// </param>
     /// <param name="email">The address the account is created with; defaults as a bearer client's does.</param>
     /// <param name="kind">
-    /// Which kind of session to open, which decides which credential opens it: a passkey for
-    /// <see cref="SessionKind.Full" />, the account's federated credential for
-    /// <see cref="SessionKind.Locked" />. The seeding throws if the domain derives the other one.
+    /// Which kind of session to open, which decides which credential opens it unless
+    /// <paramref name="opensWith" /> names one: a passkey for <see cref="SessionKind.Full" />, the
+    /// account's federated credential for <see cref="SessionKind.Locked" />. The seeding throws if the
+    /// domain derives the other one.
+    /// </param>
+    /// <param name="opensWith">
+    /// The credential type the session is opened over, for a caller whose test cannot afford the one the
+    /// kind would choose. Declared last, and optional, so every existing call site keeps compiling and
+    /// keeps seeding exactly what it seeds today.
+    /// <para>
+    /// <b>There is one reason to name it and it is <see cref="CredentialType.RecoveryCodes" />.</b> A
+    /// full session is opened by a passkey <em>or</em> by a set of recovery codes —
+    /// <c>Session.KindFor</c> maps both to <see cref="SessionKind.Full" /> and
+    /// <c>CK_sessions_kind_matches_credential</c> admits both — and the difference between them is
+    /// entirely what the seeding writes beside the session. The passkey arm files a
+    /// <c>passkey_public_keys</c> row and a <c>passkey_signature_counters</c> row and a second
+    /// <c>credentials</c> row of type <c>passkey</c>; the recovery-codes arm files one <c>credentials</c>
+    /// row and nothing else. So a test whose subject is "this account holds exactly one passkey", "the
+    /// refused ceremony filed no passkey anywhere" or "one credential was excluded from the options"
+    /// asks for this and goes on asserting the numbers it was written with. Everything else wants the
+    /// default: a set is one per account, so an account seeded this way cannot issue its first set
+    /// through the route.
+    /// </para>
+    /// </param>
+    /// <param name="issuedAtUtc">
+    /// The instant the seeded session is stamped as opened at; it expires an hour later. Omitted, it is
+    /// the wall clock. Name it on a host whose <c>TimeProvider</c> has been replaced by a fixed instant,
+    /// or the session is judged against that instant and answers 401 for a reason no assertion names —
+    /// see <c>RepositoryTestHost.SeedSignedInOwnerOnAsync</c>, which argues it.
     /// </param>
     public async Task<SignedInClient> CreateSignedInClientAsync(
         string? subject = null,
         string? email = null,
         SessionKind kind = SessionKind.Full,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CredentialType? opensWith = null,
+        DateTime? issuedAtUtc = null)
     {
         RequireApplicationAuthentication(nameof(CreateSignedInClientAsync));
 
@@ -325,7 +354,9 @@ public sealed class ApiFactory(
             resolvedSubject,
             email ?? $"{resolvedSubject}@example.com",
             kind,
-            cancellationToken);
+            cancellationToken,
+            opensWith,
+            issuedAtUtc);
 
         return new SignedInClient(
             CreateCookieClient(Base64UrlText.Encode(owner.SessionToken)),

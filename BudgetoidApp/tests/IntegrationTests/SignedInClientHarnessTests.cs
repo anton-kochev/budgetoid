@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Domain.Sessions;
+using Domain.Users;
+using Npgsql;
 
 namespace IntegrationTests;
 
@@ -125,6 +127,54 @@ public sealed class SignedInClientHarnessTests
     }
 
     /// <summary>
+    /// That a full session asked for over a set of recovery codes is a full session, and that seeding it
+    /// files no passkey of any kind.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both halves, because either alone is satisfied by the arm this one replaces.</b> The default
+    /// full client also reaches <c>/api/accounts</c>, so the status on its own says nothing about which
+    /// credential opened the session; and a client that authenticated as nobody would file no passkey
+    /// just as truthfully. Together they are the property every caller of this argument depends on: the
+    /// session is <see cref="SessionKind.Full" /> and the account holds not one passkey row.
+    /// </para>
+    /// <para>
+    /// <b>The counts are unscoped and on the container superuser connection.</b> What the callers assert
+    /// is that a <em>refused</em> ceremony filed nothing anywhere, so the claim this harness owes them is
+    /// about the whole database rather than about one account — and <c>passkey_signature_counters</c>
+    /// carries <c>user_isolation</c>, which is <c>FOR ALL</c>, so a policed connection would report zero
+    /// for a row that is there exactly as it does for one that is not.
+    /// </para>
+    /// <para>
+    /// The credential row itself is counted too, and it is what tells this arm from one that seeded no
+    /// credential at all: exactly one set, under this account.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task CreateSignedInClientAsync_OverRecoveryCodes_OpensAFullSessionAndFilesNoPasskey()
+    {
+        // Arrange
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
+        await host.StartAsync();
+
+        // Act
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(
+            "scratch-recovery-codes", opensWith: CredentialType.RecoveryCodes);
+        HttpResponseMessage accounts = await signedIn.Client.GetAsync("/api/accounts");
+
+        // Assert — a full session's reach, and not a passkey row anywhere in the database.
+        await Assert.That(accounts.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountAsync(host, "select count(*) from passkey_public_keys")).IsEqualTo(0L);
+        await Assert.That(await CountAsync(host, "select count(*) from passkey_signature_counters"))
+            .IsEqualTo(0L);
+        await Assert.That(await CountAsync(host, "select count(*) from credentials where type = 'passkey'"))
+            .IsEqualTo(0L);
+        await Assert.That(await CountAsync(
+                host, $"select count(*) from credentials where type = 'recovery_codes' and user_id = '{signedIn.UserId}'"))
+            .IsEqualTo(1L);
+    }
+
+    /// <summary>
     /// That asking for a cookie-carrying client on a host that named <see cref="TestAuthHandler" /> as its
     /// default scheme throws, naming the flag that fixes it.
     /// </summary>
@@ -158,5 +208,22 @@ public sealed class SignedInClientHarnessTests
         // barely better than the 401 storm it replaced, so what is pinned is that the message hands back
         // the argument to change.
         await Assert.That(thrown?.Message).Contains("usesApplicationAuthentication: true");
+    }
+
+    /// <summary>
+    /// Runs a counting query on the container superuser connection, refusing anything that is not a count.
+    /// </summary>
+    private static async Task<long> CountAsync(PostgresTestHost host, string sql)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(sql, connection);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected a count from '{sql}', got '{unexpected ?? "null"}'."),
+        };
     }
 }

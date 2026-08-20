@@ -301,12 +301,25 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The credential is chosen by the kind rather than named by the caller, because the two are the
-    /// same decision: <c>Session.Establish</c> derives <see cref="SessionKind.Full" /> from a passkey and
-    /// <see cref="SessionKind.Locked" /> from the federated credential, and a caller free to pair them
-    /// differently would be able to ask for a session the product cannot open.
-    /// <see cref="SeedSessionOnAsync" /> still checks what the domain derived, so the pairing below is
-    /// held by the domain rather than by this switch.
+    /// <b>The credential is derived from the kind unless the caller names one</b>, because for most
+    /// callers the two are the same decision: <c>Session.Establish</c> derives
+    /// <see cref="SessionKind.Full" /> from a passkey and <see cref="SessionKind.Locked" /> from the
+    /// federated credential. What breaks the one-to-one is <c>Session.KindFor</c>'s third arm —
+    /// <see cref="CredentialType.RecoveryCodes" /> also derives <see cref="SessionKind.Full" /> — so a
+    /// full session has <b>two</b> credentials that can open it and only the caller knows which one its
+    /// test can afford. <see cref="SeedSessionOnAsync" /> still checks what the domain derived against
+    /// <paramref name="kind" />, so a caller pairing them wrongly fails at the seeding rather than
+    /// somewhere above it: the pairing is held by the domain, not by the switch below.
+    /// </para>
+    /// <para>
+    /// <b>Why anybody asks for the recovery-codes arm.</b> The passkey arm writes three rows a test may
+    /// be counting — the <c>credentials</c> row, its <c>passkey_public_keys</c> row and its
+    /// <c>passkey_signature_counters</c> row — so an account seeded that way holds one more passkey than
+    /// the test arranged. Every assertion of the form "this account holds exactly one passkey", "no
+    /// passkey was filed anywhere" or "one credential was excluded" reads the seeding instead of the
+    /// act. The recovery-codes arm opens the same <see cref="SessionKind.Full" /> session while writing
+    /// a single <c>credentials</c> row and touching neither passkey table, which is what lets those
+    /// assertions stay exactly as they were written.
     /// </para>
     /// <para>
     /// <b>The token bytes are random here, and the WebAuthn credential id with them.</b> Both columns are
@@ -316,12 +329,32 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// their bytes have <see cref="SeedSessionAsync" /> and its fill.
     /// </para>
     /// </remarks>
+    /// <param name="opensWith">
+    /// Which credential type opens the session. Omitted, the kind chooses: a passkey for
+    /// <see cref="SessionKind.Full" /> and the account's federated credential for
+    /// <see cref="SessionKind.Locked" />. Declared last, and optional, so every existing call site keeps
+    /// compiling and keeps seeding exactly what it seeds today.
+    /// </param>
+    /// <param name="issuedAtUtc">
+    /// The instant the session is stamped as opened at; it expires an hour later. Omitted, it is the wall
+    /// clock, which is what every caller wants and what every caller had.
+    /// <para>
+    /// <b>It exists for the tests that replace the application's <c>TimeProvider</c>.</b>
+    /// <c>AuthenticateSessionHandler</c> judges a session against <c>timeProvider.GetUtcNow()</c>, so a
+    /// host serving requests at a fixed instant months from now answers 401 to a session seeded against
+    /// the wall clock — and the test reads that as the feature under it being broken. Naming the same
+    /// instant the fake clock reports puts the window back around the request.
+    /// </para>
+    /// </param>
     public Task<SignedInOwner> SeedSignedInOwnerAsync(
         string googleSubject,
         string email,
         SessionKind kind = SessionKind.Full,
-        CancellationToken cancellationToken = default) =>
-        SeedSignedInOwnerOnAsync(ConnectionString, googleSubject, email, kind, cancellationToken);
+        CancellationToken cancellationToken = default,
+        CredentialType? opensWith = null,
+        DateTime? issuedAtUtc = null) =>
+        SeedSignedInOwnerOnAsync(
+            ConnectionString, googleSubject, email, kind, cancellationToken, opensWith, issuedAtUtc);
 
     /// <inheritdoc cref="SeedOwnerOnAsync" />
     internal static async Task<SignedInOwner> SeedSignedInOwnerOnAsync(
@@ -329,26 +362,38 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         string googleSubject,
         string email,
         SessionKind kind = SessionKind.Full,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CredentialType? opensWith = null,
+        DateTime? issuedAtUtc = null)
     {
         SeededOwner owner =
             await SeedOwnerOnAsync(connectionString, googleSubject, email, cancellationToken);
 
-        Guid credentialId = kind switch
+        CredentialType credentialType = opensWith ?? kind switch
         {
-            SessionKind.Full => await SeedPasskeyOnAsync(
-                connectionString,
-                owner.UserId,
-                RandomNumberGenerator.GetBytes(WebAuthnCredentialIdLength),
-                cancellationToken: cancellationToken),
-            SessionKind.Locked =>
-                await FederatedCredentialIdOnAsync(connectionString, owner.UserId, cancellationToken),
+            SessionKind.Full => CredentialType.Passkey,
+            SessionKind.Locked => CredentialType.Federated,
             _ => throw new ArgumentOutOfRangeException(
                 nameof(kind), kind, "No credential type opens a session of that kind."),
         };
 
+        Guid credentialId = credentialType switch
+        {
+            CredentialType.Passkey => await SeedPasskeyOnAsync(
+                connectionString,
+                owner.UserId,
+                RandomNumberGenerator.GetBytes(WebAuthnCredentialIdLength),
+                cancellationToken: cancellationToken),
+            CredentialType.Federated =>
+                await FederatedCredentialIdOnAsync(connectionString, owner.UserId, cancellationToken),
+            CredentialType.RecoveryCodes =>
+                await SeedRecoveryCodesSetOnAsync(connectionString, owner.UserId, cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(opensWith), credentialType, "No credential of that type can be seeded here."),
+        };
+
         byte[] token = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
-        DateTime now = DateTime.UtcNow;
+        DateTime now = issuedAtUtc ?? DateTime.UtcNow;
         await SeedSessionOnAsync(
             connectionString,
             credentialId,
@@ -395,6 +440,43 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         return (await db.Credentials.SingleAsync(
             stored => stored.UserId == userId && stored.Type == CredentialType.Federated,
             cancellationToken)).Id;
+    }
+
+    /// <summary>
+    /// Files the <c>credentials</c> row that stands for an account's set of recovery codes and returns
+    /// its id, so a session can be opened over a credential that writes nothing on either passkey table.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The row stands alone: no <c>recovery_code_hashes</c>, and no <c>wrapped_account_keys</c>.</b>
+    /// Neither is required by anything beneath the application — <c>CK_credentials_type_shape</c> reads
+    /// the same predicate for <c>recovery_codes</c> as for <c>passkey</c>, and "every set holds ten
+    /// codes" is a property of the write surface rather than a schema fact, exactly as
+    /// "every factor has a wrapped-key row" is — so a bare set is a legal row and the seeding does not
+    /// have to invent secrets nobody redeems. It is also the shape that keeps the seeding invisible:
+    /// the tests reaching for this arm count passkeys, wrapped keys and hashes, and a seeder writing ten
+    /// hash rows would move the third of those the way the passkey arm moves the first.
+    /// <see cref="SeedPasskeyOnAsync" /> makes the same trade in the other direction — it files a
+    /// passkey with no wrapped keys, which is equally a shape no ceremony produces.
+    /// </para>
+    /// <para>
+    /// One set per account is enforced by <c>IX_credentials_user_id_recovery_codes</c>, so an account
+    /// seeded this way cannot go on to issue its first set through the route. That is a property of the
+    /// arrangement rather than a limitation of the seeder: a test that issues a set wants the passkey
+    /// arm, which is the default.
+    /// </para>
+    /// </remarks>
+    private static async Task<Guid> SeedRecoveryCodesSetOnAsync(
+        string connectionString,
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        Credential credential = Credential.CreateRecoveryCodes(userId, SeedInstant);
+        db.Credentials.Add(credential);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return credential.Id;
     }
 
     /// <summary>

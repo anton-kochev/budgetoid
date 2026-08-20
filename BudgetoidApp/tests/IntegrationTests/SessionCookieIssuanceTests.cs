@@ -316,23 +316,24 @@ public sealed class SessionCookieIssuanceTests
         await using PostgresTestHost host = await StartHostAsync();
         SyntheticAuthenticator bystanderDevice =
             SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        HttpClient bystander = host.Factory.CreateAuthenticatedClient(OtherSubject);
+        (HttpClient bystander, Guid bystanderId, _) =
+            await host.Factory.CreateSignedInClientAsync(OtherSubject);
         await RegisterPasskeyAsync(bystander, bystanderDevice);
-        Guid bystanderId = await ResolveUserIdAsync(host, OtherSubject);
         await IssueSetAsync(bystander, bystanderDevice, bystanderId, Verifiers());
 
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
         await IssueSetAsync(client, device, userId, verifiers);
 
-        // No handle before the act, or the row read afterwards is one the arrangement produced.
-        await Assert.That(await CountAsync(host.ConnectionString, "select count(*) from session_tokens"))
-            .IsEqualTo(0L);
+        // Everything standing before the act. Both accounts are signed in, so the table is not empty and
+        // "the row this redemption wrote" has to be told from the arrangement's by difference rather
+        // than by there being only one.
+        IReadOnlyList<SessionRow> sessionsBefore = await AllSessionsAsync(host.ConnectionString);
+        IReadOnlyList<SessionTokenRow> handlesBefore = await AllHandlesAsync(host.ConnectionString);
 
-        // Act — a client carrying no token at all, which is the state a recovery sign-in arrives in.
+        // Act — a client carrying no credential at all, which is the state a recovery sign-in arrives in.
         HttpResponseMessage response = await RedeemAsync(host.Factory.CreateClient(), verifiers[0]);
 
         // Assert
@@ -341,11 +342,11 @@ public sealed class SessionCookieIssuanceTests
         string cookieValue = SessionCookieValueOf(response);
         await Assert.That(Base64UrlText.Decode(cookieValue).Length).IsEqualTo(SessionToken.TokenLength);
 
-        // One session, and one handle, and the handle names that session for that account — never the
-        // bystander, whose set was issued first and whose account is what a lookup that dropped its
-        // owner predicate would land on.
-        SessionRow session = await SoleSessionAsync(host.ConnectionString);
-        SessionTokenRow handle = await SoleSessionTokenAsync(host.ConnectionString);
+        // One session opened, one handle stored, and the handle names that session for that account —
+        // never the bystander, whose set was issued first and whose account is what a lookup that
+        // dropped its owner predicate would land on.
+        SessionRow session = await SoleSessionOpenedSinceAsync(host.ConnectionString, sessionsBefore);
+        SessionTokenRow handle = await SoleHandleStoredSinceAsync(host.ConnectionString, handlesBefore);
         await Assert.That(session.UserId).IsEqualTo(userId);
         await Assert.That(handle.TokenHash).IsEqualTo(DigestOf(cookieValue));
         await Assert.That(handle.SessionId).IsEqualTo(session.Id);
@@ -370,11 +371,12 @@ public sealed class SessionCookieIssuanceTests
     {
         // Arrange — a real account holding a real set, so the refusal is about the value presented.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         await IssueSetAsync(client, device, userId, Verifiers());
+
+        IReadOnlyList<SessionTokenRow> handlesBefore = await AllHandlesAsync(host.ConnectionString);
 
         // Act — a well-formed verifier of the right width that no row was ever written for.
         HttpResponseMessage response = await RedeemAsync(host.Factory.CreateClient(), Verifiers(1)[0]);
@@ -382,8 +384,8 @@ public sealed class SessionCookieIssuanceTests
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(SetCookieHeadersOf(response)).IsEqualTo(string.Empty);
-        await Assert.That(await CountAsync(host.ConnectionString, "select count(*) from session_tokens"))
-            .IsEqualTo(0L);
+        await Assert.That((await HandlesStoredSinceAsync(host.ConnectionString, handlesBefore)).Count)
+            .IsEqualTo(0);
     }
 
     /// <summary>
@@ -400,12 +402,13 @@ public sealed class SessionCookieIssuanceTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
         await IssueSetAsync(client, device, userId, verifiers);
+
+        IReadOnlyList<SessionRow> sessionsBefore = await AllSessionsAsync(host.ConnectionString);
 
         // Act
         HttpResponseMessage response = await RedeemAsync(host.Factory.CreateClient(), verifiers[0]);
@@ -418,7 +421,7 @@ public sealed class SessionCookieIssuanceTests
         string members = string.Join(", ", body.Select(member => member.Key).Order(StringComparer.Ordinal));
         await Assert.That(members).IsEqualTo(RedemptionMembers);
 
-        SessionRow session = await SoleSessionAsync(host.ConnectionString);
+        SessionRow session = await SoleSessionOpenedSinceAsync(host.ConnectionString, sessionsBefore);
         await Assert.That(payload).DoesNotContain(session.Id.ToString("D"));
         await Assert.That(payload).DoesNotContain(session.Id.ToString("N"));
         await Assert.That(payload).DoesNotContain(SessionCookieValueOf(response));
@@ -454,16 +457,21 @@ public sealed class SessionCookieIssuanceTests
     {
         // Arrange — a real first set, and one live session hanging off it.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         await EnsureOkAsync(await GenerateAsync(client, device, userId));
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         Guid replacedSetId = await ResolveSetCredentialIdAsync(admin, userId);
         await InsertRecoveryCodeSessionAsync(admin, userId, replacedSetId, handle: null);
+
+        // Everything standing before the act. This account is also signed in over the passkey it
+        // registered, and that session is untouched by a sweep aimed at the replaced set's credential —
+        // so what the act left has to be told from what it was handed.
+        IReadOnlyList<SessionTokenRow> handlesBefore = await AllHandlesAsync(host.ConnectionString);
+        SessionRow[] liveBefore = await LiveSessionsAsync(admin, userId);
 
         // Act
         HttpResponseMessage response = await GenerateAsync(client, device, userId);
@@ -477,16 +485,18 @@ public sealed class SessionCookieIssuanceTests
         string cookieValue = SessionCookieValueOf(response);
         await Assert.That(Base64UrlText.Decode(cookieValue).Length).IsEqualTo(SessionToken.TokenLength);
 
-        // Exactly one handle, and it names the account's one live session — which is the one over the
-        // set this request just issued, not the one it revoked.
-        SessionTokenRow handle = await SoleSessionTokenAsync(host.ConnectionString);
+        // Exactly one handle stored, and it names the one live session this request added — which is the
+        // one over the set it just issued, not the one it revoked.
+        SessionTokenRow handle = await SoleHandleStoredSinceAsync(host.ConnectionString, handlesBefore);
         await Assert.That(handle.TokenHash).IsEqualTo(DigestOf(cookieValue));
         await Assert.That(handle.UserId).IsEqualTo(userId);
 
         Guid newSetId = await ResolveSetCredentialIdAsync(admin, userId);
         await Assert.That(newSetId).IsNotEqualTo(replacedSetId);
 
-        SessionRow[] live = await LiveSessionsAsync(admin, userId);
+        HashSet<Guid> standing = [.. liveBefore.Select(session => session.Id)];
+        SessionRow[] live =
+            [.. (await LiveSessionsAsync(admin, userId)).Where(session => !standing.Contains(session.Id))];
         await Assert.That(live.Length).IsEqualTo(1);
         await Assert.That(live[0].CredentialId).IsEqualTo(newSetId);
         await Assert.That(handle.SessionId).IsEqualTo(live[0].Id);
@@ -509,14 +519,14 @@ public sealed class SessionCookieIssuanceTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
 
-        // No session and no handle before the act, or every row counted afterwards is the arrangement's.
-        await Assert.That(await CountAsync(host.ConnectionString, "select count(*) from sessions"))
-            .IsEqualTo(0L);
+        // Everything standing before the act. This account is signed in over its passkey, so the two
+        // tables are not empty; what is claimed below is that this request added to neither.
+        IReadOnlyList<SessionRow> sessionsBefore = await AllSessionsAsync(host.ConnectionString);
+        IReadOnlyList<SessionTokenRow> handlesBefore = await AllHandlesAsync(host.ConnectionString);
 
         // Act
         HttpResponseMessage response = await GenerateAsync(client, device, userId);
@@ -529,10 +539,10 @@ public sealed class SessionCookieIssuanceTests
         await Assert.That(body["session"] is null).IsTrue();
 
         await Assert.That(SetCookieHeadersOf(response)).IsEqualTo(string.Empty);
-        await Assert.That(await CountAsync(host.ConnectionString, "select count(*) from session_tokens"))
-            .IsEqualTo(0L);
-        await Assert.That(await CountAsync(host.ConnectionString, "select count(*) from sessions"))
-            .IsEqualTo(0L);
+        await Assert.That((await HandlesStoredSinceAsync(host.ConnectionString, handlesBefore)).Count)
+            .IsEqualTo(0);
+        await Assert.That((await SessionsOpenedSinceAsync(host.ConnectionString, sessionsBefore)).Count)
+            .IsEqualTo(0);
     }
 
     /// <summary>
@@ -566,10 +576,9 @@ public sealed class SessionCookieIssuanceTests
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         string[] verifiers = Verifiers();
         await IssueSetAsync(client, device, userId, verifiers);
 
@@ -578,6 +587,11 @@ public sealed class SessionCookieIssuanceTests
         await ExecuteAsync(
             admin,
             $"revoke insert on session_tokens from {DatabaseProvisioning.AppRoleName}");
+
+        // Everything standing before the act, because this account is signed in and the two tables are
+        // therefore not empty. What is claimed below is that the refused redemption added to neither.
+        IReadOnlyList<SessionRow> sessionsBefore = await AllSessionsAsync(host.ConnectionString);
+        IReadOnlyList<SessionTokenRow> handlesBefore = await AllHandlesAsync(host.ConnectionString);
 
         // Act
         HttpResponseMessage response = await RedeemAsync(host.Factory.CreateClient(), verifiers[0]);
@@ -589,10 +603,10 @@ public sealed class SessionCookieIssuanceTests
         await Assert.That(response.StatusCode).IsNotEqualTo(HttpStatusCode.OK);
 
         // Neither row, and the code unspent: one unit of work, rolled back whole.
-        await Assert.That(await CountAsync(host.ConnectionString, "select count(*) from sessions"))
-            .IsEqualTo(0L);
-        await Assert.That(await CountAsync(host.ConnectionString, "select count(*) from session_tokens"))
-            .IsEqualTo(0L);
+        await Assert.That((await SessionsOpenedSinceAsync(host.ConnectionString, sessionsBefore)).Count)
+            .IsEqualTo(0);
+        await Assert.That((await HandlesStoredSinceAsync(host.ConnectionString, handlesBefore)).Count)
+            .IsEqualTo(0);
         await Assert.That(await CountAsync(host.ConnectionString, "select count(*) from recovery_code_hashes"))
             .IsEqualTo((long)RequiredCodeCount);
     }
@@ -629,10 +643,9 @@ public sealed class SessionCookieIssuanceTests
     {
         // Arrange — a real first set, one live session over it, and a stored handle for that session.
         await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await RegisterPasskeyAsync(client, device);
-        Guid userId = await ResolveUserIdAsync(host, Subject);
         await EnsureOkAsync(await GenerateAsync(client, device, userId));
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -640,9 +653,12 @@ public sealed class SessionCookieIssuanceTests
         Guid replacedSetId = await ResolveSetCredentialIdAsync(admin, userId);
         await InsertRecoveryCodeSessionAsync(admin, userId, replacedSetId, handle: TokenBytes(0x5A));
 
-        // One handle before the act, or this test is the plain replacement path with extra steps.
-        await Assert.That(await CountAsync(host.ConnectionString, "select count(*) from session_tokens"))
-            .IsEqualTo(1L);
+        // The replaced set's own handle is stored before the act, or this test is the plain replacement
+        // path with extra steps. Named by its digest rather than counted: this account is also signed in
+        // over its passkey, so the table holds that handle too and a total says nothing about which.
+        string replacedHandle = Convert.ToHexString(SHA256.HashData(TokenBytes(0x5A)));
+        IReadOnlyList<SessionTokenRow> handlesBefore = await AllHandlesAsync(host.ConnectionString);
+        await Assert.That(handlesBefore.Select(row => row.TokenHash)).Contains(replacedHandle);
 
         // Act
         HttpResponseMessage response = await GenerateAsync(client, device, userId);
@@ -652,9 +668,12 @@ public sealed class SessionCookieIssuanceTests
         await Assert.That(response.StatusCode).IsNotEqualTo(HttpStatusCode.InternalServerError);
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
-        // The replaced set's handle left with the cascade, and the only one left is the new session's.
-        SessionTokenRow handle = await SoleSessionTokenAsync(host.ConnectionString);
-        await Assert.That(handle.TokenHash).IsNotEqualTo(Convert.ToHexString(SHA256.HashData(TokenBytes(0x5A))));
+        // The replaced set's handle left with the cascade, and this request stored exactly one of its
+        // own in its place.
+        IReadOnlyList<SessionTokenRow> handlesAfter = await AllHandlesAsync(host.ConnectionString);
+        await Assert.That(handlesAfter.Select(row => row.TokenHash)).DoesNotContain(replacedHandle);
+        await Assert.That((await HandlesStoredSinceAsync(host.ConnectionString, handlesBefore)).Count)
+            .IsEqualTo(1);
     }
 
     /// <summary>The account under test on the recovery-code paths.</summary>
@@ -816,14 +835,12 @@ public sealed class SessionCookieIssuanceTests
     /// answers to.
     /// </summary>
     /// <remarks>
-    /// The account is established first, on the one route group allowed to mint one: neither passkey leg
-    /// provisions and neither does <c>/api/me/*</c>, so without this line the very first request is
-    /// refused and every test here would be red for a reason it is not about.
+    /// There is no establishing call in front of the ceremony any more: every caller hands over a client
+    /// the sign-in harness produced, and that harness writes the account, its default budget and the
+    /// session the cookie names before the client exists at all.
     /// </remarks>
     private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
     {
-        await ApiFactory.EstablishAccountAsync(client);
-
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(
             challenge,
@@ -968,6 +985,16 @@ public sealed class SessionCookieIssuanceTests
     /// </remarks>
     private static async Task<SessionRow> SoleSessionAsync(string connectionString)
     {
+        IReadOnlyList<SessionRow> rows = await AllSessionsAsync(connectionString);
+
+        return rows.Count == 1
+            ? rows[0]
+            : throw new InvalidOperationException($"Expected exactly one session, found {rows.Count}.");
+    }
+
+    /// <summary>Every <c>sessions</c> row in the database, oldest first.</summary>
+    private static async Task<IReadOnlyList<SessionRow>> AllSessionsAsync(string connectionString)
+    {
         await using NpgsqlConnection connection = new(connectionString);
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
@@ -985,13 +1012,21 @@ public sealed class SessionCookieIssuanceTests
                 reader.GetString(3)));
         }
 
-        return rows.Count == 1
-            ? rows[0]
-            : throw new InvalidOperationException($"Expected exactly one session, found {rows.Count}.");
+        return rows;
     }
 
     /// <summary>The one <c>session_tokens</c> row, or a failure saying how many there were.</summary>
     private static async Task<SessionTokenRow> SoleSessionTokenAsync(string connectionString)
+    {
+        IReadOnlyList<SessionTokenRow> rows = await AllHandlesAsync(connectionString);
+
+        return rows.Count == 1
+            ? rows[0]
+            : throw new InvalidOperationException($"Expected exactly one session handle, found {rows.Count}.");
+    }
+
+    /// <summary>Every <c>session_tokens</c> row in the database.</summary>
+    private static async Task<IReadOnlyList<SessionTokenRow>> AllHandlesAsync(string connectionString)
     {
         await using NpgsqlConnection connection = new(connectionString);
         await connection.OpenAsync();
@@ -1009,9 +1044,84 @@ public sealed class SessionCookieIssuanceTests
                 reader.GetGuid(2)));
         }
 
-        return rows.Count == 1
-            ? rows[0]
-            : throw new InvalidOperationException($"Expected exactly one session handle, found {rows.Count}.");
+        return rows;
+    }
+
+    /// <summary>
+    /// Every session in the database that was not there when <paramref name="before" /> was read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A difference, and deliberately not a count scoped to an account.</b> What every test using it
+    /// claims is that one act opened one session, or none, <em>anywhere</em> — including on somebody
+    /// else's account, which is exactly the row a handler that resolved the wrong owner writes and which
+    /// a scoped count would never see. The absolutes these replaced said the same thing only while the
+    /// arrangement left the table empty, and it stopped being empty the day the account under test was
+    /// signed in rather than provisioned from a bearer.
+    /// </para>
+    /// <para>
+    /// Keyed on the primary key rather than on the columns beside it: one account signing in twice
+    /// produces two rows agreeing on owner, credential and kind, so a difference computed without the id
+    /// would report one session where there are two.
+    /// </para>
+    /// </remarks>
+    private static async Task<IReadOnlyList<SessionRow>> SessionsOpenedSinceAsync(
+        string connectionString,
+        IReadOnlyList<SessionRow> before)
+    {
+        HashSet<Guid> standing = [.. before.Select(row => row.Id)];
+
+        return [.. (await AllSessionsAsync(connectionString)).Where(row => !standing.Contains(row.Id))];
+    }
+
+    /// <summary>
+    /// Every session handle in the database that was not there when <paramref name="before" /> was read.
+    /// </summary>
+    /// <remarks>
+    /// Keyed on the digest, which is <c>PK_session_tokens</c>. See
+    /// <see cref="SessionsOpenedSinceAsync" /> for why these are differences rather than scoped counts.
+    /// </remarks>
+    private static async Task<IReadOnlyList<SessionTokenRow>> HandlesStoredSinceAsync(
+        string connectionString,
+        IReadOnlyList<SessionTokenRow> before)
+    {
+        HashSet<string> standing = [.. before.Select(row => row.TokenHash)];
+
+        return
+        [
+            .. (await AllHandlesAsync(connectionString)).Where(row => !standing.Contains(row.TokenHash)),
+        ];
+    }
+
+    /// <summary>
+    /// The one session the act opened, or a failure saying how many it opened instead.
+    /// </summary>
+    /// <remarks>
+    /// Sole rather than first, for the reason <see cref="SoleSessionAsync" /> gives: two rows for one
+    /// sign-in is the replay defect the unit suite pins, and a test reading the first of them would
+    /// report a perfectly plausible answer.
+    /// </remarks>
+    private static async Task<SessionRow> SoleSessionOpenedSinceAsync(
+        string connectionString,
+        IReadOnlyList<SessionRow> before)
+    {
+        IReadOnlyList<SessionRow> opened = await SessionsOpenedSinceAsync(connectionString, before);
+
+        return opened.Count == 1
+            ? opened[0]
+            : throw new InvalidOperationException($"Expected the act to open one session, it opened {opened.Count}.");
+    }
+
+    /// <summary>The one handle the act stored, or a failure saying how many it stored instead.</summary>
+    private static async Task<SessionTokenRow> SoleHandleStoredSinceAsync(
+        string connectionString,
+        IReadOnlyList<SessionTokenRow> before)
+    {
+        IReadOnlyList<SessionTokenRow> stored = await HandlesStoredSinceAsync(connectionString, before);
+
+        return stored.Count == 1
+            ? stored[0]
+            : throw new InvalidOperationException($"Expected the act to store one handle, it stored {stored.Count}.");
     }
 
     /// <summary>
@@ -1099,9 +1209,16 @@ public sealed class SessionCookieIssuanceTests
     }
 
     /// <summary>
-    /// Reads back the user provisioning minted for <paramref name="subject" />. Nothing the API returns
-    /// names it, so the lookup goes through the credential the middleware resolved on.
+    /// Reads back the account filed under <paramref name="subject" />. Nothing the API returns names it,
+    /// so the lookup goes through the federated credential.
     /// </summary>
+    /// <remarks>
+    /// <b>Nothing calls this any more, and it is left standing on purpose.</b> Every arrangement here now
+    /// takes its account id from <see cref="ApiFactory.CreateSignedInClientAsync" />, which hands back the
+    /// id of the account it just wrote — so the lookup is redundant rather than wrong. It goes with the
+    /// bearer path in the commit that removes provisioning, and deleting it here would put an unrelated
+    /// deletion in a test-only change.
+    /// </remarks>
     private static async Task<Guid> ResolveUserIdAsync(PostgresTestHost host, string subject)
     {
         await using NpgsqlConnection connection = new(host.ConnectionString);
@@ -1188,9 +1305,19 @@ public sealed class SessionCookieIssuanceTests
         };
     }
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every
+    /// authenticated arrangement below now signs in with a session cookie rather than with a provider
+    /// bearer.
+    /// </summary>
+    /// <remarks>
+    /// The three assertion-path tests at the top of this file build their own factory through
+    /// <see cref="SessionCookieAuthenticationTests.CreateApiFactory" />, which makes the same choice for
+    /// the same reason; this is the recovery-code half of it.
+    /// </remarks>
     private static async Task<PostgresTestHost> StartHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
 
         return host;
