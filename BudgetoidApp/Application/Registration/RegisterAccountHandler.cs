@@ -321,9 +321,19 @@ public sealed class RegisterAccountHandler(
         // later.
         //
         // The card's rows are projected from the one validated list rather than zipped from three, so a
-        // code's verifier and a code's envelopes cannot come apart: pairing one code's verifier with
-        // another's envelopes satisfies every constraint the database holds and is discovered by somebody
-        // who redeemed a code, was handed a session, and found the account still locked.
+        // code's factor identifier and a code's envelopes cannot come apart. That is the load-bearing
+        // pairing: the identifier is the associated data the client sealed both envelopes with, so a row
+        // holding its neighbour's envelopes rebuilds associated data reproducing neither seal, and that
+        // factor opens nothing — ever, for anybody — with every constraint the database holds satisfied.
+        // Discovered by somebody who redeemed a code, was handed a session, and found the account still
+        // locked.
+        //
+        // The verifier is the member that could be permuted harmlessly, and knowing which half is which
+        // is the point of saying so: it lands in `recovery_code_hashes`, which carries no `factor_id` and
+        // no link of any kind to `wrapped_account_keys`, so a set whose verifiers were shuffled against
+        // its identifier-and-envelope triples redeems and unwraps exactly like a correct one. The
+        // projection still covers all four members, because a projection is cheaper than a rule about
+        // which of them may be zipped.
         //
         // The passkey's pair is filed against `passkey` and the card's against `recoveryCodes`, never both
         // against whichever credential is nearest to hand: the two factors derive different

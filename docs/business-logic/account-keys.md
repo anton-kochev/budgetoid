@@ -438,12 +438,26 @@ screen that shows them has to read them from somewhere.
 
 **One code's four submitted members are produced in one scope, from one code** — its verifier, its
 factor identifier and its two envelopes, pushed together. The obvious implementation derives ten
-key-encryption keys into an array, wraps ten times into a second, and zips those against the
-verifiers at post time; it pairs one code's verifier with another code's envelopes the first time
-anybody reorders anything, and **nothing on either side of the wire can see it**. The set validates,
-the account is created, a session is handed over, and it is found by somebody who redeemed a code
-months later and met an account still locked. It is the client-side twin of the projection rule
-[registration.md](registration.md) states for the server's eleven rows.
+key-encryption keys into an array, wraps ten times into a second, and zips the results against the
+ten factor identifiers at post time.
+
+**What must never come apart is the factor identifier and the envelopes beside it**, because that
+identifier *is* the associated data both envelopes were sealed with. A submission holding one code's
+identifier and another code's envelopes rebuilds associated data that reproduces neither seal, so
+that factor opens nothing — ever, for anybody — and **nothing on either side of the wire can see
+it**. The set validates, the account is created, a session is handed over, and it is found by
+somebody who redeemed a code months later and met an account still locked. It is the client-side twin
+of the projection rule [registration.md](registration.md) states for the server's eleven rows.
+
+**The verifier is the one member that could float without consequence, and naming that is the point
+of this paragraph.** It lands in `recovery_code_hashes`, which carries no `factor_id` and no link of
+any kind to `wrapped_account_keys`, so a set whose ten verifiers were permuted against its ten
+identifier-and-envelope triples is indistinguishable from a correct one at redemption and forever
+after: the hash locates the credential, and the code's own key-encryption key opens whichever of that
+credential's ten envelope pairs it was sealed under. Building all four in one scope is still the
+right shape, because a scope is cheaper than a rule about which members may be zipped — but the
+member that makes it load-bearing is the identifier, and a reader holding the wrong half will defend
+the wrong line.
 
 **The factor identifier is minted by `+core/security/factor-id.ts` and by nothing else**, in the one
 canonical spelling — `crypto.randomUUID()` lower-cased. The `toLowerCase` is not redundant even

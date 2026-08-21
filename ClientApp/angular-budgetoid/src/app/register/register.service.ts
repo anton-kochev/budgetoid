@@ -351,16 +351,30 @@ export class RegisterService {
 
         // **One code's four members are produced in one scope, from one code.**
         // The obvious implementation derives ten key-encryption keys into an
-        // array, wraps ten times into a second, and zips those against the
-        // verifiers at post time. That satisfies every type, every count and
-        // every round trip — and pairs one code's verifier with another code's
-        // envelopes the first time anybody reorders anything. Nothing on either
-        // side of the wire can see it: the set validates, the account is
+        // array, wraps ten times into a second, and zips the results against
+        // the ten factor ids at post time. That satisfies every type, every
+        // count and every round trip.
+        //
+        // **The pairing that must not come apart is the factor id and the
+        // envelopes beside it**, because that id is the associated data both
+        // envelopes were sealed with: a submission carrying one code's id and
+        // another code's envelopes rebuilds associated data reproducing neither
+        // seal, so that factor opens nothing — ever, for anybody. Nothing on
+        // either side of the wire can see it: the set validates, the account is
         // created, a session is handed over, and it is discovered by somebody
         // who redeemed a code months later and found the account still locked.
         // It is the client-side twin of the argument `RegisterAccountHandler`
         // makes over its `wrappedAccountKeys` list, where the card's rows are
         // projected from the one validated list rather than zipped from three.
+        //
+        // The verifier is the one member that could float without consequence,
+        // and naming which half is which matters more than the rule does: it
+        // lands in `recovery_code_hashes`, a table with no `factor_id` and no
+        // link to `wrapped_account_keys`, so a set whose verifiers were
+        // shuffled against its id-and-envelope triples redeems and unwraps
+        // exactly like a correct one. Building all four here is still right,
+        // because one scope is cheaper than a rule about which members may be
+        // zipped.
         //
         // The factor id is minted inside the loop for the same reason, rather
         // than eleven at a time up front: an array of ten identifiers is a
