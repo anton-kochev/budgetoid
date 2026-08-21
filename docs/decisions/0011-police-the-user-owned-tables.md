@@ -41,10 +41,10 @@ foreign key to `users.id`, does not already prove. Reading the credential alone 
 and touches no policed table.
 
 With discovery no longer reading `users`, the identity is known before any statement that needs it,
-including on registration. `User.Create` mints the id with `Guid.CreateVersion7()` on the
-application side, so the id exists before the row does: the handler publishes it, and the `users`
-`INSERT` is then checked against an `app.current_user_id` that already names the row being
-inserted.
+including on registration. `RegistrationAccountId.For` derives the id from the ceremony's own spent
+challenge on the application side, so the id exists before the row does: the handler publishes it,
+and the `users` `INSERT` is then checked against an `app.current_user_id` that already names the row
+being inserted.
 
 `credentials` keeps its exemption, and it is now the only reason on the list that could not be
 argued away. It is the table read to answer "who is asking", so a policy keyed on the identity it
@@ -233,10 +233,10 @@ breaks the convention lands in the fourth bucket and goes red, which is the beha
   returns `Guid?`, which also makes "a later sign-in never refreshes the stored profile" structural
   rather than a comment.
 - Any query that touches `users` or `budgets` before the identity is published fails with `22P02`.
-  That is the intended failure mode, and `BudgetProvisioningTests` is what notices it.
+  That is the intended failure mode, and `AccountRegistrationTests` is what notices it.
 - `IX_users_email` and `IX_budgets_user_id_name` are unique indexes, and indexes are not
-  policy-aware. `TryAddAsync` still receives `23505` against a row the session cannot see, so the
-  `ConflictException` path is unchanged. A reader may expect row-level security to hide the
+  policy-aware. `RegisterAsync` still receives `23505` against a row the session cannot see, so the
+  `RegistrationOutcome` refusal path is unchanged. A reader may expect row-level security to hide the
   conflict; it does not. `IX_users_email` is therefore an account-enumeration channel, and it is
   unexploitable **only** while the email arrives inside a provider-verified token, so a caller can
   probe no address but their own. Whichever story lands the email-change flow owns re-arguing that,
@@ -277,12 +277,13 @@ breaks the convention lands in the fourth bucket and goes red, which is the beha
   instruction to **move the column**, never to append its name to the list.
 - **A trap for whoever re-argues it.** The obvious resolution — a policy admitting a row when the
   session names nobody *or* names its owner — satisfies discovery and breaks registration under a
-  race. `EnsureUserHandler` publishes the new user's id *before* `TryAddAsync`, so when that insert
-  loses the race the re-read of `credentials` runs under the identity of a row that was never
+  race. `RegisterAccountHandler` publishes the new account's id *before* `RegisterAsync`, so when
+  that insert loses the race the re-read of `credentials` runs under the identity of a row that was
+  never
   written: such a policy sees a session naming somebody, returns nothing, and the handler reports
   an email conflict where the truth is a lost race on the subject. Resolving the exemption
   therefore requires reordering publication, not merely writing a policy.
-- **The phantom identity on the conflict path is deliberate.** When `TryAddAsync` loses and no
+- **The phantom identity on the conflict path is deliberate.** When `RegisterAsync` loses and no
   winning credential is found, the id published before the insert stays in request scope naming a
   row that was never written. Nothing reads it — the request ends in a 409 — and anything that did
   would fail closed, since every policed statement it could reach returns zero rows or `42501`.

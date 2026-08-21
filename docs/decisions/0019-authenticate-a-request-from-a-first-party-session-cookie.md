@@ -113,7 +113,7 @@ sharing a token unstorable rather than a duplicate nobody notices.
 
 **Two round trips per authenticated request**, and no transaction may wrap them. A transaction opened
 before the identity is published configures the connection while `app.current_user_id` is empty, and
-every policed statement inside it fails `22P02` — the trap `EnsureUserHandler`,
+every policed statement inside it fails `22P02` — the trap `RegisterAccountHandler`,
 `CompleteAssertionHandler` and `RedeemRecoveryCodeHandler` each already carry. The cost is stated
 rather than hidden.
 

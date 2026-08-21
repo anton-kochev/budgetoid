@@ -217,8 +217,8 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
 
 ## Business Rules & Invariants
 
-- **Rule**: The validation ladder is **fourteen rungs and its order is the security property**, not an
-  implementation detail.
+- **Rule**: The validation ladder is **thirteen rungs and its order is the security property**, not
+  an implementation detail.
 - **Why**: three rungs carry the whole of it, and each is the one a reader will move.
   - **The nonce is consumed at rung 4, before the response is verified at rung 5.** Consuming
     afterwards leaves every refusal below replayable, so a caller could grind responses against one

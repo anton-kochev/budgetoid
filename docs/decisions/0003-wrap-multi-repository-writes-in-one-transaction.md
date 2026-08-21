@@ -126,10 +126,12 @@ must not depend on state left behind by an earlier attempt.
 ## Scope: when one save beats this port
 
 The port exists for handlers that write through more than one **repository**. Two writes that share
-one repository and one `DbContext` do not need it, and provisioning is the case that proves the
-distinction: `UserRepository.TryAddAsync` adds a `users` row and its first `credentials` row and
-saves **once**. Reaching for `ITransactionalExecutor` there would be the obvious move and the
-weaker one — a single save is already atomic, so the execution-strategy retry loop guards nothing,
+one repository and one `DbContext` do not need it, and registration is the case that proves the
+distinction: `IRegistrationRepository.RegisterAsync` adds the account, its three credentials, the
+passkey's material, the ten recovery-code hashes, the eleven wrapped-key rows, the budget, the
+session and its token, and saves **once**. Reaching for `ITransactionalExecutor` there would be the
+obvious move and the weaker one — a single save is already atomic, so the execution-strategy retry
+loop guards nothing,
 and it keeps the `23505` attribution in one `catch` rather than splitting it across two writes that
 can each fail for a different reason. The rule is therefore "one transaction per handler", not "one
 `ITransactionalExecutor` per handler": when a single save already spans everything that must land
@@ -149,11 +151,15 @@ together, that *is* the transaction.
   transaction per request, deliberately: a request-wide transaction would hold a connection for the
   whole request and would silently widen every future handler's boundary. Atomicity is opted into,
   which means the absence of the call is something a reviewer has to notice.
-- **Provisioning is deliberately not wrapped.** `EnsureUserHandler` writes the user and the budget in
-  two saves and relies on a unique index plus a re-read to stay safe under concurrency, and that
-  design is load-bearing — the second save is also the heal path for a user left without a budget.
-  The reasoning is in [budgets.md](../business-logic/budgets.md#edge-cases--known-gotchas); the
-  existence of this port is not a reason to revisit it.
+- **Registration is deliberately not wrapped, and there it is fatal rather than merely redundant.**
+  `RegisterAccountHandler` writes the account, its budget and everything that guards it in a
+  **single** save, so this port has nothing to make atomic. It is also the one path that must not
+  reach for it: the identity is published immediately before the insert, and `BeginTransactionAsync`
+  opens the connection — which is when `SessionContextInterceptor` writes `app.current_user_id` — so
+  a delegate wrapping the publication configures the connection while the setting is still empty and
+  every policed statement in the save meets `''::uuid`. The reasoning is in
+  [registration.md](../business-logic/registration.md); the existence of this port is not a reason to
+  revisit it.
 - **The executor is one more thing a unit test of a handler has to supply.** It is an interface with
   a single method, so a pass-through fake is a line long, but a handler that gains the dependency
   gains it in every test that constructs it.

@@ -380,7 +380,7 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   real least-privilege connection, which is the test that dies with `22P02` if anyone ever wraps it.
   - **No transaction anywhere on this path**, which is the same trap from the other side: one opened
     before the publication configures its connection while the setting is still empty, and every
-    policed statement inside it fails. `EnsureUserHandler`, `CompleteAssertionHandler` and
+    policed statement inside it fails. `RegisterAccountHandler`, `CompleteAssertionHandler` and
     `RedeemRecoveryCodeHandler` each carry the same warning. Nothing here writes, so an atomic unit
     would be protecting nothing.
   - **Two round trips per authenticated request**, stated as the cost rather than hidden. Folding
