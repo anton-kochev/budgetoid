@@ -146,6 +146,12 @@ public sealed class FullSessionRequirementTests
     /// <c>"Elevated"</c> is the second half: a word that is not a member under any casing, standing for
     /// the kind somebody adds later and for a claim carrying arbitrary text.
     /// </para>
+    /// <para>
+    /// <b>Neither of those two reaches the round trip, which is why the numeric arm next door exists.</b>
+    /// A bare case-sensitive <c>Enum.TryParse</c> already refuses both, so this test stayed green with the
+    /// ordinal comparison deleted. See
+    /// <see cref="AKindClaimSpelledAsTheMembersNumber_DoesNotSucceed" />.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task AKindClaimSpelledAnyOtherWay_DoesNotSucceed()
@@ -173,6 +179,83 @@ public sealed class FullSessionRequirementTests
         // Assert
         await Assert.That(lowerCase.HasSucceeded).IsFalse();
         await Assert.That(unknownWord.HasSucceeded).IsFalse();
+        await Assert.That(full.HasSucceeded).IsTrue();
+    }
+
+    /// <summary>
+    /// A kind claim carrying a member's <b>number</b> rather than its name does not satisfy the
+    /// requirement.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What it holds: the ordinal round trip in <c>ReadsBudgetContent</c>, which nothing else here
+    /// reaches.</b> Every <c>Enum.TryParse</c> overload — the case-sensitive one included — accepts a
+    /// numeric string, so <c>"1"</c> parses to <see cref="Domain.Sessions.SessionKind.Full" /> and would be
+    /// admitted by an implementation carrying nothing but the parse. The two arms next door,
+    /// <c>"full"</c> and <c>"Elevated"</c>, are both refused by that bare parse on its own, which is why
+    /// deleting the comparison against <c>kind.ToString()</c> left the whole suite green.
+    /// </para>
+    /// <para>
+    /// <b>What it costs when it fires: an account's budget content opened by a value this product never
+    /// wrote.</b> The claim is published by <c>SessionKind.ToString()</c>, which emits one spelling per
+    /// member and never a digit, so a principal presenting <c>"1"</c> was assembled by something other
+    /// than the session cookie handler — and the gate that exists to keep a locked session off every
+    /// route but the sign-out would wave it through.
+    /// </para>
+    /// <para>
+    /// <c>"0"</c> is the second half and it is not redundant with the first: it is
+    /// <see cref="Domain.Sessions.SessionKind.Locked" />'s number, so a reading that admitted digits at
+    /// all would still refuse it — and asserting both says the refusal is about the <em>spelling</em>
+    /// rather than about which kind the digit happens to name. <c>"+1"</c> and <c>" 1"</c> close the
+    /// same door from the two directions the parser is generous in, since both reach
+    /// <see cref="Domain.Sessions.SessionKind.Full" /> and neither renders as it.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AKindClaimSpelledAsTheMembersNumber_DoesNotSucceed()
+    {
+        // Arrange — the number Full is declared at, the number Locked is declared at, and the two
+        // decorations of the first that Enum.TryParse also admits.
+        await using ApiFactory factory = CreateFactory();
+        AuthorizationHandlerContext fullsNumber = ContextFor(
+            factory,
+            SessionPrincipal("1"),
+            HttpContextOn(RouteWithNoMarker));
+        AuthorizationHandlerContext lockedsNumber = ContextFor(
+            factory,
+            SessionPrincipal("0"),
+            HttpContextOn(RouteWithNoMarker));
+        AuthorizationHandlerContext signed = ContextFor(
+            factory,
+            SessionPrincipal("+1"),
+            HttpContextOn(RouteWithNoMarker));
+        AuthorizationHandlerContext padded = ContextFor(
+            factory,
+            SessionPrincipal(" 1"),
+            HttpContextOn(RouteWithNoMarker));
+        AuthorizationHandlerContext full = ContextFor(
+            factory,
+            SessionPrincipal("Full"),
+            HttpContextOn(RouteWithNoMarker));
+
+        // Act
+        await RunHandlersAsync(factory, fullsNumber);
+        await RunHandlersAsync(factory, lockedsNumber);
+        await RunHandlersAsync(factory, signed);
+        await RunHandlersAsync(factory, padded);
+        await RunHandlersAsync(factory, full);
+
+        // Assert — first that the input really is the one this arm is about. Without this the test is
+        // satisfied by a digit no parser accepts, which would make it a second copy of the
+        // unknown-word arm next door rather than the only test that reaches the round trip.
+        await Assert.That(Enum.TryParse("1", out Domain.Sessions.SessionKind parsed)).IsTrue();
+        await Assert.That(parsed).IsEqualTo(Domain.Sessions.SessionKind.Full);
+
+        // Then the Full control beside them, this file's rule for every negative arm.
+        await Assert.That(fullsNumber.HasSucceeded).IsFalse();
+        await Assert.That(lockedsNumber.HasSucceeded).IsFalse();
+        await Assert.That(signed.HasSucceeded).IsFalse();
+        await Assert.That(padded.HasSucceeded).IsFalse();
         await Assert.That(full.HasSucceeded).IsTrue();
     }
 

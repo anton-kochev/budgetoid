@@ -91,6 +91,16 @@ public sealed class RegistrationRouteTests
     /// closed instead: the comparison is against a written-out set of two, so a reader finding the scheme
     /// nowhere reports an empty set against a non-empty expectation.
     /// </para>
+    /// <para>
+    /// <b>The endpoint census cannot see the fallback policy, and the second half of this test is what
+    /// closes that.</b> <c>SetFallbackPolicy</c> registers a policy in the container; it reaches no
+    /// endpoint's metadata, so <see cref="SchemesNamedBy" /> reads nothing of it however carefully it
+    /// reads. Adding <see cref="ProviderAuthentication.SchemeName" /> to that builder therefore hands a
+    /// provider bearer <em>every route in the product that declares no policy of its own</em> — the whole
+    /// surface behind the session cookie — while the set comparison above goes on reporting exactly two
+    /// routes. So the fallback's own schemes are read from
+    /// <see cref="IAuthorizationPolicyProvider.GetFallbackPolicyAsync" /> and pinned separately.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task TheProviderScheme_IsNamedByExactlyTheTwoRegistrationRoutes()
@@ -100,6 +110,8 @@ public sealed class RegistrationRouteTests
             "Host=localhost;Port=5432;Database=unused;Username=postgres;Password=postgres",
             environment: "Production");
         EndpointDataSource dataSource = factory.Services.GetRequiredService<EndpointDataSource>();
+        IAuthorizationPolicyProvider policies =
+            factory.Services.GetRequiredService<IAuthorizationPolicyProvider>();
 
         // Act
         RouteEndpoint[] endpoints = dataSource.Endpoints.OfType<RouteEndpoint>().ToArray();
@@ -110,6 +122,7 @@ public sealed class RegistrationRouteTests
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .ToArray();
+        AuthorizationPolicy? fallback = await policies.GetFallbackPolicyAsync();
 
         // Assert — joined rather than compared as collections so a failure names the route that moved
         // instead of reporting that two sets differ.
@@ -121,6 +134,13 @@ public sealed class RegistrationRouteTests
         // that do not name it.
         await Assert.That(namingTheProvider.Length).IsGreaterThan(0);
         await Assert.That(endpoints.Length).IsGreaterThan(namingTheProvider.Length);
+
+        // And the policy no endpoint carries. A null fallback is asserted against first: the product
+        // relies on it for RequireAuthenticatedUser as well, so its absence is a far larger failure than
+        // a scheme that moved, and reporting it as an empty scheme list would hide it.
+        await Assert.That(fallback).IsNotNull();
+        await Assert.That(string.Join(", ", fallback!.AuthenticationSchemes.Order(StringComparer.Ordinal)))
+            .IsEqualTo(SessionCookieAuthenticationHandler.SchemeName);
     }
 
     /// <summary>

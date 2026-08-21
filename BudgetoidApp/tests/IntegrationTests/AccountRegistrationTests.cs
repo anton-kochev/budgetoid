@@ -1345,6 +1345,78 @@ public sealed class AccountRegistrationTests
     }
 
     /// <summary>
+    /// FR-103, FR-104: when the address <b>and</b> the subject both collide, the re-read finds the winner
+    /// and the caller is told to sign in rather than sent looking for somebody else's Google account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What it holds: the branch <c>RegisterAccountHandler.RefusalFor</c> spends a paragraph on, and
+    /// the two conflict tests above cannot reach it.</b> Each of those stages exactly one collision —
+    /// the subject alone, the address alone — and the first never reaches the <c>EmailTaken</c> arm at
+    /// all while the second reaches it and finds nothing. This is the third arrangement, the one where
+    /// the arm is reached <em>and</em> the read comes back with a winner: the same provider identity and
+    /// the same address, so both <c>IX_users_email</c> and <c>IX_credentials_provider_subject</c> would
+    /// be breached, and EF writes <c>users</c> before <c>credentials</c>, so PostgreSQL names the email
+    /// index. The repository reports <c>EmailTaken</c> — honestly, since the email did collide — and
+    /// only the re-read can say that the subject collided too.
+    /// </para>
+    /// <para>
+    /// <b>What it costs when it fires: somebody who already has an account is told the address belongs to
+    /// a different Google account.</b> They go looking for an account that is not theirs, and the one
+    /// sentence that would have helped — sign in with the passkey it holds, or redeem a recovery code —
+    /// is the one they were not shown. Delete the re-read and return
+    /// <c>EmailAlreadyLinkedMessage</c> unconditionally and every other test in this file stays green;
+    /// this one reddens on the <c>detail</c>.
+    /// </para>
+    /// <para>
+    /// <b>The class remarks call this arrangement the one that cannot tell the two refusals apart, and
+    /// that is right about a different question.</b> It cannot say <em>which index</em> PostgreSQL
+    /// named, which is why the subject test above uses a fresh address. What it can say — and what no
+    /// other arrangement can — is what the handler does once the ambiguous outcome has arrived.
+    /// </para>
+    /// <para>
+    /// <b>The counter is asserted at one for a second reason here.</b> A handler that answered the
+    /// subject sentence for every <c>EmailTaken</c> without asking would satisfy the <c>detail</c>
+    /// assertion below and break
+    /// <see cref="Registration_WhenTheEmailBelongsToAnotherAccount_Returns409" /> instead; the pair is
+    /// what makes each of them a statement about the re-read rather than about a constant.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhenBothTheEmailAndTheSubjectCollide_SaysTheSubjectIsRegistered()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        FederatedCredentialReadCounter reads = new();
+        await using ApiFactory factory = CreateApiFactory(host, reads);
+        RegisteredAccount first = await RegisterAccountAsync(
+            factory.CreateAuthenticatedClient(Subject, Email),
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+        await Assert.That(first.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        IReadOnlyDictionary<string, long> before = await CountEveryRelationAsync(host);
+        int readsBefore = reads.Count;
+
+        // Act — the whole of the first registration again: the same provider identity asserting the same
+        // address, on a fresh device and eleven fresh factors, so the two identity rules are the only
+        // things that can collide and both of them do.
+        RegisteredAccount second = await RegisterAccountAsync(
+            factory.CreateAuthenticatedClient(Subject, Email),
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+
+        // Assert
+        await Assert.That(second.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+
+        string detail = await DetailOfAsync(second.Response);
+        await Assert.That(detail).IsEqualTo(SubjectConflictSentence);
+        await Assert.That(detail).DoesNotContain(EmailConflictClause);
+        await Assert.That(second.Response.Headers.Contains("Set-Cookie")).IsFalse();
+
+        // The ambiguous outcome really was ambiguous — the arm that re-reads is the arm that ran.
+        await Assert.That(reads.Count - readsBefore).IsEqualTo(1);
+        await AssertNothingChangedAsync(host, before);
+    }
+
+    /// <summary>
     /// One authenticator, one account: a WebAuthn handle already enrolled cannot be enrolled again.
     /// </summary>
     /// <remarks>
@@ -1897,6 +1969,164 @@ public sealed class AccountRegistrationTests
     }
 
     /// <summary>
+    /// FR-063, ADR 0018: each of the eleven factors gets the account's keys sealed under <b>its own</b>
+    /// key-encryption key, filed under <b>its own</b> factor identifier, against the credential that
+    /// factor belongs to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What it holds: the story's central claim, which every count in this file leaves untouched.</b>
+    /// Two one-line edits to the projection in <c>RegisterAccountHandler</c> write eleven perfectly legal
+    /// rows and pass the whole suite. Shift the card's envelopes by one across the ten codes —
+    /// <c>presented[(i + 1) % presented.Count]</c> — and row <c>F_i</c> holds an envelope sealed under
+    /// <c>AAD(F_i+1)</c>, which no reader can rebuild, so <b>not one of the ten codes opens anything,
+    /// ever</b>. File all eleven against <c>passkey</c> instead and the composite foreign key, both check
+    /// constraints and <see cref="RowsOneRegistrationWrites" /> are all satisfied — and revoking the
+    /// passkey then cascades ten recovery factors' envelopes away and answers 204.
+    /// </para>
+    /// <para>
+    /// <b>What it costs when it fires: an account nobody can ever open again, discovered months later.</b>
+    /// Both mutations hand over a 201 and a session. The first is found by somebody who lost their
+    /// authenticator, typed the code they wrote down, was signed in, and found the account unreadable; the
+    /// second by somebody who revoked a laptop.
+    /// </para>
+    /// <para>
+    /// <b>Real envelopes, and that is the whole of what makes the first half catchable.</b>
+    /// <see cref="WrappedKeyFixture" /> mints well-formed random bytes, which is right for every other
+    /// test here and says nothing about which factor an envelope belongs to. This test seals the same two
+    /// account keys eleven times under eleven different keys, each bound to its own factor identifier as
+    /// associated data, and then opens what the database handed back — see
+    /// <see cref="ClientKeyCustody" /> for what a second implementation of the client's format does and
+    /// does not buy. The ten codes are real too, so the verifier the server hashed and the key that
+    /// unwraps the account are sibling branches of one secret, exactly as they are in a browser.
+    /// </para>
+    /// <para>
+    /// <b>The passkey's key-encryption key is drawn at random rather than derived.</b> The client derives
+    /// it from the authenticator's PRF output, and the synthetic device reports the extension as enabled
+    /// without producing one. Nothing here turns on where that key came from: what is asserted is that
+    /// the envelope filed under the passkey's factor is the envelope sealed under the passkey's key, and
+    /// a key the test holds says that as well as a derived one would.
+    /// </para>
+    /// <para>
+    /// <b>The cross-open at the end is what stops the whole test being vacuous.</b> Every assertion above
+    /// it would also pass if <see cref="ClientKeyCustody.TryOpen" /> ignored its associated data, or if
+    /// the eleven key-encryption keys had silently collapsed to one. Opening a row under its
+    /// <em>neighbour's</em> key has to fail, and that failure is the tag doing the work the shift
+    /// mutation would defeat.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_SealsEachFactorsEnvelopesUnderThatFactorsOwnKey()
+    {
+        // Arrange — one pair of account keys, drawn once, wrapped eleven times. Fresh per factor would
+        // pass every round trip below and lose the account's history the first time a second factor was
+        // used, which is the mistake ADR 0018 is written against.
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        HttpClient client = factory.CreateAuthenticatedClient(Subject, Email);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        byte[] contentKey = RandomNumberGenerator.GetBytes(ClientKeyCustody.KeyBytes);
+        byte[] indexKey = RandomNumberGenerator.GetBytes(ClientKeyCustody.KeyBytes);
+
+        SealedFactor passkeyFactor = SealAccountKeysFor(
+            RandomNumberGenerator.GetBytes(ClientKeyCustody.KeyBytes),
+            contentKey,
+            indexKey);
+
+        string[] codes =
+            [.. Enumerable.Range(0, RequiredCodeCount).Select(_ => ClientKeyCustody.MintRecoveryCode())];
+        SealedFactor[] codeFactors =
+        [
+            .. codes.Select(code => SealAccountKeysFor(
+                ClientKeyCustody.KeyEncryptionKeyFromRecoveryCode(code),
+                contentKey,
+                indexKey)),
+        ];
+
+        // One submission per code, built in one scope from one code, so a verifier and a pair of
+        // envelopes cannot come apart in the fixture and read as the handler's doing.
+        IReadOnlyList<CodeSubmission> card =
+        [
+            .. codes.Select((code, index) =>
+                new CodeSubmission(ClientKeyCustody.VerifierOf(code), codeFactors[index].Keys)),
+        ];
+
+        Dictionary<Guid, SealedFactor> minted = codeFactors
+            .Append(passkeyFactor)
+            .ToDictionary(factor => factor.Factor);
+
+        // Act — the real ceremony, with the card and the passkey's envelopes this test sealed.
+        IssuedRegistrationOptions options = await BeginRegistrationCeremonyAsync(client);
+        HttpResponseMessage response = await PostRegistrationAsync(
+            client,
+            device.Register(
+                options.Challenge,
+                ApiFactory.PasskeyOrigin,
+                signCount: 0,
+                prfEnabled: true,
+                userHandle: options.UserHandle),
+            passkeyFactor.Keys,
+            card);
+
+        // Assert — the status first, so rows that are missing read as the refusal they are rather than
+        // as a write that half happened.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        IReadOnlyList<WrappedAccountKeysRow> rows = await WrappedAccountKeyRowsAsync(host);
+        await Assert.That(rows.Count).IsEqualTo(RequiredCodeCount + 1);
+
+        // The eleven identifiers are the eleven this test minted, neither more nor fewer.
+        await Assert.That(string.Join(", ", rows.Select(row => row.FactorId).Order()))
+            .IsEqualTo(string.Join(", ", minted.Keys.Order()));
+
+        // The passkey's row stands alone against the card's ten, and the credential each names is read
+        // back out of `credentials` rather than trusted from the copy on the row: that copy is written by
+        // whichever line chose the credential, so it always agrees with a wrong choice.
+        WrappedAccountKeysRow passkeyRow = rows.Single(row => row.FactorId == passkeyFactor.Factor);
+        IReadOnlyList<WrappedAccountKeysRow> cardRows =
+            [.. rows.Where(row => row.FactorId != passkeyFactor.Factor)];
+
+        await Assert.That(passkeyRow.CredentialType).IsEqualTo(PasskeyType);
+        await Assert.That(await CredentialTypeOfAsync(host, passkeyRow.CredentialId)).IsEqualTo(PasskeyType);
+
+        await Assert.That(string.Join(", ", cardRows.Select(row => row.CredentialType).Distinct()))
+            .IsEqualTo(RecoveryCodesType);
+        await Assert.That(cardRows.Select(row => row.CredentialId).Distinct().Count()).IsEqualTo(1);
+        await Assert.That(await CredentialTypeOfAsync(host, cardRows[0].CredentialId))
+            .IsEqualTo(RecoveryCodesType);
+        await Assert.That(cardRows[0].CredentialId).IsNotEqualTo(passkeyRow.CredentialId);
+
+        // And the half no count can reach: every row's two envelopes open under the key of the factor
+        // that row names, rebuilding the associated data from the identifier the DATABASE handed back
+        // rather than from the one this test sent.
+        string expectedContent = Convert.ToHexString(contentKey);
+        string expectedIndex = Convert.ToHexString(indexKey);
+
+        foreach (WrappedAccountKeysRow row in rows)
+        {
+            SealedFactor factor = minted[row.FactorId];
+
+            await Assert.That(OpenedUnder(factor.KeyEncryptionKey, row, ClientKeyCustody.ContentPurpose))
+                .IsEqualTo(expectedContent);
+            await Assert.That(OpenedUnder(factor.KeyEncryptionKey, row, ClientKeyCustody.IndexPurpose))
+                .IsEqualTo(expectedIndex);
+        }
+
+        // The non-vacuity control: each of the card's rows refuses the next code's key. Without it every
+        // assertion above is satisfied by eleven identical keys and by an open that ignores its
+        // associated data — which is the state a shifted projection would be indistinguishable from.
+        for (int index = 0; index < cardRows.Count; index++)
+        {
+            SealedFactor neighbour = minted[cardRows[(index + 1) % cardRows.Count].FactorId];
+
+            await Assert.That(
+                    OpenedUnder(neighbour.KeyEncryptionKey, cardRows[index], ClientKeyCustody.ContentPurpose))
+                .IsEqualTo(Unopenable);
+        }
+    }
+
+    /// <summary>
     /// The prf gate's refusal, read by the member it is keyed under and by what it says.
     /// </summary>
     /// <remarks>
@@ -2431,6 +2661,133 @@ public sealed class AccountRegistrationTests
 
     private static Task<IReadOnlyList<Guid>> FactorIdsAsync(PostgresTestHost host) =>
         GuidsAsync(host, "select factor_id from wrapped_account_keys");
+
+    /// <summary>
+    /// One <c>wrapped_account_keys</c> row, in the columns the key-custody test asks about.
+    /// </summary>
+    /// <param name="CredentialType">
+    /// The copy the row carries so <c>CK_wrapped_account_keys_credential_type</c> has something on the row
+    /// to check. Read beside <paramref name="CredentialId" /> rather than instead of it, for the reason
+    /// <see cref="SessionRow" /> reads both: the copy is written by whichever line chose the credential and
+    /// therefore always agrees with a wrong choice.
+    /// </param>
+    private sealed record WrappedAccountKeysRow(
+        Guid FactorId,
+        Guid CredentialId,
+        string CredentialType,
+        byte[] ContentEnvelope,
+        byte[] IndexEnvelope);
+
+    /// <summary>
+    /// One recovery factor as a client mints it: the identifier, the key it wraps under, and the two
+    /// envelopes that key produced.
+    /// </summary>
+    /// <remarks>
+    /// The three travel together so a test cannot pair one factor's key with another's envelopes by
+    /// accident — the fixture-side twin of the rule the handler's projection keeps.
+    /// </remarks>
+    private sealed record SealedFactor(Guid Factor, byte[] KeyEncryptionKey, WrappedKeyFixture Keys);
+
+    /// <summary>
+    /// What <see cref="OpenedUnder" /> reports when an envelope does not open, in place of bytes.
+    /// </summary>
+    /// <remarks>
+    /// A sentence rather than <see cref="string.Empty" /> or a null, so the control's failure message says
+    /// what happened instead of showing a blank beside a long hex string.
+    /// </remarks>
+    private const string Unopenable = "<the envelope did not open>";
+
+    /// <summary>
+    /// The two account keys sealed under <paramref name="keyEncryptionKey" />, bound to a factor
+    /// identifier minted here.
+    /// </summary>
+    /// <remarks>
+    /// The identifier is minted inside rather than passed in, because it is the value both envelopes are
+    /// bound to and a caller holding one loose is a caller who can seal under a different one than it
+    /// sends.
+    /// </remarks>
+    private static SealedFactor SealAccountKeysFor(
+        byte[] keyEncryptionKey,
+        byte[] contentKey,
+        byte[] indexKey)
+    {
+        Guid factor = Guid.CreateVersion7();
+
+        return new SealedFactor(
+            factor,
+            keyEncryptionKey,
+            new WrappedKeyFixture(
+                factor,
+                ClientKeyCustody.Seal(
+                    keyEncryptionKey,
+                    contentKey,
+                    ClientKeyCustody.AssociatedData(factor, ClientKeyCustody.ContentPurpose)),
+                ClientKeyCustody.Seal(
+                    keyEncryptionKey,
+                    indexKey,
+                    ClientKeyCustody.AssociatedData(factor, ClientKeyCustody.IndexPurpose))));
+    }
+
+    /// <summary>
+    /// What one of <paramref name="row" />'s envelopes opens to under <paramref name="keyEncryptionKey" />,
+    /// as hex, or <see cref="Unopenable" />.
+    /// </summary>
+    /// <remarks>
+    /// <b>The associated data is rebuilt from the row's own <c>factor_id</c></b>, which is the whole point:
+    /// that is what a real reader has — the envelope was found beside the identifier — and it is why an
+    /// envelope filed under the wrong factor cannot be opened by anybody, including the person it belongs
+    /// to.
+    /// </remarks>
+    private static string OpenedUnder(
+        byte[] keyEncryptionKey,
+        WrappedAccountKeysRow row,
+        string purpose)
+    {
+        byte[] envelope = purpose == ClientKeyCustody.ContentPurpose
+            ? row.ContentEnvelope
+            : row.IndexEnvelope;
+
+        return ClientKeyCustody.TryOpen(
+            keyEncryptionKey,
+            envelope,
+            ClientKeyCustody.AssociatedData(row.FactorId, purpose),
+            out byte[] opened)
+            ? Convert.ToHexString(opened)
+            : Unopenable;
+    }
+
+    /// <summary>
+    /// Every <c>wrapped_account_keys</c> row with the credential it is filed against.
+    /// </summary>
+    /// <remarks>
+    /// Read on the container superuser connection like every other read in this file:
+    /// <c>user_isolation</c> is <c>FOR ALL</c>, so a policed connection reports a misfiled row exactly as
+    /// it reports a missing one.
+    /// </remarks>
+    private static async Task<IReadOnlyList<WrappedAccountKeysRow>> WrappedAccountKeyRowsAsync(
+        PostgresTestHost host)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select factor_id, credential_id, credential_type, wrapped_content_key, wrapped_index_key "
+            + "from wrapped_account_keys",
+            connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+
+        List<WrappedAccountKeysRow> rows = [];
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new WrappedAccountKeysRow(
+                reader.GetGuid(0),
+                reader.GetGuid(1),
+                reader.GetString(2),
+                (byte[])reader[3],
+                (byte[])reader[4]));
+        }
+
+        return rows;
+    }
 
     private static async Task<IReadOnlyList<Guid>> GuidsAsync(PostgresTestHost host, string sql)
     {

@@ -11,7 +11,7 @@ using TestSupport;
 namespace IntegrationTests;
 
 /// <summary>
-/// The three censuses that carry FR-063 and FR-064: nothing the client sends can hold an unwrapped
+/// The four censuses that carry FR-063 and FR-064: nothing the client sends can hold an unwrapped
 /// key, a key-encryption key, a PRF output or a recovery code, and nothing the server stores is a
 /// value by which a wrapped key could be unwrapped.
 /// </summary>
@@ -28,16 +28,21 @@ namespace IntegrationTests;
 /// <c>docs/business-logic/account-keys.md</c> is what it is performed against.
 /// </para>
 /// <para>
-/// The three divide the work by what they read, and none of them subsumes another.
+/// The four divide the work by what they read, and none of them subsumes another.
 /// <see cref="RequestSurface_CarriesNoMemberThatCouldHoldUnwrappedKeyMaterial" /> reads names on the
 /// way <i>in</i> and is the whole of AC 5.
 /// <see cref="Schema_HoldsNoColumnNamedForUnwrappedKeyMaterial" /> reads names at <i>rest</i>. Both
 /// are name checks, and <see cref="UnwrappedKeyMaterialVocabulary" /> says plainly that a
 /// <c>bytea</c> column called <c>payload</c> walks past every rule it owns.
-/// <see cref="Schema_ClassifiesEveryBinaryColumn" /> is the one that closes that gap from the other
-/// side, by refusing to let a binary column exist without a written argument for why holding it
-/// unwraps nothing — so it is the strongest of the three and the only one a badly named column
-/// cannot slip past.
+/// <see cref="Schema_ClassifiesEveryBinaryColumn" /> closes that gap from the other side, by refusing
+/// to let a binary column exist without a written argument for why holding it unwraps nothing — so a
+/// badly named column cannot slip past it.
+/// <see cref="RequestSurface_ArguesForEveryMemberThatCanCarryText" /> is that same argument on the way
+/// <i>in</i>, and it is the newest: for a long time the schema had a fail-closed leg and the request
+/// surface had only a deny-list, so <c>string? Code</c> and <c>string? Passphrase</c> could be added
+/// to a request record and refused by nothing while <c>string? RecoveryCode</c> was caught. The two
+/// name censuses stay because a name that trips a rule should be reported as <em>that</em> rule, with
+/// the argument a reviewer has to answer, rather than as an unargued member.
 /// </para>
 /// <para>
 /// Every one of the three ships a permanent negative control that grows the offence on a throwaway
@@ -102,6 +107,124 @@ public sealed class KeyMaterialSecrecyTests
         // walk that stopped at the top level would report green having never looked.
         await Assert.That(reached).Contains("PasskeyClientExtensionResults");
         await Assert.That(reached).Contains("PasskeyPrfResults");
+    }
+
+    /// <summary>
+    /// Every member of the request surface that can carry text is argued for by name, and every argument
+    /// names a member that is still there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The mirror of <see cref="Schema_ClassifiesEveryBinaryColumn" />, and the leg the request surface
+    /// did not have.</b> The name census next door is a <b>deny-list</b>: it refuses the tokens
+    /// <see cref="UnwrappedKeyMaterialVocabulary" /> recognises and lets everything else through, and that
+    /// vocabulary's own remarks say plainly that a member called <c>payload</c> walks past every rule it
+    /// owns. It is true on this side of the wire too — <c>string? Code</c> and <c>string? Passphrase</c>
+    /// added to a registration request are refused by nothing, while <c>string? RecoveryCode</c> is
+    /// caught, and the difference is a word rather than a capability.
+    /// </para>
+    /// <para>
+    /// <b>So this leg fails closed: a text member with no written argument is a red.</b> It is more
+    /// expensive than a deny-list, one line per member and a sentence to write when a route grows one,
+    /// and it is the only shape whose verdict does not depend on what somebody chose to call a field.
+    /// </para>
+    /// <para>
+    /// <b>Both directions, and each fails for its own reason.</b> A member nobody argued for is a place
+    /// key material could arrive under a name no vocabulary can judge. An argument for a member that is
+    /// gone is the same defect running backwards: the list rots into a claim about a surface that has
+    /// moved, and every surviving entry still passes, so the file goes on reading like a complete account
+    /// of something it has stopped describing.
+    /// </para>
+    /// <para>
+    /// <b>Text, not <see cref="string" /> exactly.</b> A member typed <c>string[]</c>,
+    /// <c>IReadOnlyList&lt;string&gt;</c> or <c>Optional&lt;string&gt;</c> holds text just as well as a
+    /// bare one, and a census that matched the bare type only would be one generic away from silence.
+    /// </para>
+    /// <para>
+    /// Responses are in here with requests, because the surface walk deliberately does not tell them
+    /// apart — see <see cref="RequestSurfaceAsync" /> for why a suffix filter is the wrong instrument.
+    /// Arguing for a response member costs a line and buys the same fail-closed property.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RequestSurface_ArguesForEveryMemberThatCanCarryText()
+    {
+        // Arrange — the same derived surface the deny-list census reads, so the two legs cannot disagree
+        // about what the request surface is.
+        IReadOnlyList<SurfaceMember> surface = await RequestSurfaceAsync();
+
+        // Act
+        (string[] unargued, string[] stale) = CompareToTextArguments(surface);
+
+        // Assert — the fail-closed direction first: this is the one the leg exists for.
+        await Assert.That(string.Join(Environment.NewLine, unargued)).IsEqualTo(string.Empty);
+        await Assert.That(string.Join(Environment.NewLine, stale)).IsEqualTo(string.Empty);
+
+        // Non-vacuity. Both assertions above are satisfied by a walk that reached nothing and by an
+        // argument list nobody wrote, which are the two ways this kind of census dies quietly.
+        await Assert.That(TextMemberArguments).IsNotEmpty();
+        await Assert.That(surface.Count(member => CarriesText(member.MemberType))).IsGreaterThan(30);
+
+        // And the members closest to the line are reached BY THE WALK rather than named in a literal
+        // handed to the comparison: the two envelopes a client really does send, and the verifier that
+        // is a sibling branch of the key which must never be sent.
+        string[] text =
+        [
+            .. surface
+                .Where(member => CarriesText(member.MemberType))
+                .Select(member => member.Qualified)
+                .Distinct(StringComparer.Ordinal),
+        ];
+        await Assert.That(text).Contains("RegistrationEndpoints.RegistrationRequest.WrappedContentKey");
+        await Assert.That(text).Contains("RecoveryCodeSubmission.Verifier");
+    }
+
+    /// <summary>
+    /// The fail-closed control: a text member nobody argued for is reported, beside real ones that are.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The probe is walked together with the live surface rather than on its own</b>, and that is what
+    /// makes one run answer both halves. A comparison that reported everything satisfies the first
+    /// assertion perfectly; a comparison that reported nothing satisfies none of them. Naming the probe's
+    /// three members and then insisting a real, argued member is <em>absent</em> from the same array is
+    /// the pair of verdicts this control exists to produce.
+    /// </para>
+    /// <para>
+    /// The stale direction gets the same treatment from the opposite end: over the probe alone, every
+    /// argument in the list is an argument for a member that is not there, and one of them is named.
+    /// </para>
+    /// <para>
+    /// <see cref="ProbeRequest.WrappedContentKey" /> is deliberately among the reported three. It is the
+    /// legal spelling the deny-list census lets through, which is exactly the point: this leg does not
+    /// judge names at all, so a member being innocently named buys it nothing here.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RequestSurface_ArguesForEveryMemberThatCanCarryText_ReportsOneNobodyArguedFor()
+    {
+        // Arrange
+        IReadOnlyList<SurfaceMember> probe = MembersOf(typeof(ProbeRequest), NameOf(typeof(ProbeRequest)));
+        IReadOnlyList<SurfaceMember> surface = await RequestSurfaceAsync();
+
+        // Act — the same comparison the census makes, over the surface with the probe alongside it, and
+        // then over the probe alone.
+        (string[] unargued, _) = CompareToTextArguments([.. probe, .. surface]);
+        (_, string[] stale) = CompareToTextArguments(probe);
+
+        // Assert — the three text members of the probe are named, whatever they are called.
+        await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeRequest.ContentKey");
+        await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeRequest.WrappedContentKey");
+        await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeNestedResults.PrfOutput");
+
+        // And a real member that IS argued for is not, in the same call, so this cannot pass by a
+        // comparison that reports every member it sees.
+        await Assert.That(unargued)
+            .DoesNotContain("RegistrationEndpoints.RegistrationRequest.WrappedContentKey");
+
+        // The other direction, proven rather than assumed: over a surface holding only the probe, an
+        // argument for a member of the real surface is an argument for a member that is gone.
+        await Assert.That(stale).Contains("RegistrationEndpoints.RegistrationRequest.WrappedContentKey");
     }
 
     [Test]
@@ -538,6 +661,186 @@ public sealed class KeyMaterialSecrecyTests
     private const int MinimumReasonLength = 80;
 
     /// <summary>
+    /// One member of the request surface that can carry text, and what a client puts in it.
+    /// </summary>
+    /// <param name="Owner">The declaring type, spelled the way the surface walk reports it.</param>
+    /// <param name="Member">The member name, in the casing the CLR reports it.</param>
+    /// <param name="Carries">
+    /// What the value <b>is</b>, and — where the answer is not obvious from that — what keeps it from
+    /// being something a wrapped key could be opened with. One member rather than the two
+    /// <see cref="BinaryColumnClassification" /> carries, because most of this surface is a person's own
+    /// typing and splitting a fact from an argument there would produce fifty restatements of "nobody's
+    /// key". The members where the argument is real are the ones that say it.
+    /// </param>
+    private sealed record TextMemberArgument(string Owner, string Member, string Carries)
+    {
+        /// <summary>The key both directions of the set comparison are made on.</summary>
+        public string Qualified => $"{Owner}.{Member}";
+    }
+
+    /// <summary>
+    /// Every member of the request surface that can carry text, and what each one holds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Written down rather than derived, and in the opposite direction from the surface it is compared
+    /// against.</b> A derived list would restate the reflection walk and could never disagree with it.
+    /// What has to be authored is the sentence, one per member, and the set comparison is what makes
+    /// authoring one unavoidable.
+    /// </para>
+    /// <para>
+    /// The WebAuthn assertion's five members recur on four request records — erasure, revocation,
+    /// sign-in, and issuing a card — and each copy is entered separately rather than pointed at a shared
+    /// argument. That is deliberate in the same way the two hash columns above are: the day one of those
+    /// routes takes a sixth member, the entry beside it is where a reader looks, and a shared argument
+    /// would have to be widened in a place that answers for four routes at once.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<TextMemberArgument> TextMemberArguments { get; } =
+    [
+        new("AccountEndpoints.UpdateAccountRequest", "Name",
+            "the name a person gave one of their accounts, as they typed it"),
+        new("AccountErasureEndpoints.ErasureRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("AccountErasureEndpoints.ErasureRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("AccountErasureEndpoints.ErasureRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("AccountErasureEndpoints.ErasureRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("AccountErasureEndpoints.ErasureRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("CategoryEndpoints.UpdateCategoryRequest", "Description",
+            "a person's own note about one of their categories"),
+        new("CategoryEndpoints.UpdateCategoryRequest", "Name",
+            "the name a person gave one of their categories, as they typed it"),
+        new("CategoryGroupEndpoints.UpdateCategoryGroupRequest", "Description",
+            "a person's own note about one of their category groups"),
+        new("CategoryGroupEndpoints.UpdateCategoryGroupRequest", "Name",
+            "the name a person gave one of their category groups, as they typed it"),
+        new("CreateAccountCommand", "CurrencyCode",
+            "an ISO 4217 code chosen from the currencies this product seeds"),
+        new("CreateAccountCommand", "Name",
+            "the name a person is giving a new account, as they typed it"),
+        new("CreateCategoryCommand", "Description",
+            "a person's own note about a category they are creating"),
+        new("CreateCategoryCommand", "Name",
+            "the name a person is giving a new category, as they typed it"),
+        new("CreateCategoryGroupCommand", "Description",
+            "a person's own note about a category group they are creating"),
+        new("CreateCategoryGroupCommand", "Name",
+            "the name a person is giving a new category group, as they typed it"),
+        new("CreateTransactionCommand", "Description",
+            "a person's own note about one transaction, as they typed it"),
+        new("CreateTransactionCommand", "PayeeName",
+            "who a person says they paid, as they typed it"),
+        new("CredentialEndpoints.CredentialListEntry", "Type",
+            "a response member: one credential's type, as CredentialTypeSpelling writes it"),
+        new("CredentialEndpoints.RevocationRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("CredentialEndpoints.RevocationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("CredentialEndpoints.RevocationRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("CredentialEndpoints.RevocationRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("CredentialEndpoints.RevocationRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("Optional`1", "Value",
+            "the payload of the wrapper a partial update uses; whatever the member holding it carries, "
+            + "argued at that member"),
+        new("PasskeyEndpoints.AssertionRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("PasskeyEndpoints.AssertionRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("PasskeyEndpoints.AssertionRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("PasskeyEndpoints.AssertionRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("PasskeyEndpoints.AssertionRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("PasskeyEndpoints.AssertionResponse", "Kind",
+            "a response member: the kind of session this sign-in established, as SessionKind spells it"),
+        new("PasskeyEndpoints.RegistrationRequest", "AttestationObject",
+            "base64url over the CBOR attestation: authenticator data and a public key, both publishable"),
+        new("PasskeyEndpoints.RegistrationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("PasskeyEndpoints.RegistrationRequest", "FactorId",
+            "the client-minted identifier the two envelopes below are bound to as associated data. It is "
+            + "written back to every caller that asks, so it is a name rather than a secret"),
+        new("PasskeyEndpoints.RegistrationRequest", "WrappedContentKey",
+            "base64url over a 61-byte envelope. The key-encryption key that sealed it is derived in the "
+            + "browser from the authenticator's prf output and imported non-extractable, so it never "
+            + "reaches this member or any other"),
+        new("PasskeyEndpoints.RegistrationRequest", "WrappedIndexKey",
+            "base64url over the same envelope for the index key, sealed under the same non-extractable "
+            + "key and bound to a different purpose"),
+        new("PayeeEndpoints.RenamePayeeRequest", "Name",
+            "who a person says they paid, as they typed it"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("RecoveryCodeEndpoints.RedemptionRequest", "Verifier",
+            "base64url over one HKDF branch of a recovery code, and the code itself never crosses the "
+            + "wire. The key-encryption key is a sibling branch over the same code under a different "
+            + "`info`, so holding this one yields nothing about that one"),
+        new("RecoveryCodeEndpoints.RedemptionResponse", "Kind",
+            "a response member: the kind of session a redemption established, as SessionKind spells it"),
+        new("RecoveryCodeEndpoints.ReestablishedSessionResponse", "Kind",
+            "a response member: the kind of session an issue re-established, as SessionKind spells it"),
+        new("RecoveryCodeSubmission", "FactorId",
+            "the client-minted identifier one code's two envelopes are bound to as associated data, and "
+            + "a name rather than a secret"),
+        new("RecoveryCodeSubmission", "Verifier",
+            "base64url over one HKDF branch of one recovery code, the same value a redemption presents "
+            + "and a sibling of the key branch that stays in the browser"),
+        new("RecoveryCodeSubmission", "WrappedContentKey",
+            "base64url over a 61-byte envelope sealed under the key that code derives, which is imported "
+            + "non-extractable and never leaves the browser"),
+        new("RecoveryCodeSubmission", "WrappedIndexKey",
+            "base64url over the same envelope for the index key, sealed under the same key and bound to "
+            + "a different purpose"),
+        new("RegistrationEndpoints.EstablishedSessionResponse", "Kind",
+            "a response member: the kind of session registration established, as SessionKind spells it"),
+        new("RegistrationEndpoints.RegistrationRequest", "AttestationObject",
+            "base64url over the CBOR attestation: authenticator data and a public key, both publishable"),
+        new("RegistrationEndpoints.RegistrationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("RegistrationEndpoints.RegistrationRequest", "FactorId",
+            "the client-minted identifier the passkey factor's two envelopes are bound to as associated "
+            + "data, and a name rather than a secret"),
+        new("RegistrationEndpoints.RegistrationRequest", "WrappedContentKey",
+            "base64url over a 61-byte envelope sealed under the passkey factor's key-encryption key, "
+            + "which is derived from prf output in the browser and imported non-extractable"),
+        new("RegistrationEndpoints.RegistrationRequest", "WrappedIndexKey",
+            "base64url over the same envelope for the index key, sealed under the same key and bound to "
+            + "a different purpose"),
+        new("TransactionEndpoints.UpdateTransactionRequest", "Description",
+            "a person's own note about one transaction, present or absent, as they typed it"),
+        new("TransactionEndpoints.UpdateTransactionRequest", "PayeeName",
+            "who a person says they paid, present or absent, as they typed it"),
+    ];
+
+    /// <summary>
+    /// The shortest a sentence saying what a text member carries may be.
+    /// </summary>
+    /// <remarks>
+    /// A floor rather than a judgement of the words, for the reason
+    /// <see cref="MinimumReasonLength" /> is one: no assertion can tell a real argument from a fluent
+    /// one, and the cheapest way to write nothing is to write nothing. Set above every one-word
+    /// placeholder a reader would reach for — <c>text</c>, <c>a name</c>, <c>opaque</c>, <c>not a
+    /// key</c> — and below the shortest honest entry in the list.
+    /// </remarks>
+    private const int MinimumCarriesLength = 40;
+
+    /// <summary>
     /// The binary half of the fail-closed control: a relation carrying one <c>bytea</c> column under a
     /// name that trips <b>no</b> rule in the vocabulary. The innocence is the point — it makes the
     /// probe the exact shape the two name censuses cannot see, so a green from them and a red from
@@ -568,7 +871,15 @@ public sealed class KeyMaterialSecrecyTests
     /// what the census's own guards name it by.
     /// </param>
     /// <param name="Member">The member name, in the casing the CLR reports it.</param>
-    private sealed record SurfaceMember(string Owner, string Member);
+    /// <param name="MemberType">
+    /// The member's declared type, which the name censuses ignore and
+    /// <see cref="RequestSurface_ArguesForEveryMemberThatCanCarryText" /> is entirely about.
+    /// </param>
+    private sealed record SurfaceMember(string Owner, string Member, Type MemberType)
+    {
+        /// <summary>The key both directions of the text-member comparison are made on.</summary>
+        public string Qualified => $"{Owner}.{Member}";
+    }
 
     /// <summary>Every relation name and every column name in <c>public</c>, read once.</summary>
     /// <param name="Relations">Bare relation names.</param>
@@ -691,7 +1002,7 @@ public sealed class KeyMaterialSecrecyTests
         foreach (PropertyInfo property in
                  type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
-            members.Add(new SurfaceMember(name, property.Name));
+            members.Add(new SurfaceMember(name, property.Name, property.PropertyType));
 
             foreach (Type payload in PayloadTypes(property.PropertyType))
             {
@@ -935,6 +1246,72 @@ public sealed class KeyMaterialSecrecyTests
         (
             [.. discovered.Except(classified, StringComparer.Ordinal).Order(StringComparer.Ordinal)],
             [.. classified.Except(discovered, StringComparer.Ordinal).Order(StringComparer.Ordinal)]
+        );
+    }
+
+    /// <summary>
+    /// Whether a member of this declared type can hold text at all.
+    /// </summary>
+    /// <remarks>
+    /// <b>Broad on purpose, and in the same direction <see cref="PayloadTypes" /> is broad.</b> A member
+    /// typed <c>string[]</c>, <c>IReadOnlyList&lt;string&gt;</c>, <c>Optional&lt;string&gt;</c> or
+    /// <c>Dictionary&lt;string, string&gt;</c> is a place a key-shaped value can be put exactly as a bare
+    /// one is, so a predicate matching <see cref="string" /> alone would be one generic away from
+    /// reporting nothing. The recursion terminates because every step strips a layer of type.
+    /// </remarks>
+    private static bool CarriesText(Type type)
+    {
+        if (type == typeof(string))
+        {
+            return true;
+        }
+
+        if (Nullable.GetUnderlyingType(type) is { } underlying)
+        {
+            return CarriesText(underlying);
+        }
+
+        if (type.IsArray && type.GetElementType() is { } element && CarriesText(element))
+        {
+            return true;
+        }
+
+        return type.IsGenericType && type.GetGenericArguments().Any(CarriesText);
+    }
+
+    /// <summary>
+    /// Both directions of the comparison between the text members a surface carries and the arguments
+    /// this file makes for them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A pure function over what was walked, so the census and both halves of its control run
+    /// byte-identical classification over surfaces that differ only in what was handed in. A control
+    /// exercising a separately written comparison would prove that one can fail.
+    /// </para>
+    /// <para>
+    /// <b>An entry saying too little is reported beside a member with no entry at all</b>, rather than
+    /// through a test of its own. The two are the same defect — nobody argued for this member — and a
+    /// list whose entries nobody has to write is a list that agrees with whatever arrives next.
+    /// </para>
+    /// </remarks>
+    private static (string[] Unargued, string[] Stale) CompareToTextArguments(
+        IReadOnlyList<SurfaceMember> surface)
+    {
+        HashSet<string> argued = new(
+            TextMemberArguments
+                .Where(entry => !string.IsNullOrWhiteSpace(entry.Carries)
+                                && entry.Carries.Length >= MinimumCarriesLength)
+                .Select(entry => entry.Qualified),
+            StringComparer.Ordinal);
+        HashSet<string> carried = new(
+            surface.Where(member => CarriesText(member.MemberType)).Select(member => member.Qualified),
+            StringComparer.Ordinal);
+
+        return
+        (
+            [.. carried.Except(argued, StringComparer.Ordinal).Order(StringComparer.Ordinal)],
+            [.. argued.Except(carried, StringComparer.Ordinal).Order(StringComparer.Ordinal)]
         );
     }
 
