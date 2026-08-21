@@ -19,21 +19,34 @@
 // only the factor leaves one factor's two envelopes interchangeable, which is the
 // column swap `wrappedKeyAssociatedData` exists to make fail.
 //
-// **A key-encryption key is a non-extractable `CryptoKey`, never bytes.** There
-// is no API that reads one back out, so the value that unwraps the account's
-// whole keyspace cannot be logged, serialised into a request body, put in
-// `localStorage` or handed to a crash reporter by any code holding the object —
-// not by discipline, by construction. It is the reason both derivations below
-// return a `CryptoKey` instead of a `Uint8Array`, and the reason the spec observes
-// them by sealing under them and comparing envelopes: there is nothing else left
-// to look at.
+// **What leaves this module is a non-extractable `CryptoKey`, never bytes.**
+// That is a claim about the boundary and about nothing else. There is no API that
+// reads such a key back out, so no code holding the object can log the value that
+// unwraps the account's whole keyspace, serialise it into a request body, put it
+// in `localStorage` or hand it to a crash reporter. It is the reason both
+// derivations below return a `CryptoKey` instead of a `Uint8Array`, and the reason
+// the spec observes them by sealing under them and comparing envelopes: there is
+// nothing else left to look at.
 //
-// This module ships with a spec and **no caller**, on purpose, exactly as
-// `recovery-codes.ts` does. The ceremonies that would use it — registering a
-// passkey, generating a recovery-code set — are gated behind a WebAuthn assertion
-// this client cannot run yet. Its spec is meanwhile the only place several of
-// these rules can be checked at all: the frozen vectors are what a second
-// implementation has to reproduce, and a non-extractable key has no other witness.
+// Inside the file it is bytes twice per derivation — what `hkdfSha256` returns,
+// and the copy `importKeyEncryptionKey` hands WebCrypto — and both are now
+// zero-filled at the point they are consumed, in a `finally`, because the path
+// that skips a wipe is the path where something already went wrong. The material
+// is wiped where it is *used* rather than where it was made, so `hkdfSha256` stays
+// a general utility for its other callers instead of being reshaped around one
+// caller's hygiene. The recovery-code **verifier** branch keeps its uncleared copy
+// on purpose: a verifier is sent to the server, so wiping it locally buys nothing
+// the wire has not already given away. A key-encryption key goes nowhere, which is
+// the whole reason it is worth the `finally`.
+//
+// The **unwrapping** here has a spec and no caller: no route hands
+// `wrapped_account_keys` back yet, so nothing redeems a factor. Everything else is
+// live — `register.service.ts` draws the account's keys and wraps them under a
+// passkey and under each of ten recovery codes, and
+// `webauthn-ceremony.service.ts` derives the passkey branch's key-encryption key
+// on both legs of a ceremony. The spec remains the only place several of these
+// rules can be checked at all: the frozen vectors are what a second implementation
+// has to reproduce, and a non-extractable key has no other witness.
 //
 // Nothing here is a service and nothing here is injected. There is no state, no
 // configuration and no dependency, so a function is the whole of it; a class would
@@ -57,15 +70,15 @@ export const ACCOUNT_KEY_BYTES = 32;
 /**
  * The value a passkey's `prf` extension is evaluated against.
  *
- * **Nothing calls this yet**, and that is why it is here rather than in the story
- * that will. No client in this repository can run a WebAuthn ceremony, so there is
- * no PRF output to evaluate; a later story sends this string as the `prf`
- * extension's `eval.first` input and feeds what comes back to
- * {@link keyEncryptionKeyFromPasskey}. Declaring it now puts it under the spec's
- * pin, which is the only thing in the system that would notice it drifting — and
- * the day it drifts, every account that wrapped its keys under the old value is
- * locked out silently, by a passkey that still authenticates perfectly and simply
- * hands back different bytes.
+ * `webauthn-encoding.ts` writes it into the `prf` extension's `eval.first` of a
+ * registration's creation options, and `webauthn-ceremony.service.ts` sends the
+ * same bytes on the assertion leg and feeds what comes back to
+ * {@link keyEncryptionKeyFromPasskey}. It lives here rather than beside either of
+ * them because it is one half of a derivation the other half of which is in this
+ * file, and because that puts it under the spec's pin — the only thing in the
+ * system that would notice it drifting. The day it drifts, every account that
+ * wrapped its keys under the old value is locked out silently, by a passkey that
+ * still authenticates perfectly and simply hands back different bytes.
  *
  * The `/v1` suffix is not decoration. A change to this string is a new version
  * minted alongside the old one, never an edit to this line.
@@ -173,6 +186,10 @@ const utf8 = new TextEncoder();
  * The two keys are **copies**, not views over one draw. A caller that wipes one
  * key after wrapping it would otherwise wipe the other, and the account would lose
  * half its material with no error anywhere.
+ *
+ * The draw itself is zero-filled before the return, and that wipe exists *because*
+ * of the copies: they are what puts both account keys somewhere no caller can
+ * name, so no caller's own `finally` can reach them.
  */
 export function generateAccountKeys(): AccountKeys {
   // One draw of sixty-four bytes rather than two of thirty-two: one call to the
@@ -181,12 +198,20 @@ export function generateAccountKeys(): AccountKeys {
   const draw = new Uint8Array(2 * ACCOUNT_KEY_BYTES);
   crypto.getRandomValues(draw);
 
-  // `Uint8Array.from` over a `subarray` copies; the `subarray` alone would be a
-  // view over `draw`, leaving the two keys and the draw aliased to one buffer.
-  return {
-    contentKey: Uint8Array.from(draw.subarray(0, ACCOUNT_KEY_BYTES)),
-    indexKey: Uint8Array.from(draw.subarray(ACCOUNT_KEY_BYTES)),
-  };
+  try {
+    // `Uint8Array.from` over a `subarray` copies; the `subarray` alone would be a
+    // view over `draw`, leaving the two keys and the draw aliased to one buffer.
+    return {
+      contentKey: Uint8Array.from(draw.subarray(0, ACCOUNT_KEY_BYTES)),
+      indexKey: Uint8Array.from(draw.subarray(ACCOUNT_KEY_BYTES)),
+    };
+  } finally {
+    // A `finally` rather than a statement before the return, for the reason the
+    // ceremony service's own wipe gives: the path that skips the wipe is the path
+    // where something already went wrong, and that is the worst moment to leave
+    // both of the account's keys sitting in one buffer nothing else names.
+    draw.fill(0);
+  }
 }
 
 /**
@@ -342,18 +367,36 @@ export async function unwrapAccountKeys(
 // account's keys through the envelope, and a usage list that also carried
 // `wrapKey`/`unwrapKey` would open a second path out for key objects, unrelated to
 // the bytes this import is refusing to give up.
-function importKeyEncryptionKey(material: Uint8Array): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    'raw',
-    // Copied onto a buffer WebCrypto's `BufferSource` accepts, for the reason
-    // `key-envelope.ts` states at length: a bare `Uint8Array` is a view over
-    // either kind of buffer, and narrowing by copying asserts nothing about the
-    // caller's.
-    Uint8Array.from(material),
-    'AES-GCM',
-    false,
-    ['encrypt', 'decrypt'],
-  );
+//
+// **This is where a key-encryption key stops being bytes, so it is where both
+// copies of those bytes die.** `owned` is the account's wrapping key in the clear
+// on a buffer no name outside this call refers to once `importKey` has been
+// handed it; `material` is the same value one step earlier, and the function is
+// its last consumer. Wiping the caller's array here rather than teaching
+// `hkdfSha256` to hand out a disposable is deliberate: HKDF is a general utility
+// with other callers, and reshaping its signature for one caller's hygiene is an
+// API change every other caller pays for. Consuming code owning the wipe is also
+// the honest reading — the material dies where it is used, not where it was made.
+async function importKeyEncryptionKey(
+  material: Uint8Array,
+): Promise<CryptoKey> {
+  // Copied onto a buffer WebCrypto's `BufferSource` accepts, for the reason
+  // `key-envelope.ts` states at length: a bare `Uint8Array` is a view over either
+  // kind of buffer, and narrowing by copying asserts nothing about the caller's.
+  const owned = Uint8Array.from(material);
+
+  try {
+    // `await` rather than returning the promise: the wipe has to happen after
+    // WebCrypto has read the buffer, and a bare `return` would run the `finally`
+    // while `importKey` was still in flight.
+    return await crypto.subtle.importKey('raw', owned, 'AES-GCM', false, [
+      'encrypt',
+      'decrypt',
+    ]);
+  } finally {
+    owned.fill(0);
+    material.fill(0);
+  }
 }
 
 async function wrapOne(

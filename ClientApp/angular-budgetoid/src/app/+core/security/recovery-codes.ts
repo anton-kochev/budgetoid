@@ -15,11 +15,22 @@
 // is otherwise structurally unable to read. See
 // `docs/business-logic/recovery-codes.md` and ADR 0015.
 //
-// This module ships with a spec and **no caller**, on purpose: generating a set
-// is gated behind a fresh WebAuthn assertion and this client cannot run a
-// WebAuthn ceremony yet, so nothing can present these verifiers. It follows the
-// shape of `export-filename.ts` and `credential-registration-date.ts` — a pure
-// module tested in place.
+// **Registration is the only caller, and the settings screen is the one that
+// has none.** `register.service.ts` mints a set while the account is being
+// created, so a set can be issued only on the way in; the Generate control on
+// `/app/settings` is present and disabled. The reason is not that the browser
+// is incapable of the ceremony — it runs both halves through
+// `webauthn-ceremony.service.ts`, `create()` on `/register` and `get()` on
+// `/welcome`. Issuing a set is **ten new factors**, and each stores its own
+// wrapped copy of the account's content key and index key, so issuing one means
+// wrapping those keys — which needs them unwrapped, and no route hands
+// `wrapped_account_keys` back. There is nothing on that screen to wrap with.
+// What follows is that somebody who spends their card cannot yet mint another,
+// which is the cost `register.service.ts` weighs when it refuses to read a lost
+// answer as a refusal.
+//
+// It follows the shape of `export-filename.ts` and
+// `credential-registration-date.ts` — a pure module tested in place.
 //
 // Nothing here is a service and nothing here is injected. There is no state, no
 // configuration and nothing to inject — the imports below are pure functions

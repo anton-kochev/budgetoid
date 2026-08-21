@@ -76,6 +76,15 @@ function overOwnBuffer(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(bytes);
 }
 
+// The opposite of `overOwnBuffer`: a view over the bytes a `BufferSource`
+// already occupies, never a copy of them, so that reading it after the call
+// under test returns reads whatever the module left in it.
+function liveBytes(source: BufferSource): Uint8Array {
+  return ArrayBuffer.isView(source)
+    ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
+    : new Uint8Array(source);
+}
+
 // `extractable: false`, matching the shape the derivations under test are
 // specified to produce. An extractable import here would quietly stop
 // exercising the reason those functions return a `CryptoKey` at all.
@@ -274,6 +283,80 @@ describe('the account keys', () => {
     insecure.mockRestore();
     secure.mockRestore();
   });
+
+  it('leave no live copy of themselves in the draw they were split out of', () => {
+    // Arrange
+    // The draw is one sixty-four-byte buffer the platform fills, and both
+    // account keys are copied out of it and it is then let go. Nothing else
+    // ever names it, so nothing else can ever wipe it: it stays on the heap
+    // holding the account's content key *and* its index key in the clear for as
+    // long as the tab lives, and a heap snapshot, a crash dump or a debugger
+    // reads both out of one place.
+    //
+    // The irony is exact, and is why this is a test rather than a note. The
+    // copy is made **for** hygiene — `Uint8Array.from(draw.subarray(…))` exists
+    // so that a caller wiping one key does not wipe the other, and the test
+    // above pins that — and it is precisely that copy which puts the originals
+    // somewhere neither of the wipes that do run can reach. Registration's
+    // `finally` clears `keys.contentKey` and `keys.indexKey` and believes the
+    // account's keys are gone; the draw they came out of is untouched.
+    //
+    // The generator is replaced by a sweep that fills every byte non-zero, so
+    // "the buffer is all zeros afterwards" cannot be satisfied by an
+    // implementation that drew nothing.
+    let next = 1;
+    const live: Uint8Array[] = [];
+    const snapshots: Uint8Array[] = [];
+    const sweep = vi
+      .spyOn(crypto, 'getRandomValues')
+      .mockImplementation(<T extends ArrayBufferView | null>(buffer: T): T => {
+        const bytes = new Uint8Array(
+          (buffer as ArrayBufferView).buffer,
+          (buffer as ArrayBufferView).byteOffset,
+          (buffer as ArrayBufferView).byteLength,
+        );
+
+        for (let index = 0; index < bytes.length; index += 1) {
+          // `% 255` then `+ 1`, so no byte of the sweep is ever zero and the
+          // whole draw is distinguishable from a wiped one byte by byte.
+          bytes[index] = (next % 255) + 1;
+          next += 1;
+        }
+
+        // The view is kept rather than copied: it *is* the draw, and reading it
+        // after the call under test returns is the whole measurement. The
+        // snapshot beside it is the copy, taken now, and is what says the
+        // buffer held key material before the return rather than after it.
+        live.push(bytes);
+        snapshots.push(Uint8Array.from(bytes));
+
+        return buffer;
+      });
+
+    // Act
+    const keys = generateAccountKeys();
+    sweep.mockRestore();
+
+    // Assert
+    // Every byte the platform handed back was non-zero, and the two keys are
+    // exactly what was in there — so this is the draw the account's keys came
+    // out of, not some unrelated scratch buffer that a `fill(0)` elsewhere
+    // would satisfy by accident.
+    const zeroBytesAtDraw = snapshots
+      .flatMap((snapshot) => Array.from(snapshot))
+      .filter((byte) => byte === 0);
+    expect(zeroBytesAtDraw).toHaveLength(0);
+
+    const drawn = snapshots.map(toHex).join('');
+    expect(toHex(keys.contentKey) + toHex(keys.indexKey)).toBe(drawn);
+
+    // And nothing of it is left behind. One `fill(0)` before the return buys
+    // the only copy of both account keys that no `finally` anywhere else in
+    // this client can reach.
+    for (const region of live) {
+      expect(toHex(region)).toBe('00'.repeat(region.length));
+    }
+  });
 });
 
 // The frozen vector for the passkey branch. A fixed PRF output in, one exact
@@ -451,6 +534,104 @@ describe('a key-encryption key', () => {
 
     // Assert
     expect(underKek).not.toBe(underVerifier);
+  });
+
+  it('leaves no live copy of the material it was imported from', async () => {
+    // Arrange
+    // Read this against the claim at the top of this file and at the top of the
+    // module. The module's claim is about the boundary and says only that:
+    // "what leaves this module is a non-extractable `CryptoKey`, never bytes".
+    // That is true of the object handed back, and the header does not pretend
+    // it is true of anything else — it states that inside the file the material
+    // is bytes twice per derivation, and that both copies are zero-filled where
+    // they are consumed. This test holds up one of those two wipes.
+    // `importKeyEncryptionKey` copies the derived material with
+    // `Uint8Array.from(material)` and hands the copy to WebCrypto, and until
+    // its `finally` runs that copy is the account's key-encryption key in the
+    // clear, on a buffer no name in the program refers to once `importKey` has
+    // been called. That copy is the one the spy below reaches, and the only one
+    // it can: the hkdf output is wiped in the same `finally` and no assertion
+    // here sees it. No caller could observe either wipe being dropped — there
+    // is no API that reads such a key back out — which is why the buffer is
+    // reached through `importKey` rather than through anything the module hands
+    // back.
+    //
+    // Both derivations share this one import, so what is measured here is the
+    // recovery-code branch's wipe as much as the passkey branch's — a
+    // registration derives eleven of these, one per factor, so a dropped
+    // `fill(0)` would leave eleven thirty-two-byte copies of the values that
+    // unwrap the account behind.
+    //
+    // The bytes are read twice, once at the import and once after the
+    // derivation resolves. The first reading deliberately does **not** pin
+    // them: it asserts a width and that they were not already all zero, which
+    // is what makes a green result impossible for an implementation that
+    // imported an empty buffer, while leaving the file's rule that no
+    // assertion here names a key-encryption key's value intact.
+    const prfOutput = fromHex(GOLDEN_PRF_OUTPUT);
+    const realImportKey = crypto.subtle.importKey;
+
+    // Empty rather than optional, so the width assertions below double as the
+    // proof that the spy saw the import at all and no narrowing is needed.
+    let importedMaterial: Uint8Array = new Uint8Array(0);
+    let atImportTime: Uint8Array = new Uint8Array(0);
+    let aesImports = 0;
+
+    const importer = vi
+      .spyOn(crypto.subtle, 'importKey')
+      .mockImplementation(
+        (format, keyData, algorithm, extractable, keyUsages) => {
+          // `hkdfSha256` imports its input keying material through this same
+          // function under `'HKDF'`, so the branch is on the algorithm rather
+          // than on a call index: an extra import added anywhere below would
+          // otherwise silently move which call is measured.
+          if (algorithm === 'AES-GCM') {
+            aesImports += 1;
+            importedMaterial = liveBytes(keyData);
+            atImportTime = Uint8Array.from(importedMaterial);
+          }
+
+          // Called through rather than faked: the derivation under measurement
+          // has to be the real one, or the buffer being read is one no import
+          // ever consumed.
+          return realImportKey.call(
+            crypto.subtle,
+            format,
+            keyData,
+            algorithm,
+            extractable,
+            keyUsages,
+          );
+        },
+      );
+
+    // Act
+    try {
+      await keyEncryptionKeyFromPasskey(prfOutput);
+    } finally {
+      // Restored before the assertions, not after them: a failing expectation
+      // below would otherwise leave `crypto.subtle.importKey` spied for every
+      // test after this one in the file.
+      importer.mockRestore();
+    }
+
+    // Assert
+    // One key-encryption key was imported, from a full-width buffer that held
+    // something — so this is the material the account's wrapping key was made
+    // of, and not a scratch buffer a `fill(0)` elsewhere would satisfy by
+    // accident.
+    expect(aesImports).toBe(1);
+    expect(atImportTime).toHaveLength(ACCOUNT_KEY_BYTES);
+    expect(
+      Array.from(atImportTime).filter((byte) => byte === 0),
+    ).not.toHaveLength(ACCOUNT_KEY_BYTES);
+
+    // And the buffer holds nothing now. The wipe costs one `fill(0)` once
+    // `importKey` has resolved; leaving it costs the plaintext of the value
+    // that unwraps the account's whole keyspace, kept alive by the very
+    // function whose `finally` exists to end it.
+    expect(importedMaterial).toHaveLength(ACCOUNT_KEY_BYTES);
+    expect(toHex(importedMaterial)).toBe('00'.repeat(ACCOUNT_KEY_BYTES));
   });
 });
 
@@ -692,13 +873,17 @@ describe("the contract's constants", () => {
     );
     expect(WRAPPED_KEY_AAD_PREFIX).toBe('budgetoid/wrapped-key/v1');
 
-    // Nothing derives from the eval input yet — no client here can run a
-    // WebAuthn ceremony, so there is no PRF output to evaluate against it. That
-    // is exactly why it is pinned: this assertion is the only thing in the
-    // system that would notice it drifting, and the day it drifts every account
-    // that wrapped its keys under the old one is locked out silently, by a
-    // passkey that still authenticates perfectly and simply hands back different
-    // bytes.
+    // This one is live now: `webauthn-encoding.ts` writes it into the `prf`
+    // extension's `eval.first` of every creation request, and
+    // `webauthn-ceremony.service.ts` evaluates against it on both legs of a
+    // ceremony — so any passkey this client has registered derived its
+    // key-encryption key from this exact string, and the envelopes wrapped
+    // under that key open against nothing else. Every other reader spells the
+    // value by importing the constant, which leaves this assertion the only
+    // thing in the system that would notice the value itself drifting. The day
+    // it drifts, every account wrapped under the old one is locked out
+    // silently, by a passkey that still authenticates perfectly and simply
+    // hands back different bytes.
     expect(PASSKEY_PRF_EVAL_INPUT).toBe('budgetoid/passkey/prf-eval-input/v1');
 
     // And the three are distinct, which a copy-paste between them would break

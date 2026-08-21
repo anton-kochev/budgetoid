@@ -93,6 +93,15 @@ function withBitFlipped(envelope: Uint8Array, index: number): Uint8Array {
   return tampered;
 }
 
+// A view over the bytes a `BufferSource` occupies — the buffer itself and never
+// a copy of it, so that reading it after the call under test returns reads
+// whatever the module left in it rather than a photograph of what was there.
+function liveBytes(source: BufferSource): Uint8Array {
+  return ArrayBuffer.isView(source)
+    ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
+    : new Uint8Array(source);
+}
+
 describe('a sealed envelope', () => {
   it('lays out a version byte, a nonce, the ciphertext and a tag', async () => {
     // Arrange
@@ -218,6 +227,65 @@ describe('a sealed envelope', () => {
 
     insecure.mockRestore();
     secure.mockRestore();
+  });
+
+  it('leaves no live copy of the plaintext in the buffer it hands the cipher', async () => {
+    // Arrange
+    // `overOwnBuffer(plaintext)` is a second copy of the caller's secret, made
+    // so WebCrypto is handed a buffer this module owns. Nothing hands it back
+    // and nothing else ever names it, so the caller's own wipe cannot reach it:
+    // `register.service.ts` zero-fills the account keys in a `finally` behind
+    // its wrap loop, and that clears the caller's array while this copy of the
+    // same thirty-two bytes stays on the heap for the life of the tab. One
+    // registration wraps two account keys under eleven factors, so twenty-two
+    // of these are left behind by a single sign-up, and every field a later
+    // story encrypts adds one more per seal.
+    //
+    // The copy is observed where it crosses the platform boundary, which is the
+    // only place a test can hold it at all. It is read twice — once at the call
+    // and once after the seal resolves — and the first reading is what makes a
+    // green result impossible for an implementation that sealed nothing.
+    const key = await importAesKey(TEST_KEY_BYTES);
+    const realEncrypt = crypto.subtle.encrypt;
+
+    // Empty rather than optional, so the length assertion below doubles as the
+    // proof that the spy ran at all and no narrowing is needed to read it.
+    let handedToCipher: Uint8Array = new Uint8Array(0);
+    let atCallTime = '';
+
+    const cipher = vi
+      .spyOn(crypto.subtle, 'encrypt')
+      .mockImplementation((algorithm, cryptoKey, data) => {
+        handedToCipher = liveBytes(data);
+        atCallTime = toHex(handedToCipher);
+
+        // Called through rather than faked: the envelope this test seals has to
+        // be a real one, or the buffer under measurement is one no cipher ever
+        // read and the measurement says nothing about production's.
+        return realEncrypt.call(crypto.subtle, algorithm, cryptoKey, data);
+      });
+
+    // Act
+    try {
+      await sealEnvelope(key, TEST_PLAINTEXT, TEST_ASSOCIATED_DATA);
+    } finally {
+      // Restored before the assertions, not after them: a failing expectation
+      // below would otherwise leave `crypto.subtle.encrypt` spied for every
+      // test after this one in the file.
+      cipher.mockRestore();
+    }
+
+    // Assert
+    // The buffer held the plaintext when the cipher was called, so it is the
+    // copy the secret was in and not a scratch buffer that was empty all along.
+    expect(handedToCipher).toHaveLength(TEST_PLAINTEXT.length);
+    expect(atCallTime).toBe(toHex(TEST_PLAINTEXT));
+
+    // And it holds nothing now. The wipe costs one `fill(0)` once the cipher
+    // has resolved; leaving it costs a full-strength copy of every secret this
+    // client ever encrypts, one per seal, none of them reachable by the code
+    // that owns the original.
+    expect(toHex(handedToCipher)).toBe('00'.repeat(TEST_PLAINTEXT.length));
   });
 });
 

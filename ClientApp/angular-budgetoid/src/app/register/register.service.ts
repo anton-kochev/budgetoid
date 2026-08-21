@@ -219,8 +219,9 @@ export class RegisterService {
    * Posts the assembled registration and, on 201, hands the visitor to the app.
    *
    * **There is no retry, only {@link restart}.** The challenge is consumed
-   * before anything is verified (`RegisterAccountHandler.cs:152-165`), so a
-   * second POST of the same body meets the undifferentiated challenge refusal
+   * before anything is verified — `RegisterAccountHandler` calls
+   * `challengeStore.ConsumeAsync` above its verifier and states why there — so
+   * a second POST of the same body meets the undifferentiated challenge refusal
    * with certainty. A retry button here would look like a way out and be a way
    * to be told no twice.
    */
@@ -316,10 +317,11 @@ export class RegisterService {
       // ceremony. Cancelling the system passkey sheet is the most common thing
       // that happens on this screen, and minting first leaves that person's
       // browser holding ten recovery codes for a flow that ended — secrets
-      // created for an account that does not exist, which is
-      // `codes-step.component.ts:22-31`'s rule read in the other direction. In
-      // this order nothing secret is created until the authenticator has
-      // agreed. It costs nothing: the challenge is already spent either way.
+      // created for an account that does not exist. That is the header rule of
+      // `codes-step.component.ts` — never mint inside the screen that displays
+      // a set — read in the other direction. In this order nothing secret is
+      // created until the authenticator has agreed. It costs nothing: the
+      // challenge is already spent either way.
       const ceremony = await this.ceremony.createPasskey(options);
 
       if (!ceremony.ok) {
@@ -356,14 +358,18 @@ export class RegisterService {
         // side of the wire can see it: the set validates, the account is
         // created, a session is handed over, and it is discovered by somebody
         // who redeemed a code months later and found the account still locked.
-        // It is the client-side twin of the argument at
-        // `RegisterAccountHandler.cs:303-307`.
+        // It is the client-side twin of the argument `RegisterAccountHandler`
+        // makes over its `wrappedAccountKeys` list, where the card's rows are
+        // projected from the one validated list rather than zipped from three.
         //
         // The factor id is minted inside the loop for the same reason, rather
         // than eleven at a time up front: an array of ten identifiers is a
         // third thing to zip. Nothing checks the eleven for distinctness —
         // a `randomUUID` collision is not a case a branch can honestly cover,
-        // and the server refuses one (`RegisterAccountHandler.cs:248-253`).
+        // and the server refuses one in two places:
+        // `RecoveryCodeSetValidation.DecodeAndValidate` holds the ten apart
+        // from each other, and `RegisterAccountHandler` compares the passkey's
+        // own factor id against all ten before it writes anything.
         const codes: RecoveryCodeSubmissionBody[] = [];
 
         for (let index = 0; index < set.codes.length; index += 1) {
@@ -379,8 +385,12 @@ export class RegisterService {
           // The key-encryption key above is an expression and never a field:
           // eleven of them exist during this method and none of them outlives
           // it, whatever a later reader adds to this class. They are
-          // non-extractable by construction as well (`account-keys.ts:345-357`),
-          // so neither half of that rests on the other.
+          // non-extractable by construction as well —
+          // `account-keys.ts`'s `importKeyEncryptionKey` is the one import both
+          // derivations share and it passes `extractable: false` — so neither
+          // half of that rests on the other. Named rather than cited by line:
+          // that function has already moved once under a comment pointing at
+          // where it used to be, and a name survives the next edit above it.
           codes.push({ verifier, factorId, ...wrapped });
         }
 
@@ -398,9 +408,9 @@ export class RegisterService {
         keys.indexKey.fill(0);
 
         this.pending = {
-          // Spread, and safe **only** because `toRegistrationPayload` projects
-          // the client's extension results into a fresh `{prf:{enabled}}`
-          // rather than forwarding them (`webauthn-encoding.ts:342-352`). A
+          // Spread, and safe **only** because `webauthn-encoding.ts`'s
+          // `toRegistrationPayload` projects the client's extension results
+          // into a fresh `{prf:{enabled}}` rather than forwarding them. A
           // spread of a raw credential's results would ship `prf.results.first`
           // — the PRF output itself, which is the value the passkey factor's
           // key-encryption key is derived from.
@@ -466,7 +476,8 @@ export class RegisterService {
   // Collapsing the two readings means telling somebody whose account *was*
   // created that the only codes it has are worthless — and there is no way for
   // them to make more, because `POST /api/me/recovery-codes` has no caller in
-  // this client. It is `session.service.ts:58-76`'s four-valued reading, and
+  // this client. It is the four-valued reading `SessionStatus` and
+  // `SessionService.readingOf` carry in `session.service.ts`, and
   // `SettingsService`'s rule about never collapsing `null` into `0`, on the one
   // screen where the cost is an account nobody can ever open again.
   private static failureOf(error: unknown): RegisterFailure {

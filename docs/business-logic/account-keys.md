@@ -58,7 +58,9 @@ keyspace into a variable any screen could log.
   Never transmitted.
 - **Key-encryption key** — 32 bytes derived from a recovery factor by HKDF-SHA-256, imported as a
   **non-extractable** `AES-GCM` `CryptoKey`. Never transmitted, and never readable back out of the
-  browser's key store.
+  browser's key store. The **bytes it was imported from** are a different thing and they do exist —
+  two buffers per derivation, both zero-filled where the import consumes them. See
+  [What becomes of the bytes](#what-becomes-of-the-bytes).
 - **Wrapped key** — the versioned envelope of §5.3 over a 32-byte key. Exactly 61 bytes. This is the
   only one of the four that ever reaches the server.
 - **Factor identifier** — the `factor_id` of the `wrapped_account_keys` row, minted by the client and
@@ -104,7 +106,9 @@ erDiagram
     `ClientApp/angular-budgetoid/src/app/+core/security/account-keys.ts`, drawing 64 bytes in one
     `crypto.getRandomValues` call and splitting them into copies. `account-keys.spec.ts` asserts the
     full 64 bytes were requested and that both returned regions appear in the output, and that
-    `Math.random` was never called. No layer below the browser can check this.
+    `Math.random` was never called. No layer below the browser can check this. The draw itself is
+    zero-filled in a `finally` before the return — see
+    [What becomes of the bytes](#what-becomes-of-the-bytes).
 
 - **Each recovery factor MUST derive its own key-encryption key on its own HKDF branch.**
   - **Why**: the branches are what keep two secrets derived from one recovery code independent. The
@@ -113,6 +117,20 @@ erDiagram
     `info` away from the key.
   - **Enforced in**: the client. `account-keys.spec.ts` pins the two branches distinct, and pins the
     recovery-code key-encryption key distinct from the verifier derived from the same code.
+
+- **A buffer holding a secret that goes nowhere MUST be zero-filled where it is consumed**, in a
+  `finally` rather than in a statement before the return.
+  - **Why**: a copy made for the platform is a copy nothing outside that call names, so the code
+    owning the original cannot reach it — its own `finally` clears the array it holds while the copy
+    stays on the heap for the life of the tab. The `finally` rather than the plain statement is the
+    same argument from the other end: the path that skips a wipe is the path where something has
+    already gone wrong, which is the worst moment to leave the value that unwraps the account lying
+    in a buffer.
+  - **Enforced in**: the client, at three sites, each pinned by a spec that reads the buffer at the
+    platform boundary before and after the call. The sites, the two deliberate exceptions and why
+    the wipe belongs to the consumer are in
+    [What becomes of the bytes](#what-becomes-of-the-bytes). Nothing below the browser can check any
+    of it.
 
 - **Both keys MUST be wrapped under every recovery factor — every passkey, and every one of a set's
   ten codes.**
@@ -186,7 +204,14 @@ erDiagram
     second time, through the entity.
 
 - **The key-encryption key MUST NOT be extractable.** It is imported with `extractable: false` and
-  only `encrypt`/`decrypt` usages, so no later caller can export the bytes.
+  only `encrypt`/`decrypt` usages, so no code holding the object can export it.
+  - **Read the claim at its real width: it is about the boundary.** What holds by construction is
+    that **what leaves the derivation is a `CryptoKey`** — there is no API that reads one back out,
+    so nothing downstream can log the value that unwraps the account's whole keyspace, serialise it
+    into a request body, put it in `localStorage` or hand it to a crash reporter. It is **not** a
+    claim that the value never exists as bytes: it does, twice per derivation, inside the module.
+    That those bytes do not outlive the call is a separate and weaker kind of rule — a wipe somebody
+    wrote rather than an absence nothing can undo. Both are true; only one of them is free.
 
 - **The PRF eval input, the two `info` strings and the associated-data prefix MUST NOT be edited.**
   - **Why**: each carries a `/v1` suffix, and a change to any of them changes every value derived
@@ -338,6 +363,55 @@ holding both vectors is the only way to see that.
 | associated data | `budgetoid/key-envelope/spec/v1` |
 | envelope (61 bytes) | `01a0a1a2a3a4a5a6a7a8a9aaab6699feaec14e8438eaec0d588bf74e51e03dcb830622d4fb0497bc1de336eb9e21d4cc389d668944133ecec0a071274d` |
 
+### What becomes of the bytes
+
+**The boundary claim and the byte claim are two claims, and only the first holds by construction.**
+A derivation hands back a non-extractable `CryptoKey` and nothing that holds one can read the value
+out of it — that is a property of WebCrypto rather than of anybody's care. Inside the derivation the
+same value is bytes, and what keeps *those* from outliving the call is an ordinary `fill(0)` that
+somebody wrote and somebody else can delete. Do not read the first sentence as covering the second.
+
+Three buffers hold a secret long enough to matter, and each is cleared where it is consumed:
+
+- **The 64-byte draw inside `generateAccountKeys`** — the one buffer in which the content key and
+  the index key sit together in the clear. The irony is exact, and it is why this wipe cannot be
+  left to a caller: the two keys are *copies* of regions of that draw precisely so that a caller
+  wiping one does not wipe the other, and it is that copying which puts the originals somewhere no
+  caller can name. Registration's own `finally` clears `contentKey` and `indexKey` and reaches no
+  byte of the draw.
+- **The copy `importKeyEncryptionKey` makes for WebCrypto, and the material it was handed.** That
+  material is the key-encryption key itself, in the clear, on a buffer nothing outside the call
+  names once `importKey` has been given it. Both derivations share this one import, so a
+  registration runs eleven derivations through it — one per factor, each leaving two buffers to
+  clear.
+- **The plaintext copy `sealEnvelope` hands the cipher**, cleared once the cipher resolves and never
+  before: WebCrypto reads the buffer asynchronously, so a wipe placed ahead of the `await` seals
+  zeros. One registration wraps two account keys under eleven factors, so twenty-two of these pass
+  through a single sign-up.
+
+Each is pinned by a spec that takes the buffer at the platform boundary and reads it **twice** —
+once at the call, asserting it held key material that was not already zero, and once after. The
+first reading is what makes a green result impossible for an implementation that drew, derived or
+sealed nothing; the second is the rule. The two specs that spy on `crypto.subtle` **call through**
+rather than faking, because a buffer no real import and no real cipher ever consumed says nothing
+about what production does with one. What a spec cannot reach is the second buffer at the import: it
+observes the copy that crosses the boundary, and the material behind that copy is cleared in the
+same `finally`.
+
+**Two copies are deliberately left uncleared, and both need saying so nobody "fixes" them.** The
+associated data `sealEnvelope` also copies is **not secret** — it names a factor and which of two
+keys a copy holds, and is re-supplied from wherever the envelope was found in order to open it — so
+there is nothing to clear, and wiping it for symmetry would suggest it carried something it does
+not. The recovery-code **verifier** branch keeps its uncleared copy for a sharper reason: a verifier
+is sent to the server, so clearing it locally buys nothing the wire has not already given away. A
+key-encryption key is sent nowhere, which is the whole of why it is worth a `finally`.
+
+**The wipe belongs to the consumer rather than to the producer.** `hkdfSha256` is a general utility
+with several callers, so reshaping it into a callback or a disposable to suit one caller's hygiene
+would be an API change every other caller pays for. Clearing at the point of consumption is local,
+and it is the honest reading of ownership: the material dies where it is used, not where it was
+made.
+
 ### The one client that produces them
 
 There is exactly one place in this product where an account's keys exist in the clear, and it is the
@@ -345,11 +419,12 @@ registration flow. Four rules govern what it does with them, and each is invisib
 
 **The account keys are drawn once for the whole set, and wiped as soon as the eleven wraps are
 done.** One `generateAccountKeys()` call sits outside every loop; the two buffers are zero-filled in
-a `finally`, so a wrap that rejects halfway does not leave them alive. Drawing a pair **per factor**
-is the mistake worth naming: it satisfies every type, every count, every round trip and every
-constraint the database holds, and it gives the second factor a second, incompatible account — the
-same failure this file's opening argues about deriving from a credential, reached from the other
-side. Keeping the keys "for the encryption epic" is the other temptation and has no upside at all:
+a `finally`, so a wrap that rejects halfway does not leave them alive — and the draw those two
+buffers were split out of is wiped by `generateAccountKeys` itself, because this flow cannot name
+it. Drawing a pair **per factor** is the mistake worth naming: it satisfies every type, every
+count, every round trip and every constraint the database holds, and it gives the second factor a
+second, incompatible account — the same failure this file's opening argues about deriving from a
+credential, reached from the other side. Keeping the keys "for the encryption epic" is the other temptation and has no upside at all:
 nothing on this client encrypts anything yet, every path that retries re-draws them, and the epic
 that needs them will unwrap them from an envelope as every later session must.
 

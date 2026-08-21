@@ -52,8 +52,11 @@ by the client — and deliberately not `credentials.id`. That column is the tabl
 
    `wrapped_content_key` and `wrapped_index_key` are both `NOT NULL`, so "a factor carries a copy of
    both keys, or no row at all" is a declarative fact. **That a factor has a row at all is not one** —
-   one-to-optional is not expressible without a trigger, which ADR 0002 forbids pushing down. It is
-   held by there being exactly two write paths. The composite foreign key to
+   one-to-optional is not expressible without a trigger, which ADR 0002 forbids pushing down. What
+   holds it is a **property of the write surface rather than a count**: every path that can bring a
+   factor into existence demands the members and writes the row in the credential's own
+   `SaveChanges`, so no path can half-comply. The number of such paths is a fact about today and the
+   property is the rule — see the consequence below. The composite foreign key to
    `AK_credentials_id_user_id_type` cascades, so revoking a factor takes its keys with it, and
    replacing a set takes all ten.
 
@@ -147,9 +150,9 @@ pin* — a whole table's worth of cost for a property a plain column on the poli
 any client-known identifier. It also makes a factor that exists without its keys a reachable state —
 and reachable is the operative word, because nothing in the schema forbids that state. The two
 `NOT NULL` columns say a row carries both keys or neither; what says a factor *has* a row is that
-both write paths demand the members and write them in the same `SaveChanges` as the credential. A
-second request would be a third write path, and the first one whose failure leaves a passkey that
-proves identity and unlocks nothing.
+every write path demands the members and writes them in the same `SaveChanges` as the credential. A
+second request would be a write path that does not, and the first one whose failure leaves a passkey
+that proves identity and unlocks nothing.
 
 ## Consequences
 
@@ -183,11 +186,23 @@ proves identity and unlocks nothing.
   about a factor the client never registered. It is also the same evidence the existing
   verifier-distinctness rule is: a client repeating an identifier inside one set has randomness that
   is not what it claims.
+- **The write surface has three paths, and the count moving is what showed the rule was never the
+  count.** This decision was written against two — registering a passkey and issuing a set of
+  recovery codes — and account registration is the third, writing the passkey's pair and one pair per
+  code, **eleven rows**, inside the one save that creates the whole account
+  ([ADR 0021](0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md)).
+  It arrived without weakening anything, which is what the property holding looks like from the
+  outside. Read the rule as the property and the number as a fact about today: a **fourth** path that
+  demands the envelopes and writes them in the credential's own save costs nothing, and a fourth that
+  does not creates a factor holding no share of the keys and **reddens nothing** — there is no
+  constraint, no policy and no test that would see it.
 - **A factor identifier has exactly one spelling on the wire, and `Guid.TryParseExact(…, "D")` is not
   enough to say so.** That overload also accepts upper-case hex, mixed case and surrounding
   whitespace — it trims before it looks at the format. Since the identifier is the associated data
   both envelopes were sealed with, a client that bound one spelling and sent another finds its own
-  envelopes permanently unopenable, with no error naming the cause. Both handlers therefore compare
-  the text ordinally against `parsed.ToString("D")`. That comparison looks redundant beside the parse
-  and is not: it is the rendering itself rather than a hand-maintained copy of it, so it cannot drift
-  from what the runtime actually produces.
+  envelopes permanently unopenable, with no error naming the cause. Every write path therefore
+  compares the text ordinally against `parsed.ToString("D")`, through the one
+  `CanonicalFactorId.TryParse` they all call — a rule that drifted on one of them would seal an
+  account's keys under a spelling the others cannot reproduce. That comparison looks redundant
+  beside the parse and is not: it is the rendering itself rather than a hand-maintained copy of it,
+  so it cannot drift from what the runtime actually produces.

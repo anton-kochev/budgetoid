@@ -263,7 +263,17 @@ Load-bearing rules, each explained there or in the linked decision:
   derived from each of the ten codes, and writes eleven pairs of envelopes into a single request. Two
   custody rules ride on that method rather than on a type: the eleven key-encryption keys are locals
   that never touch the service instance, and the account keys are zero-filled in a `finally` behind
-  the wrap loop. What is still uncalled is the *unwrapping*, because no route hands
+  the wrap loop. **Three more copies are wiped where they are consumed** — the 64-byte draw
+  `generateAccountKeys` splits the keys out of, the buffer `importKeyEncryptionKey` hands WebCrypto
+  *and* the material it was handed (that material **is** the key-encryption key, in the clear, on a
+  buffer nothing names), and the plaintext copy `sealEnvelope` gives the cipher. Each is pinned by a
+  spec that spies on the platform and asserts the buffer was non-zero at the moment of the call, so
+  none can pass against an implementation that drew nothing. **Two omissions are deliberate**: the
+  associated data `sealEnvelope` also copies is not secret, and the recovery-code *verifier* branch
+  keeps its copy because a verifier is sent to the server, so clearing it locally buys nothing the
+  wire does not already give away. And the wipe lives at the point of consumption rather than in
+  `hkdfSha256`, which is a general utility several branches call — reshaping it for one caller's
+  hygiene would be an API change paid by every other. What is still uncalled is the *unwrapping*, because no route hands
   `wrapped_account_keys` back. See
   [account-keys.md](docs/business-logic/account-keys.md) and
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).

@@ -108,20 +108,40 @@ export async function sealEnvelope(
   const nonce = new Uint8Array(ENVELOPE_NONCE_BYTES);
   crypto.getRandomValues(nonce);
 
-  // WebCrypto returns the tag appended to the ciphertext — the same order this
-  // layout specifies — so `sealed` is already `ciphertext || tag` and there is
-  // no split to make here. A reader will look for one; there isn't one, and
-  // appending the tag a second time is the shape that mistake takes.
-  const sealed = await crypto.subtle.encrypt(
-    {
-      name: ALGORITHM,
-      iv: nonce,
-      additionalData: overOwnBuffer(associatedData),
-      tagLength: TAG_BITS,
-    },
-    key,
-    overOwnBuffer(plaintext),
-  );
+  // Hoisted so it can be wiped. `overOwnBuffer` is a second copy of the caller's
+  // secret, and inline it would be a copy nothing names: the caller's own
+  // `finally` clears the array it owns while these thirty-two bytes stay on the
+  // heap for the life of the tab, one per seal. Wiping it is the only reach
+  // anything has to it.
+  const ownedPlaintext = overOwnBuffer(plaintext);
+
+  // `associatedData` gets a third copy per seal and is deliberately **not**
+  // wiped. It is not secret — it names a factor and which of two keys a copy
+  // holds, and is re-supplied from where the envelope was found in order to open
+  // it — so there is nothing to clear. Wiping it for symmetry with the line above
+  // would suggest it carried something it does not.
+  let sealed: ArrayBuffer;
+
+  try {
+    // WebCrypto returns the tag appended to the ciphertext — the same order this
+    // layout specifies — so `sealed` is already `ciphertext || tag` and there is
+    // no split to make here. A reader will look for one; there isn't one, and
+    // appending the tag a second time is the shape that mistake takes.
+    sealed = await crypto.subtle.encrypt(
+      {
+        name: ALGORITHM,
+        iv: nonce,
+        additionalData: overOwnBuffer(associatedData),
+        tagLength: TAG_BITS,
+      },
+      key,
+      ownedPlaintext,
+    );
+  } finally {
+    // After the cipher has resolved, never before: WebCrypto reads the buffer
+    // asynchronously, so a wipe placed ahead of the `await` seals zeros.
+    ownedPlaintext.fill(0);
+  }
 
   // The version byte is deliberately outside the authenticated data. GCM has no
   // opinion about it, which is why {@link openEnvelope} has to check it on

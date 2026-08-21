@@ -158,9 +158,10 @@ erDiagram
     Read what each half holds: the two envelope columns are
     `NOT NULL` on a table keyed on `factor_id`, so "a row carries both keys or neither" is a schema
     fact — but **"a passkey has a row" is not one**, because one-to-optional needs a trigger and
-    ADR 0002 forbids pushing that down. It is held by there being exactly **three** paths that write a
-    factor at all. A passkey is one factor; a set of recovery codes is ten. See
-    [account-keys.md](account-keys.md).
+    ADR 0002 forbids pushing that down. What holds it is a property of the write surface rather than
+    a count: **every** path that creates a factor demands the members and writes them in the
+    credential's own save, so a path cannot half-comply. Three do today. A passkey is one factor; a
+    set of recovery codes is ten. See [account-keys.md](account-keys.md).
     - **The identifier has one spelling**, and `CanonicalFactorId.TryParse` is where that is held —
       one definition every write path calls. The rule itself is normative in
       [account-keys.md](account-keys.md) rather than here, because it is a cross-client contract and
