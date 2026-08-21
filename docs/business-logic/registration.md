@@ -135,8 +135,9 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
     pool is deriving from a value the caller chose.
   - **Enforced in**: `RegistrationAccountId.For`, called from `BeginAccountRegistrationHandler` on the
     bytes the store just issued and from `RegisterAccountHandler` at rung 12 — **after** the consume at
-    rung 4. `User.CreateWithId` is a second factory rather than an optional parameter on `User.Create`,
-    so "which path may name an account" is a fact about the call site.
+    rung 4. `User.CreateWithId` is the only factory `User` offers and it takes the identifier from
+    its caller, so "which path may name an account" is a fact about the call site — one a reviewer
+    reads, not one the compiler holds.
 
 - **The identity MUST be published before the insert, and no transaction may wrap the write.**
   - **Why**: `app.current_user_id` reaches the database on the next connection open, and the `users`

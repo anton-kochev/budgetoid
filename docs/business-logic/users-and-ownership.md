@@ -367,19 +367,31 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     bounds, and those it holds properly: `IX_credentials_user_id_federated` and
     `IX_credentials_user_id_recovery_codes`, each partial on its own `type`.
   - **What holds it instead is that exactly one write path creates a `users` row and writes all three
-    credentials in the same save**, and three things now make that a fact rather than a claim about
-    today's call sites. `RegisterAccountHandler` is the only code that brings an account into
-    existence. It is reachable from `/api/registration` and from nowhere else. And **`User.Create` —
-    the factory that let a caller mint an account under a fresh identifier — is deleted**, leaving
-    `User.CreateWithId`, which takes an id derived from the ceremony's own challenge and refuses
-    `Guid.Empty`. So a second creating path cannot be written by calling something that already
-    exists: it has to add a factory to `Domain/Users/User.cs` first, which is the change a reviewer
-    must see. The prohibition stopped being a doc comment and became a compile error.
+    credentials in the same save.** `RegisterAccountHandler` is the only code that brings an account
+    into existence, and it is reachable from `/api/registration` and from nowhere else.
+    **`User.Create` — the factory that let a caller mint an account under a fresh identifier — is
+    deleted**, leaving `User.CreateWithId`, which refuses `Guid.Empty` and makes every call site say
+    where its identifier came from instead of minting one on the way past.
+  - **That is a property of the write surface, and it is not a compile error.** `CreateWithId` takes
+    a plain `Guid`, so a second creating path is the one line
+    `User.CreateWithId(Guid.CreateVersion7(), email, now)` — which five call sites across `UnitTests`
+    and `IntegrationTests` already write today, on purpose. Nothing would redden. A reader who
+    believes the compiler is holding this rule stops looking for the review that is. What the deleted
+    factory buys is that such a path has to name
+    where its account id came from in the diff a reviewer reads, and what holds the rule is the
+    review, not the compiler. Making the compiler hold it would need a `Domain`-owned identifier type
+    whose only factory hashes a ceremony challenge — and even that buys "an account under an id
+    nothing derived is unspellable", never "one path creates an account", because the second claim is
+    about how many call sites exist and no type counts call sites.
   - **The schema still permits the state; nothing in the product produces it.** The three claims are
     cross-row, so no constraint refuses a credential-less `users` row and a direct `INSERT` still
-    writes one. What changed is that no code path can: the only factory is reached from one handler,
-    and a test or seeding helper that wanted a bare account would have to restore the deleted factory
-    to get one. Do not restore it to make a fixture shorter.
+    writes one. What changed is that no path **in the product** produces it — the one production
+    caller of `CreateWithId` is `RegisterAccountHandler`, and it writes all three credentials beside
+    the account. A test or seeding helper still gets a bare account by calling the same factory with
+    a fresh identifier, which is exactly what
+    `RepositoryConstraintAttributionTests.AddBudget_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape`
+    does on purpose. That is not a hole in this rule; it is the rule restating that the schema is not
+    where it lives.
 - **Enforced in**: `RegisterAccountHandler` builds all five entities and hands them to
   `IRegistrationRepository.RegisterAsync`, which adds and saves **once**; `Domain.Users.Registration`
   is the record that makes "a registration without one of them" unspellable, since every member is
@@ -387,8 +399,9 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   the ladder refuses a request carrying no card or no wrapped keys before anything is written. See
   [registration.md](registration.md).
 - **Counterexample**: adding a second route that creates an account — a support tool, a seed path, an
-  import. Every test in the suite stays green and the account it produces can never read itself. The
-  deleted factory is what makes that cost a visible edit rather than a call.
+  import. Every test in the suite stays green and the account it produces can never read itself.
+  Nothing catches it: the deleted factory makes such a route *name* the identifier it invents, which
+  is a thing a reviewer can see and a thing no gate can.
 - **Source**: `[SOURCE: user-story]`
 
 ---

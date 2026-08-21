@@ -55,14 +55,17 @@ Auth is live Google OAuth.
 a user id and default budget id on the scoped `CurrentUser`; `IBudgetContext` exposes the ambient
 budget. **Exactly one path creates an account**: `POST /api/registration`, which creates nothing
 without a passkey and a card of recovery codes, and writes ~30 rows in **one** `SaveChanges`. There
-is no heal, and a resolved account with no budget throws. What makes "one path" a fact rather than a
-convention is that `RegisterAccountHandler` is the only code that brings an account into existence
-and **`User.Create` is deleted** — the surviving factory takes an id derived from the ceremony's own
-challenge, so minting an account with an id of one's choosing is a compile error rather than a
-prohibition in a comment. **An authenticated principal naming no account is not a state this pipeline
-can be in**: a cookie is only ever issued over a session row, so the handler answers `NoResult` and
-the request is challenged — a 401 indistinguishable from an anonymous one. See the registration
-bullet below and
+is no heal, and a resolved account with no budget throws. What makes "one path" true is a
+property of the write surface rather than of the compiler: `RegisterAccountHandler` is the only code
+that brings an account into existence, and it is reachable from that route and nowhere else.
+`User.Create` is deleted, so the surviving `User.CreateWithId` makes a call site say where its id
+came from — but it takes a plain `Guid`, five call sites in the test projects hand it a fresh one
+deliberately, and **a second creating path is one line that would redden nothing**. The deletion
+buys a visible edit, not a compile error — and a reader who believes the compiler holds this rule
+stops looking for the review that does.
+**An authenticated principal naming no account is not a state this pipeline can be in**: a cookie is
+only ever issued over a session row, so the handler answers `NoResult` and the request is challenged
+— a 401 indistinguishable from an anonymous one. See the registration bullet below and
 [registration.md](docs/business-logic/registration.md). Read
 [data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries.
 Load-bearing rules, each explained there or in the linked decision:

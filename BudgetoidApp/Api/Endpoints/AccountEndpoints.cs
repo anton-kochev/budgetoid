@@ -14,12 +14,16 @@ public static class AccountEndpoints
 {
     public static IEndpointRouteBuilder MapAccountEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        // NOTHING ON THIS GROUP MAY BRING AN ACCOUNT INTO EXISTENCE, and after this commit that is a
-        // compile-time fact rather than a marker anybody has to remember. RegisterAccountHandler is the
+        // NOTHING ON THIS GROUP MAY BRING AN ACCOUNT INTO EXISTENCE. RegisterAccountHandler is the
         // only code in the application that creates one, User.CreateWithId is the only factory it can
         // reach, and both are behind POST /api/registration/registration — a route that needs the
         // provider scheme, a verified attestation, and a challenge drawn from the AccountRegistration
         // pool. There is no metadata a group could gain that would put minting back here.
+        //
+        // That is a property of what is written, not one the compiler holds. User.CreateWithId takes a
+        // plain Guid, so a second creating path is one line and nothing would redden. What the deleted
+        // minting factory buys is that such a path has to name the identifier it invents, in the diff a
+        // reviewer reads — see the remarks on User.CreateWithId, which spell the same correction.
         //
         // Six groups used to carry a ProvisionsUser marker so that a first authenticated request could
         // mint. It is gone with the middleware that read it: the session cookie is issued only over a

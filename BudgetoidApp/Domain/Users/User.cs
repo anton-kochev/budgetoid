@@ -27,14 +27,17 @@ public sealed class User
     /// account identifiers exist.
     /// </para>
     /// <para>
-    /// <b>The prohibition on minting an account anywhere else is a compile error rather than a doc
-    /// comment, and this is where it is spelled.</b> There used to be a second factory beside this one,
-    /// minting the id itself, so that "which path may name an account" was a fact about the call site;
-    /// six route groups carried a marker permitting them to reach it through a provisioning middleware.
-    /// All of that is gone. This type offers no way to obtain an account under an identifier nothing
-    /// derived, so a route that wanted to mint one would have to add a factory here first — which is
-    /// exactly the change a reviewer must see. Do not restore the minting factory to make a test or a
-    /// seeding helper shorter.
+    /// <b>This is not a compile error, and reading it as one is the trap.</b> There used to be a
+    /// second factory beside this one, minting the id itself, so that "which path may name an
+    /// account" was a fact about the call site; six route groups carried a marker permitting them to
+    /// reach it through a provisioning middleware. All of that is gone, and what the deletion buys is
+    /// that a creating path now has to <em>name</em> the identifier it invents, in the diff a reviewer
+    /// reads. It buys nothing else: this factory takes a plain <see cref="Guid"/>, so
+    /// <c>CreateWithId(Guid.CreateVersion7(), …)</c> compiles, and five call sites across the test
+    /// projects write exactly that on purpose. What holds "one path creates an account" is that
+    /// <c>RegisterAccountHandler</c> is its only production caller — a fact somebody checks, not one
+    /// the compiler does. Do not restore the minting factory to make a test or a seeding helper
+    /// shorter, and do not tell the next reader the compiler is watching this.
     /// </para>
     /// </remarks>
     /// <param name="id">The derived account identifier. Never <see cref="Guid.Empty"/>.</param>

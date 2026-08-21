@@ -24,12 +24,15 @@ public static class CredentialEndpoints
         // one line that defines the anonymous surface stop being the only one — and AllowAnonymous
         // must never appear.
         //
-        // IT MINTS NO ACCOUNT, and that is a compile-time fact: RegisterAccountHandler is the only
-        // code that brings one into existence, the only caller of the only factory the domain offers,
-        // and it is reachable only from POST /api/registration/registration — the provider scheme, a
-        // verified passkey attestation, and a challenge from the AccountRegistration pool. The reason
-        // it must stay that way: minting to answer a revocation would let a provider token outliving
-        // an erasure bring the account back as an empty shell.
+        // IT MINTS NO ACCOUNT: RegisterAccountHandler is the only code that brings one into
+        // existence, the only caller of the only factory the domain offers, and it is reachable
+        // only from POST /api/registration/registration — the provider scheme, a verified passkey
+        // attestation, and a challenge from the AccountRegistration pool. The reason it must stay
+        // that way: minting to answer a revocation would let a provider token outliving an erasure
+        // bring the account back as an empty shell.
+        //
+        // Held by what is written rather than by the compiler: User.CreateWithId takes a plain Guid, so
+        // a second creating path is one line nothing would redden. See the remarks on User.CreateWithId.
         //
         // ==================================================================================
         // TWO ID SPACES SHARE ONE WORD IN THIS REQUEST, AND THEY ARE NEVER COMPARED.

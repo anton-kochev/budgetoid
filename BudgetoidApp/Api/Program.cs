@@ -90,11 +90,11 @@ builder.Services.AddScoped<IUserContextWriter, CurrentUserWriter>();
 // configuration rather than request state, and one instance per request would only add a way for the
 // two legs of one sign-in to disagree about which site they are.
 builder.Services.AddSingleton<IPasskeyCeremonyPolicy, ConfiguredPasskeyCeremonyPolicy>();
-// The session cookie is the default scheme, and after this commit it is the only way into the
-// product's own surface. A request that presents no cookie, or one naming no session row, is answered
-// NoResult by the handler and challenged — which is what makes "an authenticated request can never
-// name an account that does not exist" a structural fact rather than a check: the cookie is only ever
-// issued over a session row, and a session row is only ever written beside the account it names.
+// The session cookie is the default scheme, and it is the only way into the product's own surface.
+// A request that presents no cookie, or one naming no session row, is answered NoResult by the
+// handler and challenged — which is what makes "an authenticated request can never name an account
+// that does not exist" a structural fact rather than a check: the cookie is only ever issued over a
+// session row, and a session row is only ever written beside the account it names.
 //
 // JwtBearer stays registered, but nothing defaults to it any more. It is reached by exactly one
 // policy — the registration group's, which names ProviderAuthentication.SchemeName — because an

@@ -11,12 +11,14 @@ public static class SignedInUserEndpoints
         // principal's namespace, and this is the principal describing itself.
         RouteGroupBuilder group = endpoints.MapGroup("/api/me");
 
-        // THIS READ MINTS NOTHING, and after this commit no metadata could make it. Accounts come
+        // THIS READ MINTS NOTHING, and no metadata a route could gain would make it. Accounts come
         // into existence in RegisterAccountHandler and nowhere else — it is the only caller of
         // User.CreateWithId, which is the only factory the domain offers — and it is reachable only
         // from POST /api/registration/registration, behind the provider scheme, a verified passkey
         // attestation and a challenge drawn from the AccountRegistration pool. The prohibition is a
-        // compile error rather than a marker somebody must not add.
+        // property of what is written rather than a compile error: that factory takes a plain Guid, so
+        // a second creating path is one line nothing would redden. See the remarks on
+        // User.CreateWithId.
         //
         // Worth keeping the reason beside it: a read that minted would let a provider token outliving
         // an erasure by up to an hour bring the account back as an empty shell.

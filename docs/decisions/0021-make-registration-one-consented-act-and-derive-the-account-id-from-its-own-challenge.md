@@ -107,8 +107,9 @@ challenge rather than chosen.**
    cost one: `BeginTransactionAsync` opens the connection, which is when `SessionContextInterceptor`
    writes `app.current_user_id`, so a wrap whose delegate contains the identity publication configures
    the connection while that setting is still empty and the `users` INSERT meets `''::uuid` in its
-   `WITH CHECK` — a `22P02`. `EnsureUserHandler` documents that trap for three rows; it is unchanged at
-   thirty.
+   `WITH CHECK` — a `22P02`. `CompleteAssertionHandler` and `RedeemRecoveryCodeHandler` each carry the
+   same warning, and `RegisterAccountHandler` states it inline: the argument was first written for
+   three rows and is unchanged at thirty.
 
 6. **A set of ten recovery codes is minted in the same act, not offered afterwards.** An account whose
    only factor is one passkey is an account whose keys leave with that device. Eleven
@@ -207,10 +208,14 @@ for.
   decision establishes — exactly one federated credential, at least one passkey, exactly one set of
   recovery codes, from the instant the account exists — is now a claim about **every** account in the
   schema.
-  - **`Domain.Users.User.Create` went with them, and that is what makes the claim hold.** The factory
-    that minted an account under a fresh identifier is gone, leaving `CreateWithId` as the only way to
-    obtain a `User`. A second creating path can no longer be written by calling something that already
-    exists: it has to add a factory back first, which is the change a reviewer must see.
+  - **`Domain.Users.User.Create` went with them, and it is worth being exact about what that buys.**
+    The factory that minted an account under a fresh identifier is gone, leaving `CreateWithId` as the
+    only way to obtain a `User`, and it takes the identifier from its caller — so a creating path has
+    to say in its own diff where the account id came from, rather than minting one on the way past.
+    It does **not** make a second such path a compile error. `CreateWithId` takes a plain `Guid`, and
+    five call sites in the test projects hand it a freshly minted one deliberately. What holds the
+    invariant is that exactly one **production** caller exists, which is a fact a reviewer checks and
+    not one the compiler does.
 - **The browser runs this ceremony.** `/register` obtains a PRF output from a real authenticator,
   draws the account's keys, mints the card, wraps eleven times and posts the account, and the response
   signs the person in. The server demanding a factor identifier, two envelopes and ten submissions is
