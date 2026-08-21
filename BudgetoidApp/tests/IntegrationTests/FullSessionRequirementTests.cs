@@ -210,26 +210,28 @@ public sealed class FullSessionRequirementTests
     }
 
     /// <summary>
-    /// A principal that authenticated on any scheme other than the session cookie's satisfies the
-    /// requirement, even carrying no kind claim at all.
+    /// A principal that authenticated on any scheme other than the session cookie's does <b>not</b>
+    /// satisfy the requirement.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>This is a deliberate, temporary hole, and this test is the record of it.</b> Sign-in still runs
-    /// through the identity provider, and every request that arrives on a Google bearer is authenticated
-    /// by <c>JwtBearer</c> through the <c>Budgetoid.Bridge</c> policy scheme. Such a principal carries no
-    /// session at all, so it carries no kind claim; a requirement that read the claim and refused what it
-    /// did not find would refuse every one of those requests — which is the whole product, today.
+    /// <b>This test asserted the opposite until the bridge scheme was deleted, and inverting it is the
+    /// whole point of having written it.</b> While sign-in ran through the identity provider, a Google
+    /// bearer was authenticated by <c>JwtBearer</c> through a <c>Budgetoid.Bridge</c> policy scheme and
+    /// carried no session and therefore no kind claim; a requirement that refused what it could not find
+    /// would have refused every request in the product. So the handler carried an explicit branch
+    /// admitting such a principal, and the production comment beside it said that this test going red
+    /// would be the reminder to delete the branch. The branch is gone, and this is that redness turned
+    /// into the claim it was standing in for.
     /// </para>
     /// <para>
-    /// <b>It is not a new hole.</b> That surface is exactly as reachable after this commit as before it:
-    /// a bearer token authenticated a request yesterday and authenticates the same request today. What
-    /// changes is only what a <em>session</em> may do, and no bearer request has one.
-    /// </para>
-    /// <para>
-    /// <b>It is deleted with the bridge.</b> When sign-in leaves the identity provider, the bridge scheme
-    /// and <c>JwtBearer</c> go with it, and this branch has nothing left to preserve — at which point this
-    /// test goes red, and that redness is the reminder to remove the branch rather than the test.
+    /// <b>What closes the hole is not this handler, and that is worth being precise about.</b> Nothing
+    /// defaults to <c>JwtBearer</c> any more: the fallback policy names the session cookie's scheme, and
+    /// the one policy that names the provider — the registration group's — declares itself and so never
+    /// reaches this requirement at all. A principal arriving here on some other scheme is therefore a
+    /// state no live route produces, and this test constructs one directly for exactly that reason. What
+    /// it pins is the handler's <em>reading</em>: a kind claim that is absent must not be read as
+    /// permission, whatever puts a foreign principal in front of it later.
     /// </para>
     /// <para>
     /// The authentication type below is a scheme name that is not the cookie handler's; the value stands
@@ -238,9 +240,12 @@ public sealed class FullSessionRequirementTests
     /// </para>
     /// </remarks>
     [Test]
-    public async Task APrincipalFromAnotherScheme_Succeeds()
+    public async Task APrincipalFromAnotherScheme_DoesNotSatisfyTheRequirement()
     {
-        // Arrange — no kind claim, because a bearer principal has no session and therefore never has one.
+        // Arrange — no kind claim, because a principal from another scheme has no session and so never
+        // has one. The Full control beside it is this file's rule for every negative arm: without it,
+        // "does not succeed" is satisfied by a handler that succeeds for nobody and by one that was
+        // never registered at all.
         ClaimsPrincipal bearer = new(new ClaimsIdentity(
             [new Claim(SessionCookieAuthenticationHandler.SubjectClaimType, "google-subject")],
             BearerAuthenticationType));
@@ -249,20 +254,26 @@ public sealed class FullSessionRequirementTests
             factory,
             bearer,
             HttpContextOn(RouteWithNoMarker));
+        AuthorizationHandlerContext full = ContextFor(
+            factory,
+            SessionPrincipal("Full"),
+            HttpContextOn(RouteWithNoMarker));
 
         // Act
         await RunHandlersAsync(factory, context);
+        await RunHandlersAsync(factory, full);
 
         // Assert — and that the value really is a different scheme, so a rename of the cookie scheme
         // cannot quietly turn this arm into a second copy of the session one.
         await Assert.That(BearerAuthenticationType)
             .IsNotEqualTo(SessionCookieAuthenticationHandler.SchemeName);
-        await Assert.That(context.HasSucceeded).IsTrue();
+        await Assert.That(context.HasSucceeded).IsFalse();
+        await Assert.That(full.HasSucceeded).IsTrue();
     }
 
     /// <summary>
     /// The authentication type a principal that did not come in on the session cookie carries. Any name
-    /// but the cookie scheme's would do; this is the one the provider path produces.
+    /// but the cookie scheme's would do; this is the one the provider path used to produce.
     /// </summary>
     private const string BearerAuthenticationType = "Bearer";
 

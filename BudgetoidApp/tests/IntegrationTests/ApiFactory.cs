@@ -496,35 +496,6 @@ public sealed class ApiFactory(
     /// </remarks>
     private string SeedingConnectionString => adminConnectionString ?? appConnectionString;
 
-    /// <summary>
-    /// One route that is allowed to bring an account into existence. Named so that a test needing an
-    /// account and a test asserting which routes may mint one cannot drift apart.
-    /// </summary>
-    public const string AccountProvisioningPath = "/api/accounts";
-
-    /// <summary>
-    /// Makes the one request that mints an account, so a test whose subject has never been seen can go
-    /// on to call a route that no longer mints one.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Deliberately <b>not</b> folded into <see cref="CreateAuthenticatedClient" />, and it must not be:
-    /// provisioning is opt-in per route group now, and a client that quietly provisioned itself on
-    /// construction would hide that rule from every test in the suite — including the tests whose whole
-    /// subject is that <c>/api/me/*</c> and <c>/api/passkeys/*</c> mint nothing. Every caller writes
-    /// this line, and writing it is what keeps the rule in sight.
-    /// </para>
-    /// <para>
-    /// Fails loudly on any non-success status. A silent no-op here would leave the caller's real test
-    /// measuring an account that was never created, which for a refusal test reads as a pass.
-    /// </para>
-    /// </remarks>
-    public static async Task EstablishAccountAsync(HttpClient client)
-    {
-        HttpResponseMessage response = await client.GetAsync(AccountProvisioningPath);
-        response.EnsureSuccessStatusCode();
-    }
-
     /// <param name="emailVerified">
     /// Raw value for the <c>email_verified</c> claim. Declared last, and optional, so existing
     /// positional call sites keep compiling. When omitted the handler emits its own default.

@@ -1,4 +1,4 @@
-namespace Application.Users.EnsureUser;
+namespace Application.Users;
 
 /// <summary>
 /// Publishes the identity a request was resolved to, and the budget it runs against, so the next
@@ -39,9 +39,10 @@ public interface IUserContextWriter
     /// a budget named first is a budget the rest of the request does not have, and every budget-scoped
     /// statement below it meets an unresolved budget. <b>Nothing enforces the order</b> — not a type,
     /// not the container, not the database; it holds only because each caller writes it that way, and
-    /// <c>UserProvisioningWriterTests</c> is the one place it is pinned. A caller that reverses it gets
-    /// a loud failure rather than a silent mis-scope, which is why the contract is allowed to live in a
-    /// doc comment at all.
+    /// <c>AuthenticateSessionHandlerTests.HandleAsync_PublishesTheIdentityBeforeTheAmbientBudget</c> is
+    /// the one place it is pinned — on the path every authenticated request in the product now takes. A
+    /// caller that reverses it gets a loud failure rather than a silent mis-scope, which is why the
+    /// contract is allowed to live in a doc comment at all.
     /// </remarks>
     void ResolveBudget(Guid budgetId);
 }

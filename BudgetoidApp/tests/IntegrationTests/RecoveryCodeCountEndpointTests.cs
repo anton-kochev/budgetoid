@@ -421,60 +421,32 @@ public sealed class RecoveryCodeCountEndpointTests
     }
 
     /// <summary>
-    /// An authenticated subject with no account behind it is refused, and the refusal writes nothing.
+    /// A caller carrying nothing is refused, which is now the whole of what this says.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>The row counts are the half of this test that carries the weight.</b> A status assertion cannot
-    /// tell a route that refuses from a route that mints an account and <em>then</em> refuses — and a
-    /// provider id token stays valid for up to an hour after the account it names is erased, so a
-    /// <c>ProvisionsUser</c> marker arriving on this group would turn one settings-screen load into a
-    /// resurrected, passkey-less account that the re-authentication gate in front of erasure can never
-    /// remove again. A read is the easiest place for that marker to be added by mistake, because a GET
-    /// looks harmless.
+    /// <b>This test used to discriminate and now barely does, and that is stated rather than
+    /// hidden.</b> It carried a second assertion — that the title was not the provisioning middleware's
+    /// <c>NoAccountTitle</c> — and that inequality was the interesting half: without it, a route that
+    /// had lost its authorization entirely still passed, because an anonymous request would walk on to
+    /// the middleware, find no account for a principal it could not even name, and be answered the
+    /// middleware's own 401. There is no middleware and no second 401, so the inequality had nothing
+    /// left to rule out. What remains catches exactly one thing: the fallback policy being deleted, or
+    /// this group being marked <c>AllowAnonymous</c>, either of which answers this request <c>200</c>.
+    /// The second of those is also caught by <c>AnonymousSurfaceTests</c>, which reads the marker off
+    /// the route table; the first is caught by nothing else, because that test issues no request.
     /// </para>
     /// <para>
-    /// Counted unscoped, on the superuser connection: the id an accidental marker would mint is one no
-    /// assertion here could name, and the three tables are policed by <c>user_isolation</c>, which is
-    /// <c>FOR ALL</c>, so a policed connection reports zero for a row that is still there exactly as it
-    /// does for one that was never written.
+    /// <b>A sibling test went entirely, and what it held is worth recording.</b> An authenticated
+    /// subject with no account behind it used to be refused here, and the row counts were the half that
+    /// carried the weight: a provider token outlives the account it names by up to an hour, so a
+    /// provisioning marker arriving on this group would have turned one settings-screen load into a
+    /// resurrected, passkey-less account that the re-authentication gate in front of erasure could never
+    /// remove again — and a read was the easiest place for such a marker to land by mistake, because a
+    /// GET looks harmless. There is no marker and no minting path left, and this route authenticates
+    /// from a cookie only ever issued over a session row written beside the account it names, so the
+    /// state that test arranged cannot be entered.
     /// </para>
-    /// </remarks>
-    [Test]
-    public async Task RemainingCount_ForAnAuthenticatedSubjectWithNoAccount_IsRefusedAndCreatesNothing()
-    {
-        // Arrange — an authenticated client that has deliberately never called EstablishAccountAsync.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient("google-counting-unprovisioned");
-
-        await using NpgsqlConnection admin = new(host.ConnectionString);
-        await admin.OpenAsync();
-
-        // Act
-        HttpResponseMessage response = await client.GetAsync(RecoveryCodesPath);
-
-        // Assert
-        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-        await Assert.That(await ReadTitleAsync(response)).IsEqualTo(UserProvisioningMiddleware.NoAccountTitle);
-
-        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
-        await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);
-        await Assert.That(await ScalarAsync(admin, "select count(*) from budgets")).IsEqualTo(0L);
-    }
-
-    /// <summary>
-    /// A caller carrying no token at all is refused by the fallback policy, and the title says it was the
-    /// policy rather than the middleware.
-    /// </summary>
-    /// <remarks>
-    /// Two refusals answer 401 on this route and the status cannot tell them apart: the fallback
-    /// authorization policy turning an anonymous caller away before the route is reached, and the
-    /// provisioning middleware finding no account for an authenticated principal. Only the second carries
-    /// <see cref="UserProvisioningMiddleware.NoAccountTitle" />; the anonymous one is titled
-    /// <c>"Unauthorized"</c> from the status code alone. Without the inequality, a route that had lost its
-    /// authorization entirely still passes here — an anonymous request would walk on to the provisioning
-    /// middleware, find no account for a principal it cannot even name, and be answered that middleware's
-    /// 401. This is <c>SignedInUserEndpointTests</c>' shape, for the reason it gives.
     /// </remarks>
     [Test]
     public async Task RemainingCount_WithoutAuthentication_IsRefusedWithUnauthorized()
@@ -482,14 +454,14 @@ public sealed class RecoveryCodeCountEndpointTests
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
 
-        // Act — no subject header, so nothing authenticates and the fallback policy decides. GetAsync
-        // rather than GetStreamAsync: the latter throws on any non-2xx, so a route that answered 200 to
-        // an anonymous caller would fail as a transport error rather than as the status assertion it is.
+        // Act — no cookie and no token, so nothing authenticates and the fallback policy decides.
+        // GetAsync rather than GetStreamAsync: the latter throws on any non-2xx, so a route that
+        // answered 200 to an anonymous caller would fail as a transport error rather than as the status
+        // assertion it is.
         HttpResponseMessage response = await host.Factory.CreateClient().GetAsync(RecoveryCodesPath);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-        await Assert.That(await ReadTitleAsync(response)).IsNotEqualTo(UserProvisioningMiddleware.NoAccountTitle);
     }
 
     /// <summary>

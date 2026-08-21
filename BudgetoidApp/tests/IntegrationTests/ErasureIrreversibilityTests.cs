@@ -20,7 +20,8 @@ namespace IntegrationTests;
 /// fail, and a route table is the only place that promise is visible whole.
 /// </para>
 /// <para>
-/// Structural rather than behavioural, for the reason <c>UserProvisioningRouteTests</c> gives: a
+/// Structural rather than behavioural, for the reason <see cref="AnonymousSurfaceTests" /> gives about
+/// its own set: a
 /// behavioural sweep would need one authenticated request per endpoint and could still only say what
 /// happened, not what the surface offers. The fixture is that class': the factory runs in
 /// <c>Production</c> against a connection string nothing connects to, so reading the route table needs

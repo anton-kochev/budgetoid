@@ -1,6 +1,6 @@
 using System.Net;
 using Api.Infrastructure;
-using Application.Users.EnsureUser;
+using Application.Users;
 using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence;
@@ -134,8 +134,8 @@ public sealed class AcceptsEndedSessionTests
     /// published neither would satisfy it.
     /// </para>
     /// <para>
-    /// A spy over the real writer rather than a stub, for <see cref="UserProvisioningWriterTests" />'
-    /// reason: the identity published here is what reaches <c>app.current_user_id</c> on the next
+    /// A spy over the real writer rather than a stub, and the reason is not style: the identity
+    /// published here is what reaches <c>app.current_user_id</c> on the next
     /// connection open, and a writer that recorded and discarded would leave the request failing
     /// <c>22P02</c> before the line under test.
     /// </para>

@@ -3,7 +3,7 @@ using Api.Endpoints;
 using Api.Infrastructure;
 using Application;
 using Application.Abstractions;
-using Application.Users.EnsureUser;
+using Application.Users;
 using Infrastructure;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
@@ -81,37 +81,26 @@ builder.Services.AddScoped<IBudgetContext, HttpContextBudgetContext>();
 // name the request's identity and its budget is declared in the constructors that use it rather than
 // travelling with every read. The three adapters registered here are also the only types that take
 // CurrentUser itself, and that is what the claim rests on: injecting the scoped state anywhere else —
-// provisioning middleware included — gives that collaborator both fields with neither interface, and
-// the clearing rule CurrentUserWriter.ResolveUser carries stops applying to whatever it publishes.
+// a middleware or an authentication handler included — gives that collaborator both fields with
+// neither interface, and the clearing rule CurrentUserWriter.ResolveUser carries stops applying to
+// whatever it publishes.
 builder.Services.AddScoped<IUserContext, HttpContextUserContext>();
 builder.Services.AddScoped<IUserContextWriter, CurrentUserWriter>();
 // Singleton, unlike the two contexts above: the relying party and the origin allow-list are
 // configuration rather than request state, and one instance per request would only add a way for the
 // two legs of one sign-in to disagree about which site they are.
 builder.Services.AddSingleton<IPasskeyCeremonyPolicy, ConfiguredPasskeyCeremonyPolicy>();
-// TEMPORARY, and the thing that removes it is named rather than left to a reader: sign-in moves off
-// the identity provider entirely — the passkey and recovery-code ceremonies mint a session token and
-// set the cookie — and this bridge goes with it, together with the JwtBearer registration below and
-// every claim gate in UserProvisioningMiddleware that reads a provider token.
+// The session cookie is the default scheme, and after this commit it is the only way into the
+// product's own surface. A request that presents no cookie, or one naming no session row, is answered
+// NoResult by the handler and challenged — which is what makes "an authenticated request can never
+// name an account that does not exist" a structural fact rather than a check: the cookie is only ever
+// issued over a session row, and a session row is only ever written beside the account it names.
 //
-// Until then two schemes have to serve at once, because the whole existing surface still authenticates
-// with a Google bearer while the cookie path lands one commit at a time. A policy scheme is how that is
-// expressed without a request having to be authenticated twice: it authenticates nothing itself, it
-// only chooses which real scheme this request belongs to, and it chooses by the one thing that
-// distinguishes them — whether the request presents the cookie at all.
-//
-// A request carrying both a cookie and a bearer is a session request, and that precedence is the safe
-// direction rather than an arbitrary one: the cookie is a credential this product issued and can end,
-// the provider token is the one it cannot, and a client whose interceptor attaches the bearer to every
-// /api/ call would otherwise never be able to use the session it was just given.
-const string bridgeScheme = "Budgetoid.Bridge";
-
-builder.Services.AddAuthentication(bridgeScheme)
-    .AddPolicyScheme(bridgeScheme, bridgeScheme, options =>
-        options.ForwardDefaultSelector = context =>
-            context.Request.Cookies.ContainsKey(SessionCookie.Name)
-                ? SessionCookieAuthenticationHandler.SchemeName
-                : JwtBearerDefaults.AuthenticationScheme)
+// JwtBearer stays registered, but nothing defaults to it any more. It is reached by exactly one
+// policy — the registration group's, which names ProviderAuthentication.SchemeName — because an
+// account may not exist without a completed provider exchange. A bearer presented to any other route
+// therefore authenticates nothing at all.
+builder.Services.AddAuthentication(SessionCookieAuthenticationHandler.SchemeName)
     // No options of its own: everything this scheme reads is on the request, and the collaborator it
     // needs is resolved per request from the container. See SessionCookieAuthenticationHandler.
     .AddScheme<AuthenticationSchemeOptions, SessionCookieAuthenticationHandler>(
@@ -133,14 +122,21 @@ builder.Services.AddAuthentication(bridgeScheme)
             ValidateIssuerSigningKey = true
         };
     });
-// The fallback policy carries two rules now: authenticated at all, and a session that reads the
-// account's budget content. It applies to every route that declares no policy of its own, which is
-// everything outside the AllowAnonymous surface — so the second rule reaches the routes nobody thought
-// about, and a route that must admit a locked session declares AllowsLockedSessionAttribute and says
-// why. See that attribute for the polarity argument and FullSessionRequirement for the decision.
+// The fallback policy carries two rules: authenticated at all, and a session that reads the account's
+// budget content. It applies to every route that declares no policy of its own, which is everything
+// outside the AllowAnonymous surface and the registration group — so the second rule reaches the
+// routes nobody thought about, and a route that must admit a locked session declares
+// AllowsLockedSessionAttribute and says why. See that attribute for the polarity argument and
+// FullSessionRequirement for the decision.
+//
+// It names the session cookie scheme, which is also the default one. Restating it is worth the line:
+// it makes the fallback readable off the route table, the way RegistrationRouteTests already reads the
+// registration group's own scheme, and it means a later change of default cannot silently move every
+// route that declares nothing onto some other handler.
 builder.Services.AddSingleton<IAuthorizationHandler, FullSessionRequirementHandler>();
 builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder()
+        .AddAuthenticationSchemes(SessionCookieAuthenticationHandler.SchemeName)
         .RequireAuthenticatedUser()
         .AddRequirements(new FullSessionRequirement())
         .Build());
@@ -276,7 +272,6 @@ app.UseCors();
 // starting at authentication would leave login-CSRF open on exactly them.
 app.UseMiddleware<FirstPartyRequestMiddleware>();
 app.UseAuthentication();
-app.UseMiddleware<UserProvisioningMiddleware>();
 app.UseAuthorization();
 
 // Development is the only environment where the application shapes its own database. Production

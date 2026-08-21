@@ -59,29 +59,14 @@ public sealed class FullSessionRequirementHandler : AuthorizationHandler<FullSes
             return Task.CompletedTask;
         }
 
-        // TEMPORARY, and it leaves with the bridge scheme named in Program.cs. Sign-in still runs through
-        // the identity provider, so every request arriving on a Google bearer is authenticated by
-        // JwtBearer through Budgetoid.Bridge; such a principal has no session, therefore no kind claim,
-        // and a requirement that refused what it did not find would refuse the entire product today.
-        //
-        // It is not a new hole: that surface is exactly as reachable after this commit as before it. What
-        // this requirement changes is only what a *session* may do, and no bearer request has one. When
-        // the bridge and JwtBearer are deleted, this branch has nothing left to preserve —
-        // FullSessionRequirementTests.APrincipalFromAnotherScheme_Succeeds goes red at that moment, and
-        // that redness is the reminder to remove the branch rather than the test.
-        //
-        // Every identity is asked rather than only the primary one: a principal carrying a session
-        // identity anywhere in it is a session request, and reading only the first would let a second
-        // identity stapled on in front of it skip the gate.
-        if (!context.User.Identities.Any(identity => string.Equals(
-                identity.AuthenticationType,
-                SessionCookieAuthenticationHandler.SchemeName,
-                StringComparison.Ordinal)))
-        {
-            context.Succeed(requirement);
-            return Task.CompletedTask;
-        }
-
+        // A principal that authenticated on any other scheme is not admitted here, and that is the
+        // change the bridge scheme's deletion bought. While it stood, a Google bearer authenticated
+        // through JwtBearer on the default scheme and carried no kind claim, so this requirement had to
+        // let such a principal past or refuse the entire product. Nothing defaults to JwtBearer any
+        // more: the fallback policy names the cookie scheme, and the one policy that names the provider
+        // — the registration group's — declares itself and so never reaches this requirement at all. A
+        // principal arriving here with no kind claim is therefore a cookie principal that does not have
+        // one, which is a session this product did not write.
         if (ReadsBudgetContent(
                 context.User.FindFirstValue(SessionCookieAuthenticationHandler.SessionKindClaimType)))
         {

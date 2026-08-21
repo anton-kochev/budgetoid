@@ -105,18 +105,26 @@ public sealed record AttributionCensus(
 /// the census with nothing to count.
 /// </para>
 /// <para>
-/// <b>A gap this recorded, and which is now closed.</b> Narrowing on
+/// <b>A gap this recorded, closed, and then partly reopened by a deletion.</b> Narrowing on
 /// <c>PostgresException.ConstraintName</c> is the house rule — ten of the twelve repositories do it,
 /// and two of those spell it inside a helper rather than in the <c>when</c> clause. Having a narrowed
 /// <c>catch</c> is not the same as having it <i>tested from both sides</i>, and
-/// <see cref="PinnedElsewhere" /> says per entry which halves exist. It said, for three entries, that
-/// the translation was pinned and there was <b>no mis-attribution control at all</b>:
+/// <see cref="PinnedElsewhere" /> says per entry which halves exist. It once said, for three entries,
+/// that the translation was pinned and there was <b>no mis-attribution control at all</b>:
 /// <c>PasskeyRepository</c>, <c>TransactionRepository.UpdateAsync</c> and
-/// <c>UserRepository.TryAddAsync</c>. Each of those now has one, in the file its entry names, and
-/// <c>TransactionRepository.UpdateAsync</c> gained the translation half it also turned out to be
-/// missing. <b>The reason lines were rewritten in the same change</b>, which is the discipline this
-/// member exists for in both directions: a census that keeps claiming a gap it no longer has is the
-/// same defect as one that hides a gap it does have, and the second is only easier to notice.
+/// <c>UserRepository.TryAddAsync</c>. Each gained one, and <c>TransactionRepository.UpdateAsync</c>
+/// gained the translation half it also turned out to be missing.
+/// </para>
+/// <para>
+/// <b>Then <c>UserRepository.TryAddAsync</c> was deleted with the provisioning path, and its control
+/// went with it — replaced by nothing.</b> The two-name unique filter over
+/// <c>IX_credentials_provider_subject</c> and <c>IX_users_email</c> did not leave the assembly:
+/// <c>RegistrationRepository.RegisterAsync</c> narrows on the same two names, among four, and holds
+/// the mis-attribution half on none of them. So the suite is one control short of where it was, on a
+/// catch shape that is still live, and <b>both</b> entries say so in their own words rather than one
+/// of them going quiet. That is the discipline this member exists for in both directions: a census
+/// that keeps claiming a gap it no longer has is the same defect as one that hides a gap it does
+/// have, and the second is only easier to notice.
 /// </para>
 /// <para>
 /// <b>What is not claimed is that the twelve are now uniformly covered</b> — only that every entry says
@@ -162,13 +170,21 @@ public sealed class RepositoryAttributionCensusTests
     /// <remarks>
     /// <para>
     /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Two of the seven are
-    /// pinned in both directions on every narrowing they hold; two — <c>SessionRepository</c> and
+    /// pinned in both directions on every narrowing they hold — <c>TransactionRepository</c>, and
+    /// <c>UserRepository</c>, which now holds only one narrowing because the insert that carried its
+    /// other one was deleted with the provisioning path; two — <c>SessionRepository</c> and
     /// <c>SessionTokenRepository</c> — have nothing to attribute at all, which is a different statement
     /// and each says so in its own words; two of the three that write
     /// <c>wrapped_account_keys</c> each gained a <c>factor_id</c> narrowing whose two halves are not
     /// both in the file named beside it; and the third of them —
     /// <c>RegistrationRepository</c> — holds the translation half on all four of its narrowings and the
     /// mis-attribution half on none.
+    /// </para>
+    /// <para>
+    /// <b>The <c>UserRepository</c> entry is the one to read before trusting the shape of this
+    /// list.</b> "Both halves on every narrowing it holds" is a true sentence that got easier to say by
+    /// losing a narrowing rather than by gaining a control, and the catch shape it lost is still live
+    /// one entry up. Both entries name each other for that reason.
     /// </para>
     /// <para>
     /// That split is stated rather than smoothed over, for the reason the class remarks give about the
@@ -247,7 +263,15 @@ public sealed class RepositoryAttributionCensusTests
             + "IX_credentials_user_id_recovery_codes are all keyed on a user_id derived for this "
             + "registration alone and cannot be breached by anything this save writes, which is what "
             + "keeps the missing control from being the gap it would be on a repository whose rows share "
-            + "an owner with anybody"),
+            + "an owner with anybody. THE OTHER FOUR ARE NOT SO NARROW, AND ONE OF THEM LOST ITS ONLY "
+            + "CONTROL ELSEWHERE. IX_credentials_provider_subject and IX_users_email are keyed on "
+            + "values a stranger holds — that is the entire point of both rules — and until the "
+            + "provisioning path was deleted the same two-name filter existed on "
+            + "UserRepository.TryAddAsync with a mis-attribution control beside it, staging "
+            + "IX_credentials_user_id_federated as a third neighbouring rule on credentials. That "
+            + "control went with the method it was written against. Nothing in the suite now stages an "
+            + "unrelated 23505 into a two-name credentials/users filter at any layer, so this entry's "
+            + "missing half is the last statement anybody makes about that catch shape"),
         new(
             nameof(SessionRepository),
             "SessionRepositoryTests",
@@ -283,13 +307,23 @@ public sealed class RepositoryAttributionCensusTests
         new(
             nameof(UserRepository),
             "UserRepositoryTests",
-            "both halves on both narrowings: DeleteAsync's entries-based narrowing by "
+            "both halves on its one remaining narrowing: DeleteAsync's entries-based narrowing by "
             + "_WhenAnotherRequestErasedTheRowFirst_Completes and "
-            + "_WhenTheConflictNamesAnotherEntity_LetsItEscape, and TryAddAsync's two-name unique "
-            + "filter by the TryAddAsync_With* translations plus "
-            + "TryAddAsync_WhenATrackedRowBreaksAThirdUniqueRule_LetsTheViolationEscape, which stages "
-            + "a third credentials index — IX_credentials_user_id_federated — so the control lives "
-            + "between two neighbouring rules on one table rather than across tables"),
+            + "_WhenTheConflictNamesAnotherEntity_LetsItEscape. "
+            + "IT HAD A SECOND NARROWING AND THE SUITE LOST A CONTROL WITH IT. TryAddAsync — the "
+            + "insert that wrote a user, its federated credential and its default budget in one save "
+            + "for the deleted provisioning path — filtered a 23505 on two index names, "
+            + "IX_credentials_provider_subject and IX_users_email, and was pinned in both directions "
+            + "here: the TryAddAsync_With* tests translated it and "
+            + "TryAddAsync_WhenATrackedRowBreaksAThirdUniqueRule_LetsTheViolationEscape controlled it "
+            + "by staging a third credentials index, IX_credentials_user_id_federated, so the control "
+            + "lived between two neighbouring rules on one table rather than across tables. That "
+            + "method and every one of those tests are gone with the middleware. "
+            + "The two-name filter itself is not gone: RegistrationRepository.RegisterAsync narrows on "
+            + "the same two index names, among four, and its entry in this list says in its own words "
+            + "that it holds NO mis-attribution control on any of them. So the control this entry used "
+            + "to name is not merely relocated — the catch shape survives in the assembly with nothing "
+            + "left demonstrating that it is as narrow as it claims"),
     ];
 
     [Test]

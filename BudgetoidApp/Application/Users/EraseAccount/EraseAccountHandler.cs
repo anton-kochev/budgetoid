@@ -48,10 +48,14 @@ namespace Application.Users.EraseAccount;
 /// tell someone their data might still be there.
 /// </para>
 /// <para>
-/// What it is <b>not</b> idempotent about is the caller's experience. A second request authenticates
-/// as a brand-new account that user provisioning minted moments earlier, holding no passkey, so the
-/// gate refuses it — a 401 that makes no claim about data at all, which is why it does not violate the
-/// paragraph above.
+/// What it is <b>not</b> idempotent about is the caller's experience, and the reason has changed with
+/// the way a request authenticates. A second request presents the same cookie, whose
+/// <c>session_tokens</c> row left with the account it named — the whole owned graph cascades from
+/// <c>users</c>, sessions and their tokens included — so the discovery read finds nothing and the
+/// request is challenged. The caller is answered 401 by the authentication scheme, before any handler
+/// runs, which makes no claim about data at all and is why it does not violate the paragraph above.
+/// The old answer had the same shape for a worse reason: provisioning minted a passkey-less account
+/// for the second request and the gate refused <em>that</em>.
 /// </para>
 /// </remarks>
 public sealed class EraseAccountHandler(
@@ -71,8 +75,9 @@ public sealed class EraseAccountHandler(
 
         // The gate runs to completion OUTSIDE the transactional delegate, and the position is
         // load-bearing for two reasons — neither of them the 22P02 one CompleteAssertionHandler gives
-        // for its own ordering. Identity is already published here by UserProvisioningMiddleware, so
-        // the connection is configured correctly whenever it opens.
+        // for its own ordering. Identity is already published here by AuthenticateSessionHandler, which
+        // the cookie scheme ran before the endpoint was reached, so the connection is configured
+        // correctly whenever it opens.
         //
         // 1. The consume must commit independently of the erasure. ConsumeAsync deletes the nonce row
         //    on its own save; inside the erasure transaction, a rolled-back erasure would RESTORE the
@@ -94,7 +99,7 @@ public sealed class EraseAccountHandler(
             async token =>
             {
                 // Load-bearing on the FIRST attempt of the FIRST request, not just under retry.
-                // UserProvisioningMiddleware has already resolved the request's identity through this
+                // AuthenticateSessionHandler has already resolved the request's identity through this
                 // same scoped context, which leaves the Budget entity tracked. Remove the User with
                 // that dependent still in the tracker and EF cascades to the copy it can see, emitting
                 // its own `DELETE FROM budgets` — and the app role has SELECT and INSERT on budgets

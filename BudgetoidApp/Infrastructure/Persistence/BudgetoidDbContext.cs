@@ -17,7 +17,8 @@ public sealed class BudgetoidDbContext(
     IBudgetContext? budgetContext = null) : DbContext(options)
 {
     // Budgets, Users, Credentials and Sessions deliberately carry no BudgetIsolation query filter:
-    // they are what provisioning reads and writes before an ambient budget exists, and a credential is
+    // they are what registration writes and what authentication reads before an ambient budget exists,
+    // and a credential is
     // keyed on the user it lets in rather than on a budget at all. A session's reason is its own: it
     // belongs to a person and names no budget, so there is no budget to filter it by — one person's
     // session is established before any budget is ambient and outlives whichever budget was. It is

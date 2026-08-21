@@ -1,7 +1,7 @@
 using Application.Abstractions;
 using Application.Passkeys;
 using Application.Sessions;
-using Application.Users.EnsureUser;
+using Application.Users;
 using Domain.Sessions;
 using Domain.Users;
 
@@ -18,12 +18,11 @@ namespace Application.RecoveryCodes.RedeemRecoveryCode;
 /// </para>
 /// <para>
 /// <b>This handler never reads <see cref="IUserContext"/> for the account.</b> The route is anonymous,
-/// so <c>UserProvisioningMiddleware</c> returns on the route's marker and publishes nobody whatever
-/// token accompanied the request — but the account is still taken from the matched code rather than
-/// from the request, which is what keeps the property from depending on where the middleware's
-/// anonymous arm sits. A handler that reached for the request's identity anyway would find nothing on
-/// a genuine recovery sign-in and <em>something</em> on a request from a browser whose interceptor
-/// attaches a bearer to everything, and the something is the wrong account.
+/// so nothing has published an identity by the time it runs — but the account being taken from the
+/// matched code rather than from the request is a property of this handler and not of the route's
+/// marker, which is the point. A handler that reached for the request's identity anyway would find
+/// nothing on a genuine recovery sign-in and <em>something</em> on a request from a browser that still
+/// holds a session for a different account, and the something is the wrong account.
 /// </para>
 /// <para>
 /// <b>Every refusal below is the same refusal.</b> A caller able to tell one from another on this route
@@ -80,8 +79,8 @@ public sealed class RedeemRecoveryCodeHandler(
 
         // 2. The discovery read — a statement that runs with no identity on the connection and names no
         //    owner, the shape the passkey discovery lookup and the challenge consume also have. The
-        //    route is anonymous and user provisioning returns on that marker before it resolves anyone,
-        //    so app.current_user_id is still '' whatever token accompanied the request. This may
+        //    route is anonymous, so nothing has authenticated and app.current_user_id is still ''
+        //    whatever credential accompanied the request. This may
         //    therefore touch no policed table, and making this read safe is what recovery_code_hashes is
         //    exempt from row-level security for (ADR 0016). The verifier is all the caller supplied; the
         //    answer is what will establish who is asking.

@@ -21,8 +21,11 @@ public static class SessionEndpoints
         // anything in the URL, and a DELETE on "/api/me/session" reads as "delete the session I am
         // naming" when there is nothing to name.
         //
-        // No ProvisionsUserAttribute, and it must never gain one: signing out is the last request that
-        // should be able to bring an account into existence. No AllowAnonymous either — the handle still
+        // Signing out is the last request that should be able to bring an account into existence, and
+        // now nothing here could: RegisterAccountHandler is the only code that creates one — the only
+        // caller of the only factory the domain offers — behind POST /api/registration/registration,
+        // which needs the provider scheme, a verified passkey attestation and a challenge from the
+        // AccountRegistration pool. No AllowAnonymous either — the handle still
         // has to name a real session — and no RequireAuthorization, because the application's fallback
         // policy already covers every route that declares nothing. That last sentence is now the reason
         // this route has to say something: the fallback policy refuses a session that reads no budget
@@ -40,9 +43,11 @@ public static class SessionEndpoints
                 // what makes "ends only the caller's session" a property of the shape rather than of a
                 // check — and it is why a second live session on the same account survives this.
                 //
-                // Absent on a request that authenticated some other way, which today means the bearer
-                // bridge: there is no session row to end, so this ends nothing and still answers 204
-                // and still clears the cookie. That branch leaves with the bridge.
+                // The claim is absent on a request that authenticated some other way. Nothing reaches
+                // this route on another scheme today — the fallback policy names the cookie's — so the
+                // guard is kept for what it does when one arrives: there is no session row to end, so
+                // this ends nothing, still answers 204, and still clears the cookie. Refusing instead
+                // would be a sign-out that fails, which is the one answer this route may never give.
                 if (Guid.TryParse(
                         httpContext.User.FindFirstValue(
                             SessionCookieAuthenticationHandler.SessionIdClaimType),

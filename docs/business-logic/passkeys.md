@@ -15,7 +15,7 @@
 
 This area covers **the four WebAuthn ceremonies**: creating an account with the passkey that will
 reach it, registering a further passkey to an account that already exists, signing in with one, and
-re-proving possession of one before an action too destructive to take on a bearer token alone. Two of
+re-proving possession of one before an action too destructive to take on a live session alone. Two of
 the four paths that open a session run a ceremony here — an assertion, and the account registration
 whose own rules live in [registration.md](registration.md); the other two are redeeming a recovery
 code and regenerating a set that was carrying live sessions, both in
@@ -469,7 +469,7 @@ erDiagram
   publishing the credential's account over it would be actively destructive rather than merely
   redundant: `SessionContextInterceptor` writes `app.current_user_id` and `app.current_budget_id`
   together at connection open, so a user id re-published mid-request does **not** move the budget.
-  Alice's bearer token with Bob's passkey would empty **Alice's** budget while deleting **Bob's** user
+  Alice's session with Bob's passkey would empty **Alice's** budget while deleting **Bob's** user
   row — two accounts destroyed, neither as asked.
   - **This is the single thing a future reader is most likely to get backwards**, because the
     sign-in handler's rule is the more memorable one and it is written two paragraphs above.
@@ -559,7 +559,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → ChallengeIssued | `POST /api/passkeys/{registration,assertion,reauthentication}/options`, and `POST /api/registration/options` | registration and re-authentication require a bearer token; assertion is anonymous; account registration requires a bearer token on the **named** provider scheme and is the only leg reachable by a caller with no account |
+| → ChallengeIssued | `POST /api/passkeys/{registration,assertion,reauthentication}/options`, and `POST /api/registration/options` | registration and re-authentication require a live full session, through the fallback policy; assertion is anonymous; account registration requires a provider bearer on the **named** provider scheme and is the only leg reachable by a caller with no account |
 | ChallengeIssued → Consumed | any finish leg | the nonce must exist, be unexpired, and name the right ceremony |
 | Consumed → Verified | the verifier | client-data type; origin by **equality**; not cross-origin; `SHA-256(rpId)`; user present **and** verified; the signature |
 | Verified → Registered | `TryAddAsync` | attestation `none`; algorithm offered and supported; key strength; credential id 16–1023 bytes; the authenticator credential not already registered |
@@ -614,30 +614,29 @@ factor, and an account identifier derived from the challenge it just spent —
   establish the other two; all three are `Full` and all three last 14 days. The ordering rule above —
   identity published only after the proof, the transaction opened only after that — is held by two
   handlers rather than one: this file's assertion path and the redemption. A regeneration needs no
-  such rule, its identity having been published by provisioning long before its handler runs.
+  such rule, its identity having been published while its request authenticated, long before its
+  handler runs.
 - **[Recovery Codes](recovery-codes.md)** — the third spender of the `reauthentication` pool, and the
   second full-session credential type. A passkey is what a person proves possession of in order to be
   issued a set, which is why the last-passkey floor cannot be lifted by holding one.
 - **[Users & Ownership](users-and-ownership.md)** — the credential row and the account it belongs to.
 - **[Data isolation](../engineering/data-isolation.md)** — this area's two exempt tables and its
   policed one.
-- **`UserProvisioningMiddleware`** — it reads the route's own `IAllowAnonymous` metadata **first**,
-  before its claim gate and before resolving anything, and returns. So the two anonymous legs run with
-  no identity whatever token accompanies them, which is exactly the state the discovery read needs.
-  The marker is read off the route rather than matched by path, so no exclusion list exists — one
-  would be a second place the anonymous surface is defined.
+- **The authentication pipeline** — nothing runs between authentication and authorization any more,
+  so the two anonymous legs run with no identity **whatever token accompanies them**, which is exactly
+  the state the discovery read needs. `AllowAnonymous` is read off the route rather than matched by
+  path, so no exclusion list exists — one would be a second place the anonymous surface is defined,
+  and `AnonymousSurfaceTests` reads the set whole.
   - **The authenticated passkey routes — both registration legs and the re-authentication options
-    leg — carry no `ProvisionsUser` marker**, so a caller whose account does not exist is refused
-    there before the ceremony is entered. A brand-new identity must therefore reach one of the six
-    data route groups before it can register a passkey; see
-    [users-and-ownership.md](users-and-ownership.md).
-  - **The account-registration routes are the exception, and they escape by a marker of their own.**
-    `/api/registration` carries `RegistersAccount`, whose arm sits below the two claim gates and above
-    the resolve and **publishes nobody** — so a caller with no account proceeds, and the handler
-    derives and publishes the account id itself after the signature verifies. It is also the only
-    group in this application whose authorization policy **names** a scheme, which is what stops a
-    browser already holding a session from creating an account nobody's provider vouched for. See
-    [registration.md](registration.md).
+    leg — inherit the fallback policy**, which names the session cookie scheme, so they are reachable
+    only by a request presenting a live full session. A caller with no account cannot present one, so
+    "the account does not exist" is not a state these routes can be entered in.
+  - **The account-registration routes are the exception, and they escape by declaring a policy of
+    their own.** `/api/registration` is the only group in this application whose authorization policy
+    **names** a scheme, and the scheme it names is the identity provider's — which is what admits a
+    caller with no account and what stops a browser already holding a session from creating an account
+    nobody's provider vouched for. It publishes no identity: the handler derives and publishes the
+    account id itself after the signature verifies. See [registration.md](registration.md).
 
 ## Edge Cases & Known Gotchas
 
@@ -654,12 +653,12 @@ factor, and an account identifier derived from the challenge it just spent —
   of that exchange at all. What still has no screen is the **re-authentication** the erasure,
   revocation and recovery-code-generation gates need, and the registration of a **further** passkey to
   an account that exists. Those two routes are reached today only by the integration suite, and every
-  request the app makes outside registration and sign-in still carries the Google ID token.
-  **Account creation is now gated on a passkey — on one of the two paths.** `POST /api/registration`
-  creates the account and its passkey in the same save, so an account made that way has never existed
-  without one; `UserProvisioningMiddleware` is still live beside it and still mints accounts holding a
-  federated credential alone, and for those a passkey remains something an already-signed-in person
-  adds. See [registration.md](registration.md). A signed-in
+  request the app makes is authenticated from the cookie.
+  **Account creation is gated on a passkey, on the only path there is.** `POST /api/registration`
+  creates the account and its passkey in the same save, and it is the only thing that creates an
+  account — the middleware that used to mint one holding a federated credential alone is deleted — so
+  **no account has ever existed without a passkey**. See [registration.md](registration.md). A
+  signed-in
   person can **list** every credential the account holds and **revoke** a passkey, the revocation
   gated by a fresh re-authentication exactly as erasure is. Nothing **replaces** a passkey, and
   nothing removes or replaces the **federated** credential — that is the email change, and it is not
@@ -723,19 +722,16 @@ factor, and an account identifier derived from the challenge it just spent —
   database blinked — and re-inserts a `Session` left in `Added` state, writing two rows for one
   sign-in. The discard must be **inside** the delegate; hoisted above the executor it would not
   survive the rollback, and a unit test pins the placement rather than only the call.
-- **A valid Google token may accompany an anonymous assertion, and provisioning now ignores it.** The
-  middleware returns on the route's `IAllowAnonymous` marker before it resolves anything, so nothing
-  is published and the handler's own publication is the only one. The rule the handler enforces is
-  unchanged — **the account comes from the verified passkey, never from the request** — but it now
-  outlives its original reason: it was written because provisioning had already put a *different*
-  account on the request, and today it would hold even if that could never happen. Keep it. A token
-  holder signing into their own account with somebody else's passkey is the failure, and the handler
-  is the layer that refuses it whatever the middleware does.
+- **A credential of any other kind may accompany an anonymous assertion, and nothing reads it.**
+  Nothing runs between authentication and authorization, and these legs declare `AllowAnonymous`, so
+  no identity is published before the handler and the handler's own publication is the only one. The
+  rule the handler enforces is unchanged — **the account comes from the verified passkey, never from
+  the request** — but it now outlives its original reason: it was written because a provisioning
+  middleware had already put a *different* account on the request, and today nothing can.
+  Keep it. Somebody signing into their own account with somebody else's passkey is the failure, and
+  the handler is the layer that refuses it whatever runs above.
   `Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner` pins the
-  rule with both accounts seeded directly, so the middleware is not in its picture at all;
-  `UserProvisioningTests.AssertionLegs_CarryingAnotherLiveAccountsToken_SignInAsThePasskeysOwner`
-  drives the same pair through the real endpoints, so the middleware ordering *is* in its picture —
-  it is what fails if the anonymous arm is ever moved back below resolution.
+  rule with both accounts seeded directly.
 - **A ceremony prompt can outlive its nonce.** The timeout sent to the client is
   `min(configured, challenge remaining)`, so the configured value can shorten the prompt and never
   extend the window. Two independent numbers would produce a ceremony a person completes and the

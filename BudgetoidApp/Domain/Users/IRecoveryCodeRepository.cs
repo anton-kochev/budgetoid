@@ -24,7 +24,7 @@ public interface IRecoveryCodeRepository
     /// </para>
     /// <para>
     /// The type predicate is a rule rather than tidiness. Every account also holds the federated
-    /// Google credential provisioning minted for it, and — once the account registers one — passkeys;
+    /// Google credential registration wrote for it, and the passkey registration wrote beside it;
     /// an untyped lookup would hand the caller whichever of those it found first and offer it to a
     /// delete.
     /// </para>

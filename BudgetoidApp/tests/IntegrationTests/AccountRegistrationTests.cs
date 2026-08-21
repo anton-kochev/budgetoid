@@ -457,6 +457,56 @@ public sealed class AccountRegistrationTests
     }
 
     /// <summary>
+    /// FR-001: the one budget registration writes belongs to the account it just created, and it is
+    /// nameless and currency-less.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The shape is the subject, and <see cref="RowsOneRegistrationWrites" /> cannot say a word about
+    /// it.</b> That census pins <c>budgets</c> at one row; a row filed under a stranger's
+    /// <c>user_id</c>, or one arriving pre-named in a currency nobody chose, satisfies it exactly. Two
+    /// nulls are the whole of what a person never has to answer for: a user never encounters "budget" as
+    /// something to create, so a default name or a guessed base currency would be the product deciding
+    /// something on their behalf and then showing it to them as a fact.
+    /// </para>
+    /// <para>
+    /// <b>It arrived here from a deleted <c>BudgetProvisioningTests</c>, and the premise had to move
+    /// with it.</b> There, the budget was written by the first authenticated request a subject ever
+    /// made — the provisioning middleware's find-or-create — and the test drove
+    /// <c>GET /api/accounts</c> to trigger it. That path is gone: an account and its budget now come
+    /// into existence on one route, in one <c>SaveChanges</c>, and no request mints anything. Its
+    /// sibling asserting that repeated sign-ins add no further budgets went with the middleware, because
+    /// nothing re-runs provisioning to add one.
+    /// </para>
+    /// <para>
+    /// Read on the container superuser like every other read in this file: <c>user_isolation</c> is
+    /// <c>FOR ALL</c>, and a policed connection reports another account's row exactly as it reports a
+    /// missing one — which would turn "the budget belongs to somebody else" into "there is no budget".
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_CreatesExactlyOneBudget()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        HttpClient client = factory.CreateAuthenticatedClient(Subject, Email);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act
+        RegisteredAccount registered = await RegisterAccountAsync(client, device);
+
+        // Assert — the status first, so a budget that is missing reads as the refusal it is rather than
+        // as a write that half happened.
+        await Assert.That(registered.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        BudgetRow budget = await SoleBudgetAsync(host);
+        await Assert.That(budget.UserId).IsEqualTo(registered.AccountId);
+        await Assert.That(budget.Name).IsNull();
+        await Assert.That(budget.BaseCurrencyCode).IsNull();
+    }
+
+    /// <summary>
     /// FR-087, FR-088: registration signs the person in, on a full session, in the cookie the next
     /// request presents.
     /// </summary>
@@ -846,18 +896,22 @@ public sealed class AccountRegistrationTests
     }
 
     /// <summary>
-    /// An address the provider will not vouch for registers nothing — and this is where the marker
-    /// attribute's <b>position</b> is pinned.
+    /// An address the provider will not vouch for registers nothing — and this is where the claim gate's
+    /// <b>reach</b> over these two routes is pinned.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Read this before moving <c>RegistersAccountAttribute</c>'s arm in
-    /// <c>UserProvisioningMiddleware</c>.</b> That arm has to sit <em>below</em> the <c>sub</c>/<c>email</c>
-    /// and <c>email_verified</c> claim gates and above the resolve. Placed above the gates instead — which
-    /// reads like the tidier grouping, since all three arms test endpoint metadata — a registration route
-    /// stops being subject to them, and this account is created for a caller whose address the provider
-    /// explicitly declines to assert. The options leg is asserted first for exactly that reason: it is the
-    /// leg the misplacement makes reachable, and it goes red on its own.
+    /// <b>Read this before moving <see cref="RegistrationClaimGate" /> off the registration group.</b>
+    /// The gate used to be an arm inside a provisioning middleware, and what this test pinned was that
+    /// arm's <em>position</em> — below the <c>sub</c>/<c>email</c> and <c>email_verified</c> gates,
+    /// above the resolve — because grouping all three metadata arms together, which reads like the
+    /// tidier arrangement, took a registration route out from under them entirely. There is no
+    /// middleware and no marker now, so there is no ordering left to get wrong; what is left to get
+    /// wrong is the <em>attachment</em>. The gate is an endpoint filter registered on the group beside
+    /// its <c>RequireAuthorization</c>, and a group that stops calling <c>AddEndpointFilter</c> creates
+    /// this account for a caller whose address the provider explicitly declines to assert, with nothing
+    /// else in the pipeline left to stop it. The options leg is asserted first for exactly that reason:
+    /// it is the leg a lost gate makes reachable, and it goes red on its own.
     /// </para>
     /// <para>
     /// The refusal is checked by <b>title</b> and not by status. Every gate on this path answers 401, so a
@@ -871,11 +925,12 @@ public sealed class AccountRegistrationTests
     /// database is untouched, and a leg never called cannot show that.
     /// </para>
     /// <para>
-    /// <b>The control at the end is the same one every refusal test here carries.</b> A path nobody
-    /// wrote answers 401 with this very title — the claim gate runs before the endpoint has been looked
-    /// at for anything but <c>AllowAnonymous</c> — so every assertion above holds against no route at
-    /// all. It runs after the count, on a second subject, so the count is taken on an untouched
-    /// database.
+    /// <b>The control at the end is the same one every refusal test here carries</b>, and it is what
+    /// keeps the two assertions above from being satisfied by a route that does not work for anybody. A
+    /// fixture whose scheme repointing has stopped working answers 401 on both legs for every principal
+    /// alike; so does a group that has lost its policy, or a ceremony driver that has drifted from the
+    /// wire format. Each of those makes this test green while proving nothing about the claim. It runs
+    /// after the count, on a second subject, so the count is taken on an untouched database.
     /// </para>
     /// </remarks>
     [Test]
@@ -898,10 +953,10 @@ public sealed class AccountRegistrationTests
         // Assert
         await Assert.That(options.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await TitleOfAsync(options))
-            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
+            .IsEqualTo(RegistrationClaimGate.UnverifiedEmailTitle);
         await Assert.That(finish.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await TitleOfAsync(finish))
-            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
+            .IsEqualTo(RegistrationClaimGate.UnverifiedEmailTitle);
         await AssertNoAccountRowAnywhereAsync(host);
 
         // Act, again — the same ceremony for a principal whose address the provider does vouch for.
@@ -1529,6 +1584,10 @@ public sealed class AccountRegistrationTests
         HttpClient stranger = factory.CreateAuthenticatedClient(OtherSubject, OtherEmail);
         SyntheticAuthenticator strangersDevice =
             SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // The owner's own session, because the two pools below are minted on routes a provider token no
+        // longer reaches: adding a device and re-authenticating both authenticate from the cookie.
+        using HttpClient ownerSession = SessionClientFor(factory, first);
         IReadOnlyDictionary<string, long> before = await CountEveryRelationAsync(host);
 
         // Act — one live, unspent nonce from each of the other three pools, each answered by a genuine
@@ -1542,11 +1601,11 @@ public sealed class AccountRegistrationTests
             ("registration", await RegisterOverAsync(
                 stranger,
                 strangersDevice,
-                await BeginCeremonyAsync(owner, PasskeyRegistrationOptionsPath))),
+                await BeginCeremonyAsync(ownerSession, PasskeyRegistrationOptionsPath))),
             ("reauthentication", await RegisterOverAsync(
                 stranger,
                 strangersDevice,
-                await BeginCeremonyAsync(owner, ReauthenticationOptionsPath))),
+                await BeginCeremonyAsync(ownerSession, ReauthenticationOptionsPath))),
         ];
 
         // Assert — one undifferentiated refusal per pool, keyed on the response, and nothing written.
@@ -1593,6 +1652,10 @@ public sealed class AccountRegistrationTests
 
         HttpClient anonymous = factory.CreateClient();
         HttpClient stranger = factory.CreateAuthenticatedClient(OtherSubject, OtherEmail);
+
+        // The owner's own session: both legs spent against below — adding a device and issuing a card —
+        // authenticate from the cookie and are unreachable with a provider token.
+        using HttpClient ownerSession = SessionClientFor(factory, registered);
         byte[] userHandle = PasskeyEncoding.ToUserHandle(registered.AccountId);
         IReadOnlyDictionary<string, long> before = await CountEveryRelationAsync(host);
 
@@ -1619,7 +1682,7 @@ public sealed class AccountRegistrationTests
             signCount: 0,
             prfEnabled: true);
         WrappedKeyFixture addedDeviceKeys = WrappedKeyFixture.Mint();
-        HttpResponseMessage refusedAddDevice = await owner.PostAsJsonAsync(PasskeyRegistrationPath, new
+        HttpResponseMessage refusedAddDevice = await ownerSession.PostAsJsonAsync(PasskeyRegistrationPath, new
         {
             clientDataJson = addDevice.ClientDataJsonBase64Url,
             attestationObject = addDevice.AttestationObjectBase64Url,
@@ -1634,7 +1697,7 @@ public sealed class AccountRegistrationTests
             ApiFactory.PasskeyOrigin,
             userHandle,
             signCount: 0);
-        HttpResponseMessage refusedGeneration = await owner.PostAsJsonAsync(RecoveryCodeGenerationPath, new
+        HttpResponseMessage refusedGeneration = await ownerSession.PostAsJsonAsync(RecoveryCodeGenerationPath, new
         {
             codes = SubmissionsOf(CardOf(Verifiers())),
             credentialId = reauthentication.CredentialIdBase64Url,
@@ -2230,6 +2293,43 @@ public sealed class AccountRegistrationTests
     private sealed record SessionTokenRow(string TokenHash, Guid SessionId, Guid UserId);
 
     /// <summary>
+    /// The three columns of <c>budgets</c> that carry a decision: who owns it, and the two a person
+    /// makes later.
+    /// </summary>
+    private sealed record BudgetRow(Guid UserId, string? Name, string? BaseCurrencyCode);
+
+    /// <summary>
+    /// The one <c>budgets</c> row in the database, or a failure saying how many there were.
+    /// </summary>
+    /// <remarks>
+    /// Sole rather than first, for the reason <see cref="SoleSessionAsync" /> gives: two budgets for one
+    /// registration is a defect, and a test reading the first of them would report the perfectly
+    /// plausible answer it happened to get back.
+    /// </remarks>
+    private static async Task<BudgetRow> SoleBudgetAsync(PostgresTestHost host)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select user_id, name, base_currency_code from budgets",
+            connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+
+        List<BudgetRow> rows = [];
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new BudgetRow(
+                reader.GetGuid(0),
+                await reader.IsDBNullAsync(1) ? null : reader.GetString(1),
+                await reader.IsDBNullAsync(2) ? null : reader.GetString(2)));
+        }
+
+        return rows.Count == 1
+            ? rows[0]
+            : throw new InvalidOperationException($"Expected exactly one budget, found {rows.Count}.");
+    }
+
+    /// <summary>
     /// The one <c>sessions</c> row in the database, or a failure saying how many there were.
     /// </summary>
     /// <remarks>
@@ -2431,10 +2531,31 @@ public sealed class AccountRegistrationTests
         new(
             host.AppConnectionString,
             adminConnectionString: host.ConnectionString,
+            usesApplicationAuthentication: true,
             repointsProviderSchemeToTestHandler: true,
             configureServices: reads is null
                 ? null
                 : services => CountFederatedCredentialReads(services, reads));
+
+    /// <summary>
+    /// A client presenting the session <paramref name="registered" /> opened, and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <b>Needed because a provider token now reaches the registration group and nothing else.</b> Two
+    /// tests here mint a nonce on, or spend one against, a route outside that group — adding a device,
+    /// re-authenticating, issuing a card — and every one of those authenticates from the cookie. The
+    /// header is built here rather than through <c>ApiFactory</c> because the value comes off a response
+    /// this file already holds, and because the two tests written against the session-cookie bridge
+    /// above build theirs the same way.
+    /// </remarks>
+    private static HttpClient SessionClientFor(ApiFactory factory, RegisteredAccount registered)
+    {
+        HttpClient client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(
+            "Cookie", $"{CookieName}={SessionCookieValueOf(registered.Response)}");
+
+        return client;
+    }
 
     /// <summary>
     /// Wraps whatever <see cref="IUserRepository" /> the application registered so that one call can be
@@ -2522,13 +2643,6 @@ public sealed class AccountRegistrationTests
 
             return inner.FindUserIdByFederatedCredentialAsync(provider, subject, cancellationToken);
         }
-
-        public Task<bool> TryAddAsync(
-            User user,
-            Credential credential,
-            Budget defaultBudget,
-            CancellationToken cancellationToken = default) =>
-            inner.TryAddAsync(user, credential, defaultBudget, cancellationToken);
 
         public Task DeleteAsync(Guid userId, CancellationToken cancellationToken = default) =>
             inner.DeleteAsync(userId, cancellationToken);

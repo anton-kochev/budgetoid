@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Domain.Accounts;
@@ -8,6 +9,7 @@ using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -152,67 +154,77 @@ public sealed class DataExportCompletenessTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The only test here where the stored address and the <c>email</c> claim are different strings,
-    /// which is the only arrangement that can tell an export reading the <c>users</c> row apart from one
-    /// projecting the claim off the request. Everywhere else the two are the same value by construction,
-    /// so a document assembled without ever touching that row satisfies every other assertion in this
-    /// file — the completeness test included, since it re-derives its expectation exactly the way the
-    /// factory derives the claim.
-    /// </para>
-    /// <para>
-    /// One subject and two clients, not two accounts. Two accounts would measure isolation, which
-    /// <c>DataExportRefusalTests</c> already covers; what is measured here is that a <em>later</em> token
-    /// has no authority over what registration wrote. That is the rule
+    /// One subject and two provider tokens, not two accounts. Two accounts would measure isolation,
+    /// which <c>DataExportRefusalTests</c> already covers; what is measured here is that a
+    /// <em>later</em> token has no authority over what registration wrote. That is the rule
     /// <c>docs/business-logic/users-and-ownership.md</c> states — the stored address is deliberately
     /// never refreshed from the provider — and this route is where it costs the most, because the export
     /// is the one surface whose answer a person keeps. A person whose Google address changed must still
     /// find, in the copy of their own data, the address their account can actually be reached at.
     /// </para>
     /// <para>
+    /// <b>The second token is presented to registration, because registration is the only surface a
+    /// provider token still reaches.</b> This used to make the export request itself with a bearer whose
+    /// <c>email</c> claim had moved, which measured the same rule one step closer to the assertion, and
+    /// which also caught an export projecting the claim off the request instead of reading the
+    /// <c>users</c> row. That second job no longer needs doing here: the session cookie's principal
+    /// carries <c>sub</c>, <c>session_id</c> and <c>session_kind</c> and no address at all, so a
+    /// document assembled from the request answers an empty address for every caller alive and reddens
+    /// the completeness test next door. What is left is the product rule, and the one moment it could
+    /// still be broken is a second pass through the write path.
+    /// </para>
+    /// <para>
+    /// <b>The <c>409</c> is asserted, and not as ceremony.</b> A second registration that succeeded
+    /// would mean a second account under one subject, whereupon the cookie below still names the first
+    /// and this passes for a reason unrelated to the rule; a second registration that failed before
+    /// reaching the write path would leave the test measuring an attempt nobody made.
+    /// </para>
+    /// <para>
     /// This is
     /// <see cref="SignedInUserEndpointTests.Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress" />'s
     /// shape and its argument, deliberately rather than a second one invented for this file:
-    /// <c>UnitTests.EnsureUserHandlerTests.EnsureUser_ReturningUserWhoseProviderEmailChanged_KeepsTheRegisteredEmail</c>
-    /// pins the rule at the row, that one pins it at the <c>/api/me</c> wire, and this one pins it in the
-    /// document — three places, one rule, and a reader who has met the argument once has met it here.
+    /// <c>AccountRegistrationTests.Registration_WhenTheSubjectAlreadyHasAnAccount_Returns409AndChangesNothing</c>
+    /// pins the rule at the rows with a census of every relation, that one pins it at the
+    /// <c>/api/me</c> wire, and this one pins it in the document — three places, one rule, and a reader
+    /// who has met the argument once has met it here.
     /// </para>
     /// </remarks>
     [Test]
     public async Task Export_ForASubjectWhoseProviderAddressChanged_CarriesTheStoredAddress()
     {
-        // Arrange — the account is registered under address A, by a client carrying A in its claim. Both
+        // Arrange — the account is registered under address A, by a provider token carrying A. Both
         // addresses are written down rather than left to the factory's {subject}@example.com fallback: an
         // export that rebuilt the address out of the subject would otherwise agree with that fallback.
-        await using PostgresTestHost host = await StartHostAsync();
-
-        HttpClient beforeTheChange = host.Factory.CreateAuthenticatedClient(Subject, RegisteredAddress);
-        await ApiFactory.EstablishAccountAsync(beforeTheChange);
+        await using PostgresTestHost host = await StartRegisteringHostAsync();
+        ApiFactory.SignedInClient registered =
+            await host.Factory.RegisterAccountAsync(Subject, RegisteredAddress);
 
         // The same person after a Google address change: the same subject — which is what the credential
         // resolves on, and therefore what makes this one account rather than two — carrying address B.
-        HttpClient afterTheChange = host.Factory.CreateAuthenticatedClient(
+        using HttpClient afterTheChange = host.Factory.CreateAuthenticatedClient(
             Subject,
             ChangedProviderAddress);
 
-        // Not needed to reach the export, which carries no ProvisionsUser and mints nothing, and verified
-        // rather than assumed: EnsureUserHandler asks ResolveUserHandler first, that resolves the existing
-        // credential on (provider, subject), and the handler returns before it reaches either the insert
-        // or the email uniqueness that would 409 — so this second call is a resolve on the same account.
-        // It is here because it is the real sequence a returning client performs, and because it is the
-        // one moment the stored address could be refreshed from the new token. Drop this line and a
-        // provisioning path that had started writing the claim over the row leaves this test green.
-        await ApiFactory.EstablishAccountAsync(afterTheChange);
+        // The one moment the stored address could be refreshed from the new token: a second pass through
+        // the path that writes one. It is refused, and the refusal is asserted, because a second
+        // registration that succeeded would leave two accounts under one subject and the cookie below
+        // still naming the first.
+        RegistrationCeremonyResult reregistered = await RegistrationCeremony.RegisterAsync(
+            afterTheChange,
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+        await Assert.That(reregistered.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
 
-        // The control on the line above, not ceremony: this read throws unless exactly one credential row
-        // on this subject owns exactly one budget, so a second establish that had minted a second account
-        // fails here rather than letting the assertions run against whichever row came back first.
+        // The control on the lines above, not ceremony: this read throws unless exactly one credential
+        // row on this subject owns exactly one budget, so a refused re-registration that had nonetheless
+        // written something fails here rather than letting the assertions run against whichever row came
+        // back first.
         (Guid userId, _) = await ResolveOwnerAsync(host, Subject);
 
-        // Act — as the person whose token now says B. Read as text and parsed from that text rather than
-        // through GetExportAsync's stream: the negative assertion needs the payload exactly as it went
-        // over the wire, and an address hidden behind an escape sequence in a re-rendered document is a
-        // leak that a search over the re-rendered text would report as absent.
-        HttpResponseMessage response = await afterTheChange.GetAsync(ExportPath);
+        // Act — on the session the first registration opened. Read as text and parsed from that text
+        // rather than through GetExportAsync's stream: the negative assertion needs the payload exactly
+        // as it went over the wire, and an address hidden behind an escape sequence in a re-rendered
+        // document is a leak that a search over the re-rendered text would report as absent.
+        HttpResponseMessage response = await registered.Client.GetAsync(ExportPath);
         response.EnsureSuccessStatusCode();
 
         string payload = await response.Content.ReadAsStringAsync();
@@ -1333,16 +1345,30 @@ public sealed class DataExportCompletenessTests
 
     /// <summary>
     /// A host whose factory leaves the application's own authentication standing, because every request
-    /// below authenticates from a session cookie rather than from a provider bearer.
+    /// below authenticates from a session cookie.
     /// </summary>
-    /// <remarks>
-    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it:
-    /// <see cref="Export_ForASubjectWhoseProviderAddressChanged_CarriesTheStoredAddress" /> is about a
-    /// provider token whose <c>email</c> claim moved, and a cookie carries no claim for it to move.
-    /// </remarks>
     private static async Task<PostgresTestHost> StartSignedInHostAsync()
     {
         PostgresTestHost host = new(usesApplicationAuthentication: true);
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// A host that can run the registration ceremony <em>and</em> read the cookie it hands back.
+    /// </summary>
+    /// <remarks>
+    /// Both flags, and both are required by
+    /// <see cref="Export_ForASubjectWhoseProviderAddressChanged_CarriesTheStoredAddress" />: the two
+    /// <c>/api/registration</c> routes declare a policy naming the provider's scheme and nothing else,
+    /// so the ceremony needs that scheme repointed at the test handler, and the session it hands back is
+    /// a cookie only the application's own handler can read.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartRegisteringHostAsync()
+    {
+        PostgresTestHost host = new(
+            usesApplicationAuthentication: true,
+            repointsProviderSchemeToTestHandler: true);
         await host.StartAsync();
         return host;
     }

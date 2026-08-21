@@ -51,19 +51,20 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
     public IReadOnlyList<User> Users => _users;
 
     /// <summary>
-    /// The budgets provisioning wrote through this repository.
+    /// The budgets this repository was handed.
     /// </summary>
     /// <remarks>
-    /// Nothing in the erasure tests reads it, and nothing in them calls
-    /// <see cref="TryAddAsync"/> either — the whole of provisioning is covered by the fakes in
-    /// <c>EnsureUserHandlerTests</c>. The rows are kept anyway rather than discarded, for the same
-    /// reason <see cref="DeleteAsync"/> removes rows instead of throwing: a fake that accepted a
-    /// write and then had nothing to show for it would be a behaviour the real repository cannot
-    /// produce.
+    /// <b>Nothing writes one any more and the list is kept anyway.</b> The port used to carry an
+    /// insert that wrote the user, its credential and its budget in one save; that method is gone with
+    /// the provisioning path, and an account's rows now go in through
+    /// <c>IRegistrationRepository.RegisterAsync</c>. The list stays for the reason
+    /// <see cref="DeleteAsync"/> removes rows instead of throwing — a fake whose shape stops matching
+    /// the real repository's is a fake that lies about the next thing somebody asks it — and because
+    /// <see cref="Seed"/> is where a caller would put one.
     /// </remarks>
     public IReadOnlyList<Budget> Budgets => _budgets;
 
-    /// <summary>Stores a user and its credential directly, as if an earlier request had provisioned them.</summary>
+    /// <summary>Stores a user and its credential directly, as if a registration had written them.</summary>
     public void Seed(User user, Credential credential)
     {
         _users.Add(user);
@@ -80,35 +81,6 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
             string.Equals(credential.Provider, provider, StringComparison.Ordinal)
             && string.Equals(credential.Subject, subject, StringComparison.Ordinal));
         return Task.FromResult(credential?.UserId);
-    }
-
-    /// <summary>
-    /// Inserts all three rows or none of them, which is what the one save the real repository makes
-    /// means: a refusal leaves no user holding a unique email nothing resolves to, and no account
-    /// without the budget every budget-scoped query needs.
-    /// </summary>
-    public Task<bool> TryAddAsync(
-        User user,
-        Credential credential,
-        Budget defaultBudget,
-        CancellationToken cancellationToken = default)
-    {
-        // Both unique rules the real insert can lose to, modelled together because the real one
-        // reports a single false for either. The email index is case-insensitive by collation.
-        bool loses = _credentials.Any(existing =>
-                         string.Equals(existing.Provider, credential.Provider, StringComparison.Ordinal)
-                         && string.Equals(existing.Subject, credential.Subject, StringComparison.Ordinal))
-                     || _users.Any(existing =>
-                         string.Equals(existing.Email.Value, user.Email.Value, StringComparison.OrdinalIgnoreCase));
-
-        if (loses)
-        {
-            return Task.FromResult(false);
-        }
-
-        Seed(user, credential);
-        _budgets.Add(defaultBudget);
-        return Task.FromResult(true);
     }
 
     /// <summary>

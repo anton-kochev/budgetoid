@@ -1,6 +1,6 @@
 using Api.Infrastructure;
 using Application.Abstractions;
-using Application.Users.EnsureUser;
+using Application.Users;
 
 namespace IntegrationTests;
 
@@ -55,7 +55,7 @@ public sealed class CurrentUserWriterTests
 {
     /// <summary>
     /// The state every request is in by the time anything could republish an identity:
-    /// <c>UserProvisioningMiddleware</c> resolves the user and the default budget together, so a
+    /// <c>AuthenticateSessionHandler</c> resolves the user and the ambient budget together, so a
     /// resolved user with no budget beside it is not a state this test could start from honestly.
     /// </summary>
     private static CurrentUser ProvisionedRequest(Guid userId, Guid budgetId) =>
@@ -135,17 +135,19 @@ public sealed class CurrentUserWriterTests
     /// <remarks>
     /// <para>
     /// The budget has to be publishable through this interface, because <c>ResolveUser</c> above clears
-    /// it — a writer that can only clear the budget leaves no way to set one, so provisioning is forced
-    /// to reach past the writer and assign <see cref="CurrentUser" /> itself. That is what
-    /// <c>UserProvisioningMiddleware</c> does today, and it is why this type's own summary ("only what
-    /// is injected this interface can name the request's identity") is false as written: there are two
-    /// writers, and only one of them is this one.
+    /// it — a writer that can only clear the budget leaves no way to set one, whereupon whatever
+    /// publishes an identity is forced to reach past this interface and assign <see cref="CurrentUser" />
+    /// itself. Nothing does: the provisioning middleware that once did was deleted, and
+    /// <c>AuthenticateSessionHandler</c> — the one publisher left — goes through this writer for both
+    /// members. So this type's own summary ("only what is injected this interface can name the
+    /// request's identity") is true as written again, and it is true because this member exists.
     /// </para>
     /// <para>
     /// Called <b>after</b> <c>ResolveUser</c> and never before, for the reason stated above: the user
     /// publication clears whatever budget is standing, so a budget named first is a budget the rest of
     /// the request does not have. The order is a property of the caller, so it is pinned where the
-    /// caller can be seen — see <c>UserProvisioningWriterTests</c>.
+    /// caller can be seen — see
+    /// <c>UnitTests.AuthenticateSessionHandlerTests.HandleAsync_PublishesTheIdentityBeforeTheAmbientBudget</c>.
     /// </para>
     /// </remarks>
     [Test]

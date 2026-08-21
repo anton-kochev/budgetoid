@@ -16,20 +16,21 @@ namespace IntegrationTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Every test in this file is green the day it is written, and that is the point.</b> The gates live
-/// in <see cref="UserProvisioningMiddleware" /> today, above the resolve and above the arm that lets a
-/// registration request through, so the two <c>/api/registration/*</c> routes are already subject to
-/// them. What is not green on arrival is the commit after next: the middleware is deleted, and every
-/// test here goes red unless whatever replaces it refuses the same three principals with the same two
-/// sentences. Held at the registration route rather than at a budget route because that is where the
-/// cost of losing a gate is paid — an account created under an address nobody verified, from a token
-/// that says so.
+/// <b>This file was written green against a middleware and stayed green when the middleware went, and
+/// that transition is what it was for.</b> The gates lived in a provisioning middleware, above the
+/// resolve and above the arm that let a registration request through; they now live in
+/// <see cref="RegistrationClaimGate" />, an endpoint filter on the <c>/api/registration</c> group.
+/// Every test here was carried across untouched but for the two constants it pins, which is the
+/// evidence that the replacement refuses the same three principals with the same two sentences.
+/// Held at the registration route rather than at a budget route because that is where the cost of
+/// losing a gate is paid — an account created under an address nobody verified, from a token that says
+/// so — and that choice is now the only choice there is: a provider token reaches no other route.
 /// </para>
 /// <para>
-/// <b>Moved in substance from <c>AuthenticationTests</c></b>, which drives the same three gates at
-/// <c>/api/transactions</c> and is deleted whole in a later commit. Both files existing at once is
-/// deliberate: this one has to be shown to pass before the other can go. Where a case there carried an
-/// argument for why it exists, the argument moves with it rather than being paraphrased.
+/// <b>Moved in substance from a deleted <c>AuthenticationTests</c></b>, which drove the same three
+/// gates at <c>/api/transactions</c> back when a bearer token reached that route at all. Where a case
+/// there carried an argument for why it exists, the argument moved with it rather than being
+/// paraphrased.
 /// </para>
 /// <para>
 /// <b>The refusals are read by title, not by status.</b> Every gate on this path answers 401, and so
@@ -93,7 +94,7 @@ public sealed class RegistrationClaimGateTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo(ProblemMediaType);
         await Assert.That(await TitleOfAsync(response))
-            .IsEqualTo(UserProvisioningMiddleware.MissingClaimsTitle);
+            .IsEqualTo(RegistrationClaimGate.MissingClaimsTitle);
     }
 
     /// <summary>
@@ -136,7 +137,7 @@ public sealed class RegistrationClaimGateTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo(ProblemMediaType);
         await Assert.That(await TitleOfAsync(response))
-            .IsEqualTo(UserProvisioningMiddleware.MissingClaimsTitle);
+            .IsEqualTo(RegistrationClaimGate.MissingClaimsTitle);
     }
 
     /// <summary>
@@ -162,7 +163,7 @@ public sealed class RegistrationClaimGateTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo(ProblemMediaType);
         await Assert.That(await TitleOfAsync(response))
-            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
+            .IsEqualTo(RegistrationClaimGate.UnverifiedEmailTitle);
     }
 
     /// <summary>
@@ -189,7 +190,7 @@ public sealed class RegistrationClaimGateTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo(ProblemMediaType);
         await Assert.That(await TitleOfAsync(response))
-            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
+            .IsEqualTo(RegistrationClaimGate.UnverifiedEmailTitle);
     }
 
     /// <summary>
@@ -228,7 +229,7 @@ public sealed class RegistrationClaimGateTests
         // Assert
         await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await TitleOfAsync(refused))
-            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
+            .IsEqualTo(RegistrationClaimGate.UnverifiedEmailTitle);
         await Assert.That(admitted.StatusCode).IsEqualTo(HttpStatusCode.OK);
     }
 
@@ -271,7 +272,7 @@ public sealed class RegistrationClaimGateTests
         // Assert
         await Assert.That(finish.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await TitleOfAsync(finish))
-            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
+            .IsEqualTo(RegistrationClaimGate.UnverifiedEmailTitle);
 
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
@@ -344,7 +345,7 @@ public sealed class RegistrationClaimGateTests
         // Assert — the gate's 401, and therefore not the conflict's 409.
         await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await TitleOfAsync(refused))
-            .IsEqualTo(UserProvisioningMiddleware.UnverifiedEmailTitle);
+            .IsEqualTo(RegistrationClaimGate.UnverifiedEmailTitle);
 
         // Act, again — the identical attestation from a principal the provider does vouch for, and the
         // control this test cannot do without: it is what shows the refusal above overtook a conflict
@@ -372,9 +373,17 @@ public sealed class RegistrationClaimGateTests
     /// passkey did not verify" are three different things to go and do, answered by one status code.
     /// </para>
     /// <para>
-    /// Deliberately <b>not</b> extended to <c>NoAccountTitle</c>, which a later commit deletes with the
-    /// middleware. A test naming it would have to be edited in that commit, and an assertion edited in
-    /// the same commit as the thing it constrains holds nothing.
+    /// <b>Three is now the whole population, and it used to be four.</b> A fourth titled 401 —
+    /// <c>NoAccountTitle</c>, written by the provisioning middleware when an authenticated principal
+    /// named no account — was deliberately left out of this comparison while it existed, on the grounds
+    /// that it was about to be deleted and an assertion edited in the same commit as the thing it
+    /// constrains holds nothing. That commit has happened. There is no such refusal to be distinct from:
+    /// an authenticated request can no longer name an account that does not exist, because the only
+    /// credential that authenticates one is a cookie issued over a session row, and a session row is
+    /// only ever written beside the account it names. A principal with no account now reaches the
+    /// cookie handler, is answered <c>NoResult</c>, and leaves indistinguishable from an anonymous
+    /// caller. So the set below is complete rather than pruned, and a fourth titled refusal added to
+    /// this path belongs in it.
     /// </para>
     /// <para>
     /// The emptiness check is not redundant with the distinctness one: two empty titles collide and are
@@ -386,8 +395,8 @@ public sealed class RegistrationClaimGateTests
     public async Task EveryTitleThisGateWrites_IsDistinctFromEveryOtherTitledRefusal()
     {
         // Arrange
-        string missingClaims = UserProvisioningMiddleware.MissingClaimsTitle;
-        string unverifiedEmail = UserProvisioningMiddleware.UnverifiedEmailTitle;
+        string missingClaims = RegistrationClaimGate.MissingClaimsTitle;
+        string unverifiedEmail = RegistrationClaimGate.UnverifiedEmailTitle;
         string passkeyRefused = PasskeyVerificationExceptionHandler.Title;
 
         // Act

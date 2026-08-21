@@ -114,11 +114,11 @@ Enforced today:
   | `passkey_public_keys` | the `excludeCredentials` read in the registration ceremony | `where user_id`, watched by `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential` |
   | `passkey_public_keys` | `FindByWebAuthnCredentialIdForUserAsync` on the re-authentication gate | `where user_id`, watched by `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount` |
   | `passkey_public_keys` | `INSERT` at passkey registration, and again at account registration | the credential it hangs off, written in the same save |
-  | `credentials` | the provisioning lookup resolving a `sub` claim | provider and subject, which name a principal rather than an account |
+  | `credentials` | `FindUserIdByFederatedCredentialAsync`, the re-read that settles an ambiguous email collision on a losing registration | provider and subject, which name a principal rather than an account. Its **one** caller is `RegisterAccountHandler.RefusalFor`; it is unaffected by the identity that handler published for a row that was never written, because this table is exempt |
   | `credentials` | `FindPasskeyCredentialAsync`, on the **sign-in assertion** and on revocation | `where user_id`, watched by `Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows`; and `type`, watched by `Revocation_OfTheFederatedCredential_IsRefusedAndRemovesNothing` |
   | `credentials` | `CountPasskeysForUserAsync`, behind the last-passkey rule | `where user_id` and `type`, watched by `Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing` |
   | `credentials` | `ListForUserAsync`, behind `GET /api/me/credentials` | `where user_id`, watched by `Credentials_ForASecondAccount_ListThatAccountsCredentialsAndNotTheFirsts` |
-  | `credentials` | `INSERT` at provisioning, again at passkey registration, and **three rows at once** at account registration | the owner is a value the application supplies, not one it filters by — and on account registration it is an id **derived** from the ceremony's own challenge and published a statement earlier, so every row in that save carries it by construction ([registration.md](../business-logic/registration.md)) |
+  | `credentials` | `INSERT` at passkey registration, and **three rows at once** at account registration | the owner is a value the application supplies, not one it filters by — and on account registration it is an id **derived** from the ceremony's own challenge and published a statement earlier, so every row in that save carries it by construction ([registration.md](../business-logic/registration.md)) |
   | `credentials` | `FindRecoveryCodeCredentialAsync`, on a generation and on a redemption | `where user_id` and `type` — and on the redemption the owner is the one the matched code named, never the request's |
   | `credentials` | **`DELETE`**, revoking a passkey, and again replacing a recovery-code set | the owner-scoped read above it, and nothing else — `FindPasskeyCredentialAsync` for the first, `FindRecoveryCodeCredentialAsync` for the second, each carrying owner **and** type |
   | `recovery_code_hashes` | `FindByVerifierHashAsync`, the discovery lookup on redemption | **nothing, deliberately** — it runs before there is an identity to key a filter on, and the account it answers is the one the redemption then adopts |
@@ -207,8 +207,8 @@ Enforced today:
   filter's and `IBudgetContext`'s job alone.
 - **None of the user-owned entities carries a query filter** — `Budget`, `User`, `Credential`,
   `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`, `RecoveryCodeHash`, and the challenge row.
-  The provisioning
-  lookup runs before a budget id exists, so every query over `Budgets` must scope by owner explicitly
+  The lookup that resolves the ambient budget
+  runs before a budget id exists, so every query over `Budgets` must scope by owner explicitly
   — `BudgetRepository.FindFirstForUserAsync` and `ExportReadService.ListOwnedBudgetsAsync`, which are
   the two that exist today and which a third must join rather than assume it is covered; a session and
   a passkey name no budget at all, so there is none to filter them by. That is a statement about the
@@ -272,7 +272,7 @@ request in the product answering 401**, with nothing in the response naming the 
 half of its `DELETE` grant as well: it goes red the day somebody succeeds in policing that table. That direction needs its own test because coverage
 cannot supply it: an exemption says a policy is *not required*, never that one is *forbidden*, so
 adding `user_isolation` to `credentials` leaves `RlsCoverageTests` entirely green and surfaces only as
-provisioning failing on every sign-in. `currencies` and `__EFMigrationsHistory` need no such control —
+every passkey sign-in failing to find the credential it just verified. `currencies` and `__EFMigrationsHistory` need no such control —
 their exemption rests on belonging to no tenant rather than on being read before an identity exists, so
 a policy landing on either fails loudly on a session that names somebody. `wrapped_account_keys` is
 the newest policed table and the one whose grant depends on these tests existing: nothing in the

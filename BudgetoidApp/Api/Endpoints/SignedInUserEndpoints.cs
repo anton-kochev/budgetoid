@@ -11,10 +11,15 @@ public static class SignedInUserEndpoints
         // principal's namespace, and this is the principal describing itself.
         RouteGroupBuilder group = endpoints.MapGroup("/api/me");
 
-        // No ProvisionsUserAttribute, and it must not gain one: a read that minted an account would
-        // let a stale provider token — valid for up to an hour after the account it names is erased —
-        // bring that account back as an empty shell. An authenticated subject with no account is
-        // refused instead.
+        // THIS READ MINTS NOTHING, and after this commit no metadata could make it. Accounts come
+        // into existence in RegisterAccountHandler and nowhere else — it is the only caller of
+        // User.CreateWithId, which is the only factory the domain offers — and it is reachable only
+        // from POST /api/registration/registration, behind the provider scheme, a verified passkey
+        // attestation and a challenge drawn from the AccountRegistration pool. The prohibition is a
+        // compile error rather than a marker somebody must not add.
+        //
+        // Worth keeping the reason beside it: a read that minted would let a provider token outliving
+        // an erasure by up to an hour bring the account back as an empty shell.
         //
         // No RequireAuthorization either, because the application's fallback policy already covers
         // every route that declares nothing, and restating it here would stop the one line that

@@ -1,4 +1,4 @@
-using Application.Users.EnsureUser;
+using Application.Users;
 
 namespace Api.Infrastructure;
 
@@ -25,8 +25,8 @@ public sealed class CurrentUserWriter(CurrentUser currentUser) : IUserContextWri
         // otherwise keep the budget resolved for the account the request arrived as, pairing one
         // account's id with another's tenant. budget_isolation is FOR ALL, so the first budget-scoped
         // statement added below such a republication would be scoped to a stranger, match nothing and
-        // report success. Unresolved, IBudgetContext.BudgetId throws there instead. Provisioning calls
-        // ResolveBudget after the id, never before, so it is unaffected.
+        // report success. Unresolved, IBudgetContext.BudgetId throws there instead. Every caller names
+        // the budget after the id, never before, so none of them is affected.
         currentUser.BudgetId = null;
     }
 

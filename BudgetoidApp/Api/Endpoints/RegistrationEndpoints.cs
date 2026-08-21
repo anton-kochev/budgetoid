@@ -34,10 +34,6 @@ public static class RegistrationEndpoints
         // caller holds no session at all, so a requirement about what kind of session may read budget
         // content has nothing to judge.
         RouteGroupBuilder group = endpoints.MapGroup("/api/registration")
-            // The marker that tells UserProvisioningMiddleware a request here legitimately resolves to
-            // nobody. Read RegistersAccountAttribute before adding a second route group that carries it —
-            // it publishes no identity, and its arm's position in that middleware is pinned by test.
-            .WithMetadata(new RegistersAccountAttribute())
             .RequireAuthorization(policy => policy
                 .RequireAuthenticatedUser()
                 .AddAuthenticationSchemes(ProviderAuthentication.SchemeName))
@@ -132,11 +128,11 @@ public static class RegistrationEndpoints
 
     /// <summary>The address the provider asserted, off the principal this request authenticated as.</summary>
     /// <remarks>
-    /// <see cref="UserProvisioningMiddleware"/> has already refused a principal carrying no <c>email</c>,
-    /// and one whose address the provider does not report as verified, above this delegate and above the
-    /// route's own policy. The empty fallback exists so this expression has a total answer rather than a
-    /// null-forgiving operator asserting a rule enforced two middlewares away; an empty address reaches
-    /// <c>Email.Create</c> and is refused there.
+    /// <see cref="RegistrationClaimGate"/> has already refused a principal carrying no <c>email</c>, and
+    /// one whose address the provider does not report as verified — it is an endpoint filter on this very
+    /// group, so it runs after the route's policy and before this delegate. The empty fallback exists so
+    /// this expression has a total answer rather than a null-forgiving operator asserting a rule enforced
+    /// one filter away; an empty address reaches <c>Email.Create</c> and is refused there.
     /// </remarks>
     private static string EmailOf(ClaimsPrincipal principal) =>
         principal.FindFirstValue("email") ?? string.Empty;

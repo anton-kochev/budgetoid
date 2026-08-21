@@ -3,7 +3,7 @@ using Application.Passkeys;
 using Application.Passkeys.Verification;
 using Application.RecoveryCodes;
 using Application.Sessions;
-using Application.Users.EnsureUser;
+using Application.Users;
 using Domain.Budgets;
 using Domain.Common;
 using Domain.Sessions;
@@ -34,8 +34,9 @@ namespace Application.Registration;
 /// identity provider's scheme and nothing else. That the principal has a <c>sub</c> and an <c>email</c>,
 /// and that the provider asserts the address as verified, are judged by <c>RegistrationClaimGate</c>, an
 /// endpoint filter on that same group — which is why the two claim members arrive on the command rather
-/// than being re-read here. <c>UserProvisioningMiddleware</c> judges the last two as well for as long as
-/// it stands; the two copies run together for one commit, and the filter is what survives it.
+/// than being re-read here. That filter is now the only thing judging them: the provisioning middleware
+/// that carried a second copy is gone, and the copies never disagreed because they ran together for one
+/// commit and the tests compared against one pair of constants.
 /// </para>
 /// <para>
 /// <b>An earlier version of these remarks promised those three would come down into this ring, and that
@@ -56,8 +57,11 @@ namespace Application.Registration;
 /// and <c>BeginTransactionAsync</c> is what opens the connection — which is when
 /// <c>SessionContextInterceptor</c> writes <c>app.current_user_id</c>. A wrap whose delegate contains the
 /// publication at rung 13 therefore configures the connection while the setting is still empty, and the
-/// <c>users</c> INSERT meets <c>''::uuid</c> in its <c>WITH CHECK</c>: a <c>22P02</c>, the trap
-/// <see cref="EnsureUserHandler"/> documents for three rows and that is unchanged at thirty. Publishing
+/// <c>users</c> INSERT meets <c>''::uuid</c> in its <c>WITH CHECK</c>: a <c>22P02</c>. Inside a
+/// transaction the interceptor runs exactly once, at the begin, so nothing later in the delegate can
+/// repair a connection configured before the identity existed — and the size of the write changes
+/// none of it. The provisioning path that used to carry this same ruling made it for three rows;
+/// it is unchanged at thirty. Publishing
 /// outside the wrap fixes it at the price of an ordering rule nobody may re-break and a retry that must
 /// not re-publish; one save through <see cref="IRegistrationRepository.RegisterAsync"/> carries no such
 /// rule. This is the single most likely thing a later reader "improves".
@@ -93,12 +97,14 @@ public sealed class RegisterAccountHandler(
         + "recovery code.";
 
     /// <summary>
-    /// <c>EnsureUserHandler</c>'s sentence for the same collision, verbatim.
+    /// What a caller whose address another account already holds is told when <c>IX_users_email</c>
+    /// refuses the save.
     /// </summary>
     /// <remarks>
-    /// The two paths reach one rule — <c>IX_users_email</c> — and a caller meeting it through either is
-    /// in the same position, so telling them apart by wording would be a distinction about which route
-    /// they happened to be on. Change one and change both.
+    /// The wording used to be shared verbatim with the provisioning path, which reached the same rule
+    /// from the other direction; that path is gone and this is now the only sentence for it. It is kept
+    /// as written because it says what a person can act on — a different Google account holds this
+    /// address — without saying which account, which would report on somebody else's registration.
     /// </remarks>
     private const string EmailAlreadyLinkedMessage =
         "This email address is already linked to a different Google account.";
@@ -383,13 +389,16 @@ public sealed class RegisterAccountHandler(
     /// <para>
     /// <b><see cref="RegistrationOutcome.EmailTaken"/> is ambiguous and this is where it is settled.</b> A
     /// losing insert can breach the credential's <c>(provider, subject)</c> and the email at once, and
-    /// PostgreSQL names only one of them, picked by the order the rows are written — the fact
-    /// <c>UserRepository.TryAddAsync</c> records about its own two-name filter. EF writes <c>users</c>
+    /// PostgreSQL names only one of them, picked by the order the rows are written rather than by what
+    /// happened — which is why <see cref="IRegistrationRepository"/>'s two-name filter reports the
+    /// collision without claiming which rule it was. EF writes <c>users</c>
     /// before <c>credentials</c>, so the credential index being named means the email did not collide and
     /// is unambiguous; the email index being named says nothing about the subject. Only a re-read of the
-    /// credential separates the two, and it is sound for the reason <see cref="EnsureUserHandler"/> gives:
-    /// a reported unique violation means the conflicting transaction committed, so a winning credential on
-    /// this subject is visible by now. Finding none proves the email alone collided.
+    /// credential separates the two, and it is sound because of what a <em>reported</em> unique violation
+    /// implies: under read committed the losing insert waits on the conflicting transaction and would
+    /// have succeeded had it aborted, so the violation being raised at all means that transaction
+    /// committed and a winning credential on this subject is visible by now. Finding none proves the
+    /// subject was never duplicated and the email alone collided.
     /// </para>
     /// <para>
     /// The read runs on <c>credentials</c>, which is exempt from row-level security, so it is unaffected

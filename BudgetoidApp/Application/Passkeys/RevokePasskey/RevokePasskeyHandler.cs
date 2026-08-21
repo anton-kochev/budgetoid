@@ -52,9 +52,9 @@ public sealed class RevokePasskeyHandler(
         //    second time, find the nonce already spent, and refuse a VALID revocation with the same
         //    401 an attacker gets, because the database blinked.
         //
-        // Identity is published by UserProvisioningMiddleware long before this line, so the
-        // connection is configured whenever it opens; the 22P02 ordering CompleteAssertionHandler
-        // states for its own gate is not what is going on here.
+        // Identity is published by AuthenticateSessionHandler, which the cookie scheme ran before the
+        // endpoint was reached, so the connection is configured whenever it opens; the 22P02 ordering
+        // CompleteAssertionHandler states for its own gate is not what is going on here.
         await reauthentication.VerifyAsync(command.Assertion, cancellationToken);
 
         return await transactionalExecutor.ExecuteAsync(

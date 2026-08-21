@@ -109,11 +109,15 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
     resolved server-side or not at all.
   - **Enforced in**: the route pattern carries no parameter and `ExportDataHandler` reads
     `IUserContext` and nothing else.
-- **The export route MUST NOT carry `ProvisionsUser` metadata.**
+- **The export route MUST NOT bring an account into existence.**
   - **Why**: an export is a read; a route that minted an account in order to answer one would let a
     provider token outliving an erasure bring the account back as an empty shell.
-  - **Enforced in**: the route registration in `DataExportEndpoints` withholds the marker — see
-    [users-and-ownership.md](users-and-ownership.md) for the marker's own rules.
+  - **Enforced in**: nothing on this route, and that is the point — the ban survives while what
+    enforced it changed. It used to be the absence of a marker a middleware read. It is now that
+    `RegisterAccountHandler` is the only code that creates an account, it is reachable only from
+    `/api/registration`, and the fallback policy this route inherits names the session cookie scheme,
+    so a provider bearer here authenticates nothing. See
+    [users-and-ownership.md](users-and-ownership.md).
 - **The refusal message MUST NOT name a budget id.**
   - **Why**: in Development `GlobalExceptionHandler` echoes the exception's message *and* its full
     stack trace into the response body, so an id in the message leaks twice.
@@ -320,11 +324,11 @@ flagged, and the account is in the same state after one as before.
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant M as UserProvisioningMiddleware
+    participant M as the session cookie handler
     participant H as ExportDataHandler
     participant R as ExportReadService
     C->>M: GET /api/me/export
-    M-->>C: 401 (no token, or no account for this subject)
+    M-->>C: 401 (no cookie, or one naming no live session)
     M->>H: identity and ambient budget published
     H->>R: FindUserAsync(userId)
     H->>R: ListOwnedBudgetsAsync(userId)
@@ -341,22 +345,22 @@ a round trip over their own transactions.
 How a request to `GET /api/me/export` is answered:
 
 ```
-IF the request carries no valid token                       ← arms are mutually exclusive
-  THEN 401 from the fallback policy (title "Unauthorized")
+IF the request presents no cookie naming a live session     ← arms are mutually exclusive
+  THEN 401 from the fallback policy (title "Unauthorized")     — and a provider bearer counts as
+                                                                 presenting nothing, because the
+                                                                 policy names the cookie scheme
 ELSE IF the caller's session reads no budget content        ← a federated sign-in. This route is
   THEN 403 from the fallback policy's FullSessionRequirement   the reason the rule cannot be keyed
                                                                on the ambient budget: it reads
                                                                budgets by user_id
-ELSE IF the token's subject resolves to no account
-  THEN 401 from UserProvisioningMiddleware (its own NoAccountTitle)
 ELSE IF the set of budgets the user owns ≠ { the ambient budget }   — either direction
   THEN 500: ExportCompletenessException, before any contents are read
 ELSE
   THEN 200 with the complete document and the Content-Disposition header
 ```
 
-The two 401 arms are distinct refusals from different components — see the gotcha below; the 500 arm
-is the completeness rule above.
+There is now **one** 401 arm rather than two — see the gotcha below; the 500 arm is the completeness
+rule above.
 
 ## Integration Points
 
@@ -375,8 +379,9 @@ is the completeness rule above.
   rather than the `/api/me` namespace, and names an export of one's own data as exactly what that
   narrowing was written to leave room for. The route-table scan still applies: no reversal word may
   appear in this route's pattern, display name or endpoint name.
-- **[Users & ownership](users-and-ownership.md)** — the route deliberately withholds `ProvisionsUser`,
-  so an authenticated subject with no account is refused rather than minted.
+- **[Users & ownership](users-and-ownership.md)** — this route creates no account, and cannot: one
+  handler creates them, reachable from one group whose policy names the provider's scheme, and this
+  route inherits a fallback policy naming the cookie's.
 
 ## Edge Cases & Known Gotchas
 
@@ -400,7 +405,7 @@ is the completeness rule above.
   produce a document whose parts reflect different states — a transaction naming a payee the payee
   array does not carry. The `budgets` read is one of the seven, so even the refusal can decide on a
   set that has changed by the time the contents are read. Two things a reader should not assume:
-  **one session per person does not mean one request at a time** — a bearer token authorizes as many
+  **one session per person does not mean one request at a time** — one cookie authorizes as many
   concurrent calls as a client cares to make, so this is reachable today, not only after multi-budget
   ships; and **wrapping the reads in `ITransactionalExecutor` would not close it**, because that
   opens at READ COMMITTED and PostgreSQL takes a fresh snapshot per statement. Closing it needs
@@ -412,16 +417,17 @@ is the completeness rule above.
   `budgetoid-export-{yyyyMMdd}T{HHmmss}Z.json` shape (`settings/export-filename.ts`) — so the saved
   name and the disposition are minted by two clocks and can differ by seconds, and **neither is
   authoritative**.
-- **Two 401s reach this route and they are not the same refusal.** No token at all is answered by the
-  fallback policy through `UseStatusCodePages`, titled `"Unauthorized"` from the status map alone. A
-  valid token naming no account is answered by `UserProvisioningMiddleware` with its own
-  `NoAccountTitle`. A test asserting only the status cannot tell a route that lost its authorization
-  from one that lost the middleware.
-  - **And a 403 beside them, from the same policy as the first 401.** A session that reads no budget
+- **Two 401s used to reach this route and now there is one.** Every unauthenticated request — no
+  cookie, a cookie naming nothing, a dead session, or a provider bearer this route's policy does not
+  read — is answered by the fallback policy through `UseStatusCodePages`, titled `"Unauthorized"` from
+  the status map alone. The second refusal, a titled `NoAccountTitle` from the provisioning middleware
+  for a valid token naming no account, is gone with the middleware and with the state it described:
+  an authenticated request here cannot name an account that does not exist, because the cookie is only
+  ever issued over a session row written beside one.
+  - **And a 403 beside it, from the same policy.** A session that reads no budget
     content is refused here — that arm is in the tree above — and its body carries *no* title at all,
     which is what tells it from the first-party control's 403 on this same route. So the family this
-    route can answer is four refusals across two statuses, and only one of the four is silent. Read
-    the count in bold above as "the two 401s", never as a census of what this route refuses.
+    route can answer is three refusals across two statuses, and only one of the three is silent.
 - **A refusal in Development carries the stack trace.** `GlobalExceptionHandler` writes `detail`,
   `exceptionType` and the full `stackTrace` when the environment is Development — Staging gets
   neither — and the stack trace contains the message. Anything put in

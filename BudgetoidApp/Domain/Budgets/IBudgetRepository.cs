@@ -40,8 +40,8 @@ public interface IBudgetRepository
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>No production caller.</b> Provisioning used to insert the default budget here and now sends
-    /// it into the same save as the user and the credential, so nothing in the application reaches
+    /// <b>No production caller.</b> The default budget is written by registration, into the same save
+    /// as the account and its three credentials, so nothing in the application reaches
     /// this method — the same status <see cref="HasTransactionsAsync"/> already has. It stays because
     /// it is the seam that pins two rules nothing else can reach: the <c>NULLS NOT DISTINCT</c>
     /// semantics of the unique index, and the constraint-name attribution practice every repository

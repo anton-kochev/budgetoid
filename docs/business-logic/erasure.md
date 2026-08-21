@@ -16,9 +16,9 @@
 Erasure is the one action that destroys an account and everything owned beneath it. It exists so
 that leaving the product means actually leaving, rather than being archived: after it completes, no
 row in any table references the erased user or any budget it owned. Because it is irreversible, it
-is the one action a bearer token does not buy on its own — a request must carry a WebAuthn assertion
-made moments earlier on an authenticator registered to the account, so a stolen session cannot
-destroy a budget. It cuts across almost every domain area — `users` and `credentials` from
+is the one action a signed-in session does not buy on its own — a request must carry a WebAuthn
+assertion made moments earlier on an authenticator registered to the account, so a stolen session
+cannot destroy a budget. It cuts across almost every domain area — `users` and `credentials` from
 [users-and-ownership.md](users-and-ownership.md), the identity material in
 [passkeys.md](passkeys.md) and [sessions.md](sessions.md), and every budget-owned table — so the
 ordering rule and the post-condition live here rather than being split across the files whose rows
@@ -86,7 +86,7 @@ that is the one table erasure empties itself.
     `EraseAccountHandlerTests.HandleAsync_DeletesTheTransactionsBeforeTheUser`.
 - **Erasure MUST be authorized by a fresh WebAuthn assertion on a `reauthentication` challenge, for
   a passkey registered to the account the request is authenticated as.**
-  - **Why**: a bearer token alone is not proof; it is the thing the gate exists to distrust.
+  - **Why**: a live session alone is not proof; it is the thing the gate exists to distrust.
   - **Enforced in**: the `PasskeyReauthentication` gate `EraseAccountHandler` runs before anything
     else, pinned across `ErasureReauthenticationTests`.
 
@@ -107,7 +107,7 @@ that is the one table erasure empties itself.
   - **Why**: the sign-in handler does exactly that and the rule does not transfer, which makes this
     the most inviting wrong turn in the area. `SessionContextInterceptor` writes
     `app.current_user_id` and `app.current_budget_id` together at connection open, so a user id
-    re-published mid-request does **not** move the budget: Alice's bearer token with Bob's passkey
+    re-published mid-request does **not** move the budget: Alice's session with Bob's passkey
     would empty Alice's budget while deleting Bob's user row.
   - **Enforced in**: `PasskeyReauthentication` takes `IUserContext` and never `IUserContextWriter` —
     see [passkeys.md](passkeys.md), which owns the ceremony rule.
@@ -169,7 +169,7 @@ that is the one table erasure empties itself.
 
 - **Rule**: The gate runs to completion **outside** the transactional delegate.
 - **Why**: two reasons, and **neither is the `22P02` one** that governs `CompleteAssertionHandler`.
-  Identity here is published by `UserProvisioningMiddleware` before the handler runs, so the
+  Identity here is published while the request authenticates, before the handler runs, so the
   connection is configured correctly whenever it opens.
   1. `ConsumeAsync` deletes the nonce on its own save. Inside the erasure transaction, a rolled-back
      erasure would **restore the spent nonce** and make the same assertion replayable — destroying the
@@ -262,8 +262,8 @@ that is the one table erasure empties itself.
 
 - **Rule**: The handler discards the context's tracked entities before it deletes anything, and that
   call is load-bearing on the **first** attempt of the **first** request, not only under retry.
-- **Why**: `UserProvisioningMiddleware` has already resolved the request's identity through the same
-  scoped context, which leaves the `Budget` entity tracked. Removing the `User` with that dependent
+- **Why**: authenticating the request has already resolved the identity and the ambient budget through
+  the same scoped context, which leaves the `Budget` entity tracked. Removing the `User` with that dependent
   still in the tracker makes EF cascade to the copy it can see and emit its own
   `DELETE FROM budgets` — and the application role holds `SELECT` and `INSERT` on `budgets` and
   deliberately no `DELETE`, so the request dies with `42501` before it deletes anything. **The
@@ -326,15 +326,17 @@ that is the one table erasure empties itself.
   absent row leaves an empty set and the save is a no-op rather than a branch. The handler never
   reads the user first.
   - **A second request from the same client is refused, and — this is the part that matters — it
-    creates nothing.** It never reaches the handler. The erasure route declares no `ProvisionsUser`
-    metadata, so `UserProvisioningMiddleware` finds no credential for the still-valid token, answers
-    `401`, and writes no row — literally none, since the budget heal that used to run on every
-    authenticated request is gone: see [users-and-ownership.md](users-and-ownership.md). That answer
-    makes no claim about data — it says the request did not prove who it was, which is true, because
+    creates nothing.** It never reaches the handler, and the refusal is now **structural**: the
+    session cookie the first request presented names a `session_tokens` row the cascade took with the
+    account, so the lookup matches nothing and the fallback policy answers `401`. A provider bearer
+    left over from registration fares no better — the fallback names the cookie scheme, so
+    `JwtBearer` is not consulted on this route at all. Either way the answer
+    makes no claim about data: it says the request did not prove who it was, which is true, because
     the account it names no longer exists.
     `AccountErasureEndpointTests.Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount` pins both
     halves — the second call is `401` **and** `select count(*) from users` comes back `0`. That
-    count is the whole assertion: a middleware that minted on the way past would leave `1`.
+    count is the whole assertion: while a middleware could mint on the way past it would leave `1`,
+    and the test survives the middleware's deletion as the pin that says nothing replaced it.
   - **This holds for a row that leaves between the read and the save, too.** Two erasures of the
     same account in flight at once — a double-click, or a client retrying a slow response — both
     load the rows; the loser blocks on the winner's locks, then finds nothing to delete and gets
@@ -583,16 +585,16 @@ IF the request carries no valid token                        ← arms are mutual
 ELSE IF the caller's session reads no budget content         ← a federated sign-in; the route
   THEN 403 from the fallback policy's                          carries no opt-out marker
        FullSessionRequirement, before the handler runs
-ELSE IF the token's subject resolves to no account           ← including a just-erased one
-  THEN 401 from UserProvisioningMiddleware — the route carries no ProvisionsUser,
-       so nothing is minted on the way past
+ELSE IF the presented cookie names no live session           ← including one the cascade just took
+  THEN 401 from the fallback policy — nothing is minted on the way past,
+       because nothing outside /api/registration writes a users row
 ELSE IF the gate refuses the assertion                       ← consumed/expired/wrong-pool nonce,
   THEN 401, the nonce spent                                    bad signature, another account's key
 ELSE
   THEN transactions → user row, one transaction, cascade takes the rest — 204
 ```
 
-An account already gone never reaches the handler over its own token (the second arm), and a handler
+An account already gone never reaches the handler over its own cookie (the third arm), and a handler
 reached anyway completes with `204` — see the never-`404` rule above.
 
 ## Integration Points
@@ -625,22 +627,27 @@ reached anyway completes with `204` — see the never-`404` rule above.
 
 ## Edge Cases & Known Gotchas
 
-- **A `42501` naming `budgets` is a change-tracker fault.** It means the tracked `Budget` from user
-  provisioning was still attached; the fix is `DiscardTrackedEntities()`, never a grant. This is the
-  single most likely wrong turn in this area, because the error message points at exactly the wrong
-  layer.
-- **Erasing twice creates nothing, and that took a deliberate change to the provisioning rule.** A
-  Google ID token stays valid for up to an hour after the account it names is gone, and provisioning
-  used to mint an account on any authenticated request whose credential did not resolve — so a second
-  erasure attempt, an in-flight poll, or a second tab wrote a fresh `users` row carrying the person's
-  email moments after they asked to be forgotten. The erasure route now declares no `ProvisionsUser`
-  metadata, so those requests are refused before anything is written. See
-  [users-and-ownership.md](users-and-ownership.md).
-- **A request to a route that *does* mint still resurrects an erased account while the token lives.**
-  That hole is older than the re-authentication gate and is not closed here; it closes when account
-  creation becomes a consented act. Do not read the rule above as making erasure durable against a
-  live token — it makes the erasure path itself, and every identity-bearing route beside it, write
-  nothing.
+- **A `42501` naming `budgets` is a change-tracker fault.** It means the tracked `Budget` the request
+  resolved while authenticating was still attached; the fix is `DiscardTrackedEntities()`, never a
+  grant. This is the single most likely wrong turn in this area, because the error message points at
+  exactly the wrong layer.
+- **An erased account cannot be resurrected by a token that outlives it, and the mechanism is
+  structural rather than a rule some route could forget.** A Google ID token stays valid for up to an
+  hour after the account it names is gone, and account creation used to be a side effect of being
+  authenticated — so a second erasure attempt, an in-flight poll, or a second tab wrote a fresh
+  `users` row carrying the person's email moments after they asked to be forgotten. That is closed
+  twice over now. **A provider token reaches exactly two routes**, both under `/api/registration`,
+  because the fallback authorization policy names the session cookie scheme and only that group's
+  policy names the provider's. And **those two cannot complete without a fresh server-minted challenge
+  and a WebAuthn credential the caller's own authenticator produced**, so a token alone creates
+  nothing however many times it is presented. What used to be a marker on six route groups — with the
+  hole that a client calling a marked route on boot resurrected the account anyway — is now the
+  absence of any other creating path at all. See
+  [users-and-ownership.md](users-and-ownership.md) and [registration.md](registration.md).
+  - **What a stale token still buys is one new account, and that is not a resurrection.** Somebody
+    holding a live provider token after erasing can run `/api/registration` again and create a fresh
+    account under the same address — consciously, through the whole ceremony, with a new identifier, a
+    new passkey and a new card. That is a person choosing to come back, not a poll bringing them back.
 - **The request's own session row is deleted mid-request, and that is now real rather than
   anticipated.** A request carrying the session cookie reads its `session_tokens` row and then its
   `sessions` row to authenticate at all, so this endpoint deletes — by cascade, from `users` through

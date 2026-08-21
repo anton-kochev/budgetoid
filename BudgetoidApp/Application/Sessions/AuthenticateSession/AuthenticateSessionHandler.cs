@@ -1,5 +1,5 @@
 using Application.Abstractions;
-using Application.Users.EnsureUser;
+using Application.Users;
 using Domain.Budgets;
 using Domain.Sessions;
 
@@ -11,11 +11,13 @@ namespace Application.Sessions.AuthenticateSession;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>A command rather than a query, for <see cref="ResolveUserHandler"/>'s reason.</b> It writes no
-/// row, and <see cref="IUserContextWriter.ResolveUser"/> is still the single act the whole
-/// row-level-security model rests on: every policed statement for the rest of the request is decided by
-/// the id published here. Calling this a query would advertise "no effects, safe to call anywhere"
-/// about the one call where that is most dangerously false.
+/// <b>A command rather than a query, and it writes no row.</b> Nothing here inserts, updates or
+/// deletes, so the classification looks wrong until you ask what a query promises. This is the one
+/// place a request acquires an identity: <see cref="IUserContextWriter.ResolveUser"/> is the single act
+/// the whole row-level-security model rests on, and every policed statement for the rest of the request
+/// is decided by the id published here. Calling it a query would advertise "no effects, safe to call
+/// anywhere" about the call where that is most dangerously false — and the label is the only thing
+/// standing between a later reader and a second, cheaper-looking way to ask who is signed in.
 /// </para>
 /// <para>
 /// <b>The order of the two reads is the decision ADR 0019 exists for, and it cannot be rearranged.</b>
@@ -29,8 +31,8 @@ namespace Application.Sessions.AuthenticateSession;
 /// <para>
 /// <b>No transaction anywhere on this path, which is the same trap from the other side.</b> One opened
 /// before the publication configures its connection while <c>app.current_user_id</c> is still empty, and
-/// every policed statement inside it fails <c>22P02</c> — the trap <see cref="EnsureUserHandler"/>,
-/// <c>CompleteAssertionHandler</c> and <c>RedeemRecoveryCodeHandler</c> each already carry in their own
+/// every policed statement inside it fails <c>22P02</c> — the trap <c>CompleteAssertionHandler</c>,
+/// <c>RedeemRecoveryCodeHandler</c> and <c>RegisterAccountHandler</c> each already carry in their own
 /// remarks. Nothing here writes, so there is nothing an atomic unit would be protecting; the two reads
 /// are two round trips and are stated as the cost rather than hidden.
 /// </para>
@@ -101,7 +103,7 @@ public sealed class AuthenticateSessionHandler(
         // would answer this request with somebody else's rows.
         Budget budget = await budgetRepository.FindFirstForUserAsync(token.UserId, cancellationToken)
                         ?? throw new InvalidOperationException(
-                            "A session names an account owning no budget, which provisioning cannot "
+                            "A session names an account owning no budget, which registration cannot "
                             + "produce.");
 
         // Second, always: ResolveUser clears the ambient budget, so a budget published before it is a

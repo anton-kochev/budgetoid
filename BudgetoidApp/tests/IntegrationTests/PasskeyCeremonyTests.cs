@@ -482,36 +482,67 @@ public sealed class PasskeyCeremonyTests
     }
 
     /// <summary>
-    /// The anonymous leg may still be called with a valid provider token, in which case provisioning
-    /// has already put that account on the request. The session belongs to whoever the verified passkey
-    /// belongs to, which need not be the same person.
+    /// The anonymous leg may be called by a browser that is already signed in as somebody else. The
+    /// session belongs to whoever the verified passkey belongs to, which need not be the same person.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The credential on the request used to be a provider bearer and is now a session cookie, and
+    /// the rule is the same rule.</b> While the bearer was a credential this application authenticated,
+    /// a provisioning middleware put the bystander's account on the request before the ceremony ran,
+    /// and this test said the ceremony took its account from the verified assertion instead. A bearer
+    /// authenticates nothing now — the fallback policy names the cookie scheme and the only policy
+    /// naming the provider is registration's — so a bearer presented here is an inert header and the
+    /// test would have degraded into a second copy of the happy path with a spare row in the table.
+    /// </para>
+    /// <para>
+    /// <b>The cookie is the sharper arrangement, not merely the available one.</b> It is read on every
+    /// request by <c>SessionCookieAuthenticationHandler</c>, which publishes the bystander's identity
+    /// <em>and</em> ambient budget before this route's delegate is entered — so the request really does
+    /// arrive naming an account, and it is the wrong one. That is exactly the state a person signing in
+    /// on a shared browser produces, and it is the one a handler reading the ambient identity instead
+    /// of the verified credential would get wrong.
+    /// </para>
+    /// <para>
+    /// The bystander is signed in over a set of recovery codes rather than a passkey, this file's
+    /// convention, so the seeding files no <c>passkey_public_keys</c> row that the discovery lookup
+    /// could match instead of the one under test.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner()
+    public async Task Assertion_PresentedWithAnotherAccountsSession_EstablishesTheSessionForThePasskeysOwner()
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
-        await using ApiFactory factory = CreateApiFactory(host);
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
         RepositoryTestHost.SeededOwner passkeyOwner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
-        RepositoryTestHost.SeededOwner bystander = await host.SeedOwnerAsync(OtherSubject, OtherEmail);
         SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await host.SeedPasskeyAsync(
             passkeyOwner.UserId,
             authenticator.CredentialId,
             authenticator.CoseKey,
             authenticator.Algorithm);
+        ApiFactory.SignedInClient bystander = await factory.CreateSignedInClientAsync(
+            OtherSubject,
+            OtherEmail,
+            opensWith: CredentialType.RecoveryCodes);
+
+        // Read before the act, because the bystander's own sign-in is already a row: an absolute count
+        // would be measuring the arrangement rather than what the ceremony wrote.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
 
         // Act
-        HttpClient bystanderClient = factory.CreateAuthenticatedClient(OtherSubject, OtherEmail);
-        AssertionResult assertion = await BuildAssertionAsync(bystanderClient, authenticator, passkeyOwner.UserId);
-        HttpResponseMessage response = await PostAssertionAsync(bystanderClient, assertion);
+        AssertionResult assertion = await BuildAssertionAsync(
+            bystander.Client, authenticator, passkeyOwner.UserId);
+        HttpResponseMessage response = await PostAssertionAsync(bystander.Client, assertion);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        IReadOnlyList<SessionRow> sessions = await ReadSessionsAsync(host);
-        await Assert.That(sessions.Count).IsEqualTo(1);
-        await Assert.That(sessions[0].UserId).IsEqualTo(passkeyOwner.UserId);
-        await Assert.That(sessions[0].UserId).IsNotEqualTo(bystander.UserId);
+
+        IReadOnlyList<SessionRow> opened = await SessionsOpenedSinceAsync(host, before);
+        await Assert.That(opened.Count).IsEqualTo(1);
+        await Assert.That(opened[0].UserId).IsEqualTo(passkeyOwner.UserId);
+        await Assert.That(opened[0].UserId).IsNotEqualTo(bystander.UserId);
     }
 
     [Test]
@@ -1059,10 +1090,11 @@ public sealed class PasskeyCeremonyTests
     /// </para>
     /// <para>
     /// It does <b>not</b> prove FR-108's first clause — that an incomplete registration owns no
-    /// budget-owned row — and cannot: <c>EnsureUserHandler</c> provisions the account's default budget
-    /// on every authenticated request, before any ceremony runs, so a budget already exists by the
-    /// time this refusal happens. Satisfying that clause means moving provisioning behind the passkey,
-    /// which is a different change.
+    /// budget-owned row — and cannot, because it is not about registration: this account was created
+    /// whole, budget included, by <c>POST /api/registration</c>, and what is refused here is a
+    /// <em>second</em> passkey being added to it afterwards. That clause is proved next door, by
+    /// <c>AccountRegistrationTests</c>' refusal battery, every member of which asserts that the whole
+    /// thirty-row save left nothing anywhere.
     /// </para>
     /// </remarks>
     [Test]
@@ -1482,10 +1514,27 @@ public sealed class PasskeyCeremonyTests
 
     /// <summary>
     /// The negative side of "only a passkey opens a session that reads budget content": a provider
-    /// token reaches an ordinary endpoint and establishes nothing.
+    /// token reaches an ordinary endpoint, establishes nothing, and is now not even let in.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The status assertion was <c>200</c> and is now <c>401</c>, and that inversion is the claim
+    /// getting stronger rather than the test changing its mind.</b> What it has always said is that a
+    /// Google token opens no session — a bearer holder could read their budget but held no
+    /// <c>sessions</c> row, so a later revocation had nothing to revoke. The bridge policy scheme that
+    /// let a bearer authenticate an ordinary route is gone: the fallback policy names the session
+    /// cookie's scheme, and the one policy that names the provider is the registration group's. So this
+    /// account, reached by its Google token alone, now reaches nothing at all.
+    /// </para>
+    /// <para>
+    /// <b>The session count stays and is the half worth keeping.</b> A refusal that nonetheless wrote a
+    /// session would be a request establishing an unrevokable sign-in on its way to being turned away,
+    /// and the status alone cannot see it. The account is seeded, so the refusal is a verdict on the
+    /// credential rather than on a subject nobody has heard of.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task AnAccountReachedByItsGoogleTokenAlone_HasNoSessionRow()
+    public async Task AnAccountReachedByItsGoogleTokenAlone_IsRefusedAndHasNoSessionRow()
     {
         // Arrange
         await using RepositoryTestHost host = await StartRepositoryHostAsync();
@@ -1497,7 +1546,7 @@ public sealed class PasskeyCeremonyTests
         HttpResponseMessage response = await authenticated.GetAsync("/api/transactions");
 
         // Assert
-        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
     }
 
@@ -1799,10 +1848,13 @@ public sealed class PasskeyCeremonyTests
     /// <remarks>
     /// <para>
     /// <b>It stands beside <see cref="CreateApiFactory" /> rather than replacing it, and what is left
-    /// over there is exactly the tests whose subject is the provider bearer itself</b> —
-    /// <see cref="Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner" />
-    /// and <see cref="AnAccountReachedByItsGoogleTokenAlone_HasNoSessionRow" /> — plus the anonymous
-    /// tests, which authenticate as nobody and need no factory flag either way.
+    /// over there is one test whose subject is the provider bearer itself</b> —
+    /// <see cref="AnAccountReachedByItsGoogleTokenAlone_IsRefusedAndHasNoSessionRow" /> — plus the
+    /// anonymous tests, which authenticate as nobody and need no factory flag either way. Its former
+    /// companion,
+    /// <see cref="Assertion_PresentedWithAnotherAccountsSession_EstablishesTheSessionForThePasskeysOwner" />,
+    /// moved to this factory when the credential its arrangement carries stopped being a bearer and
+    /// became a cookie.
     /// </para>
     /// <para>
     /// <b>What used to keep the counting tests over there, and what closed it.</b> Seeding a sign-in

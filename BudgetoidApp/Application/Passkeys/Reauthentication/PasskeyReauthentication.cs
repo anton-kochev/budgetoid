@@ -199,8 +199,8 @@ public sealed class PasskeyReauthentication(
         //    cascaded away anyway: an assertion has to mean the same thing on every path it is accepted
         //    on, and a clone detector that one ceremony quietly opts out of is not a clone detector.
         //    passkey_signature_counters is policed by user_isolation and the request's identity was
-        //    published by provisioning long before this line, so the read and the write are scoped by
-        //    the database.
+        //    published while its cookie was authenticated, long before this line, so the read and the
+        //    write are scoped by the database.
         PasskeySignatureCounter counter =
             await passkeyRepository.FindCounterAsync(publicKey.CredentialId, cancellationToken)
             ?? throw new PasskeyVerificationException("The passkey has a public key but no signature counter.");

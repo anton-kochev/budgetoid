@@ -26,15 +26,17 @@ public static class RecoveryCodeEndpoints
         // declares nothing, and restating it here would make the one line that defines the anonymous
         // surface stop being the only one. And never AllowAnonymous.
         //
-        // No ProvisionsUser, and neither route may ever gain one. A provider id token stays valid for up
-        // to an hour after the account it names is erased, so a route that minted an account in order to
-        // answer a code generation would let that stale token bring the account back — as a shell HOLDING
-        // RECOVERY CODES, which is strictly worse than the empty shell the erasure and export groups
-        // argue about: a set of recovery codes is a full-session credential, so the resurrected account
-        // comes back with a working way in, and it holds no passkey, so the re-authentication gate in
-        // front of erasure can never remove it again. An authenticated subject with no account is refused
-        // by UserProvisioningMiddleware instead. The GET is the easier of the two to mark by mistake,
-        // because a read looks harmless.
+        // NEITHER ROUTE MAY BRING AN ACCOUNT INTO EXISTENCE, and neither can. RegisterAccountHandler
+        // is the only code in the application that creates one — the only caller of the only factory
+        // the domain offers — behind POST /api/registration/registration, which needs the provider
+        // scheme, a verified passkey attestation and a challenge from the AccountRegistration pool.
+        // The prohibition is worth keeping written out because the consequence here is the worst in
+        // the product: a provider id token stays valid for up to an hour after the account it names is
+        // erased, so a route that minted one to answer a code generation would bring that account back
+        // AS A SHELL HOLDING RECOVERY CODES — strictly worse than the empty shell the erasure and
+        // export groups argue about, because a set of recovery codes is a full-session credential, so
+        // the resurrected account comes back with a working way in, and it holds no passkey, so the
+        // re-authentication gate in front of erasure can never remove it again.
 
         // POST to the collection rather than to a named sub-resource, and 200 rather than 201 on both a
         // first issue and a regeneration: the resource is THE ACCOUNT'S RECOVERY-CODE SET, singular —
@@ -146,14 +148,13 @@ public static class RecoveryCodeEndpoints
         // principal: it names nobody, and the account it lands on is discovered from the code. And not
         // under "/api/passkeys", which is where the WebAuthn ceremonies are run and this is not one.
         //
-        // NO ProvisionsUser, AND IT MAY NEVER GAIN ONE — a likelier accident here than on "/api/me",
-        // because this is the route people reach for when they cannot get in, which reads a great deal
-        // like a route that should be able to create something. A provider id token stays valid for up
-        // to an hour after the account it names is erased, so a marker here would turn one retried
-        // redemption into a resurrected, passkey-less account that the re-authentication gate in front
-        // of erasure can never remove again. The marker would also do nothing it appears to do:
-        // UserProvisioningMiddleware reads the anonymous arm first and returns, so the two markers are
-        // mutually exclusive and UserProvisioningRouteTests holds them disjoint.
+        // A REDEMPTION MAY NEVER MINT AN ACCOUNT — a likelier accident here than on "/api/me", because
+        // this is the route people reach for when they cannot get in, which reads a great deal like a
+        // route that should be able to create something. It does not: this route discovers an account
+        // from the hash of a verifier, and finding none is the end of the request. RegisterAccountHandler
+        // is the only code that creates an account, behind POST /api/registration/registration. Were it
+        // otherwise, one retried redemption would resurrect a passkey-less account that the
+        // re-authentication gate in front of erasure could never remove again.
         RouteGroupBuilder anonymous = endpoints.MapGroup("/api/recovery-codes").AllowAnonymous();
 
         // POST to a sub-resource rather than a verb: the thing being created is a redemption of the

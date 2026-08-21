@@ -25,8 +25,8 @@ ownership and purpose rather than currency, and why budgets never aggregate — 
 `product-research/multi-budget.md` in the private `budgetoid-specs` repository, which holds the
 unbuilt half of the design until the multi-budget surface ships.
 
-The budget is deliberately invisible to a user who has one: it is created for them at sign-in, never
-named in a URL, and never something they set up.
+The budget is deliberately invisible to a user who has one: it is created for them in the same save
+that creates the account, never named in a URL, and never something they set up.
 
 **The budget is also the unit of tenancy**, and this file is the canonical home of that invariant.
 Accounts, category groups, categories, payees and transactions all belong to a budget; the user owns
@@ -170,14 +170,14 @@ erDiagram
 
 - **Code that reads `BaseCurrencyCode` MUST treat null as the normal value.** Every budget has a
   null base currency.
-  - **Why**: The budget is created for the user at sign-in, before they have been asked anything.
-    Requiring a base currency at creation would make the budget something the user must set up,
-    which is exactly what the default budget exists to avoid — so neither factory takes one, and
-    nothing has needed to set one since. Treating null as an exceptional state would therefore make
+  - **Why**: The budget is created in the same save as the account, before the person has been asked
+    anything beyond the passkey and the card. Requiring a base currency at creation would make the
+    budget something the user must set up, which is exactly what the default budget exists to avoid —
+    so neither factory takes one, and nothing has needed to set one since. Treating null as an exceptional state would therefore make
     the only reachable state the exceptional one.
   - **Enforced in**: `Budget.Create` and `Budget.CreateDefault` take no currency argument and
-    `Budget` exposes no mutator for `BaseCurrencyCode`. `BudgetTests`, `EnsureUserHandlerTests` and
-    `BudgetProvisioningTests` each assert the provisioned budget's `BaseCurrencyCode` is null.
+    `Budget` exposes no mutator for `BaseCurrencyCode`. `BudgetTests` and the registration suite each
+    assert the created budget's `BaseCurrencyCode` is null.
     `base_currency_code` is a nullable `varchar(3)` with a `Restrict` foreign key to
     `currencies.code`, so if a value is ever written the currency behind it cannot be deleted out
     from under it. The bottom layer agrees and says something wider: the application role holds
@@ -241,31 +241,31 @@ erDiagram
 
 ## Business Rules & Invariants
 
-- **Rule**: A budget with **no name** is created for a user when they are provisioned, and the step is
-  idempotent — a user who already has a budget gets no new one.
-- **Why**: A user must never encounter "budget" as something to set up. Signing in is the whole
+- **Rule**: A budget with **no name** is created for a user in the same save as their account, and
+  nothing else ever creates one.
+- **Why**: A user must never encounter "budget" as something to set up. Registering is the whole
   setup, so the pool of money their data hangs off has to already exist by the time their first
   request reaches a handler. It carries no name because nobody named it: naming a budget is an
   explicit act, and inventing a name on the user's behalf would both put a display decision in
   storage and make a budget they never touched look deliberately named.
-- **Enforced in**: `IUserRepository.TryAddAsync` writes the user, its first credential and this budget
-  in one save; `ResolveUserHandler` reads it back through `IBudgetRepository.FindFirstForUserAsync`
-  for an account that already existed. Both return `ProvisionedUser(UserId, BudgetId)`.
-  `Budget.CreateDefault` is the only path that produces a budget without a name.
-- **Example**: A brand-new Google subject's first authenticated request ends with exactly one row in
-  `budgets`, owned by the new user, with `name` and `base_currency_code` both null. Three more
-  requests add nothing.
-- **Counterexample**: Creating the budget only on the new-user branch would look correct and pass a
-  first-sign-in test, but it would leave any user whose budget insert was lost permanently without
-  one — and nothing would ever repair it.
+- **Enforced in**: `RegisterAccountHandler` builds it with `Budget.CreateDefault` and
+  `IRegistrationRepository.RegisterAsync` writes it beside the user and its three credentials in one
+  save; every later request reads it back through `IBudgetRepository.FindFirstForUserAsync` while
+  authenticating. `Budget.CreateDefault` is the only path that produces a budget without a name, and
+  `RegisterAccountHandler` is its only caller.
+- **Example**: a completed registration ends with exactly one row in
+  `budgets`, owned by the new user, with `name` and `base_currency_code` both null. Every later
+  request reads that row and adds nothing.
+- **Counterexample**: writing the budget in a second save. It would make "a user row with no budget"
+  reachable, and that state has no repair — every resolve throws and the person cannot even erase.
 - **Source**: `[SOURCE: user-story]`
 
 ---
 
 - **Rule**: A user has **at most one unnamed budget**, plus any number of named ones.
-- **Why**: The unnamed budget is the one provisioning creates, so "no second unnamed budget" is the
-  same sentence as "provisioning is idempotent under concurrency" — two requests that both find no
-  budget must not both succeed in creating one. Keying that on the *absence* of a name is what makes
+- **Why**: The unnamed budget is the one registration creates, so "no second unnamed budget" is what
+  stops any writer — including one that does not exist yet — from giving an account a second budget
+  nobody asked for. Keying that on the *absence* of a name is what makes
   it hold: a shared default string would be a constant two callers have to write identically, it can
   drift, and the day it drifted both inserts would succeed and the user would silently own two
   budgets with no error anywhere. Nothing about "no name" can drift. The invariant is also exactly
@@ -276,16 +276,15 @@ erDiagram
   under [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) — the schema is
   the lowest layer that can state it declaratively, so it holds for write paths that do not exist
   yet. `BudgetRepository.TryAddAsync` restates nothing; it only translates a `23505` on
-  `IX_budgets_user_id_name` into `false` so the caller can re-read, and lets every other rejection
-  propagate. The caller answers `false` by re-reading the owner's budget, so only a collision on
-  this rule guarantees a winning row is there to be read; a broader `false` would send provisioning
-  hunting for a budget nobody inserted.
+  `IX_budgets_user_id_name` into `false` so a caller could re-read, and lets every other rejection
+  propagate. It has **no production caller** — the only insert of a budget rides on registration's
+  single save — and keeps its pins for the reason `HasTransactionsAsync` does.
   `BudgetoidDbContextConstructionTests.Model_ScopesBudgetNameUniquenessToTheOwner` pins the
   declaration, and `BudgetRepositoryTests.Budgets_WithNoNameForOneUser_AreRejectedAfterTheFirst`
   pins the behaviour against PostgreSQL.
-- **Example**: two concurrent first requests for one new Google subject both find no budget and both
-  insert `(user_id, NULL)`. PostgreSQL accepts one and rejects the other with `23505`; the loser
-  re-reads and adopts the winner's row, so the user ends up with one budget and sees no error.
+- **Example**: two writers inserting `(user_id, NULL)` for one owner. PostgreSQL accepts one and
+  rejects the other with `23505`, so that account ends up with one budget however the second writer
+  arrived.
 - **Counterexample**: leaving the index at PostgreSQL's default NULL semantics, where every NULL is
   distinct from every other. Both racing rows would insert cleanly, the user would silently own two
   budgets, and nothing — no error, no log line, no other failing test — would say so. A store-level
@@ -297,14 +296,14 @@ erDiagram
 ---
 
 - **Rule**: A user and its default budget are created in **one** `SaveChanges`, together with the
-  user's first credential. There is no heal: a request that resolves an account and finds no budget
-  **throws** rather than repairing anything.
+  account's three credentials. There is no heal: a request that resolves an account and finds no
+  budget **throws** rather than repairing anything.
 - **Why**: the budget used to go in a second save, which made "a user row with no budget" reachable
   and bought a find-or-create on every authenticated request to repair it. One save removes the state
   instead of tolerating it, and the atomicity argument is the one
-  [users-and-ownership.md](users-and-ownership.md) already makes for the credential, applied verbatim.
-  What that buys beyond the round-trip: nothing on an unmarked route writes at all, and there is no
-  unconditional repair a future reader can delete as apparent duplication.
+  [users-and-ownership.md](users-and-ownership.md) already makes for the credentials, applied
+  verbatim. What that buys beyond the round-trip: no route but the one that creates an account writes
+  at all, and there is no unconditional repair a future reader can delete as apparent duplication.
   - **Unreachable from the only path that creates a user — not unreachable outright.** Nothing in
     the schema forbids the state, so a direct `DELETE FROM budgets` still produces it, and the
     account is then **dead rather than healed**: every resolve throws and the person cannot even
@@ -312,15 +311,15 @@ erDiagram
     guarantee — a participation constraint, `users.default_budget_id`
     `NOT NULL DEFERRABLE INITIALLY DEFERRED` — was considered and deferred; see the decision log for
     what it would buy and what it costs.
-- **Enforced in**: `IUserRepository.TryAddAsync(User, Credential, Budget, …)`, one save, one `catch`;
-  `ResolveUserHandler` reads and throws `InvalidOperationException` — not a 404, because the invariant
-  broke rather than the account being absent.
-  `ResolveUserHandlerTests.ResolveUser_ForAnAccountWhoseBudgetRowIsMissing_FailsLoudlyAndHealsNothing`
-  asserts both the throw and that `budgets` stays empty.
-- **Example**: two concurrent first requests from one person. The loser's insert is refused, and it
-  adopts the winner's budget — which is **guaranteed to exist**, because a reported unique violation
-  means the winner's transaction committed and that transaction contained its budget row. Under the
-  split save it did not.
+- **Enforced in**: `IRegistrationRepository.RegisterAsync`, one save over a `Domain.Users.Registration`
+  whose members are all required — so a registration missing its budget is unspellable rather than
+  merely unwritten. `AuthenticateSessionHandler` reads that budget back on every request and throws
+  `InvalidOperationException` if it is absent — not a 404, because the invariant broke rather than the
+  account being absent.
+- **Example**: two registrations racing on one Google identity. The loser's whole save is refused, so
+  it leaves no user, no credential and no budget behind, and it is answered `409` rather than being
+  signed into the winner's account — which its brand-new passkey could not open. See
+  [registration.md](registration.md).
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -329,7 +328,8 @@ erDiagram
 - **Why**: Resolving it lazily deeper in the request would mean issuing a query from wherever it was
   first needed, potentially on the very context being queried. Resolving it at the edge means one
   lookup per request and a single place where "which budget is ambient" is decided.
-- **Enforced in**: `UserProvisioningMiddleware` assigns both `ProvisionedUser` ids onto the scoped
+- **Enforced in**: `AuthenticateSessionHandler` publishes both through `IUserContextWriter` — the
+  identity first, the budget second, because `ResolveUser` clears it — onto the scoped
   `CurrentUser` (`UserId`, `BudgetId`). `HttpContextBudgetContext` exposes `CurrentUser.BudgetId` as
   `IBudgetContext.ResolvedBudgetId`, and `IBudgetContext.BudgetId` — the strict accessor the query
   filters read — is that value with null rejected, so a request that somehow skipped provisioning
@@ -337,9 +337,9 @@ erDiagram
   strict form is a default interface member rather than something each implementation writes, because
   the row-level security session variable reads one accessor and the query filters read the other:
   two separately written members could name different budgets and nothing would fail. The nullable
-  one exists for the two callers that legitimately have no budget — provisioning itself, which runs
+  one exists for the two callers that legitimately have no budget — authentication itself, which runs
   before there is one, and infrastructure scopes such as health checks. `CurrentUser.UserId` still
-  exists because the middleware needs a request-scoped home for the identity it provisioned; nothing
+  exists because the request needs a scoped home for the identity the session resolved; nothing
   downstream filters by it.
 - **Example**: A handler creating an account never receives an owner id from the client — it reads
   `IBudgetContext.BudgetId` and stamps it. Removing the client's ability to name an owner is what
@@ -403,46 +403,47 @@ erDiagram
 
 ## Workflows & State Transitions
 
-**Provisioning on an authenticated request** (`UserProvisioningMiddleware` → `EnsureUserHandler`).
-The user branch is documented in [users-and-ownership.md](users-and-ownership.md#workflows--state-transitions);
-this is the budget branch that runs after it, on every path:
+**Where a budget comes from, and how a request finds it.** It is written once, in the save that
+creates the account; every request afterwards reads it while authenticating. The user branch is
+documented in [users-and-ownership.md](users-and-ownership.md#workflows--state-transitions); this is
+the budget half:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> UserResolved : user provisioned or found
+    [*] --> Created : POST /api/registration — Budget.CreateDefault, in the account's own save
+    Created --> [*] : one row, name and base_currency_code both null
+
+    [*] --> UserResolved : an authenticated request publishes its account
     UserResolved --> BudgetLookup : FindFirstForUserAsync(userId)
     BudgetLookup --> BudgetResolved : budget found
-    BudgetLookup --> BudgetCreating : no budget found
-    BudgetCreating --> BudgetResolved : TryAdd succeeded
-    BudgetCreating --> BudgetRaceReread : TryAdd failed (concurrent insert)
-    BudgetRaceReread --> BudgetResolved : re-read the user's first budget
+    BudgetLookup --> Broken : the account owns none
+    Broken --> [*] : InvalidOperationException — nothing repairs it
     BudgetResolved --> [*] : CurrentUser.UserId and CurrentUser.BudgetId set, request proceeds
 ```
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| UserCreating → BudgetResolved | A new account: the budget is written in the same save as the user and its credential | `Budget.CreateDefault` validates the owner; there is no name to validate |
-| UserResolved → BudgetLookup | An account that already existed | — |
-| BudgetLookup → BudgetResolved | The user owns a budget | First budget by `CreatedAtUtc`, then `Id` |
-| BudgetLookup → Broken | The user owns none | `InvalidOperationException`. Unreachable from any path that creates a user; nothing repairs it |
-| UserCreating → CredentialRaceLost → BudgetResolved | The insert lost to a concurrent first request | Publish the winner, **then** read its budget — `budgets` is policed by `user_isolation`, so a read under the loser's phantom id matches nothing |
+| → Created | `POST /api/registration`, in the one `SaveChanges` that writes the whole account | `Budget.CreateDefault` validates the owner; there is no name to validate |
+| UserResolved → BudgetLookup | Every authenticated request, after `ResolveUser` and never before it | `ResolveUser` clears the ambient budget, so the order is the rule |
+| BudgetLookup → BudgetResolved | The account owns a budget | First budget by `CreatedAtUtc`, then `Id`. The read is scoped by owner explicitly — `Budget` carries no query filter |
+| BudgetLookup → Broken | The account owns none | `InvalidOperationException`. Unreachable from the one path that creates an account; nothing repairs it |
 
 ## Decision Trees
 
 Resolving the ambient budget, after the user has been resolved:
 
 ```
-IF the account already existed
-  THEN read its first budget by CreatedAtUtc, then Id
-  IF none                                                ← unreachable from any path that creates a user
-    THEN InvalidOperationException                       ← the invariant broke; nothing repairs it
-ELSE                                                     ← a new account
-  the budget was written in the same save as the user    ← no lookup, no insert, no race
-  IF that save lost the credential race
-    publish the winner FIRST                             ← budgets is policed by user_isolation
-    re-read the winner's first budget and adopt it       ← guaranteed present: the winner's commit held it
-    IF it is still absent
-      THEN InvalidOperationException                     ← a unique violation with nothing behind it
+IF the request is creating the account                   ← POST /api/registration, and nothing else
+  the budget is written in the same save as the user     ← no lookup, no insert, no race
+  IF that save loses on any of four unique rules
+    THEN nothing is written at all — 409                 ← the winner is never adopted
+ELSE                                                     ← every other authenticated request
+  publish the account FIRST                              ← budgets is policed by user_isolation, so a
+                                                           read under an unpublished identity matches
+                                                           nothing and fails 22P02
+  read its first budget by CreatedAtUtc, then Id
+  IF none                                                ← unreachable from the one path that creates
+    THEN InvalidOperationException                         an account; nothing repairs it
 ```
 
 The user branch that runs before this is in
@@ -450,8 +451,8 @@ The user branch that runs before this is in
 
 ## Integration Points
 
-- **[Users & Ownership](users-and-ownership.md)**: the owning user comes from provisioning, and the
-  budget step is part of the same handler — "an account exists ⇒ it has its budget" is one idea, so
+- **[Users & Ownership](users-and-ownership.md)**: the owning user comes from registration, and the
+  budget is written in that same save — "an account exists ⇒ it has its budget" is one idea, so
   splitting it would open a window where a user exists without a budget.
 - **[Currencies](currencies.md)**: `BaseCurrencyCode` references the global ISO-4217 reference table
   by code with `Restrict`, so a base currency in use could not be deleted — no budget holds one
@@ -463,8 +464,9 @@ The user branch that runs before this is in
 
 ## Edge Cases & Known Gotchas
 
-- **`Budget` has no global query filter and cannot have one.** The provisioning lookup has to find a
-  budget *before* any budget id exists, so there is nothing for a filter to close over. Consequently
+- **`Budget` has no global query filter and cannot have one.** The lookup that resolves the ambient
+  budget has to find one *before* any budget id exists, so there is nothing for a filter to close
+  over. Consequently
   **every query over `db.Budgets` must scope by owner explicitly** — `BudgetRepository`
   `FindFirstForUserAsync` does this with an explicit `Where(budget => budget.UserId == userId)`. This
   is the easiest tenant leak to introduce in the codebase: a new `db.Budgets` query that forgets the
@@ -473,21 +475,20 @@ The user branch that runs before this is in
 - **"Exactly one budget per user" is a release-scope property, not a schema invariant.** The schema
   permits several budgets per user *on purpose* — it is multi-budget-ready from day one, and
   `BudgetConfiguration` deliberately carries no unique index or key over `user_id` alone. The
-  one-per-user property holds today only because no code path creates a second budget: the
-  provisioning handler's insert is the only insert and it is guarded by `FindFirstForUserAsync`, and
-  there is no create-budget command or endpoint. It is pinned by
-  `BudgetProvisioningTests.FirstAuthenticatedRequest_CreatesExactlyOneBudget` and
-  `RepeatedSignIns_DoNotCreateAdditionalBudgets`, not by a constraint. Do not write code that relies
+  one-per-user property holds today only because no code path creates a second budget: registration's
+  own save is the only insert, and there is no create-budget command or endpoint. It is pinned by the
+  registration suite and by the `NULLS NOT DISTINCT` index above, not by a constraint over `user_id`.
+  Do not write code that relies
   on a user having at most one budget, and do not "fix" the missing constraint by adding one. The
   `NULLS NOT DISTINCT` index is not that constraint and must not be mistaken for it: it bounds the
   *unnamed* budgets at one and leaves named ones unlimited, which is why it survives multi-budget
   untouched.
 
-- **Provisioning is one `SaveChanges`, and deliberately not a transaction port.** The user, its first
-  credential and this budget are written together, so a concurrent request can no longer observe a
-  user with no budget and there is no budget-insert race left to lose: each racer's `user_id` is a
-  `Guid.CreateVersion7()` minted in its own call, so `IX_budgets_user_id_name` cannot be contended on
-  this path at all. What races is the **credential**, and the loser adopts the winner's budget.
+- **Account creation is one `SaveChanges`, and deliberately not a transaction port.** The user, its
+  three credentials and this budget are written together, so nothing can observe a
+  user with no budget and there is no budget-insert race left to lose: each racer's `user_id` is
+  derived from its own ceremony's challenge, so `IX_budgets_user_id_name` cannot be contended on
+  this path at all. What races is the **credential**, and the loser writes nothing and is refused.
   **Do not wrap it in `ITransactionalExecutor`.** Beyond the reasons
   [users-and-ownership.md](users-and-ownership.md) already gives, there is a correctness one:
   `BeginTransactionAsync` is what opens the connection, and opening the connection is when
@@ -498,9 +499,9 @@ The user branch that runs before this is in
   reintroduced here. It is fixable by publishing outside the wrap, but the fix is a new ordering rule
   someone must not re-break; one save has no such rule.
 - **The `NULLS NOT DISTINCT` declaration on `IX_budgets_user_id_name` is still load-bearing**, even
-  though provisioning no longer contends it. It is what makes "one unnamed budget per owner" true of
+  though nothing contends it. It is what makes "one unnamed budget per owner" true of
   *any* writer, and `BudgetRepositoryTests.Budgets_WithNoNameForOneUser_AreRejectedAfterTheFirst` holds
-  it through `IBudgetRepository.TryAddAsync` — a seam that now has no production caller and keeps its
+  it through `IBudgetRepository.TryAddAsync` — a seam that has no production caller and keeps its
   pins for that reason, exactly as `HasTransactionsAsync` does. Do not delete it as dead code.
 
 - **`FindFirstForUserAsync`'s `CreatedAtUtc`-then-`Id` ordering is a contract, not an implementation
@@ -508,11 +509,11 @@ The user branch that runs before this is in
   pick different budgets for the same user; the reason is on `IBudgetRepository`.
 
 - **The lookup is by owner, never by name.** `FindFirstForUserAsync` matches `UserId` alone, and it
-  has to: the budget provisioning creates has no name, so there is no value to match on at all. The
+  has to: the budget registration creates has no name, so there is no value to match on at all. The
   point survives renaming too — a name-based lookup would stop finding a budget the day the user
-  renamed it, and provisioning would silently create a second one. Do not reintroduce a name — a
+  renamed it, and a future writer would silently create a second one. Do not reintroduce a name — a
   well-known literal, a marker string, a flag column standing in for one — as the way the
-  provisioned budget is recognized.
+  default budget is recognized.
 
 - **A budget with no name renders as the client's own localized default label.** That is the whole
   contract for the missing name, and it is written down before there is anything to write it into:
@@ -591,7 +592,8 @@ The user branch that runs before this is in
   `IAccountRepository.HasTransactionsAsync`.
 
 - **Resolving the ambient budget costs one extra indexed read per authenticated request.** The
-  provisioning lookup hits the leading column of an index that already exists, and it runs on every
-  request because it is also the heal path. Caching it — in the session, in a claim, or in a
-  distributed cache — is a deliberate non-goal for now: a cached budget id is a stale tenant id, and
-  the correctness of tenancy is worth more than the read.
+  lookup hits the leading column of an index that already exists, and it runs on every
+  request — the third of the three reads that authenticating one takes. Caching it — in the session
+  row, in a claim, or in a distributed cache — is a deliberate non-goal for now: a cached budget id is
+  a stale tenant id, and the correctness of tenancy is worth more than the read. Putting it on the
+  `sessions` row would additionally be a second copy of a fact `budgets` already owns.

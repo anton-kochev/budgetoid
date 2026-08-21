@@ -516,7 +516,7 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
-        User user = User.Create(email, SeedInstant);
+        User user = User.CreateWithId(Guid.CreateVersion7(), email, SeedInstant);
         db.Users.Add(user);
         db.Credentials.Add(Credential.CreateFederated(
             user.Id, Credential.GoogleProvider, googleSubject, SeedInstant));

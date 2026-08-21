@@ -1,6 +1,7 @@
 # ADR 0019 — Authenticate from a session cookie, and split its discovery key onto an exempt table
 
-- **Status:** Accepted and implemented on the server. No client screen reaches it yet.
+- **Status:** Accepted and implemented. The cookie is the only thing that authenticates a request to
+  this API, the two registration routes aside.
 - **Date:** 2026-08-16
 - **Area:** Persistence / Security (row-level security coverage, grant matrix, sessions)
 
@@ -156,7 +157,8 @@ attached by a browser on its own, so nothing before this needed the control at a
 **The reading half shipped one commit before the writing half, and the asymmetry was the point.** The
 alternative was one commit moving the whole product from bearer tokens to cookies at once — the
 ceremonies, the registration gate and the client all inside it. Landing the reader first meant every
-intermediate commit was shippable, and the bridge scheme below is what bought that.
+intermediate commit was shippable, and the bridge scheme below is what bought that. It has since been
+paid for and removed.
 
 **One write path takes both rows, and the port's shape is what holds the pairing.**
 `ISessionRepository.AddAsync` takes the session *and* its token, with no overload taking a session
@@ -172,13 +174,23 @@ precisely so nothing else is a handle, so the establishing handlers return the r
 their result, through a type the endpoint destructures and never serialises. A census over every type
 a route returns is what keeps that true of records added later.
 
-**A temporary default scheme, and what removes it is named rather than left to a reader.** The
-application's default is a policy scheme forwarding to the cookie handler when the cookie is present
-and to `JwtBearer` otherwise. It goes when sign-in moves off the identity provider entirely, together
-with the `JwtBearer` registration and every claim gate that reads a provider token. Until then a
-request carrying both credentials is treated as a session request — the safe direction, because the
-cookie is the credential this product issued and can end.
+**The temporary default scheme has been removed, and the state it was named to reach has arrived.**
+`Budgetoid.Bridge` — a policy scheme forwarding to the cookie handler when the cookie was present and
+to `JwtBearer` otherwise — existed so the whole surface kept working while this decision landed one
+commit at a time. **The cookie handler is now the default**, and the fallback authorization policy
+names it explicitly rather than relying on the default, so a later change of default cannot silently
+move every route that declares nothing onto some other handler.
 
-The visible cost is a commit in which a session can be presented and never issued. That reads as an
-oversight, so [sessions.md](../business-logic/sessions.md) says plainly which half is missing, and
-says that the gotcha about a session authenticating nothing has now half-closed rather than closed.
+`JwtBearer` stays registered and is reached by **exactly one policy**: the `/api/registration` group's,
+which names the provider's scheme because an account may not exist without a completed provider
+exchange. A bearer presented to any other route therefore authenticates nothing at all — the cookie
+handler answers `NoResult` and the request is answered the same `401` an anonymous one gets. That is
+what makes "an authenticated request can never name an account that does not exist" a **structural**
+fact rather than a check: the cookie is only ever issued over a session row, and a session row is only
+ever written beside the account it names. The claim gates that read a provider token did not leave with
+the bridge; they moved onto the one group that still reads one.
+
+Two things the bridge's removal closed downstream. `FullSessionRequirement` no longer has to admit a
+principal that authenticated on any scheme but the cookie's — while the bridge stood, a Google bearer
+carried no session and therefore no kind claim, and a requirement refusing what it did not find would
+have refused the whole product. And `sub` means one thing again: this installation's own account id.

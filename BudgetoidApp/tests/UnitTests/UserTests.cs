@@ -6,23 +6,42 @@ namespace UnitTests;
 
 public sealed class UserTests
 {
+    /// <summary>
+    /// The account comes back under the identifier it was handed, with the address trimmed.
+    /// </summary>
+    /// <remarks>
+    /// <b>The id is compared against the one passed in, not merely against
+    /// <see cref="Guid.Empty" />.</b> That is what this test gained when the minting factory beside
+    /// <see cref="User.CreateWithId" /> was deleted: while <c>User.Create</c> chose the id itself,
+    /// "not empty" was the strongest thing a caller could say about it. It is now the whole point —
+    /// the identifier is the WebAuthn user handle the authenticator was given when the ceremony
+    /// opened, and a row written under any other value answers no assertion that device will ever
+    /// produce, silently and permanently.
+    /// </remarks>
     [Test]
-    public async Task Create_WithValidInput_ReturnsInitializedUser()
+    public async Task CreateWithId_WithValidInput_ReturnsInitializedUser()
     {
+        // Arrange
+        var id = Guid.CreateVersion7();
         DateTime createdAtUtc = UtcNow();
 
-        User user = User.Create(" person@example.com ", createdAtUtc);
+        // Act
+        User user = User.CreateWithId(id, " person@example.com ", createdAtUtc);
 
-        await Assert.That(user.Id).IsNotEqualTo(Guid.Empty);
+        // Assert
+        await Assert.That(user.Id).IsEqualTo(id);
         await Assert.That(user.Email.Value).IsEqualTo("person@example.com");
         await Assert.That(user.CreatedAtUtc).IsEqualTo(createdAtUtc);
     }
 
     [Test]
-    public async Task Create_WithBlankEmail_ThrowsValidationException()
+    public async Task CreateWithId_WithBlankEmail_ThrowsValidationException()
     {
-        ValidationException exception = ThrowsValidationException(() => User.Create("   ", UtcNow()));
+        // Arrange, Act
+        ValidationException exception = ThrowsValidationException(
+            () => User.CreateWithId(Guid.CreateVersion7(), "   ", UtcNow()));
 
+        // Assert
         await Assert.That(exception.Errors.ContainsKey("Email")).IsTrue();
     }
 

@@ -1,32 +1,32 @@
 # ADR 0021 — Make registration one consented act, and derive the account id from its own challenge
 
-- **Status:** Accepted and implemented on the server. No client screen reaches it yet.
+- **Status:** Accepted and implemented, and it is now the **only** way an account comes to exist.
 - **Date:** 2026-08-18
 - **Area:** API / Application (account creation, WebAuthn ceremony pools, provisioning markers)
 
 ## Context
 
-An account has never been asked for. `UserProvisioningMiddleware` mints one from **any** authenticated
-request reaching a route group that carries `ProvisionsUser`, so the first time somebody signs in with
-the identity provider and a client calls `GET /api/transactions`, a `users` row, a `credentials` row
-and a `budgets` row come into existence. Nobody consented to anything, and nothing about the account
+An account had never been asked for. `UserProvisioningMiddleware` minted one from **any** authenticated
+request reaching a route group that carried `ProvisionsUser`, so the first time somebody signed in with
+the identity provider and a client called `GET /api/transactions`, a `users` row, a `credentials` row
+and a `budgets` row came into existence. Nobody consented to anything, and nothing about the account
 was chosen.
 
-What that produces is worse than an unwanted row. The account holds **one federated credential and
+What that produced is worse than an unwanted row. The account held **one federated credential and
 nothing else** — and `federated` is the one credential type that can never open a session reaching
 budget content, because an authorization exchange returns claims rather than a secret a client can
-turn into a key. So provisioning creates an account **holding nothing that can ever read it**. Three
-consequences follow, each recorded somewhere in this repository as a gap rather than a design:
+turn into a key. So provisioning created an account **holding nothing that could ever read it**. Three
+consequences followed, each recorded somewhere in this repository as a gap rather than a design:
 
-- **Onboarding is ordered and the order is invisible.** A brand-new identity must reach one of the six
-  marked groups *before* it can register a passkey, because the passkey routes mint nothing and answer
-  a caller with no account `401`. That ordering lives in `ApiFactory.EstablishAccountAsync` and in no
-  product code at all.
-- **The account can be reached and cannot be emptied.** Erasure is gated on a fresh WebAuthn
-  assertion, so an account holding no passkey can never clear the gate in front of it.
+- **Onboarding was ordered and the order was invisible.** A brand-new identity had to reach one of the
+  six marked groups *before* it could register a passkey, because the passkey routes minted nothing and
+  answered a caller with no account `401`. That ordering lived in `ApiFactory.EstablishAccountAsync`
+  and in no product code at all.
+- **The account could be reached and could not be emptied.** Erasure is gated on a fresh WebAuthn
+  assertion, so an account holding no passkey could never clear the gate in front of it.
 - **A provider id token outlives an erasure by up to an hour**, and a call to a marked route inside
-  that window resurrects the account. [users-and-ownership.md](../business-logic/users-and-ownership.md)
-  states that hole and says it closes "when account creation becomes a consented act".
+  that window resurrected the account. [users-and-ownership.md](../business-logic/users-and-ownership.md)
+  stated that hole and said it would close "when account creation becomes a consented act".
 
 Making registration an act therefore means one request that creates the account **and** the passkey
 that reaches it **and** the card of recovery codes that survives losing the passkey — or creates
@@ -60,22 +60,28 @@ challenge rather than chosen.**
    options leg would hand a caller the ability to decide which account identifiers exist, because that
    leg mints the bytes the identifier comes off. Naming the scheme is also what makes
    `AuthorizationMiddleware` re-authenticate against the provider's handler rather than against
-   whatever the default resolves to — today a policy scheme that forwards a cookie-bearing request to
-   the session handler, so without the name a browser already holding a session could create an
-   account nobody's provider vouched for. Declaring a policy at all takes both routes out of the
+   the default, which is the session cookie's — so without the name a browser already holding a
+   session could create an account nobody's provider vouched for, and no bearer would be read at all.
+   **This policy is the only reason `JwtBearer` is still registered**: nothing defaults to it and no
+   other route names it, so a bearer presented anywhere else authenticates nothing.
+   Declaring a policy at all takes both routes out of the
    **fallback** policy and therefore out of `FullSessionRequirement`, which is the right outcome rather
    than a side effect worked around: this caller holds no session, so a rule about what kind of session
    may read budget content has nothing to judge.
 
-2. **A third marker attribute, `RegistersAccountAttribute`, and its arm publishes nobody.**
-   `UserProvisioningMiddleware` runs before the endpoint's own policy, so without a marker a provider
-   principal with no account is refused `NoAccountTitle` before the handler is ever entered. The arm
-   sits **below** the `sub`/`email` and `email_verified` claim gates — placed above them, an account
-   would be created for a caller whose address the provider explicitly declines to assert — and
-   **above** the resolve, because a caller who is about to register has by definition no account to
-   resolve. It calls the next middleware and does nothing else. Opt-in, like its two neighbours and for
-   their reason; a route carrying it *and* `ProvisionsUser` is a contradiction the middleware cannot
-   honour, because it reads this one first and returns, so the find-or-create arm is never reached.
+2. **A caller with no account reaches these two routes and nothing else, and the scheme on the group's
+   policy is what says so.** This began as a third marker attribute, `RegistersAccountAttribute`,
+   because a provisioning middleware ran before the endpoint's own policy and would otherwise have
+   refused a provider principal with no account before the handler was ever entered. That middleware
+   and that marker are both deleted, and **the argument they carried survives intact, held by the
+   policy above**: a bearer authenticates here and nowhere else, so "this route serves callers who
+   have no account" is a property of the two routes' own authentication rather than of metadata
+   somebody could add to a seventh group by mistake. What was the marker's arm is now three
+   properties of this group: the claim gates run **before** the handler, as an endpoint filter, so an
+   account is never created for a caller whose address the provider declines to assert; nothing
+   resolves an account, because a caller about to register has by definition none; and **no identity
+   is published**, because the handler derives and publishes the account id itself after the signature
+   verifies.
 
 3. **`users.id` is `SHA-256(domain-separation prefix ‖ challenge)`, first 16 bytes, RFC 9562
    version 8, stamped on the big-endian layout.** Both legs call one pure function,
@@ -194,16 +200,20 @@ for.
   test that reads the response. What it changes is which credential a later revocation sweeps: revoking
   the passkey would leave the session standing, and replacing the card would sign the person out of a
   session their passkey opened.
-- **`UserProvisioningMiddleware` is still live and still mints accounts on six route groups.** This
-  decision does not remove it; it adds a path beside it. So the invariant registration establishes —
-  exactly one federated credential, at least one passkey, exactly one set of recovery codes, from the
-  instant the account exists — is **registration's** invariant and is not true account-wide. The
-  markers collapse and the middleware goes in later work, and `RegistersAccountAttribute` goes with
-  them.
-- **Nothing in the browser runs this ceremony.** The two routes are reached today only by the
-  integration suite, and the app still authenticates every request it makes from the provider's ID
-  token. The server demanding a factor identifier, two envelopes and ten submissions is what keeps a
-  keyless account from ever existing; the screen that would satisfy that demand is later work, and the
-  asymmetry is deliberate for the reason
+- **This is the only path that creates an account.** `UserProvisioningMiddleware` stood beside it for
+  a time, minting accounts holding a federated credential alone on six marked route groups; it is
+  deleted, together with `ProvisionsUserAttribute`, `RegistersAccountAttribute`, `EnsureUserHandler`,
+  `ResolveUserHandler`, `IUserRepository.TryAddAsync` and `NoAccountTitle`. So the invariant this
+  decision establishes — exactly one federated credential, at least one passkey, exactly one set of
+  recovery codes, from the instant the account exists — is now a claim about **every** account in the
+  schema.
+  - **`Domain.Users.User.Create` went with them, and that is what makes the claim hold.** The factory
+    that minted an account under a fresh identifier is gone, leaving `CreateWithId` as the only way to
+    obtain a `User`. A second creating path can no longer be written by calling something that already
+    exists: it has to add a factory back first, which is the change a reviewer must see.
+- **The browser runs this ceremony.** `/register` obtains a PRF output from a real authenticator,
+  draws the account's keys, mints the card, wraps eleven times and posts the account, and the response
+  signs the person in. The server demanding a factor identifier, two envelopes and ten submissions is
+  what kept a keyless account from ever existing while the client was catching up — the asymmetry
   [ADR 0018](0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
-  gives about the client crypto shipping ahead of its caller.
+  argues for, now closed on this path.

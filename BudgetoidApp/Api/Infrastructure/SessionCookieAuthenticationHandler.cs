@@ -38,12 +38,7 @@ namespace Api.Infrastructure;
 /// </para>
 /// <para>
 /// <b>The claims are the answer, not the evidence.</b> <c>sub</c> carries this installation's own
-/// account id and not a provider subject, which is a collision with what
-/// <see cref="UserProvisioningMiddleware" /> reads that word to mean on the bearer path. Nothing brings
-/// the two together — that middleware returns immediately for a request whose identity is already
-/// published, which every request authenticated here is — and if it ever did, the collision fails
-/// closed: a GUID resolves to no federated credential and the request is refused rather than answered
-/// as somebody else.
+/// account id and not a provider subject.
 /// </para>
 /// </remarks>
 public sealed class SessionCookieAuthenticationHandler(
@@ -58,8 +53,7 @@ public sealed class SessionCookieAuthenticationHandler(
 
     /// <summary>
     /// The account the request acts as. Spelled <c>sub</c> because that is what a subject claim is
-    /// called; see the remarks on the class for the collision this shares with the bearer path and what
-    /// keeps the two apart.
+    /// called, and carrying this installation's own account id rather than a provider subject.
     /// </summary>
     public const string SubjectClaimType = "sub";
 
@@ -86,8 +80,10 @@ public sealed class SessionCookieAuthenticationHandler(
 
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
-        // No cookie is not a refusal: it is a request that said nothing about a session, and on the
-        // bridge scheme it would not have arrived here at all.
+        // No cookie is not a refusal: it is a request that said nothing about a session. This is also
+        // the arm that makes "an authenticated request can never name an account that does not exist"
+        // structural — NoResult leaves the principal unauthenticated and the fallback policy challenges,
+        // so nothing downstream ever runs holding an identity nobody could resolve.
         if (!Request.Cookies.TryGetValue(SessionCookie.Name, out string? presented))
         {
             return AuthenticateResult.NoResult();

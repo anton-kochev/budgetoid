@@ -120,7 +120,7 @@ public interface IPasskeyRepository
     /// </para>
     /// <para>
     /// The type predicate is the rule itself rather than tidiness. Every account also holds the
-    /// federated Google credential provisioning minted for it, so a count with no type filter reads
+    /// federated Google credential registration wrote for it, so a count with no type filter reads
     /// <b>two</b> for an account standing on the floor and lets its last passkey go — leaving somebody
     /// who can still sign in, still cannot reach any budget content, and cannot even prove presence
     /// for an erasure.

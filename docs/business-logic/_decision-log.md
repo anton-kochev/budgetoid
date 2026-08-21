@@ -8,6 +8,102 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-21 — Sign in with a passkey, not with Google
+
+**Context:** two ways into this product stood beside each other, and only one of them was consented
+to. `POST /api/registration` created an account as a single act — the passkey, the card of ten
+recovery codes and the eleven wrapped copies of the account keys in one save. Beside it,
+`UserProvisioningMiddleware` still turned any authenticated Google bearer into an account on six
+marked route groups, and the account it produced held **one federated credential and nothing that
+could read it**: no passkey, so no session reaching budget content, and no way past the
+re-authentication gate in front of erasure. Every invariant registration established had to be
+written down twice — once as what that path does, once as a warning that it was not a claim about
+every row in `users`. Three separate documents carried a promise that the marker set would collapse
+"when account creation becomes a consented act". It had; nothing had collapsed.
+
+The provider was also still the thing that authenticated ordinary requests. `Budgetoid.Bridge`, a
+policy scheme forwarding to the session cookie handler when a cookie was present and to `JwtBearer`
+otherwise, was the API's default, and it existed so the surface kept working while sessions landed one
+commit at a time. Everything downstream of it was shaped by its presence: `FullSessionRequirement`
+had to admit a principal that authenticated on any scheme but the cookie's, because a Google bearer
+carried no session and therefore no kind claim, and a requirement refusing what it did not find would
+have refused the whole product.
+
+**Decision:** **the identity provider is contacted once in an account's life, and a session cookie
+authenticates everything else.**
+
+- `UserProvisioningMiddleware` is deleted, with `ProvisionsUserAttribute` and its six
+  `.WithMetadata(…)` applications, `RegistersAccountAttribute`, `EnsureUserHandler`,
+  `ResolveUserHandler`, their commands, `ProvisionedUser`, `IUserRepository.TryAddAsync` and
+  `NoAccountTitle`.
+- `User.Create` — the factory that minted an account under a fresh identifier — is deleted too, so
+  `User.CreateWithId` is the only way to obtain a `User` and it takes an id derived from a ceremony's
+  own challenge. **The prohibition on creating an account anywhere else stopped being a doc comment
+  and became a compile error.**
+- The two claim gates move to `RegistrationClaimGate`, an `IEndpointFilter` on the
+  `/api/registration` group, carrying `MissingClaimsTitle` and `UnverifiedEmailTitle`.
+- The bridge scheme is deleted. The session cookie handler is the default, the fallback policy names
+  it explicitly and carries `FullSessionRequirement`, and `FullSessionRequirement`'s
+  another-scheme escape hatch goes with the bridge. `JwtBearer` stays registered and is reached by
+  exactly one policy — registration's.
+
+**What that buys, verified by running rather than reasoned:** an authenticated bearer naming no
+account now answers **401, indistinguishable from an anonymous request**, because
+`AuthorizationMiddleware` re-authenticates against the cookie handler alone and it returns
+`NoResult`. Six route comments used to end with "an authenticated subject with no account is refused
+instead"; the refusal survives and the enforcer changed, which is why those sentences were rewritten
+rather than deleted.
+
+**Alternatives considered:**
+
+- *Keep the bridge as a permanent seam*, so a bearer keeps working for clients that have not moved.
+  It is the cheapest option and it is what the deletion is for: while any scheme but the cookie can
+  authenticate an ordinary route, `FullSessionRequirement` must admit a principal carrying no kind
+  claim, which is a hole with a comment on it rather than a rule. A permanent seam also keeps
+  `NoAccountTitle` alive — a titled refusal describing a state the product can no longer be in.
+- *Push the three claim rungs into the Application ring*, which is what `RegisterAccountHandler`'s
+  remarks and [registration.md](registration.md) both promised. **It could not be done, and the
+  promise is corrected rather than kept.** Judging `email_verified` there needs either a
+  `ClaimsPrincipal` inside `Application` — against the rule that keeps `System.Security.Claims` out of
+  that project, the reason the endpoint reads the two claim members off the principal at the call
+  site — or a member on `RegisterAccountCommand` for the answer to land in, which
+  [users-and-ownership.md](users-and-ownership.md) argues against by name: the verified-email claim is
+  read and never stored, and the command carries only the subject and the address precisely so there
+  is nowhere for it to go.
+- *An authorization requirement or a `RequireAssertion` on the group's policy* instead of an endpoint
+  filter. Both run earlier and both answer **403 with no title**, collapsing two refusals a caller
+  acts on differently into one untitled status.
+- *`JwtBearerEvents.OnTokenValidated`*, which runs earliest of all and can answer 401. Writing a
+  titled `ProblemDetails` from there needs `OnChallenge` written too, and the gate becomes a property
+  of the **scheme** rather than of the route — invisible to anybody reading the route table, which is
+  where every other rule about who may reach those two routes is declared.
+- *A new middleware reading a new marker.* It is the deleted middleware under another name: the same
+  opt-in metadata, the same silence when a group forgets it.
+
+**Accepted behaviour change:** a filter runs after model binding, so a caller sending an unverified
+address **and** a malformed body is now answered `400` where the middleware answered `401`. Nothing
+measures it. It is a worse order to be told things in, not a disclosure — a deserialization failure is
+a fact about the caller's own request.
+
+**Known gap, stated rather than hidden:** deleting `IUserRepository.TryAddAsync` removed the
+**mis-attribution control** the repository-attribution census cited by name — a test staging an
+unrelated unique violation into that method's two-index catch filter, proving the filter did not claim
+violations it should let escape. `RegistrationRepository` narrows on the same two index names,
+`IX_users_email` and `IX_credentials_provider_subject`, and has **no equivalent control at any layer**.
+Its own census entry argued the missing control was cheap because three of its four indexes are keyed
+on a user id derived for that one registration — and that argument does not cover these two, which are
+keyed on values a stranger holds, which is the whole point of both rules. A control closed a gap and a
+deletion partly reopened it.
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md),
+[registration.md](registration.md), [sessions.md](sessions.md), [erasure.md](erasure.md),
+[export.md](export.md), [recovery-codes.md](recovery-codes.md), [passkeys.md](passkeys.md),
+[budgets.md](budgets.md),
+[ADR 0019](../decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md),
+[ADR 0021](../decisions/0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md).
+
+---
+
 ## 2026-08-14 — A recovery factor is one code, not one set of ten
 
 **Context:** the entry below records wrapping the account's two keys under every recovery factor. It

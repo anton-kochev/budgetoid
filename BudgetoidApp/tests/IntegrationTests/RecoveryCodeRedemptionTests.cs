@@ -677,13 +677,13 @@ public sealed class RecoveryCodeRedemptionTests
     /// <remarks>
     /// <para>
     /// <b>The row counts are the whole of this test.</b> A status assertion cannot tell a route that
-    /// refuses from a route that mints an account and <em>then</em> refuses — and a provider id token
-    /// stays valid for up to an hour after the account it names is erased, so a <c>ProvisionsUser</c>
-    /// marker arriving on this route would turn one retried redemption into a resurrected, passkey-less
-    /// account that the re-authentication gate in front of erasure can never remove again. This route must
-    /// never carry that marker, and it is a likelier accident here than on <c>/api/me</c>: this is the
-    /// route people reach for when they cannot get in, which reads a great deal like a route that should
-    /// be able to create something.
+    /// refuses from a route that mints an account and <em>then</em> refuses, and this is the route people
+    /// reach for when they cannot get in — which reads a great deal like a route that should be able to
+    /// create something. An account now comes into existence on exactly one path,
+    /// <c>POST /api/registration</c>; a redemption that started minting one would hand somebody who
+    /// presented an unknown code a brand-new, passkey-less account that the re-authentication gate in
+    /// front of erasure could never remove again. The counts are what would notice, and the state they
+    /// rule out is one no route table census can see, because there is no marker to read off it any more.
     /// </para>
     /// <para>
     /// <b>Counted unscoped, on the superuser connection.</b> The id an accidental marker would mint is one
@@ -693,19 +693,23 @@ public sealed class RecoveryCodeRedemptionTests
     /// is there exactly as it does for one that is not.
     /// </para>
     /// <para>
-    /// <b>The two title assertions are what make the counts mean anything.</b> An unmapped path answers
-    /// 404 and leaves the same empty tables behind, so the status is asserted first; and the refusal may
-    /// not be <see cref="UserProvisioningMiddleware.NoAccountTitle" />, because that title is the
-    /// middleware's answer to an authenticated principal it could not resolve — reaching it would mean the
-    /// route is <em>not</em> anonymous, and a genuine recovery sign-in from a browser holding a stale
-    /// provider token would be refused before the handler ever saw the code.
+    /// <b>The title assertion is what makes the counts mean anything.</b> An unmapped path answers 404
+    /// and leaves the same empty tables behind, so the status is asserted first; and the refusal may not
+    /// be <see cref="StatusCodeOnlyTitle" />, because that is what a caller gets when the authorization
+    /// middleware turns them away before the route is reached. Getting it here would mean the route is
+    /// <em>not</em> anonymous, and a genuine recovery sign-in — from somebody who by definition holds no
+    /// session — would be refused before the handler ever saw the code. There used to be a second
+    /// inequality beside it, against the provisioning middleware's title for an authenticated principal
+    /// it could not resolve; that middleware is gone, no request can be in that state, and the remaining
+    /// assertion covers the same failure from the only direction still reachable.
     /// </para>
     /// </remarks>
     [Test]
     public async Task Redemption_ForASubjectWithNoAccount_CreatesNothing()
     {
-        // Arrange — an authenticated client that has deliberately never called EstablishAccountAsync, on
-        // a host where nothing else has either.
+        // Arrange — a client carrying a provider token for a subject no account was ever created for,
+        // on a host where nothing else has one either. The token authenticates nothing on this route,
+        // which is the point: it is what a browser holding a stale bearer would still be sending.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = host.Factory.CreateAuthenticatedClient("google-redeeming-unprovisioned");
 
@@ -717,10 +721,7 @@ public sealed class RecoveryCodeRedemptionTests
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-
-        string title = await ReadTitleAsync(response);
-        await Assert.That(title).IsNotEqualTo(UserProvisioningMiddleware.NoAccountTitle);
-        await Assert.That(title).IsNotEqualTo(StatusCodeOnlyTitle);
+        await Assert.That(await ReadTitleAsync(response)).IsNotEqualTo(StatusCodeOnlyTitle);
 
         await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
         await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);

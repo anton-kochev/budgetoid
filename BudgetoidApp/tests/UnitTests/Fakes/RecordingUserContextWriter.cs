@@ -1,4 +1,4 @@
-using Application.Users.EnsureUser;
+using Application.Users;
 
 namespace UnitTests.Fakes;
 
@@ -25,10 +25,14 @@ public sealed class RecordingUserContextWriter : IUserContextWriter
     /// Every budget published, oldest first.
     /// </summary>
     /// <remarks>
-    /// Nothing in this project reads it yet — no handler publishes a budget, the middleware does, and the
-    /// middleware is not unit-testable here. Kept anyway rather than dropping the value on the floor: the
-    /// type's whole claim is that it keeps what it was handed, and a fake that silently discards half of
-    /// it is a fake that reads as green the first time a handler starts publishing budgets.
+    /// <b>A handler does publish the ambient budget now, and it is the one every request goes
+    /// through.</b> This remark used to say the opposite — that no handler published one and the
+    /// provisioning middleware did — and that stopped being true when the middleware was deleted and
+    /// <c>AuthenticateSessionHandler</c> became the only thing that names a tenant. Two of its tests
+    /// read this list, and one of them reads it for a value that must <em>not</em> be here: a handler
+    /// that threw on an account holding no budget must not have published a stranger's on the way out,
+    /// and an empty list is the whole assertion. That is why the list keeps refusals as faithfully as
+    /// it keeps successes, and why nothing here filters.
     /// </remarks>
     public IReadOnlyList<Guid> PublishedBudgets => _publishedBudgets;
 

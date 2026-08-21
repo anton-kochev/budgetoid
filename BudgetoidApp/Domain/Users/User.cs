@@ -12,21 +12,9 @@ public sealed class User
     public Email Email { get; private set; } = null!;
     public DateTime CreatedAtUtc { get; private set; }
 
-    public static User Create(string email, DateTime createdAtUtc)
-    {
-        Email emailValue = Email.Create(email);
-
-        return new User
-        {
-            Id = Guid.CreateVersion7(),
-            Email = emailValue,
-            CreatedAtUtc = createdAtUtc
-        };
-    }
-
     /// <summary>
-    /// Creates the account under an identifier the caller already holds, for the one path whose two
-    /// requests have to reach the same value without carrying it between them.
+    /// Creates the account under an identifier the caller already holds — the only way an account comes
+    /// into existence.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -39,11 +27,14 @@ public sealed class User
     /// account identifiers exist.
     /// </para>
     /// <para>
-    /// <b>A second factory rather than an optional parameter on <see cref="Create"/>.</b> Widening that
-    /// one would put a caller-chosen id on the path provisioning uses, where nothing distinguishes it
-    /// from the minted one: <c>OwnershipKeyImmutabilityTests</c> asks whether the key is written once,
-    /// not where the value came from, so the widening would redden nothing. Two factories make "which
-    /// path may name an account" a fact about the call site.
+    /// <b>The prohibition on minting an account anywhere else is a compile error rather than a doc
+    /// comment, and this is where it is spelled.</b> There used to be a second factory beside this one,
+    /// minting the id itself, so that "which path may name an account" was a fact about the call site;
+    /// six route groups carried a marker permitting them to reach it through a provisioning middleware.
+    /// All of that is gone. This type offers no way to obtain an account under an identifier nothing
+    /// derived, so a route that wanted to mint one would have to add a factory here first — which is
+    /// exactly the change a reviewer must see. Do not restore the minting factory to make a test or a
+    /// seeding helper shorter.
     /// </para>
     /// </remarks>
     /// <param name="id">The derived account identifier. Never <see cref="Guid.Empty"/>.</param>

@@ -295,7 +295,7 @@ public sealed class PasskeyRepositoryTests
         Guid userId = await host.SeedUserAsync("google-1", TakenEmail);
 
         await using BudgetoidDbContext db = CreateDb(host);
-        db.Users.Add(User.Create(TakenEmail, SeedInstant));
+        db.Users.Add(User.CreateWithId(Guid.CreateVersion7(), TakenEmail, SeedInstant));
         var repository = new PasskeyRepository(db);
 
         // The registration itself is flawless: a handle no row in the table carries, and a factor

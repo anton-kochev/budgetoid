@@ -2,10 +2,11 @@
 
 ## Business summary
 
-Budgetoid is a **personal budgeting app with no sharing**. A person signs in with Google, then
-records money movements so they can see where their money goes. There is no admin role and no
-multi-user visibility: everything a signed-in person reaches belongs to a **Budget** they own, and a
-budget belongs to exactly one user.
+Budgetoid is a **personal budgeting app with no sharing**. A person creates an account once, in a
+single consented act vouched for by Google and completed with a passkey, and signs in with that
+passkey afterwards; then they record money movements so they can see where their money goes. There is
+no admin role and no multi-user visibility: everything a signed-in person reaches belongs to a
+**Budget** they own, and a budget belongs to exactly one user.
 
 A user owns Budgets. A **Budget** owns **Accounts**, against which signed **Transactions** are
 recorded. A negative amount is money spent; a positive amount is money received. A Transaction can
@@ -21,7 +22,7 @@ does is itself a rule — see [budgets.md](budgets.md).
 Entity factories enforce the field rules the schema cannot state declaratively and application
 handlers enforce cross-entity rules, but whatever the schema can state, it owns: check constraints
 bound account type and money magnitude, composite foreign keys refuse a cross-budget reference
-whatever code path wrote it, and unique indexes are what make name uniqueness and provisioning
+whatever code path wrote it, and unique indexes are what make name uniqueness and account creation
 race-safe. Immutability is owned down there too: the application connects as a least-privilege role
 whose `UPDATE` privileges are granted per column, so a column left off the list — `budget_id` on
 every owned table, `accounts.currency_code`, `users.created_at_utc`, every column of `budgets` and
@@ -44,7 +45,7 @@ local one: each rule is owned by the lowest layer that can enforce it declarativ
 deliberately sits higher the doc says why — see
 [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The central tenancy
 invariant — the budget, not the user, is what everything belongs to — is documented in
-[budgets.md](budgets.md); identity and provisioning are in
+[budgets.md](budgets.md); identity, and the one act that brings it into existence, are in
 [users-and-ownership.md](users-and-ownership.md).
 
 ## Glossary
@@ -52,9 +53,9 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | Term | Definition |
 |---|---|
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. On the registration path that GUID is **derived from the ceremony's own challenge** rather than drawn at random, because it is also the WebAuthn user handle the authenticator stores — see [registration.md](registration.md). |
-| **Registration** | The one request that brings an account into existence on purpose: a caller the identity provider vouched for completes a WebAuthn ceremony, and the account, its budget, its three credentials, the passkey's key material, ten recovery-code hashes, eleven wrapped-key rows and the session it signs them in on all land in **one save, or none**. Distinct from **provisioning**, which still exists beside it — see [registration.md](registration.md). |
+| **Registration** | The one request that brings an account into existence, and the **only** one: a caller the identity provider vouched for completes a WebAuthn ceremony, and the account, its budget, its three credentials, the passkey's key material, ten recovery-code hashes, eleven wrapped-key rows and the session it signs them in on all land in **one save, or none**. See [registration.md](registration.md). |
 | **Session** | An established sign-in recorded server-side, naming the credential that established it, which the product can end without asking any external party. Four things establish one — a completed account registration, a verified passkey assertion, a redeemed recovery code, and a regeneration of a recovery-code set that was carrying live sessions, which opens one over the new set in their place. All four mint a handle and set the cookie; a request presenting it is authenticated from it, and `POST /api/me/session/revocation` ends it — see [sessions.md](sessions.md). |
-| **Session token** | The handle a session will be presented by — an opaque value stored as `SHA-256(token)` on `session_tokens`, a table of its **own**. It is separate from the session row because it is read *before* the request has an identity, and `sessions` is policed by a policy keyed on the very identity that read produces; everything decided *after* that answer — expiry, revocation — stays on the policed row. It travels in the `__Host-budgetoid-session` cookie, is minted by all four paths that establish a session, and is read on every request presenting one. It never appears in a response body — the cookie is `HttpOnly` so that nothing else is a handle. **One client screen receives one**: registration, whose response sets the cookie; nothing in the browser can read the value, and no other screen mints one. See [sessions.md](sessions.md) and [ADR 0019](../decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md). |
+| **Session token** | The handle a session will be presented by — an opaque value stored as `SHA-256(token)` on `session_tokens`, a table of its **own**. It is separate from the session row because it is read *before* the request has an identity, and `sessions` is policed by a policy keyed on the very identity that read produces; everything decided *after* that answer — expiry, revocation — stays on the policed row. It travels in the `__Host-budgetoid-session` cookie, is minted by all four paths that establish a session, and is read on every request presenting one. It never appears in a response body — the cookie is `HttpOnly` so that nothing else is a handle. **Two client screens receive one**: registration and the passkey sign-in on the welcome screen, each of whose responses sets the cookie; nothing in the browser can read the value. See [sessions.md](sessions.md) and [ADR 0019](../decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md). |
 | **First-party request** | A request carrying a non-empty `X-Budgetoid-Client` header, which every route but `GET /health` requires. The CSRF control a cookie makes necessary: no cross-site form can add a header, and its *value* is deliberately unchecked because a value would be a shared secret shipped to every client. It covers the anonymous routes too — those are the ones that set a cookie. See [sessions.md](sessions.md). |
 | **Passkey** | A WebAuthn discoverable credential held by the user's authenticator. One of the two credential types that open a session reaching budget content — see [passkeys.md](passkeys.md). |
 | **Recovery code** | A secret the account holder writes down, so that losing the authenticator does not mean losing the account. **Minted in the browser; the server never sees one** — what it stores is `SHA-256` of a verifier the client derived. Redeeming one deletes its row, and there is no third state — see [recovery-codes.md](recovery-codes.md). |
@@ -74,14 +75,13 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | **PRF** | The WebAuthn `prf` extension: a secret the authenticator derives and the server never sees. Requested at registration and **required** for one to complete — a registration completes only when the client reports a `prf` result that is present and true, so reporting nothing and reporting `enabled: false` are alike refused. The claim is the client's and unverifiable, so the refusal is a product gate rather than a control; the product stores nothing about it. See [passkeys.md](passkeys.md). |
 | **Relying party** | The site a passkey is bound to, named by its `rpId`. An authenticator signs over `SHA-256(rpId)`, so a credential registered here cannot be asserted anywhere else. |
 | **Locked session** | A session established from a federated credential. `federated` is the **only** credential type that cannot reach budget content, because an authorization exchange returns claims rather than a secret a client can turn into a key. |
-| **Full session** | The kind of session a credential the holder actually possesses opens: a passkey, held by their authenticator, or a set of recovery codes, which they wrote down. The key custody each is meant to carry is built and reaches a person on one path: an account created through registration has its keys wrapped under the passkey and under every one of its ten codes. An account minted by provisioning has none, and nothing in the browser opens one yet, so possession is still the whole of the reason the rule holds everywhere. Every path that establishes one gives 14 days — a completed `POST /api/registration`, a verified assertion on the sign-in leg, a spent code on `POST /api/recovery-codes/redemption`, and `POST /api/me/recovery-codes` when replacing a set ends any of that set's sessions. |
-| **Budget** | A coherent pool of money owned by one user, created for them at provisioning; the unit of tenancy and the thing that owns the money picture. |
+| **Full session** | The kind of session a credential the holder actually possesses opens: a passkey, held by their authenticator, or a set of recovery codes, which they wrote down. The key custody each is meant to carry is built and reaches every account there is: registration is the only way an account exists, and it wraps the account's keys under the passkey and under every one of its ten codes. Nothing in the browser *opens* one yet, so possession is still the whole of the reason the rule holds. Every path that establishes one gives 14 days — a completed `POST /api/registration`, a verified assertion on the sign-in leg, a spent code on `POST /api/recovery-codes/redemption`, and `POST /api/me/recovery-codes` when replacing a set ends any of that set's sessions. |
+| **Budget** | A coherent pool of money owned by one user, created for them in the save that creates their account; the unit of tenancy and the thing that owns the money picture. |
 | **Erasure** | Destroying an account and everything owned beneath it, so that no row in any table references the erased user or any budget it owned. Not a status and not a soft delete: nothing is marked, and no row survives to record that it happened — see [erasure.md](erasure.md). |
 | **Export document** | The single JSON object an export answers with: a schema version, the user record, and every budget the user owns, each carrying its accounts, category groups, categories, payees and transactions as nested arrays. Nothing in it is summarized, sampled or paged, and assembling it writes no row — see [export.md](export.md). |
 | **Schema version** | The integer identifying the shape of an export document. A saved file outlives the deployment that wrote it, so the version is the only thing telling a reader which shape they are holding. |
-| **Provisioning** | The step that turns an authenticated Google principal into an internal user and an ambient budget, run on every authenticated request. It **mints** an account only on the six route groups carrying `ProvisionsUser`, and such an account holds one federated credential and nothing that can read it. Still live beside [registration](registration.md), and removed in later work. |
-| **Unnamed budget** | The budget provisioning creates when a user owns none. It has no name — `name` is null — and a client shows its own localized label in place of one. A user has at most one of these; named budgets are unconstrained in number. The invariant keys on the *absence of a name* rather than on a "default" flag or a well-known name, which is what makes provisioning race-safe — see [budgets.md](budgets.md#business-rules--invariants). "Default budget" names the same row from the provisioning side (`Budget.CreateDefault`, "find-or-create the user's default budget"); prefer "unnamed budget" when the rule turns on the missing name. |
-| **Ambient budget** | The one budget a request is scoped to, resolved server-side at provisioning and read through `IBudgetContext`. Never supplied by the client. |
+| **Unnamed budget** | The budget registration creates in the account's own save. It has no name — `name` is null — and a client shows its own localized label in place of one. A user has at most one of these; named budgets are unconstrained in number. The invariant keys on the *absence of a name* rather than on a "default" flag or a well-known name, which is what makes it hold for a writer that does not exist yet — see [budgets.md](budgets.md#business-rules--invariants). "Default budget" names the same row from the factory's side (`Budget.CreateDefault`); prefer "unnamed budget" when the rule turns on the missing name. |
+| **Ambient budget** | The one budget a request is scoped to, read from the account while the request authenticates and exposed through `IBudgetContext`. Never supplied by the client. |
 | **Base currency** | A nullable ISO-4217 code on the Budget, reserved for a planning layer. Nothing writes it, so it is null on every Budget. |
 | **Account** | A budget-owned place money lives, denominated in one Currency. |
 | **Account Type** | `Checking`, `Savings`, `Cash`, or `CreditCard`; a label, not a state machine. |
@@ -108,7 +108,7 @@ the account's keys. See [sessions.md](sessions.md).
 Within their ambient budget a user manages
 Accounts, Category Groups, and Categories; records, lists, edits and deletes Transactions; lists
 Payees, creates them implicitly by naming one on a transaction, and renames them; and reads global
-Currencies. The budget itself is not manageable — it is provisioned, never configured. The same
+Currencies. The budget itself is not manageable — it arrives with the account, never configured. The same
 owner can download a complete copy of everything the server holds about them, can see the address
 the account is registered under, can issue themselves a set of recovery codes and ask how many are
 left, and can destroy the account outright; none of it is behind a support request.
@@ -142,8 +142,9 @@ references are additionally constrained by composite foreign keys to a row in th
 
 ## Table of contents
 
-- [Users & Ownership](users-and-ownership.md) — identity, claims, and provisioning.
-- [Registration](registration.md) — the one request that creates an account on purpose, the account
+- [Users & Ownership](users-and-ownership.md) — identity, the provider claims that gate its creation,
+  and how a request comes to name an account.
+- [Registration](registration.md) — the one request that creates an account, the account
   identifier it derives rather than chooses, and one of the four paths that open a session.
 - [Passkeys](passkeys.md) — the four WebAuthn ceremonies, and one of the four paths that open a
   session.

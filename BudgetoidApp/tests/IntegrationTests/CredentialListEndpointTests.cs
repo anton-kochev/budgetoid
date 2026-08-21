@@ -67,11 +67,19 @@ namespace IntegrationTests;
 /// No test here names a type the endpoint declares — no request record, no response record, no handler.
 /// They address the route over HTTP and read the wire body, so while the endpoint is unmapped they fail
 /// on the status assertion against a real 404 rather than failing to compile — which is the difference
-/// between a red test that is telling us something and one that is telling us nothing. What the
-/// arrangements do name is <see cref="CredentialType" />, to say which credential opens the seeded
-/// session, and <see cref="UserProvisioningMiddleware.NoAccountTitle" />, to tell this route's two
-/// refusals apart. Neither belongs to this endpoint's contract, so naming either cannot make a test
-/// agree with the thing it measures.
+/// between a red test that is telling us something and one that is telling us nothing. The one thing
+/// the arrangements do name is <see cref="CredentialType" />, to say which credential opens the seeded
+/// session; it does not belong to this endpoint's contract, so naming it cannot make a test agree with
+/// the thing it measures.
+/// </para>
+/// <para>
+/// <b>This route had two refusals and now has one, because the second state stopped existing.</b> An
+/// authenticated principal naming an account that did not exist was reachable while a provider bearer
+/// authenticated it — a token outlives the account it names by up to an hour — and the provisioning
+/// middleware answered it a distinctly titled 401 that a second test told apart from the anonymous
+/// one. This route now authenticates from the session cookie and nothing else, the cookie is only
+/// issued over a session row, and a session row is only written beside the account it names, so
+/// "authenticated, and no such account" is not a state the pipeline can be in.
 /// </para>
 /// </remarks>
 public sealed class CredentialListEndpointTests
@@ -529,69 +537,19 @@ public sealed class CredentialListEndpointTests
     }
 
     /// <summary>
-    /// An authenticated subject with no account behind it is refused, and the refusal writes nothing.
+    /// A caller carrying nothing is refused, which is now the whole of what this says.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// <b>The row counts are the half of this test that carries the weight.</b> A status assertion cannot
-    /// see the difference between a route that refuses and a route that mints an account and
-    /// <em>then</em> refuses — and a provider id token stays valid for up to an hour after the account it
-    /// names is erased, so a <c>ProvisionsUser</c> marker arriving on this group would turn one retried
-    /// <c>GET /api/me/credentials</c> into a resurrected, passkey-less account that the re-authentication
-    /// gate in front of erasure can never remove again.
-    /// </para>
-    /// <para>
-    /// <b>Counted unscoped, on the superuser connection.</b> The id an accidental marker would mint is one
-    /// no assertion here could name, so a count filtered to this subject would pass over the very row it
-    /// exists to catch — and <c>users</c>, <c>budgets</c> and <c>sessions</c> are policed by
-    /// <c>user_isolation</c>, which is <c>FOR ALL</c>, so a policed connection reports zero rows for a row
-    /// that is still there exactly as it does for one that was never written.
-    /// </para>
-    /// <para>
-    /// The title is asserted before the counts, because it is what makes them meaningful: it says the
-    /// request reached the provisioning middleware and was refused there. An unmapped path answers 404 and
-    /// leaves the same three empty tables behind, so the counts on their own prove nothing.
-    /// </para>
-    /// </remarks>
-    [Test]
-    public async Task Credentials_ForAnAuthenticatedSubjectWithNoAccount_IsRefusedAndCreatesNothing()
-    {
-        // Arrange — an authenticated client that has deliberately never called EstablishAccountAsync.
-        // Nothing under /api/me mints anything, so this subject has a valid token and no account behind
-        // it, which is exactly the state a token outliving an erasure leaves behind.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient("google-listing-unprovisioned");
-
-        await using NpgsqlConnection admin = new(host.ConnectionString);
-        await admin.OpenAsync();
-
-        // Act
-        HttpResponseMessage response = await client.GetAsync(CredentialsPath);
-
-        // Assert
-        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-        await Assert.That(await ReadTitleAsync(response))
-            .IsEqualTo(UserProvisioningMiddleware.NoAccountTitle);
-
-        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
-        await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);
-        await Assert.That(await ScalarAsync(admin, "select count(*) from budgets")).IsEqualTo(0L);
-    }
-
-    /// <summary>
-    /// A caller carrying no token at all is refused by the fallback policy, and the title says it was the
-    /// policy rather than the middleware.
-    /// </summary>
-    /// <remarks>
-    /// Two refusals answer 401 on this route and the status cannot tell them apart: the fallback
-    /// authorization policy turning an anonymous caller away before the route is reached, and the
-    /// provisioning middleware finding no account for an authenticated principal. Only the second carries
-    /// <see cref="UserProvisioningMiddleware.NoAccountTitle" />; the anonymous one is titled
-    /// <c>"Unauthorized"</c> from the status code alone, because <c>UseStatusCodePages</c> writes it with
-    /// no title of its own. Without the inequality, a route that had lost its authorization entirely still
-    /// passes here — an anonymous request would walk on to the provisioning middleware, find no account
-    /// for a principal it cannot even name, and be answered that middleware's 401. This is
-    /// <c>SignedInUserEndpointTests</c>'s shape, for the reason it gives.
+    /// <b>This test used to discriminate and now barely does, and that is stated rather than
+    /// hidden.</b> It carried a second assertion — that the title was not the provisioning middleware's
+    /// <c>NoAccountTitle</c> — and that inequality was the interesting half: without it, a route that
+    /// had lost its authorization entirely still passed, because an anonymous request would walk on to
+    /// the middleware, find no account for a principal it could not even name, and be answered the
+    /// middleware's own 401. There is no middleware and no second 401, so the inequality had nothing
+    /// left to rule out. What remains catches exactly one thing: the fallback policy being deleted, or
+    /// this group being marked <c>AllowAnonymous</c>, either of which answers this request <c>200</c>.
+    /// The second of those is also caught by <c>AnonymousSurfaceTests</c>, which reads the marker off
+    /// the route table; the first is caught by nothing else, because that test issues no request.
     /// </remarks>
     [Test]
     public async Task Credentials_WithoutAuthentication_IsRefusedWithUnauthorized()
@@ -599,15 +557,14 @@ public sealed class CredentialListEndpointTests
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
 
-        // Act — no subject header, so nothing authenticates and the fallback policy decides. GetAsync
-        // rather than GetStreamAsync: the latter throws on any non-2xx, so a route that answered 200 to an
-        // anonymous caller would fail as a transport error rather than as the status assertion it is.
+        // Act — no cookie and no token, so nothing authenticates and the fallback policy decides.
+        // GetAsync rather than GetStreamAsync: the latter throws on any non-2xx, so a route that
+        // answered 200 to an anonymous caller would fail as a transport error rather than as the status
+        // assertion it is.
         HttpResponseMessage response = await host.Factory.CreateClient().GetAsync(CredentialsPath);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-        await Assert.That(await ReadTitleAsync(response))
-            .IsNotEqualTo(UserProvisioningMiddleware.NoAccountTitle);
     }
 
     /// <summary>

@@ -363,7 +363,7 @@ public sealed class SessionCookieAuthenticationTests
     /// <remarks>
     /// <para>
     /// The invariant <c>IBudgetRepository.FindFirstForUserAsync</c> documents and
-    /// <c>ResolveUserHandler</c> already throws on: an account resolved with no budget is a broken row,
+    /// <c>AuthenticateSessionHandler</c> throws on: an account resolved with no budget is a broken row,
     /// not a state to be recovered from. What this test refuses is the recovery — a request that fell
     /// back to <em>some</em> budget would answer 200 with another tenant's rows, which is the one
     /// failure mode of this whole path that nobody would notice.

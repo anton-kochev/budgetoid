@@ -51,18 +51,18 @@ are injected as plain handlers (`ICommandHandler`/`IQueryHandler`); no MediatR d
 until decorators are needed. The API is ASP.NET Core minimal API on Azure Container Apps.
 Auth is live Google OAuth.
 
-**The budget is the unit of tenancy.** `UserProvisioningMiddleware` resolves the Google
-`sub` (via `ResolveUserHandler`) into a user id and default budget id on the scoped
-`CurrentUser`; `IBudgetContext` exposes the ambient budget. **Two paths create an account and
-they are not equivalent.** Through the middleware, **only a route carrying `ProvisionsUser`
-metadata may create one** — every other authenticated route resolves or answers 401 and writes
-nothing at all, so a token outliving an erasure cannot resurrect the row. An account, its first
-credential and its default budget are created in **one** `SaveChanges`; there is no heal, and a
-resolved account with no budget throws. That marker is opt-in on six route groups; adding it
-anywhere else needs the argument in
-[users-and-ownership.md](docs/business-logic/users-and-ownership.md). The other path is
-`POST /api/registration`, which creates nothing without a passkey and a card of recovery codes —
-see the registration bullet below and
+**The budget is the unit of tenancy.** `AuthenticateSessionHandler` resolves the session cookie into
+a user id and default budget id on the scoped `CurrentUser`; `IBudgetContext` exposes the ambient
+budget. **Exactly one path creates an account**: `POST /api/registration`, which creates nothing
+without a passkey and a card of recovery codes, and writes ~30 rows in **one** `SaveChanges`. There
+is no heal, and a resolved account with no budget throws. What makes "one path" a fact rather than a
+convention is that `RegisterAccountHandler` is the only code that brings an account into existence
+and **`User.Create` is deleted** — the surviving factory takes an id derived from the ceremony's own
+challenge, so minting an account with an id of one's choosing is a compile error rather than a
+prohibition in a comment. **An authenticated principal naming no account is not a state this pipeline
+can be in**: a cookie is only ever issued over a session row, so the handler answers `NoResult` and
+the request is challenged — a 401 indistinguishable from an anonymous one. See the registration
+bullet below and
 [registration.md](docs/business-logic/registration.md). Read
 [data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries.
 Load-bearing rules, each explained there or in the linked decision:
@@ -111,8 +111,9 @@ Load-bearing rules, each explained there or in the linked decision:
   covering the **anonymous** routes because those are the ones that set a cookie; an **ended** session
   authenticates on exactly one route, the one that ends sessions, marked with
   `AcceptsEndedSessionAttribute` and reaching no ambient budget even there; and the default scheme is
-  a **temporary** `Budgetoid.Bridge` policy scheme forwarding to the cookie when it is present and to
-  `JwtBearer` otherwise, deleted when sign-in leaves the identity provider. All **four** establishing
+  the cookie's, named **explicitly** by the fallback policy as well so the policy is readable off the
+  route table — `JwtBearer` stays registered and is reached by exactly one policy, registration's.
+  All **four** establishing
   paths now mint a handle and set the cookie, and three rules hold that: **`ISessionRepository.AddAsync`
   takes the session *and* its token with no overload taking a session alone**, so a handle-less session
   is unwritable and `ISessionTokenRepository` can stay read-only; **no response body carries the handle
@@ -136,10 +137,12 @@ Load-bearing rules, each explained there or in the linked decision:
   so it covers every route declaring no policy of its own — everything outside the anonymous surface
   and the registration group, which declares one naming the provider scheme and nothing else —
   and a route escapes with `AllowsLockedSessionAttribute`. The opted-out set is exactly
-  `POST /api/me/session/revocation`, read whole off the route table. **Opt-out, unlike its two
-  neighbours**: `ProvisionsUser` and `AcceptsEndedSession` are opt-in because a forgotten marker there
-  refuses something and is loud, while a forgotten opt-*in* here would hand budget content to a locked
-  session with nothing going red. It sits in the application because no declarative database rule
+  `POST /api/me/session/revocation`, read whole off the route table. **Opt-out, unlike its
+  neighbour**: `AcceptsEndedSession` is opt-in because a forgotten marker there refuses something and
+  is loud, while a forgotten opt-*in* here would hand budget content to a locked session with nothing
+  going red. Polarity follows from which mistake is audible, and that derivation — the only written
+  one in the codebase — was lifted into `AcceptsEndedSessionAttribute` before the third marker was
+  deleted. It sits in the application because no declarative database rule
   reaches it — `budget_isolation` cannot, since a live locked session resolves an ambient budget like
   any other, and `GET /api/me/export` reads user-owned `budgets` anyway — which is the
   [ADR 0002](docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) statement the rule owes.
@@ -147,20 +150,28 @@ Load-bearing rules, each explained there or in the linked decision:
   compare the text ordinally against what the parsed member renders as) because `Enum.TryParse` admits
   `"full"` case-insensitively and `"1"` under every overload; `SessionKindReach.ReadsBudgetContent` is
   the **one** definition and `Session.ReadsBudgetContent` calls it, so a kind added later cannot be
-  admitted by one caller and refused by the other; and a principal that authenticated on any scheme
-  **but** the cookie's satisfies the requirement outright — a deliberate, pinned hole that keeps every
-  bearer request working and leaves with the `Budgetoid.Bridge` scheme. Nothing establishes a locked
+  admitted by one caller and refused by the other; and the hole that let a principal from any other
+  scheme satisfy the requirement outright is **closed** — it existed to keep bearer requests working
+  and left with them, so a cookie principal carrying no kind claim is now a session this product did
+  not write. Nothing establishes a locked
   session today, so the gate is unreachable from any live route and is held entirely by tests that seed
   one through the database, each pairing its refusal with a `Full` session on the same account.
 - **Registration is one act and one transaction, and the account id is derived rather than chosen.**
   Two routes under `/api/registration`, authenticated by the **provider scheme and nothing else** —
-  not anonymous, because an account may not exist without a completed provider exchange. They escape
-  `UserProvisioningMiddleware`'s 401 through a **third** marker, `RegistersAccountAttribute`, whose arm
-  sits **below** the `sub`/`email` and `email_verified` gates and **above** the resolve and publishes
-  no identity. The finish leg writes ~30 rows across nine relations in **one `SaveChanges`** — three
+  not anonymous, because an account may not exist without a completed provider exchange. **That policy
+  is the only reason `JwtBearer` is still registered.** The `sub`/`email` and `email_verified` gates
+  ride an `IEndpointFilter`, `RegistrationClaimGate`, on that group — **not** in the Application ring,
+  which the handler and `registration.md` both once promised: judging `email_verified` there needs
+  either a `ClaimsPrincipal` in that project, which reading the two claim members at the endpoint
+  exists to prevent, or a member on the command for the answer to land in, which the ownership rules
+  refuse by name. The promise is corrected, not kept. A filter runs after model binding, so a caller
+  with an unverified address **and** a malformed body now gets 400 where the middleware gave 401 —
+  accepted, and a worse order to be told things in rather than a disclosure. The finish leg writes ~30
+  rows across nine relations in **one `SaveChanges`** — three
   credentials, eleven wrapped-key rows, the session and its token — and **no
-  `ITransactionalExecutor` may wrap it**, for the `22P02` reason `EnsureUserHandler` states at three
-  rows. `RegistrationAccountId.For(challenge)` is called by **both** legs over the same nonce, because
+  `ITransactionalExecutor` may wrap it**, for the `22P02` reason the handler now states inline, having
+  inherited it from the deleted provisioning handler.
+  `RegistrationAccountId.For(challenge)` is called by **both** legs over the same nonce, because
   `user.id` in the creation options is the WebAuthn user handle and the assertion path compares it
   byte-for-byte against `users.id`: disagree, and every later sign-in from that authenticator is
   refused permanently with no error naming the cause. It is derived **after** `ConsumeAsync`, never
@@ -273,7 +284,7 @@ Load-bearing rules, each explained there or in the linked decision:
   one budget's rows filed under another's id. Do not simplify it to `Count > 1`; that passes the
   second direction, which has its own test. A silent single-budget export is exactly the truncation
   the requirement forbids, and the throw is what a future reader will be tempted to "fix" into a
-  quiet success. It writes no row, logs no identifier, and carries no `ProvisionsUser`.
+  quiet success. It writes no row and logs no identifier.
   See [export.md](docs/business-logic/export.md).
 - `SessionContextInterceptor` must stay a **connection-opened** interceptor, and
   `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string —

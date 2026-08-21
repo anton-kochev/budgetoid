@@ -67,9 +67,9 @@ public sealed class GenerateRecoveryCodesHandler(
         //    second time, find the nonce already spent, and refuse a VALID request with the same 401
         //    an attacker gets, because the database blinked.
         //
-        // Identity is published by UserProvisioningMiddleware long before this line, so the connection
-        // is configured whenever it opens; the 22P02 ordering CompleteAssertionHandler states for its
-        // own gate is not what is going on here.
+        // Identity is published by AuthenticateSessionHandler, which the cookie scheme ran before the
+        // endpoint was reached, so the connection is configured whenever it opens; the 22P02 ordering
+        // CompleteAssertionHandler states for its own gate is not what is going on here.
         //
         // What rides on the gate is larger than on any other reauthenticated route: a set of recovery
         // codes is a full-session credential, so minting one on an unproven request hands the account
@@ -329,9 +329,9 @@ public sealed class GenerateRecoveryCodesHandler(
                 // THE 22P02 ORDERING REDEMPTION DOCUMENTS DOES NOT APPLY HERE, and a reader will look
                 // for it by analogy. RedeemRecoveryCodeHandler must publish the identity before its
                 // transaction opens, because the connection is configured on open and sessions is
-                // policed by user_isolation. On this route UserProvisioningMiddleware published the
-                // identity long before the handler was entered, so app.current_user_id is already on
-                // the connection whenever it opens.
+                // policed by user_isolation. On this route AuthenticateSessionHandler published the
+                // identity while the cookie was being authenticated, long before the handler was
+                // entered, so app.current_user_id is already on the connection whenever it opens.
                 //
                 // UNDER REPLAY THE RULE IS CONVERGENT. A second attempt sees its own committed set as
                 // the previous one, sweeps the session it opened itself, deletes, re-inserts and opens

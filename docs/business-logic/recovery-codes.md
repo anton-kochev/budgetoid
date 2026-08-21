@@ -238,10 +238,11 @@ erDiagram
     in the body would each be a value the server would have to ignore or trust, and trusting one would
     let an anonymous caller choose whose code is matched. What establishes the identity is the row the
     presented verifier hashes to.
-    - **Consequence a reader will trip on**: a browser interceptor that attaches a bearer to every
-      request will attach one here. A handler reading `IUserContext` for the account would find
-      nothing on a genuine recovery sign-in and *something* on that request, and the something is the
-      wrong account.
+    - **Consequence a reader will trip on**: the client's interceptor attaches the session cookie to
+      every request it makes to this API, including this one. A handler reading `IUserContext` for
+      the account would find nothing on a genuine recovery sign-in — the person has no session,
+      which is why they are here — and *something* on a request made from a browser that still holds
+      one, and the something is the wrong account.
   - **Enforced in**: `RedeemRecoveryCodeCommand` carries the verifier and nothing else;
     `RedeemRecoveryCodeHandler` takes `IUserContextWriter` and never reads `IUserContext` for the
     account, publishing the id it found on the row. The permission itself is reviewable as a set
@@ -275,22 +276,25 @@ erDiagram
     reason: `RegisterAccountCommand` names no account either, but there the identity comes from a
     value **derived** from the ceremony's own challenge rather than from an ambient one, because there
     is no account yet to be ambient. See [registration.md](registration.md).
-- **No route in this area may carry `ProvisionsUser`, and none may ever gain it.**
+- **No route in this area may bring an account into existence, and none may ever gain the ability.**
   - **Why**: a provider id token stays valid for up to an hour after the account it names is erased,
     so a route that minted an account in order to answer a generation would let that stale token
     bring the account back **as a shell holding recovery codes** — strictly worse than the empty
     shell the erasure and export groups argue about, because a set of codes is a full-session
     credential, and because the resurrected account holds no passkey and can therefore never clear
-    the re-authentication gate in front of erasure again. Two of the three routes are easy to mark
-    by mistake for opposite reasons: the `GET` because a read looks harmless, and the **redemption**
-    because it is the route people reach for when they cannot get in, which reads a great deal like
-    a route that should be able to create something. On the redemption the marker would also do
-    nothing it appears to do — `UserProvisioningMiddleware` reads the anonymous arm first and
-    returns, so the two markers are mutually exclusive.
-  - **Enforced in**: `UserProvisioningRouteTests` holds the two markers disjoint;
-    `Redemption_ForASubjectWithNoAccount_CreatesNothing` counts `users`, `credentials`, `budgets`
-    and `sessions` unscoped afterwards, because the id an accidental marker would mint is one no
-    assertion could name.
+    the re-authentication gate in front of erasure again. Two of the three routes are the ones a
+    reader would wire it into for opposite reasons: the `GET` because a read looks harmless, and the
+    **redemption** because it is the route people reach for when they cannot get in, which reads a
+    great deal like a route that should be able to create something.
+  - **Enforced in**: nothing on these routes, and the ban survives while what enforces it changed.
+    It used to be the absence of a `ProvisionsUser` marker on each of them, held by a route-table
+    test. It is now that `RegisterAccountHandler` is the only code that creates an account and
+    `/api/registration` the only group that reaches it; the two authenticated routes here inherit a
+    fallback policy naming the session cookie scheme, so a provider bearer authenticates nothing on
+    them, and the redemption is anonymous.
+    `Redemption_ForASubjectWithNoAccount_CreatesNothing` still counts `users`, `credentials`,
+    `budgets` and `sessions` unscoped afterwards, and is now a pin on that structural claim rather
+    than on a marker's absence.
 - **A refusal on the redemption route MUST NOT carry anything that varies by cause.**
   - **Why**: absent member, not base64url, wrong width, past the ceiling, no such code, already
     spent, and a concurrent redemption of the same verifier all leave as one `401`, with one title
@@ -634,11 +638,12 @@ erDiagram
   the account's keys, a code the keys are wrapped under — now has its cryptography built, the write
   paths that store the result, **and one browser flow that produces it**: `/register` derives a
   key-encryption key from each of the ten codes it mints and files eleven wrapped pairs in the same
-  save as the account, so an account created there really does have its keys wrapped under both kinds
-  of secret. What is still missing is every other browser surface — nothing signs in with a passkey,
-  nothing redeems a code, nothing issues a replacement set — and an account minted by provisioning
-  has no wrapped keys at all. So custody is what makes the rule durable rather than what makes it
-  true of every account today; the schema can no longer hold a factor that carries none.
+  save as the account, so **every** account really does have its keys wrapped under both kinds of
+  secret — registration being the only way an account comes to exist. What is still missing is the
+  rest of the browser surface: nothing redeems a code and nothing issues a replacement set, and
+  nothing unwraps anything, because no route hands `wrapped_account_keys` back. So custody is what
+  makes the rule durable rather than what makes it true today; possession is still the whole of the
+  reason it holds.
   - **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule
     rather than a coincidence.** A set of codes is a secret its holder possesses exactly as an
     authenticator is, and reaches exactly as far, so a session that expired sooner here would
@@ -794,8 +799,9 @@ The gate runs to completion **outside** the transactional delegate, for the two 
 [erasure.md](erasure.md) states for its own: the nonce has to stay spent through a rollback, and the
 delegate is replayed under a retrying execution strategy, so a gate inside it would consume a second
 time and refuse a **valid** request with the same `401` an attacker gets because the database blinked.
-The `22P02` ordering that governs the sign-in path is **not** what is going on here — identity is
-published by `UserProvisioningMiddleware` long before the handler runs.
+The `22P02` ordering that governs the sign-in path is **not** what is going on here — this request
+presents a session, so its identity was published while it authenticated, long before the handler
+runs.
 
 The request that spends one code, where that ordering **is** what is going on:
 
@@ -912,12 +918,12 @@ ELSE                                                               ← first iss
   would mint a **persistent** factor that survives token rotation and password-style remediation
   entirely, which is a worse position than the one the codes were meant to improve. The consequence is
   a requirement on the client — it must push generation at or near passkey registration, when the
-  person still has the authenticator in their hand — and **on the registration path that requirement
-  is now met by the server**: `POST /api/registration` refuses without ten submissions, so an account
-  created there has never existed without a card. The gap survives on the other path. An account
-  minted by `UserProvisioningMiddleware` can hold a passkey and no codes indefinitely: the settings
-  screen states the count, so somebody who goes looking is told, and nobody who does not is ever
-  prompted.
+  person still has the authenticator in their hand — and **the server now meets it for every account
+  there is**: `POST /api/registration` refuses without ten submissions and is the only path that
+  creates an account, so no account has ever existed without a card. What survives is narrower: an
+  account whose ten codes are all spent, or whose card is lost, needs a passkey assertion to be issued
+  another. The settings screen states the count, so somebody who goes looking is told, and nobody who
+  does not is ever prompted.
 - **`CK_credentials_type_shape`'s `recovery_codes` arm is byte-identical to its `passkey` arm**, so
   that constraint **no longer discriminates between those two types**. That is deliberate: both are
   self-contained credentials with no issuer and no provider subject, so from that constraint's point of

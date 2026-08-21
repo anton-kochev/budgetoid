@@ -6,14 +6,14 @@ namespace Api.Infrastructure;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Opt-out, and it is the opposite of the two markers beside it on purpose.</b>
-/// <see cref="ProvisionsUserAttribute" /> and <see cref="AcceptsEndedSessionAttribute" /> are opt-in, and
-/// all three polarities are the fail-loud direction for their own rule. A forgotten opt-in marker
-/// refuses something that should have been allowed; a forgotten opt-out here is a 403 on a route that
-/// should have worked, which is just as loud and reaches somebody within a day. What would be silent is
-/// the inverse of this one: an opt-<em>in</em> gate whose forgotten marker admits a provider sign-in to
-/// budget content, with nothing anywhere going red. So the gate covers everything by default, and a
-/// route argues its way out.
+/// <b>Opt-out, and it is the opposite of the marker beside it on purpose.</b>
+/// <see cref="AcceptsEndedSessionAttribute" /> is opt-in, and both polarities are the fail-loud
+/// direction for their own rule — that attribute derives the rule and this one is where it comes out
+/// the other way. A forgotten opt-in marker there refuses something that should have been allowed; a
+/// forgotten opt-out here is a 403 on a route that should have worked, which is just as loud and
+/// reaches somebody within a day. What would be silent is the inverse of this one: an opt-<em>in</em>
+/// gate whose forgotten marker admits a provider sign-in to budget content, with nothing anywhere going
+/// red. So the gate covers everything by default, and a route argues its way out.
 /// </para>
 /// <para>
 /// <b>What it does not relax.</b> Nothing about whether the presented handle matched a session — that is

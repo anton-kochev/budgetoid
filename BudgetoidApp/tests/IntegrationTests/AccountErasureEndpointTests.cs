@@ -339,21 +339,31 @@ public sealed class AccountErasureEndpointTests
     /// <para>
     /// This replaces <c>Erase_CalledASecondTime_IsRefusedAndLeavesTheNewAccountIntact</c>, and the
     /// final assertion is inverted from that test's: it demanded exactly one <c>users</c> row after the
-    /// second call, and one row is the defect. A Google id token stays valid for up to an hour after
-    /// the account it names is gone, so the second request — a retry, a poll, a forgotten second tab —
+    /// second call, and one row is the defect. A Google id token stayed valid for up to an hour after
+    /// the account it named was gone, so the second request — a retry, a poll, a forgotten second tab —
     /// arrived authenticated and provisioning minted a whole new account for it: a <c>users</c> row
     /// carrying the address, a <c>credentials</c> row carrying the subject, and a default budget. That
     /// account then held no passkey, so the erasure gate refused it forever. Leaving stopped meaning
     /// leaving, and the wreckage was unerasable.
     /// </para>
     /// <para>
+    /// <b>The stale credential is now a session cookie rather than a provider token, and the arrangement
+    /// had to move with it.</b> This test used to hold a bearer client, because a bearer was the thing
+    /// that outlived the account. Nothing but the cookie authenticates this route now, and the cookie
+    /// outlives an erasure in a different and shorter way: the <c>session_tokens</c> row it is looked up
+    /// by is cascaded away with the account, so the handle names nothing and the second call is refused
+    /// by the authentication handler rather than by a middleware. The claim being made is the same one —
+    /// the second call is refused, and the refusal creates nothing — and the unscoped <c>users</c> count
+    /// at the end is still the only line that would see a resurrected account under a different id.
+    /// </para>
+    /// <para>
     /// The refusal itself is unchanged and is not the subject here: a 401 makes no claim about data, it
-    /// says the request did not prove who it was, which is true of a token naming an account that no
+    /// says the request did not prove who it was, which is true of a handle naming a session that no
     /// longer exists. What changed is that the refusal now writes nothing.
     /// </para>
     /// <para>
     /// The first call's 204 and the per-table zeros are kept deliberately, and they are the control: a
-    /// middleware that refused <b>every</b> erasure — before or after — would satisfy an empty
+    /// pipeline that refused <b>every</b> erasure — before or after — would satisfy an empty
     /// <c>users</c> table perfectly and would have destroyed the feature.
     /// </para>
     /// <para>
@@ -367,10 +377,11 @@ public sealed class AccountErasureEndpointTests
     public async Task Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount()
     {
         // Arrange
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient(Subject);
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid firstUserId, Guid firstBudgetId) =
+            await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        (Guid firstUserId, Guid firstBudgetId) = await FurnishAccountAsync(host, client, Subject);
+        await FurnishAccountAsync(host, client, Subject);
         await RegisterPasskeyAsync(client, device);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -389,14 +400,14 @@ public sealed class AccountErasureEndpointTests
         await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsGreaterThan(0L);
 
         // Act — one ceremony, answered twice. The second call posts the same body directly instead of
-        // beginning another ceremony: the options leg is itself an authenticated request on a route
-        // that mints nothing, so for a caller whose account is gone it answers 401 too, and the
+        // beginning another ceremony: the options leg is itself an authenticated request, so for a
+        // caller whose session row the erasure cascaded away it answers 401 too, and the
         // EnsureSuccessStatusCode inside it would end this test before its own assertion.
         AssertionResult assertion = await AuthenticateAsync(client, device, firstUserId);
         HttpResponseMessage first = await PostErasureAsync(client, assertion);
         HttpResponseMessage second = await PostErasureAsync(client, assertion);
 
-        // The same stale token knocking on the ceremony's own door, which is the request a retrying
+        // The same stale handle knocking on the ceremony's own door, which is the request a retrying
         // client actually makes first. Asserted separately because it is the one that used to provision.
         HttpResponseMessage retriedOptions =
             await client.PostAsync(ReauthenticationOptionsPath, content: null);
@@ -872,11 +883,11 @@ public sealed class AccountErasureEndpointTests
     /// request above authenticates from a session cookie rather than from a provider bearer.
     /// </summary>
     /// <remarks>
-    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for the two tests that assert
-    /// something about how a request proves who is asking:
-    /// <see cref="Erase_WithoutAuthentication_IsRefused" />, and
-    /// <see cref="Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount" />, whose whole subject is a
-    /// provider token still valid an hour after the account it names is gone.
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for the one test that
+    /// authenticates as nobody at all: <see cref="Erase_WithoutAuthentication_IsRefused" />, which makes
+    /// its request through <c>CreateClient</c> and so is decided by the fallback policy either way.
+    /// <see cref="Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount" /> used the plain host too while
+    /// its stale credential was a provider token; it is a session cookie now, and it moved here.
     /// </remarks>
     private static async Task<PostgresTestHost> StartSignedInHostAsync()
     {

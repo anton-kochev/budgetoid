@@ -322,7 +322,7 @@ public sealed class EraseAccountHandlerTests
             InMemoryTransactionRepository transactions = new();
             InMemoryUserRepository users = new(transactions);
 
-            User user = User.Create("person@example.com", UtcNow);
+            User user = User.CreateWithId(Guid.CreateVersion7(), "person@example.com", UtcNow);
             if (seedUser)
             {
                 users.Seed(user, Credential.CreateFederated(

@@ -9,10 +9,9 @@ public static class PayeeEndpoints
 {
     public static IEndpointRouteBuilder MapPayeeEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        // One of the six groups allowed to bring an account into existence; why the permission is
-        // opt-in is in ProvisionsUserAttribute, why it sits on the group in AccountEndpoints.
-        RouteGroupBuilder group = endpoints.MapGroup("/api/payees")
-            .WithMetadata(new ProvisionsUserAttribute());
+        // Brings no account into existence, and cannot: RegisterAccountHandler is the only code that
+        // does, behind /api/registration. AccountEndpoints carries the argument.
+        RouteGroupBuilder group = endpoints.MapGroup("/api/payees");
 
         group.MapGet("/", async (GetPayeesHandler handler, CancellationToken cancellationToken) =>
         {

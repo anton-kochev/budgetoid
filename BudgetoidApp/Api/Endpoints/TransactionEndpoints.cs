@@ -14,10 +14,9 @@ public static class TransactionEndpoints
 {
     public static IEndpointRouteBuilder MapTransactionEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        // One of the six groups allowed to bring an account into existence; why the permission is
-        // opt-in is in ProvisionsUserAttribute, why it sits on the group in AccountEndpoints.
-        RouteGroupBuilder group = endpoints.MapGroup("/api/transactions")
-            .WithMetadata(new ProvisionsUserAttribute());
+        // Brings no account into existence, and cannot: RegisterAccountHandler is the only code that
+        // does, behind /api/registration. AccountEndpoints carries the argument.
+        RouteGroupBuilder group = endpoints.MapGroup("/api/transactions");
 
         group.MapPost("/", async (
             CreateTransactionCommand command,

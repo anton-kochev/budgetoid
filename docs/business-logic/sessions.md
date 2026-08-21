@@ -29,12 +29,13 @@ establishing paths mint a handle and set the cookie; a request presenting it is 
 it, publishing the account and the ambient budget; and `POST /api/me/session/revocation` ends it. The
 loop is closed on the server.
 
-**One of the four paths has a screen; three do not.** `/register` runs its ceremony from a page, so a
-person really does complete it, receive the cookie and go on to be authenticated from it. The other
-three are reached today only by the integration suite — nothing in the browser signs in with a
-passkey, redeems a code, or regenerates a set — and every request the app makes outside registration
-still carries the identity provider's ID token. The first gotcha below carries what that means for
-reading the rest of this file.
+**Two of the four paths have a screen; two do not.** `/register` runs its creation ceremony from a
+page and `/welcome` runs the assertion, so a person really does complete either, receive the cookie
+and go on to be authenticated from it. The other two are reached today only by the integration
+suite — nothing in the browser redeems a code or regenerates a set. **Every request this app makes is
+now authenticated from the cookie**: the identity provider is contacted once, on the registration
+screen, and a bearer presented to any other route authenticates nothing at all. The first gotcha below
+carries what that means for reading the rest of this file.
 
 ## Key Entities
 
@@ -598,18 +599,26 @@ database holds, and the sentence above is what makes it one-to-one in fact.
     reaches it, which makes the application the lowest capable layer; within the application, an
     authorization policy is the declarative mechanism the framework provides and the only one a
     route-table test can read whole.
-  - **Opt-out, and the polarity is the argument.** `ProvisionsUser` and `AcceptsEndedSession` are
-    opt-**in** because a forgotten marker there refuses something — loud, and filed within a day. Here
+  - **Opt-out, and the polarity is the argument.** `AcceptsEndedSession` — now the only opt-**in**
+    marker in the product, since `ProvisionsUser` left with the middleware that read it — is opt-in
+    because a forgotten marker there refuses something: loud, and filed within a day. Here
     both directions are loud, but only one is loud in the *right* direction: a forgotten opt-out is a
     `403` on a route that should have worked, while an opt-**in** gate whose marker was forgotten
     hands budget content to a locked session with nothing going red. So the gate covers everything by
-    default and a route argues its way out.
+    default and a route argues its way out. **The derivation is what matters, not the tally**: which
+    polarity a marker takes follows from which of its two failures is audible, and a marker added later
+    is decided by asking that question rather than by counting how many of each exist.
 - **Enforced in**: `FullSessionRequirement` and its handler, carried on the fallback authorization
-  policy in `Program.cs` beside `RequireAuthenticatedUser` — so it reaches every route declaring no
+  policy in `Program.cs` beside `RequireAuthenticatedUser` and beside the **session cookie scheme,
+  named explicitly** — so it reaches every route declaring no
   policy of its own, which is everything outside the anonymous surface and the **registration** group.
   That group declares a policy naming the identity provider's scheme, which takes it out of the
   fallback; the outcome is right rather than worked around, because a caller with no session at all
-  gives a requirement about session kinds nothing to judge. Routes opt out with
+  gives a requirement about session kinds nothing to judge. Naming the scheme on the fallback restates
+  the default and is worth the line twice over: it makes the fallback readable off the route table the
+  way `RegistrationRouteTests` already reads the registration group's, and it means a later change of
+  default cannot silently move every route that declares nothing onto some other handler. Routes opt
+  out with
   `AllowsLockedSessionAttribute`; the opted-out set is exactly `POST /api/me/session/revocation`,
   read whole off the route table by `LockedSessionTests`, the way `AnonymousSurfaceTests` reads the
   anonymous one. The kind claim is judged by a **round trip** — parse, then compare the presented
@@ -623,14 +632,15 @@ database holds, and the sentence above is what makes it one-to-one in fact.
     `Federated` and the federated path mints no cookie. Every test seeds the session and its handle
     directly through the database, and each refusal is paired with a `Full` session on the same
     account against the same route — without that arm, a policy refusing everybody passes.
-  - **One temporary hole, deliberate and pinned.** A principal that authenticated on any scheme but
-    the cookie's satisfies the requirement, claim or no claim. Sign-in still runs through the identity
-    provider, so every request arriving on a Google bearer comes in through the `Budgetoid.Bridge`
-    scheme carrying no session and therefore no kind; a requirement refusing what it did not find
-    would refuse the whole product. It is not a new hole — that surface is exactly as reachable as
-    before — and it leaves with the bridge, at which point
-    `FullSessionRequirementTests.APrincipalFromAnotherScheme_Succeeds` goes red and that redness is
-    the reminder.
+  - **The temporary hole this rule used to carry is closed.** A principal that authenticated on any
+    scheme but the cookie's used to satisfy the requirement outright, claim or no claim, because the
+    default scheme was a bridge forwarding a bearer-bearing request to `JwtBearer` — such a principal
+    carried no session and therefore no kind, and a requirement refusing what it did not find would
+    have refused the whole product. The bridge is deleted and the fallback names the cookie scheme, so
+    `AuthorizationMiddleware` re-authenticates against that handler alone. **A principal arriving here
+    with no kind claim is therefore a cookie principal that does not have one — a session this product
+    did not write — and it is refused.** The one policy that still names the provider's scheme is the
+    registration group's, which declares itself and so never reaches this requirement at all.
 - **Example**: `POST /api/me/session/revocation` answers `204` to a locked session; `GET
   /api/accounts`, `GET /api/me`, `GET /api/me/export`, `GET /api/me/credentials` and `POST
   /api/me/erasure` each answer `403` with a body identical to the others and naming no session,
@@ -740,9 +750,11 @@ enumerated spelling makes at the database — see the first rule above.
   not to want them: an origin wildcard plus credentials is every site on the internet reading this
   API as the signed-in person.
 - **[Users & Ownership](users-and-ownership.md), on the pipeline order** — `FirstPartyRequestMiddleware`
-  runs after CORS and before authentication, then `UserProvisioningMiddleware` runs after
-  authentication and returns immediately for a request the cookie already spoke for. The provisioning
-  middleware and everything it reads are deleted when sign-in leaves the identity provider.
+  runs after CORS and before authentication, and **nothing runs between authentication and
+  authorization** any more. The middleware that used to turn a provider token into an account is
+  deleted, along with the markers it read; the cookie handler is the default scheme and the identity
+  is published while authenticating, so the request that reaches a route delegate already names an
+  account that certainly exists.
 - **`SessionContextInterceptor`** — **not** about a session in this file's sense. It writes
   `app.current_user_id` and `app.current_budget_id` onto each PostgreSQL connection the context
   opens; the PostgreSQL backend session and a `Domain.Sessions.Session` share a word and nothing
@@ -761,9 +773,10 @@ enumerated spelling makes at the database — see the first rule above.
   request that browser makes to this API is authenticated from the cookie. The two paths differ in
   one way worth stating: sign-in touches the identity provider not at all. The other two establishing
   routes still have no screen — nothing presents a recovery code or regenerates a set — so they are
-  reached only by the integration suite, and every request the app makes on any other path still
-  carries the Google ID token it is handed, as
-  [users-and-ownership.md](users-and-ownership.md) describes.
+  reached only by the integration suite. **There is no longer any path on which a request is
+  authenticated by anything but the cookie**, the two registration routes aside; the client still
+  attaches a bearer while it holds an id token, and no route but those two reads it. See
+  [users-and-ownership.md](users-and-ownership.md).
   - **The handle never appears in a response body.** The cookie is `HttpOnly` precisely so that
     nothing else is a handle; no response record carries a token or a session id, and
     `SessionTokenSecrecyTests` is a census over every type a route serialises so a record added later
@@ -786,22 +799,20 @@ enumerated spelling makes at the database — see the first rule above.
     belongs to the attempt that survived. **Registration has no delegate at all** — no transaction
     wraps its write, for the `22P02` reason [registration.md](registration.md) states — so there the
     question does not arise.
-  - **The API's default authentication scheme is a temporary bridge**, `Budgetoid.Bridge`, a policy
-    scheme that forwards to the cookie handler when the cookie is present and to `JwtBearer`
-    otherwise. It exists so the whole existing surface keeps working while this area lands one commit
-    at a time, and it is deleted when sign-in moves off the identity provider entirely. A request
-    carrying both is treated as a session request, which is the safe direction rather than an
-    arbitrary one: the cookie is a credential this product issued and can end, the provider token is
-    the one it cannot.
+  - **The session cookie is the API's default authentication scheme, and the temporary bridge that
+    stood in front of it is gone.** `Budgetoid.Bridge` was a policy scheme forwarding to the cookie
+    handler when the cookie was present and to `JwtBearer` otherwise, and it existed so the whole
+    existing surface kept working while this area landed one commit at a time. `JwtBearer` stays
+    registered and is reached by exactly **one** policy — the registration group's — so a bearer
+    presented anywhere else authenticates nothing and the request is answered the same `401` an
+    anonymous one gets.
 
-- **`sub` means two different things depending on how the request authenticated, and nothing brings
-  the two together.** On the cookie path it is this installation's own account id; on the bearer path
-  `UserProvisioningMiddleware` reads it as a provider subject. They stay apart because that
-  middleware returns immediately for a request whose identity is already published — and it tests the
-  **published state**, not which scheme ran, so the session path cannot be re-provisioned by any edit
-  short of deleting that arm, and the next scheme that publishes an identity inherits the rule
-  without being named. If the two ever did meet, the collision fails closed: a GUID resolves to no
-  federated credential and the request is refused rather than answered as somebody else.
+- **`sub` means one thing now: this installation's own account id.** It meant two while a bearer could
+  authenticate an ordinary route — an account id on the cookie path, a provider subject on the bearer
+  path — and nothing brought the two together. The bearer path is gone from every route but the two
+  under `/api/registration`, and those publish no identity at all: the handler derives the account id
+  from the ceremony's own challenge and publishes it after the signature verifies. So there is no
+  longer a request on which the two spellings could meet.
 
 - **A refused request can leave an identity published behind it.** When a token's digest matches but
   the session is dead, `app.current_user_id` names the account whose handle really did match, on a

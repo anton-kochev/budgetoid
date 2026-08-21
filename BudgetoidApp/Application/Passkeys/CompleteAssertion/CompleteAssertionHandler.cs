@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using Application.Abstractions;
 using Application.Passkeys.Verification;
 using Application.Sessions;
-using Application.Users.EnsureUser;
+using Application.Users;
 using Domain.Common;
 using Domain.Sessions;
 using Domain.Users;
@@ -21,9 +21,9 @@ namespace Application.Passkeys.CompleteAssertion;
 /// This handler never reads <see cref="IUserContext"/> for the account, and the rule survives its own
 /// reason. A caller may present a valid provider bearer token <i>and</i> call this endpoint; the account
 /// this ceremony signs in to is whichever one the verified passkey belongs to, which need not be the one
-/// that token names. The endpoint is anonymous, so user provisioning returns on the route's marker and
-/// publishes nobody — but the account is still taken from the credential rather than from the request,
-/// which is what keeps the property from depending on where the middleware's anonymous arm sits.
+/// that token names. The endpoint is anonymous, so nothing has published an identity by the time this
+/// runs — but the account being taken from the credential rather than from the request is a property of
+/// this handler and not of the route's marker, which is the point.
 /// </para>
 /// </remarks>
 public sealed class CompleteAssertionHandler(
@@ -92,9 +92,9 @@ public sealed class CompleteAssertionHandler(
 
         // 2. The discovery read — a statement that runs with no identity on the connection and names no
         //    owner, the shape the challenge consume above and RedeemRecoveryCodeHandler's lookup also
-        //    have. Both legs of this ceremony are anonymous routes, and user provisioning returns
-        //    on that marker before it resolves anyone, so app.current_user_id is still '' whatever token
-        //    accompanied the request. This may therefore touch no policed table, and making this read
+        //    have. Both legs of this ceremony are anonymous routes, so nothing has authenticated and
+        //    app.current_user_id is still '' whatever credential accompanied the request. This may
+        //    therefore touch no policed table, and making this read
         //    safe is what passkey_public_keys is exempt from row-level security for (ADR 0012) — the
         //    exemption answers the read, not the route, and holds however the request arrived. The
         //    handle is all the caller supplied; the answer is what will establish who is asking.

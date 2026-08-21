@@ -28,13 +28,13 @@ Identity itself — who a person is, and which credentials prove it — lives in
 opens once it has answered lives in [sessions.md](sessions.md). This file covers **the act**: its two
 routes, the order its checks run in, and the one value it derives rather than chooses.
 
-**Two things are true today that a reader must hold together.** The path is whole on both sides: the
+**This is the only way an account comes to exist**, and the path is whole on both sides: the
 `/register` screen runs the ceremony, draws the account's keys, mints the card, wraps both keys under
 all eleven factors and posts the account, and a person who completes it is signed in on the session
-that request opened. And the older way in is still live: `UserProvisioningMiddleware` still mints an
-account from any authenticated request reaching one of six marked route groups, and an account minted
-that way holds one federated credential and no way to read itself. Every invariant below is stated as
-what **this path** establishes. See the first gotcha.
+that request opened. Nothing else writes a `users` row — the middleware that used to mint one from any
+authenticated request is deleted, and so is the domain factory it called. So every invariant below,
+stated as what **this path** establishes, is also a claim about every account in the schema. See the
+first gotcha.
 
 The client's half of this act — the order it does things in, what it does with each answer, and the
 one refusal it cannot tell apart — is the run of rules at the end of *Business Rules & Invariants*.
@@ -59,8 +59,10 @@ What the screen looks like is the **Registration** chapter of
 - **`RegistrationOutcome`** — `SubjectTaken`, `Registered`, `EmailTaken`, `AuthenticatorTaken`,
   `FactorTaken`. `SubjectTaken` is `0` so that `default` is a **refusal**, the fail-closed direction
   `CredentialType` and `SessionKind` already take.
-- **`RegistersAccountAttribute`** — endpoint metadata declaring that a request here legitimately
-  resolves to nobody. **It publishes no identity, and that absence is the marker.**
+- **`RegistrationClaimGate`** — the `IEndpointFilter` on the group that judges `sub`, `email` and
+  `email_verified`, with a distinct title for each of its two refusals. It carries no value out: the
+  route delegate reads the two claim members off the principal itself, so nothing plumbed through the
+  filter can disagree with what the handler is given.
 - **`RegistrationResponse`** — one member, and it describes the sign-in: `{"session": {"kind": "full",
   "expiresAtUtc": …}}`. Nested rather than flattened, so that widening it later cannot produce "kind
   present, expiry absent".
@@ -95,28 +97,33 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
   policy.**
   - **Why**: an account cannot exist without a completed provider exchange, and the scheme is what
     enforces that. Naming it is also what makes `AuthorizationMiddleware` re-authenticate against the
-    provider's handler rather than against whatever the default resolves to — today a policy scheme
-    forwarding a cookie-bearing request to the session handler, so without the name a browser already
-    holding a session could create an account nobody's provider vouched for. Declaring a policy at all
+    provider's handler rather than against the default, which is the session cookie's — so without the
+    name a browser already holding a session could create an account nobody's provider vouched for,
+    and no bearer would be read at all. Declaring a policy at all
     takes both routes out of the **fallback** policy and therefore out of `FullSessionRequirement`,
     which is correct rather than worked around: this caller holds no session, so a rule about what
     kind of session may read budget content has nothing to judge.
+    - **This policy is the only reason `JwtBearer` is still registered.** Nothing defaults to it, and
+      no other route names it, so a provider bearer presented anywhere else authenticates nothing:
+      the cookie handler answers `NoResult` and the request gets the same `401` an anonymous one
+      gets. That is what makes "an authenticated caller with no account" unreachable everywhere else
+      — structurally, rather than by a check some route could forget.
   - **Enforced in**: `RegistrationEndpoints`, one `RequireAuthorization` call on the group, over
     `ProviderAuthentication.SchemeName` — a name rather than the `JwtBearer` literal, because "did the
     provider vouch for this caller?" and "which handler validates the bearer" are the same value only
-    until sign-in leaves the identity provider.
+    until sign-in leaves the identity provider. `RegistrationRouteTests` reads the group's scheme off
+    the route table, so it cannot be widened quietly.
 
-- **The route group MUST carry `RegistersAccount`, and MUST NOT carry `ProvisionsUser`.**
-  - **Why**: `UserProvisioningMiddleware` runs before the endpoint's own policy, so without the marker
-    a provider principal with no account is refused `NoAccountTitle` before the handler is entered.
-    The two markers on one route is a contradiction the middleware cannot honour — it reads this one
-    first and returns, so the find-or-create arm is never reached, and the route would create nothing
-    while declaring that it may.
-  - **Enforced in**: `.WithMetadata(new RegistersAccountAttribute())` on the group, and the arm in
-    `UserProvisioningMiddleware` that returns on it. Its position is load-bearing in both directions:
-    **below** the `sub`/`email` and `email_verified` claim gates, so a registration route is still
-    subject to them; **above** the resolve, because a caller about to register has by definition no
-    account to resolve.
+- **Both routes MUST carry `RegistrationClaimGate`, declared on the group.**
+  - **Why**: the policy says which scheme may speak for this caller; the gate says what that scheme
+    has to have said. An account may not exist without a completed provider exchange, and it may not
+    exist under an address that exchange declines to vouch for. It runs on **both** legs because the
+    options leg is the one that mints the challenge the account identifier is derived from.
+  - **Enforced in**: `.AddEndpointFilter<RegistrationClaimGate>()` beside the group's
+    `RequireAuthorization`, read off the route table rather than opted into with a marker — a marker
+    would rebuild the deleted provisioning middleware under another name, with the same silence when a
+    group forgets it. The two refusal titles must stay distinct from each other;
+    `RegistrationClaimGateTests` is what holds that.
 
 - **The account identifier MUST be derived from the ceremony's own challenge, and MUST be derived only
   after the challenge store has answered.**
@@ -234,17 +241,46 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
 
 ---
 
-- **Rule**: **Three rungs of the ladder are not here, and they are the first three.** That the request
-  carries a live provider token, that the principal has a `sub` and an `email`, and that the provider
-  asserts the address as verified are all judged by `UserProvisioningMiddleware`, above this handler
-  and above the route's own policy.
+- **Rule**: **Three rungs of the ladder are not in the handler, and they are the first three.** That
+  the request carries a live provider token is judged by the group's own **policy**; that the
+  principal has a `sub` and an `email`, and that the provider asserts the address as verified, are
+  judged by `RegistrationClaimGate`, an **endpoint filter on the same group**. Both sit above the
+  handler and neither is in the Application ring.
 - **Why**: that is why the two claim members arrive **on the command** rather than being re-read in the
   handler. The empty-string fallback the endpoint uses when reading them is not a second gate: it
   exists so the expression has a total answer rather than a null-forgiving operator asserting a rule
-  enforced two middlewares away, and an empty address reaches `Email.Create` and is refused there.
-- **Enforced in**: the claim gates in `UserProvisioningMiddleware`, which sit **above** the
-  `RegistersAccount` arm. The three come down into the Application ring in the commit that deletes the
-  middleware, and they land at the top of this ladder.
+  enforced one filter away, and an empty address reaches `Email.Create` and is refused there.
+  - **This file, and `RegisterAccountHandler`'s own remarks, promised those three would "come down
+    into the Application ring in the commit that deletes the middleware, and land at the top of this
+    ladder". That promise could not be kept, and it is corrected rather than fulfilled.** Judging
+    `email_verified` in that ring needs one of two things and it may have neither. A
+    `ClaimsPrincipal` inside `Application` is against the rule this file already states where the
+    endpoint reads the two claim members off the principal at the call site — the rule that keeps
+    `System.Security.Claims` out of that project altogether. A member on `RegisterAccountCommand` for
+    the answer to land in is argued against by name in
+    [users-and-ownership.md](users-and-ownership.md): the verified-email claim is read and never
+    stored, and the command carries only the subject and the address precisely so there is nowhere for
+    it to go. What is left is the boundary that already holds the principal.
+  - **Three earlier positions were each refused, and the reasons are not interchangeable.** A
+    `RequireAssertion` on the policy and a custom `IAuthorizationRequirement` both answer **403 with
+    no title**, collapsing two refusals a caller acts on differently — *your token is unusable* and
+    *your provider does not vouch for this address* — into one untitled status.
+    `JwtBearerEvents.OnTokenValidated` runs earliest and *can* answer 401, but a titled
+    `ProblemDetails` from there needs `OnChallenge` written too, and the gate then becomes a property
+    of the **scheme** rather than of the route, invisible to anybody reading the route table. And a
+    new middleware reading a new marker is the deleted one under another name.
+  - **One accepted behaviour change, recorded because nothing measures it.** A filter runs after model
+    binding, so a caller sending an unverified address **and** a malformed body is now answered `400`
+    by the framework where the middleware answered `401`. It was put to the repository owner and
+    accepted. The cost is worth saying plainly: such a caller learns their body is wrong before they
+    learn their address was never going to be accepted, which is a worse order to debug in. It is
+    **not** a disclosure — a deserialization failure is a fact about the caller's own request and says
+    nothing about what this server stores or about whose address is registered.
+- **Enforced in**: `RegistrationEndpoints`, on the group — one `RequireAuthorization` naming the
+  provider scheme and one `AddEndpointFilter<RegistrationClaimGate>()`.
+  `RegistrationClaimGateTests` is now the only thing holding the two claim rules; it stayed green
+  through the middleware's deletion, which is what proved the filter was carrying them rather than
+  duplicating them.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -295,9 +331,9 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
   it, by re-reading the federated credential — and that re-read is sound because a reported unique
   violation means the conflicting transaction committed, so a winning credential on this subject is
   visible by now. Finding none proves the email alone collided.
-  - **The race winner is never adopted**, which is where this path diverges from provisioning's own
-    race. Adopting would sign the caller into an account **their brand-new passkey cannot open** — the
-    winning account holds the winner's factors, not theirs.
+  - **The race winner is never adopted**, which is where this path diverges from the way the deleted
+    provisioning path handled the same race. Adopting would sign the caller into an account **their
+    brand-new passkey cannot open** — the winning account holds the winner's factors, not theirs.
   - **The re-read runs on `credentials`**, which is exempt from row-level security, so it is unaffected
     by the identity published at rung 13 naming a row that was never written.
 - **Enforced in**: `RegistrationRepository` filters four catches on
@@ -315,6 +351,17 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
     just spent — so no other row can share it. `PK_users` is not narrowed either: at 122 bits off a
     single-use nonce, two registrations reaching one account identifier is not chance, and reporting it
     as any of the four would be a sentence about the wrong thing.
+  - **Two of the four catches have lost their mis-attribution control, and it has not been replaced.**
+    The repository-attribution census cited by name a test that staged an **unrelated** unique
+    violation into `IUserRepository.TryAddAsync`'s two-index catch filter, proving the filter did not
+    claim violations it should let escape. That method is deleted and the test with it. These four
+    catches include the same two index names and there is **no equivalent control at any layer** —
+    nothing stages a violation of a third rule into them and asserts it escapes. The census entry for
+    this repository argued the missing control was cheap because three of its four indexes are keyed on
+    a `user_id` derived for this one registration and therefore uncontendable. That argument is sound
+    and it **does not cover these two**: `IX_users_email` and `IX_credentials_provider_subject` are
+    keyed on values a stranger holds, which is the entire point of both rules. A control closed a gap;
+    a deletion partly reopened it.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -506,7 +553,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → ChallengeIssued | `POST /api/registration/options` | a live provider token on the named scheme; `sub`, `email` and `email_verified` from the middleware. `POST` rather than `GET` because it persists a nonce, so it is neither safe nor idempotent and a `GET` would be cacheable and prefetchable |
+| → ChallengeIssued | `POST /api/registration/options` | a live provider token on the named scheme; `sub`, `email` and `email_verified` from `RegistrationClaimGate` on the same group. `POST` rather than `GET` because it persists a nonce, so it is neither safe nor idempotent and a `GET` would be cacheable and prefetchable |
 | ChallengeIssued → Consumed | `POST /api/registration` | the nonce must exist, be unexpired, and name the **`AccountRegistration`** pool — one undifferentiated refusal covering never issued, already spent, expired, and any of the other three pools |
 | Consumed → Verified | `PasskeyRegistrationVerifier.Verify` | client-data type; origin by equality; not cross-origin; `SHA-256(rpId)`; user present **and** verified; attestation `none`; algorithm offered and supported; key strength; the signature |
 | Verified → Accepted | rungs 6 to 11 | `prf` reported present and true; `factorId` in the one canonical spelling; both envelopes exactly 61 bytes at version 1; ten submissions, every verifier and every factor identifier distinct; the passkey's identifier differing from all ten |
@@ -591,10 +638,10 @@ ELSE consume the nonce — from here every outcome has burnt it
 - **[Sessions](sessions.md)** — the **fourth** thing that establishes a session, and like the other
   three it mints a handle and sets the cookie.
 - **[Users & Ownership](users-and-ownership.md)** — the account, its credentials, and the invariant
-  this path establishes that the older provisioning path does not.
+  this path establishes, which is now the invariant of every account there is.
 - **[Budgets](budgets.md)** — the nameless default budget, created in the same save.
-- **`UserProvisioningMiddleware`** — the marker arm, its position, and the fact that the middleware is
-  still live and still mints on six other route groups.
+- **`RegistrationClaimGate`** — the two claim rules, why they sit at this boundary rather than in the
+  Application ring, and the `400`-before-`401` ordering that placement accepts.
 - **`FirstPartyRequestMiddleware`** — both routes require a non-empty `X-Budgetoid-Client` header like
   every route but `GET /health`. That control covers this surface for the reason it covers the
   anonymous one: these are routes that **set a cookie**.
@@ -609,15 +656,12 @@ ELSE consume the nonce — from here every outcome has burnt it
 
 - **What is built and what is not.** Both routes exist, the whole write is tested, and a person can
   reach them: `/register` runs the ceremony and posts the account, and the response really does sign
-  them in. A returning person now signs in with that passkey from `/welcome`, and the provider is not
-  contacted on that path at all. What is **not** built beside it is the rest of the client's passkey
-  surface — nothing registers a second passkey, and nothing runs the fresh assertion the erasure,
-  revocation and recovery-code-generation gates need — so every other request the app makes still
-  carries the provider's ID token. And the older way in is **still live**:
-  `UserProvisioningMiddleware` still mints an account from any authenticated request to one of six
-  marked route groups, and such an account holds one federated credential, no passkey and no codes.
-  Read every invariant in this file as what *this path* establishes, never as a claim about every
-  account in the schema.
+  them in. A returning person signs in with that passkey from `/welcome`, and the provider is not
+  contacted on that path at all. **There is no second way in any more** — the provisioning middleware
+  is deleted, so every invariant in this file is a claim about every account in the schema. What is
+  **not** built beside it is the rest of the client's passkey
+  surface: nothing registers a second passkey, and nothing runs the fresh assertion the erasure,
+  revocation and recovery-code-generation gates need.
 - **Somebody who already has an account is walked all the way to a `409`, and that is the accepted
   cost of not having an oracle.** The welcome screen now offers two ways in, and **Create account** is
   the Primary of the two, so an existing account holder who reaches for it rather than for **Sign in
@@ -666,15 +710,11 @@ ELSE consume the nonce — from here every outcome has burnt it
   client refused for its authenticator, its payload or a lost race must return to the options leg for a
   fresh nonce — and a fresh nonce means a **different account identifier**, which is why the factor
   conflict's sentence says to mint a fresh identifier and wrap the keys again rather than to retry.
-- **`RegistersAccount` and `ProvisionsUser` on one route is silent in the direction that matters.** The
-  markers answer questions that read as compatible — "this route serves callers who have no account"
-  and "this route may bring one into existence" — and the middleware reads this one first and returns.
-  The route would then create nothing while declaring that it may, and the failure is invisible to
-  everyone who already has an account.
 - **The `null` arm on the cookie write is unreachable and is written as a pattern anyway.** A
   registration that returns has established a session. The alternative is a null-forgiving operator
   asserting a rule that lives in another project, and the shape matches the three other establishing
   legs.
-- **`RegistersAccountAttribute` is deleted in the commit that deletes the middleware** — the same
-  commit that collapses the six provisioning markers, since registration having become a consented act
-  is what makes the rest of them unnecessary.
+- **A caller whose token is fine and whose body is not now learns about the body first.** The claim
+  gate is an endpoint filter, and a filter runs after model binding, so an unverified address plus a
+  malformed payload answers `400` where it used to answer `401`. Accepted, unmeasured, and recorded
+  under the ladder rule above so nobody reads it as a regression somebody missed.

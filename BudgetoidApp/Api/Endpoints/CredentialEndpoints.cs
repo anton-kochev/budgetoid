@@ -22,9 +22,14 @@ public static class CredentialEndpoints
         // No metadata of its own. Authentication comes from the application's fallback policy, which
         // covers every route declaring nothing, so restating RequireAuthorization here would make the
         // one line that defines the anonymous surface stop being the only one — and AllowAnonymous
-        // must never appear. No ProvisionsUser either, and it must never gain one: minting an account
-        // to answer a revocation would let a provider token that outlives an erasure bring the account
-        // back as an empty shell, and an authenticated subject with no account is refused instead.
+        // must never appear.
+        //
+        // IT MINTS NO ACCOUNT, and that is a compile-time fact: RegisterAccountHandler is the only
+        // code that brings one into existence, the only caller of the only factory the domain offers,
+        // and it is reachable only from POST /api/registration/registration — the provider scheme, a
+        // verified passkey attestation, and a challenge from the AccountRegistration pool. The reason
+        // it must stay that way: minting to answer a revocation would let a provider token outliving
+        // an erasure bring the account back as an empty shell.
         //
         // ==================================================================================
         // TWO ID SPACES SHARE ONE WORD IN THIS REQUEST, AND THEY ARE NEVER COMPARED.
@@ -62,9 +67,9 @@ public static class CredentialEndpoints
         });
 
         // Declares no metadata either, and for the reasons stated above the revocation: the fallback
-        // policy authenticates it, and a ProvisionsUser marker here would let a provider token that
-        // outlives an erasure — valid for up to an hour after it — resurrect the account as an empty
-        // shell on a plain GET.
+        // policy authenticates it, and this read creates nothing — a plain GET able to resurrect an
+        // account for a provider token that outlives an erasure by up to an hour would be the worst
+        // shape of that mistake, and registration being the only creating path is what rules it out.
         group.MapGet("/credentials", async (
             ListCredentialsHandler handler,
             CancellationToken cancellationToken) =>

@@ -56,8 +56,9 @@ public sealed class FirstPartyRequestMiddleware(RequestDelegate next)
 
     /// <summary>
     /// The one sentence a refused request receives. Public so a test can pin it, and distinct from
-    /// every titled refusal <see cref="UserProvisioningMiddleware" /> produces: the corrective action
-    /// here is "send the header", which no other refusal on this path asks for.
+    /// every other titled refusal on this path — <see cref="RegistrationClaimGate" />'s two and
+    /// <c>PasskeyVerificationExceptionHandler</c>'s: the corrective action here is "send the header",
+    /// which none of the others asks for.
     /// </summary>
     public const string Title = "Request did not come from a first-party client.";
 

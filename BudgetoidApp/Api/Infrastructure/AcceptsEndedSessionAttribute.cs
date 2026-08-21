@@ -15,10 +15,22 @@ namespace Api.Infrastructure;
 /// also nothing left to protect on that request: the session it names has already ended.
 /// </para>
 /// <para>
-/// <b>Opt-in, for <see cref="ProvisionsUserAttribute" />'s reason.</b> Under opt-out, "which routes
-/// accept a dead handle" would be "everything nobody thought about", and the route added next is
-/// exactly the one nobody reviews for this. A group that forgets the marker refuses a dead handle,
-/// which is the safe direction and is loud.
+/// <b>Opt-in — and this is where the polarity rule itself is derived, because a marker is not chosen
+/// by taste.</b> The rule is: pick the polarity whose <em>forgotten</em> marker fails loudly, and the
+/// two directions are never symmetric. Under opt-out, "which routes accept a dead handle" would be
+/// "everything nobody thought about", so a route added later admits one on sight and nothing anywhere
+/// says so — a permission granted by silence, discovered by nobody. Under opt-in the same forgetfulness
+/// refuses a dead handle: wrong, but wrong in the direction that returns a status somebody notices and
+/// that grants nothing on the way past. What decides the polarity is therefore which mistake is
+/// audible, never which reads tidier at the route.
+/// </para>
+/// <para>
+/// A deleted marker used to make the same derivation about account creation, where the two directions
+/// were even further apart: an opt-out minting permission would have let a browser still holding a
+/// provider token resurrect an erased account through a plain <c>GET</c>. The rule survived that
+/// marker's deletion because it was never about minting. <see cref="AllowsLockedSessionAttribute" />
+/// applies it and comes out the other way, which is the demonstration that it is a rule rather than a
+/// preference for opt-in.
 /// </para>
 /// <para>
 /// <b>What it does not grant.</b> The handle still has to name a real session belonging to the account
@@ -31,8 +43,9 @@ namespace Api.Infrastructure;
 /// sign-out route carries both markers because it needs both answers, not because one implies the other.
 /// </para>
 /// <para>
-/// Read purely as endpoint metadata, like <see cref="ProvisionsUserAttribute" />, and read by the
-/// authentication handler rather than by an authorization policy. The distinction is forced rather than
+/// Read purely as endpoint metadata, like <see cref="AllowsLockedSessionAttribute" /> beside it, and
+/// read by the authentication handler rather than by an authorization policy. The distinction is
+/// forced rather than
 /// chosen: an ended session that authenticated and then failed a policy would be answered <c>403</c>,
 /// and a presented handle that is no longer good is a <c>401</c> — it is the credential that is
 /// wanting, not the permission.

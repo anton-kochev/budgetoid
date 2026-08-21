@@ -17,8 +17,9 @@ namespace Application.Registration;
 /// </para>
 /// <para>
 /// <b>It reads no <see cref="IUserContext"/>, because there is nobody to read.</b> Every other ceremony
-/// on this surface takes its account off the request; this leg's whole premise is that the request
-/// resolves to no account, which is what <c>RegistersAccountAttribute</c> declares to the middleware.
+/// on this surface takes its account off the request; this leg's whole premise is that the caller has
+/// no account yet. Nothing publishes an identity for it either: the route's policy names the provider
+/// scheme, which authenticates a token and resolves nothing in this installation.
 /// </para>
 /// <para>
 /// <see cref="PasskeyCreationOptions"/> is reused whole rather than copied into a record of this

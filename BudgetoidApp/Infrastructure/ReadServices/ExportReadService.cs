@@ -40,7 +40,8 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         Guid userId,
         CancellationToken cancellationToken = default)
     {
-        // budgets carries no BudgetIsolation query filter — it is what provisioning writes before any
+        // budgets carries no BudgetIsolation query filter — it is what registration writes and what
+        // session authentication reads before any
         // budget is ambient — so this predicate is the only read-side scoping there is, and the
         // user_isolation policy is what enforces it. Do not drop it on the grounds that the policy
         // covers it: the policy makes a wrong query answer empty, not correct.

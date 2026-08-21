@@ -156,8 +156,11 @@ query filter sitting over the same row.
   version list or lock file to lean on either.
 - **Business logic in an endpoint.** The composition guard reads parameter *types*; an endpoint that
   takes the right handler and then does the wrong thing in its body is invisible to it. "No business
-  logic in Api" has no reflective signature, and the one crisp part of it — which routes may mint an
-  account — is already held by `UserProvisioningRouteTests`.
+  logic in Api" has no reflective signature, and the one crisp part of it — which routes may create an
+  account — is no longer a rule any test has to hold: `Domain.Users.User` offers one factory, it takes
+  an identifier derived from a ceremony's own challenge, and its one caller is
+  `RegisterAccountHandler`. A route that wanted to create an account would have to add a factory to
+  the Domain first.
 - **A port an endpoint reaches without declaring.** Reading signatures means three routes walk past
   the composition guard: `HttpContext.RequestServices.GetRequiredService<IAccountRepository>()` in
   the body, a port among the members of an `[AsParameters]` struct, and a port captured in a closure.

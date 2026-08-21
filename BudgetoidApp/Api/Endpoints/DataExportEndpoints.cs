@@ -13,10 +13,16 @@ public static class DataExportEndpoints
         // principal for the same reason the erasure does.
         RouteGroupBuilder group = endpoints.MapGroup("/api/me");
 
-        // No ProvisionsUserAttribute, and it must not gain one. An export is a read, and a route that
-        // minted an account in order to answer it would hand a stale provider token — one that stays
-        // valid for up to an hour after the account it names is erased — a way to bring the account
-        // back as an empty shell. An authenticated subject with no account is refused instead.
+        // AN EXPORT IS A READ AND IT MINTS NOTHING, which is now structural rather than declared.
+        // RegisterAccountHandler is the only code in the application that brings an account into
+        // existence — the only caller of the only factory the domain offers — and it is reachable only
+        // from POST /api/registration/registration, behind the provider scheme, a verified passkey
+        // attestation and a challenge drawn from the AccountRegistration pool. No metadata added here
+        // could put minting back.
+        //
+        // The reason is worth keeping beside it: a route that minted to answer an export would hand a
+        // provider token outliving an erasure by up to an hour a way to bring the account back as an
+        // empty shell.
         //
         // No RequireAuthorization either: the application's fallback policy already covers every route
         // that declares nothing, and restating it here would make the one line that defines the

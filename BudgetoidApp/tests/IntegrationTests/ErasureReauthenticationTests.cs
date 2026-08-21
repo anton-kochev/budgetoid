@@ -399,8 +399,8 @@ public sealed class ErasureReauthenticationTests
     /// <para>
     /// The obvious shape — post the identical request twice for the same account — no longer measures
     /// single use at all. The first post returns 204 and destroys the account, so the replay arrives
-    /// with a provider token that outlives the erasure by up to an hour, naming an account that no
-    /// longer exists, and <c>UserProvisioningMiddleware</c> turns it away one step <b>before</b> the
+    /// carrying a session handle whose row the erasure cascaded away, naming an account that no longer
+    /// exists, and the cookie handler turns it away one step <b>before</b> the
     /// ceremony. That refusal is identical whether the nonce is single use or not, which makes it no
     /// evidence.
     /// </para>

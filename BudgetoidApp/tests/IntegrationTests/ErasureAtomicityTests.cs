@@ -326,14 +326,11 @@ public sealed class ErasureAtomicityTests
     /// Fails the second of the erasure's two saves, leaving everything before it to run for real.
     /// </summary>
     /// <remarks>
-    /// A <b>decorator</b> over the real repository rather than a bare stub, and the reason is the
-    /// erasure request itself rather than only the seeding. The erasure route carries no
-    /// <c>ProvisionsUser</c> metadata, so <c>UserProvisioningMiddleware</c> resolves it through
-    /// <c>ResolveUserHandler</c>, which calls
-    /// <see cref="IUserRepository.FindUserIdByFederatedCredentialAsync" /> <b>on the erasure request</b>.
-    /// A stub answering <see langword="null" /> there produces a 401 before the handler is ever
-    /// reached, and the test then reads as a broken fixture rather than as an atomicity failure.
-    /// <c>TryAddAsync</c> is reached separately, by the one route group allowed to mint an account.
+    /// A <b>decorator</b> over the real repository rather than a bare stub, and the reason is that
+    /// every member but the one under test has to keep working for the request to arrive at all. The
+    /// erasure path reads <see cref="IUserRepository.FindUserIdByFederatedCredentialAsync" />, and a
+    /// stub answering <see langword="null" /> there refuses the request before the handler is ever
+    /// reached — whereupon the test reads as a broken fixture rather than as an atomicity failure.
     /// </remarks>
     /// <param name="attempts">
     /// The tally the refused calls are recorded on. It is a parameter, and so an object the test owns
@@ -373,14 +370,6 @@ public sealed class ErasureAtomicityTests
             string subject,
             CancellationToken cancellationToken = default) =>
             inner.FindUserIdByFederatedCredentialAsync(provider, subject, cancellationToken);
-
-        // Delegated for real too: this is what mints the account every one of these tests seeds.
-        public Task<bool> TryAddAsync(
-            User user,
-            Credential credential,
-            Budget defaultBudget,
-            CancellationToken cancellationToken = default) =>
-            inner.TryAddAsync(user, credential, defaultBudget, cancellationToken);
 
         // Non-transient on purpose. An NpgsqlException would be replayed by
         // NpgsqlRetryingExecutionStrategy, which runs the whole transactional delegate again and turns

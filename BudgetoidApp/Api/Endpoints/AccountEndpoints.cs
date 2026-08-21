@@ -14,18 +14,18 @@ public static class AccountEndpoints
 {
     public static IEndpointRouteBuilder MapAccountEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        // The marker that allows an authenticated request on this group to bring an account into
-        // existence. Six groups carry it — accounts, transactions, categories, category groups, payees,
-        // currencies. Why the permission is opt-in is in ProvisionsUserAttribute; why the set is
-        // exactly six, including the one member that reads no tenant data, is in CurrencyEndpoints.
+        // NOTHING ON THIS GROUP MAY BRING AN ACCOUNT INTO EXISTENCE, and after this commit that is a
+        // compile-time fact rather than a marker anybody has to remember. RegisterAccountHandler is the
+        // only code in the application that creates one, User.CreateWithId is the only factory it can
+        // reach, and both are behind POST /api/registration/registration — a route that needs the
+        // provider scheme, a verified attestation, and a challenge drawn from the AccountRegistration
+        // pool. There is no metadata a group could gain that would put minting back here.
         //
-        // On the GROUP rather than on each route, so the whole minting surface of the application is six
-        // greppable lines a reviewer can hold in their head at once. That is the same argument
-        // PasskeyEndpoints already makes for keeping the anonymous surface in one visible place, and it
-        // is worth more here: what a route may create is harder to infer from reading its handler than
-        // what it may read.
-        RouteGroupBuilder group = endpoints.MapGroup("/api/accounts")
-            .WithMetadata(new ProvisionsUserAttribute());
+        // Six groups used to carry a ProvisionsUser marker so that a first authenticated request could
+        // mint. It is gone with the middleware that read it: the session cookie is issued only over a
+        // row, so an authenticated request naming an account that does not exist is not a state this
+        // product can reach.
+        RouteGroupBuilder group = endpoints.MapGroup("/api/accounts");
 
         group.MapPost("/", async (
             CreateAccountCommand command,

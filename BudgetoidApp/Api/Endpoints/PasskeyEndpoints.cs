@@ -78,10 +78,9 @@ public static class PasskeyEndpoints
         });
 
         // The sign-in legs. Anonymous on the group, because sign-in is the one exchange that by
-        // definition runs before anyone is signed in. UserProvisioningMiddleware needs no exclusion
-        // list for this — it reads this very marker off the route and returns above its claim gate, so a
-        // provider bearer a client interceptor attached changes nothing about these two legs, and an
-        // exclusion list would be a second place the anonymous surface is defined.
+        // definition runs before anyone is signed in. Nothing anywhere carries a list of routes to
+        // skip: an exclusion list would be a second place the anonymous surface is defined, and
+        // AnonymousSurfaceTests reads this very marker off the route table to hold the first one whole.
         RouteGroupBuilder anonymous = endpoints.MapGroup("/api/passkeys").AllowAnonymous();
 
         anonymous.MapPost("/assertion/options", async (
@@ -159,9 +158,14 @@ public static class PasskeyEndpoints
     /// past the prf gate, rather than by a framework 400 raised before anything signed was judged.
     /// </para>
     /// <para>
-    /// This route gains no <c>ProvisionsUser</c> metadata and may never: a provider id token outlives
-    /// the account it names by up to an hour, so a registration able to mint one would let a stale token
-    /// resurrect an erased account — here as a shell holding a passkey <em>and</em> a copy of the
+    /// <b>This route registers a passkey on an account that already exists, and it may never create
+    /// one.</b> It cannot: <c>RegisterAccountHandler</c> is the only code in the application that
+    /// brings an account into existence — the only caller of <c>User.CreateWithId</c>, which is the
+    /// only factory the domain offers — and it is reachable only from
+    /// <c>POST /api/registration/registration</c>. The prohibition is stated because the consequence is
+    /// severe rather than because anything here is close to breaking it: a provider id token outlives
+    /// the account it names by up to an hour, so a passkey registration able to mint would let a stale
+    /// token resurrect an erased account as a shell holding a passkey <em>and</em> a copy of the
     /// account keys, which is a working way back in rather than an empty row.
     /// </para>
     /// </remarks>

@@ -119,7 +119,7 @@ public sealed class SecurityHeaderTests
     /// <para>
     /// <b>The lever.</b> <c>BeginAssertionHandler</c>'s registration is replaced with one that throws on
     /// resolve, and the request is <c>POST /api/passkeys/assertion/options</c> — an anonymous route, so
-    /// <c>UserProvisioningMiddleware</c> returns above its claim gate and no database is touched, and the
+    /// authorization decides nothing and no database is touched, and the
     /// throw happens while the minimal API delegate is resolving its arguments, which is inside the
     /// exception handler's reach. <c>GlobalExceptionHandler</c> is registered last and claims anything no
     /// earlier handler wants, which is what makes the status 500.

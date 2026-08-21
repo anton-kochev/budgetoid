@@ -305,12 +305,12 @@ public sealed class CredentialRevocationTests
     /// <remarks>
     /// <para>
     /// <b>The consequence of losing the type predicate is the worst outcome in this story, and it is
-    /// silent.</b> The federated credential is the row <c>UserProvisioningMiddleware</c> resolves the
-    /// Google <c>sub</c> on. Let this route delete it and the very next request authenticates fine at
-    /// the provider, resolves to no account, and is answered 401 — every authenticated route, including
-    /// <c>/api/me/erasure</c>. The person is left with an account that holds their money, cannot be
-    /// reached, and cannot even be erased. Nothing in the database is corrupt and no error is logged;
-    /// the account simply becomes unreachable.
+    /// silent.</b> The federated credential is the row a registration wrote the account's provider
+    /// identity into, and the row a later provider exchange is matched against. Let this route delete
+    /// it and the account has no provider identity left: a repeat registration under the same
+    /// <c>sub</c> no longer conflicts with anything, so the address is registered twice under two
+    /// accounts, and the one holding the money is reachable only by the passkeys that survive. Nothing
+    /// in the database is corrupt and no error is logged; the row simply stops being there.
     /// </para>
     /// <para>
     /// <b>Two passkeys, because the floor must not be what answers.</b> An account standing on one
@@ -1009,22 +1009,23 @@ public sealed class CredentialRevocationTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Three refusals answer 401 on this route and the status cannot tell them apart: the fallback
-    /// authorization policy turning an anonymous caller away before the route is reached, the
-    /// provisioning middleware finding no account for an authenticated principal, and the
-    /// re-authentication gate refusing a proof. Only the middleware's carries
-    /// <see cref="UserProvisioningMiddleware.NoAccountTitle" /> and only the gate's carries
+    /// Two refusals answer 401 on this route and the status cannot tell them apart: the fallback
+    /// authorization policy turning an anonymous caller away before the route is reached, and the
+    /// re-authentication gate refusing a proof. Only the gate's carries
     /// <see cref="PasskeyVerificationExceptionHandler.Title" />; the anonymous one is titled
     /// <c>"Unauthorized"</c> from the status code alone, because <c>UseStatusCodePages</c> writes it
-    /// with no title of its own.
+    /// with no title of its own. That inequality is what rules out the door standing open: a route
+    /// reached anonymously and refused only by the ceremony would pass a status-only assertion, and that
+    /// would mean an unauthenticated caller reaching a handler at all.
     /// </para>
     /// <para>
-    /// Both inequalities, because each rules out a different way the door could be standing open.
-    /// Without the middleware one, a route that had lost its authorization entirely still passes here —
-    /// an anonymous request would walk on to the provisioning middleware, find no account for a
-    /// principal it cannot even name, and be answered that middleware's 401. Without the gate one, a
-    /// route reached anonymously and refused only by the ceremony would pass, and that would mean an
-    /// unauthenticated caller reaching a handler at all.
+    /// <b>There was a third refusal and a second inequality beside it, and both went with the
+    /// provisioning middleware.</b> An authenticated principal naming no account was answered a
+    /// distinctly titled 401, and without that inequality a route that had lost its authorization
+    /// entirely still passed here — an anonymous request would walk on to the middleware, find no
+    /// account for a principal it could not even name, and be answered the middleware's own 401. This
+    /// route now authenticates from a cookie only ever issued over a session row written beside the
+    /// account it names, so that state cannot be entered and there is nothing left to rule out.
     /// </para>
     /// <para>
     /// This is <c>SignedInUserEndpointTests</c>'s shape, for the reason it gives. The route names an id
@@ -1037,17 +1038,15 @@ public sealed class CredentialRevocationTests
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
 
-        // Act — no subject header, so nothing authenticates and the fallback policy decides.
+        // Act — no cookie and no token, so nothing authenticates and the fallback policy decides.
         HttpResponseMessage response = await host.Factory
             .CreateClient()
             .PostAsJsonAsync(RevocationPath(Guid.CreateVersion7()), new { });
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-
-        string title = await ReadTitleAsync(response);
-        await Assert.That(title).IsNotEqualTo(UserProvisioningMiddleware.NoAccountTitle);
-        await Assert.That(title).IsNotEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That(await ReadTitleAsync(response))
+            .IsNotEqualTo(PasskeyVerificationExceptionHandler.Title);
     }
 
     /// <summary>

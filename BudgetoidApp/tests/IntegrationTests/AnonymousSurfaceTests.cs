@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -6,7 +7,7 @@ namespace IntegrationTests;
 
 /// <summary>
 /// Every route this application serves without a token, read off the route table and compared against a
-/// written-out set.
+/// written-out set — and, for the two claims the route table cannot make, the requests that make them.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -25,10 +26,20 @@ namespace IntegrationTests;
 /// <em>and</em> the argument for it below.
 /// </para>
 /// <para>
-/// <b>Structural rather than behavioural</b>, for the reason <see cref="UserProvisioningRouteTests" />
-/// gives about its own marker: a sweep of unauthenticated requests could only report what happened on the
-/// routes it thought to try, while the permission is a property of the route table and has to be
-/// readable whole.
+/// <b>The set is pinned structurally, and the reason is that a sweep cannot pin a set.</b> A run of
+/// unauthenticated requests could only report what happened on the routes it thought to try, while the
+/// permission is a property of the route table and has to be readable whole. That is why
+/// <see cref="EveryAnonymousRoute_IsOneOfTheOnesArguedFor" /> reads <see cref="IAllowAnonymous" /> off
+/// the endpoints and issues no request at all.
+/// </para>
+/// <para>
+/// <b>Three tests below issue real requests, and they are not a duplicate of that one.</b> Reading the
+/// marker says a route is <em>declared</em> anonymous; it says nothing about whether the route answers
+/// <c>200</c> when reached that way, and for <c>/health</c> that is the entire claim the container
+/// platform depends on. Nor does it say what happens on the other side of the line — that a route
+/// carrying no marker refuses an unauthenticated caller with a body a client can read. They arrived here
+/// from a deleted <c>AuthenticationTests</c>, whose remaining tests were all about a provisioning
+/// middleware that no longer exists.
 /// </para>
 /// <para>
 /// <b>Production, and the environment is load-bearing.</b> <c>Program.cs</c> maps the OpenAPI document
@@ -59,7 +70,10 @@ public sealed class AnonymousSurfaceTests
     /// <c>/api/recovery-codes/redemption</c> — signing in with a recovery code, which by definition runs
     /// before anyone is signed in and, unlike the passkey exchange, cannot be made to run any other way:
     /// somebody redeeming a code has lost the authenticator that would have proved who they are. It
-    /// carries no <c>ProvisionsUser</c> and must never gain one. <b>Before it knows who is asking</b> it
+    /// creates no account and must never start: an account now comes into existence on exactly one
+    /// path, <c>POST /api/registration</c>, and a route that redeems a code for an account that no
+    /// longer exists must answer nothing rather than mint one.
+    /// <b>Before it knows who is asking</b> it
     /// does exactly two things: it decodes the presented verifier against an exact 32-byte ceiling, and
     /// it looks one <c>recovery_code_hashes</c> row up by <c>SHA-256</c> of it. That lookup is one of the
     /// three reads in the system naming no owner — the others being the passkey discovery lookup and the
@@ -134,5 +148,92 @@ public sealed class AnonymousSurfaceTests
         // The controls: the marker exists on this route table, and the route table was really read.
         await Assert.That(anonymousPatterns.Length).IsGreaterThan(0);
         await Assert.That(endpoints.Length).IsGreaterThan(anonymousPatterns.Length);
+    }
+
+    /// <summary>
+    /// A route carrying no anonymous marker refuses an unauthenticated caller, and says so in a body.
+    /// </summary>
+    /// <remarks>
+    /// <b>This became more load-bearing, not less, when the provisioning middleware went.</b> While it
+    /// stood, an unauthenticated request was turned away by a middleware that wrote its own titled
+    /// ProblemDetails; now nothing between the cookie handler and the endpoint writes anything, and the
+    /// refusal is produced entirely by the authorization middleware challenging the cookie scheme. The
+    /// content type is half the assertion for that reason: a bare <c>401</c> with an empty body is what
+    /// this path degrades to if the ProblemDetails registration is dropped, and every client in the
+    /// product reads the body.
+    /// </remarks>
+    [Test]
+    public async Task UnauthenticatedRequest_Returns401ProblemJson()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+
+        // Act
+        HttpResponseMessage response = await host.Factory.CreateClient().GetAsync("/api/transactions");
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(response.Content.Headers.ContentType?.MediaType).IsEqualTo("application/problem+json");
+    }
+
+    /// <summary>
+    /// <c>/health</c> really answers <c>200</c> to a caller holding nothing.
+    /// </summary>
+    /// <remarks>
+    /// The set test above proves the marker is declared on this pattern. It cannot prove the route
+    /// answers, and a health check that is anonymous and returns <c>503</c> fails a liveness probe just
+    /// as thoroughly as one that demands a token.
+    /// </remarks>
+    [Test]
+    public async Task Health_AllowsAnonymous()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+
+        // Act
+        HttpResponseMessage response = await host.Factory.CreateClient().GetAsync("/health");
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// The only proof that <c>/health</c> answers <c>200</c> in Production with no database behind it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is what a Container Apps liveness probe needs, and nothing else in the suite says it.</b>
+    /// The factory names a connection string nothing is listening on and runs in Production, which skips
+    /// the Development startup block that would migrate a database — so a health check that grew a
+    /// dependency check, or a startup path that touched the database before the endpoint could answer,
+    /// fails here and passes <see cref="Health_AllowsAnonymous" /> above, which has a live container
+    /// behind it.
+    /// </para>
+    /// <para>
+    /// The environment is load-bearing twice over: the anonymous surface itself differs by environment
+    /// (Development maps the OpenAPI document anonymously), so a Development pin would be measuring a
+    /// pipeline nobody deploys.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Health_AllowsAnonymousInProductionForContainerAppProbes()
+    {
+        // Arrange
+        await using ApiFactory factory = new(
+            "Host=localhost;Port=5432;Database=budgetoid;Username=postgres;Password=postgres",
+            environment: "Production");
+
+        // Act
+        HttpResponseMessage response = await factory.CreateClient().GetAsync("/health");
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+    }
+
+    private static async Task<PostgresTestHost> StartHostAsync()
+    {
+        PostgresTestHost host = new();
+        await host.StartAsync();
+        return host;
     }
 }

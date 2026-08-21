@@ -60,9 +60,9 @@ namespace IntegrationTests;
 /// this file's first paragraph describes and placed beside its method rather than moved in here.
 /// </para>
 /// <para>
-/// None of this is reachable through today's handlers — <c>UserProvisioningMiddleware</c> runs
-/// before routing, and <c>CreateTransactionHandler</c> commits the payee before the transaction
-/// insert — which is exactly why the mechanism is built explicitly here. It is a trap for the next
+/// None of this is reachable through today's handlers — <c>CreateTransactionHandler</c> commits the
+/// payee before the transaction insert, and no other handler leaves two writes pending on one
+/// context — which is exactly why the mechanism is built explicitly here. It is a trap for the next
 /// handler that performs two writes on one context.
 /// </para>
 /// <para>
@@ -169,7 +169,7 @@ public sealed class RepositoryConstraintAttributionTests
         await using BudgetoidDbContext db = new(CreateOptions(host));
         // No credential for this one: a user row without one is legal at the schema level, and the
         // subject here is the email index, not identity resolution.
-        db.Users.Add(User.Create("person@example.com", UtcNow()));
+        db.Users.Add(User.CreateWithId(Guid.CreateVersion7(), "person@example.com", UtcNow()));
         var repository = new BudgetRepository(db);
 
         // Act

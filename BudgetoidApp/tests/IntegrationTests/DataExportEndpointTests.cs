@@ -10,50 +10,41 @@ using Npgsql;
 namespace IntegrationTests;
 
 /// <summary>
-/// That a signed-in account can ask for a copy of its own data and be answered, and that the two
-/// callers who are not that account are turned away without anything being written for them.
+/// That a signed-in account can ask for a copy of its own data and be answered, and that a caller who
+/// is not that account is turned away.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Driven through the real HTTP pipeline rather than the handler, because what is measured here is
 /// not the document: it is which requests reach one. The route carries no authorization metadata of
-/// its own — the application's fallback policy is what authenticates it — and no
-/// <c>ProvisionsUserAttribute</c>, so both refusals below are properties of the pipeline the route
-/// was mapped into rather than of anything written inside the endpoint.
+/// its own — the application's fallback policy is what authenticates it — so the refusal below is a
+/// property of the pipeline the route was mapped into rather than of anything written inside the
+/// endpoint.
 /// </para>
 /// <para>
-/// <see cref="Export_ForAnAuthenticatedOwner_RespondsWithApplicationJson" /> is the control for both
-/// refusals, and without it they are worth nothing: a route that refused every caller — one that was
-/// never mapped at all, answering 404 — satisfies neither status assertion, but a route mapped behind
-/// a policy nobody can clear satisfies both while the feature does not exist. The happy path is what
-/// says the door opens for somebody.
+/// <see cref="Export_ForAnAuthenticatedOwner_RespondsWithApplicationJson" /> is the control for the
+/// refusal, and without it the refusal is worth nothing: a route that refused every caller — one that
+/// was never mapped at all, answering 404 — fails the status assertion, but a route mapped behind a
+/// policy nobody can clear satisfies it while the feature does not exist. The happy path is what says
+/// the door opens for somebody.
 /// </para>
 /// <para>
-/// The two 401s are asserted to be <em>distinguishable</em> rather than merely both 401. Three
-/// refusals reach this route — nothing authenticated, an authenticated token naming an account that
-/// does not exist, and the claim gates above it — and only the second carries
-/// <see cref="UserProvisioningMiddleware.NoAccountTitle" />. The anonymous one is titled
-/// <c>"Unauthorized"</c> by <c>ProblemDetailsDefaults</c>, from the status code alone, because
-/// <c>UseStatusCodePages</c> writes it with no title of its own. Without the title asserted, a route
-/// that had lost its authorization entirely would still pass the unprovisioned case on the 401 the
-/// middleware answers, and a route that had lost the middleware would still pass the anonymous case.
+/// <b>There used to be two refusals here and now there is one, because the second state stopped
+/// existing.</b> An authenticated principal naming an account that did not exist was reachable while a
+/// provider bearer authenticated this route — the token outlived the account it named by up to an hour
+/// — and the provisioning middleware answered it a distinctly titled 401. The test that drove it
+/// counted rows rather than reading a status, because a marker added to this group by mistake would
+/// have turned one retried export into a resurrected, passkey-less account. None of it is reachable
+/// now: this route authenticates from the session cookie and nothing else, the cookie is only ever
+/// issued over a session row, and a session row is only ever written beside the account it names. So
+/// "authenticated, and no such account" is not a state the pipeline can be in, and there is no marker
+/// left to add. What that costs the one remaining refusal is said where it is asserted.
 /// </para>
 /// <para>
 /// <see cref="Export_CarriesSchemaVersionOne" /> sits with them rather than with the completeness
 /// tests, because it is a claim about the envelope and not about anything inside it: it needs no
 /// furnished budget, and it is the one member of the document a caller reads before deciding whether
 /// it can read the rest.
-/// </para>
-/// <para>
-/// The row count in
-/// <see cref="Export_ForAnAuthenticatedSubjectWithNoAccount_IsRefusedAndCreatesNothing" /> is the
-/// half that carries the weight. A status assertion cannot see the difference between a route that
-/// refuses and a route that mints an account and <em>then</em> refuses — and a provider id token
-/// stays valid for up to an hour after the account it names has been erased, so a marker added to
-/// this group would turn one retried export into a resurrected, passkey-less account. Read on the
-/// container superuser, never on the application role: <c>user_isolation</c> is <c>FOR ALL</c>, so a
-/// policed connection reports zero rows for a row that is still there exactly as it does for one that
-/// is gone, and the assertion could not fail.
 /// </para>
 /// </remarks>
 public sealed class DataExportEndpointTests
@@ -78,54 +69,35 @@ public sealed class DataExportEndpointTests
         await Assert.That(response.Content.Headers.ContentType!.MediaType).IsEqualTo("application/json");
     }
 
+    /// <summary>
+    /// A caller carrying nothing is refused, which is now the whole of what this says.
+    /// </summary>
+    /// <remarks>
+    /// <b>This test used to discriminate and now barely does, and that is stated rather than
+    /// hidden.</b> It carried a second assertion — that the title was not the provisioning middleware's
+    /// <c>NoAccountTitle</c> — and that inequality was the interesting half: without it, a route that
+    /// had lost its authorization entirely still passed, because an anonymous request would walk on to
+    /// the middleware, find no account for a principal it could not even name, and be answered the
+    /// middleware's own 401. There is no middleware and no second 401, so the inequality had nothing
+    /// left to rule out. What remains catches exactly one thing: the fallback policy being deleted, or
+    /// this group being marked <c>AllowAnonymous</c>, either of which answers this request <c>200</c>.
+    /// The second of those is also caught by <c>AnonymousSurfaceTests</c>, which reads the marker off
+    /// the route table; the first is caught by nothing else, because that test issues no request.
+    /// </remarks>
     [Test]
     public async Task Export_WithoutAuthentication_IsRefusedWithUnauthorized()
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
 
-        // Act — no subject header, so nothing authenticates and the fallback policy decides. GetAsync
-        // rather than GetStreamAsync: the latter throws on any non-2xx, so a route that answered 200 to
-        // an anonymous caller would fail this test as a transport error rather than as the status
-        // assertion it is.
+        // Act — no cookie and no token, so nothing authenticates and the fallback policy decides.
+        // GetAsync rather than GetStreamAsync: the latter throws on any non-2xx, so a route that
+        // answered 200 to an anonymous caller would fail this test as a transport error rather than as
+        // the status assertion it is.
         HttpResponseMessage response = await host.Factory.CreateClient().GetAsync(ExportPath);
 
-        // Assert — and that this refusal is not the middleware's. The endpoint declares no
-        // authorization metadata of its own, so this is the test that would notice an AllowAnonymous
-        // added to the group.
+        // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-        await Assert.That(await ReadTitleAsync(response))
-            .IsNotEqualTo(UserProvisioningMiddleware.NoAccountTitle);
-    }
-
-    [Test]
-    public async Task Export_ForAnAuthenticatedSubjectWithNoAccount_IsRefusedAndCreatesNothing()
-    {
-        // Arrange — an authenticated client that has deliberately never called EstablishAccountAsync.
-        // /api/me/* mints nothing, so this subject has a valid token and no account behind it, which is
-        // exactly the state a token outliving an erasure leaves behind.
-        await using PostgresTestHost host = await StartHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient("google-unprovisioned");
-
-        await using NpgsqlConnection admin = new(host.ConnectionString);
-        await admin.OpenAsync();
-
-        // Act
-        HttpResponseMessage response = await client.GetAsync(ExportPath);
-
-        // Assert — the title first, because it is what makes the count below meaningful: it says the
-        // request reached the provisioning middleware and was refused there, rather than never having
-        // matched a route at all. An unmapped path answers 404 and leaves an empty users table too.
-        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-        await Assert.That(await ReadTitleAsync(response))
-            .IsEqualTo(UserProvisioningMiddleware.NoAccountTitle);
-
-        // Unscoped, not "no row for this subject". The id an accidental ProvisionsUserAttribute would
-        // mint is one no assertion here could name, so a scoped count would pass over the very row it
-        // exists to catch.
-        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
-        await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);
-        await Assert.That(await ScalarAsync(admin, "select count(*) from budgets")).IsEqualTo(0L);
     }
 
     /// <summary>

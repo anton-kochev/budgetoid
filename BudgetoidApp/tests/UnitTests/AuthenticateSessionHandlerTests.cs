@@ -1,5 +1,5 @@
 using Application.Sessions.AuthenticateSession;
-using Application.Users.EnsureUser;
+using Application.Users;
 using Domain.Budgets;
 using Domain.Sessions;
 using Domain.Users;
@@ -14,8 +14,11 @@ namespace UnitTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Successor in spirit to <c>UserProvisioningWriterTests</c>, and it asserts on a collaboration for
-/// that file's reason.</b> The state this handler leaves behind is correct under every ordering a
+/// <b>The successor to a deleted <c>UserProvisioningWriterTests</c>, and it asserts on a collaboration
+/// for that file's reason.</b> That file watched the provisioning middleware publish an identity and a
+/// budget through the one writer, in that order; the middleware is gone and this handler is the only
+/// thing left that publishes either, so the rule moved here whole.
+/// The state this handler leaves behind is correct under every ordering a
 /// reader might write, because the values it publishes do not depend on the order it publishes them
 /// in. The <em>order</em> is the rule: <c>CurrentUserWriter.ResolveUser</c> clears the ambient budget,
 /// so a budget published before an identity is a budget the rest of the request does not have, and
@@ -442,7 +445,8 @@ public sealed class AuthenticateSessionHandlerTests
     /// <c>RecordingUserContextWriter</c> keeps the ids in two lists, one per member, which is what its
     /// callers need and what makes the relative order of two <em>different</em> members unrecoverable
     /// from it. Rather than widen a fake five other test classes depend on, this wraps it — the shape
-    /// <c>UserProvisioningWriterTests.SpyingUserContextWriter</c> already uses over the real writer.
+    /// <c>AcceptsEndedSessionTests.SpyingUserContextWriter</c> uses over the real writer, and the shape
+    /// a deleted <c>UserProvisioningWriterTests</c> used before it.
     /// </remarks>
     private sealed class SequencingUserContextWriter(RecordingUserContextWriter inner) : IUserContextWriter
     {

@@ -13,20 +13,23 @@
 
 ## Purpose
 
-This area covers **who a user is** and how that identity comes to exist. There are **two ways in, and
-they are not equivalent.** `POST /api/registration` creates an account as one consented act, with its
-passkey and its card of recovery codes in the same save — that path has its own file,
-[registration.md](registration.md), and the invariant it establishes is stated below. Beside it, the
-older way is still live: users are provisioned transparently from their Google sign-in, on the first
-request they make **to a route that declares it may create an account**; every other authenticated
-route resolves an existing account or refuses, and never mints one. A user owns **Budgets** and nothing
+This area covers **who a user is** and how that identity comes to exist. There is **one way in**.
+`POST /api/registration` creates an account as one consented act, with its passkey and its card of
+recovery codes in the same save — that path has its own file, [registration.md](registration.md), and
+the invariant it establishes is now a claim about **every** account in the schema, stated below.
+Nothing else writes a `users` row. An authenticated request resolves an account that already exists or
+it is refused, and that refusal is **structural rather than a check**: a request authenticates from a
+session cookie, a cookie is only ever issued over a session row, and a session row is only ever
+written beside the account it names — so "an authenticated request naming an account that does not
+exist" is not a state the pipeline can be in. A user owns **Budgets** and nothing
 else. Everything else — accounts, category groups, categories, payees, transactions — belongs to a
 budget, so **the budget, not the user, is the unit of tenancy.** That invariant and the isolation
 rules for the money data live in [budgets.md](budgets.md); this area does not duplicate them. What it
-does own is the identity, its claims, the provisioning step that resolves a Google principal into an
-internal user together with the ambient budget for the request, and the isolation of the identity
-rows themselves — `users`, `budgets`, `sessions` and `passkey_signature_counters` are the tables
-scoped to a **user** rather than to a budget, and that rule has its canonical statement here.
+does own is the identity, the two provider claims the one account-creating route reads, the step that
+turns a presented session into an internal user together with the ambient budget for the request, and
+the isolation of the identity rows themselves — `users`, `budgets`, `sessions` and
+`passkey_signature_counters` are the tables scoped to a **user** rather than to a budget, and that
+rule has its canonical statement here.
 
 ## Key Entities
 
@@ -43,9 +46,8 @@ scoped to a **user** rather than to a budget, and that rule has its canonical st
   which `google` is the only member today — and the provider's `Subject`, the OAuth `sub` claim,
   stable, non-empty and at most `Credential.MaxSubjectLength` = 255 characters. The other two carry
   neither. An account may hold more than one credential, but **at most one of type `federated`** and
-  **at most one of type `recovery_codes`**. Every account is created with a federated Google
-  credential; an account created by **registration** is created with all three at once — see the
-  invariant below — while one created by **provisioning** holds that federated credential alone. A
+  **at most one of type `recovery_codes`**. Every account is created with all three at once, in one
+  save, by the one route that creates accounts — see the invariant below. A
   signed-in person may then register passkeys beside it, each carrying its own
   verification material on its own tables — see [passkeys.md](passkeys.md) — and may issue
   themselves one set of recovery codes. A signed-in person may **revoke a passkey**, proving
@@ -66,8 +68,8 @@ scoped to a **user** rather than to a budget, and that rule has its canonical st
   `Email.MaxLength` = 254 characters. Two `Email` values are equal iff their strings are equal.
   Uniqueness is a **wider** comparison than that equality: `users.email` carries a unique index on
   the `case_insensitive` collation, so at most one user row holds a given address whatever its
-  casing. The address is written once, when the account is provisioned, and no later request
-  changes it — see the provisioning rule below.
+  casing. The address is written once, when the account is registered, and no later request
+  changes it — see the rule below about the provider being contacted once.
 
 ```mermaid
 erDiagram
@@ -137,114 +139,119 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     `BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration;
     `SessionContextInterceptor` puts `app.current_user_id` on every connection the context opens, so
     a session that resolved nobody fails with `22P02` rather than reading another person's row. There
-    is no EF query filter above them — the provisioning lookup runs before an identity exists, so
-    `Budgets` is scoped by owner explicitly in `FindFirstForUserAsync`. `credentials`,
+    is no EF query filter above them — the budget lookup that follows a session's own resolve runs
+    before the ambient budget exists, so `Budgets` is scoped by owner explicitly in
+    `FindFirstForUserAsync`. `credentials`,
     `passkey_public_keys` and `recovery_code_hashes` are the user-owned tables deliberately left
     unpoliced: reading one is *how* a request discovers who is asking and whether it is really them,
     which is also why the credential lookup projects to `credentials.user_id` and never joins `users`.
     `tests/IntegrationTests/RlsIsolationTests.cs` proves the isolation on both axes and
     `RlsCoverageTests.cs` fails any new table that owes a policy and has none.
 
-- **Only a route that declares `ProvisionsUser` may bring an account into existence *through the
-  middleware*.** Every other authenticated route resolves an existing account or answers `401` and
-  writes nothing — except the registration group, which declares `RegistersAccount` and creates the
-  account in its own handler, naming nobody on the way past.
-  - **Why**: a Google ID token stays valid for up to an hour after the account it names is erased. A
-    middleware that minted on *any* authenticated request would let one in-flight poll, one second
-    tab, or one service-worker retry resurrect a `users` row carrying the person's email and a
-    `credentials` row carrying their Google subject — moments after they asked to be forgotten. And
-    that resurrection is unerasable: the fresh account holds no passkey, so the re-authentication gate
-    in front of erasure refuses it forever. "Leaving the product means actually leaving" is the claim
-    [erasure.md](erasure.md) opens with, and this is what keeps it true of the erasure path itself.
-    - **Opt-in, and the polarity is the whole rule.** Marking the routes that must *not* mint leaves
-      the mint set as "everything else", so the stale token resurrects the account through
-      `GET /api/transactions` and the fix buys nothing. It also fails **silently**: a new endpoint
-      whose author forgets the marker mints, and nothing says so. Under opt-in a forgotten marker
-      gives brand-new users a `401` on that group — loud, caught by any integration test, and it
-      writes no row on the way past.
-    - **What it does not fix, stated rather than implied**: a client that calls a *marked* route on
-      app boot still resurrects an erased account within the token's remaining life. That hole is
-      older than this rule and closes when account creation becomes a consented act and the six
-      markers collapse to one. What this rule buys today is that the erasure path and every
-      identity-bearing route beside it write nothing — so an account is not resurrected by the act
-      of trying to erase it again.
-  - **Enforced in**: `Api/Infrastructure/ProvisionsUserAttribute.cs`, attached with
-    `.WithMetadata(...)` to the **route group** in six endpoint files — accounts, transactions,
-    categories, category groups, payees, currencies — so the whole minting surface is six greppable
-    lines, the same argument `PasskeyEndpoints.cs` makes for keeping the anonymous surface visible in
-    one place. `UserProvisioningRouteTests.ProvisionsUserMetadata_IsCarriedByExactlyTheDataRouteGroups`
-    pins the set in both directions, so a marker added to `/api/passkeys` "so registration works" fails
-    rather than quietly reopening the door.
-    - **A client must reach a marked route before any `/api/passkeys/*` or `/api/me/*` call.**
-      Neither the passkey groups nor the erasure route mints, so a brand-new identity that goes
-      straight to `POST /api/passkeys/registration/options` is refused — onboarding is ordered:
-      provider sign-in, one request to a marked group, then the passkey. Today that ordering lives
-      only in `ApiFactory.EstablishAccountAsync` and bites whoever builds the client's passkey flow,
-      as a 401 at the first step. It disappears when account creation becomes a consented act and
-      the six markers collapse to one. **`/api/registration` is the exception and it is the whole
-      point of that route**: it is reachable by an identity that has no account, and the account it
-      leaves behind needs no further ordering to be usable.
-    - **A third marker exists, `RegistersAccount`, and it is the fourth arm of the middleware.**
-      `UserProvisioningMiddleware` runs before the endpoint's own policy, so a provider principal
-      with no account would otherwise be refused `NoAccountTitle` before the registration handler was
-      ever entered. Its arm sits **below** the `sub`/`email` and `email_verified` claim gates — placed
-      above them, an account would be created for a caller whose address the provider explicitly
-      declines to assert — and **above** the resolve, because a caller about to register has by
-      definition no account to resolve. **It publishes no identity**, because the handler derives and
-      publishes the account id itself after the signature verifies. It is opt-in like its two
-      neighbours, and it must never appear on a route that also carries `ProvisionsUser`: the
-      middleware reads this one first and returns, so such a route would create nothing while
-      declaring that it may, invisibly to everyone who already has an account. See
-      [registration.md](registration.md) and
-      [ADR 0021](../decisions/0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md).
-  - **Counterexample**: answering the unmarked-and-unresolved case with `204` on the erasure route, on
-    the grounds that "no account" satisfies erasure's post-condition. It reads well and it is wrong: it
-    creates a path through the erasure handler that reports success having verified nothing, which is
-    the one shape that path must never have.
+- **`POST /api/registration` is the only thing in this product that brings an account into
+  existence.** No middleware mints one, no marker permits one, and no other route writes a `users`
+  row on the way past.
+  - **Why**: a Google ID token stays valid for up to an hour after the account it names is erased.
+    While account creation was a side effect of being authenticated, one in-flight poll, one second
+    tab, or one service-worker retry could resurrect a `users` row carrying the person's email and a
+    `credentials` row carrying their Google subject — moments after they asked to be forgotten — and
+    that resurrection was unerasable, because the fresh account held no passkey and the
+    re-authentication gate in front of erasure refuses it forever. "Leaving the product means actually
+    leaving" is the claim [erasure.md](erasure.md) opens with; a single consented creation path is
+    what makes it true of every route rather than of the marked ones.
+    - **The hole that used to be recorded here is closed, and it is closed structurally.** A route
+      group carrying a marker still minted an account from a stale token, and that was written down as
+      a gap that would close "when account creation becomes a consented act". This is that. A provider
+      token now reaches exactly **two** routes, both under `/api/registration`, and neither completes
+      without a live server-minted challenge and a WebAuthn credential the caller's own authenticator
+      produced.
+  - **Enforced in**: `RegisterAccountHandler`, and by there being no second factory to reach.
+    `User.CreateWithId` takes an identifier derived from the ceremony's own challenge and is the
+    **only** way to obtain a `User`; the factory that minted its own id is deleted, so a route that
+    wanted to create an account would have to add one back — which is the change a reviewer must see.
+    The prohibition stopped being a doc comment and became a compile error, and `Domain/Users/User.cs`
+    is where it is spelled.
+    - **What a provider token now buys, off the route table.** The two registration routes declare a
+      policy naming `ProviderAuthentication.SchemeName` and nothing else, so they are the only routes
+      `JwtBearer` authenticates at all. Every other route inherits the fallback policy, which names
+      the session cookie scheme — `AuthorizationMiddleware` re-authenticates against that handler,
+      which answers `NoResult` for a request carrying no cookie, so a bearer presented anywhere else
+      is **401 and indistinguishable from an anonymous request**. `RegistrationRouteTests` reads the
+      group's scheme off the route table and `AnonymousSurfaceTests` reads the anonymous set whole,
+      so neither surface can widen quietly.
+  - **Counterexample**: answering the authenticated-but-unresolved case with `204` on the erasure
+    route, on the grounds that "no account" satisfies erasure's post-condition. It reads well and it is
+    wrong: it creates a path through the erasure handler that reports success having verified nothing,
+    which is the one shape that path must never have.
   - **Source**: `[SOURCE: user-story]`
 
 - **A request must resolve to a real internal user and an ambient budget before it can touch data.**
   - **Why**: Handlers stamp and filter by `IBudgetContext.BudgetId`; without a resolved budget there
     is no tenant to scope to, and a default value would silently point at nothing.
-  - **Enforced in**: `BudgetoidApp/Api/Infrastructure/UserProvisioningMiddleware.cs` publishes both,
-    through `IUserContextWriter` and never by assigning `CurrentUser` itself — `ResolveUser` then
-    `ResolveBudget`, in that order, because `ResolveUser` **clears** any budget resolved for a previous
+  - **Enforced in**: `Application/Sessions/AuthenticateSessionHandler`, on the path **every**
+    authenticated request in the product now takes. It publishes both through `IUserContextWriter` and
+    never by assigning `CurrentUser` itself — `ResolveUser` then `ResolveBudget`, in that order,
+    because `ResolveUser` **clears** any budget resolved for a previous
     identity. `CurrentUserWriter` is the only type that assigns `CurrentUser`, which is what makes
     that clearing rule impossible to skip; nothing but its XML doc enforces the call order, and
-    `UserProvisioningWriterTests.Provisioning_PublishesTheBudgetThroughTheUserContextWriter` is the
+    `AuthenticateSessionHandlerTests.HandleAsync_PublishesTheIdentityBeforeTheAmbientBudget` is the
     only thing that pins it. `HttpContextBudgetContext` surfaces the second as
     `IBudgetContext.ResolvedBudgetId`, and the strict `IBudgetContext.BudgetId` derived from it throws
     `"The ambient budget for the current request has not been resolved."` if the budget id is still
-    null. The nullable accessor is for the paths that legitimately have none — provisioning itself,
-    and infrastructure scopes such as health checks — and neither of them touches budget-owned data.
-    `CurrentUser.UserId` exists because the middleware needs a request-scoped home for the identity it
-    just provisioned — no query filters by it.
+    null. The nullable accessor is for the paths that legitimately have none — authentication itself,
+    which runs before there is a budget, and infrastructure scopes such as health checks — and neither
+    of them touches budget-owned data. `CurrentUser.UserId` exists because the request needs a scoped
+    home for the identity the session resolved — no query filters by it.
 
-- **An authenticated principal must carry `sub`, `email` and `email_verified` claims.**
-  - **Why**: `sub` is the stable identity key we upsert on, and `email` is the address the account is
-    reached at — without either we cannot provision a user. `email_verified` decides whether that
-    address may be registered at all: an address the provider will not vouch for is one anybody could
-    have typed, and accepting it would let a token claim an address its holder never proved.
+- **A principal reaching `/api/registration` must carry `sub`, `email` and `email_verified` claims.**
+  - **Why**: `sub` is the stable identity the account's federated credential is filed under, and
+    `email` is the address the account is reached at — without either there is nothing to create an
+    account from. `email_verified` decides whether that address may be registered at all: an address
+    the provider will not vouch for is one anybody could have typed, and accepting it would let a token
+    claim an address its holder never proved.
+    - **Why the rule is now stated about those two routes rather than about every request.** They are
+      the only routes a provider token authenticates at all — the group's policy names the provider's
+      scheme, and everything else names the session cookie's — so there is no other request on which
+      the claims exist to be judged. Nothing was relaxed by narrowing the sentence: what used to run
+      on every bearer request now has no other bearer request to run on.
     - **Why here and not in the database**: the rule is about a token, and the database cannot
       inspect one. Pushing it lower would mean procedural logic, which
       [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out. The API
       boundary is the lowest layer capable of enforcing it.
-  - **Enforced in**: `UserProvisioningMiddleware` returns `401` (ProblemDetails, "missing required
-    claims") when `sub` or `email` is absent, and `401` ("email address is not asserted as verified")
-    when `email_verified` is absent or is anything `bool.TryParse` does not read as `true` — `"false"`
-    and `"1"` alike. The check runs **before** provisioning, so a refused principal writes no row,
-    and it runs on **every** request rather than only the first: an account that already exists is
-    no more reachable with an unvouched address than a new one, which is what
-    `AuthenticatedRequest_ExistingAccount_EmailNotAssertedVerified_Returns401ProblemJson` pins. The
-    regression it guards against is moving the check below the credential lookup on the reasoning
-    that a known user need not be re-gated.
+  - **Enforced in**: `Api/Infrastructure/RegistrationClaimGate`, an `IEndpointFilter` declared on the
+    `/api/registration` group beside its `RequireAuthorization`, so both legs carry it. It answers
+    `401` with `MissingClaimsTitle` when `sub` or `email` is absent or blank, and `401` with
+    `UnverifiedEmailTitle` when `email_verified` is absent or is anything `bool.TryParse` does not read
+    as `true` — `"false"` and `"1"` alike. **The two titles must stay distinct from each other**, which
+    is the property `RegistrationClaimGateTests` holds; a caller cannot act on a distinction the
+    response does not make.
+    - **Why a filter and not any of the three things that run earlier**, because each is the obvious
+      alternative. A `RequireAssertion` on the group's policy and a custom
+      `IAuthorizationRequirement` both answer **403 with no title**, collapsing two refusals a caller
+      acts on differently into one untitled status. `JwtBearerEvents.OnTokenValidated` can answer 401,
+      but writing a titled `ProblemDetails` from there needs `OnChallenge` written too, and the gate
+      then becomes a property of the **scheme** rather than of the route — invisible to anybody reading
+      the route table, which is where every other rule about who may reach these two routes is
+      declared. And a middleware reading a new marker would rebuild the deleted provisioning
+      middleware under a different name: the same opt-in metadata, the same silence when a group
+      forgets it.
+    - **One accepted behaviour change: a `400` can now overtake the `401`.** A filter runs after model
+      binding, so a caller sending an unverified address **and** a malformed body is answered `400` by
+      the framework where the middleware answered `401`. Nothing in the suite measures the ordering.
+      It is a worse order to be told things in, not a disclosure — a deserialization failure is a fact
+      about the caller's own request and says nothing about what this server stores. See
+      [registration.md](registration.md), which owns the correction this gate's placement is part of.
 
 - **The verified-email claim is read and never stored.**
   - **Why**: it answers one question — may this address be registered — and once answered it holds
     nothing about the person worth keeping. Storing it would be a claim the product carries for no
     reader, which is the thing the account row exists to avoid.
-  - **Enforced in**: `EnsureUserCommand` carries only the subject and the email, so there is no field
-    for the answer to land in; the pinned `users` column set leaves it nowhere to go.
+  - **Enforced in**: `RegisterAccountCommand` carries only the subject and the email, so there is no
+    field for the answer to land in; the pinned `users` column set leaves it nowhere to go. That
+    absence is also **half the reason the claim gate stays at the API boundary** — judging
+    `email_verified` in the Application ring would need either a `ClaimsPrincipal` in that project or
+    a member here for the answer to land in, and this rule refuses the second by name. See
+    [registration.md](registration.md).
 
 - **A user row carries an internal identifier, an email address and a creation timestamp, and no
   other column.**
@@ -341,10 +348,9 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ## Business Rules & Invariants
 
-- **Rule**: An account created by **registration** holds **exactly one** `federated` credential, **at
-  least one** `passkey`, and **exactly one** `recovery_codes` set, from the instant it exists. An
-  account created by **provisioning** holds the federated credential alone, so the invariant is
-  **registration's** and is not true account-wide today.
+- **Rule**: An account holds **exactly one** `federated` credential, **at least one** `passkey`, and
+  **exactly one** `recovery_codes` set, from the instant it exists. This is a claim about **every**
+  account in the schema, not about one write path's output.
 - **Why**: those three credentials are what make an account reachable, readable and recoverable, and
   an account missing any of them is broken in a way no later request repairs. A `federated` credential
   alone opens a session that reaches no budget content at all, so the account exists holding nothing
@@ -361,13 +367,19 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     bounds, and those it holds properly: `IX_credentials_user_id_federated` and
     `IX_credentials_user_id_recovery_codes`, each partial on its own `type`.
   - **What holds it instead is that exactly one write path creates a `users` row and writes all three
-    credentials in the same save.** A second such path would create a credential-less account and
-    **redden nothing**. Naming that here is what a future reader gets instead of a constraint.
-  - **The schema still permits the state, and one test creates it on purpose.**
-    `RepositoryConstraintAttributionTests.AddBudget_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape`
-    tracks a bare `User.Create(…)` with no credential at all, because its subject is the email index
-    rather than identity resolution, and the comment beside it says so. That is not a hole in the
-    rule; it is the rule's own statement that the schema is not where it lives.
+    credentials in the same save**, and three things now make that a fact rather than a claim about
+    today's call sites. `RegisterAccountHandler` is the only code that brings an account into
+    existence. It is reachable from `/api/registration` and from nowhere else. And **`User.Create` —
+    the factory that let a caller mint an account under a fresh identifier — is deleted**, leaving
+    `User.CreateWithId`, which takes an id derived from the ceremony's own challenge and refuses
+    `Guid.Empty`. So a second creating path cannot be written by calling something that already
+    exists: it has to add a factory to `Domain/Users/User.cs` first, which is the change a reviewer
+    must see. The prohibition stopped being a doc comment and became a compile error.
+  - **The schema still permits the state; nothing in the product produces it.** The three claims are
+    cross-row, so no constraint refuses a credential-less `users` row and a direct `INSERT` still
+    writes one. What changed is that no code path can: the only factory is reached from one handler,
+    and a test or seeding helper that wanted a bare account would have to restore the deleted factory
+    to get one. Do not restore it to make a fixture shorter.
 - **Enforced in**: `RegisterAccountHandler` builds all five entities and hands them to
   `IRegistrationRepository.RegisterAsync`, which adds and saves **once**; `Domain.Users.Registration`
   is the record that makes "a registration without one of them" unspellable, since every member is
@@ -375,52 +387,41 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   the ladder refuses a request carrying no card or no wrapped keys before anything is written. See
   [registration.md](registration.md).
 - **Counterexample**: adding a second route that creates an account — a support tool, a seed path, an
-  import. Every test in the suite stays green and the account it produces can never read itself.
-- **Note**: `UserProvisioningMiddleware` is still live and still creates accounts holding only a
-  federated credential on six route groups. Do not read this rule as a claim about every row in
-  `users`. The older path is removed in later work, and the invariant becomes account-wide then.
+  import. Every test in the suite stays green and the account it produces can never read itself. The
+  deleted factory is what makes that cost a visible edit rather than a call.
 - **Source**: `[SOURCE: user-story]`
 
 ---
 
-- **Rule**: A user is provisioned idempotently on sign-in, keyed on the federated credential's
-  `(provider, subject)`. What the provider reports on a **later** sign-in changes nothing about the
-  stored account.
-- **Why**: There is no registration step. The first authenticated request must create the internal
-  user; subsequent requests must find the same one without ever creating duplicates. The provider's
-  role ends there. It vouched for this person once, and that is not standing authority to rewrite
-  what the account holds — an address the user never asked to change is not an address they can be
-  reached at, and silently adopting one would move the account's only human-readable identifier
-  because a token said so.
+- **Rule**: The identity provider is contacted **once in an account's life**, at registration. What it
+  reports afterwards changes nothing about the stored account, and nothing in the product asks it
+  again.
+- **Why**: it vouched for this person once, and that is not standing authority to rewrite what the
+  account holds — an address the user never asked to change is not an address they can be reached at,
+  and silently adopting one would move the account's only human-readable identifier because a token
+  said so. Signing in afterwards is a passkey assertion or a redeemed recovery code, neither of which
+  involves any third party, so there is no later moment at which the provider has anything to say.
   - **Consequence, accepted**: the stored address goes stale, and there is no way to update it yet.
     Changing it is its own operation, requiring its own fresh authorization exchange, and that is
     not built.
-- **Enforced in**: two handlers, split along the line the rule above draws.
-  `ResolveUserHandler` (`Application/Users/EnsureUser/ResolveUserHandler.cs`) finds the account and
-  returns `ProvisionedUser(UserId, BudgetId)` or `null`; it never creates one, and
-  `ResolveUserCommand` carries **no email member**, because the resolve path never writes one — the
-  email claim is read on every request by the gate and reaches a handler only on the one route that
-  may create an account. `EnsureUserHandler` calls it first and mints only on `null`, so the
-  existing-user branch lives in one place rather than being copied. `UserProvisioningMiddleware`
-  invokes whichever the route's metadata calls for.
-  The default budget is written **in the same save** as the user and its credential, so "an account
-  exists ⇒ it owns a budget" needs no repair step; `ResolveUserHandler` reads that budget and throws
-  if it is absent. That half is documented in
-  [budgets.md](budgets.md#business-rules--invariants) and not restated here.
-  `ResolveUserHandler` is an `ICommandHandler` rather than a query even though it writes nothing to
-  the database, because it publishes the request's identity through `IUserContextWriter` — the single
-  act the whole row-level-security model rests on. A query classification would advertise "no effects,
-  safe to call anywhere" about the one call where that is most dangerously false.
-- **Example**: A returning user whose Google address changed from `old@example.com` to
-  `new@example.com` signs in. The handler finds her by `(provider, subject)`, returns the same
-  account, and the stored address stays `old@example.com`.
-  `EnsureUserHandlerTests.EnsureUser_ReturningUserWhoseProviderEmailChanged_KeepsTheRegisteredEmail`
-  pins it, at both the handler and the database level.
-- **Counterexample**: Keying on `email` instead of the credential would break if the user changed
-  their Google email — they'd be provisioned as a brand-new user and lose access to all their data.
-  Which is also why the address is not refreshed: the credential is the identity, so a changed
-  address is new *information about* the account, not a new account and not a fact the account must
-  adopt.
+  - **The federated credential is still the account's link to that one exchange**, filed under
+    `(provider, subject)` and unique across the table, which is what makes a second registration from
+    the same Google identity a `409` rather than a second account. It is read on exactly one path
+    after creation — `RegisterAccountHandler` re-reads it to settle an ambiguous email collision —
+    and by nothing else.
+- **Enforced in**: nothing writes `users.email` after the insert. The `UPDATE` grant on `users` names
+  `email` alone and **has no caller at all**; the domain exposes no mutator; and
+  `RegisterAccountCommand` is the only command that carries an address. The default budget is written
+  **in the same save** as the user and its credentials, so "an account exists ⇒ it owns a budget"
+  needs no repair step, and the read that follows a session's resolve throws if it is absent. That
+  half is documented in [budgets.md](budgets.md#business-rules--invariants) and not restated here.
+- **Example**: a person registered as `old@example.com` changes their Google address to
+  `new@example.com` and signs in with their passkey. Nothing in that exchange reaches Google, and the
+  account is still reachable at `old@example.com`.
+- **Counterexample**: keying identity on `email` instead of the credential. It would break the moment
+  somebody changed their Google address — the same human would arrive as a stranger — which is also
+  why the address is not refreshed: the credential is the identity, so a changed address is new
+  *information about* the account, not a new account and not a fact the account must adopt.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -441,13 +442,13 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     the first half of a client-supplied tenancy parameter. Widening the response later is additive
     and cheap; narrowing it is breaking, which is why the narrow shape is the one that ships.
   - **Handing back null is a race, not a 404.** No *stored* state produces it: the account, its
-    first credential and its default budget land in one `SaveChanges`, and `credentials` cascades
-    from `users` on delete, so a live credential standing over a missing user row is not a shape the
-    schema holds. What produces one is **read skew** — the middleware resolves the identity out of
-    `credentials`, then reads `budgets`, and only then does the handler read `users`, three round
+    three credentials and its default budget land in one `SaveChanges`, and `credentials` cascades
+    from `users` on delete, so a live session standing over a missing user row is not a shape the
+    schema holds. What produces one is **read skew** — authentication reads `session_tokens`, then
+    `sessions`, then `budgets`, and only then does the handler read `users`, four round
     trips sharing no transaction, so an erasure committing inside that window leaves the earlier
     reads valid and this one empty. The handler throws and the caller sees the 500
-    `GlobalExceptionHandler` writes, which is also how `ResolveUserHandler` answers the same race one
+    `GlobalExceptionHandler` writes, which is also how the budget read answers the same race one
     step earlier. Answering "no such account" to a request the pipeline has just authenticated *as
     that account* would file it as an ordinary missing resource, which is the one shape nobody
     investigates.
@@ -459,12 +460,12 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   is what makes another account's id answer nothing rather than answer theirs, so the id predicate is
   an index seek rather than the thing doing the scoping. The route declares no authorization metadata
   of its own, which is now what *gates* it rather than what leaves it open: the application's fallback
-  policy both authenticates the request and refuses a session that reads no budget content, so a
-  federated sign-in is answered `403` here — see [sessions.md](sessions.md). And **no
-  `ProvisionsUser`**, so a
-  provider token outliving an erasure is refused rather than minting an empty shell;
-  `UserProvisioningRouteTests` already lists `/api/me` under the prefixes where minting is forbidden
-  and covers this route with no edit to that list. `SignedInUserEndpointTests` carries the pair that
+  policy names the session cookie scheme, authenticates the request against that handler alone, and
+  refuses a session that reads no budget content — so a federated sign-in is answered `403` here, and
+  a provider bearer outliving an erasure is answered the same `401` an anonymous request gets, because
+  the cookie handler returns `NoResult` for a request carrying no cookie. **Nothing can mint an
+  account here because nothing anywhere but `/api/registration` can.**
+  `SignedInUserEndpointTests` carries the pair that
   makes the read meaningful — a second account established *after* the first, each asking for itself,
   asserted in both directions, because with one account every wrong answer and the right one are the
   same value.
@@ -721,127 +722,116 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   answer. Nothing updates `users.email` after the insert, so a returning user cannot collide with
   anyone: the only write that could breach the index is the one that creates the account.
 - **Enforced in**: three layers, deliberately. The unique index `IX_users_email` on the
-  `case_insensitive` collation is what makes the rule *true*. `UserRepository` reports the rejection
-  without interpreting it: `TryAddAsync` writes the user row and its first credential in one save and
-  returns `false` for a unique violation of **either** the email index or the credential's
-  `(provider, subject)` index, because a losing insert can breach both at once and the database names
-  only one. One save is also what keeps a refused insert from leaving a user row behind: an orphan
-  would hold its unique email while no credential resolved to it, and every later sign-in with that
-  address would 409 with no way to heal. `EnsureUserHandler` is where the treatment is chosen — it
-  re-reads by `(provider, subject)`, adopts the winning row when there is one, and otherwise throws
-  `ConflictException` ("This
-  email address is already linked to a different Google account."), which `ConflictExceptionHandler`
-  renders as 409 ProblemDetails. **Whether a collision is a conflict or a lost race is application
+  `case_insensitive` collation is what makes the rule *true*. `RegistrationRepository` reports the
+  rejection without interpreting it: `RegisterAsync` writes the whole account in one save and answers
+  `EmailTaken` for a unique violation of the email index and `SubjectTaken` for one of the
+  credential's `(provider, subject)` index, because a losing insert can breach both at once and the
+  database names only one. One save is also what keeps a refused insert from leaving a user row
+  behind: an orphan would hold its unique email while no credential resolved to it, and every later
+  attempt with that address would 409 with no way to heal. `RegisterAccountHandler.RefusalFor` is
+  where the treatment is chosen — on `EmailTaken` it re-reads by `(provider, subject)` and, finding a
+  credential there, answers the *subject* sentence instead, because the email index being named says
+  nothing about the subject. Otherwise it throws `ConflictException` ("This email address is already
+  linked to a different Google account."), which `ConflictExceptionHandler` renders as 409
+  ProblemDetails. **Whether a collision is one rule or two is application
   policy, sitting above the database on purpose**: the database rejects the write and cannot even
-  say which of the two rules it rejected it for, so only the application can separate a person
-  racing themselves from a stranger holding their address.
-- **Example**: a person whose Google account was recreated signs in with a new `sub` and their old
-  address. Provisioning refuses with 409 and a sentence naming the cause, rather than quietly
+  say which of the two rules it rejected it for, so only the application can separate them.
+  - **The race winner is never adopted, and that is where this path diverges from what the deleted
+    provisioning path did.** Adopting would sign the caller into an account **their brand-new passkey
+    cannot open** — the winning account holds the winner's factors, not theirs. So a lost race and a
+    stranger holding the address answer the same way: nothing was created, sign in instead. See
+    [registration.md](registration.md).
+- **Example**: a person whose Google account was recreated registers with a new `sub` and their old
+  address. Registration refuses with 409 and a sentence naming the cause, rather than quietly
   handing them an empty second budget.
-- **Counterexample**: deciding the outcome from the reported constraint name — email index means
-  409, subject index means a lost race — looks like the precise version of the re-read and is
-  unsound: two concurrent first requests from one person insert the same subject *and* the same
-  email, so the loser breaches both indexes, and PostgreSQL names whichever of them it checked
-  first. The user row is written before its credential, so the email index is the one that reports
-  — and that person is told their own address belongs to a different Google account.
+- **Counterexample**: deciding the outcome from the reported constraint name alone — email index
+  means "a stranger holds it", subject index means "already registered" — is right in one direction
+  and unsound in the other. EF writes `users` before `credentials`, so an insert that duplicates both
+  reports the **email** index, and that person would be told their own address belongs to a different
+  Google account. Only the re-read separates the two.
 - **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
 
-**User provisioning on an authenticated request** (`UserProvisioningMiddleware` → `ResolveUserHandler`,
-then `EnsureUserHandler` only where the route declares `ProvisionsUser`):
+**How a request comes to name an account.** There are two shapes and they share no code: a request
+*presenting a session* resolves one, and a request *under `/api/registration`* creates one. Nothing
+else in the product does either.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Authenticated : request passes authentication
-    Authenticated --> AlreadyPublished : the identity is already resolved
-    AlreadyPublished --> [*] : nothing to do here, before every other arm
-    Authenticated --> Rejected : missing sub or email claim
-    Authenticated --> Rejected : email not asserted as verified
-    Authenticated --> Anonymous : the endpoint carries IAllowAnonymous
-    Anonymous --> [*] : continues with no identity, before the claim gate
-    Authenticated --> Registering : the endpoint carries RegistersAccount, after the claim gates
-    Registering --> [*] : continues naming nobody; the handler publishes the id it derives
-    Authenticated --> Lookup : has sub + email + verified email
-    Lookup --> Existing : user found by federated credential
-    Lookup --> Refused : no credential, and the route does not declare ProvisionsUser
-    Lookup --> Creating : no credential, on a route that declares ProvisionsUser
-    Refused --> [*] : 401 ProblemDetails, no row written
-    Existing --> Resolved : the stored account stands as registered (no write)
-    Creating --> Resolved : TryAdd wrote the user and its credential
-    Creating --> InsertRejected : unique violation on the credential, the email, or both
-    InsertRejected --> RaceReread : re-read by provider and subject
-    RaceReread --> Resolved : a credential holds this subject → adopt its user
-    RaceReread --> Conflict : no credential holds it → the email alone collided
-    Resolved --> BudgetEnsured : find-or-create the user's default budget
-    BudgetEnsured --> [*] : CurrentUser.UserId and CurrentUser.BudgetId set, request proceeds
-    Rejected --> [*] : 401 ProblemDetails
+    [*] --> Presented : __Host-budgetoid-session on the request
+    [*] --> Provider : a provider bearer on /api/registration
+    [*] --> Neither : anything else
+
+    Presented --> TokenFound : session_tokens by digest — exempt, nobody published
+    Presented --> Refused : the cookie is absent, malformed, or names no row
+    TokenFound --> Published : ResolveUser — the identity is published here and nowhere earlier
+    Published --> SessionRead : sessions by id — policed, works only because of the line above
+    SessionRead --> Refused : revoked or expired, unless the route accepts an ended session
+    SessionRead --> BudgetResolved : ResolveBudget — second, because ResolveUser clears it
+    BudgetResolved --> [*] : the request proceeds, naming an account that certainly exists
+
+    Provider --> Gated : RegistrationClaimGate — sub, email, email_verified
+    Gated --> Refused : a claim is missing, or the address is not asserted as verified
+    Gated --> Creating : the ceremony is verified and its payload accepted
+    Creating --> [*] : one SaveChanges — the account, its budget, three credentials, a session
+    Creating --> Conflict : the subject, the email, the authenticator or a factor id is taken
+
+    Neither --> Refused : 401 from the fallback policy, identical to an anonymous request
+    Refused --> [*]
     Conflict --> [*] : 409 ProblemDetails
 ```
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| Authenticated → AlreadyPublished | `IUserContext.ResolvedUserId` is already set — which every request authenticated from the session cookie is, because that path publishes the account and the ambient budget while authenticating | none, and it sits **above every other arm including the anonymous one**. This middleware turns a provider token into an account; a request that already has one has nothing here to do, and doing it anyway would name a second source for the same fact. The test is the published **state** and never which scheme ran: a scheme list falls behind the schemes registered, and the day it did the symptom would be a cookie-borne request refused over claims a cookie has never carried. See [sessions.md](sessions.md) |
-| Authenticated → Rejected | Auth succeeds but claims missing | `sub` and `email` both required, else 401 "missing required claims" |
-| Authenticated → Rejected | Auth succeeds, claims present, `email_verified` does not assert verification | Absent, blank, `false` or unparseable, else 401 "email address is not asserted as verified". One state, two titles: the caller holds the token and can read the claim, so naming the reason leaks nothing |
-| Lookup → Existing | A federated credential holds this `(provider, subject)`; its user is the account | — |
-| Lookup → Refused | No credential holds it and the endpoint carries no `ProvisionsUser` metadata | 401 ProblemDetails. The request stops before routing dispatches, so no handler runs and no row is written |
-| Authenticated → Anonymous | The endpoint carries `IAllowAnonymous` | None. The marker is read **before** the claim gate and the request continues with no identity at all, exactly as an unauthenticated one would. It never reaches the lookup, so a token attached by a client interceptor changes nothing about those routes — which is what lets a passkey sign-in complete on a token the claim gate would refuse |
-| Authenticated → Registering | The endpoint carries `RegistersAccount` | The two claim gates have already run — this arm is **below** them, so a registration is still refused for a missing claim or an unverified address. It is **above** the resolve, because the caller has no account to resolve. Nothing is published and nothing is written here; the ceremony behind it derives the account id from its own challenge and publishes it after the signature verifies. See [registration.md](registration.md) |
-| Existing → Resolved | Always, once the credential resolves | None. The branch reads and returns; whatever the token now says about this person is not applied |
-| Creating → Resolved | New user, its first credential **and its default budget** inserted in one save | `User.Create` validates email presence and both length bounds; `Credential.CreateFederated` validates provider and subject; `Budget.CreateDefault` validates the owner |
-| Creating → InsertRejected | A unique violation on the credential index, the email index, or both | `TryAddAsync` returns `false` without deciding which rule fired — the reported constraint name cannot say — and neither row is left behind |
-| InsertRejected → RaceReread → Resolved | A concurrent request registered this credential first | The re-read finds the winning credential and the request adopts its user id |
-| InsertRejected → RaceReread → Conflict | The re-read finds no credential for this subject | Only the email can have collided, so a different Google account holds it: 409 ProblemDetails |
-| Resolved → BudgetEnsured | An account that already existed | Read its default budget; throw if absent. Nothing heals — the budget arrived with the account and only a direct delete can remove it. See [budgets.md](budgets.md#workflows--state-transitions) |
-| InsertRejected → RaceReread → Resolved | (ordering) | The winner is published **before** its budget is read: `budgets` is policed by `user_isolation`, so a read under the loser's phantom id matches nothing. `EnsureUser_WhenTheInsertLosesTheCredentialRace_PublishesTheWinnerBeforeReadingItsBudget` pins it |
+| Presented → TokenFound | The cookie decodes to 32 bytes whose `SHA-256` names a `session_tokens` row | The lookup runs on an **exempt** table naming nobody, because the value it produces is the value a policy on `sessions` would need. See [sessions.md](sessions.md) |
+| TokenFound → Published → SessionRead | Always, and **in that order** | Reversed, the policed read meets `''::uuid` and every request in the product answers `22P02`. No transaction may wrap any of it |
+| SessionRead → Refused | The session is revoked or past its expiry | 401, except on the one route carrying `AcceptsEndedSessionAttribute`, which reaches no ambient budget even there |
+| SessionRead → BudgetResolved | A live session | The account's first budget; `ResolveBudget` runs after `ResolveUser` because that call clears it |
+| Neither → Refused | An authenticated bearer on any route outside `/api/registration`, or nothing at all | **The same 401.** The fallback policy names the session cookie scheme, so `AuthorizationMiddleware` re-authenticates against that handler alone and it answers `NoResult` for a request with no cookie. A provider token outliving an erasure is therefore indistinguishable from an anonymous request, and writes nothing because nothing outside registration writes a `users` row |
+| Provider → Gated | Either leg of `/api/registration` | The group's policy names `ProviderAuthentication.SchemeName` and nothing else, so this is the only place a bearer authenticates. `RegistrationClaimGate` then requires `sub`, `email` and `email_verified`, with a distinct title for each of the two refusals |
+| Gated → Creating | A verified account-registration ceremony, a `prf` result, a canonical factor id, two envelopes and ten submissions | `User.CreateWithId` validates the derived identifier and the address; `Credential.CreateFederated` validates provider and subject; `Budget.CreateDefault` validates the owner. See [registration.md](registration.md) |
+| Creating → Conflict | A unique violation on one of four pinned index names | `RegisterAsync` reports which, `RefusalFor` chooses the sentence, and **the race winner is never adopted** — the caller's brand-new passkey could not open that account |
 
 ## Decision Trees
 
-Resolving the internal user (`UserProvisioningMiddleware` → `ResolveUserHandler`, then
-`EnsureUserHandler.CreateUserIdAsync` only where the route allows it):
+How a request comes to name an account, or fails to:
 
 ```
-IF the request is not authenticated
-  THEN skip provisioning and continue                    ← public endpoints reach no budget-scoped data
-ELSE IF the endpoint carries IAllowAnonymous
-  THEN continue with no identity                         ← a route that runs without a principal runs
-                                                           without an account; the gate below decides
-                                                           whether an address may be REGISTERED, and
-                                                           these routes register nothing
-ELSE IF the sub or email claim is missing or blank
-  THEN 401 ProblemDetails "Authenticated principal is missing required claims."
-ELSE IF email_verified does not parse as true                ← absent, blank, "false" and "1" all fail
-  THEN 401 ProblemDetails "Authenticated principal's email address is not asserted as verified."
-ELSE IF the endpoint carries RegistersAccount
-  THEN continue naming nobody                            ← below the gates, above the resolve; the
-                                                           ceremony derives and publishes the id
-                                                           itself, after the signature verifies
-ELSE IF a federated credential already holds that provider and sub
-  THEN use its user                                      ← no write; the token's claims are not applied
-ELSE IF the endpoint does not declare ProvisionsUser
-  THEN 401 ProblemDetails, and no row is written         ← a stale token must not resurrect an account
-ELSE                                                     ← no credential for that sub, on a minting route
-  try to insert a user and its credential in one save    ← a refusal leaves neither row behind
-  IF the insert succeeded
-    THEN use it
-  ELSE IF it lost to the credential index, the email index, or both
-    re-read by provider and sub                          ← the reported name cannot separate the two
-    IF a credential holds that sub now
-      THEN adopt its user                                ← a concurrent request won; it is one person
-    ELSE                                                 ← the subject was never duplicated
-      THEN ConflictException → 409 "This email address is already linked to a different Google account."
-  ELSE                                                   ← a unique rule this path does not model
-    THEN let the 23505 propagate unhandled → 500 naming the constraint
+IF the request presents __Host-budgetoid-session
+  read session_tokens by the digest                      ← exempt table, no identity on the connection
+  IF no row matches
+    THEN 401                                             ← the cookie names nothing
+  ELSE
+    publish the account the row carries                  ← before the policed read, never after
+    read the sessions row
+    IF it is revoked or expired
+      THEN 401, unless the route accepts an ended session
+    ELSE
+      publish the account's first budget and continue    ← the account certainly exists: the cookie
+                                                           was issued over a session row written
+                                                           beside it
+ELSE IF the route is under /api/registration             ← the only routes JwtBearer authenticates
+  IF sub or email is missing or blank
+    THEN 401 ProblemDetails "Authenticated principal is missing required claims."
+  ELSE IF email_verified does not parse as true              ← absent, blank, "false" and "1" all fail
+    THEN 401 ProblemDetails "Authenticated principal's email address is not asserted as verified."
+  ELSE
+    run the ceremony ladder, derive the account id, publish it, save once
+                                                         ← registration.md owns every rung
+ELSE
+  THEN 401 from the fallback policy                      ← a bearer here authenticates nothing at all:
+                                                           the policy names the cookie scheme and its
+                                                           handler answers NoResult
 ```
 
 Every repository catch that handles a PostgreSQL error filters on `PostgresException.ConstraintName`
 as well as on the SQLSTATE, against a name pinned as a constant on the owning configuration — the
 practice lives in [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md), under
 "A violation report names one rule, not every rule that was violated". Here that is why
-`UserRepository`'s catch clause filters on two pinned index names — `IX_users_email` on
-`UserConfiguration` and `IX_credentials_provider_subject` on `CredentialConfiguration` — declared as
-constants instead of left to EF's naming
+`RegistrationRepository`'s catches filter on four pinned index names, two of which are
+`IX_users_email` on `UserConfiguration` and `IX_credentials_provider_subject` on
+`CredentialConfiguration` — declared as constants instead of left to EF's naming
 convention. What that filter decides is whether a `23505` is a failure this path models at all: a
 property rename that shifted a generated index name would leave the catch unmatched and turn an
 actionable 409 into an opaque 500, and the
@@ -850,22 +840,37 @@ constraint is more useful than a false "someone else won the race". What a const
 decide is *what went wrong*. It identifies the rule the database reported, not the set of rules the
 row violated — an insert that duplicates a credential's subject duplicates that user's email along
 with it, and the user row is written first, so the email index is the one that reports. Only the
-re-read separates a person racing themselves from a stranger holding their address.
+re-read separates the two.
+
+- **A control that closed a gap here was deleted with the path it guarded, and the gap is partly
+  reopened.** The census of repository attribution cited, by name, a test that staged an **unrelated**
+  unique violation into `IUserRepository.TryAddAsync`'s two-index catch filter — proving the filter
+  did not claim violations it should let escape. `TryAddAsync` is gone, and with it that test.
+  `RegistrationRepository` narrows on the same two index names and has **no equivalent control at any
+  layer**: nothing today stages a violation of a third rule into those catches and asserts it escapes.
+  Its own census entry argued the missing control was cheap because three of its four indexes are keyed
+  on a user id derived for that one registration and therefore uncontendable — but **that argument does
+  not cover these two**, which are keyed on values a stranger holds, which is the whole point of both
+  rules. Read this as a hole to close, not as coverage that moved.
 
 The budget branch that runs after this, on every path, is in
 [budgets.md](budgets.md#decision-trees).
 
 ## Integration Points
 
-- **Google OAuth / OIDC**: identity comes from the Google ID token, and reaches the account through a
-  federated credential rather than through a column on the user. The API reads three claims and no
+- **Google OAuth / OIDC**: the provider is contacted **once in an account's life**, on the
+  registration screen, and the identity it vouches for reaches the account through a federated
+  credential rather than through a column on the user. The API reads three claims and no
   others — `sub` and `email`, which are stored, and `email_verified`, which is **read and not
   stored**: it gates registration and is then discarded. The token carries more, and the rest is
-  deliberately dropped rather than stored against the account. The frontend attaches the **ID token** (not the access token) as the
-  `Authorization: Bearer` header on API calls (see the client `AuthInterceptor`) and reads no claim
+  deliberately dropped rather than stored against the account. The frontend attaches the **ID token**
+  (not the access token) as the `Authorization: Bearer` header when it holds one, and reads no claim
   out of it at all; the authorization request asks for `openid email` and nothing more.
   `auth-service.spec.ts` pins the first half and `no-profile-scope.spec.ts`, which reads the built
-  bundle, pins the second. **The client reads no claim *because* it asks the API**: `GET /api/me` is
+  bundle, pins the second. **Only two routes accept that header.** `JwtBearer` is reached by exactly
+  one authorization policy — the `/api/registration` group's — so a bearer sent anywhere else
+  authenticates nothing and the request is answered the anonymous `401`. **The client reads no claim
+  *because* it asks the API**: `GET /api/me` is
   its only source for the address, and that is not a detour around the token — the token asserts what
   the provider says today, while the account is reachable at what was stored when it was created. Do
   not "optimize" the call away by decoding the token; the two values legitimately disagree, and the
@@ -874,66 +879,64 @@ The budget branch that runs after this, on every path, is in
   only source for it. It needed no grant — the role already holds `SELECT` on `users`, so
   `AppRoleGrantMatrixTests` staying green *untouched* is the proof, and a `42501` on this path would
   be a query bug rather than a missing privilege. `user_isolation` is what scopes the read. The route
-  declares no authorization metadata of its own and never `AllowAnonymous`, and it carries no
-  `ProvisionsUser` — so a brand-new subject whose **first** authenticated request is this one is
-  refused with `NoAccountTitle` rather than provisioned. A client must reach one of the six
-  account-creating route groups before it reaches this one.
-- **[Registration](registration.md)**: the other way an account comes to exist, and the one that
-  creates it on purpose. Its two routes carry `RegistersAccount` and never `ProvisionsUser`, they are
-  the only routes in this application whose policy **names** an authentication scheme, and the account
-  they leave behind satisfies the three-credential invariant above from its first instant. The account
+  declares no authorization metadata of its own and never `AllowAnonymous`, so it inherits the
+  fallback policy — which authenticates against the session cookie handler alone, meaning a caller
+  holding a provider bearer and no account is answered the same `401` an anonymous request gets, and
+  writes nothing on the way past because nothing outside `/api/registration` writes anything.
+- **[Registration](registration.md)**: the one way an account comes to exist. Its two routes are
+  the only ones in this application whose policy **names** an authentication scheme, and the account
+  they leave behind satisfies the three-credential invariant above from its first instant — which is
+  now the same sentence as "every account satisfies it", because they are the only routes that create
+  one. The account
   identifier they write is derived from the ceremony's own challenge rather than drawn by
-  `Guid.CreateVersion7()`, which is why `User` carries a second factory, `CreateWithId`, rather than an
-  optional parameter on `Create` — `OwnershipKeyImmutabilityTests` asks whether the key is written
-  once, not where the value came from, so widening the existing factory would have reddened nothing.
+  `Guid.CreateVersion7()`, which is why `User.CreateWithId` takes an id rather than minting one, and
+  why the minting factory beside it is deleted rather than left unused —
+  `OwnershipKeyImmutabilityTests` asks whether the key is written once, not where the value came from,
+  so a second factory would have reddened nothing.
 - **[Recovery Codes](recovery-codes.md)**: the third credential type, and the second family of rows
   hanging off a `credentials` row. Its three routes — `POST` and `GET /api/me/recovery-codes`, and the
-  anonymous `POST /api/recovery-codes/redemption` — carry no `ProvisionsUser` and may never gain one: a
-  stale provider token that minted an account there would resurrect it **holding a full-session
+  anonymous `POST /api/recovery-codes/redemption` — create no account, and now cannot: a
+  stale provider token that minted one there would resurrect the account **holding a full-session
   credential and no passkey**, which is strictly worse than the empty shell the erasure and export
   routes argue about, because such an account can never clear the re-authentication gate in front of
-  erasure again. On the redemption the marker would also be inert — the middleware reads the anonymous
-  arm first and returns — so the two markers are mutually exclusive, and it is the route on which the
-  mistake is likeliest, being the one people reach for when they cannot get in.
-- **[Budgets](budgets.md)**: provisioning resolves the identity *and* the ambient budget in one step.
-  Everything a user can see hangs off that budget, so all tenancy rules — stamping, filtering, name
-  uniqueness, the 404 behaviour — are documented there.
+  erasure again. The refusal is no longer a marker somebody could add by mistake — the two
+  authenticated routes reach `RegisterAccountHandler` through nothing, and the redemption is anonymous.
+- **[Budgets](budgets.md)**: authenticating a session resolves the identity *and* the ambient budget
+  in one step, and registration writes both in one save. Everything a user can see hangs off that
+  budget, so all tenancy rules — stamping, filtering, name uniqueness, the 404 behaviour — are
+  documented there.
 - **All other domain areas**: Accounts, Transactions, Payees, Category Groups, and Categories are
   budget-scoped, not user-scoped. They carry no `UserId` at all; the only owner link in the schema is
   `Budget.UserId`.
 
 ## Edge Cases & Known Gotchas
 
-- **Concurrent first-request race**: two simultaneous first requests for the same new user can both
-  miss on lookup and race to insert. The loser catches the unique violation and re-reads by
-  `(provider, subject)` rather than erroring, adopting the winner's row. Do not "simplify"
-  `EnsureUserHandler` by dropping the re-read — it is what makes provisioning safe under concurrency,
-  and it is also the only thing that tells this race apart from a genuine email collision. The losing
-  write duplicates the subject *and* the email, so it breaches both unique indexes and the database
-  names only one of them; the re-read is sound because a reported unique violation means the winning
-  transaction committed, which makes its rows visible here.
+- **Two registrations racing on one Google identity**: both consume their own challenge, both verify,
+  and both reach the save. The loser catches the unique violation and re-reads by
+  `(provider, subject)` to tell an ambiguous email collision from a real one — the losing write
+  duplicates the subject *and* the email, so it breaches both unique indexes and the database names
+  only one of them; the re-read is sound because a reported unique violation means the winning
+  transaction committed, which makes its rows visible here. **The winner is never adopted**, which is
+  the opposite of what the deleted provisioning path did with the same race: the loser's brand-new
+  passkey is not registered to the winning account and could not open it, so signing them in there
+  would hand somebody an account they cannot read. Both readings answer `409`.
 
-- **The user row, its first credential and its default budget are written in one `SaveChanges`, and
-  that is load-bearing.** Splitting off the credential would make a user with no credential reachable —
+- **The whole account is written in one `SaveChanges`, and that is load-bearing.** Splitting off the
+  credentials would make a user with no credential reachable —
   a row holding its unique email that no sign-in can ever resolve to, so every later attempt with that
-  address is a 409 with no repair path, and nothing heals it. Splitting off the budget is what used to
-  happen, and it made a user with no budget reachable; that state now has no repair either, so the
-  save is what keeps it from arising.
-  `UserRepositoryTests.TryAddAsync_WhenOnlyTheCredentialCollides_LeavesNoOrphanedUserRow` and
-  `…TryAddAsync_WhenTheEmailCollides_LeavesNoUserCredentialOrBudgetRow` are what fail if someone
-  splits it.
-
-  **Registration makes the same argument at ten times the size**, and the `22P02` half of it is
-  sharper there rather than merely repeated: that path writes roughly thirty rows across nine
-  relations in one save and takes **no** transaction, for exactly the reason above — the identity is
-  published inside the handler, so a wrap would configure the connection while `app.current_user_id`
-  was still empty. See [registration.md](registration.md).
+  address is a 409 with no repair path, and nothing heals it. Splitting off the budget would make a
+  user with no budget reachable; that state has no repair either, so the save is what keeps it from
+  arising. Registration writes roughly thirty rows across nine
+  relations in that one save and takes **no** transaction, because the identity is
+  published inside the handler and a wrap would configure the connection while `app.current_user_id`
+  was still empty — a `22P02` on the `users` INSERT's own `WITH CHECK`. See
+  [registration.md](registration.md), which owns the ladder and the refusals.
 
   Two shapes were considered and rejected, both of which a later reader is likely to propose.
   **Wrapping the writes in `ITransactionalExecutor`** ([ADR 0003](../decisions/0003-wrap-multi-repository-writes-in-one-transaction.md))
   is the named mechanism for exactly "several writes in one handler must be atomic", and it is the
-  first thing to reach for here. One save is better, and at three rows the argument is no longer only
-  about cost: `BeginTransactionAsync` opens the connection, and opening the connection is when
+  first thing to reach for here. One save is better, and the argument is not about cost:
+  `BeginTransactionAsync` opens the connection, and opening the connection is when
   `SessionContextInterceptor` writes `app.current_user_id`. Inside a transaction that runs **once**, at
   the begin — so a wrap whose delegate contains `ResolveUser` configures the connection while the
   setting is still empty and the `users` INSERT fails `22P02` against its own `WITH CHECK`. It also
@@ -961,13 +964,14 @@ The budget branch that runs after this, on every path, is in
   [budgets.md](budgets.md#edge-cases--known-gotchas).
 
 - **A returning user's stored email is deliberately never refreshed, and it will go stale.** The
-  obvious "fix" is to re-apply the token's claims on the existing-user branch, which is what the
-  code once did. Do not restore it: the provider gates registration and is not standing
-  authority to rewrite the account afterwards, and a silent refresh both contacts the provider on
-  every request and moves the account's only reachable address without anyone asking. Changing the
-  address is its own operation with its own fresh authorization, and it is not built yet.
-  `EnsureUserHandlerTests.EnsureUser_ReturningUserWhoseProviderEmailChanged_KeepsTheRegisteredEmail`
-  is what fails if someone restores it.
+  obvious "fix" is to re-apply a token's claims to an account that already exists, which is what the
+  code once did on every authenticated request. Do not restore it: the provider gates registration and
+  is not standing authority to rewrite the account afterwards, and a silent refresh both contacts the
+  provider on every request and moves the account's only reachable address without anyone asking.
+  There is now no request on which it could be done at all — a returning person signs in with a
+  passkey, contacting no third party — so what keeps the rule is the shape of the product rather than
+  a branch somebody could re-add. Changing the address is its own operation with its own fresh
+  authorization, and it is not built yet.
 
 - **`case_insensitive` folds case but not accents.** It is ICU `und-u-ks-level2`, so
   `josé@example.com` and `jose@example.com` are two distinct rows and both can exist at once. This is
@@ -979,8 +983,8 @@ The budget branch that runs after this, on every path, is in
   search-by-email or autocomplete over it needs an explicit `COLLATE` on the expression rather than a
   plain `LIKE`, and the failure will arrive at runtime, not at compile time.
 
-- **An over-long email from the identity provider fails the *first* sign-in with a 400, and only
-  the first.** The 254-character bound is checked where the value is written, so an existing user
+- **An over-long email from the identity provider fails *registration* with a 400, and nothing
+  after it.** The 254-character bound is checked where the value is written, so an existing account
   never meets it again however long their provider address grows. Softening it on the insert path
   would mean truncating the address or swallowing the validation error, and
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out both: a

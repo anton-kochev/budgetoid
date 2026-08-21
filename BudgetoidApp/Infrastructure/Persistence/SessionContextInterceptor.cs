@@ -18,9 +18,9 @@ namespace Infrastructure.Persistence;
 /// operation and nothing here pins it open, so a value written once in middleware evaporates when
 /// the connection returns to the pool, and a <c>set_config</c> issued inside a transaction is undone
 /// by a rollback. Retries re-open too, so this is also what survives
-/// <c>NpgsqlRetryingExecutionStrategy</c>. It is also why user provisioning publishes the resolved
-/// id into the request scope rather than issuing its own <c>set_config</c>: the identity reaches the
-/// database on the next connection open, never mid-statement.
+/// <c>NpgsqlRetryingExecutionStrategy</c>. It is also why the handlers that establish an identity
+/// publish it into the request scope rather than issuing their own <c>set_config</c>: the identity
+/// reaches the database on the next connection open, never mid-statement.
 /// </para>
 /// <para>
 /// Both settings travel in one statement, so the session is never observable half-configured and
@@ -68,8 +68,9 @@ public sealed class SessionContextInterceptor(IBudgetContext budgetContext, IUse
         command.CommandText = SetSessionContextSql;
 
         // The Resolved* accessors, never the throwing ones: unresolved is a legitimate state for both
-        // — credential discovery runs before any identity exists, provisioning queries budgets before
-        // a budget id does, and infrastructure scopes such as health checks resolve neither — so
+        // — credential discovery runs before any identity exists, session authentication reads the
+        // account's budget before a budget id does, and infrastructure scopes such as health checks
+        // resolve neither — so
         // catching their throw would be exception-as-control-flow for a case that is not exceptional.
         //
         // Unresolved writes '' rather than skipping the setting, which would leave correctness

@@ -1,10 +1,7 @@
-using Domain.Budgets;
 using Domain.Users;
 using Infrastructure.Persistence;
-using Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
-using Npgsql;
 
 namespace Infrastructure.Repositories;
 
@@ -36,45 +33,6 @@ public sealed class UserRepository(BudgetoidDbContext dbContext) : IUserReposito
                                  && credential.Subject == trimmedSubject)
             .Select(credential => (Guid?)credential.UserId)
             .SingleOrDefaultAsync(cancellationToken);
-    }
-
-    /// <inheritdoc />
-    public async Task<bool> TryAddAsync(
-        User user,
-        Credential credential,
-        Budget defaultBudget,
-        CancellationToken cancellationToken = default)
-    {
-        dbContext.Users.Add(user);
-        dbContext.Credentials.Add(credential);
-        dbContext.Budgets.Add(defaultBudget);
-
-        try
-        {
-            // One save, so the three rows land together or not at all — see the interface for why
-            // each of them is unhealable on its own, and why a wrapping ITransactionalExecutor is not
-            // the way to get the same property.
-            await dbContext.SaveChangesAsync(cancellationToken);
-            return true;
-        }
-        // A losing insert can violate both unique rules at once — same (provider, subject), same
-        // email — and PostgreSQL names only one of them, picked by the order the rows are written
-        // rather than by what happened. So this cannot tell the two apart and does not try: either
-        // name means "an existing row already holds this identity", and the caller decides which by
-        // re-reading the credential. The filter still lists exactly those two names, so a 23505 from
-        // any other unique rule propagates on purpose: it is a constraint this method does not model,
-        // and a 500 naming it is more useful than a false "someone else won the race". The budget's
-        // own index is deliberately not among them, and is unreachable besides — its user_id is minted
-        // in this call, so no other row can share it.
-        catch (DbUpdateException exception) when (
-            IsUniqueViolationOf(exception, CredentialConfiguration.ProviderSubjectIndexName)
-            || IsUniqueViolationOf(exception, UserConfiguration.EmailIndexName))
-        {
-            dbContext.Entry(user).State = EntityState.Detached;
-            dbContext.Entry(credential).State = EntityState.Detached;
-            dbContext.Entry(defaultBudget).State = EntityState.Detached;
-            return false;
-        }
     }
 
     public async Task DeleteAsync(Guid userId, CancellationToken cancellationToken = default)
@@ -152,10 +110,4 @@ public sealed class UserRepository(BudgetoidDbContext dbContext) : IUserReposito
             entry.State = EntityState.Detached;
         }
     }
-
-    private static bool IsUniqueViolationOf(DbUpdateException exception, string indexName) =>
-        exception.InnerException is PostgresException
-        {
-            SqlState: PostgresErrorCodes.UniqueViolation,
-        } postgresException && postgresException.ConstraintName == indexName;
 }

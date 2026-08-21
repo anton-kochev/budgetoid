@@ -1882,76 +1882,29 @@ public sealed class RecoveryCodeGenerationTests
     }
 
     /// <summary>
-    /// An authenticated subject with no account behind it is refused, and the refusal writes nothing.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <b>The row counts are the half of this test that carries the weight.</b> A status assertion cannot
-    /// tell a route that refuses from a route that mints an account and <em>then</em> refuses — and a
-    /// provider id token stays valid for up to an hour after the account it names is erased, so a
-    /// <c>ProvisionsUser</c> marker arriving on this group would turn one retried POST into a
-    /// resurrected, passkey-less account that the re-authentication gate in front of erasure can never
-    /// remove again. This route must never gain that marker.
-    /// </para>
-    /// <para>
-    /// <b>Counted unscoped, on the superuser connection.</b> The id an accidental marker would mint is
-    /// one no assertion here could name, so a count filtered to this subject would pass over the very row
-    /// it exists to catch — and <c>users</c>, <c>budgets</c> and <c>sessions</c> are policed by
-    /// <c>user_isolation</c>, which is <c>FOR ALL</c>, so a policed connection reports zero rows for a row
-    /// that is still there exactly as it does for one that was never written.
-    /// </para>
-    /// <para>
-    /// The title is asserted before the counts, because it is what makes them meaningful: it says the
-    /// request reached the provisioning middleware and was refused there. An unmapped path answers 404
-    /// and leaves the same empty tables behind, so the counts on their own prove nothing.
-    /// </para>
-    /// </remarks>
-    [Test]
-    public async Task Generation_ForAnAuthenticatedSubjectWithNoAccount_IsRefusedAndCreatesNothing()
-    {
-        // Arrange — an authenticated client that has deliberately never called EstablishAccountAsync.
-        await using PostgresTestHost host = await StartBearerHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient("google-issuing-unprovisioned");
-
-        await using NpgsqlConnection admin = new(host.ConnectionString);
-        await admin.OpenAsync();
-
-        // Act
-        HttpResponseMessage response = await client.PostAsJsonAsync(
-            RecoveryCodesPath,
-            new { codes = SubmissionsOf(Verifiers()) });
-
-        // Assert
-        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-        await Assert.That(await ReadTitleAsync(response)).IsEqualTo(UserProvisioningMiddleware.NoAccountTitle);
-
-        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
-        await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);
-        await Assert.That(await ScalarAsync(admin, "select count(*) from budgets")).IsEqualTo(0L);
-        await Assert.That(await ScalarAsync(admin, "select count(*) from recovery_code_hashes")).IsEqualTo(0L);
-    }
-
-    /// <summary>
     /// A caller carrying no token at all is refused by the fallback policy, and the title says so.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Three refusals answer 401 on this route and the status cannot tell them apart: the fallback
-    /// authorization policy turning an anonymous caller away before the route is reached, the
-    /// provisioning middleware finding no account for an authenticated principal, and the
-    /// re-authentication gate refusing a proof. Only the middleware's carries
-    /// <see cref="UserProvisioningMiddleware.NoAccountTitle" /> and only the gate's carries
+    /// Two refusals answer 401 on this route and the status cannot tell them apart: the fallback
+    /// authorization policy turning an anonymous caller away before the route is reached, and the
+    /// re-authentication gate refusing a proof. Only the gate's carries
     /// <see cref="PasskeyVerificationExceptionHandler.Title" />; the anonymous one is titled
     /// <c>"Unauthorized"</c> from the status code alone, because <c>UseStatusCodePages</c> writes it with
-    /// no title of its own.
+    /// no title of its own. That inequality is what rules out the door standing open: a route reached
+    /// anonymously and refused only by the ceremony would pass a status-only assertion, and that would
+    /// mean an unauthenticated caller reaching a handler at all.
     /// </para>
     /// <para>
-    /// Both inequalities, because each rules out a different way the door could be standing open. Without
-    /// the middleware one, a route that had lost its authorization entirely still passes here — an
-    /// anonymous request would walk on to the provisioning middleware, find no account for a principal it
-    /// cannot even name, and be answered that middleware's 401. Without the gate one, a route reached
-    /// anonymously and refused only by the ceremony would pass, and that would mean an unauthenticated
-    /// caller reaching a handler at all.
+    /// <b>There was a third refusal and a second inequality beside it, and both went with the
+    /// provisioning middleware.</b> An authenticated principal naming no account was answered a
+    /// distinctly titled 401, and the sibling test that drove it counted rows rather than reading a
+    /// status: a provider token outlives the account it names by up to an hour, so a provisioning marker
+    /// arriving on this group would have turned one retried POST into a resurrected, passkey-less
+    /// account that the re-authentication gate in front of erasure could never remove again. There is no
+    /// marker and no minting path left, and this route authenticates from a cookie only ever issued over
+    /// a session row written beside the account it names, so that state cannot be entered and there is
+    /// nothing left for the second inequality to rule out.
     /// </para>
     /// </remarks>
     [Test]
@@ -1960,17 +1913,15 @@ public sealed class RecoveryCodeGenerationTests
         // Arrange
         await using PostgresTestHost host = await StartBearerHostAsync();
 
-        // Act — no subject header, so nothing authenticates and the fallback policy decides.
+        // Act — no cookie and no token, so nothing authenticates and the fallback policy decides.
         HttpResponseMessage response = await host.Factory
             .CreateClient()
             .PostAsJsonAsync(RecoveryCodesPath, new { codes = SubmissionsOf(Verifiers()) });
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
-
-        string title = await ReadTitleAsync(response);
-        await Assert.That(title).IsNotEqualTo(UserProvisioningMiddleware.NoAccountTitle);
-        await Assert.That(title).IsNotEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That(await ReadTitleAsync(response))
+            .IsNotEqualTo(PasskeyVerificationExceptionHandler.Title);
     }
 
     /// <summary>

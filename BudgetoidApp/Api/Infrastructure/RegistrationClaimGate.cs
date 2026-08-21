@@ -10,13 +10,11 @@ namespace Api.Infrastructure;
 /// <remarks>
 /// <para>
 /// <b>These gates are the only thing between a provider token and an account created under an address
-/// nobody verified.</b> They live in <see cref="UserProvisioningMiddleware"/> today as well, above its
-/// resolve and above its <see cref="RegistersAccountAttribute"/> arm, and the two copies run together
-/// for exactly one commit — the one that deletes the middleware is what proves this filter is carrying
-/// them, because <c>RegistrationClaimGateTests</c> stays green through the deletion or the gate was
-/// never here. While both stand, the two title constants must read byte for byte the same as the
-/// middleware's: that file's copies are what the tests compare against, and a reworded pair here would
-/// look like a passing move and be a silent divergence.
+/// nobody verified — and now they are literally the only thing.</b> A provisioning middleware carried a
+/// second copy of both for one commit; the commit that deleted it is what proved this filter was
+/// carrying them, because <c>RegistrationClaimGateTests</c> stayed green through the deletion. Nothing
+/// duplicates the two title constants below any more, so they may be reworded on their own — but only
+/// by an edit that keeps them distinct from each other, which is the property those tests hold.
 /// </para>
 /// <para>
 /// <b>Why an endpoint filter and not any of the three things that run earlier.</b> A
@@ -28,8 +26,8 @@ namespace Api.Infrastructure;
 /// a titled ProblemDetails from there needs <c>OnChallenge</c> written too, and the gate then becomes a
 /// property of the <em>scheme</em> rather than of the route — invisible to anybody reading the route
 /// table, which is where every other rule about who may reach these two routes is declared. And a new
-/// middleware reading a new marker is <see cref="RegistersAccountAttribute"/> under a different name:
-/// the same opt-in metadata, the same silence when a group forgets it.
+/// middleware reading a new marker would rebuild the deleted provisioning middleware under a different
+/// name: the same opt-in metadata, the same silence when a group forgets it.
 /// </para>
 /// <para>
 /// <b>The accepted behaviour change: 400 can now overtake 401.</b> A filter runs after model binding, so
