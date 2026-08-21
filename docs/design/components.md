@@ -699,8 +699,15 @@ Three of them are worth reading twice.
 ### Step 3 — the codes
 
 Specified in full in [the recovery-code hand-off](#the-recovery-code-hand-off) below. What the flow
-adds around it is an input and an output: the ten codes it has just minted, and the press that posts
-the account.
+adds around it is **two inputs and an output**: the ten codes it has just minted, whether the account
+is being created right now, and the press that posts it.
+
+**The wait is handed down rather than rendered by the shell**, and that is structural rather than a
+preference. This step owns the only `role="status"` region on the screen, in the DOM from first paint
+and empty at rest; a region the shell created at the moment it had something to say would be
+announced unreliably or not at all — the failure the live-region rule above exists to prevent. An
+input also keeps the step what it is: it still mints nothing, posts nothing, navigates nowhere, and
+holds no reference to the flow.
 
 ### The four post-request states
 
@@ -713,33 +720,53 @@ the screen in all four.
 | State | Copy | Control |
 | --- | --- | --- |
 | Refused | **Registration was refused** — "Your account wasn't created and nothing was saved. The ten codes you were just shown open nothing — start again to get a new set." | Primary **Start again** |
-| An account already exists, on a first attempt | **You already have an account** — "An account already exists for this Google address. Nothing was created here, and the ten codes you were just shown open nothing — sign in from the Budgetoid home page instead." | none |
-| An account already exists, after a restart | **Your first attempt worked** — "Your first attempt did create your account — its answer just didn't reach this browser. Sign in with the passkey you made on that attempt. The ten codes you were shown a moment ago open nothing; the ten from the first attempt are the ones that work." | none |
+| An account already exists, and no earlier request went unanswered | **You already have an account** — "An account already exists for this Google address. Nothing was created here, and the ten codes you were just shown open nothing — sign in from the Budgetoid home page instead." | Primary **Go to sign in** |
+| An account already exists, after an earlier request went unanswered | **Your first attempt worked** — "Your first attempt did create your account — its answer just didn't reach this browser. Sign in with the passkey you made on that attempt. The ten codes you were shown a moment ago open nothing; the ten from the first attempt are the ones that work." | Primary **Go to sign in** |
 | No answer came back | **Budgetoid didn't hear back** — "Budgetoid didn't get an answer, so we can't tell you whether your account was created. Keep the ten codes you saved: if it was, they're part of the only way back into it." | Primary **Start again** |
 
-- **The first two say the codes are dead; the last must never.** A judged request was read and left
-  the server before a row was written, so saying the ten codes open nothing is a kindness — it tells
-  somebody to throw away a piece of paper that is worthless, and it stops ten worthless secrets
-  standing in front of a person about to be handed ten real ones. A request that got **no answer**
+- **The first three say the ten codes on screen are dead; the last must never.** A judged request
+  was read and left the server before a row was written, so saying those ten open nothing is a
+  kindness — it tells somebody to throw away a piece of paper that is worthless, and it stops ten
+  worthless secrets standing in front of a person about to be handed ten real ones. The third state
+  says it of the codes on screen while naming an *earlier* ten as the live ones, which is the same
+  claim about the same request. A request that got **no answer**
   says nothing about whether the account exists: it may have arrived, committed and lost its
   response. Telling that person their codes are worthless tells them to discard the only key to an
   account they cannot make more codes for. The two sentences are the requirement; collapsing them is
   the defect.
-- **The two conflicts are the same status code and opposite facts**, and the screen may only tell
-  them apart by whether **Start again** has been pressed. The server sends four distinct sentences
-  under one identical title with no machine-readable code, so the copy above must never be chosen by
-  matching the server's text. On a first attempt the 409 is a stranger at the front door and nothing
-  was created here. After a restart it is the person's *own* first attempt answering: that POST
-  committed and lost its 201, so the account exists, the passkey that opens it is the first
-  attempt's, and the live codes are the first attempt's ten. Showing the first sentence there is
-  false on every clause and costs the account — somebody who throws the first card away holds a
-  passkey, no codes, and no way to make more.
-- **Neither conflict carries a control, and after a restart that is now a gap rather than a rule.** On
-  a first attempt, starting again spends another challenge and another passkey to be told the same
-  thing, so the sentence is the whole offer. After a restart the sentence tells the person to sign in
-  with the passkey their first attempt created — and `/welcome` now does exactly that, so the screen
-  it names is a screen this state could point at. What ships carries no control there; adding one is
-  work, and until it lands this bullet records the departure rather than the reason.
+- **The two conflicts are the same status code and opposite facts**, and the screen tells them apart
+  by **what the previous registration request ended as** — never by whether a button was pressed. The
+  server sends four distinct sentences under one identical title with no machine-readable code, so
+  the copy above must never be chosen by matching the server's text either. What the client does know
+  is how its own earlier POST ended, and only one of those endings leaves the question open: a lost
+  answer. A `400` and a `409` are judgements — the server looked and said no, and every one of those
+  paths leaves the handler before a row is written — so neither of them ever opens it. With no
+  earlier unanswered request the 409 is a stranger at the front door and nothing was created here.
+  After one it is the person's *own* first attempt answering: that POST committed and lost its 201,
+  so the account exists, the passkey that opens it is the first attempt's, and the live codes are the
+  first attempt's ten. Showing the first sentence there is false on every clause and costs the
+  account — somebody who throws the first card away holds a passkey, no codes, and no way to make
+  more.
+  - **Forking on the press was the defect, and the shape of it is worth keeping.** **Start again** is
+    offered from two states, so *refused → start again → 409* rendered "Your first attempt worked"
+    at somebody whose first attempt had created nothing, and sent them to sign in with a passkey the
+    server never saw — met by a byte-identical 401 that names no cause. The reading is also
+    **one-directional**: once a request has gone unanswered, nothing later closes the question, and
+    an account that may exist does not stop existing because the request after it was refused.
+- **Both conflicts carry one control, and it is rendered outside the fork.** A single Primary **Go to
+  sign in**, routing to `/welcome`, which is the one screen in the product that runs a passkey
+  assertion — exactly what both readings need, since one has a passkey from an earlier visit and the
+  other has the one their first attempt registered. Outside the fork on purpose: the branch that most
+  needs the control is the one a reader is least likely to be looking at, and a control written twice
+  is a control somebody forgets once.
+  - **A button, not an `<a routerLink>`.** What a link buys is opening the address somewhere else,
+    and doing that from here leaves this dead end standing in the old tab with ten worthless codes on
+    it. This is a way *out* of a flow that has ended, of the same kind as the **Start again** its
+    neighbours offer — not navigation somebody might want beside what they are reading.
+  - **Start again is still absent from both**, and that argument is unchanged: it spends another
+    challenge and another passkey to meet the same 409. It reaches "not that control", never "no
+    control" — which is what left both branches telling a person to go somewhere with nothing to
+    press, on a route that carries no navigation of its own.
 - **Start again re-draws everything**: a new challenge, a new passkey, new account keys, ten new
   codes and eleven new factor identifiers. It returns to step 2, and the set on screen when the flow
   next reaches step 3 is a different set.
@@ -757,24 +784,32 @@ the same sentence with `--bud-over` removed. Every control is a 48px target.
 ### What ships today
 
 The whole of the above renders: three steps, the caption, both branches of the introduction, every
-passkey sentence with its control, the hand-off, and all four post-request states. The flow runs
-the ceremony, draws the account keys, mints the card and eleven factor identifiers, wraps every
-factor's copy, posts the account, publishes the session and hands the person to `/app`. The record
-that an attempt was abandoned is read on exactly one surface — the conflict, where it decides which
-of two opposite sentences is true — and nowhere else.
+passkey sentence with its control, the hand-off with its busy state, and all four post-request
+states with their controls. The flow runs the ceremony, draws the account keys, mints the card and
+eleven factor identifiers, wraps every factor's copy, posts the account, publishes the session and
+hands the person to `/app`. **Nothing on this screen reads whether a step was restarted** — the one
+place two opposite sentences had to be told apart reads how the previous request ended instead, and
+a press is recorded nowhere.
 
-**One departure, named rather than tidied away.** Outside that conflict, **no step says an attempt
-was abandoned**: after **Start again**, nothing on the passkey or codes step tells a person that the
-ten codes they may have written down a minute ago belong to nothing. Those two steps are where a
-person is still standing rather than being told an outcome, and the sentence that would sit there is
-work rather than a rule this chapter is retiring.
+**One departure, named rather than tidied away.** **No step says an attempt was abandoned**: after
+**Start again**, nothing on the passkey or codes step tells a person that the ten codes they may
+have written down a minute ago belong to nothing. Those two steps are where a person is still
+standing rather than being told an outcome, and the sentence that would sit there is work rather
+than a rule this chapter is retiring.
 
 ## The recovery-code hand-off
 
 The one screen in the product that shows a secret, and the only time it is shown. Built as
-`register/steps/codes-step.component`, driven by an `input()`, and rendered as the last step of the
+`register/steps/codes-step.component`, driven by its inputs, and rendered as the last step of the
 registration flow above — which mints the codes, hands them here, and posts the account when this
 step raises its one output.
+
+**The contract is two inputs and one output.** The ten codes are **required**: an empty default would
+render a screen promising ten codes and showing none, and the failure would read as a styling problem
+rather than as a flow that forgot to mint. Whether the account is being created right now is
+**optional and defaults to false**, so the step renders its resting screen without being told. The
+output carries nothing — the codes are already the caller's, and handing them back out would put a
+second reference to ten secrets into a flow with no use for it.
 
 ### Anatomy
 
@@ -825,7 +860,13 @@ behind it. Silence after a press is the defect the export control next door alre
 `role="status"` holding a list narrates every entry as an event and puts ten secrets in a speech
 buffer, for no gain: they are content, and content is read in reading order. One `role="status"`
 region exists, in the DOM from first paint and empty at rest, and it carries the one-sentence
-outcomes — `Copied.` and the copy failure — and nothing else. The download is the accessible route.
+outcomes — `Copied.`, the copy failure, and the line saying the account is being created — and
+nothing else. The download is the accessible route.
+
+**The wait comes first and wins**, the way it does on the passkey step: the press that starts it is
+the press that ends the flow, so `Saved.` left standing underneath would be the screen answering a
+question nobody is asking any more. It is one region and not two, so the outcome of the last press
+is always in one place and nobody has to know where to look for bad news as opposed to good.
 
 ### The acknowledgement
 
@@ -839,6 +880,27 @@ way becomes noise the reader learns to skip, which is the opposite of what it is
 
 The Primary is `disabledInteractive` until the box is ticked — the third disabled case in the
 Buttons chapter — and the gate is repeated in the click handler, for the reason stated there.
+
+### While the account is being created
+
+**The press that ends this flow is the longest wait in the product** — roughly thirty rows across
+nine relations in one save — so a screen that renders unchanged for several seconds reads as a
+control that did nothing, which is what invites the second press. It is specified, not optional.
+
+- **`Creating your account…`** lands in the region above, replacing whatever outcome was there.
+- **The Primary becomes unavailable and keeps its place in the tab order** — the *busy* case in the
+  Buttons chapter: `disabledInteractive` renders the unavailable appearance and sets `aria-disabled`
+  while leaving the DOM `disabled` property false, so a keyboard user standing on the control is not
+  dropped to `<body>` mid-press.
+- **The label does not change.** The region says what is happening; a control that renames itself
+  under the finger moves the answer somewhere a screen reader has to be told to go back to, and
+  leaves the one press in this flow that matters with no stable name.
+- **The codes stay exactly where they are.** Nothing is taken off the screen while the request is
+  out: this is the last moment anybody can check a transcription against them, and the four states
+  that replace this step arrive only once the request has answered.
+
+The attribute is presentation here as everywhere else — the flow refuses a second press itself while
+a request is outstanding, which is the layer that owns the question.
 
 ### Copy
 
@@ -873,12 +935,13 @@ colour removed.
 ### What ships today
 
 All of it, and the flow that reaches it: a person creating an account is shown ten codes on this
-screen, saves or copies them, acknowledges the consequence, and presses the control that creates the
-account. **This component still mints nothing and posts nothing** — the codes arrive through its
-input and the press leaves through its output, which is what stops a set being re-minted by every
-re-render of the step. The type styles above — Inter, `tabular-nums`, the tracking — are the one part
-of this chapter no test holds: jsdom applies no styles, and a bundle-reading spec was judged not
-worth it here.
+screen, saves or copies them, acknowledges the consequence, presses the control that creates the
+account, and is told the account is being created while they wait. **This component still mints
+nothing and posts nothing** — the codes and the wait arrive through its inputs and the press leaves
+through its output, which is what stops a set being re-minted by every re-render of the step, and
+what keeps the step holding no reference to the flow at all. The type styles above — Inter,
+`tabular-nums`, the tracking — are the one part of this chapter no test holds: jsdom applies no
+styles, and a bundle-reading spec was judged not worth it here.
 
 ## Text fields and selects
 

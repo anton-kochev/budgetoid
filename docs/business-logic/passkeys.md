@@ -373,6 +373,16 @@ erDiagram
     client cannot report `true` about a device it could not derive from. The server's rule, its
     sentence, and all five of its pinned refusals are untouched; do not "align" them with this
     paragraph.
+    - **The payload therefore asserts what the client *established*, not what `create()` reported**,
+      and the two are different for a large share of real devices. `toRegistrationPayload` takes the
+      claim as a parameter and the ceremony passes it, because the ceremony is the only code that
+      knows which of the two routes below produced the output. Built from the creation results alone,
+      the payload reports nothing for exactly the authenticators the second route exists for, and the
+      server answers 400 — by which point the account's keys are sealed into twenty-two envelopes and
+      ten recovery codes are on screen, so a device that works perfectly is told to throw them away,
+      on every attempt, because an authenticator's answer at enrolment never changes. The default
+      stays "as reported": a caller holding no output must not be able to claim one by leaving an
+      argument off.
   - **A conforming client may need two ceremonies to satisfy it, and one of them goes nowhere.**
     Many platform authenticators return no PRF output at creation and do at the first assertion, so
     `webauthn-ceremony.service.ts` calls `create()` with the evaluation input, and — only if nothing
@@ -380,6 +390,13 @@ erDiagram
     derives from that, and **discards the assertion; it is never sent anywhere.** Refusing after
     `create()` alone would turn away capable devices at the one moment the person can still choose a
     different one, which is the failure this whole rule exists to prevent.
+    - **An authenticator that answers `enabled: false` is refused immediately, with no second
+      prompt.** Absent is not `false`: a credential reporting no `prf` member has said nothing, and a
+      great many of those derive on the first assertion. `false` is the credential stating it does
+      not evaluate the extension at all, and no assertion against it ever will — so running the local
+      `get()` anyway would raise a second system prompt, make the person authenticate again, and
+      refuse them at the end of it with what was already known. The refusal is owed either way; the
+      second prompt is not.
     - That local assertion carries `allowCredentials` naming the new credential, because WebAuthn
       throws `NotSupportedError` when `evalByCredential` is present and the list is empty. It does
       **not** contradict the sign-in rule that no `allowCredentials` is ever sent: that rule is about
@@ -390,6 +407,10 @@ erDiagram
     `getClientExtensionResults()` carries `prf.results.first` — the output — so the client builds a
     fresh `{ prf: { enabled } }` rather than forwarding the results object. See
     [account-keys.md](account-keys.md) for why a filter or a spread is not an acceptable substitute.
+    The claim above changes **which value `enabled` takes**, never how the member is built: an
+    established claim is a fresh literal too, because copying the results object and overwriting one
+    member would start from the value the projection exists to be rid of and carry the output to the
+    server.
 - **Enforced in**: `CompleteRegistrationHandler`, deliberately as the **last check on the ceremony
   response**, after `PasskeyRegistrationVerifier.Verify`. Checked earlier, a malformed, replayed or
   wrong-origin response would be told its authenticator cannot hold the keys, which is a lie about

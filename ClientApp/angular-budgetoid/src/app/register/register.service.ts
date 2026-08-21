@@ -101,7 +101,7 @@ export class RegisterService {
   // route state and no `history.state`; `null` means "not minted", which is a
   // different thing from an empty set and is never collapsed into one.
   private readonly codesSignal = signal<readonly RecoveryCode[] | null>(null);
-  private readonly restartedSignal = signal(false);
+  private readonly mayHaveCreatedSignal = signal(false);
 
   public readonly step: Signal<RegisterStep> = this.stepSignal.asReadonly();
   public readonly busy: Signal<boolean> = this.busySignal.asReadonly();
@@ -123,8 +123,29 @@ export class RegisterService {
   public readonly email: Signal<string | null> = computed(() =>
     this.auth.providerEmail(),
   );
-  public readonly restarted: Signal<boolean> =
-    this.restartedSignal.asReadonly();
+  /**
+   * Whether a request from this browser may have created the account.
+   *
+   * **What the previous POST ended as, and never whether a button was
+   * pressed.** `unknown` is the only outcome under which anything may have been
+   * written: a status 0, a timeout and a 5xx say nothing about whether thirty
+   * rows were committed and a 201 was lost coming back. Every 400, 401 and 403
+   * leaves `RegisterAccountHandler` before `RegisterAsync` is reached, and a 409
+   * refuses the request it answers — so after any of those, nothing exists that
+   * did not exist before, and the passkey the device made was never seen by the
+   * server.
+   *
+   * **Set and never cleared, and the asymmetry between the three words is what
+   * makes that right.** A 400 and a 409 are judgements — the server looked and
+   * said no — so neither of them ever opens the question. `unknown` opens it,
+   * and nothing that happens later closes it: a request that may have committed
+   * thirty rows stays one whatever the next attempt answers, and the account it
+   * may have created does not stop existing because a request after it was
+   * refused. That is why the sentence this signal buys the screen is still true
+   * when it appears after a restart.
+   */
+  public readonly mayHaveCreatedAccount: Signal<boolean> =
+    this.mayHaveCreatedSignal.asReadonly();
 
   // The assembled request body, and the reason it is a field rather than an
   // argument to `create()`: what a person acknowledges on the codes step is
@@ -236,9 +257,22 @@ export class RegisterService {
         void this.router.navigateByUrl('/app');
       },
       error: (error: unknown) => {
+        const failure = RegisterService.failureOf(error);
+
         this.pending = null;
         this.busySignal.set(false);
-        this.failureSignal.set(RegisterService.failureOf(error));
+
+        // **Published here, from the answer, and nowhere else.** This is what
+        // the screen's two readings of a 409 fork on, so it has to be a fact
+        // about the request that just ended rather than about anything the
+        // person did afterwards — see {@link mayHaveCreatedAccount}. `unknown`
+        // is the only word that leaves the question open; the other two are
+        // judgements, and after one of them nothing was written.
+        if (failure === 'unknown') {
+          this.mayHaveCreatedSignal.set(true);
+        }
+
+        this.failureSignal.set(failure);
       },
     });
   }
@@ -248,12 +282,18 @@ export class RegisterService {
    *
    * Everything is re-drawn: a new challenge, a new passkey, new account keys,
    * new codes and eleven new factor identifiers. Nothing from the previous
-   * attempt is reused, and nothing could be — the challenge is spent and the
-   * keys were wiped.
+   * attempt is reused, and nothing could be — the challenge is spent, the keys
+   * were wiped, and the codes somebody may have written down a minute ago
+   * belong to nothing.
    *
-   * `restarted` is set and never cleared. It is what lets the screen say that
-   * the codes somebody may have written down a minute ago belong to nothing,
-   * and that stays true for the rest of the visit whatever happens next.
+   * **This publishes no fact of its own, because a press is not a fact about
+   * the server.** `Start again` is offered from two states, so forking the two
+   * readings of a 409 on "did this browser restart?" told somebody whose first
+   * attempt was *refused* that it had created their account — and every clause
+   * of that was false. They were then sent to sign in with a passkey the server
+   * had never seen, which answers a byte-identical 401 with nothing naming the
+   * cause. {@link mayHaveCreatedAccount} is what that fork needs, and it is set
+   * from the answer rather than from the press.
    */
   public restart(): void {
     if (this.busySignal()) {
@@ -263,7 +303,6 @@ export class RegisterService {
     this.pending = null;
     this.codesSignal.set(null);
     this.failureSignal.set(null);
-    this.restartedSignal.set(true);
     this.stepSignal.set('passkey');
   }
 

@@ -83,24 +83,28 @@ const UNKNOWN =
 //
 // The server sends four distinct sentences under an identical title in
 // `ProblemDetails.Detail`, with no machine-readable code, so the client cannot
-// tell them apart and must not try to match on the text. `restarted()` is the
-// only discriminant it has, and it is enough, because the two readings that
-// matter differ by exactly that flag.
+// tell them apart and must not try to match on the text.
+// `mayHaveCreatedAccount()` is the only discriminant it has, and it is enough,
+// because the two readings that matter differ by exactly what an earlier POST
+// ended as. Not by whether `Start again` was pressed: that control is offered
+// from two failure states, and forking on the press told somebody whose first
+// attempt was *refused* that it had created their account.
 //
-// On a first attempt a 409 means what it says: somebody who already has an
-// account walked back into the front door. Nothing was created here and the ten
-// codes on screen open nothing.
+// While no request from this browser has ended without an answer, a 409 means
+// what it says: somebody who already has an account walked back into the front
+// door. Nothing was created here and the ten codes on screen open nothing.
 //
-// After a restart it means something else entirely, and it is the worst case in
-// the flow. The person's *first* POST committed all thirty rows and lost its 201
-// coming back; they were correctly told Budgetoid could not tell and to keep
-// their codes; they pressed `Start again`; and the 409 is that first account
-// answering. So the account exists, the passkey that opens it is the one made on
-// the first attempt, and the live codes are the first attempt's ten — not the
-// ten that were on this screen a moment ago. Rendering {@link CONFLICT} here
-// tells that person the opposite of every one of those facts, and somebody who
-// then throws the first card away holds a passkey, no codes, and no way to make
-// more: `POST /api/me/recovery-codes` has no caller in this client.
+// After a POST that ended `unknown` it means something else entirely, and it is
+// the worst case in the flow. The person's *first* POST committed all thirty
+// rows and lost its 201 coming back; they were correctly told Budgetoid could
+// not tell and to keep their codes; they pressed `Start again`; and the 409 is
+// that first account answering. So the account exists, the passkey that opens
+// it is the one made on the first attempt, and the live codes are the first
+// attempt's ten — not the ten that were on this screen a moment ago. Rendering
+// {@link CONFLICT} here tells that person the opposite of every one of those
+// facts, and somebody who then throws the first card away holds a passkey, no
+// codes, and no way to make more: `POST /api/me/recovery-codes` has no caller
+// in this client.
 const CONFLICT =
   'An account already exists for this Google address. Nothing was created here, and the ten codes you were just shown open nothing — sign in from the Budgetoid home page instead.';
 // New copy, because the state it belongs to renders nothing today. Written to
@@ -374,13 +378,13 @@ describe('RegisterComponent', () => {
     await settle();
 
     // Assert
-    // Nothing has been restarted, so this 409 is the plain one: somebody who
+    // One POST, and it was judged, so this 409 is the plain one: somebody who
     // already has an account walked back into the front door. Nothing was
     // created here, the ten codes open nothing, and the way forward is to go and
-    // sign in. Asserted with the flag it turns on, because this test is the
-    // control for the one below — without it a screen that renders the
-    // *restart* sentence for every 409 alike is green on the pair.
-    expect(service.restarted()).toBe(false);
+    // sign in. Asserted with the signal the sentence forks on, because this test
+    // is the control for the one below — without it a screen that renders the
+    // *first attempt worked* sentence for every 409 alike is green on the pair.
+    expect(service.mayHaveCreatedAccount()).toBe(false);
     expect(elementSaying(host, CONFLICT)).not.toBeNull();
     expect(elementSaying(host, CONFLICT_AFTER_RESTART)).toBeNull();
   });
@@ -412,11 +416,14 @@ describe('RegisterComponent', () => {
     await settle();
 
     // Assert
-    // `restarted` is the only discriminant available — the server sends four
-    // distinct 409 sentences under one title with no machine-readable code, so
-    // the client cannot tell them apart and must not read the text. This is what
-    // the signal exists for, and `register.service.ts:254-256` says so.
-    expect(service.restarted()).toBe(true);
+    // `mayHaveCreatedAccount` is the only discriminant available — the server
+    // sends four distinct 409 sentences under one title with no machine-readable
+    // code, so the client cannot tell them apart and must not read the text.
+    // What opened the question is the *first* POST getting no answer, not the
+    // press that followed it, and it is one-directional: this second POST was
+    // judged, and a judgement cannot close a question an unanswered request
+    // opened, because the account it may have created does not stop existing.
+    expect(service.mayHaveCreatedAccount()).toBe(true);
     expect(elementSaying(host, CONFLICT_AFTER_RESTART)).not.toBeNull();
     // **The pair is the test.** A screen that renders one sentence for both
     // readings of a 409 passes any assertion that only looks for a phrase both

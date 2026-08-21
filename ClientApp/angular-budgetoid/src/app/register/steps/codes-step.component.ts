@@ -22,8 +22,11 @@ import { recoveryCodesFilename } from '../recovery-codes-filename';
 // **It has a flow now, and still no state of its own.** `RegisterService` mints
 // the set, wraps the account keys under each code and commits the account;
 // `register.component` renders this step as the last of three. The codes still
-// arrive through a required input and `create` is still an output, and this
-// component still mints nothing, posts nothing and navigates nowhere. Do not
+// arrive through a required input, the wait through an optional one and
+// `create` is still an output, and this component still mints nothing, posts
+// nothing and navigates nowhere — it holds no reference to the flow at all,
+// which is why the wait arrives as a value rather than as an injected service.
+// Do not
 // "finish" it by calling `mintRecoveryCodeSet` in here: a set minted by the
 // screen that displays it would be re-minted by every re-render of the step,
 // and the codes a person wrote down would stop being the codes the account was
@@ -72,6 +75,18 @@ export class CodesStepComponent {
    * styling problem rather than like a flow that forgot to mint.
    */
   public readonly codes = input.required<readonly RecoveryCode[]>();
+
+  /**
+   * Whether the account is being created right now.
+   *
+   * An input rather than an injected flow, which is what keeps the promise in
+   * the header above literally true: this component still holds no reference to
+   * the thing that posts. It defaults to `false` so the step renders a screen
+   * at rest without being told, and the two things it changes — the announcement
+   * and the unavailable control — are both the answer to the same question a
+   * person asks after pressing the last button in the flow.
+   */
+  public readonly creating = input(false);
 
   /**
    * Raised once the person has acknowledged the consequence and pressed the

@@ -29,16 +29,16 @@ import {
   provideHttpClientTesting,
   type TestRequest,
 } from '@angular/common/http/testing';
+import { isSignal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import {
   ACCOUNT_KEY_BYTES,
   keyEncryptionKeyFromRecoveryCode,
   unwrapAccountKeys,
-  type AccountKeys,
   type WrappedAccountKeys,
 } from '@app-core/security/account-keys';
-import { decodeBase64Url } from '@app-core/security/base64url';
+import { decodeBase64Url, encodeBase64Url } from '@app-core/security/base64url';
 import { isCanonicalFactorId } from '@app-core/security/factor-id';
 import {
   ENVELOPE_NONCE_BYTES,
@@ -48,6 +48,7 @@ import {
 import { canonicalRecoveryCode } from '@app-core/security/recovery-code-canonical';
 import {
   RECOVERY_CODE_SET_SIZE,
+  recoveryCodeVerifier,
   type RecoveryCode,
 } from '@app-core/security/recovery-codes';
 import {
@@ -64,6 +65,34 @@ import { ConfigurationService } from '@app-core/services/configuration.service';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RegisterService } from './register.service';
 
+// **The account keys' zero-filling has no witness in this runner, and it is not
+// for want of a seam.** All four `fill(0)` calls in `mintUnder` can be deleted
+// with a green suite, and nothing in this file changes that.
+//
+// The obvious seam does not exist here. `vi.mock` over
+// `@app-core/security/account-keys` — by its alias or by a relative path —
+// intercepts **nothing** under `@angular/build:unit-test`: the builder
+// pre-bundles the application with esbuild, so `register.service.ts`'s import
+// of `generateAccountKeys` is resolved before Vitest's module registry is ever
+// consulted, and a mocked module is not what either side receives. This was
+// measured, not assumed: a factory returning a replaced export leaves both the
+// production call site and this file's own import bound to the original. Do not
+// re-add one.
+//
+// The buffers themselves are out of reach for a reason no test can route
+// around. `keys.contentKey` and `keys.indexKey` are locals of `mintUnder`, and
+// every consumer downstream is handed a **copy** — `sealEnvelope` calls
+// `overOwnBuffer`, which is `Uint8Array.from`, so even a spy on
+// `crypto.subtle.encrypt` holds a different object from the one that gets
+// wiped. Wiping a buffer nobody else references has, by construction, no
+// observable effect.
+//
+// What would make it checkable is a production change and therefore not this
+// file's to make: the draw has to arrive through a seam the register screen
+// provides — an injectable that hands `mintUnder` its pair — at which point the
+// spec supplies the buffers and reads them back after the flow settles, on the
+// happy path and on a wrap that rejects halfway. Every other copy of the key
+// material named in `account-keys.ts` is a separate gap with a separate fix.
 const API_BASE_URL = 'https://api.test';
 const OPTIONS_URL = `${API_BASE_URL}/api/registration/options`;
 const REGISTRATION_URL = `${API_BASE_URL}/api/registration`;
@@ -216,7 +245,22 @@ function objectBodyOf(request: TestRequest): Record<string, unknown> {
 // were sealed against, and the two envelopes.
 interface BodyFactor {
   readonly factorId: string;
+  // The verifier the server will find this code by. The passkey's factor sits
+  // at the top level of the body and carries none, so this is `null` there —
+  // `null` rather than absent, because the assertion that one code's four
+  // members were built from one code has to be able to say "this factor carried
+  // no verifier at all" instead of comparing `undefined` against a string and
+  // reporting a mismatch that names the wrong thing.
+  readonly verifier: string | null;
   readonly wrapped: WrappedAccountKeys;
+}
+
+// How a failure names one of the eleven. Body order is the order they were
+// written in — the passkey, then one factor per code in card order — so an
+// index here is a claim about *which* code, which is the whole reason a failure
+// is worth naming rather than counting.
+function factorName(index: number): string {
+  return index === 0 ? 'the passkey' : `the code at index ${index - 1}`;
 }
 
 // The eleven factors, read out of the body rather than asserted into shape. A
@@ -250,6 +294,7 @@ function factorsOf(body: Record<string, unknown>): readonly BodyFactor[] {
     }
 
     const factorId: unknown = entry['factorId'];
+    const verifier: unknown = entry['verifier'];
     const wrappedContentKey: unknown = entry['wrappedContentKey'];
     const wrappedIndexKey: unknown = entry['wrappedIndexKey'];
 
@@ -263,7 +308,11 @@ function factorsOf(body: Record<string, unknown>): readonly BodyFactor[] {
       );
     }
 
-    return { factorId, wrapped: { wrappedContentKey, wrappedIndexKey } };
+    return {
+      factorId,
+      verifier: typeof verifier === 'string' ? verifier : null,
+      wrapped: { wrappedContentKey, wrappedIndexKey },
+    };
   });
 }
 
@@ -325,25 +374,82 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   );
 }
 
-// Opens one recovery factor's pair, deriving that code's key-encryption key the
-// way a redemption screen will have to.
-async function openUnder(
-  code: RecoveryCode,
-  factor: BodyFactor,
-): Promise<AccountKeys> {
-  return unwrapAccountKeys(
-    await keyEncryptionKeyFromRecoveryCode(code),
-    factor.wrapped,
-    factor.factorId,
-  );
+// A key-encryption key, branded rather than tested with `instanceof`. It is the
+// rule `webauthn-encoding.ts` states for `isArrayBuffer` and it matters more
+// here: realms differ between this runner, a worker and an iframe, and a
+// narrowing that silently goes false would report "nothing parked" for every
+// key alike — a refusal that passes because it looked at nothing.
+function isCryptoKey(value: unknown): boolean {
+  return Object.prototype.toString.call(value) === '[object CryptoKey]';
 }
 
-// Every place on a walk where {@link ACCOUNT_KEY_BYTES} bytes could be sitting:
-// a byte view, a buffer, or a string this client would decode. Three shapes and
-// not one, because the answer to "is the key readable from here" must not depend
-// on which of them somebody happened to publish it as. Paths are collected
-// rather than a boolean returned, so a finding names where it is.
-function keySizedFindings(value: unknown, path: string): readonly string[] {
+// A record this service assembled, as opposed to one it was injected with.
+// The walk below recurses into the first and stops at the second: `pending` is
+// an object literal and `codes` is an array of them, which is every shape
+// production stores, while stepping into an injected collaborator would walk
+// the application graph and report findings about somebody else's field.
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const prototype: unknown = Object.getPrototypeOf(value);
+
+  return prototype === Object.prototype || prototype === null;
+}
+
+// Everything the instance holds, under the names it holds it under.
+//
+// **TypeScript's `private` is a compile-time rule and nothing else.** It is
+// erased before a browser ever sees the class, so `pending` and all five
+// signals are ordinary own properties here — which is what makes "the eleven
+// key-encryption keys never touch `this`" checkable instead of only stated.
+// Symbol-keyed properties are read too; a `#name` field would not be, and no
+// reflective API can reach one.
+function ownState(target: object): Record<string, unknown> {
+  const state: Record<string, unknown> = {};
+
+  for (const name of Object.getOwnPropertyNames(target)) {
+    state[name] = Reflect.get(target, name);
+  }
+
+  for (const symbol of Object.getOwnPropertySymbols(target)) {
+    state[String(symbol)] = Reflect.get(target, symbol);
+  }
+
+  return state;
+}
+
+// Every place on a walk where the account's key material could be sitting: a
+// key-encryption key, a byte view or buffer {@link ACCOUNT_KEY_BYTES} wide, or
+// a string this client would decode to that width. Four shapes and not one,
+// because the answer to "is the key reachable from here" must not depend on
+// which of them somebody happened to park it as. Paths are collected rather
+// than a boolean returned, so a finding names where it is.
+//
+// **A `CryptoKey` is opaque and has no width**, so the three width tests cannot
+// see one — and it is the single most valuable thing this flow holds, because
+// one of them opens both envelopes of its factor without any account key ever
+// being in the clear. It is a finding wherever it is found, with no width to
+// argue about.
+function custodyFindings(
+  value: unknown,
+  path: string,
+  member: string,
+  seen = new WeakSet<object>(),
+): readonly string[] {
+  if (isCryptoKey(value)) {
+    return [path];
+  }
+
+  // A signal is a function, so it has to be read before the walk drops it as
+  // one. This is what puts the four public readings and the five private
+  // writable signals behind them under the same walk, and `email` — a
+  // `computed` — with them.
+  if (isSignal(value)) {
+    return custodyFindings(value(), `${path}()`, member, seen);
+  }
+
   // Before the record branch: a `Uint8Array` is `typeof 'object'`, and read as
   // one it walks into index keys holding numbers and reports nothing at all.
   if (ArrayBuffer.isView(value)) {
@@ -355,20 +461,45 @@ function keySizedFindings(value: unknown, path: string): readonly string[] {
   }
 
   if (typeof value === 'string') {
+    // `verifier` is the one member legitimately this wide, and the exemption is
+    // the same one the wire test carries: `RECOVERY_CODE_VERIFIER_BYTES` and
+    // `ACCOUNT_KEY_BYTES` are independently chosen numbers that both happen to
+    // be 32, and a verifier is an HKDF output on a branch that unwraps nothing.
+    // Ten of them sit inside `pending` between the wrapping and the POST, on
+    // purpose. It is exempted **by name and by nothing else**, and deliberately
+    // not extended to the two byte branches above — a verifier reaches this
+    // instance only as the base64url string the body carries, so one arriving
+    // as raw bytes is a new thing and should be looked at.
+    if (member === 'verifier') {
+      return [];
+    }
+
     const bytes = decodedOrNull(value);
 
     return bytes !== null && bytes.length === ACCOUNT_KEY_BYTES ? [path] : [];
   }
 
   if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return [];
+    }
+
+    seen.add(value);
+
     return value.flatMap((entry: unknown, index) =>
-      keySizedFindings(entry, `${path}[${index}]`),
+      custodyFindings(entry, `${path}[${index}]`, member, seen),
     );
   }
 
-  if (isRecord(value)) {
+  if (isPlainObject(value)) {
+    if (seen.has(value)) {
+      return [];
+    }
+
+    seen.add(value);
+
     return Object.entries(value).flatMap(([key, entry]: [string, unknown]) =>
-      keySizedFindings(entry, `${path}.${key}`),
+      custodyFindings(entry, `${path}.${key}`, key, seen),
     );
   }
 
@@ -499,6 +630,20 @@ describe('RegisterService', () => {
     );
 
     return { request, codes };
+  }
+
+  // The key one factor's pair was sealed under: the passkey's at index zero,
+  // and after it the key each code derives for itself. Body order is the order
+  // the eleven were written in, so this function *is* the pairing claim — hand
+  // it an index and it produces the only key that factor's envelopes may open
+  // under.
+  function keyOf(
+    index: number,
+    codes: readonly RecoveryCode[],
+  ): Promise<CryptoKey> {
+    return index === 0
+      ? Promise.resolve(keyEncryptionKey)
+      : keyEncryptionKeyFromRecoveryCode(codes[index - 1]);
   }
 
   // No `http.verify()` teardown, and the omission is deliberate: this test ends
@@ -721,35 +866,105 @@ describe('RegisterService', () => {
     const factors = factorsOf(objectBodyOf(request));
 
     // Act
-    // Three factors sharing nothing but the account: the passkey, the first
-    // code and the last. Any one of them alone opens perfectly under a
-    // per-factor draw.
-    const [passkey, first, last] = await Promise.all([
-      unwrapAccountKeys(
-        keyEncryptionKey,
-        factors[0].wrapped,
-        factors[0].factorId,
-      ),
-      openUnder(codes[0], factors[1]),
-      openUnder(codes[RECOVERY_CODE_SET_SIZE - 1], factors[FACTOR_COUNT - 1]),
-    ]);
+    // **All eleven, not a sample of three.** The passkey, the first code and
+    // the last were opened here before and factors two through nine were opened
+    // by nothing in the system — so a per-factor draw that skipped the ends was
+    // invisible, and so was every mistake confined to the middle of the card.
+    // Eleven unwraps cost milliseconds; the alternative is discovering it from
+    // somebody who redeemed one of the eight months later.
+    const opened = await Promise.all(
+      factors.map(async (factor, index) => {
+        try {
+          return await unwrapAccountKeys(
+            await keyOf(index, codes),
+            factor.wrapped,
+            factor.factorId,
+          );
+        } catch {
+          // GCM refuses without a word about why, so the name is the whole of
+          // what a reader gets: which of the eleven could not open its own pair.
+          throw new Error(
+            `${factorName(index)} cannot open its own envelopes.`,
+          );
+        }
+      }),
+    );
 
     // Assert
+    expect(opened).toHaveLength(FACTOR_COUNT);
+
+    const [passkey] = opened;
     expect(passkey.contentKey).toHaveLength(ACCOUNT_KEY_BYTES);
     expect(passkey.indexKey).toHaveLength(ACCOUNT_KEY_BYTES);
 
-    for (const [name, keys] of [
-      ['the first code', first],
-      ['the last code', last],
-    ] as const) {
+    opened.forEach((keys, index) => {
       expect(
         sameBytes(passkey.contentKey, keys.contentKey),
-        `${name} opens a different content key from the passkey's.`,
+        `${factorName(index)} opens a different content key from the ` +
+          "passkey's.",
       ).toBe(true);
       expect(
         sameBytes(passkey.indexKey, keys.indexKey),
-        `${name} opens a different index key from the passkey's.`,
+        `${factorName(index)} opens a different index key from the passkey's.`,
       ).toBe(true);
+    });
+  });
+
+  // **One code's four members are built in one scope, from one code** — the
+  // rule `register.service.ts:350-366` argues, executed. The obvious
+  // implementation derives ten key-encryption keys into an array, wraps ten
+  // times into a second, and zips those against the verifiers at post time. A
+  // mispairing there satisfies every type, every count, every round trip and
+  // every constraint the server has: the set validates, the account is created,
+  // a session is handed over, and it is discovered by somebody who redeemed a
+  // code months later and found the account still locked.
+  //
+  // Both halves are here and neither implies the other. A verifier zipped from
+  // a parallel array leaves the envelopes opening perfectly under the code they
+  // sit beside; a key-encryption key zipped from one leaves the verifier
+  // matching perfectly. Only checking each code against both members catches
+  // either.
+  it('gives every code its own verifier and its own envelopes', async () => {
+    // Arrange
+    const { request, codes } = await driveToRegistration();
+    const factors = factorsOf(objectBodyOf(request));
+
+    // Act
+    // Derived here from the codes the screen published, on the same branch
+    // `mintRecoveryCodeSet` used — a deterministic HKDF over the code, so an
+    // equal verifier is the same code and nothing else.
+    const expected = await Promise.all(codes.map(recoveryCodeVerifier));
+
+    // Assert
+    expect(codes).toHaveLength(RECOVERY_CODE_SET_SIZE);
+    // The passkey's factor is not a code's and carries no verifier. A body
+    // where it did would mean a code's four members had been spread across the
+    // wrong entry entirely, which every count below would still pass.
+    expect(factors[0].verifier).toBeNull();
+
+    for (const [index, code] of codes.entries()) {
+      const factor = factors[index + 1];
+
+      // The value the server finds this code by. Paired with another code's,
+      // the code the person kept redeems as nothing at all.
+      expect(
+        factor.verifier,
+        `The code at index ${index} was submitted under another code's ` +
+          'verifier.',
+      ).toBe(expected[index]);
+
+      // And the two envelopes filed beside it, opened by the key that same code
+      // derives. Paired with another code's, the code redeems and then unwraps
+      // nothing — an account that authenticates and stays unreadable.
+      await expect(
+        unwrapAccountKeys(
+          await keyEncryptionKeyFromRecoveryCode(code),
+          factor.wrapped,
+          factor.factorId,
+        ),
+        `The code at index ${index} does not open the envelopes filed beside ` +
+          'it.',
+      ).resolves.toBeDefined();
     }
   });
 
@@ -757,37 +972,25 @@ describe('RegisterService', () => {
     // Arrange
     const { request, codes } = await driveToRegistration();
     const factors = factorsOf(objectBodyOf(request));
-    const cases = [
-      {
-        name: 'the passkey',
-        kek: keyEncryptionKey,
-        factor: factors[0],
-        neighbour: factors[1],
-      },
-      {
-        name: 'the first code',
-        kek: await keyEncryptionKeyFromRecoveryCode(codes[0]),
-        factor: factors[1],
-        neighbour: factors[2],
-      },
-      {
-        name: 'the last code',
-        kek: await keyEncryptionKeyFromRecoveryCode(
-          codes[RECOVERY_CODE_SET_SIZE - 1],
-        ),
-        factor: factors[FACTOR_COUNT - 1],
-        neighbour: factors[0],
-      },
-    ];
 
     // Act & Assert
-    for (const { name, kek, factor, neighbour } of cases) {
+    // **Every factor, each against the next one round the ring.** Three were
+    // checked here before — the passkey, the first code and the last — which
+    // left the eight in the middle bound by nothing. Going round the ring makes
+    // each of the eleven both a subject and somebody else's neighbour, so none
+    // of them is left out of either role.
+    expect(factors).toHaveLength(FACTOR_COUNT);
+
+    for (const [index, factor] of factors.entries()) {
+      const kek = await keyOf(index, codes);
+      const neighbour = factors[(index + 1) % FACTOR_COUNT];
+
       // The success is half the pair and proves only that the envelope is well
       // formed. Alone it would pass just as happily against envelopes bound to
       // nothing at all.
       await expect(
         unwrapAccountKeys(kek, factor.wrapped, factor.factorId),
-        `${name} cannot open its own envelopes.`,
+        `${factorName(index)} cannot open its own envelopes.`,
       ).resolves.toBeDefined();
 
       // The same key, a neighbouring factor's id. The only thing that changed
@@ -796,7 +999,7 @@ describe('RegisterService', () => {
       // rather than open there.
       await expect(
         unwrapAccountKeys(kek, factor.wrapped, neighbour.factorId),
-        `${name}'s envelopes open under another factor's id.`,
+        `${factorName(index)}'s envelopes open under another factor's id.`,
       ).rejects.toThrow();
     }
   });
@@ -828,40 +1031,54 @@ describe('RegisterService', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('holds no unwrapped account key once the wrapping is done', async () => {
+  it('parks no key material on the instance', async () => {
     // Arrange
     const codes = await driveToCodes();
 
     // Act
-    // The public surface, read the way a template, an `effect()` or a devtools
-    // panel reads it. **This cannot observe a private field and does not claim
-    // to.** What it holds is the shape of the surface: that nothing reachable
-    // from outside this service is key material. The wipe itself is held by the
-    // account keys being locals of the method that draws them, wiped in a
-    // `finally` — a fact no test in this runner can see.
-    const surface: readonly unknown[] = [
-      service.step(),
-      service.busy(),
-      service.failure(),
-      service.codes(),
-      service.email(),
-      service.restarted(),
-    ];
+    // **The instance's own properties, not the declared surface.** TypeScript's
+    // `private` is erased at compile time — `stepSignal`, `codesSignal` and
+    // `pending` are all present by name in the emitted JavaScript — so the one
+    // custody rule that had nothing but a comment behind it is checkable here:
+    // the eleven key-encryption keys are expressions inside `mintUnder` and
+    // never fields, and the account keys are locals of the same method.
+    //
+    // Read at the moment of maximum exposure: `pending` assembled, ten codes
+    // published, the wrapping just finished.
+    //
+    // **What it still cannot reach** is anything the instance never stores — a
+    // closure variable of `mintUnder`, a module-level `let`, a field on an
+    // injected collaborator, and a `#name` field, which no reflective API can
+    // see. It is a statement about `this` and about nothing else.
+    const state = ownState(service);
 
     // Assert
-    // The surface is not empty, which is what stops this passing over a flow
-    // that published nothing at all.
+    // The flow got somewhere, which is what stops this passing over a run that
+    // published nothing at all.
     expect(codes).toHaveLength(RECOVERY_CODE_SET_SIZE);
-    expect(keySizedFindings(surface, 'surface')).toEqual([]);
+    // Deliberately not a count: a walk over seventeen own properties naming
+    // where a key is found is worth more in a failure than `false`.
+    expect(custodyFindings(state, 'service', 'service')).toEqual([]);
 
-    // The control, and this assertion is the reason the one above means
-    // anything: a walk that found nothing anywhere would pass it silently.
-    expect(
-      keySizedFindings(
-        [...surface, new Uint8Array(ACCOUNT_KEY_BYTES)],
-        'probe',
-      ),
-    ).toEqual([`probe[${surface.length}]`]);
+    // The control, and it is the reason the line above means anything: a walk
+    // that found nothing anywhere would satisfy a refusal silently. The four
+    // members stand for the four mutations this test exists to catch — a
+    // key-encryption key parked in the wrap loop, the account keys held back
+    // "for the encryption epic", and a raw key published under a member nobody
+    // would have thought to list. `verifier` is in here to hold the exemption
+    // to exactly one member: widen it and `stray` stops being reported.
+    const probe = {
+      kek: keyEncryptionKey,
+      keys: { contentKey: new Uint8Array(ACCOUNT_KEY_BYTES) },
+      verifier: encodeBase64Url(new Uint8Array(ACCOUNT_KEY_BYTES)),
+      stray: encodeBase64Url(new Uint8Array(ACCOUNT_KEY_BYTES)),
+    };
+
+    expect(custodyFindings(probe, 'probe', 'probe')).toEqual([
+      'probe.kek',
+      'probe.keys.contentKey',
+      'probe.stray',
+    ]);
   });
 
   it('refuses to post the same registration twice', async () => {
@@ -906,10 +1123,14 @@ describe('RegisterService', () => {
       ).toBe(false);
     }
 
-    // Set and never cleared, because the codes somebody may have written down a
-    // minute ago belong to nothing and that stays true for the rest of the
-    // visit.
-    expect(service.restarted()).toBe(true);
+    // **And the restart on its own says nothing about the server.** No POST has
+    // left this browser, so nothing can have been written and the question of
+    // whether an account exists is not open. Only an answer that never arrived
+    // opens it — a fact about the request that ended, never about a button
+    // being pressed, which is what the four tests below hold one status at a
+    // time. Forking a 409's two readings on the press instead told somebody
+    // whose first attempt was *refused* that it had created their account.
+    expect(service.mayHaveCreatedAccount()).toBe(false);
   });
 
   // Four answers and three words, and the split is the most consequential
@@ -922,6 +1143,11 @@ describe('RegisterService', () => {
   // they cannot make more codes for — this client has no caller for
   // `POST /api/me/recovery-codes`, so there is no second chance behind the
   // sentence.
+  //
+  // The same split decides `mayHaveCreatedAccount`, which is why every test here
+  // asserts both: `unknown` is the one word under which anything may have been
+  // written, and the screen's two readings of a 409 fork on it. The asymmetry is
+  // the whole point — a judgement is the server having looked and said no.
   describe('does not tell a lost answer from a refusal', () => {
     it('reads a judged request as refused', async () => {
       // Arrange
@@ -932,6 +1158,9 @@ describe('RegisterService', () => {
 
       // Assert
       expect(service.failure()).toBe('refused');
+      // A 400 leaves the handler before a row is written, so the question of
+      // whether an account exists is not open and never was.
+      expect(service.mayHaveCreatedAccount()).toBe(false);
     });
 
     it('reads an account that already exists as a conflict', async () => {
@@ -943,6 +1172,10 @@ describe('RegisterService', () => {
 
       // Assert
       expect(service.failure()).toBe('conflict');
+      // A 409 refuses the request it answers, so nothing exists that did not
+      // exist before it. This is the plain reading of a 409, and the flag being
+      // false here is what the screen renders it by.
+      expect(service.mayHaveCreatedAccount()).toBe(false);
     });
 
     it('reads an answer that never arrived as unknown', async () => {
@@ -958,6 +1191,10 @@ describe('RegisterService', () => {
       // Assert
       expect(service.failure()).not.toBe('refused');
       expect(service.failure()).toBe('unknown');
+      // A status 0 says nothing about whether thirty rows were committed and a
+      // 201 was lost coming back, so the question stays open for the rest of the
+      // visit and nothing later closes it.
+      expect(service.mayHaveCreatedAccount()).toBe(true);
     });
 
     it('reads a server that failed as unknown', async () => {
@@ -970,6 +1207,9 @@ describe('RegisterService', () => {
       // Assert
       expect(service.failure()).not.toBe('refused');
       expect(service.failure()).toBe('unknown');
+      // A 5xx is not a judgement either: the write may have gone through and the
+      // failure be everything after it.
+      expect(service.mayHaveCreatedAccount()).toBe(true);
     });
   });
 

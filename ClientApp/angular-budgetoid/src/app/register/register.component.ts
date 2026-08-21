@@ -5,6 +5,7 @@ import {
   inject,
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
+import { Router } from '@angular/router';
 import { RegisterService } from './register.service';
 import { CodesStepComponent } from './steps/codes-step.component';
 import { IntroStepComponent } from './steps/intro-step.component';
@@ -49,6 +50,12 @@ type PostRequestFailure = 'refused' | 'conflict' | 'unknown';
 export class RegisterComponent {
   protected readonly register = inject(RegisterService);
 
+  // The shell's own, and not the flow's. `RegisterService` navigates on the
+  // 201 because that navigation is part of the act it committed; leaving a dead
+  // end for the screen that can sign somebody in is a decision about what this
+  // screen offers, and it creates nothing, posts nothing and ends no flow.
+  private readonly router = inject(Router);
+
   // A `switch` over the closed union rather than a set membership test, so a
   // tenth word added to `RegisterFailure` fails to compile here and has to be
   // filed on one side of this line deliberately. The side matters: a word
@@ -76,4 +83,13 @@ export class RegisterComponent {
       }
     },
   );
+
+  // Both readings of a 409 tell the reader to go and sign in, and this is the
+  // only address in the application where that is possible: `/welcome` runs the
+  // passkey assertion, and nothing else does. It is offered from the conflict
+  // state alone — `refused` and `unknown` have no account to sign in to, or no
+  // way to know whether they have one.
+  protected goToSignIn(): void {
+    void this.router.navigateByUrl('/welcome');
+  }
 }

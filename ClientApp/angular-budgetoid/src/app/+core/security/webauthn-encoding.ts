@@ -241,6 +241,15 @@ export function toRequestOptions(
 }
 
 /**
+ * Which of two things the payload's `prf.enabled` is a report of.
+ *
+ * `'as-reported'` is the creation response's own word, verbatim. `'derived'` is
+ * the caller's statement that it holds a PRF output for this credential — by
+ * whichever route it obtained one.
+ */
+export type PasskeyPrfClaim = 'as-reported' | 'derived';
+
+/**
  * Builds the registration payload out of what the authenticator produced.
  *
  * The two binary members are re-encoded as unpadded base64url, byte for byte:
@@ -253,10 +262,46 @@ export function toRequestOptions(
  * {@link prfResults}, which is where the one line that would leak every account
  * key in the product would otherwise be written.
  *
+ * **`claim` says what the payload's `prf.enabled` is a report of, and it exists
+ * because `create()`'s own word is not the answer to the question the server
+ * asks.** `'derived'` asserts one thing: the caller obtained a PRF output for
+ * this credential — from the creation response itself, or from an assertion it
+ * ran locally against the credential it just made. The server's gate is about
+ * the account's keys being derivable, and an output in hand is exactly that
+ * evidence; `create()`'s `enabled` is a different, weaker sentence about what
+ * the authenticator was willing to say at enrolment time.
+ *
+ * **Only the ceremony can make that claim, which is why it is a parameter and
+ * not a rule here.** This module sees one response and never learns whether a
+ * second call followed it. The ceremony is the layer that knows which route
+ * derived, so it is the layer that gets to say so; reading it off the response
+ * here would be this function guessing at a fact it has no access to.
+ *
+ * **Reporting `create()`'s word alone turned working devices away.** Many
+ * platform authenticators derive only from the *first* assertion and answer a
+ * registration with `enabled: true` and no output — or with no `prf` member at
+ * all. The ceremony handles that: it runs one local, discarded `get()` and comes
+ * back holding the output. But a payload built from the creation results reports
+ * `null` for exactly those devices, and the server answers 400. By then the
+ * account's keys are sealed into twenty-two envelopes and ten recovery codes are
+ * on screen, so the person is told to throw away codes that were never live —
+ * and every retry ends the same way, because the device's answer never changes.
+ *
+ * **The default is `'as-reported'` and is not a convenience.** A caller holding
+ * no output must not be able to claim one by leaving an argument off, and every
+ * existing call site means the creation response's word.
+ *
+ * `'derived'` still builds the member from nothing rather than editing the
+ * results — the projection rule at {@link prfResults} is the reason this is a
+ * literal. Copying the object and overwriting `enabled` would carry
+ * `prf.results.first` to the server, which is the leak that argument exists to
+ * prevent.
+ *
  * Throws on a response that is not a registration response.
  */
 export function toRegistrationPayload(
   credential: PublicKeyCredential,
+  claim: PasskeyPrfClaim = 'as-reported',
 ): PasskeyRegistrationPayload {
   const response = credential.response;
 
@@ -274,7 +319,10 @@ export function toRegistrationPayload(
     clientDataJson: encodeBase64Url(bytesOf(response.clientDataJSON)),
     attestationObject: encodeBase64Url(bytesOf(response.attestationObject)),
     clientExtensionResults: {
-      prf: prfResults(credential.getClientExtensionResults()),
+      prf:
+        claim === 'derived'
+          ? { enabled: true }
+          : prfResults(credential.getClientExtensionResults()),
     },
   };
 }

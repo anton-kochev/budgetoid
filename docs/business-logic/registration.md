@@ -482,19 +482,40 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
 
 ---
 
-- **Rule**: **The client renders one conflict state, and the server's four distinct `409` sentences
-  are not reachable from it.** This is a gap with a named cause, not a simplification.
+- **Rule**: **The server's four distinct `409` sentences are not reachable from the client, and the
+  two states it does render are told apart by what the previous POST ended as — never by anything the
+  person pressed.** The first half is a gap with a named cause; the second is a rule.
 - **Why**: `ConflictExceptionHandler` writes an identical `Title` for every conflict in the product
   and puts the distinguishing sentence in `Detail` as free text. There is no machine-readable
   discriminant — no code member, no problem `type` per cause — so the only way for a client to tell
   *the subject is taken* from *this authenticator is already registered* is to match on `Detail`,
   which is a second copy of the server's copy held across the wire with nothing to redden when the
-  two drift. One wrong sentence here is worse than a general one: it would send somebody to sign in
-  with a passkey the account does not hold. The client therefore says the one thing true of all four
-  — an account already exists for this address, nothing was created here, sign in instead — and
-  closing the gap means giving the server a discriminant, not teaching the client to read prose.
-- **Enforced in**: `RegisterService.failureOf` mapping `409` to a single word, and the shell
-  rendering one conflict state for it.
+  two drift. One wrong sentence is worse than a general one: it would send somebody to sign in with a
+  passkey the account does not hold. Closing that gap means giving the server a discriminant, not
+  teaching the client to read prose.
+  - **What the client *can* know is how its own earlier request ended, and that is the fork that
+    matters.** A lost answer is the only ending that leaves the question open, so a `409` after one
+    is very likely that browser's own committed registration answering, while a `409` with no such
+    ending is a stranger at the front door. Both readings get a sentence of their own; neither is
+    chosen from the server's text.
+  - **Forking on *Start again* instead was a defect, and the shape is worth keeping.** That control
+    is offered from two states, so `400` → restart → `409` rendered *"Your first attempt did create
+    your account"* — false in every clause, because every `400`, `401` and `403` leaves the handler
+    before a row is written and the passkey the device made was never seen by this server. That
+    person was then sent to sign in with it, and met the byte-identical `401` the assertion route
+    answers everything with. **A press is not a fact about the server.**
+  - **The reading is set only from a lost answer, and nothing later clears it.** It runs one way
+    because the three words are not symmetric: a `400` and a `409` are judgements, so neither ever
+    opens the question, while a request that may have committed thirty rows stays one whatever the
+    next attempt answers — the account it may have created does not stop existing because a later
+    request was refused.
+  - **Both readings carry the same one control**, a *Go to sign in* that routes to the one screen in
+    this application running a passkey assertion. *Start again* is deliberately absent from both: it
+    spends another challenge and another passkey to meet the same `409`.
+- **Enforced in**: `RegisterService.failureOf` mapping `409` to a single word;
+  `RegisterService.mayHaveCreatedAccount`, published from the answer inside the error branch and only
+  for the *cannot be told* word; and the shell rendering two states for one word, with the control
+  outside the fork.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -678,11 +699,17 @@ ELSE consume the nonce — from here every outcome has burnt it
   is the one the first attempt created, locked under the first attempt's keys — so somebody who
   discarded that first card and kept the second holds a passkey and no codes and no way to make more,
   since `POST /api/me/recovery-codes` has no caller in this client. The screen's sentence therefore
-  says **keep** the codes you saved, and the `409` that follows a restart says the same thing from the
-  other end: it names the first attempt as the one that worked and the codes on screen as the dead
-  ones. The client tells the two readings of a `409` apart by whether *Start again* was pressed and
-  **never** by the `Detail` text, because all four conflict sentences ship under one identical title
-  with no machine-readable code.
+  says **keep** the codes you saved, and the `409` that follows says the same thing from the other
+  end: it names the first attempt as the one that worked and the codes on screen as the dead ones.
+  The client tells the two readings of a `409` apart by **what the previous POST ended as** — never by
+  whether *Start again* was pressed, and never by the `Detail` text, since all four conflict sentences
+  ship under one identical title with no machine-readable code.
+- **Both readings of a `409` end the flow, and both offer the same way out.** `/register` carries no
+  navigation of its own, so a state telling somebody to go and sign in with no control on it told them
+  to go somewhere with nothing to press. One *Go to sign in* serves both, rendered outside the fork
+  because a control written twice is one somebody forgets, and as a button rather than a link — this
+  is an exit from a flow that has ended, and opening it in a new tab would leave the dead end standing
+  in the old one with ten worthless codes on it.
 - **Moving the derivation up is the one edit that turns a function into a vulnerability.** Rung 12 sits
   after rung 4 and nothing about the code's shape says so — `clientData.Challenge` is in scope from
   rung 3, so hoisting the derivation beside the parse compiles, reads tidier, and passes every test in

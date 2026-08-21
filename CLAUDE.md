@@ -434,10 +434,17 @@ Load-bearing rules, each explained there or in the linked decision:
   legs derive through `keyEncryptionKeyFromPasskey` themselves, return a non-extractable `CryptoKey`
   and zero-fill the bytes, so no screen can log the value that unwraps the account. **The registration
   payload projects** `getClientExtensionResults()` into a fresh `{prf:{enabled}}` — never forwards,
-  filters or spreads it, because that object carries the PRF output itself. **`create()` returning no
+  filters or spreads it, because that object carries the PRF output itself. **The claim's *value* is
+  what the client established, not what `create()` reported**, passed to `toRegistrationPayload` by
+  the ceremony because it is the only caller that knows which of the two routes derived: reporting
+  `create()`'s word alone answered `null` for every authenticator that derives on the first assertion,
+  and the server gates on that word — so a working device sealed twenty-two envelopes, showed somebody
+  ten recovery codes, and was told to throw them away, on every attempt. **`create()` returning no
   PRF output is not a refusal**: one *local* `get()` follows, carrying `allowCredentials` for the new
   credential (WebAuthn throws `NotSupportedError` without it) and **discarded, never sent** — many
-  platform authenticators only derive from the first assertion. And **`isArrayBuffer` is a brand check,
+  platform authenticators only derive from the first assertion. An authenticator reporting
+  `enabled: false` **is** a refusal, immediately, without that second prompt; absent is not `false`.
+  And **`isArrayBuffer` is a brand check,
   never `instanceof`**: realms differ across an iframe, a worker and this test runner, and a narrowing
   that silently goes false derives the key from zero bytes on every device alike. **`assertPasskey`
   asks for PRF too, and the sign-in screen lets the key go**: the wrapped keys open under exactly that
@@ -481,10 +488,18 @@ Load-bearing rules, each explained there or in the linked decision:
   **`refused`/`conflict` and `unknown` are never collapsed** — a 400 and a 409 are
   certainly-not-created so the codes on screen are certainly dead, while a lost answer may have
   committed all thirty rows, and telling that person to discard their codes discards the only key to
-  an account they cannot make more codes for. **A 409 has two readings and `restarted` is the only
-  thing that can tell them apart**: the server sends four distinct sentences in `ProblemDetails.Detail`
-  under an identical `Title` with no machine-readable code, so matching on the text is forbidden and
-  the client renders two states, not four. And **no `canDeactivate`, no `beforeunload`** — abandoning
+  an account they cannot make more codes for. **A 409 has two readings, and what tells them apart is
+  what the previous request *ended as* — never whether a button was pressed.** The server sends four
+  distinct sentences in `ProblemDetails.Detail` under an identical `Title` with no machine-readable
+  code, so matching on the text is forbidden and the client renders two states, not four; which of
+  the two is decided by `mayHaveCreatedAccount`, set only in the POST's error branch and only for
+  `unknown`. Forking on a `Start again` press instead is the bug this replaced: that control is
+  offered from **two** failure states, so a 400 followed by a restart and a 409 told somebody their
+  first attempt had created an account when nothing had been written. A 400 and a 409 are judgements
+  and close the question; a lost answer opens it for the rest of the visit and nothing later closes
+  it. Both readings carry **one** control out — a control written twice is one somebody forgets — and
+  it is a button, because this is an exit from a dead flow rather than navigation worth opening in a
+  new tab beside a screen holding ten dead codes. And **no `canDeactivate`, no `beforeunload`** — abandoning
   costs nothing and a confirm dialog would say otherwise. Both requests carry
   `EXPECTS_UNAUTHENTICATED`, its first two callers, or a 401 mid-flow navigates away and destroys ten
   codes already written down. The provider `redirectUri` points at `/register`, and **the matching

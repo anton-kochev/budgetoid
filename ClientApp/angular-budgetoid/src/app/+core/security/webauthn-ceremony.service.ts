@@ -12,13 +12,26 @@
 // derivation has consumed it. `account-keys.ts`'s header argues the shape of
 // that at length and it is not re-argued here.
 //
-// **The PRF output is obtained by two routes and refused only after both.**
-// `create()` is called with `eval.first` set; a great many platform
-// authenticators answer `enabled: true` and return no output until the first
-// *assertion*, so a client that gave up after creation would turn away exactly
-// the devices this product is built around, and would do it with a message
-// blaming the authenticator. When no output arrives at creation, one **local**
-// assertion is run against the credential just created and then discarded.
+// **The PRF output is obtained by two routes and refused only after both —
+// unless the authenticator has already answered.** `create()` is called with
+// `eval.first` set; a great many platform authenticators answer `enabled: true`
+// and return no output until the first *assertion*, so a client that gave up
+// after creation would turn away exactly the devices this product is built
+// around, and would do it with a message blaming the authenticator. When no
+// output arrives at creation, one **local** assertion is run against the
+// credential just created and then discarded. The exception is `enabled: false`,
+// which is the credential saying it does not evaluate the extension at all: the
+// refusal is immediate there, because the second route could only raise a second
+// system prompt on the way to the same answer.
+//
+// **What the payload claims about PRF is what this module established**, not
+// what `create()` reported — which is why the registration payload is built
+// with `toRegistrationPayload(created, 'derived')`. The server gates on that
+// word, and reading it off the creation alone refuses every device that derives
+// only on the first assertion, which is the case the second route exists for.
+// The claim is the payload's own member, so the encoder owns it; this module
+// passes the fact because it is the only caller that knows which of the two
+// routes produced the output.
 //
 // **Both members are reached now.** `register.service.ts` runs the creation
 // ceremony on the passkey step of the registration flow, and `sign-in.service.ts`
@@ -165,21 +178,41 @@ export class WebauthnCeremonyService {
         return { ok: false, failure: 'failed' };
       }
 
+      const results = created.getClientExtensionResults();
+
       // The second route is reached only when the first produced nothing, which
       // is what keeps an authenticator that derives at creation from showing
-      // the person two prompts for one registration.
+      // the person two prompts for one registration — **and only when the
+      // authenticator has not already answered the question.** `enabled: false`
+      // is that answer: this credential does not evaluate the extension, and no
+      // assertion against it ever will. A client that ran the local assertion
+      // anyway would raise a second system prompt, make the person authenticate
+      // again, and refuse them at the end of it with what it already knew. The
+      // refusal is owed either way; the second prompt is not.
       const prfOutput =
-        prfOutputOf(created.getClientExtensionResults()) ??
-        (await this.localPrfOutput(created, creation));
+        prfOutputOf(results) ??
+        (declinesPrf(results)
+          ? null
+          : await this.localPrfOutput(created, creation));
 
       if (prfOutput === null) {
         return { ok: false, failure: 'no-prf' };
       }
 
+      // **`'derived'`, and it is true by position.** This line is reached only
+      // past the `no-prf` refusal above, so a PRF output for this credential is
+      // in hand — by whichever of the two routes produced it, which is not a
+      // distinction the server has a member for. Letting the payload report
+      // `create()`'s own word instead writes `null` for every authenticator
+      // that derives only on the first assertion, and the server answers 400.
+      // By then the account's keys are sealed into twenty-two envelopes and ten
+      // recovery codes are on screen, so a device that works is told to throw
+      // them away — and every retry ends identically, because the
+      // authenticator's answer at enrolment never changes.
       return {
         ok: true,
         value: {
-          payload: toRegistrationPayload(created),
+          payload: toRegistrationPayload(created, 'derived'),
           keyEncryptionKey: await keyEncryptionKeyFrom(prfOutput),
         },
       };
@@ -381,6 +414,19 @@ function prfOutputOf(
   return isArrayBuffer(first)
     ? new Uint8Array(first)
     : new Uint8Array(first.buffer, first.byteOffset, first.byteLength);
+}
+
+// The authenticator answering the question directly, which is a different thing
+// from saying nothing about it.
+//
+// Absent is not `false`: an authenticator that reports no `prf` member at all
+// has told this client nothing, and a great many of them then derive on the
+// first assertion. `false` is a statement about the credential, and this client
+// is in no position to argue with it — an authenticator that said no and then
+// derived on the next breath would produce a payload claiming the extension
+// worked over a credential that reported the opposite.
+function declinesPrf(results: AuthenticationExtensionsClientOutputs): boolean {
+  return results.prf?.enabled === false;
 }
 
 // The value the extension is evaluated against, encoded fresh per call and read

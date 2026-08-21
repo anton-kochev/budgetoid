@@ -509,7 +509,10 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
   it, or spreading it with a member omitted. The two rejected shapes both start from the value they
   are trying to be rid of, so the next member an authenticator invents arrives inside them. A
   pass-through here would hand the operator every account key in the product, in a request that would
-  look ordinary in a log, a proxy and a review.
+  look ordinary in a log, a proxy and a review. The **value** of `enabled` is a separate question and
+  the caller answers it — the ceremony reports what it established rather than what `create()`
+  returned, because many authenticators derive only on the first assertion; see
+  [passkeys.md](passkeys.md). That changes which literal is written, never that it is one.
 - **Signing in derives a key-encryption key too, and that is a decision.** The cheaper reading — a
   sign-in only has to prove who is asking, so ask for no PRF and derive nothing — is what a reader
   will propose, and it is wrong for the day encryption lands: the wrapped account keys are opened

@@ -675,6 +675,92 @@ describe('WebauthnCeremonyService', () => {
     expect(get).toHaveBeenCalledTimes(1);
   });
 
+  it('claims PRF worked when only the local assertion derived', async () => {
+    // Arrange
+    // **The client and the server have to mean the same thing by "PRF
+    // worked", and today they do not.** This module decides by the presence of
+    // an *output* and will take one from either route; the payload's claim is
+    // built from `create()`'s results alone, so it reports `null` whenever the
+    // creation carried no `prf` member at all. The server gates on the word:
+    // `RegisterAccountHandler.cs` refuses anything that is not
+    // `{ Enabled: true }`.
+    //
+    // The device below is not a corner case. It is the one the second route
+    // exists for, written at its most literal: `create()` returns nothing about
+    // the extension, and the first assertion derives. Such a client runs the
+    // whole ceremony, draws the account's keys, seals twenty-two envelopes,
+    // shows a person ten codes they are told to write down — and then posts a
+    // payload the server refuses with a 400, which this flow reads as `refused`
+    // and renders as "throw the codes away and start again". Every retry on
+    // that device ends the same way, so the account can never be created at
+    // all.
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    create.mockResolvedValue(creationCredential({}));
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    const ceremony = ceremonyValue(
+      await service.createPasskey(SERVER_CREATION_OPTIONS),
+    );
+
+    // Assert
+    // The claim is about what this client *did*, which is derive a
+    // key-encryption key through the extension — not about which of the two
+    // routes the authenticator chose to answer on, a distinction the server has
+    // no member for and no interest in.
+    //
+    // Deep equality rather than a member check, for the reason
+    // `webauthn-encoding.ts` builds this object fresh instead of forwarding
+    // one: the results carry `prf.results.first`, which is the PRF output
+    // itself, and a spread or a filtered copy satisfies every check that only
+    // asks whether `enabled` is `true`.
+    expect(ceremony.payload.clientExtensionResults).toStrictEqual({
+      prf: { enabled: true },
+    });
+
+    // The control. Without it this passes on an implementation that hard-codes
+    // `true` on every registration, including one where nothing derived
+    // anything — which would send the server a claim no device ever made.
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes an authenticator at its word when it says the extension is off', async () => {
+    // Arrange
+    // The other end of the same disagreement. `enabled: false` is the
+    // authenticator answering the question directly: this credential does not
+    // evaluate the extension, and no assertion against it ever will. The client
+    // currently ignores the word entirely — the local route runs whenever no
+    // output is present, which includes here — so the person is shown a second
+    // system prompt, made to authenticate again, and refused anyway.
+    //
+    // A refusal is owed to them either way; what is not owed is the second
+    // prompt. And the refusal is `no-prf` rather than `failed`: the ceremony
+    // succeeded, and what this device cannot do is hold the account's keys.
+    create.mockResolvedValue(creationCredential({ prf: { enabled: false } }));
+    // Deliberately willing, and it must never be reached. An authenticator that
+    // said no and then derived on the next breath is not a device this client
+    // is entitled to argue with, and a payload built out of that assertion
+    // would claim `enabled: true` over a credential that reported the opposite.
+    get.mockResolvedValue(
+      assertionCredential({
+        prf: { results: { first: prfOutput(ASSERTION_PRF_BYTES).buffer } },
+      }),
+    );
+
+    // Act
+    const result = await service.createPasskey(SERVER_CREATION_OPTIONS);
+
+    // Assert
+    expect(ceremonyFailure(result)).toBe('no-prf');
+    expect(
+      get,
+      'the person was asked for a second assertion after the authenticator ' +
+        'had already said the extension is off.',
+    ).not.toHaveBeenCalled();
+  });
+
   it('asks the authenticator to evaluate the account’s own PRF input', async () => {
     // Arrange
     const creationPrf = prfOutput(CREATION_PRF_BYTES);

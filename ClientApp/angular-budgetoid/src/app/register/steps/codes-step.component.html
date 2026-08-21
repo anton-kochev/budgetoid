@@ -101,19 +101,30 @@
      something they typed. One region rather than two, so the outcome of the
      last press is in one place and nobody has to know where to look for bad
      news as opposed to good — and a `@switch` rather than three `@if`s, so a
-     new outcome replaces the old instead of stacking under it. -->
+     new outcome replaces the old instead of stacking under it.
+
+     The wait comes first and wins, the way it does on the passkey step: the
+     press that starts it is the one that ends the flow, so `Saved.` left
+     standing underneath would be the screen answering a question nobody is
+     asking any more. The codes stay where they are throughout — nothing is
+     taken off the screen while the request is out, because this is the last
+     moment anybody could check a transcription against them. -->
 <div class="r-outcome" role="status">
-  @switch (outcome()) {
-    @case ('saved') {
-      <p class="r-prose">Saved.</p>
-    }
-    @case ('copied') {
-      <p class="r-prose">Copied.</p>
-    }
-    @case ('copy-failed') {
-      <p class="r-error">
-        Couldn&rsquo;t copy them. Save them to a file instead.
-      </p>
+  @if (creating()) {
+    <p class="r-prose">Creating your account&hellip;</p>
+  } @else {
+    @switch (outcome()) {
+      @case ('saved') {
+        <p class="r-prose">Saved.</p>
+      }
+      @case ('copied') {
+        <p class="r-prose">Copied.</p>
+      }
+      @case ('copy-failed') {
+        <p class="r-error">
+          Couldn&rsquo;t copy them. Save them to a file instead.
+        </p>
+      }
     }
   }
 </div>
@@ -160,12 +171,20 @@
      tabbing the screen would never meet it, never be told it is waiting on
      anything, and have no way to discover that the gate is the checkbox they
      just passed. The cost is that the press still arrives — see the guard at
-     the top of `createAccount`, which is what actually refuses it. -->
+     the top of `createAccount`, which is what actually refuses it.
+
+     **The label does not change while the request is out**, only the state.
+     The line in the region above says what is happening; a control that renames
+     itself under the finger moves the answer to somewhere a screen reader has
+     to be told to go back to, and leaves the one press in this flow that
+     matters with no stable name. The second refusal is `RegisterService.create`,
+     which returns while a POST is outstanding — the layer that owns the
+     question, and the reason a press that arrives here anyway posts nothing. -->
 <button
   class="r-button"
   mat-flat-button
   type="button"
-  [disabled]="!acknowledged()"
+  [disabled]="!acknowledged() || creating()"
   [disabledInteractive]="true"
   (click)="createAccount()"
 >

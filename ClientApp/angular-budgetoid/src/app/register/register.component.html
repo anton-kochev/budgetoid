@@ -16,10 +16,11 @@
          the step that is no longer on it.
 
          And the codes go with it, in all four — three words, and the 409 is
-         two states because `restarted` splits it. Two of the four say the
-         codes on screen are dead, and leaving ten worthless secrets in front
-         of somebody who is about to be handed ten real ones is the one thing
-         this screen must not do. One says nothing can be told either way, and
+         two states because what the previous POST ended as splits it. Two of
+         the four say the codes on screen are dead, and leaving ten worthless
+         secrets in front of somebody who is about to be handed ten real ones
+         is the one thing this screen must not do. One says nothing can be told
+         either way, and
          a person who kept them has them; a person who did not cannot get them
          back from here, which is what the sentence says instead of pretending
          otherwise. The fourth says both at once: these ten are dead and an
@@ -49,34 +50,42 @@
             </button>
           }
           @case ('conflict') {
-            <!-- **One 409, read two ways, and `restarted` is the only thing
-                 that can tell them apart.** The server sends four distinct
-                 sentences in `ProblemDetails.Detail` under an identical title
-                 with no machine-readable code
+            <!-- **One 409, read two ways, and what the previous POST ended as
+                 is the only thing that can tell them apart.** The server sends
+                 four distinct sentences in `ProblemDetails.Detail` under an
+                 identical title with no machine-readable code
                  (`ConflictExceptionHandler.cs:21-26`), so the client cannot
                  tell those four apart and must never match on the text. What it
-                 does know is whether *this* browser has already posted once,
-                 and that is exactly the fork that matters.
+                 does know is how its own earlier request ended, and that is
+                 exactly the fork that matters.
 
-                 On a first attempt the 409 means what it says: somebody who
-                 already has an account walked back into the front door. Nothing
-                 was created here, the ten codes open nothing, and starting
-                 again would spend another challenge and another passkey to be
-                 told the same thing.
+                 **It is not whether `Start again` was pressed.** That control
+                 is offered from two states, so a refusal, a restart and a 409
+                 came out here saying the first attempt had created the account
+                 — false in every clause, because a 400, a 401 and a 403 all
+                 leave the handler before a row is written and the passkey the
+                 device made was never seen by the server. Somebody told to go
+                 and sign in with it meets a byte-identical 401 and is in a
+                 closed loop with nothing naming the cause.
 
-                 After a restart it means the opposite of all three. The first
-                 POST committed its thirty rows and lost the 201 coming back —
-                 which is why the person was told Budgetoid could not tell and
-                 to keep their codes — they pressed `Start again`, and this 409
-                 is that first account answering. So the account exists, the
-                 passkey that opens it is the first attempt's, and the live
-                 codes are the first attempt's ten. Saying "nothing was created
-                 here and those codes open nothing" to that person is false on
-                 the first clause and lethal on the second: they throw away the
-                 first card, keep a passkey, and hold no codes and no way to
-                 make more, because `POST /api/me/recovery-codes` has no caller
-                 in this client. -->
-            @if (register.restarted()) {
+                 With no earlier `unknown`, the 409 means what it says: somebody
+                 who already has an account walked back into the front door.
+                 Nothing was created here, the ten codes open nothing, and
+                 starting again would spend another challenge and another
+                 passkey to be told the same thing.
+
+                 After one it means the opposite of all three. That POST
+                 committed its thirty rows and lost the 201 coming back — which
+                 is why the person was told Budgetoid could not tell and to keep
+                 their codes — and this 409 is that account answering. So the
+                 account exists, the passkey that opens it is the first
+                 attempt's, and the live codes are the first attempt's ten.
+                 Saying "nothing was created here and those codes open nothing"
+                 to that person is false on the first clause and lethal on the
+                 second: they throw away the first card, keep a passkey, and
+                 hold no codes and no way to make more, because
+                 `POST /api/me/recovery-codes` has no caller in this client. -->
+            @if (register.mayHaveCreatedAccount()) {
               <h1 class="r-title">Your first attempt worked</h1>
               <p class="r-error">
                 Your first attempt did create your account &mdash; its answer
@@ -85,20 +94,6 @@
                 ago open nothing; the ten from the first attempt are the ones
                 that work.
               </p>
-              <!-- No control, for a harder reason than the branch below.
-                   `Start again` walks into this same 409 a third time, and
-                   `/register` is the only address this screen could send
-                   somebody to that leads anywhere but back here.
-
-                   **The other half of this argument has expired and the control
-                   has not caught up.** It used to read that nothing in this
-                   browser could run a passkey assertion, so a `Sign in` control
-                   would be a promise no route could keep. `/welcome` now signs a
-                   returning person in with the passkey their first attempt
-                   created, which is exactly what this branch tells them to do —
-                   so the honest offer here is a way to that screen, and adding
-                   one is work this commit did not do. Until then the sentence
-                   carries it alone. -->
             } @else {
               <h1 class="r-title">You already have an account</h1>
               <p class="r-error">
@@ -107,6 +102,40 @@
                 &mdash; sign in from the Budgetoid home page instead.
               </p>
             }
+
+            <!-- One control for both readings, and outside the fork on purpose:
+                 the branch that most needs it is the one a reader is least
+                 likely to be looking at, and a control written twice is a
+                 control that can be forgotten once.
+
+                 **`Start again` is genuinely the wrong offer here** — it spends
+                 another challenge and another passkey to meet this same 409 —
+                 and that argument reaches "not that control", never "no
+                 control". Both sentences above tell the reader to go and sign
+                 in; `/register` has no navigation of its own and the shell is a
+                 bare `<router-outlet />`, so without this they were told to go
+                 somewhere with nothing to press. `/welcome` is the one screen
+                 in this application that runs a passkey assertion, which is
+                 exactly what both readings need: the first has a passkey from
+                 an earlier visit, the second has the one their first attempt
+                 registered.
+
+                 A button and not an `<a routerLink>`, which is the shape a
+                 reader will reach for first. What a link buys is opening the
+                 address somewhere else — a new tab, a second window — and doing
+                 that from here leaves this dead end standing in the old tab
+                 with ten worthless codes still on it. This is a way *out* of a
+                 flow that ended, in the same block and of the same kind as the
+                 `Start again` its neighbours offer, rather than a piece of
+                 navigation somebody might want beside what they are reading. -->
+            <button
+              class="r-button"
+              mat-flat-button
+              type="button"
+              (click)="goToSignIn()"
+            >
+              Go to sign in
+            </button>
           }
           @case ('unknown') {
             <!-- A status 0, a timeout and a 5xx say nothing about whether the
@@ -137,7 +166,24 @@
         }
       </div>
     } @else if (register.codes(); as codes) {
-      <app-codes-step [codes]="codes" (create)="register.create()" />
+      <!-- **The wait is handed down rather than rendered here, and the codes
+           stay on the screen through it.** The press this step ends with is the
+           one that cannot be taken back and the request behind it is the
+           longest in the product — ~30 rows across nine relations in one save —
+           so a screen that renders unchanged for several seconds reads as a
+           control that did nothing, which is what invites the second press.
+
+           It goes in as an input for two reasons. The step already owns the one
+           live region on this screen, in the DOM from first paint and empty at
+           rest, and a region this shell created at the moment it had something
+           to say would be announced unreliably or not at all. And an input
+           keeps that step what it is: it still mints nothing, posts nothing,
+           navigates nowhere and holds no reference to the flow. -->
+      <app-codes-step
+        [codes]="codes"
+        [creating]="register.busy()"
+        (create)="register.create()"
+      />
     }
   }
 }
