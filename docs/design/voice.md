@@ -113,5 +113,8 @@ again, and state a loss nobody can reverse — without any of it reading as alar
 ## Marketing voice (Welcome and public surfaces)
 
 Currency-free, no feature lists, no trust-claim lists, no gimmick lines. The shipped
-Welcome copy is the reference: "Always watching. Never judging." — statements, then
-one action. Anything that reads as a sales trick gets cut.
+Welcome copy is the reference: "Always watching. Never judging." — statements, then the
+acts. Two of those are offered and exactly one of them is Primary, per
+[components](components.md); the voice rule is that the screen sells one thing and the
+second control is there to be found rather than to persuade. Anything that reads as a
+sales trick gets cut.

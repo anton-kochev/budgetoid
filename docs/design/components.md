@@ -65,13 +65,16 @@ label style `label` (Inter 600 15), icon 20 with 8px gap.
 | Variant | Surface | Label | Use |
 | --- | --- | --- | --- |
 | Primary | `--mat-sys-primary` fill | `--mat-sys-on-primary` | The screen's one main action |
-| Outline | `--bud-surface`, 1px `--bud-hairline` border | `--bud-text` | Secondary actions; the Google sign-in button is this spec |
+| Outline | `--bud-surface`, 1px `--bud-hairline` border | `--bud-text` | Secondary actions; the provider control on the registration flow's introduction step is this spec |
 | Ghost | transparent | `--bud-accent-text` | Tertiary, inline, and dialog-dismiss actions |
 | Destructive | `--bud-over` fill | `#FFFFFF` | Deleting and erasing, only after confirmation UI |
 
-One primary button per view. Hover on Outline may invert to primary fill (the shipped
-sign-in hover); Ghost and icon buttons use state layers. Icon-only buttons: 40px
-visual, 48px target, always `aria-label`.
+One primary button per view. Hover on Outline may invert to primary fill; Ghost and icon
+buttons use state layers. Icon-only buttons: 40px visual, 48px target, always
+`aria-label`. **Nothing ships that inversion today** — the one control that drew it was a
+shared provider sign-in button, deleted when the provider stopped signing anybody in, and
+the provider control that replaced it is a plain Material `outlined`. Read the inversion as
+the target, like the rest of this table.
 
 A destructive action whose confirmation UI does not exist yet is specified as **Outline,
 disabled** — never Destructive. The Destructive fill is a promise that a confirmation
@@ -635,8 +638,10 @@ way on. Title **Create your Budgetoid account**.
   challenge, and the account that results is bound to whichever address was asserted.
 - **Holding none**, it shows no address and no **Continue**. One line saying this browser is not
   holding a Google address, and an **Outline** **Continue with Google** — the treatment the book
-  gives that control wherever it appears, in the welcome screen's own words so that somebody bounced
-  here meets the control they already pressed once. A browser arrives in this state routinely: a
+  gives that control wherever it appears, which is here and nowhere else. **This is the only
+  provider control in the product**, and there is no shared component behind it: the welcome screen
+  carries no provider button, so there is no other screen's copy for this one to match and no
+  sentence about meeting a control already pressed. A browser arrives in this state routinely: a
   bookmark, a reload an hour later, an exchange that never completed. A **Continue** from there
   would reach a refusal with nothing useful to say about why.
 

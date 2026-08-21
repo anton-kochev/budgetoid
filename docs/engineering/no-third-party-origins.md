@@ -39,9 +39,16 @@ actually used — never a CDN link, never the whole 1.38 MB face.
 **The production build registers no state-inspection or developer-tooling provider, and
 carries none of its code.** The Redux DevTools browser extension is a third party in the
 sense that matters here: an NgRx store instrumented for it hands over every dispatched
-action and the whole state tree, which today includes the signed-in user's profile. NgRx's
-`logOnly` flag narrows what such an extension may *do*, never what it may *see*, so it is
-not a mitigation.
+action and the whole state tree. NgRx's `logOnly` flag narrows what such an extension may
+*do*, never what it may *see*, so it is not a mitigation.
+
+**The store holds nothing today, and the guard is worth more than the store is.** The last
+slice in the application was the provider sign-in button's action chain, and it left with
+the button; `provideStore()` and `provideEffects()` in `app.config.ts` are registered
+empty. They stay because removing them takes `devtools.providers.ts`, the `angular.json`
+`fileReplacements` entry and `no-devtools.spec.ts` with them — and the state tree an
+extension would read is the *next* slice's, which arrives without anybody re-deciding this.
+Do not read the two idle calls as dead code.
 
 Removal happens at build time, not at runtime. `src/app/devtools.providers.ts` registers
 `provideStoreDevtools` and the `fileReplacements` entry in the production configuration of
@@ -59,11 +66,28 @@ second as a `window` property name.
 
 ## Two gaps this test cannot close
 
-Federated sign-in still fetches `accounts.google.com/.well-known/openid-configuration` and, from
+Creating an account still fetches `accounts.google.com/.well-known/openid-configuration` and, from
 the URL that document returns, `www.googleapis.com/oauth2/v3/certs`. Neither is a subresource,
 and the second appears in no bundle — the library learns the URL at runtime. Ending them means
-ending the dependency on a federated identity provider. Until then the page loads privately and
-*signing in* does not.
+ending the dependency on a federated identity provider.
+
+**Both fetches have narrowed to one moment in an account's life, and that is the whole of what
+changed.** The identity provider is contacted **once**, on the registration screen's introduction
+step, and nothing else in the client touches it: signing in is a WebAuthn assertion against this
+product's own API, and every request after it authenticates from the first-party session cookie.
+So the page loads privately, *signing in* loads privately, and the two fetches above are reachable
+only while an account is being created. What used to be a standing cost of using the product is now
+a one-time cost of starting to.
+
+**What an allow-listed origin buys, and what it therefore cannot catch.**
+`accounts.google.com` is listed above as the issuer `auth-service.ts` configures, legitimately —
+the registration redirect is a top-level navigation to exactly that host. The consequence is that a
+change putting this application back in *repeated* contact with it adds no origin the bundle did not
+already carry, and this test stays green. The concrete case is
+`setupAutomaticSilentRefresh()`, which plants a hidden iframe pointed at the provider and re-runs it
+on a timer for as long as the tab is open: a third-party request on every page, forever, to renew a
+token used once and discarded at the `201`. Nothing schedules one, and what holds that is a pin of
+its own in `auth-service.spec.ts` rather than anything here.
 
 And this covers what the build emits, not what the browser permits. The
 `Content-Security-Policy` that enforces the same rule at runtime ships in `globalHeaders` of

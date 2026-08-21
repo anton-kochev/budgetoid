@@ -34,7 +34,8 @@ page and `/welcome` runs the assertion, so a person really does complete either,
 and go on to be authenticated from it. The other two are reached today only by the integration
 suite — nothing in the browser redeems a code or regenerates a set. **Every request this app makes is
 now authenticated from the cookie**: the identity provider is contacted once, on the registration
-screen, and a bearer presented to any other route authenticates nothing at all. The first gotcha below
+screen, a bearer presented to any other route authenticates nothing at all, and the client sends one
+to no other route. The first gotcha below
 carries what that means for reading the rest of this file.
 
 ## Key Entities
@@ -439,9 +440,10 @@ database holds, and the sentence above is what makes it one-to-one in fact.
 ---
 
 - **Rule**: The web client decides **once** whether a request is going to this product's API, and
-  that one answer carries **three** effects: `withCredentials: true`, the `X-Budgetoid-Client`
-  header, and — until sign-in leaves the identity provider — the `Authorization: Bearer` header. The
-  decision compares **origins**, never a string prefix.
+  that one answer carries **three** effects: `withCredentials: true` and the `X-Budgetoid-Client`
+  header on every such request, and the `Authorization: Bearer` header on **two routes only** —
+  `POST /api/registration/options` and `POST /api/registration`. The decision compares **origins**,
+  never a string prefix, and the origin is settled **before** the route is looked at.
 - **Why**: the three effects share a predicate because two predicates drift, and the drift is
   silent in both directions. Drop the cookie and every request arrives unauthenticated; drop the
   header and every request answers 403; widen the predicate and the browser hands this app's
@@ -455,14 +457,45 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   drops out of sign-in; and an empty `apiBaseUrl` — which is what the config holds until it
   loads — classifies **nothing** as this API, because `''` is a prefix of every string on earth and
   failing open there hands credentials to every request the app makes.
+  - **The bearer did not leave with sign-in; it narrowed, and it is not going to leave.** The
+    sentence this rule used to carry — *until sign-in leaves the identity provider* — was written
+    before registration became provider-authenticated. Sign-in has left, and those two routes
+    authenticate on the provider's scheme and nothing else **permanently**, because an account may
+    not exist without a completed provider exchange and there is no first-party credential to
+    present on the one call that creates the first-party account.
+  - **Narrowing was worth doing even though no other route reads the token.** `RegisterService`
+    discards it at the `201`, but a browser that abandoned registration keeps it for the hour it
+    lives, and what that person usually does next is a passkey sign-in — so both anonymous assertion
+    legs were being handed a provider credential they could not act on. Every hop a credential makes
+    is another log, proxy and error report it can be recorded in, and another handler that could
+    start reading it without anybody deciding to.
+  - **The order of the two questions is the security property.** Which origin the request is going
+    to is settled first; only then which route it is asking for. Reversed — or folded into one path
+    test — `https://api.budgetoid.app.attacker.example/api/registration` is a registration request,
+    and a host anybody can register is handed the token. The path predicate therefore takes a
+    **pathname** rather than a URL, so a caller has to have settled the origin in order to have an
+    argument for it at all.
 - **Enforced in**: `apiCredentialsInterceptor` in `+core/interceptors/`. The predicate is
   **exported from there and imported** by `sessionExpiryInterceptor`, which needs the same answer
   on the way back; it is one definition with two callers rather than one interceptor, and that is
-  what keeps "one predicate" literally true. The interceptor's spec calls the function directly and
+  what keeps "one predicate" literally true. The two registration paths are declared there too and
+  imported by `RegistrationApiService`, which builds the requests — that direction and not the other,
+  because the service imports `EXPECTS_UNAUTHENTICATED` from the expiry interceptor, which imports
+  the origin predicate from this one, so the opposite edge would close a cycle. Two modules have to
+  agree about those two strings and a second spelling of either fails silently in both directions: a
+  path corrected only in the service loses the bearer and meets a `401` on the flow's first call,
+  while a path corrected only in the interceptor hands the provider's token to a route that has
+  moved. The interceptor's spec calls the function directly and
   therefore cannot see whether anybody registered it, so `app.config.spec.ts` stands up the real
   provider list with only the HTTP backend swapped and goes red on an emptied
   `withInterceptors([…])`. Without that second spec the registration can be deleted with the whole
   suite green and the product answering 403 to everything.
+  - **Three of that spec's assertions separate mistakes nothing else would catch**: that the two
+    assertion legs and `GET /api/me` carry no bearer; that the narrowing touched the bearer alone,
+    since an implementation that narrowed the whole interceptor to the registration routes would
+    cost every other request its cookie and its header — a 403 on every route, from a change that
+    reads as a tightening; and that a registration **path** on another origin is sent nothing at
+    all, which is the one assertion a path-first implementation fails.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -774,8 +807,9 @@ enumerated spelling makes at the database — see the first rule above.
   one way worth stating: sign-in touches the identity provider not at all. The other two establishing
   routes still have no screen — nothing presents a recovery code or regenerates a set — so they are
   reached only by the integration suite. **There is no longer any path on which a request is
-  authenticated by anything but the cookie**, the two registration routes aside; the client still
-  attaches a bearer while it holds an id token, and no route but those two reads it. See
+  authenticated by anything but the cookie**, the two registration routes aside — and the client no
+  longer sends a bearer anywhere else either, so the set of requests that carry one and the set of
+  routes that read one are now the same two. See
   [users-and-ownership.md](users-and-ownership.md).
   - **The handle never appears in a response body.** The cookie is `HttpOnly` precisely so that
     nothing else is a handle; no response record carries a token or a session id, and

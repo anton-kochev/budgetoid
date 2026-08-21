@@ -9,7 +9,6 @@ import { provideRouter } from '@angular/router';
 import { provideAppCore } from '@app-core/core.providers';
 import { apiCredentialsInterceptor } from '@app-core/interceptors/api-credentials.interceptor';
 import { sessionExpiryInterceptor } from '@app-core/interceptors/session-expiry.interceptor';
-import * as authenticationEffects from '@app-state/authentication/authentication.effects';
 import { provideEffects } from '@ngrx/effects';
 import { provideStore } from '@ngrx/store';
 import { provideOAuthClient } from 'angular-oauth2-oidc';
@@ -37,8 +36,21 @@ export const appConfig: ApplicationConfig = {
     ),
     provideRouter(routes),
     provideOAuthClient(),
+    // **Registered holding nothing, on purpose.** The last thing that used
+    // NgRx was the provider sign-in button's action chain, and it left with
+    // the button — no reducer, no effect and no selector is left in the
+    // application, so these two calls are the whole of the store today.
+    //
+    // Kept rather than removed because this is where the decision now reads:
+    // the store is what the next state slice reaches for, and taking it out
+    // means taking out `devtools.providers.ts`, the `fileReplacements` entry
+    // in `angular.json` that swaps it for an empty module in production, and
+    // `no-devtools.spec.ts`, which is what proves a state-inspection provider
+    // never reaches the bundle. That guard is worth more standing than the
+    // two idle calls cost. Do not read an empty `provideEffects()` as an
+    // oversight, and do not delete it as dead code.
     provideStore(),
-    provideEffects(authenticationEffects),
+    provideEffects(),
     ...devtoolsProviders,
     provideAnimationsAsync('noop'),
     provideAppCore(),

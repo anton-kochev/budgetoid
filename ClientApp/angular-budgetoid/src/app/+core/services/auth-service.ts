@@ -9,9 +9,9 @@ export class AuthService {
   private readonly config = inject(ConfigurationService);
   private readonly oAuth = inject(OAuthService);
 
-  // Configure OAuth from the (now-loaded) app config, process any redirect-back
-  // token, and start silent refresh. Driven by an APP_INITIALIZER after the
-  // config has loaded — see core.providers.ts — so config values are present.
+  // Configure OAuth from the (now-loaded) app config and process any
+  // redirect-back token. Driven by an APP_INITIALIZER after the config has
+  // loaded — see core.providers.ts — so config values are present.
   public async initialize(): Promise<void> {
     const { auth } = this.config.getConfig();
 
@@ -42,10 +42,16 @@ export class AuthService {
     // a browser that never completed an exchange, so a flag beside it would be
     // a second, weaker way of asking a question that is already answered.
     //
-    // The silent refresh sits inside the guard on purpose rather than by
-    // accident of scope: without a discovery document there is no token
-    // endpoint to refresh against, so scheduling it would start a timer that
-    // can only fail.
+    // **Nothing schedules a silent refresh, and the omission is the rule.**
+    // `setupAutomaticSilentRefresh()` used to sit on the next line; it plants a
+    // hidden iframe pointed at `accounts.google.com` and re-runs it on a timer
+    // for as long as the tab is open. The provider token is now used **once**,
+    // on the registration screen, and discarded at the 201 by
+    // `forgetProviderToken()` — every request after that authenticates from the
+    // first-party session cookie. Refreshing it would be a third-party request
+    // on every page of the product, forever, to keep alive a credential nothing
+    // reads. Adding it back is a change to what this application loads from
+    // another origin, not a convenience.
     //
     // This guard is a deliberate scope departure in the commit that added it —
     // that commit is about registration, and this is a bootstrap fix. It is
@@ -54,7 +60,6 @@ export class AuthService {
     // degraded sign-in into a blank page. Read it as argued, not as a drive-by.
     try {
       await this.oAuth.loadDiscoveryDocumentAndTryLogin();
-      this.oAuth.setupAutomaticSilentRefresh();
     } catch {
       // Intentionally swallowed; see above.
     }

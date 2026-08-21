@@ -16,9 +16,16 @@ import { emittedFiles, expectProductionBuild } from './production-bundle';
 // Requires a production build: `npm run build && npm test`.
 //
 // Only `.css` is read, and deliberately. Component styles are inlined into the
-// JavaScript chunks, and one component — the Google sign-in button — hand-rolls
-// its own `:focus-visible` ring. Searching the JavaScript would let that single
-// button satisfy a rule about every interactive element in the application.
+// JavaScript chunks, so a ring written in one component's stylesheet would be
+// found by a search over the JavaScript and would satisfy, on its own, a rule
+// about every interactive element in the application.
+//
+// No component hand-rolls one today: `src/styles.scss` is the only file in the
+// repository that writes `:focus-visible`, which is exactly why that one global
+// block has to name every interactive selector itself. That is a fact about
+// today rather than something enforced, and it is what makes the narrowing
+// worth keeping — a search over the JavaScript would pass right now for the
+// right reason, and go on passing the day a component grows a ring of its own.
 //
 // The limit, stated instead of papered over: this proves the rule reaches the
 // shipped global stylesheet. It does not prove the rule wins the cascade

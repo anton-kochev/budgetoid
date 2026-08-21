@@ -308,24 +308,33 @@ Load-bearing rules, each explained there or in the linked decision:
 ## Frontend Architecture
 
 - Angular 21 standalone components (no NgModules)
-- Slice-1 transaction state uses an Angular signal-based service; NgRx remains for existing
-  auth scaffolding only
+- Slice-1 transaction state uses an Angular signal-based service. **NgRx is registered and empty**:
+  `provideStore()` and `provideEffects()` take no arguments and no action, reducer, effect or
+  selector remains — the auth scaffolding that was its last consumer is gone, and `+state/` with it.
+  It is kept as the store the next slice reaches for, and because removing it would take
+  `devtools.providers.ts`, the `angular.json` `fileReplacements` entry and `no-devtools.spec.ts` —
+  the guard proving the production bundle registers no state-inspection provider. `@app-state/*`
+  currently resolves to nothing.
 - `+core/` — API services, guards, interceptors, app-wide providers
 - `+shared/` — shared components and utilities
-- `+state/` — NgRx actions, effects, selectors, reducers
 - Path aliases: `@app-core/*`, `@app-shared/*`, `@app-state/*` (baseUrl is `./src`)
 - Auth: Google OAuth via `angular-oauth2-oidc`
 - UI: Angular Material + Angular CDK, styled with SCSS
 - **Two interceptors, one predicate.** `apiCredentialsInterceptor` answers "is this going to our
   API?" **once** and attaches three things: `withCredentials: true`, the `X-Budgetoid-Client`
-  header, and (until sign-in leaves the identity provider) the bearer. `sessionExpiryInterceptor`
-  reads the same question on the way back. The predicate is **exported from the first and
-  imported by the second** — never restated — because two copies of "is this our API?" drift, and
-  the drift is silent in both directions. It compares **origins**: `url.startsWith(apiBaseUrl)`
-  admits `https://api.budgetoid.app.attacker.example`, a name anybody can register, and hands it
-  this app's bearer. The bearer is conditional on holding an id token; the cookie and the header
-  are **not**, because a browser holding a session and no id token is every browser after the
-  provider drops out. An empty `apiBaseUrl` classifies nothing as this API. **Neither
+  header, and — **on the two registration routes only** — the provider's bearer.
+  `sessionExpiryInterceptor` reads the same question on the way back. The predicate is **exported
+  from the first and imported by the second** — never restated — because two copies of "is this our
+  API?" drift, and the drift is silent in both directions. It compares **origins**:
+  `url.startsWith(apiBaseUrl)` admits `https://api.budgetoid.app.attacker.example`, a name anybody
+  can register, and hands it this app's credentials. **The bearer is narrowed by origin first and
+  path second, in that order** — a route test on the path alone would hand the provider's token to
+  `…attacker.example/api/registration`. It goes to those two routes because they are the only ones
+  the provider scheme authenticates, and nowhere else because a person who abandons registration
+  still holds the token and their next act is usually a passkey sign-in: a credential travelling
+  further than it is needed is the defect whether or not anything reads it. The cookie and the
+  header are unconditional, because a browser holding a session and no id token is every browser
+  after registration. An empty `apiBaseUrl` classifies nothing as this API. **Neither
   interceptor's own spec can see whether it is registered** — both call their function directly —
   so `src/app/app.config.spec.ts` carries one pin per interceptor, and each reddens on its own
   half only. Without them either registration is deletable with a green suite: the first costs

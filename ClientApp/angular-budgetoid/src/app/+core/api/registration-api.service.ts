@@ -12,6 +12,10 @@
 // comment points at it rather than restating the argument.
 import { HttpClient, HttpContext } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
+import {
+  REGISTRATION_OPTIONS_PATH,
+  REGISTRATION_PATH,
+} from '@app-core/interceptors/api-credentials.interceptor';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/session-expiry.interceptor';
 import type { WrappedAccountKeys } from '@app-core/security/account-keys';
 import type { RecoveryCodeVerifier } from '@app-core/security/recovery-codes';
@@ -87,6 +91,14 @@ export type RegistrationRequestBody = PasskeyRegistrationPayload &
 // either — the options leg has no body for it to describe, which is the
 // argument `getBlob` already makes in that file, and Angular sets it from the
 // body on the leg that has one.
+//
+// **The two paths are imported, not written here.** `apiCredentialsInterceptor`
+// has to recognise the same two routes to decide which requests still carry the
+// provider's bearer, and a second spelling of either one is a silent failure in
+// both directions: a path corrected only here loses the token and meets a 401 on
+// the first call, and one corrected only there hands the token to a route that
+// has moved. That file argues why the definition sits at the enforcing end —
+// the same direction `EXPECTS_UNAUTHENTICATED` already travels into this one.
 @Injectable({ providedIn: 'root' })
 export class RegistrationApiService {
   private readonly http = inject(HttpClient);
@@ -105,7 +117,7 @@ export class RegistrationApiService {
    */
   public getCreationOptions(): Observable<PasskeyCreationOptionsJson> {
     return this.http.post<PasskeyCreationOptionsJson>(
-      `${this.baseUrl}/api/registration/options`,
+      `${this.baseUrl}${REGISTRATION_OPTIONS_PATH}`,
       null,
       { context: anonymousContext() },
     );
@@ -132,7 +144,7 @@ export class RegistrationApiService {
    * {@link getCreationOptions}.
    */
   public register(body: RegistrationRequestBody): Observable<void> {
-    return this.http.post<void>(`${this.baseUrl}/api/registration`, body, {
+    return this.http.post<void>(`${this.baseUrl}${REGISTRATION_PATH}`, body, {
       context: anonymousContext(),
     });
   }

@@ -119,23 +119,28 @@ The product publicly promises: the user only and always owns their data.
 
 **Today's Settings screen** is `/app/settings`. It has no entry in the bottom bar or the
 rail and is reached by typing the URL — a later epic gives it one. It renders the account's
-email address, a working Export that saves the server's response bytes unread, and an Erase
-control that is present and **disabled**, because erasure has to be confirmed with a fresh
-passkey assertion and nothing in the browser runs one. It states in plain words what the
-operator can read, and that erased rows survive in point-in-time backups for up to seven days.
+email address, a working Export that saves the server's response bytes unread, a working
+**Sign out**, and an Erase control that is present and **disabled** because *this screen* does
+not ask for the fresh passkey assertion erasure is confirmed with. The browser is not
+incapable of one — `/welcome` runs an assertion — and the copy must not say it is. It states
+in plain words what the operator can read, and that erased rows survive in point-in-time
+backups for up to seven days.
 
 It also lists **every way of signing in** — each entry its type in words and the day behind
 it, and nothing more. A recovery-code set is one of those entries, because redeeming a code
 opens a full session the way the other kinds do. Registering and revoking are present and
-**disabled**: no screen on this path runs the ceremony either needs — the client runs a
-creation ceremony only inside registration, and an assertion nowhere at all. One sentence
-above the list explains it, rather than one beside each row, so a screen reader hears it once
+**disabled**, and **not for the same reason**, which is why the section carries two sentences
+rather than one: registering a passkey would give a new factor its own wrapped copy of the
+account's keys, and no route hands those keys back to unwrap; revoking waits on this screen
+asking for an assertion, exactly as erasure does. Each sentence sits
+above the list rather than beside each row, so a screen reader hears it once
 instead of once per entry. An entry nothing can ever revoke carries no button at all, not even
 a disabled one.
 
 Between that list and Export sits **Recovery codes**, which says how many are left and
 nothing more — no code, no part of one, no identifier, no date. It reads and never writes:
-its Generate control is present and **disabled** on the argument the others use, so generating
+its Generate control is present and **disabled** on the account-keys argument word for word,
+a set being ten factors that each wrap those keys — so generating
 a set **from here** and redeeming one are unbuilt, as are key rotation, the email-change action
 and the erasure confirmation dialog. Showing a set once is built and lives elsewhere — the last
 step of registration, where the account's first set is issued. The section sits there and

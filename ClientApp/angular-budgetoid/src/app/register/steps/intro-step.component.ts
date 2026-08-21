@@ -10,14 +10,15 @@ import { RegisterService } from '../register.service';
 // its own — the flow's state lives in `RegisterService`, provided by the shell
 // and discarded with it.
 //
-// **The provider control is this component's own button rather than
-// `<app-google-sign-in-button />`.** That button dispatches an NgRx action
-// through a `LoginFacade` it provides itself, so placing it here would drag the
-// store into a screen that otherwise touches neither NgRx nor the network, and
-// would route this press through the auth effects rather than through the
-// service the rest of this flow already depends on. The copy is deliberately
-// identical to the welcome screen's: a person bounced here from there meets the
-// control they already pressed once.
+// **This is the only provider control in the product, and there is no shared
+// component behind it.** There used to be one — a button dispatching an NgRx
+// action through a facade it provided itself — and it was deleted along with the
+// welcome screen's provider button, because a screen that touches neither the
+// store nor the network has no reason to reach the identity provider through
+// two indirections. Nothing else offers this press, so nothing here has to match
+// another screen's copy: the provider is contacted once, on this step, and the
+// sentence about meeting a control already pressed on the welcome screen went
+// with the control it described.
 
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -28,9 +28,11 @@ const KINETIC_LINES: readonly (readonly [fear: string, verdict: string])[] = [
 // goes to the registration flow, and signing in, which runs the assertion
 // ceremony against this product's own API and asks the provider nothing at all.
 //
-// The provider button is gone from here. The component itself still ships in
-// `+shared`; the one place the provider is contacted is the registration flow's
-// introduction step.
+// The provider button is gone from here, and there is no shared component left
+// behind it: the button, the facade it provided and the store chain it
+// dispatched into went with it. The registration flow's introduction step draws
+// its own control, and that step is the one place the provider is ever
+// contacted — once, while an account is being created.
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [BrandLockupComponent, KineticSentenceComponent, MatButtonModule],

@@ -106,8 +106,11 @@ origin.
 it. It names four sources: `'self'`, the API, `accounts.google.com` for the OpenID discovery
 document, and `www.googleapis.com` for the JWKS that document points at. The last two are the same
 fetches [no-third-party-origins.md](no-third-party-origins.md) already records as gaps it cannot
-close, and both leave with federated sign-in. `oauth2.googleapis.com` is deliberately absent: the
-application runs the implicit flow, so no request reaches a token endpoint.
+close, and both leave with federated sign-in. They are reachable on **one** screen — the
+registration flow's introduction step, the only place the provider is contacted — so the policy has
+to permit them on a document served at every address, for a fetch that happens once in an account's
+life. `oauth2.googleapis.com` is deliberately absent: the application runs the implicit flow, so no
+request reaches a token endpoint.
 
 `img-src` carries no `data:`, verified against the emitted CSS and JavaScript, which contain none.
 `data:` is the token a reader adds to make one inlined icon work; it is not an origin, and it admits
@@ -241,17 +244,24 @@ policy to everything, not Azure's. The first deploy records the real value (`DEP
 [ADR 0020](../decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md) holds the
 same reasoning.
 
-## Silent refresh is refused, and that is not a regression
+## Silent refresh is gone, and the policy refuses it independently
 
-`+core/services/auth-service.ts` calls `setupAutomaticSilentRefresh()`, which works through a hidden
-iframe. Both legs of that iframe are now refused, for two different reasons: the outbound one frames
-Google, governed by `frame-src` falling back to `default-src 'self'`; the return one redirects into
-this origin, which `frame-ancestors 'none'` refuses — framed by its own origin is still framed.
+**Nothing calls `setupAutomaticSilentRefresh()`.** `+core/services/auth-service.ts` used to, and the
+call is deleted: the provider token is obtained once, on the registration screen, and discarded at
+the `201`, so a background renewal keeps alive a credential nothing reads. That decision is argued
+in [no third-party origins](no-third-party-origins.md) and pinned by `auth-service.spec.ts`; this
+section covers only what the browser would do if it came back.
 
-The feature was **already broken** before the policy shipped, because there is no
-`silent-refresh.html` for the iframe to load. The policy turns an existing silent defect into a
-loud one. The correct response to the console error is not to loosen the policy: the caller leaves
-with federated sign-in, and `auth-service.ts` was deliberately not touched.
+It would be refused twice over, for two different reasons. The outbound leg frames Google, governed
+by `frame-src` falling back to `default-src 'self'`; the return leg redirects into this origin,
+which `frame-ancestors 'none'` refuses — framed by its own origin is still framed. It would also
+fail on its own, because there is no `silent-refresh.html` for the iframe to load.
+
+**Read the two halves as independent, because that is what they are.** The policy is not what
+removed the call, and deleting the call is not what makes the policy right: a restored renewal adds
+no origin the emitted bundle did not already carry, so the build-time check stays green while the
+runtime policy is the only thing refusing it. Neither the loosening of `frame-src` nor the addition
+of a `silent-refresh.html` is the correct answer to a console error from this direction.
 
 ## The API
 

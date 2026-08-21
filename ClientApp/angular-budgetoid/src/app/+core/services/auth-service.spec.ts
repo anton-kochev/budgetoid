@@ -69,13 +69,11 @@ describe('AuthService', () => {
   // rest of the app runs on.
   it('finishes initializing when the provider cannot be reached', async () => {
     // Arrange
-    const setupAutomaticSilentRefresh = vi.fn();
     const oAuth = {
       configure: vi.fn(),
       loadDiscoveryDocumentAndTryLogin: vi.fn(() =>
         Promise.reject(new Error('The discovery document is unreachable.')),
       ),
-      setupAutomaticSilentRefresh,
     } as unknown as OAuthService;
 
     TestBed.configureTestingModule({
@@ -92,9 +90,58 @@ describe('AuthService', () => {
 
     // Act & Assert
     await expect(service.initialize()).resolves.toBeUndefined();
-    // Inside the guard on purpose rather than by accident of scope: without a
-    // discovery document there is no token endpoint to refresh against, so
-    // scheduling the refresh would start a timer that can only fail.
+  });
+
+  // **Nothing schedules a background renewal of the provider token.** That
+  // token is used once, on the registration screen, and discarded at the 201;
+  // every request after it authenticates from the first-party session cookie,
+  // so nothing reads it again. Scheduling a renewal — which is what
+  // `setupAutomaticSilentRefresh()` does — plants a hidden iframe pointed at
+  // `accounts.google.com` and re-runs it on a timer for as long as the tab is
+  // open: a third-party request on every page of the product, forever, to keep
+  // alive a credential nobody reads, in an application whose whole point is
+  // that the provider is contacted once in an account's life.
+  //
+  // The assertion has to sit on the **success** path. On the failure path the
+  // scheduling could never have run anyway — it followed the line that throws —
+  // so an assertion there discriminates nothing and would pass over a restored
+  // call.
+  //
+  // `src/no-external-origins.spec.ts` cannot hold this. It reads the production
+  // bundle for foreign origins, and `accounts.google.com` is already
+  // allow-listed there as the issuer this service configures, legitimately so:
+  // the sign-in redirect goes to exactly that host. A restored renewal adds no
+  // origin the bundle did not already carry, so that spec stays green while a
+  // timer starts hitting Google on every page.
+  it('schedules no background renewal of the provider token', async () => {
+    // Arrange
+    const loadDiscoveryDocumentAndTryLogin = vi.fn(() => Promise.resolve(true));
+    const setupAutomaticSilentRefresh = vi.fn();
+    const oAuth = {
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin,
+      setupAutomaticSilentRefresh,
+    } as unknown as OAuthService;
+
+    TestBed.configureTestingModule({
+      providers: [
+        AuthService,
+        { provide: OAuthService, useValue: oAuth },
+        {
+          provide: ConfigurationService,
+          useValue: { getConfig: () => ({ apiBaseUrl: '', auth: {} }) },
+        },
+      ],
+    });
+    const service = TestBed.inject(AuthService);
+
+    // Act
+    await service.initialize();
+
+    // Assert
+    // The first expectation is not decoration: without it an `initialize()`
+    // that had been emptied out entirely would satisfy the second one.
+    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledOnce();
     expect(setupAutomaticSilentRefresh).not.toHaveBeenCalled();
   });
 

@@ -864,17 +864,24 @@ The budget branch that runs after this, on every path, is in
   others — `sub` and `email`, which are stored, and `email_verified`, which is **read and not
   stored**: it gates registration and is then discarded. The token carries more, and the rest is
   deliberately dropped rather than stored against the account. The frontend attaches the **ID token**
-  (not the access token) as the `Authorization: Bearer` header when it holds one, and reads no claim
-  out of it at all; the authorization request asks for `openid email` and nothing more.
-  `auth-service.spec.ts` pins the first half and `no-profile-scope.spec.ts`, which reads the built
-  bundle, pins the second. **Only two routes accept that header.** `JwtBearer` is reached by exactly
+  (not the access token) as the `Authorization: Bearer` header on the **two registration routes and
+  nowhere else** — the same two routes that accept it, so the set of requests carrying one and the
+  set of routes reading one are identical. `JwtBearer` is reached by exactly
   one authorization policy — the `/api/registration` group's — so a bearer sent anywhere else
-  authenticates nothing and the request is answered the anonymous `401`. **The client reads no claim
-  *because* it asks the API**: `GET /api/me` is
-  its only source for the address, and that is not a detour around the token — the token asserts what
-  the provider says today, while the account is reachable at what was stored when it was created. Do
-  not "optimize" the call away by decoding the token; the two values legitimately disagree, and the
-  stored one is the answer.
+  authenticates nothing and the request is answered the anonymous `401`; the client's own narrowing
+  is not what makes that true, it is what stops a credential travelling further than the routes that
+  can act on it. The authorization request asks for `openid email` and nothing more, pinned by
+  `no-profile-scope.spec.ts`, which reads the built bundle.
+  - **The client reads exactly one claim, and only on the registration screen.** `providerEmail()`
+    reads `email` so the introduction step can show which account is about to be created; it reads
+    no other member — not `name`, and above all not `picture`, which is an image from another origin
+    this application does not load at all — and `auth-service.spec.ts` pins that through a proxy
+    recording every claim touched. `openid email` already carries it, so reading it widens no scope.
+  - **`GET /api/me` is the only source for the *account's* address**, and the claim above is not a
+    detour around it: the token asserts what the provider says today, while the account is reachable
+    at what was stored when it was created. Do not "optimize" the call away by decoding the token;
+    the two values legitimately disagree, the stored one is the answer, and after registration there
+    is no token to decode — it is discarded at the `201`.
 - **`GET /api/me`**: an authenticated read of the caller's own address, and the settings surface's
   only source for it. It needed no grant — the role already holds `SELECT` on `users`, so
   `AppRoleGrantMatrixTests` staying green *untouched* is the proof, and a `42501` on this path would

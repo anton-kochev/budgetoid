@@ -19,6 +19,26 @@ import { apiCredentialsInterceptor } from './api-credentials.interceptor';
 const API_BASE_URL = 'https://api.budgetoid.app';
 const API_URL = `${API_BASE_URL}/api/me`;
 
+// The two routes authenticated by the provider scheme and nothing else. An
+// account may not exist without a completed provider exchange, so these are the
+// only requests in the product a Google bearer still means anything on, and
+// they always will be: registration is the one act that runs before this
+// product has an identity of its own to present.
+const REGISTRATION_OPTIONS_URL = `${API_BASE_URL}/api/registration/options`;
+const REGISTRATION_URL = `${API_BASE_URL}/api/registration`;
+
+// The anonymous assertion legs, and the reason the narrowing is a fix rather
+// than tidying. `RegisterService` discards the provider token at the 201, but a
+// person who abandons registration keeps it, and their next act is usually a
+// passkey sign-in — so these two currently carry a provider credential to
+// routes that neither read it nor could act on it. A credential travelling
+// further than it is needed is the defect, whether or not anything reads it:
+// every hop it makes is another log, proxy and error report it can be recorded
+// in, and another handler that could start reading it later without anyone
+// deciding to.
+const ASSERTION_OPTIONS_URL = `${API_BASE_URL}/api/passkeys/assertion/options`;
+const ASSERTION_URL = `${API_BASE_URL}/api/passkeys/assertion`;
+
 // A real other-origin request this app actually makes. `AuthService.initialize`
 // calls `loadDiscoveryDocumentAndTryLogin`, which fetches exactly this URL
 // through the same `HttpClient` the interceptor sits in front of. A contrived
@@ -196,19 +216,110 @@ describe('apiCredentialsInterceptor', () => {
     expect(client?.trim()).not.toBe('');
   });
 
-  // The bearer survives this commit so every intermediate commit ships; it goes
-  // when sign-in leaves the identity provider.
-  it('carries the bearer to the API while there is an id token', () => {
+  // Both legs, not one. They are separate routes with separate handlers, and an
+  // implementation that matched only the finish leg would leave the flow
+  // failing at its first request with a 401 nothing on screen can explain.
+  it("carries the provider's token to the routes that authenticate with it", () => {
     // Arrange
-    const request = apiGet();
+    const options = new HttpRequest<unknown>(
+      'POST',
+      REGISTRATION_OPTIONS_URL,
+      null,
+    );
+    const finish = new HttpRequest<unknown>('POST', REGISTRATION_URL, {
+      factorId: 'f',
+    });
+
+    // Act
+    const forwardedOptions = forwardedRequest(options);
+    const forwardedFinish = forwardedRequest(finish);
+
+    // Assert
+    expect(forwardedOptions.headers.get(AUTHORIZATION_HEADER)).toBe(
+      `Bearer ${ID_TOKEN}`,
+    );
+    expect(forwardedFinish.headers.get(AUTHORIZATION_HEADER)).toBe(
+      `Bearer ${ID_TOKEN}`,
+    );
+  });
+
+  // An id token is held throughout, which is the whole point: the browser of
+  // somebody who started registering and stopped holds one for an hour, and
+  // every request it makes in that hour is one of these. The two assertion
+  // legs are named explicitly because they are the requests that browser
+  // actually goes on to make — a provider credential presented to an anonymous
+  // route that will never read it.
+  //
+  // The offending URLs are collected rather than asserted one by one so a
+  // failure names which route still carries the token instead of reporting
+  // `true !== false`.
+  it('carries no provider token to any other API route', () => {
+    // Arrange
+    const requests = [
+      apiGet(),
+      new HttpRequest<unknown>('POST', ASSERTION_OPTIONS_URL, null),
+      new HttpRequest<unknown>('POST', ASSERTION_URL, { id: 'c' }),
+    ];
+
+    // Act
+    const forwarded = requests.map((request) => forwardedRequest(request));
+
+    // Assert
+    const carriers = forwarded
+      .filter((one) => one.headers.has(AUTHORIZATION_HEADER))
+      .map((one) => one.url);
+
+    expect(carriers).toEqual([]);
+  });
+
+  // The narrowing touches the bearer and nothing else. Without this, an
+  // implementation that narrowed the whole interceptor to the registration
+  // routes would satisfy both tests above while costing every other request in
+  // the product its session cookie and its client header — a 403 on every
+  // route, from a change that read as a tightening.
+  it('still carries the cookie and the client header everywhere', () => {
+    // Arrange
+    const requests = [
+      new HttpRequest<unknown>('POST', REGISTRATION_OPTIONS_URL, null),
+      new HttpRequest<unknown>('POST', REGISTRATION_URL, { factorId: 'f' }),
+      apiGet(),
+      new HttpRequest<unknown>('POST', ASSERTION_OPTIONS_URL, null),
+      new HttpRequest<unknown>('POST', ASSERTION_URL, { id: 'c' }),
+    ];
+
+    // Act
+    const forwarded = requests.map((request) => forwardedRequest(request));
+
+    // Assert
+    const stripped = forwarded
+      .filter((one) => !one.withCredentials || !one.headers.has(CLIENT_HEADER))
+      .map((one) => one.url);
+
+    expect(stripped).toEqual([]);
+  });
+
+  // The other-origin rule, restated on a registration path because the
+  // narrowing gives it a new way to fail. The two negative controls above are
+  // written against `/api/me`, so an implementation that decided "is this
+  // registration?" from the path alone would pass them and still hand the
+  // provider's token to `api.budgetoid.app.attacker.example`, a host anybody
+  // can register. Which origin a request is going to has to be settled before
+  // which route it is asking for.
+  it('sends nothing to another origin, registration path included', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>(
+      'POST',
+      `${API_BASE_URL}.attacker.example/api/registration`,
+      { factorId: 'f' },
+    );
 
     // Act
     const forwarded = forwardedRequest(request);
 
     // Assert
-    expect(forwarded.headers.get(AUTHORIZATION_HEADER)).toBe(
-      `Bearer ${ID_TOKEN}`,
-    );
+    expect(forwarded.withCredentials).toBe(false);
+    expect(forwarded.headers.has(CLIENT_HEADER)).toBe(false);
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
   });
 
   // The mistake this catches is one line long and is exactly the shape of the
