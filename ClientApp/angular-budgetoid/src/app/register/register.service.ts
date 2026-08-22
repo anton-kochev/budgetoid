@@ -70,7 +70,11 @@ export type RegisterStep = 'intro' | 'passkey' | 'codes';
  *   * `start-failed` — the server never issued a challenge. Nothing was minted.
  *   * `refused` — the server judged the request and said no. Nothing was
  *     created and the codes on screen are dead.
- *   * `conflict` — an account already exists for this provider identity.
+ *   * `conflict` — an account already exists for this provider identity. The
+ *     one word published from **both** legs, and the two arrive at different
+ *     steps: from the options leg nothing has been minted and the person is on
+ *     the passkey step, from the POST leg ten codes are on screen and the
+ *     shell replaces the codes step with it.
  *   * `unknown` — no answer, or an answer that says nothing about what
  *     happened. It is **not** a synonym of `refused`; see {@link create}.
  */
@@ -205,12 +209,15 @@ export class RegisterService {
       next: (options) => {
         void this.mintUnder(options);
       },
-      error: () => {
-        // One word for every way the options leg can end badly. There is
-        // nothing to tell apart: no challenge exists, so nothing was minted,
-        // nothing was spent and the next step is the same for all of them.
+      error: (error: unknown) => {
+        // Two words, and {@link startFailureOf} argues which. Everything but
+        // the 409 is `start-failed`: no challenge exists, so nothing was
+        // minted, nothing was spent and the next step is the same for all of
+        // them. Nothing here touches {@link mayHaveCreatedAccount} — no request
+        // that creates anything has left this browser, and a leg that cannot
+        // write is not one that can open the question.
         this.busySignal.set(false);
-        this.failureSignal.set('start-failed');
+        this.failureSignal.set(RegisterService.startFailureOf(error));
       },
     });
   }
@@ -473,6 +480,35 @@ export class RegisterService {
       case 'failed':
         return 'ceremony-failed';
     }
+  }
+
+  // The options leg's own mapper, and **it is a second mapper on purpose.**
+  //
+  // A reader will want to hand this leg {@link failureOf} and be done with it,
+  // because both legs answer HTTP and one of the two statuses even means the
+  // same thing on both. It cannot be done: **the same status is a different
+  // fact on each leg**, and the two disagree in the direction that costs.
+  // `POST /api/registration/options` refuses with a 409 when the provider
+  // identity already has an account, and it does so *above* its own
+  // `challengeStore.IssueAsync` — `BeginAccountRegistrationHandler` argues the
+  // position there — so nothing is minted, nothing is spent and, the part that
+  // reaches the person, the browser never runs
+  // `navigator.credentials.create()` and is not left holding a passkey for an
+  // account that was never created. Everything else on this leg is
+  // `start-failed`: the server never issued a challenge.
+  //
+  // **The expensive half is `unknown`, which is why it appears in neither
+  // branch below.** `failureOf`'s `unknown` carries one meaning and one only —
+  // the request may have committed all thirty rows and lost its answer coming
+  // back — and it is the word the screen renders "keep your codes" from. This
+  // leg creates nothing, ever, so that sentence is false here in every case,
+  // and `start-failed` is the honest one. Leave `failureOf`'s argument where it
+  // is: it is written about the POST leg throughout and is not true of this
+  // one.
+  private static startFailureOf(error: unknown): RegisterFailure {
+    return error instanceof HttpErrorResponse && error.status === 409
+      ? 'conflict'
+      : 'start-failed';
   }
 
   // **`refused` and `conflict` are not `unknown`, and this is the most

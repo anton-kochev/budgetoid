@@ -1,6 +1,8 @@
 using Application.Abstractions;
 using Application.Passkeys;
 using Application.Passkeys.BeginRegistration;
+using Domain.Common;
+using Domain.Users;
 
 namespace Application.Registration;
 
@@ -22,6 +24,13 @@ namespace Application.Registration;
 /// scheme, which authenticates a token and resolves nothing in this installation.
 /// </para>
 /// <para>
+/// <b>It does read one row, and that is not a contradiction of the paragraph above.</b> The paragraph is
+/// about the request's <em>identity</em>, which this leg still never publishes and never reads. The read
+/// is a question about a provider identity the caller has already proved they hold — does it already have
+/// an account — and it runs on a connection naming nobody, against a table exempt from row-level security
+/// for exactly that case. The refusal it produces is argued at the call site.
+/// </para>
+/// <para>
 /// <see cref="PasskeyCreationOptions"/> is reused whole rather than copied into a record of this
 /// feature's own: these members are WebAuthn's, and a second declaration of them would be two contracts
 /// able to disagree about a payload the browser parses to one specification.
@@ -30,6 +39,7 @@ namespace Application.Registration;
 public sealed class BeginAccountRegistrationHandler(
     IWebAuthnChallengeStore challengeStore,
     IPasskeyCeremonyPolicy policy,
+    IUserRepository userRepository,
     TimeProvider timeProvider) : ICommandHandler<BeginAccountRegistrationCommand, PasskeyCreationOptions>
 {
     public async Task<PasskeyCreationOptions> HandleAsync(
@@ -37,6 +47,54 @@ public sealed class BeginAccountRegistrationHandler(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+
+        // BEFORE THE NONCE IS ISSUED, AND THE POSITION IS THE WHOLE POINT OF THE CHECK. A refusal raised
+        // one line lower answers the identical 409 with the identical sentence and leaves a row in
+        // webauthn_challenges that nothing will ever spend; worse, it would say this fix is about the
+        // status code, which it is not. What the finish leg's 409 cannot undo is a passkey: by the time
+        // it answers, the browser has run navigator.credentials.create() and the authenticator has saved
+        // a credential permanently — WebAuthn gives a relying party no way to delete one it caused to be
+        // enrolled. A second registration from the same provider identity therefore used to leave a
+        // stray passkey on somebody's phone for an account that was never created and never will be.
+        // This is the only place the refusal costs nothing.
+        //
+        // THE READ IS LEGAL HERE FOR THE REASON THE EXEMPTION EXISTS. `credentials` is exempt from
+        // row-level security precisely because it is read BEFORE a request has an identity a policy could
+        // be keyed on, and this is that shape exactly: the discovery lookup on (provider, subject),
+        // joining nothing to `users`, on a connection naming nobody. This leg publishes no identity — see
+        // the class remarks — so there is no owner filter it could have carried instead.
+        //
+        // AND IT IS NOT AN ACCOUNT-ENUMERATION ORACLE. The route's policy names the provider scheme and
+        // nothing else, so the caller holds a provider-verified token for this exact subject; the only
+        // question they can ask is whether they themselves are registered, which is a fact about their own
+        // identity and one they are entitled to. Substituting somebody else's subject means minting
+        // somebody else's token.
+        //
+        // ONLY THE SUBJECT ARM MOVES, AND THE EMAIL ARM CANNOT FOLLOW IT. Answering
+        // EmailAlreadyLinkedMessage needs a read of `users.email`, and `users` is policed by
+        // `user_isolation` on the identity this leg has not published — so that read comes back empty at
+        // best and dies with 22P02 the moment anything opens a connection expecting a setting that is
+        // still ''. An address another Google account already holds therefore stays discoverable only on
+        // the finish leg, which means that caller still pays a passkey for the discovery. That is a known
+        // limit of this fast path rather than an oversight, and closing it needs somewhere for the email
+        // question to be asked without an identity.
+        //
+        // THE FINISH LEG'S CHECK STAYS. These are two requests with a gap between them, and an account
+        // can be created in that gap — by another tab, another device, or a retry of a ceremony already
+        // in flight. RegisterAccountHandler's read of the same fact against the unique index is what
+        // actually decides; this one stops the common case from costing a passkey and replaces nothing.
+        Guid? existingAccountId = await userRepository.FindUserIdByFederatedCredentialAsync(
+            Credential.GoogleProvider,
+            command.GoogleSubject,
+            cancellationToken);
+
+        if (existingAccountId is not null)
+        {
+            // The finish leg's sentence, byte for byte, because it is one fact reached from two routes —
+            // see RegistrationConflicts for why sharing it is a requirement and not tidiness. The id just
+            // read is deliberately not mentioned in it and goes no further than this scope.
+            throw new ConflictException(RegistrationConflicts.SubjectAlreadyRegisteredMessage);
+        }
 
         IssuedChallenge issued = await challengeStore.IssueAsync(
             WebAuthnCeremony.AccountRegistration,

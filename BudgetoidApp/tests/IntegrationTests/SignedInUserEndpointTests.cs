@@ -84,6 +84,16 @@ namespace IntegrationTests;
 /// which takes a census of every relation before and after; this is the wire half, and it is the one
 /// that says what the person is shown afterwards.
 /// </para>
+/// <para>
+/// <b>The two halves are not interchangeable, which is why this one may not be simplified into a
+/// refusal read off the options leg.</b> That census counts <em>rows</em>. An <c>UPDATE</c> of
+/// <c>users.email</c> moves no count, so a write path that refused the second registration and
+/// refreshed the stored address on its way out satisfies every relation's before-and-after exactly.
+/// Reading the address back after the write path has seen the new token is the only thing in either
+/// suite that can see that — so the request under test here remains the one that reaches the write
+/// path, and the arrangement note on the test says how it still gets there now that the options leg
+/// turns this token away a leg earlier.
+/// </para>
 /// </remarks>
 public sealed class SignedInUserEndpointTests
 {
@@ -182,6 +192,25 @@ public sealed class SignedInUserEndpointTests
     /// repointing — never reaches the write path at all, and the test would then be measuring an attempt
     /// that was never made.
     /// </para>
+    /// <para>
+    /// <b>The nonce is opened by a stranger, and that is the arrangement rather than a way around
+    /// one.</b> The options leg now refuses a subject that already has an account before it mints
+    /// anything — <c>AccountRegistrationTests.SecondOptionsRequest_ForASubjectThatAlreadyHasAnAccount_IsRefused</c>
+    /// is where that refusal is the subject — so the changed token can no longer open a ceremony of its
+    /// own, and driving both legs as it would stop the request under test before it reached the code
+    /// that writes an address. Beginning as <see cref="StrangerSubject" /> and finishing as
+    /// <see cref="ChangedSubject" /> is the begin-then-finish race the finish leg's conflict check exists
+    /// for: two requests with a gap, and an account created in the gap by another tab, another device or
+    /// a retry already in flight.
+    /// </para>
+    /// <para>
+    /// <b>Reaching the write path is the point, not an accident of how this used to be written.</b>
+    /// Asserting the options leg's 409 instead would be a cheaper test that measures a different fact —
+    /// that this token cannot start a ceremony — and would leave nothing anywhere driving the write path
+    /// with an address that differs from the stored one. That is the only code that can overwrite a
+    /// stored address, and the census next door cannot see it do so, because an <c>UPDATE</c> moves no
+    /// row count. <b>Do not delete or downgrade this test as covered by the options leg's refusal.</b>
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress()
@@ -198,13 +227,24 @@ public sealed class SignedInUserEndpointTests
             ChangedSubject,
             ChangedProviderAddress);
 
-        // Act — the new token presented to the one path that writes an address, which refuses it.
-        RegistrationCeremonyResult reregistered = await RegistrationCeremony.RegisterAsync(
+        // A ceremony opened by a subject nobody has registered, because the registered one is refused a
+        // leg earlier now. The stranger only opens it — it never finishes, so no second account comes
+        // into being and the reads below still have exactly one row to find.
+        using HttpClient stranger = host.Factory.CreateAuthenticatedClient(
+            StrangerSubject,
+            StrangerAddress);
+        IssuedRegistrationOptions ceremony = await RegistrationCeremony.BeginAsync(stranger);
+
+        // Act — the new token presented to the one path that writes an address, which refuses it. It is
+        // finished over the stranger's live nonce because that is the only way this token reaches that
+        // path at all now, and reaching it is what the assertion below is about.
+        HttpResponseMessage reregistered = await RegistrationCeremony.RegisterOverAsync(
             afterTheChange,
-            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
+            ceremony.Challenge);
 
         // Assert — the attempt really reached the write path and was turned away there.
-        await Assert.That(reregistered.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(reregistered.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
 
         // And the account still answers with the address it was registered under. Both halves, through
         // the helper the two-account test uses, because the halves are the same two here: A is the
@@ -331,6 +371,21 @@ public sealed class SignedInUserEndpointTests
     /// the "appears nowhere in the body" half fails on an echo rather than on the correct answer.
     /// </summary>
     private const string ChangedProviderAddress = "changed-at-the-provider@budgetoid.test";
+
+    /// <summary>
+    /// The provider identity that opens the nonce
+    /// <see cref="Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress" /> finishes
+    /// over. Deliberately <em>not</em> <see cref="ChangedSubject" />: the options leg refuses a subject
+    /// that already has an account, so the registered one cannot mint a challenge, and the whole
+    /// arrangement is that a live nonce and a registered subject meet on one finish leg.
+    /// </summary>
+    private const string StrangerSubject = "google-stranger";
+
+    /// <summary>
+    /// The stranger's address. Distinct from all three above so a leak of it would be visible, and it
+    /// is never stored — the stranger opens a ceremony and never finishes one.
+    /// </summary>
+    private const string StrangerAddress = "stranger@budgetoid.test";
 
     /// <summary>
     /// Asserts both directions of one caller's answer: that its own address is the value of

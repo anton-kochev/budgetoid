@@ -184,7 +184,14 @@ Load-bearing rules, each explained there or in the linked decision:
   prf gate); the passkey's factor id must differ from all ten codes', a rule the primary key would
   otherwise answer with a sentence naming a factor nobody registered; and the session opens over the
   **passkey** credential, never the recovery-codes one, which changes nothing a constraint can see and
-  everything a later revocation sweeps. See [registration.md](docs/business-logic/registration.md) and
+  everything a later revocation sweeps. **The options leg refuses a subject that already holds an
+  account, above its own `IssueAsync`** — the browser mints the passkey the instant the device agrees,
+  so a refusal that waits for the finish leg costs a credential the authenticator keeps forever and no
+  relying party can delete. It reads `credentials` by `(provider, subject)`, the exempt discovery shape,
+  on a connection naming nobody, and it is no enumeration oracle because the caller arrived holding a
+  provider-verified token for that exact subject. The **email** conflict cannot move with it — that
+  needs `users`, which is policed — so it closes the common case and not the class, and the finish leg
+  keeps both checks for the race. See [registration.md](docs/business-logic/registration.md) and
   [ADR 0021](docs/decisions/0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md).
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
   `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.

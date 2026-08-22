@@ -289,16 +289,32 @@ public sealed class RegistrationClaimGateTests
     /// it says "this Google account is already registered" to somebody whose address nobody vouched for,
     /// which confirms that an account exists on the strength of a claim the server has just declined to
     /// accept as evidence, one refusal before anything at all has been verified. The gate has to sit
-    /// above the conflict, and what holds it there today is only that it lives in a middleware the next
-    /// commit deletes.
+    /// above the conflict, and what holds it there is that
+    /// <see cref="RegistrationClaimGate" /> is an endpoint filter on the <c>/api/registration</c> group:
+    /// a filter runs after model binding and before the delegate, so it precedes every handler on either
+    /// leg by construction.
     /// </para>
     /// <para>
-    /// <b>The finish leg, over a live challenge, and neither half is optional.</b> The options leg runs
-    /// no conflict check at all, so a refusal measured there is 401 against a leg that could never have
-    /// answered 409 — the ordering would be untested and the test would read as if it held it. The nonce
-    /// is minted while the claim is still verified and answered by a real device, so the request clears
-    /// the ladder's fourth rung: over an unissued challenge a gate-less path would answer 400 and the
-    /// conflict would stay out of reach for a second reason.
+    /// <b>The options leg, and it moved there because that leg grew the conflict this test is about.</b>
+    /// It used to be arranged on the finish leg over a live challenge, for a reason that has since
+    /// expired: the options leg ran no conflict check at all, so a 401 measured there was a refusal
+    /// against a leg that could never have answered 409, and the ordering would have been untested while
+    /// reading as if it were held. That leg now asks <c>credentials</c> about the subject <em>before</em>
+    /// it mints a nonce, so it answers the very 409 this gate has to overtake — and the same principal
+    /// meeting the same route is a sharper statement of the ordering than a ceremony was, with no
+    /// challenge, no device and no attestation standing between the claim and the answer. It is also
+    /// where the leak now costs most: on the options leg the 409 is the <em>first</em> thing an
+    /// unverified caller could be told, before any authenticator has been asked for anything.
+    /// </para>
+    /// <para>
+    /// <b>The finish leg's copy of this ordering is no longer arranged anywhere, and that is stated
+    /// rather than hidden.</b> One filter on one group serves both legs, so the two orderings are one
+    /// fact with one mechanism, and moving the gate below either handler reddens this test. What is not
+    /// covered any more is a change that left the gate above the options handler and put something below
+    /// it on the finish leg alone. The finish leg still has its own gate test —
+    /// <see cref="Registration_RefusedAtTheClaimGate_WritesNoUserRow" />, which refuses an unverified
+    /// claim above the challenge rung and writes no row — but that arrangement holds no account, so
+    /// there is no conflict there for the gate to overtake.
     /// </para>
     /// <para>
     /// The account is created through the route rather than seeded, because the conflict this test is
@@ -323,40 +339,23 @@ public sealed class RegistrationClaimGateTests
             SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
         await Assert.That(account.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
 
-        // Arrange — a live nonce and a real device answering it, so the second attempt is refused by a
-        // rule about the principal rather than by the challenge.
-        IssuedRegistrationOptions second = await RegistrationCeremony.BeginAsync(verified);
-        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
-        AttestationResult attestation = device.Register(
-            second.Challenge,
-            ApiFactory.PasskeyOrigin,
-            signCount: 0,
-            prfEnabled: true,
-            userHandle: second.UserHandle);
-
-        // Act — the same subject, now carrying an assertion the provider does not make.
+        // Act — the same subject asking to open a second ceremony, now carrying an assertion the
+        // provider does not make. No challenge and no device: this leg reads the principal and then asks
+        // `credentials` about the subject, and the whole claim is about the order of those two.
         HttpClient unverified = factory.CreateAuthenticatedClient(Subject, Email, emailVerified: "false");
-        HttpResponseMessage refused = await RegistrationCeremony.PostAsync(
-            unverified,
-            attestation,
-            WrappedKeyFixture.Mint(),
-            RegistrationCeremony.CardOf(RegistrationCeremony.Verifiers()));
+        HttpResponseMessage refused = await unverified.PostAsync(OptionsPath, content: null);
 
         // Assert — the gate's 401, and therefore not the conflict's 409.
         await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await TitleOfAsync(refused))
             .IsEqualTo(RegistrationClaimGate.UnverifiedEmailTitle);
 
-        // Act, again — the identical attestation from a principal the provider does vouch for, and the
+        // Act, again — the identical request from a principal the provider does vouch for, and the
         // control this test cannot do without: it is what shows the refusal above overtook a conflict
         // that was standing there the whole time. Without it the test passes on an arrangement that could
-        // never have reached the 409 it claims to have pre-empted. The nonce is still live because the
-        // gate refuses above the rung that spends it, which is the same ordering said a second way.
-        HttpResponseMessage conflicted = await RegistrationCeremony.PostAsync(
-            verified,
-            attestation,
-            WrappedKeyFixture.Mint(),
-            RegistrationCeremony.CardOf(RegistrationCeremony.Verifiers()));
+        // never have reached the 409 it claims to have pre-empted — which is exactly what this test was
+        // before the options leg learned to answer one.
+        HttpResponseMessage conflicted = await verified.PostAsync(OptionsPath, content: null);
 
         await Assert.That(conflicted.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
     }

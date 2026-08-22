@@ -85,18 +85,6 @@ public sealed class RegisterAccountHandler(
     private const string ResponseField = "Response";
 
     /// <summary>
-    /// The sentence a caller whose provider identity already has an account is answered with.
-    /// </summary>
-    /// <remarks>
-    /// It says what to do next rather than only what went wrong: the caller is holding a completed
-    /// ceremony and a card of codes their client has very likely already shown somebody, and the useful
-    /// fact is that none of it is needed.
-    /// </remarks>
-    private const string SubjectAlreadyRegisteredMessage =
-        "This Google account is already registered. Sign in with the passkey it holds, or redeem a "
-        + "recovery code.";
-
-    /// <summary>
     /// What a caller whose address another account already holds is told when <c>IX_users_email</c>
     /// refuses the save.
     /// </summary>
@@ -423,7 +411,7 @@ public sealed class RegisterAccountHandler(
         switch (outcome)
         {
             case RegistrationOutcome.SubjectTaken:
-                return new ConflictException(SubjectAlreadyRegisteredMessage);
+                return new ConflictException(RegistrationConflicts.SubjectAlreadyRegisteredMessage);
 
             case RegistrationOutcome.EmailTaken:
                 Guid? winnerId = await userRepository.FindUserIdByFederatedCredentialAsync(
@@ -432,7 +420,7 @@ public sealed class RegisterAccountHandler(
                     cancellationToken);
 
                 return new ConflictException(
-                    winnerId is null ? EmailAlreadyLinkedMessage : SubjectAlreadyRegisteredMessage);
+                    winnerId is null ? EmailAlreadyLinkedMessage : RegistrationConflicts.SubjectAlreadyRegisteredMessage);
 
             case RegistrationOutcome.AuthenticatorTaken:
                 return new ConflictException(AuthenticatorAlreadyRegisteredMessage);

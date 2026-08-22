@@ -114,6 +114,20 @@ public sealed class DataExportCompletenessTests
     /// </summary>
     private const string ChangedProviderAddress = "changed-at-the-provider@budgetoid.test";
 
+    /// <summary>
+    /// The provider identity that opens the nonce
+    /// <see cref="Export_ForASubjectWhoseProviderAddressChanged_CarriesTheStoredAddress" /> finishes
+    /// over. Deliberately <em>not</em> <see cref="Subject" />: the options leg refuses a subject that
+    /// already has an account, so the registered one can no longer mint a challenge of its own.
+    /// </summary>
+    private const string StrangerSubject = "export-completeness-stranger";
+
+    /// <summary>
+    /// The stranger's address, distinct from both above and stored nowhere — it opens a ceremony and
+    /// never finishes one, so no second user row comes into being.
+    /// </summary>
+    private const string StrangerAddress = "stranger@budgetoid.test";
+
     [Test]
     public async Task Export_CarriesTheUserRecordWithEveryPersistedColumn()
     {
@@ -180,6 +194,23 @@ public sealed class DataExportCompletenessTests
     /// reaching the write path would leave the test measuring an attempt nobody made.
     /// </para>
     /// <para>
+    /// <b>The nonce is opened by a stranger, and that is the arrangement rather than a way around
+    /// one.</b> The options leg now refuses a subject that already has an account before it mints
+    /// anything, so the changed token cannot open a ceremony of its own; <see cref="StrangerSubject" />
+    /// asks for one and <see cref="Subject" /> finishes it. That is the begin-then-finish race the finish
+    /// leg's conflict check exists for — two requests with a gap, and an account created in the gap by
+    /// another tab, another device or a retry already in flight — and it is what still puts the changed
+    /// address in front of the only code that could overwrite the stored one.
+    /// </para>
+    /// <para>
+    /// <b>Pointing this at the options leg instead would cost the whole rule.</b> That refusal writes
+    /// nothing and reads no address, so it says only that the token cannot start a ceremony. The census
+    /// in <c>AccountRegistrationTests</c> cannot stand in either: it counts rows, and an <c>UPDATE</c> of
+    /// <c>users.email</c> moves no count. This test and its <c>/api/me</c> twin are the only two things
+    /// anywhere that drive the write path with an address differing from the stored one and then read the
+    /// stored one back. <b>Do not delete or downgrade either as covered by the options leg's refusal.</b>
+    /// </para>
+    /// <para>
     /// This is
     /// <see cref="SignedInUserEndpointTests.Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress" />'s
     /// shape and its argument, deliberately rather than a second one invented for this file:
@@ -205,14 +236,24 @@ public sealed class DataExportCompletenessTests
             Subject,
             ChangedProviderAddress);
 
+        // A ceremony opened by a subject nobody has registered, because the registered one is refused a
+        // leg earlier now. The stranger only opens it and never finishes, so no second account comes
+        // into being and the owner read below still has exactly one row to find.
+        using HttpClient stranger = host.Factory.CreateAuthenticatedClient(
+            StrangerSubject,
+            StrangerAddress);
+        IssuedRegistrationOptions ceremony = await RegistrationCeremony.BeginAsync(stranger);
+
         // The one moment the stored address could be refreshed from the new token: a second pass through
-        // the path that writes one. It is refused, and the refusal is asserted, because a second
-        // registration that succeeded would leave two accounts under one subject and the cookie below
-        // still naming the first.
-        RegistrationCeremonyResult reregistered = await RegistrationCeremony.RegisterAsync(
+        // the path that writes one, finished over the stranger's live nonce because that is the only way
+        // this token still reaches that path. It is refused, and the refusal is asserted, because a
+        // second registration that succeeded would leave two accounts under one subject and the cookie
+        // below still naming the first.
+        HttpResponseMessage reregistered = await RegistrationCeremony.RegisterOverAsync(
             afterTheChange,
-            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
-        await Assert.That(reregistered.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
+            ceremony.Challenge);
+        await Assert.That(reregistered.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
 
         // The control on the lines above, not ceremony: this read throws unless exactly one credential
         // row on this subject owns exactly one budget, so a refused re-registration that had nonetheless

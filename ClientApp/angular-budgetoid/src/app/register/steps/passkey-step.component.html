@@ -46,9 +46,14 @@
      control that goes truly `disabled` under the finger drops focus to
      `<body>`, and the live region above is what says why it cannot be pressed.
 
-     `none` renders nothing, and that is the whole of the rule the two refusals
-     without a retry exist for. Leaving `Create a passkey` on the screen there
-     is a retry that does not admit to being one. -->
+     `none` renders nothing, and that is the whole of the rule the three
+     refusals without a retry exist for — the browser cannot run the
+     ceremony, the device cannot hold the account's keys, or the account already
+     exists. Leaving `Create a passkey` on the screen there is a retry that does
+     not admit to being one.
+
+     `none` is about the *ceremony* control alone, and one of those three has a
+     way out of its own below. -->
 @switch (control()) {
   @case ('create') {
     <button
@@ -81,6 +86,26 @@
       Try again
     </button>
   }
+}
+
+<!-- The way out, and it belongs to one refusal. The sentence above it tells the
+     reader to go and sign in, and `/register` has no navigation of its own —
+     the app shell is a bare `<router-outlet />` — so a screen without this is a
+     dead end whatever the copy says.
+
+     It is bound to the refusal's own flag rather than to `control() === 'none'`,
+     which is the shape a reader will reach for: `unsupported` and `no-prf` land
+     in `none` too, and neither has an account at the far end of a sign-in.
+
+     A button and not an `<a routerLink>`, for the reason the shell's own
+     conflict block gives at its control: what a link buys is opening the
+     address somewhere else, and doing that from here leaves this dead end
+     standing in the old tab. This is a way *out* of a flow that ended, of the
+     same kind as the `Try again` it replaces. -->
+@if (offersSignIn()) {
+  <button class="r-button" mat-flat-button type="button" (click)="goToSignIn()">
+    Go to sign in
+  </button>
 }
 
 <!-- The standing line, on this step as on the other two. Truer here than

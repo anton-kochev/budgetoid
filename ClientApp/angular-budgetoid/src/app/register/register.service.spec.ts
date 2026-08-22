@@ -1267,4 +1267,93 @@ describe('RegisterService', () => {
     // exactly what it is told here for free.
     expect(http.match(() => true)).toHaveLength(0);
   });
+
+  // The options leg has two words, and the split is not the POST leg's split
+  // read again on a different route.
+  //
+  // `POST /api/registration/options` refuses with a 409 when the provider
+  // identity already has an account, and it refuses *before* it issues a
+  // challenge — which is the whole reason it is worth telling apart here.
+  // Nothing is minted, nothing is spent, and the browser never runs
+  // `navigator.credentials.create()`, so the person is not left with a stray
+  // passkey on their device for an account that was never created. Every other
+  // answer on this leg is `start-failed`: the server never issued a challenge.
+  //
+  // **`unknown` is the word that must never appear here**, which is why the
+  // second test exists at all. On the POST leg it means "thirty rows may have
+  // been committed and the answer lost coming back"; on this leg nothing is
+  // ever created, so it would be a lie — and it is the lie that decides what
+  // the screen tells somebody to do with ten codes. Nothing is minted on this
+  // leg either way, so `mayHaveCreatedAccount` stays false through both.
+  describe('tells an account that already exists from a start that failed', () => {
+    it('reads a 409 before the challenge as a conflict', async () => {
+      // Arrange
+      service.begin();
+      service.createPasskey();
+
+      const options = await eventually(
+        () => http.match(OPTIONS_URL)[0] ?? null,
+        'the request for the creation options',
+      );
+
+      // Act
+      options.flush(null, { status: 409, statusText: 'Conflict' });
+
+      // Assert
+      expect(service.failure()).toBe('conflict');
+      // The refusal is about the account and not about the request that met
+      // it: this browser has posted nothing, so the question of whether it
+      // created anything is not open and never was. That flag is what the
+      // screen's two readings of a 409 fork on, and a leg that set it here
+      // would tell somebody Budgetoid could not tell — on the one path where
+      // it can.
+      expect(service.mayHaveCreatedAccount()).toBe(false);
+      // Refused above the challenge, so nothing downstream of it ran.
+      expect(service.codes()).toBeNull();
+      expect(service.step()).toBe('passkey');
+      expect(http.match(REGISTRATION_URL)).toHaveLength(0);
+    });
+
+    it.each([
+      {
+        answer: (request: TestRequest): void => {
+          request.flush(null, {
+            status: 500,
+            statusText: 'Internal Server Error',
+          });
+        },
+        what: 'a server that failed',
+      },
+      {
+        answer: (request: TestRequest): void => {
+          request.error(new ProgressEvent('error'), {
+            status: 0,
+            statusText: 'Unknown Error',
+          });
+        },
+        what: 'an answer that never arrived',
+      },
+    ])('reads $what as a start that failed', async ({ answer }) => {
+      // Arrange
+      service.begin();
+      service.createPasskey();
+
+      const options = await eventually(
+        () => http.match(OPTIONS_URL)[0] ?? null,
+        'the request for the creation options',
+      );
+
+      // Act
+      answer(options);
+
+      // Assert
+      // The control that stops the 409 above from becoming "every options
+      // error is a conflict", and the one that stops this leg from borrowing
+      // the POST leg's mapper — which would answer `unknown` to both of these.
+      expect(service.failure()).toBe('start-failed');
+      expect(service.mayHaveCreatedAccount()).toBe(false);
+      expect(service.codes()).toBeNull();
+      expect(http.match(REGISTRATION_URL)).toHaveLength(0);
+    });
+  });
 });

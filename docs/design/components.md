@@ -647,7 +647,7 @@ way on. Title **Create your Budgetoid account**.
 
 ### Step 2 — the passkey
 
-The step that spends the challenge, and the one screen in the flow with seven ways to end badly.
+The step that spends the challenge, and the one screen in the flow with eight ways to end badly.
 Title **Create your passkey**, then two lines: what the device is about to ask for, and that the same
 authenticator holds the keys the records are locked with.
 
@@ -661,12 +661,18 @@ authenticator holds the keys the records are locked with.
   `disabledInteractive` — the *busy* case in the Buttons chapter, not the acknowledgement case — with
   **"Waiting for your device."** in the region above it. After a refusal worth another press, **Try
   again**.
-- **Two of the seven refusals render no control at all**, and that is the whole of the rule. Whether a
-  press could help is a property of the refusal rather than a default, and *no* is not a smaller
-  version of *yes*: where the browser cannot run the ceremony, or the authenticator cannot derive the
-  value the account's keys are wrapped under, leaving **Create a passkey** on the screen is a retry
-  that does not admit to being one — it reads as a way forward, costs another system sheet to
-  disprove, and ends in the same sentence.
+- **Three of the eight offer no second press.** Whether a press could help is a property of the
+  refusal rather than a default, and *no* is not a smaller version of *yes*: where the browser cannot
+  run the ceremony, where the authenticator cannot derive the value the account's keys are wrapped
+  under, or where the account already exists, leaving **Create a passkey** on the screen is a retry
+  that does not admit to being one — it reads as a way forward, costs another system sheet or another
+  request to disprove, and ends in the same sentence.
+- **One of those three carries a different control rather than none**, and the distinction is the
+  rule. *No way forward* and *nowhere to go* are not the same state. Two of the three are dead ends on
+  this device and the copy says so. The third is not: the account exists, so there is somewhere to be,
+  and the step renders a Primary **Go to sign in** to `/welcome` — the one address in this application
+  that runs a passkey assertion. A sentence that names a door the screen does not have is the defect
+  this control exists to remove, and the shell's own conflict readings already had to fix it once.
 
 The sentences are the specification, not an example of them. None is a synonym of another: folded
 into one, the screen tells somebody whose browser cannot run WebAuthn at all to try again, and tells
@@ -680,9 +686,10 @@ somebody who simply closed the system sheet that their device is unsupported.
 | The device cannot hold the account's keys | "This device can't hold your account's keys, and Budgetoid won't create an account it can't lock. Try a different phone, laptop or security key." | No |
 | The ceremony did not finish | "Your device didn't finish creating the passkey. Nothing has been saved." | Yes |
 | The server never issued a challenge | "Budgetoid couldn't reach the server to start. Nothing has been saved." | Yes |
+| The Google address already has an account | "An account already exists for this Google address. Nothing was created and no passkey was made — sign in from the Budgetoid home page instead." | No — **Go to sign in** instead |
 | Something nobody predicted, between the challenge arriving and the codes being ready | "Budgetoid didn't finish, and nothing has been saved. Try again." | Yes |
 
-Three of them are worth reading twice.
+Four of them are worth reading twice.
 
 - **The sixth is the only one on this screen about the *server* rather than the device**, and the
   sentence has to say so: a person told their device failed will go and buy a security key for a
@@ -691,6 +698,12 @@ Three of them are worth reading twice.
   empty `excludeCredentials`, so there is nothing for an authenticator to decline against — and it is
   specified anyway, because a refusal the screen has no sentence for is a screen that says nothing at
   all. See [registration.md](../business-logic/registration.md).
+- **The eighth is answered before the device is ever asked**, which is what its copy is allowed to
+  promise. The options leg refuses a Google identity that already holds an account above its own
+  challenge, so on this path no system sheet opens and no credential is left on the authenticator —
+  and the sentence says both, because "no passkey was made" is the clause a person acts on. It must
+  not be reworded into the shell's two conflict sentences: those say the ten codes just shown open
+  nothing, and on this step no code has been minted at all.
 - **The seventh shares a cause with the shell's "no answer" state and must not share its words.**
   Nothing has been posted on this step, so this sentence can say plainly that nothing was created;
   the shell's cannot, because there a request really did leave. Same failure, two screens, two

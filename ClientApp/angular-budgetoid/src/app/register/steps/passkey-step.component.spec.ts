@@ -1,11 +1,11 @@
 // The step that spends the challenge, and the only screen in the flow that has
-// seven different ways to end badly.
+// eight different ways to end badly.
 //
-// Every one of those seven is `RegisterFailure`'s word for it, and the whole of
-// this file is the claim that the seven are not interchangeable. Five of them
+// Every one of those eight is `RegisterFailure`'s word for it, and the whole of
+// this file is the claim that the eight are not interchangeable. Five of them
 // come from the ceremony one for one — `webauthn-ceremony.service.ts` argues why
-// none is a synonym of another — `start-failed` is the flow's own word for a
-// challenge that was never issued, and `unknown` is what the flow's outermost
+// none is a synonym of another — `start-failed` and `conflict` are the two
+// answers the options leg has, and `unknown` is what the flow's outermost
 // catch publishes for anything nobody predicted. A screen that folds them into
 // one sentence tells somebody whose browser cannot run WebAuthn at all to try
 // again, and tells somebody who simply closed the sheet that their device is
@@ -17,6 +17,7 @@
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
+import { Router, UrlTree, provideRouter } from '@angular/router';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { RegisterService, type RegisterFailure } from '../register.service';
 import { PasskeyStepComponent } from './passkey-step.component';
@@ -27,17 +28,35 @@ const STEP_CAPTION = 'Step 2 of 3';
 // exactly one way forward and a census can count it.
 const CREATE_BUTTON = 'Create a passkey';
 const RETRY_BUTTON = 'Try again';
+// The way out, and it belongs to one refusal rather than to the step. It is not
+// a third name for the control above: pressing it runs no ceremony and spends no
+// challenge, it leaves the flow for the one screen that can sign a returning
+// person in.
+const SIGN_IN_BUTTON = 'Go to sign in';
+
+// Where that control has to land. `/welcome` is the one address in this
+// application that runs a passkey assertion, which is what the sentence beside
+// the control tells the reader to go and do.
+const WELCOME_URL = '/welcome';
 
 // One refusal: the word the service publishes, the sentence this screen says,
-// and whether pressing again could possibly help.
+// whether pressing again could possibly help, and whether the person is being
+// sent anywhere.
 //
 // The sentences are pinned whole. On this screen that is not a style rule — the
 // difference between two of them *is* the requirement, and a fragment assertion
-// (`toContain('passkey')`) is satisfied by four of the seven.
+// (`toContain('passkey')`) is satisfied by four of the eight.
 interface Refusal {
   readonly failure: RegisterFailure;
   readonly sentence: string;
   readonly offersRetry: boolean;
+  // **Not the negation of `offersRetry`, and this is the flag the census exists
+  // to keep honest.** Three of the eight offer no retry and only one of those
+  // has anywhere to go: `unsupported` and `no-prf` are stuck on this device with
+  // no account at the far end of a sign-in, so a control derived from "no retry"
+  // would promise a way forward to two people who have none. Every constant
+  // below answers it, and exactly one answers `true`.
+  readonly offersSignIn: boolean;
 }
 
 // The browser cannot run the ceremony at all — no WebAuthn, or the page is not
@@ -48,6 +67,10 @@ const UNSUPPORTED: Refusal = {
   sentence:
     'This browser can’t create a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can.',
   offersRetry: false,
+  // No retry and no way out either: a browser that cannot run the ceremony
+  // cannot run an assertion on `/welcome` either, so a sign-in control here
+  // would be the same dead end one screen further on.
+  offersSignIn: false,
 };
 
 // The person closed the system sheet, or it timed out. Nothing is wrong, nothing
@@ -58,6 +81,7 @@ const CANCELLED: Refusal = {
   sentence:
     'The passkey wasn’t created. Nothing has been saved, and nothing was sent — try again whenever you’re ready.',
   offersRetry: true,
+  offersSignIn: false,
 };
 
 // The authenticator declined because it already holds a credential named in the
@@ -67,6 +91,7 @@ const DUPLICATE: Refusal = {
   sentence:
     'This device already holds a passkey Budgetoid can’t reuse. Try again with a different device or security key.',
   offersRetry: true,
+  offersSignIn: false,
 };
 
 // Anything else the ceremony ended in, including one that resolved nothing.
@@ -75,6 +100,7 @@ const CEREMONY_FAILED: Refusal = {
   sentence:
     'Your device didn’t finish creating the passkey. Nothing has been saved.',
   offersRetry: true,
+  offersSignIn: false,
 };
 
 // The options leg never answered, so no challenge exists and nothing was minted.
@@ -86,6 +112,7 @@ const START_FAILED: Refusal = {
   sentence:
     'Budgetoid couldn’t reach the server to start. Nothing has been saved.',
   offersRetry: true,
+  offersSignIn: false,
 };
 
 // Nothing that has a word of its own. `RegisterService.mintUnder` carries a
@@ -102,6 +129,7 @@ const UNKNOWN: Refusal = {
   failure: 'unknown',
   sentence: 'Budgetoid didn’t finish, and nothing has been saved. Try again.',
   offersRetry: true,
+  offersSignIn: false,
 };
 
 // The one refusal that is about the authenticator rather than about the person
@@ -114,6 +142,31 @@ const NO_PRF: Refusal = {
   sentence:
     'This device can’t hold your account’s keys, and Budgetoid won’t create an account it can’t lock. Try a different phone, laptop or security key.',
   offersRetry: false,
+  // The second word without a retry, and the second with nowhere to go. It
+  // carries the same `false` as `unsupported` for a different reason: this
+  // person has no account to sign in to, and the device that could not derive
+  // the key would be asked to derive it again.
+  offersSignIn: false,
+};
+
+// The other answer the options leg has, and the one refusal on this screen that
+// a second press cannot change by definition: the provider identity already has
+// an account, and the server says so above its own challenge — so nothing was
+// minted, no ceremony ran and no passkey was made. It is the one word this
+// screen shares with the shell's conflict block, and the two say different
+// things because the shell's are about ten codes on screen and there are none
+// here.
+const CONFLICT: Refusal = {
+  failure: 'conflict',
+  sentence:
+    'An account already exists for this Google address. Nothing was created and no passkey was made — sign in from the Budgetoid home page instead.',
+  offersRetry: false,
+  // The only `true` in the file. The sentence sends the reader to the home page
+  // and `/register` has no navigation of its own — the app shell is a bare
+  // `<router-outlet />` — so without a control here the copy names a door that
+  // is not on the screen. That is the dead end the shell's own conflict block
+  // was fixed for, one step over.
+  offersSignIn: true,
 };
 
 const REFUSALS: readonly Refusal[] = [
@@ -124,6 +177,7 @@ const REFUSALS: readonly Refusal[] = [
   START_FAILED,
   UNKNOWN,
   NO_PRF,
+  CONFLICT,
 ];
 
 describe('PasskeyStepComponent', () => {
@@ -132,8 +186,17 @@ describe('PasskeyStepComponent', () => {
   let failure: ReturnType<typeof signal<RegisterFailure | null>>;
   let busy: ReturnType<typeof signal<boolean>>;
   let createPasskey: Mock<RegisterService['createPasskey']>;
+  // Where the router was asked to go, in order, recorded off the **real**
+  // router. A `routerLink` lands here as well as a programmatic call —
+  // `RouterLink` calls `navigateByUrl` itself — so these tests say where the
+  // screen goes and leave to whoever writes it whether the way out is a button
+  // or an anchor. A stub object in the router's place would pin the shape
+  // instead of the destination, and would answer nothing at all for the anchor.
+  let navigations: string[];
 
   beforeEach(async () => {
+    navigations = [];
+
     // Writable in the fixture and read-only on the stub. Every test here moves
     // the one signal this screen branches on, and the TestBed refuses a second
     // `configureTestingModule` once the module has been instantiated.
@@ -152,9 +215,25 @@ describe('PasskeyStepComponent', () => {
       imports: [PasskeyStepComponent],
       providers: [
         provideNoopAnimations(),
+        provideRouter([]),
         { provide: RegisterService, useValue: service },
       ],
     }).compileComponents();
+
+    const router = TestBed.inject(Router);
+
+    // Recorded rather than run: this router declares no routes, so a real
+    // navigation to `/welcome` rejects into a promise nothing awaits and the
+    // rejection surfaces as an unrelated failure some tests later.
+    vi.spyOn(router, 'navigateByUrl').mockImplementation(
+      (url: string | UrlTree): Promise<boolean> => {
+        navigations.push(
+          typeof url === 'string' ? url : router.serializeUrl(url),
+        );
+
+        return Promise.resolve(true);
+      },
+    );
 
     fixture = TestBed.createComponent(PasskeyStepComponent);
     host = fixture.nativeElement as HTMLElement;
@@ -176,7 +255,7 @@ describe('PasskeyStepComponent', () => {
 
     // Assert
     // The sentence names what the *device* cannot do, and this is the only one
-    // of the seven where that is the subject. The ceremony worked: the person
+    // of the eight where that is the subject. The ceremony worked: the person
     // touched the sensor, the authenticator agreed, a credential exists — and it
     // cannot produce the value the account's content and index keys are wrapped
     // under, so an account created against it would be an account whose own
@@ -187,11 +266,18 @@ describe('PasskeyStepComponent', () => {
     // under either of them: leaving `Create a passkey` on the screen is a retry
     // that does not admit to being one.
     expect(ceremonyControls(host)).toHaveLength(0);
+    // And no way out either, which is the half this test has to carry itself
+    // because it is excluded from the census below. `no-prf` and `conflict` are
+    // two of the three words that leave this screen with nothing to press, and
+    // only one of them has an account at the far end of a sign-in: a control
+    // offered here sends somebody who has no account to a screen that can only
+    // refuse them, on the one device that is certain to fail the assertion.
+    expect(signInControls(host)).toHaveLength(0);
   });
 
   it.each(REFUSALS.filter((refusal) => refusal !== NO_PRF))(
     'says its own sentence and no other when the flow ends in $failure',
-    ({ failure: word, sentence, offersRetry }: Refusal) => {
+    ({ failure: word, sentence, offersRetry, offersSignIn }: Refusal) => {
       // Act
       failure.set(word);
       fixture.detectChanges();
@@ -208,8 +294,8 @@ describe('PasskeyStepComponent', () => {
       // person using a screen reader has to go looking for.
       expect(said?.closest(LIVE_REGION_SELECTOR)).not.toBeNull();
 
-      // And none of the other six. Without this half every one of these tests
-      // passes on a screen that renders all seven sentences at once, or on one
+      // And none of the other seven. Without this half every one of these tests
+      // passes on a screen that renders all eight sentences at once, or on one
       // that renders a single sentence containing all of the words.
       const text = collapse(host.textContent ?? '');
 
@@ -223,17 +309,75 @@ describe('PasskeyStepComponent', () => {
       }
 
       // Whether pressing again could help is a property of the word, not a
-      // default. Five of the seven are worth another press — a closed sheet, a
+      // default. Five of the eight are worth another press — a closed sheet, a
       // device already holding a credential, a ceremony that did not finish, a
-      // server that did not answer, and a rejection nobody predicted. The two
+      // server that did not answer, and a rejection nobody predicted. The three
       // that are not come through here with `offersRetry` false — and `no-prf`
-      // through a test of its own besides — because offering a retry on either
-      // is offering somebody a button that cannot ever do anything but repeat
-      // itself.
+      // through a test of its own besides — because offering a retry on any of
+      // them is offering somebody a button that cannot ever do anything but
+      // repeat itself. `conflict` is the sharpest of the three: the account
+      // exists, so another press spends another request to be told so.
       expect(controls).toHaveLength(offersRetry ? 1 : 0);
       expect(createPasskey).toHaveBeenCalledTimes(offersRetry ? 1 : 0);
+
+      // And whether the person is sent anywhere is a second property of the
+      // word, read from the table rather than from the line above it. **The
+      // whole point of counting it on every row is that it is not `!offersRetry`
+      // — it is `true` on `conflict` alone.** `unsupported` and `no-prf` carry
+      // the same `false` for two further reasons of their own: neither has an
+      // account at the far end of a sign-in, and neither device can complete the
+      // assertion that would be asked for. A control attached to every word
+      // without a retry passes every other assertion in this file.
+      expect(
+        signInControls(host),
+        `${word} offers ${offersSignIn ? 'no' : 'a'} way to sign in.`,
+      ).toHaveLength(offersSignIn ? 1 : 0);
+      // Offered, not taken: nothing pressed above is navigation, and a refusal
+      // that moved the browser by itself would take the person off a screen
+      // still holding the sentence explaining what happened.
+      expect(navigations).toEqual([]);
     },
   );
+
+  it('reaches the sign-in screen when an account already exists', () => {
+    // Arrange
+    // Two controls for one assertion, and both are about *this* screen at rest.
+    // Without them the test below passes on a step that carries a permanent
+    // link to `/welcome` in its furniture — which is a different screen, one
+    // where the way out belongs to nobody in particular and the `conflict`
+    // sentence is the only thing that makes it read as an answer.
+    expect(signInControls(host)).toHaveLength(0);
+    expect(navigations).toEqual([]);
+
+    // Act
+    failure.set('conflict');
+    fixture.detectChanges();
+
+    const [control] = signInControls(host);
+
+    control?.click();
+
+    // Assert
+    // The sentence in this branch ends "sign in from the Budgetoid home page
+    // instead", and `/register` has no navigation of its own — the app shell is
+    // a bare `<router-outlet />`. So a screen without this control is a dead end
+    // whatever the copy says, and the copy naming a door is what makes it the
+    // worse kind: the person goes looking for something that is not there.
+    expect(
+      control,
+      'the conflict state renders no way to sign in.',
+    ).toBeDefined();
+    // Exactly where, and nowhere else. `/welcome` is the one address in this
+    // application that runs an assertion, so a control landing anywhere else
+    // ends the same journey one screen further along.
+    expect(navigations).toEqual([WELCOME_URL]);
+    // And nothing to press beside it. `conflict` is the one refusal on this
+    // screen that a second press cannot change by definition — the account
+    // exists — so a retry offered here spends another challenge and another
+    // system sheet to be told the same thing.
+    expect(ceremonyControls(host)).toHaveLength(0);
+    expect(createPasskey).not.toHaveBeenCalled();
+  });
 
   it('says nothing while nothing has happened', () => {
     // Act
@@ -285,29 +429,45 @@ function liveRegion(host: HTMLElement): Element | null {
 // no retry" is a statement about the screen and not about a label: a screen that
 // renamed the button, or that left the original beside a new one, would pass a
 // single-name check while handing the person exactly what the rule refuses.
-function ceremonyControls(host: HTMLElement): readonly HTMLButtonElement[] {
-  return [CREATE_BUTTON, RETRY_BUTTON].flatMap((name) => {
-    const button = buttonNamed(host, name);
+function ceremonyControls(host: HTMLElement): readonly HTMLElement[] {
+  return controlsNamed(host, CREATE_BUTTON, RETRY_BUTTON);
+}
 
-    return button === null ? [] : [button];
+// Every control on the screen that offers to leave for the screen that can sign
+// somebody in. One name today and still a census, for the reason above and for
+// one of its own: the count is asserted on all eight words, so "no way out" has
+// to mean the screen offers none rather than that this one label is absent.
+function signInControls(host: HTMLElement): readonly HTMLElement[] {
+  return controlsNamed(host, SIGN_IN_BUTTON);
+}
+
+function controlsNamed(
+  host: HTMLElement,
+  ...names: readonly string[]
+): readonly HTMLElement[] {
+  return names.flatMap((name) => {
+    const control = controlNamed(host, name);
+
+    return control === null ? [] : [control];
   });
 }
 
-// Finds a button the way a screen reader announces it, so a control renamed in
-// the DOM but not in the copy stops being found.
-function buttonNamed(
-  host: HTMLElement,
-  name: string,
-): HTMLButtonElement | null {
-  const buttons = Array.from(
-    host.querySelectorAll<HTMLButtonElement>('button'),
-  );
+// Finds a control the way a screen reader announces it, so one renamed in the
+// DOM but not in the copy stops being found.
+//
+// Buttons **and** anchors, because what these tests say is what the screen
+// offers and where pressing it lands — not which element was reached for. A
+// lookup over `button` alone would report "no way out" for a way out written as
+// an `<a routerLink>`, which navigates perfectly well and lands in the same
+// recording.
+function controlNamed(host: HTMLElement, name: string): HTMLElement | null {
+  const controls = Array.from(host.querySelectorAll<HTMLElement>('button, a'));
 
   return (
-    buttons.find(
-      (button) =>
+    controls.find(
+      (control) =>
         collapse(
-          button.getAttribute('aria-label') ?? button.textContent ?? '',
+          control.getAttribute('aria-label') ?? control.textContent ?? '',
         ) === name,
     ) ?? null
   );

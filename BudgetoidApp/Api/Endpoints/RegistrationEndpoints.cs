@@ -56,8 +56,12 @@ public static class RegistrationEndpoints
             BeginAccountRegistrationHandler handler,
             CancellationToken cancellationToken) =>
         {
+            // Both claim members are read HERE and never bound from a body, for the reason the finish
+            // leg's delegate states below — this leg carries no body at all, so there is nowhere for a
+            // caller to put either value even if the rule were relaxed. The subject is what the handler
+            // asks the credential table about before it mints anything.
             PasskeyCreationOptions options = await handler.HandleAsync(
-                new BeginAccountRegistrationCommand(EmailOf(principal)),
+                new BeginAccountRegistrationCommand(SubjectOf(principal), EmailOf(principal)),
                 cancellationToken);
 
             return TypedResults.Ok(options);

@@ -181,6 +181,30 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
     which is also what keeps `System.Security.Claims` out of the Application ring — the split
     `SessionEndpoints` already makes for its session id.
 
+- **The options leg MUST refuse a subject that already holds an account, before it issues a nonce.**
+  - **Why**: the ceremony runs in the browser, and the authenticator stores the credential the instant
+    it agrees. A refusal that waits for the finish leg therefore costs a **passkey** — one saved on
+    somebody's device, under a fresh user handle, for an account that was never created — and WebAuthn
+    gives a relying party no way to delete it. Only the person can, in their password manager. The
+    refusal must also sit **above** `IssueAsync`, or the same request still spends a nonce it was
+    always going to be told no about.
+  - **Why it is legal to read here**: the lookup is `credentials` by `(provider, subject)` — the
+    discovery shape, with no join on `users` — and `credentials` is exempt from row-level security, so
+    it answers on a connection naming nobody, which is exactly what the exemption is for. It is not an
+    enumeration oracle either: the caller holds a provider-verified token for that exact subject, so
+    they can only ever probe themselves.
+  - **What does NOT move, and it is a limit rather than an oversight**: the **email** conflict stays on
+    the finish leg. Answering it needs a read of `users.email`, `users` is policed by `user_isolation`,
+    and this leg publishes no identity — so that read would return nothing or die with `22P02`.
+    Somebody whose address another account holds therefore still mints a passkey before being refused.
+    The same is true of a race between the two legs, of an abandoned flow, and of `AuthenticatorTaken`
+    and `FactorTaken`. This closes the common case, not the class.
+  - **The finish leg keeps its own check.** Two requests, so an account can be created between them —
+    which is the only way the finish leg's subject conflict is now reachable at all, and the tests that
+    reach it say so.
+  - **Enforced in**: `BeginAccountRegistrationHandler`, above `IssueAsync`, answering the same sentence
+    the finish leg does through the shared `RegistrationConflicts`.
+
 - **The options leg MUST NOT emit an `excludeCredentials` list.**
   - **Why**: three reasons, no one of which settles it alone. There is nothing to exclude, because the
     account does not exist. The read that would produce a list has no acceptable shape — scoped to the
@@ -575,7 +599,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → ChallengeIssued | `POST /api/registration/options` | a live provider token on the named scheme; `sub`, `email` and `email_verified` from `RegistrationClaimGate` on the same group. `POST` rather than `GET` because it persists a nonce, so it is neither safe nor idempotent and a `GET` would be cacheable and prefetchable |
+| → ChallengeIssued | `POST /api/registration/options` | a live provider token on the named scheme; `sub`, `email` and `email_verified` from `RegistrationClaimGate` on the same group; **and the subject must hold no account** — judged before the nonce is issued, so a caller who already registered is refused without a passkey being minted. `POST` rather than `GET` because it persists a nonce, so it is neither safe nor idempotent and a `GET` would be cacheable and prefetchable |
 | ChallengeIssued → Consumed | `POST /api/registration` | the nonce must exist, be unexpired, and name the **`AccountRegistration`** pool — one undifferentiated refusal covering never issued, already spent, expired, and any of the other three pools |
 | Consumed → Verified | `PasskeyRegistrationVerifier.Verify` | client-data type; origin by equality; not cross-origin; `SHA-256(rpId)`; user present **and** verified; attestation `none`; algorithm offered and supported; key strength; the signature |
 | Verified → Accepted | rungs 6 to 11 | `prf` reported present and true; `factorId` in the one canonical spelling; both envelopes exactly 61 bytes at version 1; ten submissions, every verifier and every factor identifier distinct; the passkey's identifier differing from all ten |
@@ -684,16 +708,22 @@ ELSE consume the nonce — from here every outcome has burnt it
   **not** built beside it is the rest of the client's passkey
   surface: nothing registers a second passkey, and nothing runs the fresh assertion the erasure,
   revocation and recovery-code-generation gates need.
-- **Somebody who already has an account is walked all the way to a `409`, and that is the accepted
-  cost of not having an oracle.** The welcome screen now offers two ways in, and **Create account** is
-  the Primary of the two, so an existing account holder who reaches for it rather than for **Sign in
-  with a passkey** lands on `/register` and is taken through a system passkey sheet and a card of ten
-  codes before the server tells them the account exists. The client cannot check first: **no route
-  answers "does this subject have an account?"**, deliberately, because one would be an enumeration
-  oracle for anybody holding a provider token. The `409` itself discloses nothing — it is answered to
-  somebody who has just proved control of that address — and the sentence on screen sends them to
-  sign in rather than to try again, which is now an address the client can offer. The passkey they
-  created on the way is a credential their authenticator keeps and this product never saw.
+- **Somebody who already has an account is refused at the options leg, and the passkey sheet never
+  opens.** The welcome screen offers two ways in and **Create account** is the Primary of the two, so
+  an existing account holder reaching for it rather than for **Sign in with a passkey** lands on
+  `/register` — and the first request that screen makes now comes back `409`. No system sheet, no
+  card of ten codes, and no credential left on the authenticator.
+  - **This is not the enumeration oracle a dedicated route would be.** There is still **no route that
+    answers "does this subject have an account?"**, and there must not be. What the options leg
+    answers is narrower: it refuses *this caller's own* registration, to a caller who arrived holding
+    a provider-verified token for that exact subject. They can only ever ask about themselves, and
+    they already knew the answer.
+  - **What it does not cover is written down beside it**, because the shape is easy to mistake for a
+    guarantee: a passkey is still minted before the refusal when the *address* collides rather than
+    the subject (that read is impossible here — see the rule above), when the account is created
+    between the two legs, and whenever somebody simply abandons the flow after agreeing on the
+    device. A relying party cannot delete a credential from an authenticator; only the person can, in
+    their password manager.
 - **After a lost answer and a restart, the live codes are the *first* attempt's.** The *cannot be
   told* state offers *Start again* precisely because a second attempt settles the question: if the
   first request did commit, the second meets the `409` and says so plainly. But the account it names
@@ -705,10 +735,21 @@ ELSE consume the nonce — from here every outcome has burnt it
   The client tells the two readings of a `409` apart by **what the previous POST ended as** — never by
   whether *Start again* was pressed, and never by the `Detail` text, since all four conflict sentences
   ship under one identical title with no machine-readable code.
-- **Both readings of a `409` end the flow, and both offer the same way out.** `/register` carries no
-  navigation of its own, so a state telling somebody to go and sign in with no control on it told them
-  to go somewhere with nothing to press. One *Go to sign in* serves both, rendered outside the fork
-  because a control written twice is one somebody forgets, and as a button rather than a link — this
+- **A `409` is now rendered on two different steps, and the second one is not a copy of the first.**
+  The options leg's `409` lands while the **passkey** step is showing, with nothing minted and no
+  codes anywhere; the finish leg's lands in place of the codes step. The sentences differ in the one
+  clause a person acts on — the shell's two both say the ten codes just shown open nothing, which is
+  false on the earlier leg — so `passkey-step.component.ts` carries its own, and its own *Go to sign
+  in* beside it. That is a second control rather than a shared one **on purpose**: the two render at
+  different steps and neither can hand its markup to the other, so what a shared owner would save is
+  the address and nothing else, while an output left unbound compiles, lints, passes the step's own
+  spec and ships a dead button — the exact defect this control exists to remove. Both copies are
+  pinned by specs that press the control and read where the router was asked to go.
+- **Both readings of the finish leg's `409` end the flow, and both offer the same way out.**
+  `/register` carries no navigation of its own, so a state telling somebody to go and sign in with no
+  control on it told them to go somewhere with nothing to press. One *Go to sign in* serves both,
+  rendered outside the fork because a control written twice is one somebody forgets, and as a button
+  rather than a link — this
   is an exit from a flow that has ended, and opening it in a new tab would leave the dead end standing
   in the old one with ten worthless codes on it.
 - **Moving the derivation up is the one edit that turns a function into a vulnerability.** Rung 12 sits

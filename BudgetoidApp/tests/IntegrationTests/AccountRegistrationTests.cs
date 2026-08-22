@@ -1230,6 +1230,20 @@ public sealed class AccountRegistrationTests
     /// rule is being enforced at all.
     /// </para>
     /// <para>
+    /// <b>The nonce is taken as a stranger and spent as the registered subject, and that is the
+    /// arrangement rather than a way around one.</b> The options leg now refuses a subject that already
+    /// has an account — see
+    /// <see cref="SecondOptionsRequest_ForASubjectThatAlreadyHasAnAccount_IsRefused" /> — so driving both
+    /// legs as that subject never reaches the thing this test is about. Beginning as
+    /// <see cref="OtherSubject" /> and finishing as <see cref="Subject" /> is literally the
+    /// begin-then-finish race the finish leg's check exists to catch: options and finish are two
+    /// requests, and an account can be created in the gap by another tab, another device or a retry
+    /// already in flight. <b>Do not delete this test as covered by the options leg.</b> Since that leg
+    /// refuses the common path, this test and its two neighbours below are the <em>only</em> things
+    /// exercising the finish leg's subject conflict at all; the <c>OtherSubject</c> challenge is the
+    /// point, not an accident.
+    /// </para>
+    /// <para>
     /// <b>The sentence is the assertion, not the status.</b> All four conflicts on this route answer 409
     /// under one title, so a status comparison cannot tell this from the email conflict next door — and
     /// the two are told apart by a re-read the handler performs, which is the piece with no other cover.
@@ -1262,23 +1276,34 @@ public sealed class AccountRegistrationTests
             factory.CreateAuthenticatedClient(Subject, Email),
             SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
         await Assert.That(first.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        // Taken before the nonce is minted, so the challenge row the options leg writes and the finish
+        // leg spends nets to nothing across the census.
         IReadOnlyDictionary<string, long> before = await CountEveryRelationAsync(host);
 
-        // A delta rather than an absolute, so the arrangement above is not part of the measurement.
+        // A ceremony opened by a subject nobody has registered, because the registered one is refused a
+        // leg earlier now. This is the begin-then-finish race, not a detour around the conflict.
+        IssuedRegistrationOptions ceremony = await BeginRegistrationCeremonyAsync(
+            factory.CreateAuthenticatedClient(OtherSubject, OtherEmail));
+
+        // A delta rather than an absolute, and read after the options leg: that leg asks the same port
+        // the same question, so counting from any earlier point would measure two legs and pin neither.
         int readsBefore = reads.Count;
 
-        // Act — the same provider subject, a fresh address, a fresh device and eleven fresh factors.
-        RegisteredAccount second = await RegisterAccountAsync(
+        // Act — the registered provider subject finishes the ceremony a stranger opened, on a fresh
+        // device, eleven fresh factors and a fresh address, so the subject alone can collide.
+        HttpResponseMessage refused = await RegisterOverAsync(
             factory.CreateAuthenticatedClient(Subject, OtherEmail),
-            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
+            ceremony.Challenge);
 
         // Assert
-        await Assert.That(second.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
 
-        string detail = await DetailOfAsync(second.Response);
+        string detail = await DetailOfAsync(refused);
         await Assert.That(detail).IsEqualTo(SubjectConflictSentence);
         await Assert.That(detail).DoesNotContain(EmailConflictClause);
-        await Assert.That(second.Response.Headers.Contains("Set-Cookie")).IsFalse();
+        await Assert.That(refused.Headers.Contains("Set-Cookie")).IsFalse();
 
         // The subject collision is reported as itself, so nothing had to be worked out.
         await Assert.That(reads.Count - readsBefore).IsEqualTo(0);
@@ -1311,6 +1336,15 @@ public sealed class AccountRegistrationTests
     /// nothing satisfies the zero, and a handler that re-read on every refusal satisfies the one — and
     /// together they say the two conflicts travel different paths, which no response body can.
     /// </para>
+    /// <para>
+    /// <b>The ceremony is driven a leg at a time so the counter can be read between them.</b> The options
+    /// leg now asks the same port the same question before it mints a nonce, so a count taken before it
+    /// sees two reads where only one belongs to the leg under test. Raising the expected number to two is
+    /// the wrong repair: it would pin "two reads happen somewhere on this route" instead of "the finish
+    /// leg re-reads", and it goes stale the moment either leg changes. Nothing else about the arrangement
+    /// moved — one client still drives both legs, and it is a subject with no account, which is the
+    /// caller the options leg still serves.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Registration_WhenTheEmailBelongsToAnotherAccount_Returns409()
@@ -1324,20 +1358,30 @@ public sealed class AccountRegistrationTests
             SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
         await Assert.That(first.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
         IReadOnlyDictionary<string, long> before = await CountEveryRelationAsync(host);
+
+        // A provider identity nobody has registered, asserting an address somebody has. It opens the
+        // ceremony itself — the options leg has nothing to refuse it for, since the address is not what
+        // that leg may judge.
+        HttpClient stranger = factory.CreateAuthenticatedClient(OtherSubject, Email);
+        IssuedRegistrationOptions ceremony = await BeginRegistrationCeremonyAsync(stranger);
+
+        // After the options leg, which now reads the same port: the delta must measure the finish leg's
+        // disambiguating re-read and nothing else.
         int readsBefore = reads.Count;
 
-        // Act — a provider identity nobody has registered, asserting an address somebody has.
-        RegisteredAccount second = await RegisterAccountAsync(
-            factory.CreateAuthenticatedClient(OtherSubject, Email),
-            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+        // Act
+        HttpResponseMessage refused = await RegisterOverAsync(
+            stranger,
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
+            ceremony.Challenge);
 
         // Assert
-        await Assert.That(second.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
 
-        string detail = await DetailOfAsync(second.Response);
+        string detail = await DetailOfAsync(refused);
         await Assert.That(detail).IsEqualTo(EmailConflictSentence);
         await Assert.That(detail).DoesNotContain(SubjectConflictClause);
-        await Assert.That(second.Response.Headers.Contains("Set-Cookie")).IsFalse();
+        await Assert.That(refused.Headers.Contains("Set-Cookie")).IsFalse();
 
         // The ambiguous outcome was settled by asking, once.
         await Assert.That(reads.Count - readsBefore).IsEqualTo(1);
@@ -1381,6 +1425,16 @@ public sealed class AccountRegistrationTests
     /// <see cref="Registration_WhenTheEmailBelongsToAnotherAccount_Returns409" /> instead; the pair is
     /// what makes each of them a statement about the re-read rather than about a constant.
     /// </para>
+    /// <para>
+    /// <b>The nonce is opened by a stranger, because the registered subject is now refused a leg
+    /// earlier.</b> Both collisions still have to arrive on one finish leg, and that leg is reached the
+    /// only way it can be: <see cref="OtherSubject" /> asks for the ceremony,
+    /// <see cref="Subject" /> finishes it asserting <see cref="Email" />. That is the begin-then-finish
+    /// race the finish leg's check is written for — two requests with a gap, and an account created in
+    /// the gap — so the arrangement states the rule more sharply than re-running the whole ceremony did.
+    /// <b>Do not delete this test as covered by the options leg's refusal:</b> that leg never reaches the
+    /// <c>EmailTaken</c> arm, and this is one of the three arrangements left that can.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Registration_WhenBothTheEmailAndTheSubjectCollide_SaysTheSubjectIsRegistered()
@@ -1393,23 +1447,33 @@ public sealed class AccountRegistrationTests
             factory.CreateAuthenticatedClient(Subject, Email),
             SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
         await Assert.That(first.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        // Before the nonce is minted, so the challenge row the options leg writes and the finish leg
+        // spends nets to nothing across the census.
         IReadOnlyDictionary<string, long> before = await CountEveryRelationAsync(host);
+
+        // A ceremony opened by a subject with no account, which is the only caller the options leg will
+        // serve now — the registered subject is refused there before a nonce exists.
+        IssuedRegistrationOptions ceremony = await BeginRegistrationCeremonyAsync(
+            factory.CreateAuthenticatedClient(OtherSubject, OtherEmail));
+
+        // After the options leg, which reads the same port: the delta is about the finish leg alone.
         int readsBefore = reads.Count;
 
-        // Act — the whole of the first registration again: the same provider identity asserting the same
-        // address, on a fresh device and eleven fresh factors, so the two identity rules are the only
-        // things that can collide and both of them do.
-        RegisteredAccount second = await RegisterAccountAsync(
+        // Act — the whole of the first registration again, finished over a stranger's nonce: the same
+        // provider identity asserting the same address, on a fresh device and eleven fresh factors, so
+        // the two identity rules are the only things that can collide and both of them do.
+        HttpResponseMessage refused = await RegisterOverAsync(
             factory.CreateAuthenticatedClient(Subject, Email),
-            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
+            ceremony.Challenge);
 
         // Assert
-        await Assert.That(second.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
 
-        string detail = await DetailOfAsync(second.Response);
+        string detail = await DetailOfAsync(refused);
         await Assert.That(detail).IsEqualTo(SubjectConflictSentence);
         await Assert.That(detail).DoesNotContain(EmailConflictClause);
-        await Assert.That(second.Response.Headers.Contains("Set-Cookie")).IsFalse();
+        await Assert.That(refused.Headers.Contains("Set-Cookie")).IsFalse();
 
         // The ambiguous outcome really was ambiguous — the arm that re-reads is the arm that ran.
         await Assert.That(reads.Count - readsBefore).IsEqualTo(1);
@@ -1851,7 +1915,13 @@ public sealed class AccountRegistrationTests
 
         // The control: the same cookie beside a provider token reaches the leg. It runs after the census,
         // so the census is taken on a database this arrangement has not touched.
-        HttpClient sessionAndBearer = factory.CreateAuthenticatedClient(Subject, Email);
+        //
+        // The token names a subject with no account, and that moved: the options leg now refuses a
+        // subject that already has one, so the registered pair this session belongs to would answer 409
+        // and the control would be measuring the conflict instead of the scheme. What it controls for is
+        // unchanged — a 200 says the leg exists and the missing token, not a missing route, is what
+        // refused the two acts above.
+        HttpClient sessionAndBearer = factory.CreateAuthenticatedClient(OtherSubject, OtherEmail);
         sessionAndBearer.DefaultRequestHeaders.Add("Cookie", cookie);
         HttpResponseMessage admitted = await sessionAndBearer.PostAsync(OptionsPath, content: null);
         await Assert.That(admitted.StatusCode).IsEqualTo(HttpStatusCode.OK);
@@ -1874,6 +1944,24 @@ public sealed class AccountRegistrationTests
     /// <see cref="Registration_WithASessionCookieAndNoBearer_IsRefused" />: one shows the cookie alone is
     /// not enough, the other shows the cookie does not displace what is enough.
     /// </para>
+    /// <para>
+    /// <b>It stays on the finish leg, and that is a decision rather than an accident of how it was
+    /// written.</b> The options leg now answers the same 409 for the same subject, so the cheap rewrite
+    /// is to point this at that leg and delete the ceremony. It is the wrong one. The property this test
+    /// holds is <em>which scheme decides a request carrying both credentials</em>, and the paragraph
+    /// above prices losing it on this leg specifically: a finish leg authenticated by the session handler
+    /// reads a principal with no <c>sub</c> and no <c>email</c>, and <b>creates an account</b> no
+    /// provider ever vouched for. On the options leg the same slip mints a nonce and creates nothing. A
+    /// property is worth holding where its failure costs most, so the request under test remains the one
+    /// that writes rows.
+    /// </para>
+    /// <para>
+    /// <b>The nonce therefore comes from a stranger.</b> The registered subject can no longer open a
+    /// ceremony, so <see cref="OtherSubject" /> asks — carrying no cookie, so the request under test is
+    /// still the only one presenting both credentials — and the cookie-and-bearer client finishes it.
+    /// This is the begin-then-finish race, and reaching the finish leg through it is what keeps the
+    /// answer a fact about the principal the endpoint read rather than about the leg it arrived on.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Registration_WithASessionCookieAndABearer_Returns409SubjectTaken()
@@ -1890,16 +1978,26 @@ public sealed class AccountRegistrationTests
         sessionAndBearer.DefaultRequestHeaders.Add(
             "Cookie",
             $"{CookieName}={SessionCookieValueOf(registered.Response)}");
+
+        // Before the nonce is minted, so the challenge row the options leg writes and the finish leg
+        // spends nets to nothing across the census.
         IReadOnlyDictionary<string, long> before = await CountEveryRelationAsync(host);
 
-        // Act
-        RegisteredAccount second = await RegisterAccountAsync(
+        // A stranger opens the ceremony, and carries no cookie: the request under test is the one below,
+        // and it must be the only one presenting both credentials.
+        IssuedRegistrationOptions ceremony = await BeginRegistrationCeremonyAsync(
+            factory.CreateAuthenticatedClient(OtherSubject, OtherEmail));
+
+        // Act — one request carrying a live session cookie and a provider token for the account that
+        // session belongs to. The provider token is what the endpoint must read.
+        HttpResponseMessage refused = await RegisterOverAsync(
             sessionAndBearer,
-            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
+            ceremony.Challenge);
 
         // Assert
-        await Assert.That(second.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
-        await Assert.That(await DetailOfAsync(second.Response)).Contains(SubjectConflictClause);
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(await DetailOfAsync(refused)).Contains(SubjectConflictClause);
         await AssertNothingChangedAsync(host, before);
     }
 
@@ -2125,6 +2223,183 @@ public sealed class AccountRegistrationTests
                 .IsEqualTo(Unopenable);
         }
     }
+
+    /// <summary>
+    /// FR-104 read one leg earlier: a provider identity that already has an account is refused by the
+    /// <b>options</b> leg, before any authenticator is asked to do anything.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What the finish leg's 409 cannot undo is a passkey.</b> By the time that leg answers, the
+    /// browser has already run <c>navigator.credentials.create()</c> and the authenticator has saved a
+    /// credential permanently — WebAuthn gives a relying party no way to delete one it caused to be
+    /// enrolled. So a second registration attempt from the same Google account leaves a stray passkey on
+    /// somebody's phone or laptop, for an account that was never created and never will be, and every
+    /// later credential list on that device shows it. Refusing here is the only place the refusal costs
+    /// nothing.
+    /// </para>
+    /// <para>
+    /// <b>The sentence is the assertion, not the status.</b> Every conflict in this product answers 409
+    /// under one title, so the detail is the whole of what a caller is told — and this leg must say the
+    /// same thing the finish leg says for the same cause, or somebody who reaches the two on consecutive
+    /// visits is told two different stories about one fact. It is transcribed rather than read off a
+    /// symbol, for <see cref="SubjectConflictSentence" />'s reason.
+    /// </para>
+    /// <para>
+    /// The refusal is asserted against the <em>same</em> subject and a <em>fresh</em> address, so the
+    /// provider identity is the only thing that collides. The address is not what this leg may judge:
+    /// <c>IX_users_email</c> is the finish leg's business and answers a different sentence.
+    /// </para>
+    /// <para>
+    /// The positive control lives next door in
+    /// <see cref="RegistrationOptions_ForASubjectWithNoAccount_IssuesOptions" />, because a leg that
+    /// refused every caller alike satisfies this test and the one after it perfectly.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task SecondOptionsRequest_ForASubjectThatAlreadyHasAnAccount_IsRefused()
+    {
+        // Arrange — one whole account, created by the ceremony a browser really runs.
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RegisteredAccount first = await RegisterAccountAsync(
+            factory.CreateAuthenticatedClient(Subject, Email),
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+        await Assert.That(first.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        // Act — the same provider subject asks to open a second ceremony.
+        HttpResponseMessage refused = await factory
+            .CreateAuthenticatedClient(Subject, OtherEmail)
+            .PostAsync(OptionsPath, content: null);
+
+        // Assert
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+
+        string detail = await DetailOfAsync(refused);
+        await Assert.That(detail).IsEqualTo(SubjectConflictSentence);
+        await Assert.That(detail).DoesNotContain(EmailConflictClause);
+    }
+
+    /// <summary>
+    /// The half that actually protects the device: the refused options leg mints no nonce.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is not the previous test restated.</b> A handler that issues the challenge and
+    /// <em>then</em> discovers the account answers the identical 409 with the identical sentence, and
+    /// every assertion next door stays green — while a row sits in <c>webauthn_challenges</c> that
+    /// nothing will ever spend, and the ordering rule the fix exists for has not been written. The count
+    /// is the only thing that can see the difference.
+    /// </para>
+    /// <para>
+    /// <b>A delta, never an absolute.</b> The arrangement's own ceremony issues a nonce and spends it, so
+    /// the absolute number here happens to be zero today — and a test asserting zero would be pinning
+    /// what the harness leaves behind rather than what the refused request did. Read before, read after,
+    /// compare.
+    /// </para>
+    /// <para>
+    /// <b>The control at the end is what makes the delta evidence.</b> A route that answered 500 for
+    /// everybody, a pool renamed out from under the query, or a counting helper reading the wrong
+    /// relation all produce a delta of zero and would leave this test green having measured nothing. So
+    /// an unregistered subject runs the same leg afterwards and the same count must move by exactly one.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task SecondOptionsRequest_ForASubjectThatAlreadyHasAnAccount_IssuesNoChallenge()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RegisteredAccount first = await RegisterAccountAsync(
+            factory.CreateAuthenticatedClient(Subject, Email),
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+        await Assert.That(first.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        long before = await AccountRegistrationChallengeCountAsync(host);
+
+        // Act
+        HttpResponseMessage refused = await factory
+            .CreateAuthenticatedClient(Subject, OtherEmail)
+            .PostAsync(OptionsPath, content: null);
+
+        // Assert — nothing was minted for a ceremony that may not start.
+        long after = await AccountRegistrationChallengeCountAsync(host);
+        await Assert.That(after - before).IsEqualTo(0L);
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+
+        // Act, again — an unregistered subject on the same leg, which is what says the count is live.
+        HttpResponseMessage issued = await factory
+            .CreateAuthenticatedClient(OtherSubject, OtherEmail)
+            .PostAsync(OptionsPath, content: null);
+
+        // Assert
+        await Assert.That(issued.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await AccountRegistrationChallengeCountAsync(host) - after).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// The positive control the two tests above are worthless without: a caller with no account still
+    /// gets a ceremony.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A leg that refused everybody satisfies both refusal tests exactly.</b> So does one that threw
+    /// on every request, and so does one whose new lookup asks the wrong question and finds an account
+    /// for every subject alike — which is the specific way this fix goes wrong, because the read it adds
+    /// is keyed on two values and a wrong one of them is invisible from a refusal.
+    /// </para>
+    /// <para>
+    /// It runs on a database holding <b>one</b> account already, and asks as a different subject: an
+    /// empty database would let a lookup that always answers "no account" pass while proving nothing
+    /// about the one that matters.
+    /// </para>
+    /// <para>
+    /// Both binary members are read back, because they are what the browser is about to hand its
+    /// authenticator: a response carrying a 409's shape under a 200 would satisfy a status-only
+    /// assertion.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RegistrationOptions_ForASubjectWithNoAccount_IssuesOptions()
+    {
+        // Arrange — an account exists, and it is somebody else's.
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RegisteredAccount first = await RegisterAccountAsync(
+            factory.CreateAuthenticatedClient(Subject, Email),
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+        await Assert.That(first.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        // Act
+        HttpResponseMessage issued = await factory
+            .CreateAuthenticatedClient(OtherSubject, OtherEmail)
+            .PostAsync(OptionsPath, content: null);
+
+        // Assert
+        await Assert.That(issued.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject body = await ReadJsonObjectAsync(issued);
+        await Assert.That(Base64UrlText.Decode(body["challenge"]!.GetValue<string>()).Length).IsEqualTo(32);
+        await Assert.That(Base64UrlText.Decode(body["user"]!["id"]!.GetValue<string>()).Length)
+            .IsEqualTo(UserHandleLength);
+        await Assert.That(body["user"]!["name"]!.GetValue<string>()).IsEqualTo(OtherEmail);
+    }
+
+    /// <summary>
+    /// How many live nonces the account-registration pool holds.
+    /// </summary>
+    /// <remarks>
+    /// <b>Scoped to the pool rather than to the relation.</b> The four ceremonies share one table, and a
+    /// whole-table count would be moved by any other leg a test happened to drive — which is the sort of
+    /// coupling that turns a red about this route into a red about its neighbour. The spelling is
+    /// transcribed rather than read off <c>WebAuthnChallengeConfiguration</c>: it is what
+    /// <c>CK_webauthn_challenges_ceremony</c> enumerates, and a test taking it from the mapping agrees
+    /// with whatever that mapping later decides the pool is called.
+    /// </remarks>
+    private static Task<long> AccountRegistrationChallengeCountAsync(PostgresTestHost host) =>
+        CountAsync(
+            host,
+            "select count(*) from webauthn_challenges where ceremony = 'account_registration'");
 
     /// <summary>
     /// The prf gate's refusal, read by the member it is keyed under and by what it says.
