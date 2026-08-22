@@ -66,4 +66,34 @@ describe('BrandLockupComponent', () => {
     first.destroy();
     second.destroy();
   });
+
+  it('draws the wordmark by default and drops it for the mark', () => {
+    // Arrange
+    const fixture = TestBed.createComponent(BrandLockupComponent);
+
+    // Act
+    fixture.detectChanges();
+    const host = fixture.nativeElement as HTMLElement;
+    const lockupViewBox = host.querySelector('svg')?.getAttribute('viewBox');
+    const lockupPaths = host.querySelectorAll('svg > path').length;
+
+    fixture.componentRef.setInput('variant', 'mark');
+    fixture.detectChanges();
+    const markViewBox = host.querySelector('svg')?.getAttribute('viewBox');
+    const markPaths = host.querySelectorAll('svg > path').length;
+
+    // Assert
+    // The rail asks for the mark by name: an 88px column has no room for the
+    // wordmark. Cropping the viewBox alone is the tempting half of this — it
+    // frames the coin and leaves the wordmark in the document, where anything
+    // sizing the drawing by its bounding box still has to reckon with a shape
+    // at x=134. Both halves are asserted, in both directions, so neither the
+    // crop nor the removal can be dropped on its own.
+    expect(lockupViewBox).toBe('0 0 450 96');
+    expect(lockupPaths).toBe(1);
+    expect(markViewBox).toBe('0 0 96 96');
+    expect(markPaths).toBe(0);
+
+    fixture.destroy();
+  });
 });

@@ -43,3 +43,33 @@
     U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
     U+2212, U+2215, U+FEFF, U+FFFD;
 }
+
+// The product's first icon font, and it carries four glyphs. Material Symbols Rounded is
+// what docs/design/components.md specifies; the whole face is 15 MB, so what ships is a
+// subset of exactly the destinations the navigation renders — receipt_long (U+EF6E),
+// account_balance_wallet (U+E850), category (U+E574) and settings (U+E8B8). Adding a
+// destination means regenerating this file, and the recipe is in public/fonts/README.md.
+//
+// **The FILL axis stays variable and that is the whole reason this is one file.** The book
+// marks the active destination with a filled icon, so the two states are `font-variation-settings:
+// 'FILL' 0` and `'FILL' 1` on the same face rather than two woff2 files that could drift.
+// weight 400, grade 0 and optical size 24 are pinned into the bytes instead, because the
+// book fixes all three and a variable axis nobody moves is payload nobody uses.
+//
+// `block` rather than `swap`, unlike the text faces above: these codepoints are in a
+// private use area, so a fallback face has nothing to put there and a swap period would
+// paint four tofu boxes in the navigation before painting the icons. It is 1.5 kB from
+// this origin, so the block period is not a wait anybody sees.
+//
+// Not preloaded, deliberately — see index.html, where Inter is preloaded because it blocks
+// first paint. This one is fetched by the navigation on the first `/app` route and by
+// nothing else.
+@font-face {
+  font-family: 'Material Symbols Rounded';
+  font-style: normal;
+  font-display: block;
+  font-weight: 400;
+  src: url('/fonts/material-symbols-rounded-subset.woff2')
+    format('woff2-variations');
+  unicode-range: U+E574, U+E850, U+E8B8, U+EF6E;
+}

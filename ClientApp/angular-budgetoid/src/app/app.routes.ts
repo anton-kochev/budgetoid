@@ -9,8 +9,19 @@ export const routes: Routes = [
     loadComponent: () => import('./welcome/welcome.component').then(x => x.WelcomeComponent),
     canActivate: [guestGuard],
   },
+  // The signed-in surface, and the navigation is a component of this route rather
+  // than of the root shell. Which screens carry a bar is a fact about the route
+  // table: everything under `app` sits behind `authGuard`, and `welcome` and
+  // `register` are siblings of it, so a layout mounted here draws over the one
+  // and cannot reach the others. The alternative — a root shell asking
+  // `SessionService` whether to draw a bar — answers a question about identity
+  // where one about position was asked, and would paint a signed-in navigation
+  // over the welcome screen for as long as the status said the visitor held a
+  // session.
   {
     path: 'app',
+    // prettier-ignore
+    loadComponent: () => import('./shell/shell.component').then(x => x.ShellComponent),
     children: [
       {
         path: 'transactions',

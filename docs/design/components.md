@@ -16,26 +16,52 @@ All interactive components share: focus ring `2px solid var(--bud-focus-ring)` w
 destination. Sizes: 20 (inline), 24 (default), 40 (empty states). Icons never appear
 without an accessible name — a visible label or `aria-label`.
 
-No icon font is loaded today, because no component uses an icon yet. The first icon to
-ship brings a woff2 **subsetted to the glyph names actually used**, served from
-`public/fonts/` — the whole face is 1.38 MB against roughly 1.3 kB for two glyphs, and
-it may never come from a CDN. The `FILL` axis stays variable so the active-destination
-state needs no second file. See
+The navigation was the first icon to ship, and it brought the font with it:
+`public/fonts/material-symbols-rounded-subset.woff2`, **1.5 kB for four glyphs** against
+15 MB for the upstream face. It may never come from a CDN. `wght`, `GRAD` and `opsz` are
+pinned into the bytes at the 400 / 0 / 24 above, and the **`FILL` axis stays variable**, so
+the active-destination state is a `font-variation-settings` change on one file rather than
+a second file that could drift.
+
+**Glyphs are addressed by codepoint, not by ligature**, and the codepoints never appear in
+a template — they live in one named map beside the destination list. Subsetting for
+ligatures costs about 87 kB here, because the ligature closure drags in a thousand
+placeholder glyphs and every letter that spells a name. Adding an icon means regenerating
+the subset; the recipe and the verification checklist are in `public/fonts/README.md`. See
 [no third-party origins](../engineering/no-third-party-origins.md).
 
 ## App shell and navigation
 
-Destinations: **Home, Transactions, Accounts, Categories**, plus the **Add** action.
+Destinations: **Home, Transactions, Accounts, Categories, Settings**, plus the **Add**
+action.
 
-**Settings is not a destination.** The Settings screen ships at `/app/settings` with no entry
-in the bar and none in the rail; it is reached by typing the URL. Nothing in the shell links
-to it yet, and adding it is a decision about the destination list rather than a tidy-up.
+**Settings is a destination.** It was specified as deliberately *not* one, reachable only by
+typing its URL. That was a product decision and it was overturned: Settings is where signing
+out, the export, the credential list and the recovery-code count live, so a surface with no
+entry to it is one whose whole account-management half is unreachable without a keyboard and
+prior knowledge.
+
+**What ships is four of the six.** The shell renders Transactions, Accounts, Categories and
+Settings, evenly distributed, and neither **Home** nor **Add** is built:
+
+- **Home** has no route. `/app` redirects to `/app/transactions` and there is no screen for a
+  home destination to reach.
+- **Add** has no flow. Each screen carries its own inline form, so a central button has
+  nothing to open, and this book's own rule is that a control which cannot be activated does
+  not get to look like the most important thing on screen. When the flow exists, the bar
+  parts around it as specified below; until then the four are spaced evenly rather than left
+  with a gap where it would go.
+
+Both are departures from what follows, and the sections below are the target rather than a
+report. `shell.component.ts` names both omissions beside the destination list so they read
+as decisions rather than oversights.
 
 ### Bottom bar (compact, < 960px)
 
 - Paper background (`--bud-bg`), top hairline, no elevation, no blur. Height 64px +
   `env(safe-area-inset-bottom)`.
-- Five slots: four destinations around a centered Add button.
+- Five slots: four destinations around a centered Add button. **Four even slots ship
+  today** — see the destination note above.
 - Item: icon 24 above a `caption` label. Inactive: `--bud-text-muted`, icon outlined.
   Active: `--mat-sys-primary`, icon filled, label weight 600, and a **4px mint bead**
   centered beneath the icon — the bead marks "you are here".
@@ -50,6 +76,21 @@ to it yet, and adding it is a decision about the destination list rather than a 
   icon-over-label items. Active: filled icon, primary color, 4px bead centered under
   the icon pair.
 - Content area becomes a centered column, max 1080px.
+
+**The bead has one placement, not two.** The bar section says "beneath the icon" and the rail
+section "under the icon pair"; what ships puts it under the pair in both, because a bead
+wedged between an icon and the label it belongs to splits a pair this book otherwise keeps
+together.
+
+**The bar and the rail are one `<nav>` and one list**, switched by grid rules rather than
+rendered as two elements. Two would put every destination into the accessibility tree twice.
+The mark is the only part that belongs to one layout, and it leaves by `display: none`, which
+takes it out of that tree as well as out of the picture.
+
+**This is the largest component stylesheet in the product**, and the production
+`anyComponentStyle` warning was raised from 2 kB to 3 kB for it — the error stays at 4 kB. It
+is the one component that carries two complete layouts, and a standing build warning teaches
+a reader to ignore build warnings.
 
 ### Screen header
 

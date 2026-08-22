@@ -405,8 +405,19 @@ Load-bearing rules, each explained there or in the linked decision:
 - **The test runner's time zone is pinned** to `Pacific/Kiritimati` in `src/test-setup.ts`,
   because CI runs at UTC and a date test comparing UTC against local discriminates nothing
   there. `export-filename.spec.ts` asserts the offset is non-zero, so deleting the pin fails.
-- **`/app/settings` ships with no navigation entry** — reachable by URL only, on purpose; a
-  later epic gives it one. It shows the email from `GET /api/me`, a working export that writes
+- **`/app/settings` is reached from the shell navigation**, which is a reversal: it shipped
+  deliberately entry-less, and the reason it stopped being deliberate is that signing out, the
+  export, the credential list and the recovery-code count all live here, so an entry-less
+  Settings makes the whole account-management half of the product unreachable without typing a
+  URL. The nav is `ShellComponent`, a layout on the `app` route rather than anything in the
+  root shell — **which routes carry a bar is a fact about the route table**, so `/welcome` and
+  `/register`, being siblings rather than children, cannot draw one however a session status
+  reads. It carries four destinations; **Home and Add are specified and not built**, having no
+  route and no flow respectively. Its icons are the product's first, from a **four-glyph 1.5 kB
+  subset** of Material Symbols Rounded self-hosted in `public/fonts/`, addressed by codepoint
+  rather than ligature and keeping only the `FILL` axis variable, which is what lets one file
+  serve both the outlined and the filled state.
+  The screen itself shows the email from `GET /api/me`, a working export that writes
   the response bytes to disk **unread** (`responseType: 'blob'` — a JSON round-trip would turn
   exact `numeric(14,4)` amounts into doubles), a working **Sign out**, and an erasure control that is
   present and **disabled**. It also lists every credential

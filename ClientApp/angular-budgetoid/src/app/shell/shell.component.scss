@@ -1,0 +1,222 @@
+// The signed-in layout: a bottom bar under the content on a phone, an 88px rail
+// beside it from 960px. Mobile-first, as everything here is — the bar is the base
+// and the rail is the enhancement.
+//
+// Grid places both, so the nav can lead in the DOM and still sit at the foot of a
+// phone. `min-height` is what keeps the bar at the bottom of a short screen
+// instead of half-way up it; the content row takes the rest.
+:host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 100vh;
+  box-sizing: border-box;
+  background: var(--bud-bg);
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+}
+
+// Sticky rather than fixed: fixed would take the bar out of flow and every screen
+// below would need padding of its own to stop the last row hiding under it.
+//
+// 64px is the book's bar height and the safe-area inset is the phone's home
+// indicator — the bar grows by it, so the items stay 64px and stay reachable.
+// No shadow and no `backdrop-filter`: the book gives this bar a hairline and an
+// opaque ground, and nothing else.
+.sh-nav {
+  grid-row: 2;
+  grid-column: 1;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  box-sizing: border-box;
+  height: calc(64px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  border-top: 1px solid var(--bud-hairline);
+  background: var(--bud-bg);
+}
+
+// Rail only. `display: none` takes it out of the accessibility tree as well as
+// out of the picture, which is the point — see the template.
+.sh-mark {
+  display: none;
+}
+
+// Four even slots. Evenly distributed rather than parted around a centre slot,
+// because there is no Add button to part them around — the argument is in
+// shell.component.ts, beside the list.
+.sh-items {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sh-slot {
+  display: grid;
+}
+
+// 48px is the floor even though the bar is 64px tall: the item is only as wide as
+// a quarter of the screen, and on the narrowest phone that is still well clear of
+// it. The floor is written down so a fifth destination cannot quietly cross it.
+//
+// The focus ring is deliberately absent from this file. `styles.scss` owns one
+// global `:focus-visible` rule and it already covers `a[href]`, which is what a
+// `routerLink` on an anchor renders as. A ring restated here would be a second
+// definition of the same line.
+.sh-item {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: var(--bud-space-1);
+  box-sizing: border-box;
+  min-width: var(--bud-touch-target);
+  min-height: var(--bud-touch-target);
+  height: 100%;
+  padding: var(--bud-space-1);
+  border-radius: var(--bud-radius-md);
+  color: var(--bud-text-muted);
+  text-decoration: none;
+  transition: color var(--bud-motion-micro) var(--bud-ease-standard);
+}
+
+.sh-item:hover {
+  background: var(--bud-state-hover);
+}
+
+.sh-item:active {
+  background: var(--bud-state-pressed);
+}
+
+// The icon face, named exactly as `assets/theming/_fonts.scss` declares it; that
+// file owns the `@font-face` and the argument for the subset.
+//
+// `FILL` is the one axis left variable in the bytes, and this is what it is for:
+// the active destination fills, and there is no second file to drift. `liga 0`
+// because the glyphs are addressed by codepoint and nothing here should shape.
+//
+// 24 is the book's default icon size.
+.sh-icon {
+  font-family: 'Material Symbols Rounded';
+  font-size: 24px;
+  line-height: 1;
+  font-feature-settings: 'liga' 0;
+  font-variation-settings: 'FILL' 0;
+  transition: font-variation-settings var(--bud-motion-micro)
+    var(--bud-ease-standard);
+}
+
+// `caption` role. The literals are the book's own numbers: the type scale has no
+// token to reference yet, the same reason the register steps state at theirs.
+.sh-label {
+  font-weight: 400;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+// The bead is what marks "you are here". It sits under the icon-and-label pair
+// rather than between them: the book says "beneath the icon" for the bar and
+// "under the icon pair" for the rail, and one placement has to serve both — a
+// bead wedged between an icon and the label it belongs to would split a pair the
+// same book puts together.
+//
+// 4px is the book's size.
+.sh-bead {
+  width: 4px;
+  height: 4px;
+  border-radius: var(--bud-radius-full);
+  background: var(--bud-accent);
+  opacity: 0;
+  transition: opacity var(--bud-motion-micro) var(--bud-ease-standard);
+}
+
+// Every part of the active treatment hangs off the one class `routerLinkActive`
+// adds, which is the same directive that writes `aria-current`.
+.sh-item--active {
+  color: var(--mat-sys-primary);
+}
+
+.sh-item--active .sh-icon {
+  font-variation-settings: 'FILL' 1;
+}
+
+.sh-item--active .sh-label {
+  font-weight: 600;
+}
+
+.sh-item--active .sh-bead {
+  opacity: 1;
+}
+
+.sh-content {
+  grid-row: 1;
+  grid-column: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  min-width: 0;
+}
+
+// The rail. Same element, same list, different rules.
+@media (min-width: 960px) {
+  :host {
+    // 88px is the book's rail width.
+    grid-template-columns: 88px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .sh-nav {
+    grid-row: 1;
+    grid-column: 1;
+    top: 0;
+    bottom: auto;
+    align-content: start;
+    gap: var(--bud-space-6);
+    height: 100vh;
+    padding: var(--bud-space-6) 0;
+    border-top: none;
+    border-right: 1px solid var(--bud-hairline);
+  }
+
+  // 28px is the book's mark size here. Forest is `--mat-sys-primary`: the runtime
+  // token file drops the fixed brand hexes on purpose in favour of the swap-aware
+  // roles, and forest is what primary resolves to in the green brand.
+  .sh-mark {
+    display: block;
+    justify-self: center;
+    height: 28px;
+    color: var(--mat-sys-primary);
+  }
+
+  .sh-items {
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    gap: var(--bud-space-2);
+    padding-inline: var(--bud-space-2);
+  }
+
+  .sh-item {
+    height: auto;
+    padding: var(--bud-space-2) var(--bud-space-1);
+  }
+
+  // The book's centred column.
+  .sh-content {
+    grid-column: 2;
+    width: 100%;
+    max-width: 1080px;
+    margin-inline: auto;
+  }
+}
+
+// The colour and opacity fades are the kind the book allows to stay. The fill is
+// a shape change, so it snaps instead.
+@media (prefers-reduced-motion: reduce) {
+  .sh-icon {
+    transition: none;
+  }
+}
