@@ -46,14 +46,15 @@
      control that goes truly `disabled` under the finger drops focus to
      `<body>`, and the live region above is what says why it cannot be pressed.
 
-     `none` renders nothing, and that is the whole of the rule the three
+     `none` renders nothing, and that is the whole of the rule the four
      refusals without a retry exist for — the browser cannot run the
-     ceremony, the device cannot hold the account's keys, or the account already
-     exists. Leaving `Create a passkey` on the screen there is a retry that does
-     not admit to being one.
+     ceremony, the device cannot hold the account's keys, the account already
+     exists, or the provider token the request carried was refused. Leaving
+     `Create a passkey` on the screen there is a retry that does not admit to
+     being one.
 
-     `none` is about the *ceremony* control alone, and one of those three has a
-     way out of its own below. -->
+     `none` is about the *ceremony* control alone, and two of those four have a
+     way out of their own below — different doors, one each. -->
 @switch (control()) {
   @case ('create') {
     <button
@@ -105,6 +106,28 @@
 @if (offersSignIn()) {
   <button class="r-button" mat-flat-button type="button" (click)="goToSignIn()">
     Go to sign in
+  </button>
+}
+
+<!-- The other door, and `/welcome` is the wrong one here. That screen runs a
+     passkey assertion and this person has no account for it to find, so it could
+     only answer the byte-identical 401 it gives every unknown credential,
+     naming no cause. The exchange is the one act that changes the answer, and
+     its `redirectUri` comes back to `/register` — the first step, not this one,
+     which is why the sentence above says so.
+
+     Bound to the provider computed rather than to `control() === 'none'`, which
+     is the shape a reader reaches for: `unsupported` and `no-prf` land in `none`
+     too and neither has a provider problem. Both readings come off the one
+     `wayOut` member, so no refusal can render two doors. -->
+@if (offersProvider()) {
+  <button
+    class="r-button"
+    mat-stroked-button
+    type="button"
+    (click)="signInWithProvider()"
+  >
+    Continue with Google
   </button>
 }
 

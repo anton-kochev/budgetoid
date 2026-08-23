@@ -65,9 +65,21 @@ export type RegisterStep = 'intro' | 'passkey' | 'codes';
  * to `ceremony-failed`, because `failed` on this surface would read as "the
  * registration failed" rather than "the device did not finish".
  *
- * The last four are this flow's own:
+ * The last five are this flow's own:
  *
  *   * `start-failed` — the server never issued a challenge. Nothing was minted.
+ *   * `provider-token-refused` — the options leg answered 401, so the provider
+ *     token this browser attached was not accepted. **Named for what the answer
+ *     proves and not for the cause behind it**: a 401 on a route declared on the
+ *     provider scheme says the bearer was refused, and expiry is only the
+ *     likeliest of several reasons — a token already spent, one minted for
+ *     another audience, a clock far enough out to make a live token look dead.
+ *     `provider-token-expired` would be a diagnosis the answer does not carry,
+ *     and a word this flow later has to be careful not to believe. It is not a
+ *     narrower `refused` either: that word is the POST leg's and means the
+ *     server read a registration and said no, while this one means the request
+ *     never reached a handler at all. The way out is the provider rather than
+ *     another press, which is what makes it a word rather than a status.
  *   * `refused` — the server judged the request and said no. Nothing was
  *     created and the codes on screen are dead.
  *   * `conflict` — an account already exists for this provider identity. The
@@ -89,6 +101,7 @@ export type RegisterFailure =
   | 'no-prf'
   | 'ceremony-failed'
   | 'start-failed'
+  | 'provider-token-refused'
   | 'refused'
   | 'conflict'
   | 'unknown';
@@ -609,10 +622,39 @@ export class RegisterService {
   // and `start-failed` is the honest one. Leave `failureOf`'s argument where it
   // is: it is written about the POST leg throughout and is not true of this
   // one.
+  //
+  // **The 401 is the third word, and it was the most expensive one to be
+  // missing.** Both registration routes are declared on the provider scheme and
+  // nothing else, so a 401 here is the API refusing the bearer this browser
+  // attached — measured on `/register` loaded with an id token 71 minutes past
+  // its expiry, which answered `invalid_token` and the instant it expired at.
+  // Read as `start-failed` it produced a screen saying Budgetoid could not reach
+  // the server, beside a `Try again` that re-sends the same dead token for as
+  // long as anybody keeps pressing it: wrong about what happened, and offering
+  // the one act certain to end here again. `AuthService.providerEmail` closes
+  // the cold-load half of this by answering `null` for a token that is no longer
+  // valid; this closes the half where the token lapses with the screen already
+  // open, which that one cannot see — `email` is a `computed` with no signal
+  // dependency and settles on first read, deliberately.
+  //
+  // **The 403 is not this word and must not become it.** It is the
+  // `X-Budgetoid-Client` refusal — a defect in this client, answered to a
+  // browser whose token is perfectly good — so it stays `start-failed` with
+  // every other status, and a person sent through the provider for it would come
+  // back to exactly the same refusal.
   private static startFailureOf(error: unknown): RegisterFailure {
-    return error instanceof HttpErrorResponse && error.status === 409
-      ? 'conflict'
-      : 'start-failed';
+    if (!(error instanceof HttpErrorResponse)) {
+      return 'start-failed';
+    }
+
+    switch (error.status) {
+      case 401:
+        return 'provider-token-refused';
+      case 409:
+        return 'conflict';
+      default:
+        return 'start-failed';
+    }
   }
 
   // **`refused` and `conflict` are not `unknown`, and this is the most

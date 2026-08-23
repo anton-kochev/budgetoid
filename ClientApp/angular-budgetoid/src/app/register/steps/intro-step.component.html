@@ -60,7 +60,7 @@
     }
   </div>
 
-  <!-- One control, under one of three names.
+  <!-- One control, under one of four names.
 
        `busy` keeps the Primary exactly where it was with `disabledInteractive`
        — the *busy* case in the buttons chapter, not the acknowledgement case.
@@ -120,6 +120,26 @@
         (click)="goToSignIn()"
       >
         Go to sign in
+      </button>
+    }
+    @case ('provider') {
+      <!-- The only control on this screen that can change the answer. The token
+           this browser is holding was refused, so every press that attaches it
+           again reaches the same 401 — including one calling itself `Try again`,
+           which is the shape this refusal arrived under until now. The exchange
+           is what mints a token the two registration legs will accept, and it
+           comes back here.
+
+           Outline, and the same name and treatment the `@else` arm below offers
+           a browser holding no token at all: the two states differ in how the
+           browser got here and in nothing the person has to do about it. -->
+      <button
+        class="r-button"
+        mat-stroked-button
+        type="button"
+        (click)="signIn()"
+      >
+        Continue with Google
       </button>
     }
   }

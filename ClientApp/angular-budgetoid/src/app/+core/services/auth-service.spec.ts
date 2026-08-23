@@ -182,6 +182,30 @@ describe('AuthService', () => {
     expect(read).toEqual(['email']);
   });
 
+  // **The claim outlives the token, and reading it without asking is what put a
+  // dead `Continue` on the registration screen.** `getIdentityClaims()` answers
+  // out of storage and keeps answering for as long as the browser holds the
+  // decoded token — an hour after it expired, a day after. The registration
+  // screen renders "your account will be created under <address>" from this
+  // method, and both legs behind that press are declared on the provider scheme
+  // and nothing else: a stale claim therefore promises an account, offers a
+  // control, and reaches a 401 that says nothing a person can act on.
+  //
+  // The address is not the only thing that goes with the token. The `sub` the
+  // account is created under is read off the principal the *server* resolves, so
+  // an expired token has no identity behind it at all — which is why `null` here
+  // is the honest answer rather than a cautious one.
+  it('reads no address from an expired id token', () => {
+    // Arrange
+    const service = authServiceReading(
+      () => ({ email: 'owner@budgetoid.test' }),
+      false,
+    );
+
+    // Act & Assert
+    expect(service.providerEmail()).toBeNull();
+  });
+
   it.each([
     // Present but blank is not an address. A screen rendering one shows a label
     // with nothing after it, which reads as a bug rather than as absence.
@@ -204,13 +228,27 @@ describe('AuthService', () => {
   });
 });
 
-// One `AuthService` over a stubbed provider whose claims the caller decides.
+// One `AuthService` over a stubbed provider whose claims the caller decides,
+// and whose token is live unless the caller says otherwise.
+//
+// **The validity is a parameter rather than a fixture constant**, because it is
+// the one input `providerEmail` has besides the claims themselves: the claims
+// outlive the token, so every case below is really a pair — these claims, this
+// answer to "is the token still good?" — and defaulting it to `true` is what
+// keeps each of the four shapes below a statement about the claims alone.
+//
 // Declared below the suite it serves rather than above it: the first test in
 // this file builds its own stub on purpose — it is asserting that *nothing* is
 // read — and routing it through a shared helper would put a second reader
 // between it and the claim it is watching.
-function authServiceReading(getIdentityClaims: () => object): AuthService {
-  const oAuth = { getIdentityClaims } as unknown as OAuthService;
+function authServiceReading(
+  getIdentityClaims: () => object,
+  hasValidIdToken = true,
+): AuthService {
+  const oAuth = {
+    getIdentityClaims,
+    hasValidIdToken: () => hasValidIdToken,
+  } as unknown as OAuthService;
 
   TestBed.configureTestingModule({
     providers: [

@@ -77,6 +77,29 @@ export class AuthService {
    * only caller — the registration screen's header — wants what the current
    * token says, not what it said when the service was constructed.
    *
+   * **A claim from a token that has stopped being valid is not an address, and
+   * that is the first thing this method asks.** `getIdentityClaims()` answers
+   * out of storage: it keeps handing back the decoded token's members for as
+   * long as the browser holds them, an hour after the token expired and a day
+   * after. The registration screen renders "your account will be created under
+   * <address>" from this method and offers a `Continue` beside it, and both legs
+   * behind that press are declared on the provider scheme and nothing else — so
+   * a stale claim promises an account, offers the control, and reaches a 401
+   * whose reason nothing on the screen can name. Answered `null`, the same
+   * screen falls through to the arm it already has for a browser holding no
+   * token: it says so and offers the provider.
+   *
+   * The address is not the only thing that goes with the token. The `sub` the
+   * account is created under is read off the principal the *server* resolves
+   * from that same token, so an expired one has no identity behind it at all —
+   * which is what makes `null` the honest answer here rather than a cautious
+   * one. This is the prevention half; a token that lapses while the screen is
+   * already open is the register flow's own `provider-token-refused`, published
+   * from the 401 itself, and neither half covers the other's case.
+   *
+   * Nothing here schedules a renewal, and the omission is argued in
+   * {@link initialize}.
+   *
    * It asks the provider for **no new scope**: `openid email` already carries
    * this claim, which is what keeps `src/no-profile-scope.spec.ts` green, and
    * it is the identifier the backend stores anyway. Reading it is therefore not
@@ -91,6 +114,12 @@ export class AuthService {
    * label with nothing after it, which reads as a bug rather than as absence.
    */
   public providerEmail(): string | null {
+    // Above the claims, so a token this application would not send is one whose
+    // members it does not read either.
+    if (!this.oAuth.hasValidIdToken()) {
+      return null;
+    }
+
     const claims: unknown = this.oAuth.getIdentityClaims();
 
     if (typeof claims !== 'object' || claims === null || !('email' in claims)) {

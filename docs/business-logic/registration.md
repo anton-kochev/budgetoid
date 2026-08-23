@@ -491,7 +491,10 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
 
 - **Rule**: **A refusal and a lost answer are separate readings, and they may never be collapsed.**
   A `400`, a `401`, a `403` and a `409` mean *certainly not created*; a network failure, a timeout
-  and every `5xx` mean *cannot be told*.
+  and every `5xx` mean *cannot be told*. **This is about the POST leg**, and the two legs read a
+  `401` differently on purpose: here it is one of four refusals meaning the codes on screen are dead,
+  while on the options leg it is `provider-token-refused` and nothing has been minted to be dead. One
+  status, two facts, because the question each leg was asked is different.
 - **Why**: every `400` leaves the handler by exception before the save is reached, a `401` and a
   `403` are refused before the handler is entered at all, and a `409` refuses this request against an
   account that already stands — so on all four the ten codes on screen open nothing, and saying so is
@@ -569,8 +572,11 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
 - **Rule**: **The identity provider's redirect lands on `/register`, and the matching entry in the
   Google Cloud console's authorized redirect URIs is part of that change.**
 - **Why**: the registration screen is the only surface that can do anything with a fresh provider
-  token — it reads the asserted address off the id token, and both legs of this act authenticate as
-  the provider scheme and nothing else. The site root is where the redirect used to land, and that is
+  token — it reads the asserted address off the id token **while that token is still valid**, and
+  both legs of this act authenticate as the provider scheme and nothing else. The validity clause is
+  load-bearing rather than pedantic: `AuthService.providerEmail` answers `null` for a token whose
+  hour has run out, which is what puts the screen back on its **Continue with Google** arm instead of
+  showing an address under a promise the next press cannot keep. The site root is where the redirect used to land, and that is
   the address the app reads as *somebody arriving with a session*, which a person consenting in order
   to **create** an account does not have.
   - **No test in this repository can see the other half.** A mismatch is refused by Google with
@@ -702,7 +708,14 @@ ELSE consume the nonce — from here every outcome has burnt it
   [components.md](../design/components.md); why it is a linear sequence of full screens rather than a
   checklist is in [patterns.md](../design/patterns.md). Both of its requests carry the
   `EXPECTS_UNAUTHENTICATED` context token, so a `401` from either is read as this request's verdict
-  rather than as a session ending — see [sessions.md](sessions.md).
+  rather than as a session ending — see [sessions.md](sessions.md). **What the options leg then does
+  with that verdict is its own word.** A `401` there means the provider token this browser attached
+  was rejected, which is almost always an hour having passed, so the client publishes
+  `provider-token-refused` and both steps that can receive it offer **Continue with Google** — the
+  one act that changes the answer. It is deliberately not `start-failed`: that sentence says the
+  server could not be reached, and this server answered. A `403` on the same route **is**
+  `start-failed`, because that is the `X-Budgetoid-Client` refusal, a client defect no provider
+  exchange repairs.
 
 ## Edge Cases & Known Gotchas
 

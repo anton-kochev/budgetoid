@@ -18,6 +18,7 @@ import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { Router, UrlTree, provideRouter } from '@angular/router';
+import { AuthService } from '@app-core/services/auth-service';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { RegisterService, type RegisterFailure } from '../register.service';
 import { PasskeyStepComponent } from './passkey-step.component';
@@ -33,6 +34,12 @@ const RETRY_BUTTON = 'Try again';
 // challenge, it leaves the flow for the one screen that can sign a returning
 // person in.
 const SIGN_IN_BUTTON = 'Go to sign in';
+// The other way out, and it is not the one above under a different name: it
+// leaves for the identity provider rather than for this application's own
+// sign-in screen, and it comes back to `/register` with a token the two
+// registration legs will accept. The same words the introduction's own
+// token-less arm uses for the same act.
+const PROVIDER_BUTTON = 'Continue with Google';
 
 // Where that control has to land. `/welcome` is the one address in this
 // application that runs a passkey assertion, which is what the sentence beside
@@ -57,6 +64,14 @@ interface Refusal {
   // would promise a way forward to two people who have none. Every constant
   // below answers it, and exactly one answers `true`.
   readonly offersSignIn: boolean;
+  // The second way out, counted on every row for the reason the first one is.
+  // It is a different door rather than a second name for the same one: this
+  // control leaves for Google and comes back here, where the one above leaves
+  // for this application's own sign-in screen and does not. Exactly one word
+  // answers `true`, and no word answers `true` to both — a refusal offering two
+  // ways out is a screen asking the reader to choose between doors it has not
+  // explained.
+  readonly offersProvider: boolean;
 }
 
 // The browser cannot run the ceremony at all — no WebAuthn, or the page is not
@@ -71,6 +86,7 @@ const UNSUPPORTED: Refusal = {
   // cannot run an assertion on `/welcome` either, so a sign-in control here
   // would be the same dead end one screen further on.
   offersSignIn: false,
+  offersProvider: false,
 };
 
 // The person closed the system sheet, or it timed out. Nothing is wrong, nothing
@@ -82,6 +98,7 @@ const CANCELLED: Refusal = {
     'The passkey wasn’t created. Nothing has been saved, and nothing was sent — try again whenever you’re ready.',
   offersRetry: true,
   offersSignIn: false,
+  offersProvider: false,
 };
 
 // The authenticator declined because it already holds a credential named in the
@@ -92,6 +109,7 @@ const DUPLICATE: Refusal = {
     'This device already holds a passkey Budgetoid can’t reuse. Try again with a different device or security key.',
   offersRetry: true,
   offersSignIn: false,
+  offersProvider: false,
 };
 
 // Anything else the ceremony ended in, including one that resolved nothing.
@@ -101,6 +119,7 @@ const CEREMONY_FAILED: Refusal = {
     'Your device didn’t finish creating the passkey. Nothing has been saved.',
   offersRetry: true,
   offersSignIn: false,
+  offersProvider: false,
 };
 
 // The options leg never answered, so no challenge exists and nothing was minted.
@@ -113,6 +132,7 @@ const START_FAILED: Refusal = {
     'Budgetoid couldn’t reach the server to start. Nothing has been saved.',
   offersRetry: true,
   offersSignIn: false,
+  offersProvider: false,
 };
 
 // Nothing that has a word of its own. `RegisterService.mintUnder` carries a
@@ -130,6 +150,7 @@ const UNKNOWN: Refusal = {
   sentence: 'Budgetoid didn’t finish, and nothing has been saved. Try again.',
   offersRetry: true,
   offersSignIn: false,
+  offersProvider: false,
 };
 
 // The one refusal that is about the authenticator rather than about the person
@@ -147,6 +168,7 @@ const NO_PRF: Refusal = {
   // person has no account to sign in to, and the device that could not derive
   // the key would be asked to derive it again.
   offersSignIn: false,
+  offersProvider: false,
 };
 
 // The other answer the options leg has, and the one refusal on this screen that
@@ -167,6 +189,41 @@ const CONFLICT: Refusal = {
   // is not on the screen. That is the dead end the shell's own conflict block
   // was fixed for, one step over.
   offersSignIn: true,
+  // The account exists and this browser's Google token is fine, so the provider
+  // has nothing to offer: an exchange would come back with the same identity and
+  // meet the same 409. The way in is a passkey assertion, one screen over.
+  offersProvider: false,
+};
+
+// The third answer the options leg has, and the second refusal on this screen
+// that is about the server rather than the device. A 401 there is the API
+// refusing the bearer this browser attached — both registration routes are
+// declared on the provider scheme and nothing else — and an id token lives an
+// hour while this step can be sat on for longer: a restart, a closed system
+// sheet, a device that did not finish.
+//
+// It is not `start-failed`. That sentence says the server could not be reached,
+// and the server answered; its `Try again` re-runs a ceremony whose refetch
+// attaches the same dead token. Nothing minted on either path that reaches this
+// word, so the sentence can say plainly that nothing has been saved and the
+// person can leave for Google without losing anything.
+const PROVIDER_TOKEN_REFUSED: Refusal = {
+  failure: 'provider-token-refused',
+  sentence:
+    'Your Google sign-in has expired. Nothing has been saved — continue with Google and you’ll come back to the first step.',
+  // A retry here is a retry of the ceremony, and the ceremony is not what was
+  // refused. It would spend a system sheet to reach the same refetch and the
+  // same 401.
+  offersRetry: false,
+  // Not this door: this person has no account, so `/welcome` can only refuse the
+  // assertion it runs with a byte-identical 401 naming no cause.
+  offersSignIn: false,
+  // The only `true` in the file, and it is the one act that changes the answer.
+  // `/register` has no navigation of its own — the app shell is a bare
+  // `<router-outlet />` — so without this control the sentence names a door that
+  // is not on the screen, which is the dead end this whole change exists to
+  // remove.
+  offersProvider: true,
 };
 
 const REFUSALS: readonly Refusal[] = [
@@ -178,6 +235,7 @@ const REFUSALS: readonly Refusal[] = [
   UNKNOWN,
   NO_PRF,
   CONFLICT,
+  PROVIDER_TOKEN_REFUSED,
 ];
 
 describe('PasskeyStepComponent', () => {
@@ -186,6 +244,9 @@ describe('PasskeyStepComponent', () => {
   let failure: ReturnType<typeof signal<RegisterFailure | null>>;
   let busy: ReturnType<typeof signal<boolean>>;
   let createPasskey: Mock<RegisterService['createPasskey']>;
+  // The provider exchange, recorded rather than run: `signIn()` calls
+  // `initLoginFlow()`, which sets `location.href` and takes the runner with it.
+  let signIn: Mock<AuthService['signIn']>;
   // Where the router was asked to go, in order, recorded off the **real**
   // router. A `routerLink` lands here as well as a programmatic call —
   // `RouterLink` calls `navigateByUrl` itself — so these tests say where the
@@ -203,6 +264,7 @@ describe('PasskeyStepComponent', () => {
     failure = signal<RegisterFailure | null>(null);
     busy = signal(false);
     createPasskey = vi.fn<RegisterService['createPasskey']>();
+    signIn = vi.fn<AuthService['signIn']>();
 
     const service: Pick<RegisterService, 'busy' | 'failure' | 'createPasskey'> =
       {
@@ -210,6 +272,10 @@ describe('PasskeyStepComponent', () => {
         failure: failure.asReadonly(),
         createPasskey,
       };
+    // Stubbed rather than left to the root injector: the real one reaches
+    // `OAuthService`, which nothing provides here, and constructing it would
+    // make this file red for a reason that has nothing to do with the screen.
+    const auth: Pick<AuthService, 'signIn'> = { signIn };
 
     await TestBed.configureTestingModule({
       imports: [PasskeyStepComponent],
@@ -217,6 +283,7 @@ describe('PasskeyStepComponent', () => {
         provideNoopAnimations(),
         provideRouter([]),
         { provide: RegisterService, useValue: service },
+        { provide: AuthService, useValue: auth },
       ],
     }).compileComponents();
 
@@ -273,11 +340,21 @@ describe('PasskeyStepComponent', () => {
     // offered here sends somebody who has no account to a screen that can only
     // refuse them, on the one device that is certain to fail the assertion.
     expect(signInControls(host)).toHaveLength(0);
+    // Nor the other door. The provider token is not what refused anything here:
+    // the ceremony succeeded and the device cannot derive the value the
+    // account's keys are wrapped under, which no exchange changes.
+    expect(providerControls(host)).toHaveLength(0);
   });
 
   it.each(REFUSALS.filter((refusal) => refusal !== NO_PRF))(
     'says its own sentence and no other when the flow ends in $failure',
-    ({ failure: word, sentence, offersRetry, offersSignIn }: Refusal) => {
+    ({
+      failure: word,
+      sentence,
+      offersRetry,
+      offersSignIn,
+      offersProvider,
+    }: Refusal) => {
       // Act
       failure.set(word);
       fixture.detectChanges();
@@ -332,10 +409,26 @@ describe('PasskeyStepComponent', () => {
         signInControls(host),
         `${word} offers ${offersSignIn ? 'no' : 'a'} way to sign in.`,
       ).toHaveLength(offersSignIn ? 1 : 0);
+      // And the third property, counted on every row for the same reason. It is
+      // `true` on `provider-token-refused` alone — the one refusal that is about
+      // the credential the request carried rather than about the device, the
+      // network or the account. Offered anywhere else it sends somebody through
+      // an exchange that changes nothing and returns them to the refusal they
+      // started from; missing where it belongs, the screen names a door that is
+      // not on it.
+      expect(
+        providerControls(host),
+        `${word} offers ${offersProvider ? 'no' : 'a'} way to continue with ` +
+          'the provider.',
+      ).toHaveLength(offersProvider ? 1 : 0);
       // Offered, not taken: nothing pressed above is navigation, and a refusal
       // that moved the browser by itself would take the person off a screen
-      // still holding the sentence explaining what happened.
+      // still holding the sentence explaining what happened. The provider
+      // control is held to the same rule by its own test below — it leaves this
+      // application entirely, which is the one departure no `navigations` list
+      // can record.
       expect(navigations).toEqual([]);
+      expect(signIn).not.toHaveBeenCalled();
     },
   );
 
@@ -376,6 +469,49 @@ describe('PasskeyStepComponent', () => {
     // exists — so a retry offered here spends another challenge and another
     // system sheet to be told the same thing.
     expect(ceremonyControls(host)).toHaveLength(0);
+    expect(createPasskey).not.toHaveBeenCalled();
+  });
+
+  // **The refetch's own 401, and the reason this step needs the control at
+  // all.** The challenge is fetched again from here after a restart and after a
+  // ceremony that failed, and a provider id token lives an hour — long enough to
+  // lapse between the introduction's press and this one. What arrived before was
+  // `start-failed`: a sentence saying the server could not be reached, beside a
+  // `Try again` whose refetch attaches the same dead token, on a step with no
+  // provider control anywhere.
+  it('offers the provider again when the Google sign-in has expired', () => {
+    // Arrange
+    // Both about this screen at rest, and without them the assertions below pass
+    // on a step carrying a permanent provider control in its furniture — where
+    // the way out belongs to nobody in particular and the sentence is the only
+    // thing making it read as an answer.
+    expect(providerControls(host)).toHaveLength(0);
+    expect(signIn).not.toHaveBeenCalled();
+
+    // Act
+    failure.set('provider-token-refused');
+    fixture.detectChanges();
+
+    const [control] = providerControls(host);
+
+    control?.click();
+
+    // Assert
+    expect(
+      control,
+      'the refused token renders no way to continue with the provider.',
+    ).toBeDefined();
+    // Once, and only because it was pressed. The exchange leaves this
+    // application for Google, which is a departure no router recording can see,
+    // so a refusal that started one by itself would take somebody off the screen
+    // still explaining what happened to them.
+    expect(signIn).toHaveBeenCalledOnce();
+    expect(navigations).toEqual([]);
+    // And nothing else to press. The ceremony is not what was refused — a retry
+    // spends a system sheet to reach the same refetch and the same 401 — and
+    // `/welcome` runs an assertion this person has no account for.
+    expect(ceremonyControls(host)).toHaveLength(0);
+    expect(signInControls(host)).toHaveLength(0);
     expect(createPasskey).not.toHaveBeenCalled();
   });
 
@@ -439,6 +575,14 @@ function ceremonyControls(host: HTMLElement): readonly HTMLElement[] {
 // to mean the screen offers none rather than that this one label is absent.
 function signInControls(host: HTMLElement): readonly HTMLElement[] {
   return controlsNamed(host, SIGN_IN_BUTTON);
+}
+
+// Every control on the screen that offers to leave for the identity provider. A
+// separate census from the one above rather than a widening of it: the two doors
+// lead to different places and exactly one word opens each, so a helper that
+// counted both together would let a screen offering the wrong one pass.
+function providerControls(host: HTMLElement): readonly HTMLElement[] {
+  return controlsNamed(host, PROVIDER_BUTTON);
 }
 
 function controlsNamed(

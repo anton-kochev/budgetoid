@@ -702,16 +702,23 @@ A promise made in the product's own words and broken two screens later.
   that was never going to finish is the cost this rule refuses. Learning about a conflict would not
   repay it either: the way out of a conflict is a passkey assertion, which needs the same WebAuthn
   this browser does not have.
-- **Holding none**, it shows no address and no **Continue**. One line saying this browser is not
-  holding a Google address, and an **Outline** **Continue with Google** — the treatment the book
-  gives that control wherever it appears, which is here and nowhere else. **This is the only
-  provider control in the product**, and there is no shared component behind it: the welcome screen
-  carries no provider button, so there is no other screen's copy for this one to match and no
-  sentence about meeting a control already pressed. A browser arrives in this state routinely: a
-  bookmark, a reload an hour later, an exchange that never completed. A **Continue** from there
-  would reach a refusal with nothing useful to say about why.
+- **Holding no *usable* token**, it shows no address and no **Continue**. One line saying this
+  browser is not holding a Google address, and an **Outline** **Continue with Google** — the
+  treatment the book gives that control wherever it appears. **The test is validity, not
+  presence**: a token whose hour has run out is read as no token at all, so a browser reloading the
+  screen after lunch lands here rather than being shown a promise its next press cannot keep. A
+  browser arrives in this state routinely: a bookmark, a reload an hour later, an exchange that
+  never completed. A **Continue** from there would reach a refusal with nothing useful to say about
+  why.
 
-The two sentences are the specification. Neither is a copy of the passkey step's word for the same
+**The provider control appears in three places and is one specification.** This arm, the refusal
+below when a token is rejected mid-visit, and the same refusal on step 2. There is no shared
+component behind it — the welcome screen carries no provider button, so there is no other screen's
+copy to match and no sentence about meeting a control already pressed — but the name, the Outline
+treatment and the act are the same in all three, because what the person has to do is the same and
+only how they arrived differs.
+
+The three sentences are the specification. None is a copy of the passkey step's word for the same
 outcome: that one ends "no passkey was made", which is worth saying where a system sheet was on the
 screen a moment ago and says nothing at all here, where no passkey was ever going to be made.
 
@@ -719,10 +726,18 @@ screen a moment ago and says nothing at all here, where no passkey was ever goin
 | --- | --- | --- |
 | The Google address already has an account | "An account already exists for this Google address. Nothing has been created — sign in from the Budgetoid home page instead." | No — **Go to sign in** instead |
 | The server never answered | "Budgetoid couldn't reach the server. Nothing has been created." | Yes — **Try again**, which is another **Continue** under a name that admits to being one |
+| The provider token the request carried was rejected | "Your Google sign-in has expired. Nothing has been created — continue with Google and you'll come straight back to this page." | No — **Continue with Google** instead |
+
+**The third keeps the promise above it, and the second reason is why.** The server said nothing
+about the address — it never read the request — so "your account will be created under this one" is
+still what will happen once a fresh token carries it. Taking the promise down there would put the
+only false sentence on the screen. And **Try again** is refused as a control precisely because it
+would work: it would attach the same dead token and collect the same refusal, which is a way of
+being told no twice.
 
 ### Step 2 — the passkey
 
-The step that runs the ceremony, and the one screen in the flow with eight ways to end badly.
+The step that runs the ceremony, and the one screen in the flow with nine ways to end badly.
 Title **Create your passkey**, then two lines: what the device is about to ask for, and that the same
 authenticator holds the keys the records are locked with.
 
@@ -736,18 +751,26 @@ authenticator holds the keys the records are locked with.
   `disabledInteractive` — the *busy* case in the Buttons chapter, not the acknowledgement case — with
   **"Waiting for your device."** in the region above it. After a refusal worth another press, **Try
   again**.
-- **Three of the eight offer no second press.** Whether a press could help is a property of the
+- **Four of the nine offer no second press.** Whether a press could help is a property of the
   refusal rather than a default, and *no* is not a smaller version of *yes*: where the browser cannot
   run the ceremony, where the authenticator cannot derive the value the account's keys are wrapped
-  under, or where the account already exists, leaving **Create a passkey** on the screen is a retry
+  under, where the account already exists, or where the provider token the request carried was
+  rejected, leaving **Create a passkey** on the screen is a retry
   that does not admit to being one — it reads as a way forward, costs another system sheet or another
   request to disprove, and ends in the same sentence.
-- **One of those three carries a different control rather than none**, and the distinction is the
-  rule. *No way forward* and *nowhere to go* are not the same state. Two of the three are dead ends on
-  this device and the copy says so. The third is not: the account exists, so there is somewhere to be,
-  and the step renders a Primary **Go to sign in** to `/welcome` — the one address in this application
+- **Two of those four carry a different control rather than none, and they are different doors**,
+  which is the rule. *No way forward* and *nowhere to go* are not the same state, and neither is
+  *the wrong place to go*. Two of the four are dead ends on this device and the copy says so. The
+  conflict is not: the account exists, so there is somewhere to be, and the step renders a Primary
+  **Go to sign in** to `/welcome` — the one address in this application
   that runs a passkey assertion. A sentence that names a door the screen does not have is the defect
   this control exists to remove, and the shell's own conflict readings already had to fix it once.
+  The rejected token is not either, and **`/welcome` would be the wrong door for it**: that person
+  has no account, so the assertion there answers the byte-identical 401 it answers every unknown
+  credential with, and they would be told nothing twice. The exchange is the one act that changes
+  the answer, so the control is an Outline **Continue with Google** — and the copy says it comes
+  back to the *first* step, because the provider's `redirectUri` is `/register` and this screen is
+  not where it lands.
   **Three screens now carry that control** — the introduction, this step and the shell — which is
   three sentences that must keep naming the same door. The third is the one that arrived last and the
   one this table's conflict row now describes a narrower case for: the introduction answers the
@@ -768,26 +791,30 @@ somebody who simply closed the system sheet that their device is unsupported.
 | The server never issued a challenge | "Budgetoid couldn't reach the server to start. Nothing has been saved." | Yes |
 | The Google address already has an account | "An account already exists for this Google address. Nothing was created and no passkey was made — sign in from the Budgetoid home page instead." | No — **Go to sign in** instead |
 | Something nobody predicted, between the challenge arriving and the codes being ready | "Budgetoid didn't finish, and nothing has been saved. Try again." | Yes |
+| The provider token the request carried was rejected | "Your Google sign-in has expired. Nothing has been saved — continue with Google and you'll come back to the first step." | No — **Continue with Google** instead |
 
-Four of them are worth reading twice.
+Five of them are worth reading twice. **Named rather than numbered**, because the ordinals this list
+used to carry had already come apart from the table's order and each new refusal breaks them again.
 
-- **The sixth is the only one on this screen about the *server* rather than the device**, and the
-  sentence has to say so: a person told their device failed will go and buy a security key for a
-  problem a reload would have fixed.
-- **The third is unreachable from this flow today** — the account-registration options leg sends an
-  empty `excludeCredentials`, so there is nothing for an authenticator to decline against — and it is
-  specified anyway, because a refusal the screen has no sentence for is a screen that says nothing at
-  all. See [registration.md](../business-logic/registration.md).
-- **The eighth is answered before the device is ever asked**, which is what its copy is allowed to
+- **The unreachable server and the rejected token are the two on this screen about the *server*
+  rather than the device**, and the sentence has to say so: a person told their device failed will go
+  and buy a security key for a problem a reload would have fixed. They are not variants of one
+  another. The first is silence and another press is a real way forward; the second is an answer, and
+  another press would attach the same dead token and collect the same refusal.
+- **The declined credential is unreachable from this flow today** — the account-registration options
+  leg sends an empty `excludeCredentials`, so there is nothing for an authenticator to decline
+  against — and it is specified anyway, because a refusal the screen has no sentence for is a screen
+  that says nothing at all. See [registration.md](../business-logic/registration.md).
+- **The conflict is answered before the device is ever asked**, which is what its copy is allowed to
   promise. The options leg refuses a Google identity that already holds an account above its own
   challenge, so on this path no system sheet opens and no credential is left on the authenticator —
   and the sentence says both, because "no passkey was made" is the clause a person acts on. It must
   not be reworded into the shell's two conflict sentences: those say the ten codes just shown open
   nothing, and on this step no code has been minted at all.
-- **The seventh shares a cause with the shell's "no answer" state and must not share its words.**
-  Nothing has been posted on this step, so this sentence can say plainly that nothing was created;
-  the shell's cannot, because there a request really did leave. Same failure, two screens, two
-  truthful sentences.
+- **The unpredicted failure shares a cause with the shell's "no answer" state and must not share its
+  words.** Nothing has been posted on this step, so this sentence can say plainly that nothing was
+  created; the shell's cannot, because there a request really did leave. Same failure, two screens,
+  two truthful sentences.
 
 ### Step 3 — the codes
 

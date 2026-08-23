@@ -53,7 +53,14 @@ interface IntroRefusal {
   // address in this application that runs a passkey assertion. A refusal the
   // account already exists for cannot be pressed through — the account exists,
   // and pressing again spends another request to be told so.
-  readonly control: 'retry' | 'sign-in';
+  //
+  // `provider` is the third, and it is not a retry under a third name: it leaves
+  // this page for Google and comes back to it with a token the two registration
+  // legs will accept. It is offered by the one refusal that says nothing about
+  // the account and everything about the credential the request carried, and it
+  // is the same control the `@else` arm of this template offers a browser
+  // holding no token at all — which is what that refusal amounts to.
+  readonly control: 'retry' | 'sign-in' | 'provider';
 }
 
 // What the control is at this instant. `continue` is the state this step spends
@@ -116,9 +123,9 @@ export class IntroStepComponent {
   }
 }
 
-// The flow's nine words, and only two of them can land while this step is
+// The flow's ten words, and only three of them can land while this step is
 // showing. A `switch` over the closed union rather than a lookup object or a
-// set membership test, so a tenth word added to `RegisterFailure` fails to
+// set membership test, so an eleventh word added to `RegisterFailure` fails to
 // compile here and has to be filed on one side of this line deliberately — the
 // rule `register.component.ts` keeps for the shell and `passkey-step` for step
 // 2. The side matters: a word answered here renders on the introduction, and a
@@ -160,6 +167,35 @@ function refusalOf(failure: RegisterFailure): IntroRefusal | null {
     // and the shell renders them in place of the codes step. Inventing a
     // sentence here for any of them would be writing copy for a state this step
     // cannot be in.
+    // The options leg answered 401: the provider token this browser attached
+    // was refused. Both registration routes are declared on the provider scheme
+    // and nothing else, so nothing was issued, nothing was minted and no handler
+    // was reached — and no press on this screen can change it, because every
+    // press attaches the same token.
+    //
+    // **The sentence names expiry although the word does not.** A 401 proves the
+    // bearer was refused and nothing narrower; expiry is the likeliest cause and
+    // not the only one, which is why `RegisterFailure` calls this
+    // `provider-token-refused`. Copy is judged by what a person can act on,
+    // though, and "the token was refused" is not something anybody can do
+    // anything with, while "sign in with Google again" is — and it is the right
+    // act under every one of those causes alike. The last clause is the `@else`
+    // arm's own, deliberately: the exchange comes back here, which is what makes
+    // leaving this screen safe.
+    case 'provider-token-refused':
+      return {
+        sentence:
+          'Your Google sign-in has expired. Nothing has been created — continue with Google and you’ll come straight back to this page.',
+        // **The promise stands, and the conflict's shape would be wrong here for
+        // a reason about the *other* lead rather than about this one.** The
+        // server refused a credential and said nothing about the address; the
+        // account will still be created under it once the exchange has been made
+        // again. Dropping the promise renders "this browser is signed in to
+        // Google as <address>" in its place, which is the one sentence on this
+        // screen a refused token makes false.
+        promiseHolds: true,
+        control: 'provider',
+      };
     case 'unsupported':
     case 'cancelled':
     case 'duplicate':

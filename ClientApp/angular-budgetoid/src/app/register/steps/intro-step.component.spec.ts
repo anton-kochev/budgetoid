@@ -58,6 +58,14 @@ const CONFLICT =
   'An account already exists for this Google address. Nothing has been created — sign in from the Budgetoid home page instead.';
 const START_FAILED =
   'Budgetoid couldn’t reach the server. Nothing has been created.';
+// The third, and the one that names a cause on purpose. `provider-token-refused`
+// is the word for a 401 and says only that the bearer was refused; the sentence
+// may go further, because a person cannot act on "the token was refused" and can
+// act on "sign in with Google again". It ends where the `@else` arm's sentence
+// ends, deliberately: the exchange comes back to this page, which is what makes
+// leaving it safe to do.
+const PROVIDER_TOKEN_REFUSED =
+  'Your Google sign-in has expired. Nothing has been created — continue with Google and you’ll come straight back to this page.';
 
 const CONTINUE_BUTTON = 'Continue';
 // Another `Continue` under a name that admits to being one, offered by the
@@ -319,6 +327,77 @@ describe('IntroStepComponent', () => {
     expect(buttonNamed(host, CONTINUE_BUTTON)).toBeNull();
     expect(buttonNamed(host, RETRY_BUTTON)).toBeNull();
     expect(begin).not.toHaveBeenCalled();
+  });
+
+  // **The measured defect, and it is two defects.** `/register` loaded with an
+  // id token 71 minutes past its expiry showed the promise and a `Continue`;
+  // pressing it sent the stale bearer and the API answered
+  // `401 invalid_token`. The screen then said Budgetoid could not reach the
+  // server — it had been reached and had answered — beside a `Try again` that
+  // could only re-send the same dead token. The one control that fixes it,
+  // `Continue with Google`, rendered on the arm reached when the browser holds
+  // no token at all, so the person was stuck on a screen offering the two things
+  // that cannot work and not the one that can.
+  it('offers the provider again when the Google sign-in has expired', () => {
+    // Arrange
+    // The control, and the half that makes the assertions below mean anything: a
+    // step that offered the provider unconditionally would not pass this line.
+    expect(buttonNamed(host, PROVIDER_BUTTON)).toBeNull();
+    expect(buttonNamed(host, CONTINUE_BUTTON)).not.toBeNull();
+
+    // Act
+    failure.set('provider-token-refused');
+    fixture.detectChanges();
+
+    const control = buttonNamed(host, PROVIDER_BUTTON);
+
+    control?.click();
+
+    // Assert
+    expect(elementSaying(host, PROVIDER_TOKEN_REFUSED)).not.toBeNull();
+    // The provider, and it is the only act that can clear this. A refused token
+    // is refused for every later press alike.
+    expect(
+      control,
+      'the refused token offers no way to sign in with the provider again.',
+    ).not.toBeNull();
+    expect(signIn).toHaveBeenCalledOnce();
+    // And neither of the two controls that cannot work. `Continue` and `Try
+    // again` are the same press, and that press attaches the same dead token; a
+    // `Go to sign in` would send somebody with no account to a screen that can
+    // only refuse them with a byte-identical 401.
+    expect(buttonNamed(host, CONTINUE_BUTTON)).toBeNull();
+    expect(buttonNamed(host, RETRY_BUTTON)).toBeNull();
+    expect(buttonNamed(host, SIGN_IN_BUTTON)).toBeNull();
+    expect(begin).not.toHaveBeenCalled();
+    // Offered, not taken: pressing the provider control leaves this page for
+    // Google, and nothing may move the browser before the person asks.
+    expect(navigations).toEqual([]);
+  });
+
+  // **The promise survives this one, and the conflict's shape would be wrong
+  // here for a reason that is about the other sentence rather than about this
+  // one.** The server said nothing about the address — it refused a credential —
+  // and the account still will be created under it once the exchange has been
+  // made again. Dropping the promise renders the lead that replaces it, "this
+  // browser is signed in to Google as <address>", which is the one statement on
+  // the screen that a refused token makes false.
+  it('keeps the promise when the Google sign-in has expired', () => {
+    // Arrange
+    expect(collapse(host.textContent ?? '')).toContain(PROMISE);
+
+    // Act
+    failure.set('provider-token-refused');
+    fixture.detectChanges();
+
+    const shown = collapse(host.textContent ?? '');
+
+    // Assert
+    expect(shown).toContain(PROMISE);
+    expect(shown).not.toContain(SIGNED_IN_AS);
+    // The address is on the screen either way, and it is what the person is
+    // being asked to sign in as again.
+    expect(shown).toContain(OWNER_EMAIL);
   });
 
   it('keeps the promise and offers another press when the start fails', () => {

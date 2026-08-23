@@ -1353,6 +1353,103 @@ describe('RegisterService', () => {
   // the screen tells somebody to do with ten codes. Nothing is minted on this
   // leg either way, so `mayHaveCreatedAccount` stays false through both.
   describe('tells an account that already exists from a start that failed', () => {
+    // **The third answer this leg has, and the one the flow had no word for.**
+    // Both registration routes are declared on the provider scheme and nothing
+    // else, so a 401 here is the API refusing the bearer this browser attached:
+    // an id token that lapsed while the screen was open, one already spent, one
+    // minted for another audience. `start-failed` said "Budgetoid couldn't reach
+    // the server", which is wrong twice — the server answered, and the `Try
+    // again` beside it re-sends the same dead token forever. Nothing on the
+    // screen could fix it: the one control that can is the provider's, and it
+    // renders only for a browser holding no token at all.
+    //
+    // Measured rather than reasoned about: `/register` loaded with an id token
+    // 71 minutes past its expiry answered `401 Bearer error="invalid_token",
+    // error_description="The token expired at ..."`.
+    it('reads a refused provider token as its own word', async () => {
+      // Arrange
+      service.begin();
+
+      const options = await eventually(
+        () => http.match(OPTIONS_URL)[0] ?? null,
+        'the request for the creation options',
+      );
+
+      // Act
+      options.flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      // Assert
+      // **Not `start-failed`, which is the whole of the change.** The two words
+      // differ in what they ask of the reader: one says press again, the other
+      // says go and sign in with Google — and pressing again is the one act
+      // guaranteed to end up here again.
+      expect(service.failure()).toBe('provider-token-refused');
+      // Nothing was created and nothing is open. The request never reached a
+      // handler — the provider scheme refuses it above the endpoint — so no
+      // challenge was issued and no row could have been written.
+      expect(service.mayHaveCreatedAccount()).toBe(false);
+      expect(service.codes()).toBeNull();
+      // And the reader has not moved. The sentence is about the Google sign-in
+      // named on this step, and the way out of it is the control this step
+      // already has for a browser holding no token.
+      expect(service.step()).toBe('intro');
+      expect(service.busy()).toBe(false);
+      expect(http.match(REGISTRATION_URL)).toHaveLength(0);
+    });
+
+    // The same answer to the refetch, which is the other place this leg is
+    // asked. A token lives an hour and this flow can sit on the passkey step
+    // for longer: a restart, a closed system sheet, a device that did not
+    // finish. Nothing has been minted on that path either — `restart()` drops
+    // the codes and a failed ceremony never made any — so the word is the same
+    // and the step it lands on is the only difference.
+    it('reads a refused provider token on the refetch too', async () => {
+      // Arrange
+      await pressContinue();
+      await runCeremony();
+      service.restart();
+      service.createPasskey();
+
+      const options = await eventually(
+        () => http.match(OPTIONS_URL)[0] ?? null,
+        'the refetched request for the creation options',
+      );
+
+      // Act
+      options.flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      // Assert
+      expect(service.failure()).toBe('provider-token-refused');
+      expect(service.step()).toBe('passkey');
+      expect(service.busy()).toBe(false);
+      expect(service.codes()).toBeNull();
+      expect(service.mayHaveCreatedAccount()).toBe(false);
+    });
+
+    // **A 403 is not a token problem and must not borrow the word.** It is
+    // `FirstPartyRequestMiddleware` refusing a request that carried no
+    // `X-Budgetoid-Client` header — a defect in this client, answered to a
+    // browser whose provider token is perfectly good. Telling that person to
+    // sign in with Google again sends them through an exchange that changes
+    // nothing and returns them to the same refusal.
+    it('reads a client refused by the CSRF control as a start that failed', async () => {
+      // Arrange
+      service.begin();
+
+      const options = await eventually(
+        () => http.match(OPTIONS_URL)[0] ?? null,
+        'the request for the creation options',
+      );
+
+      // Act
+      options.flush(null, { status: 403, statusText: 'Forbidden' });
+
+      // Assert
+      expect(service.failure()).toBe('start-failed');
+      expect(service.mayHaveCreatedAccount()).toBe(false);
+      expect(service.step()).toBe('intro');
+    });
+
     it('reads a 409 before the challenge as a conflict', async () => {
       // Arrange
       // One press, and it is `Continue`. The refusal belongs to the

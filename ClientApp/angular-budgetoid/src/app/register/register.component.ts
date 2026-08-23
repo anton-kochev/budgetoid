@@ -56,8 +56,8 @@ export class RegisterComponent {
   // screen offers, and it creates nothing, posts nothing and ends no flow.
   private readonly router = inject(Router);
 
-  // A `switch` over the closed union rather than a set membership test, so a
-  // tenth word added to `RegisterFailure` fails to compile here and has to be
+  // A `switch` over the closed union rather than a set membership test, so an
+  // eleventh word added to `RegisterFailure` fails to compile here and has to be
   // filed on one side of this line deliberately. The side matters: a word
   // landing here replaces the codes step, and a word landing on the other side
   // is rendered by the step that is showing.
@@ -79,6 +79,17 @@ export class RegisterComponent {
         case 'no-prf':
         case 'ceremony-failed':
         case 'start-failed':
+        case 'provider-token-refused':
+          // `provider-token-refused` is filed here with the other options-leg
+          // word and not with the three above, because it is published from a
+          // request this shell never makes. A 401 on
+          // `POST /api/registration/options` is asked for by the introduction
+          // and by the passkey step's refetch, and each of those says its own
+          // sentence where the reader is standing; the codes step cannot be
+          // showing when it lands, so a block here would be copy for a state
+          // this shell cannot be in. The POST leg's own 401 is `refused`, above,
+          // and stays that way — by then the ten codes are on screen and what
+          // has to be said is about them.
           return null;
       }
     },

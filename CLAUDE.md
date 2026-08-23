@@ -527,7 +527,15 @@ Load-bearing rules, each explained there or in the linked decision:
   following a failed ceremony — that leg fetches its own, which is why a 409 is still reachable there
   and why all three steps carry a conflict sentence of their own. A browser that cannot run a
   ceremony asks for **no** challenge and advances anyway, leaving `unsupported` to the step that has
-  a sentence for it. **The device agrees before anything is minted** — cancelling the
+  a sentence for it. **A provider token is judged by validity, never by presence**: `providerEmail`
+  answers `null` once the id token's hour is up, so the screen falls to its **Continue with Google**
+  arm instead of promising an account the next press cannot create — and a token that dies while the
+  screen is open publishes `provider-token-refused` on a 401, its own word, because `start-failed`
+  says the server could not be reached and a **Try again** there would attach the same dead token
+  forever. A 403 on that route stays `start-failed`: it is the `X-Budgetoid-Client` refusal, which no
+  provider exchange repairs. Nothing schedules a silent refresh and that omission is the rule — a
+  hidden iframe on `accounts.google.com` for the life of every tab, to keep alive a credential used
+  once. **The device agrees before anything is minted** — cancelling the
   system sheet is the common case, and minting first leaves ten live codes in a browser for a flow
   that ended. **One code's four submitted members are built in one scope from one code**, never zipped
   from parallel arrays: a mispairing satisfies every type, count and round trip, and is discovered by
