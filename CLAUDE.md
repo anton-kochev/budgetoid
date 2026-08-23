@@ -509,14 +509,25 @@ Load-bearing rules, each explained there or in the linked decision:
   [components.md](docs/design/components.md), "A secret shown once" in
   [voice.md](docs/design/voice.md), and
   [recovery-codes.md](docs/business-logic/recovery-codes.md).
-- **Registration is one screen, one route and one request.** `/register` carries `guestGuard` and
+- **Registration is one screen, one route and one *creating* request** — the flow also asks the
+  options leg, from either of two presses, and that is not the request the headline counts.
+  `/register` carries `guestGuard` and
   declares **no `children`**: the step is a signal inside `register.component.ts`, so `/register/codes`
   is not a URL — a child route would make Back land on a step whose in-memory state is gone and would
   deep-link a screen whose whole premise is that ten codes were minted moments ago.
   `RegisterService` is **component-provided**, which is custody rather than lifetime: the account
   keys, the eleven key-encryption keys and the ten codes die with the screen, and the component spec
   pulls the service out of `fixture.debugElement.injector` so deleting the `providers` array reddens.
-  Six rules a reader will simplify. **The device agrees before anything is minted** — cancelling the
+  Seven rules a reader will simplify. **The introduction's `Continue` is the options request, and
+  the step moves only on an answer** — the leg that refuses a subject already holding an account
+  refuses above its own `IssueAsync`, so the answer exists at the first press, and read at the second
+  it reaches somebody already told their account would be created under a named address. The
+  challenge that press fetches is **taken once** by `createPasskey` and dropped by `restart`, so a
+  spent nonce is never handed back; when there is none in hand — after a restart, or a `Try again`
+  following a failed ceremony — that leg fetches its own, which is why a 409 is still reachable there
+  and why all three steps carry a conflict sentence of their own. A browser that cannot run a
+  ceremony asks for **no** challenge and advances anyway, leaving `unsupported` to the step that has
+  a sentence for it. **The device agrees before anything is minted** — cancelling the
   system sheet is the common case, and minting first leaves ten live codes in a browser for a flow
   that ended. **One code's four submitted members are built in one scope from one code**, never zipped
   from parallel arrays: a mispairing satisfies every type, count and round trip, and is discovered by

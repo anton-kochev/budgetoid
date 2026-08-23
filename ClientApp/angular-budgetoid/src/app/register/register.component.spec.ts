@@ -349,8 +349,11 @@ describe('RegisterComponent', () => {
     await settle();
 
     // Act
+    // The restart lands on the passkey step and the next press fetches its own
+    // challenge — the one `Continue` prefetched was spent by the ceremony that
+    // ran before the refusal.
     press(RESTART_BUTTON);
-    await runCeremony();
+    await runCeremonyFetchingAChallenge();
 
     // Assert
     // Everything is re-drawn: a new challenge, a new passkey, new account keys,
@@ -410,7 +413,7 @@ describe('RegisterComponent', () => {
     // again — and the 409 is the account their *first* attempt created, which
     // committed all thirty rows and lost its 201 coming back.
     press(RESTART_BUTTON);
-    await runCeremony();
+    await runCeremonyFetchingAChallenge();
     const second = await acknowledgeAndCreate();
     second.flush(null, { status: 409, statusText: 'Conflict' });
     await settle();
@@ -487,7 +490,7 @@ describe('RegisterComponent', () => {
     // document with no `h1` at all.
     expectOneHeading('the introduction');
 
-    press(CONTINUE_BUTTON);
+    await pressContinue();
     expectOneHeading('the passkey step');
 
     await runCeremony();
@@ -534,9 +537,35 @@ describe('RegisterComponent', () => {
     fixture.detectChanges();
   }
 
-  // From the passkey step to ten codes on the screen. The ceremony, the account
-  // keys, the card and the eleven wraps all happen in here, on real WebCrypto.
-  async function runCeremony(): Promise<void> {
+  // `Continue`, on the introduction. **The options request leaves on this
+  // press**, and the step does not move until it is answered: the server
+  // refuses a subject that already holds an account above its own challenge, so
+  // the answer exists here and reading it one step later breaks a promise this
+  // screen has already made in words.
+  async function pressContinue(): Promise<void> {
+    press(CONTINUE_BUTTON);
+
+    const options = await eventually(
+      () => http.match(OPTIONS_URL)[0] ?? null,
+      'the request for the creation options',
+    );
+    options.flush(CREATION_OPTIONS);
+    await settle();
+  }
+
+  // `Create a passkey`, with the challenge already in hand — **flushing
+  // nothing**. The ceremony, the account keys, the card and the eleven wraps
+  // all happen in here, on real WebCrypto.
+  function runCeremony(): Promise<void> {
+    press(CREATE_PASSKEY_BUTTON);
+
+    return settleOnCodes();
+  }
+
+  // The same press with no challenge in hand, which is what every re-entry to
+  // the passkey step looks like: the nonce `Continue` fetched was spent by the
+  // ceremony that ran before the restart.
+  async function runCeremonyFetchingAChallenge(): Promise<void> {
     press(CREATE_PASSKEY_BUTTON);
 
     const options = await eventually(
@@ -544,7 +573,10 @@ describe('RegisterComponent', () => {
       'the request for the creation options',
     );
     options.flush(CREATION_OPTIONS);
+    await settleOnCodes();
+  }
 
+  async function settleOnCodes(): Promise<void> {
     await eventually(
       (): readonly RecoveryCode[] | null => service.codes(),
       'the minted recovery codes to be published',
@@ -553,7 +585,7 @@ describe('RegisterComponent', () => {
   }
 
   async function driveToCodes(): Promise<void> {
-    press(CONTINUE_BUTTON);
+    await pressContinue();
     await runCeremony();
   }
 

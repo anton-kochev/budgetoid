@@ -1,51 +1,114 @@
-// The first of the three steps, and the only one that asks for nothing: it
-// states which account is about to be created and offers the way on.
+// The first of the three steps, and no longer the one that asks for nothing: it
+// states which account is about to be created, asks the server whether it may
+// be, and offers the way on.
+//
+// **The change this file grew for is one press moving one screen earlier.**
+// `POST /api/registration/options` answers 409 when the provider identity
+// already holds an account, above its own challenge, so that answer exists at
+// the first press. Read at the second one it reached somebody who had been
+// promised an account under an address, sent through a screen about
+// authenticators, and refused there — a promise made in the product's own words
+// and broken two screens later. So this step now has three states beside its
+// resting one, and what a person reads in each of them is this file's subject.
 //
 // It is driven against a stubbed `RegisterService` rather than the real one,
 // because nothing this step does reaches the network, the authenticator or the
-// crypto — it renders one address and calls one method. `register.service.spec`
-// owns the flow; `register.component.spec` owns the wiring between the steps;
-// this file owns what a person reads here.
+// crypto — it renders one address, calls one method and reads two signals.
+// `register.service.spec` owns the flow; `register.component.spec` owns the
+// wiring between the steps; this file owns what a person reads here.
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
+import { Router, UrlTree, provideRouter } from '@angular/router';
 import { AuthService } from '@app-core/services/auth-service';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { RegisterService } from '../register.service';
+import { RegisterService, type RegisterFailure } from '../register.service';
 import { IntroStepComponent } from './intro-step.component';
 
 // The copy is pinned as whole sentences and whole control names, for the reason
 // `settings.component.spec.ts` gives: a fragment assertion survives a rewrite
-// that changes what the sentence promises.
+// that changes what the sentence promises. On this screen it is more than a
+// style rule — the two refusals differ by whether the promise above them is
+// still true, and a `toContain('account')` is satisfied by every line here.
 const OWNER_EMAIL = 'owner@budgetoid.test';
 // The caption that tells a person how much of this is left. Three steps, and
 // the number is the whole of the promise: somebody being asked to register a
 // passkey and then transcribe ten codes needs to know before they start that
 // there is an end to it.
 const STEP_CAPTION = 'Step 1 of 3';
+
+// **The promise, and the one thing on this screen that can stop being true.**
+// It is what the whole change exists to protect: an account *will* be created
+// under this address, unless the server has just said one already was.
+const PROMISE = `Your account will be created under ${OWNER_EMAIL}.`;
+// What replaces it once the server has answered. The address stays on the
+// screen — the refusal beside it says *this Google address*, and a sentence
+// pointing at nothing is worse than the promise was — but it is no longer a
+// promise about anything.
+const SIGNED_IN_AS = `This browser is signed in to Google as ${OWNER_EMAIL}.`;
+
+// What the live region says while the request is out. This step's own sentence
+// and deliberately not the passkey step's "Waiting for your device.": no
+// authenticator has been asked for anything here, and what this press waits on
+// is the server.
+const CHECKING = 'Checking your account.';
+
+// The two refusals this step can be showing, pinned whole.
+const CONFLICT =
+  'An account already exists for this Google address. Nothing has been created — sign in from the Budgetoid home page instead.';
+const START_FAILED =
+  'Budgetoid couldn’t reach the server. Nothing has been created.';
+
 const CONTINUE_BUTTON = 'Continue';
+// Another `Continue` under a name that admits to being one, offered by the
+// refusal a second press could actually get past.
+const RETRY_BUTTON = 'Try again';
+// The way *out*, and it belongs to one refusal rather than to the step.
+const SIGN_IN_BUTTON = 'Go to sign in';
 // The same words the welcome screen uses for the same act, deliberately: a
 // person who has been bounced here from there is meeting the control they
 // already pressed once.
 const PROVIDER_BUTTON = 'Continue with Google';
 
+// Where the sign-in control has to land. `/welcome` is the one address in this
+// application that runs a passkey assertion, which is exactly what the conflict
+// sentence tells the reader to go and do.
+const WELCOME_URL = '/welcome';
+
 describe('IntroStepComponent', () => {
   let fixture: ComponentFixture<IntroStepComponent>;
   let host: HTMLElement;
   let email: ReturnType<typeof signal<string | null>>;
+  // The two readings this step branches on, writable in the fixture and
+  // read-only on the stub. Every state below is reached by moving one of them,
+  // because the TestBed refuses a second `configureTestingModule` once the
+  // module has been instantiated.
+  let busy: ReturnType<typeof signal<boolean>>;
+  let failure: ReturnType<typeof signal<RegisterFailure | null>>;
   let begin: Mock<RegisterService['begin']>;
   let signIn: Mock<AuthService['signIn']>;
+  // Where the router was asked to go, in order, recorded off the **real**
+  // router. A `routerLink` lands here as well as a programmatic call —
+  // `RouterLink` calls `navigateByUrl` itself — so these tests say where the
+  // screen goes and leave to whoever writes it whether the way out is a button
+  // or an anchor.
+  let navigations: string[];
 
   beforeEach(async () => {
-    // Writable in the fixture and read-only on the stub, so a test can move the
-    // one value this screen branches on without a second `configureTestingModule`
-    // — which the TestBed refuses once the module has been instantiated.
     email = signal<string | null>(OWNER_EMAIL);
+    busy = signal(false);
+    failure = signal<RegisterFailure | null>(null);
     begin = vi.fn<RegisterService['begin']>();
     signIn = vi.fn<AuthService['signIn']>();
+    navigations = [];
 
-    const service: Pick<RegisterService, 'email' | 'begin'> = {
+    const service: Pick<
+      RegisterService,
+      'email' | 'busy' | 'failure' | 'begin'
+    > = {
       email: email.asReadonly(),
+      busy: busy.asReadonly(),
+      failure: failure.asReadonly(),
       begin,
     };
     const auth: Pick<AuthService, 'signIn'> = { signIn };
@@ -54,6 +117,7 @@ describe('IntroStepComponent', () => {
       imports: [IntroStepComponent],
       providers: [
         provideNoopAnimations(),
+        provideRouter([]),
         // Provided rather than the real one for the reason the header states:
         // the real service reaches the identity provider, the authenticator and
         // WebCrypto, and this step touches none of the three.
@@ -61,6 +125,21 @@ describe('IntroStepComponent', () => {
         { provide: AuthService, useValue: auth },
       ],
     }).compileComponents();
+
+    const router = TestBed.inject(Router);
+
+    // Recorded rather than run: this router declares no routes, so a real
+    // navigation to `/welcome` rejects into a promise nothing awaits and the
+    // rejection surfaces as an unrelated failure some tests later.
+    vi.spyOn(router, 'navigateByUrl').mockImplementation(
+      (url: string | UrlTree): Promise<boolean> => {
+        navigations.push(
+          typeof url === 'string' ? url : router.serializeUrl(url),
+        );
+
+        return Promise.resolve(true);
+      },
+    );
 
     fixture = TestBed.createComponent(IntroStepComponent);
     host = fixture.nativeElement as HTMLElement;
@@ -80,6 +159,7 @@ describe('IntroStepComponent', () => {
     // address is read off the id token by `AuthService.providerEmail`, so it is
     // the provider's claim rather than anything typed here.
     expect(shown).toContain(OWNER_EMAIL);
+    expect(shown).toContain(PROMISE);
   });
 
   it('offers the provider when no token is held', () => {
@@ -119,12 +199,183 @@ describe('IntroStepComponent', () => {
     // is before they start rather than after the authenticator has fired.
     expect(shown).toContain(STEP_CAPTION);
   });
+
+  it('says nothing while nothing has happened', () => {
+    // Act
+    const regions = liveRegions(host);
+
+    // Assert
+    // Both halves are load-bearing, as on every region in this app. Presence
+    // alone is satisfied by a region that always holds a line, and emptiness
+    // alone by no region at all — which is a live region created at the moment
+    // it gains content and therefore announced unreliably or not at all.
+    expect(regions).toHaveLength(1);
+    expect(collapse(regions[0]?.textContent ?? '')).toBe('');
+    // `status`, never `alert`: nothing is typed on this screen, and every
+    // sentence that lands here is the outcome of a press the person made.
+    // Assertive is reserved for a failure to save something they wrote.
+    expect(host.querySelectorAll('[role="alert"]')).toHaveLength(0);
+  });
+
+  it('says the account is being checked while the request is out', () => {
+    // Arrange
+    // The control for both assertions below: at rest the region is empty and
+    // the control is pressable, so neither of them is a statement about a
+    // screen that always looked this way.
+    expect(liveRegionText(host)).toBe('');
+    expect(
+      buttonNamed(host, CONTINUE_BUTTON)?.getAttribute('aria-disabled'),
+    ).not.toBe('true');
+
+    // Act
+    busy.set(true);
+    fixture.detectChanges();
+
+    const control = buttonNamed(host, CONTINUE_BUTTON);
+
+    control?.click();
+    fixture.detectChanges();
+
+    // Assert
+    // Said where it is heard. This press waits on a network round trip and the
+    // introduction had nothing to wait on before it; a screen that renders
+    // unchanged reads as a control that did nothing, and a person who cannot
+    // see the screen is told by nothing else at all.
+    expect(liveRegionText(host)).toBe(CHECKING);
+    // **The control keeps its place**, which is the busy case in the buttons
+    // chapter rather than the acknowledgement case: a control that goes truly
+    // `disabled` under the finger drops focus to `<body>`, and the region above
+    // is what says why it cannot be pressed.
+    expect(
+      control,
+      'the busy state removes the control from the screen.',
+    ).not.toBeNull();
+    expect(control?.getAttribute('aria-disabled')).toBe('true');
+    expect(control?.disabled).toBe(false);
+    expect(control?.getAttribute('tabindex')).not.toBe('-1');
+    // And `disabledInteractive` is presentation, so the click arrives —
+    // Material's own click-halt is installed on anchors only. Nothing may be
+    // behind it: a second press while the first request is out asks the server
+    // for a second challenge, and a challenge is a nonce it persisted.
+    expect(begin).not.toHaveBeenCalled();
+  });
+
+  it('drops the promise when the account already exists', () => {
+    // Arrange
+    // **The control without which this test passes against a template that
+    // never made the promise at all.** A refusal that removes a sentence can
+    // only be checked against a screen that was saying it a moment ago.
+    expect(collapse(host.textContent ?? '')).toContain(PROMISE);
+
+    // Act
+    failure.set('conflict');
+    fixture.detectChanges();
+
+    const shown = collapse(host.textContent ?? '');
+
+    // Assert
+    expect(elementSaying(host, CONFLICT)).not.toBeNull();
+    // A promise standing beside its own refusal is the defect this whole change
+    // exists to remove — one screen earlier than it used to be read.
+    expect(shown).not.toContain(PROMISE);
+    // And the address stays, under a lead that claims nothing. The sentence
+    // above says *this Google address*, so taking it off the screen leaves a
+    // refusal pointing at nothing — which is worse than the promise was.
+    expect(shown).toContain(SIGNED_IN_AS);
+    expect(shown).toContain(OWNER_EMAIL);
+  });
+
+  it('reaches the sign-in screen when the account already exists', () => {
+    // Arrange
+    // Two controls, both about this screen at rest. Without them the assertions
+    // below pass on a step carrying a permanent link to `/welcome` in its
+    // furniture, where the way out belongs to nobody in particular.
+    expect(buttonNamed(host, SIGN_IN_BUTTON)).toBeNull();
+    expect(navigations).toEqual([]);
+
+    // Act
+    failure.set('conflict');
+    fixture.detectChanges();
+
+    const control = buttonNamed(host, SIGN_IN_BUTTON);
+
+    control?.click();
+
+    // Assert
+    // `/register` has no navigation of its own — the app shell is a bare
+    // `<router-outlet />` — so a screen without this control is a dead end
+    // whatever the copy says, and copy naming a door is the worse kind of dead
+    // end: the person goes looking for something that is not there.
+    expect(
+      control,
+      'the conflict state renders no way to sign in.',
+    ).not.toBeNull();
+    // Exactly where, and nowhere else. `/welcome` is the one address in this
+    // application that runs an assertion.
+    expect(navigations).toEqual([WELCOME_URL]);
+    // And nothing to press through. The account exists, so a second `Continue`
+    // spends another request to be told the same thing — which is why the
+    // conflict replaces the control rather than sitting beside it.
+    expect(buttonNamed(host, CONTINUE_BUTTON)).toBeNull();
+    expect(buttonNamed(host, RETRY_BUTTON)).toBeNull();
+    expect(begin).not.toHaveBeenCalled();
+  });
+
+  it('keeps the promise and offers another press when the start fails', () => {
+    // Act
+    failure.set('start-failed');
+    fixture.detectChanges();
+
+    const control = buttonNamed(host, RETRY_BUTTON);
+
+    control?.click();
+
+    // Assert
+    expect(elementSaying(host, START_FAILED)).not.toBeNull();
+    // **Not the conflict's shape, and the difference is the point.** The server
+    // said nothing about the address — a status 0, a timeout, a 5xx — so the
+    // promise above still holds and the next press is a real way forward.
+    // Dropping it here would tell somebody whose network blinked that their
+    // account is not going to be created under the address they are reading.
+    expect(collapse(host.textContent ?? '')).toContain(PROMISE);
+    // And no way out is offered, because there is nothing to go out to: this
+    // person has no account, so `/welcome` would refuse the assertion it runs
+    // there with a byte-identical 401 naming no cause.
+    expect(buttonNamed(host, SIGN_IN_BUTTON)).toBeNull();
+    expect(navigations).toEqual([]);
+    // The retry is another `Continue` under a name that admits to being one, so
+    // it asks the same question again rather than moving anybody on.
+    expect(control, 'the failed start offers nothing to press.').not.toBeNull();
+    expect(begin).toHaveBeenCalledOnce();
+  });
 });
 
 // Collapses the whitespace an HTML template introduces. Without it every
 // assertion above is hostage to where Prettier wrapped the line.
 function collapse(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+// Every shape that makes a node a live region, not only the one this screen
+// uses. The rule is "the wait and the refusal are announced", and a sentence
+// moved into a `role="log"` or an `aria-live` div satisfies it as well as the
+// `role="status"` does; a sentence moved out of all of them satisfies none.
+const LIVE_REGION_SELECTOR =
+  '[role="status"], [role="alert"], [role="log"], [aria-live]';
+
+function liveRegions(host: HTMLElement): readonly Element[] {
+  return Array.from(host.querySelectorAll(LIVE_REGION_SELECTOR));
+}
+
+// Every live region read as one string, so an assertion about what is announced
+// does not have to know which of them holds it. One region is the shape today
+// and the count is pinned by its own test above.
+function liveRegionText(host: HTMLElement): string {
+  return collapse(
+    liveRegions(host)
+      .map((region) => region.textContent ?? '')
+      .join(' '),
+  );
 }
 
 // Finds a button the way a screen reader announces it, so a control renamed in
@@ -147,6 +398,18 @@ function buttonNamed(
         collapse(
           button.getAttribute('aria-label') ?? button.textContent ?? '',
         ) === name,
+    ) ?? null
+  );
+}
+
+// The element whose own text *is* the sentence — the paragraph carrying it,
+// rather than every ancestor that contains it.
+function elementSaying(root: Element | null, sentence: string): Element | null {
+  const elements = Array.from(root?.querySelectorAll('*') ?? []);
+
+  return (
+    elements.find(
+      (element) => collapse(element.textContent ?? '') === sentence,
     ) ?? null
   );
 }

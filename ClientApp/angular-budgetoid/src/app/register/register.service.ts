@@ -71,10 +71,14 @@ export type RegisterStep = 'intro' | 'passkey' | 'codes';
  *   * `refused` — the server judged the request and said no. Nothing was
  *     created and the codes on screen are dead.
  *   * `conflict` — an account already exists for this provider identity. The
- *     one word published from **both** legs, and the two arrive at different
- *     steps: from the options leg nothing has been minted and the person is on
- *     the passkey step, from the POST leg ten codes are on screen and the
- *     shell replaces the codes step with it.
+ *     one word published from **both** legs, and it can arrive on any of the
+ *     three steps. From the options leg nothing has been minted: on the
+ *     introduction, which is where {@link RegisterService.begin} asks and where
+ *     the answer ordinarily lands, and on the passkey step for the refetch a
+ *     restart or a failed ceremony makes. From the POST leg ten codes are on
+ *     screen and the shell replaces the codes step with it. Each of the three
+ *     says its own sentence, because what is true beside the refusal differs
+ *     every time.
  *   * `unknown` — no answer, or an answer that says nothing about what
  *     happened. It is **not** a synonym of `refused`; see {@link create}.
  */
@@ -163,18 +167,81 @@ export class RegisterService {
   // outcome is one somebody will eventually re-send.
   private pending: RegistrationRequestBody | null = null;
 
+  // The challenge {@link begin} fetched, waiting for the press that spends it.
+  //
+  // **A field and not a signal, because no template renders it** — the header
+  // rule of this file. It is also taken *once*: {@link createPasskey} reads it
+  // and clears it in the same statement, so a second ceremony can never run
+  // against a challenge the first one consumed. `RegisterAccountHandler` calls
+  // `challengeStore.ConsumeAsync` above its verifier, so a second use meets the
+  // undifferentiated challenge refusal — the same argument {@link create} makes
+  // about re-posting a body.
+  //
+  // Cleared by {@link restart} as well, which promises a new challenge and
+  // would otherwise hand back the spent one.
+  private options: PasskeyCreationOptionsJson | null = null;
+
   /**
-   * Leaves the introduction for the passkey step.
+   * Asks whether this provider identity may have an account at all, and leaves
+   * the introduction for the passkey step if it may.
+   *
+   * **The refusal belongs here, not one step further on.**
+   * `POST /api/registration/options` answers 409 when the subject already holds
+   * an account, and it answers *above* its own `challengeStore.IssueAsync` —
+   * `BeginAccountRegistrationHandler` argues the position there. Asked from the
+   * passkey step, that answer arrives after somebody has read "your account
+   * will be created under <address>", pressed `Continue`, read a screen about
+   * authenticators and pressed again. The server knew at the first press.
+   *
+   * Nothing here touches {@link mayHaveCreatedAccount}, and no later edit may:
+   * this leg creates nothing, ever — the argument {@link startFailureOf}
+   * carries and {@link createPasskey}'s error branch restates.
    *
    * `failure` is cleared here rather than only where one is set, which is the
    * rule every act in this service follows: a failure is cleared when an act
-   * *starts*. Cleared only on failure, the sentence from a cancelled ceremony
+   * *starts*. Cleared only on failure, the sentence from a refused start
    * survives the press that retries it, and the reader is told what went wrong
    * last time while this time is still running.
    */
   public begin(): void {
+    if (this.busySignal()) {
+      return;
+    }
+
     this.failureSignal.set(null);
-    this.stepSignal.set('passkey');
+
+    // **A browser that cannot run the ceremony asks for no challenge, and that
+    // rule outranks asking early.** A challenge is a nonce the server persisted
+    // — on this route it is also the value the account identifier is derived
+    // from — and this browser was never going to finish. The conflict it would
+    // learn about is not worth one either: the way out of a conflict is a
+    // passkey assertion on `/welcome`, which needs the same WebAuthn this
+    // browser does not have. So the step advances with no options in hand and
+    // {@link createPasskey} says `unsupported` without a request, exactly as it
+    // did before this leg existed.
+    if (!this.ceremony.available()) {
+      this.stepSignal.set('passkey');
+
+      return;
+    }
+
+    this.busySignal.set(true);
+    this.api.getCreationOptions().subscribe({
+      next: (options) => {
+        this.options = options;
+        this.busySignal.set(false);
+        this.stepSignal.set('passkey');
+      },
+      error: (error: unknown) => {
+        // **The step does not move.** A refusal published against the passkey
+        // step would be a refusal the reader has to be walked back from, and
+        // the introduction is where both of this leg's two words make sense:
+        // `conflict` says this address has an account, and `start-failed` says
+        // the server never answered.
+        this.busySignal.set(false);
+        this.failureSignal.set(RegisterService.startFailureOf(error));
+      },
+    });
   }
 
   /**
@@ -185,6 +252,14 @@ export class RegisterService {
    * each is argued where it happens. Nothing is posted here: what this produces
    * is {@link pending} and ten codes on screen, and the account is created by
    * {@link create} once the person says they have kept them.
+   *
+   * **The challenge is usually already in hand**, fetched by {@link begin} so
+   * the 409 could be answered a step earlier. When it is, this press runs the
+   * ceremony and nothing else — a second options request would spend a second
+   * nonce and strand the first. When it is not, this leg fetches its own, and
+   * that is the path a {@link restart} and every `Try again` on the passkey
+   * step take: the previous challenge is spent, so a fresh one is the only
+   * thing that can work.
    */
   public createPasskey(): void {
     if (this.busySignal()) {
@@ -193,11 +268,11 @@ export class RegisterService {
 
     this.failureSignal.set(null);
 
-    // **Before the options call**, which is the only position that costs
-    // nothing. A browser that was never going to finish the ceremony would
-    // otherwise spend a challenge on its way to being told so, and a challenge
-    // is a nonce the server persisted — on this route it is also the value the
-    // account identifier is derived from.
+    // **Above everything, on both paths.** A browser that was never going to
+    // finish the ceremony would otherwise spend a challenge on its way to being
+    // told so, and a challenge is a nonce the server persisted — on this route
+    // it is also the value the account identifier is derived from. {@link begin}
+    // reads the same answer before *its* request for the same reason.
     if (!this.ceremony.available()) {
       this.failureSignal.set('unsupported');
 
@@ -205,6 +280,20 @@ export class RegisterService {
     }
 
     this.busySignal.set(true);
+
+    // Taken, not read: cleared in the same breath so the ceremony below is the
+    // only thing that can ever run against this nonce. A prefetched challenge
+    // left in place is one a later `Try again` would re-use after the server
+    // had consumed it, and the refusal that follows names nothing.
+    const prefetched = this.options;
+
+    if (prefetched !== null) {
+      this.options = null;
+      void this.mintUnder(prefetched);
+
+      return;
+    }
+
     this.api.getCreationOptions().subscribe({
       next: (options) => {
         void this.mintUnder(options);
@@ -216,6 +305,12 @@ export class RegisterService {
         // them. Nothing here touches {@link mayHaveCreatedAccount} — no request
         // that creates anything has left this browser, and a leg that cannot
         // write is not one that can open the question.
+        //
+        // **The 409 is still reachable from here** now that {@link begin}
+        // usually answers it first, and the passkey step keeps its sentence for
+        // it: this refetch runs after a restart or a ceremony that failed, and
+        // another tab — or the same person on another device — can have
+        // finished registering in between.
         this.busySignal.set(false);
         this.failureSignal.set(RegisterService.startFailureOf(error));
       },
@@ -309,6 +404,13 @@ export class RegisterService {
     }
 
     this.pending = null;
+    // **The prefetched challenge goes with everything else**, or the promise in
+    // the paragraph above is false the one time it is load-bearing. The nonce
+    // {@link begin} fetched is consumed by the ceremony that ran before this
+    // restart, so a copy left here would be handed to the next ceremony and
+    // refused by a server that has already seen it — for reasons the refusal
+    // does not name. Cleared here, {@link createPasskey} fetches a fresh one.
+    this.options = null;
     this.codesSignal.set(null);
     this.failureSignal.set(null);
     this.stepSignal.set('passkey');
@@ -482,7 +584,9 @@ export class RegisterService {
     }
   }
 
-  // The options leg's own mapper, and **it is a second mapper on purpose.**
+  // The options leg's own mapper, called by both presses that make that request
+  // — {@link begin} and {@link createPasskey} — and **it is a second mapper on
+  // purpose.**
   //
   // A reader will want to hand this leg {@link failureOf} and be done with it,
   // because both legs answer HTTP and one of the two statuses even means the

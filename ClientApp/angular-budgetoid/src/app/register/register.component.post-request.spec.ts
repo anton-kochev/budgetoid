@@ -149,10 +149,20 @@ describe('RegisterComponent, around the press that creates the account', () => {
   // control was written.
   let navigations: string[];
   let keyEncryptionKey: CryptoKey;
+  // Whether the authenticator is still thinking about it.
+  //
+  // **The only way left to hold the passkey step busy.** The wait used to be
+  // held open by leaving the options request unanswered, and there is no such
+  // request on that press any more: `Continue` fetched the challenge one screen
+  // earlier. What the step is actually waiting for is the system sheet, so this
+  // is the honest instrument for it as well — a promise that never settles is
+  // exactly a sheet nobody has answered yet.
+  let ceremonyPending: boolean;
 
   beforeEach(async () => {
     keyEncryptionKey = await importKeyEncryptionKey();
     navigations = [];
+    ceremonyPending = false;
 
     // The one seam that has to exist: `available()` and `createPasskey()` both
     // touch `navigator.credentials`, which this runner does not implement. The
@@ -166,10 +176,14 @@ describe('RegisterComponent, around the press that creates the account', () => {
       createPasskey: (): Promise<
         PasskeyCeremonyResult<PasskeyRegistrationCeremony>
       > =>
-        Promise.resolve({
-          ok: true,
-          value: { payload: REGISTRATION_PAYLOAD, keyEncryptionKey },
-        }),
+        ceremonyPending
+          ? new Promise<PasskeyCeremonyResult<PasskeyRegistrationCeremony>>(
+              () => undefined,
+            )
+          : Promise.resolve({
+              ok: true,
+              value: { payload: REGISTRATION_PAYLOAD, keyEncryptionKey },
+            }),
     };
 
     await TestBed.configureTestingModule({
@@ -386,16 +400,18 @@ describe('RegisterComponent, around the press that creates the account', () => {
     // suite stayed green. What that branch buys is the reason the wait is
     // bearable at all — a system sheet is about to appear, and the screen has
     // to admit it is waiting for one.
-    press(CONTINUE_BUTTON);
+    //
+    // **The wait is held open by the ceremony and not by a request**, which is
+    // the half this test had to be rebuilt for. It used to hold the step busy
+    // by leaving the options request unanswered; that request now leaves on
+    // `Continue`, one screen earlier, so a press waiting on it here would be
+    // waiting on nothing and the busy branch would never render.
+    ceremonyPending = true;
+    await pressContinue();
     expect(liveRegionText()).toBe('');
 
     // Act
     press(CREATE_PASSKEY_BUTTON);
-
-    await eventually(
-      () => http.match(OPTIONS_URL)[0] ?? null,
-      'the request for the creation options',
-    );
     await settle();
 
     // Assert
@@ -403,6 +419,16 @@ describe('RegisterComponent, around the press that creates the account', () => {
       liveRegionText(),
       'nothing on the screen says the device is being waited on.',
     ).not.toBe('');
+
+    // **And this press asked for nothing.** The challenge is the one `Continue`
+    // fetched: a second request here spends a second nonce the server has
+    // persisted — on this route it is also the value the account identifier is
+    // derived from — and strands the first, which is a passkey bound to an
+    // account id nobody will ever be able to sign in under.
+    expect(
+      http.match(OPTIONS_URL),
+      'the passkey step asked for a challenge it was already holding.',
+    ).toHaveLength(0);
 
     const create = controlNamed(host, CREATE_PASSKEY_BUTTON);
 
@@ -412,13 +438,16 @@ describe('RegisterComponent, around the press that creates the account', () => {
       fixture?.detectChanges();
     }
 
-    // A second press must not spend a second challenge. A challenge is a nonce
-    // the server persisted, and on this route it is also the value the account
-    // identifier is derived from.
+    // And a second press cannot start a second ceremony, or spend a challenge
+    // on the way to one.
     expect(
       http.match(OPTIONS_URL),
       'a second challenge was asked for while the first ceremony was running.',
     ).toHaveLength(0);
+    expect(
+      service.codes(),
+      'the ceremony finished while the device was still being waited on.',
+    ).toBeNull();
   });
 
   // The codes step's own `disabledInteractive` gets no test here, and that is a
@@ -499,9 +528,33 @@ describe('RegisterComponent, around the press that creates the account', () => {
       .filter((name) => name !== '');
   }
 
-  // From the passkey step to ten codes on the screen. The ceremony, the account
-  // keys, the card and the eleven wraps all happen in here, on real WebCrypto.
-  async function runCeremony(): Promise<void> {
+  // `Continue`, on the introduction — **the press the options request now
+  // leaves on**. The step does not move until the answer arrives, because the
+  // server refuses a subject that already holds an account above its own
+  // challenge and that answer belongs on the screen showing the address.
+  async function pressContinue(): Promise<void> {
+    press(CONTINUE_BUTTON);
+
+    const options = await eventually(
+      () => http.match(OPTIONS_URL)[0] ?? null,
+      'the request for the creation options',
+    );
+    options.flush(CREATION_OPTIONS);
+    await settle();
+  }
+
+  // `Create a passkey`, with the challenge already in hand — **flushing
+  // nothing**. The ceremony, the account keys, the card and the eleven wraps
+  // all happen in here, on real WebCrypto.
+  function runCeremony(): Promise<void> {
+    press(CREATE_PASSKEY_BUTTON);
+
+    return settleOnCodes();
+  }
+
+  // The same press with no challenge in hand, which is what a restart leaves
+  // behind: the prefetched nonce was spent by the ceremony that ran before it.
+  async function runCeremonyFetchingAChallenge(): Promise<void> {
     press(CREATE_PASSKEY_BUTTON);
 
     const options = await eventually(
@@ -509,7 +562,10 @@ describe('RegisterComponent, around the press that creates the account', () => {
       'the request for the creation options',
     );
     options.flush(CREATION_OPTIONS);
+    await settleOnCodes();
+  }
 
+  async function settleOnCodes(): Promise<void> {
     await eventually(
       (): readonly RecoveryCode[] | null => service.codes(),
       'the minted recovery codes to be published',
@@ -518,7 +574,7 @@ describe('RegisterComponent, around the press that creates the account', () => {
   }
 
   async function driveToCodes(): Promise<void> {
-    press(CONTINUE_BUTTON);
+    await pressContinue();
     await runCeremony();
   }
 
@@ -559,7 +615,7 @@ describe('RegisterComponent, around the press that creates the account', () => {
     await settle();
 
     press(RESTART_BUTTON);
-    await runCeremony();
+    await runCeremonyFetchingAChallenge();
 
     const second = await acknowledgeAndCreate();
     second.flush(null, { status: 409, statusText: 'Conflict' });
@@ -577,7 +633,7 @@ describe('RegisterComponent, around the press that creates the account', () => {
     await settle();
 
     press(RESTART_BUTTON);
-    await runCeremony();
+    await runCeremonyFetchingAChallenge();
 
     const second = await acknowledgeAndCreate();
     second.flush(null, { status: 409, statusText: 'Conflict' });

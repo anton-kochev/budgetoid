@@ -668,15 +668,40 @@ by hand cannot answer *is there more of this afterwards?* from anything else on 
 
 ### Step 1 — the introduction
 
-The only step that asks for nothing: it states which account is about to be created and offers the
-way on. Title **Create your Budgetoid account**.
+The step that asks whether this account may exist at all. Title **Create your Budgetoid account**.
+
+**It used to ask for nothing, and that is the whole of this step's design.** The options leg refuses
+when the provider identity already holds an account, and it refuses *above* its own challenge — so
+the answer exists at the first press. Read at the second one, which is where step 2 used to read it,
+somebody who already has an account is shown the address their account will be created under,
+presses **Continue**, reads a screen about authenticators, presses again, and only then is told no.
+A promise made in the product's own words and broken two screens later.
 
 - **Holding a provider token**, it shows the asserted address back — `body`, with the address itself
   at weight 600, tabular figures and `overflow-wrap: anywhere` for a long one on a 320px screen —
   then one line naming what the next two steps are, then one Primary **Continue**. A person with a
   personal Google account and a work one has no other way to learn which of them this browser is
-  still signed in to, and the cost of guessing wrong is not a wasted click: the next step spends a
-  challenge, and the account that results is bound to whichever address was asserted.
+  still signed in to, and the cost of guessing wrong is not a wasted click: the account that results
+  is bound to whichever address was asserted.
+- **The press is a request, so this step has a busy state and two refusals**, on the terms the
+  passkey step's region sets and which are not restated here: one `role="status"`, in the DOM from
+  first paint, empty at rest, carrying the busy line and the refusal alike. While the request is
+  out, the Primary is held exactly where it was with `disabledInteractive` and the region reads
+  **"Checking your account."** The line is this step's own: "Waiting for your device." is the passkey
+  step's, and is false here because no authenticator has been asked for anything.
+- **A conflict takes the promise down with it.** "Your account will be created under &lt;address&gt;"
+  is false the moment the server says that address already holds an account, and a promise standing
+  beside its own refusal is exactly the defect this step was changed to remove — one screen earlier,
+  not one screen later. The lead becomes **"This browser is signed in to Google as
+  &lt;address&gt;."**, and the address stays, because the refusal says *this Google address* and a
+  sentence pointing at nothing is worse than the promise was. A server that never answered leaves the
+  promise standing, because it said nothing about the address.
+- **A browser that cannot run a passkey ceremony asks for nothing and moves on anyway.** It gets no
+  refusal here and meets its own on step 2. A challenge is a nonce the server persisted, and on this
+  route it is also the value the account identifier is derived from, so spending one for a browser
+  that was never going to finish is the cost this rule refuses. Learning about a conflict would not
+  repay it either: the way out of a conflict is a passkey assertion, which needs the same WebAuthn
+  this browser does not have.
 - **Holding none**, it shows no address and no **Continue**. One line saying this browser is not
   holding a Google address, and an **Outline** **Continue with Google** — the treatment the book
   gives that control wherever it appears, which is here and nowhere else. **This is the only
@@ -686,9 +711,18 @@ way on. Title **Create your Budgetoid account**.
   bookmark, a reload an hour later, an exchange that never completed. A **Continue** from there
   would reach a refusal with nothing useful to say about why.
 
+The two sentences are the specification. Neither is a copy of the passkey step's word for the same
+outcome: that one ends "no passkey was made", which is worth saying where a system sheet was on the
+screen a moment ago and says nothing at all here, where no passkey was ever going to be made.
+
+| Refusal | Copy | Offers another press |
+| --- | --- | --- |
+| The Google address already has an account | "An account already exists for this Google address. Nothing has been created — sign in from the Budgetoid home page instead." | No — **Go to sign in** instead |
+| The server never answered | "Budgetoid couldn't reach the server. Nothing has been created." | Yes — **Try again**, which is another **Continue** under a name that admits to being one |
+
 ### Step 2 — the passkey
 
-The step that spends the challenge, and the one screen in the flow with eight ways to end badly.
+The step that runs the ceremony, and the one screen in the flow with eight ways to end badly.
 Title **Create your passkey**, then two lines: what the device is about to ask for, and that the same
 authenticator holds the keys the records are locked with.
 
@@ -714,6 +748,11 @@ authenticator holds the keys the records are locked with.
   and the step renders a Primary **Go to sign in** to `/welcome` — the one address in this application
   that runs a passkey assertion. A sentence that names a door the screen does not have is the defect
   this control exists to remove, and the shell's own conflict readings already had to fix it once.
+  **Three screens now carry that control** — the introduction, this step and the shell — which is
+  three sentences that must keep naming the same door. The third is the one that arrived last and the
+  one this table's conflict row now describes a narrower case for: the introduction answers the
+  ordinary conflict, and what reaches step 2 is the refetch a restart or a failed ceremony makes,
+  which another tab or another device can have raced in the meantime.
 
 The sentences are the specification, not an example of them. None is a synonym of another: folded
 into one, the screen tells somebody whose browser cannot run WebAuthn at all to try again, and tells

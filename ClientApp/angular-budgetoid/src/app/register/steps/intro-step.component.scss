@@ -57,6 +57,26 @@
   overflow-wrap: anywhere;
 }
 
+// Colour is never the message: the line reads as a sentence with the colour
+// removed.
+.r-error {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--bud-over);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Holds its box while empty, so the screen does not shift under the reader when
+// the outcome of a press arrives — and it is empty for the whole of the first
+// paint, which is the state this step spends most of its life in.
+.r-outcome {
+  display: grid;
+  gap: var(--bud-space-2);
+  justify-items: start;
+  min-height: 1lh;
+}
+
 // Material's M3 button is shorter than the system's touch minimum.
 .r-button {
   min-height: var(--bud-touch-target);

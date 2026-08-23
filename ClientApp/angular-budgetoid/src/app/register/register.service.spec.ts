@@ -519,6 +519,14 @@ describe('RegisterService', () => {
   // touches neither sees the fixture unchanged.
   let ceremonyAvailable: boolean;
   let ceremonyOutcome: PasskeyCeremonyResult<PasskeyRegistrationCeremony>;
+  // Every set of creation options the ceremony was handed, in order.
+  //
+  // It exists for one assertion and would be padding without it. `Continue` now
+  // fetches the challenge, so the press after it must issue **no** options
+  // request — and an absence of requests is exactly what a flow that stopped
+  // dead also looks like. This is the positive half: the ceremony really ran,
+  // once, against the challenge the earlier press fetched.
+  let ceremonyChallenges: PasskeyCreationOptionsJson[];
   let navigations: string[];
 
   beforeEach(async () => {
@@ -528,6 +536,7 @@ describe('RegisterService', () => {
       ok: true,
       value: { payload: REGISTRATION_PAYLOAD, keyEncryptionKey },
     };
+    ceremonyChallenges = [];
     navigations = [];
 
     // The one stub that has to exist: `available()` and `createPasskey()` both
@@ -538,9 +547,13 @@ describe('RegisterService', () => {
       'available' | 'createPasskey'
     > = {
       available: () => ceremonyAvailable,
-      createPasskey: (): Promise<
-        PasskeyCeremonyResult<PasskeyRegistrationCeremony>
-      > => Promise.resolve(ceremonyOutcome),
+      createPasskey: (
+        options: PasskeyCreationOptionsJson,
+      ): Promise<PasskeyCeremonyResult<PasskeyRegistrationCeremony>> => {
+        ceremonyChallenges.push(options);
+
+        return Promise.resolve(ceremonyOutcome);
+      },
     };
 
     TestBed.configureTestingModule({
@@ -594,12 +607,40 @@ describe('RegisterService', () => {
     service = TestBed.inject(RegisterService);
   });
 
-  // From the introduction to ten codes on screen. Every test below starts here
-  // because that is where this flow's secrets exist — the account keys have
-  // been drawn, wrapped eleven times and wiped, and the body that will be
-  // posted is assembled — and none of them can reach any of it any earlier.
-  async function driveToCodes(): Promise<readonly RecoveryCode[]> {
+  // `Continue`, on the introduction. **This is where the options request leaves
+  // now**, and the split below exists because of it: the press that fetches the
+  // challenge and the press that spends it are two acts on two screens, and a
+  // helper that ran both would make "the second press asks for nothing" an
+  // unaskable question.
+  async function pressContinue(): Promise<void> {
     service.begin();
+
+    const options = await eventually(
+      () => http.match(OPTIONS_URL)[0] ?? null,
+      'the request for the creation options',
+    );
+    options.flush(CREATION_OPTIONS);
+  }
+
+  // `Create a passkey`, with the challenge already in hand — **flushing
+  // nothing**, because nothing is asked for. The ceremony, the account keys,
+  // the card and the eleven wraps all happen in here, on real WebCrypto.
+  function runCeremony(): Promise<readonly RecoveryCode[]> {
+    service.createPasskey();
+
+    return eventually(
+      (): readonly RecoveryCode[] | null => service.codes(),
+      'the minted recovery codes to be published',
+    );
+  }
+
+  // The same press with no challenge in hand, which is the shape every path
+  // that re-enters the passkey step takes: a restart and every `Try again`
+  // there. The prefetched nonce was spent by the ceremony that ran before them,
+  // so this leg fetches its own.
+  async function runCeremonyFetchingAChallenge(): Promise<
+    readonly RecoveryCode[]
+  > {
     service.createPasskey();
 
     const options = await eventually(
@@ -612,6 +653,16 @@ describe('RegisterService', () => {
       (): readonly RecoveryCode[] | null => service.codes(),
       'the minted recovery codes to be published',
     );
+  }
+
+  // From the introduction to ten codes on screen. Every test below starts here
+  // because that is where this flow's secrets exist — the account keys have
+  // been drawn, wrapped eleven times and wiped, and the body that will be
+  // posted is assembled — and none of them can reach any of it any earlier.
+  async function driveToCodes(): Promise<readonly RecoveryCode[]> {
+    await pressContinue();
+
+    return runCeremony();
   }
 
   // The same, with the acknowledgement pressed. The request is left outstanding
@@ -653,16 +704,20 @@ describe('RegisterService', () => {
 
   it('sends no recovery code to the server', async () => {
     // Arrange
+    // Spelled out rather than driven through the helpers, because this is the
+    // one test in the flow that has to be readable end to end without opening
+    // anything else. The two presses are in the order a person makes them, and
+    // the challenge arrives on the first of them.
     service.begin();
-
-    // Act
-    service.createPasskey();
 
     const options = await eventually(
       () => http.match(OPTIONS_URL)[0] ?? null,
       'the request for the creation options',
     );
     options.flush(CREATION_OPTIONS);
+
+    // Act
+    service.createPasskey();
 
     const codes = await eventually(
       (): readonly RecoveryCode[] | null => service.codes(),
@@ -1104,8 +1159,12 @@ describe('RegisterService', () => {
     const first = await driveToCodes();
 
     // Act
+    // A restart lands on the passkey step, so the next press is `Create a
+    // passkey` and it fetches its own challenge: the one `Continue` prefetched
+    // was spent by the ceremony that ran a moment ago, and `restart()` drops it
+    // for that reason.
     service.restart();
-    const second = await driveToCodes();
+    const second = await runCeremonyFetchingAChallenge();
 
     // Assert
     expect(first).toHaveLength(RECOVERY_CODE_SET_SIZE);
@@ -1226,16 +1285,14 @@ describe('RegisterService', () => {
     async ({ failure }) => {
       // Arrange
       ceremonyOutcome = { ok: false, failure };
+      // The challenge, fetched by the press before this one. It has to be in
+      // hand before the ceremony is asked for anything: `createPasskey()`
+      // no-ops while the options request is in flight, so the two presses run
+      // together reach the authenticator not at all.
+      await pressContinue();
 
       // Act
-      service.begin();
       service.createPasskey();
-
-      const options = await eventually(
-        () => http.match(OPTIONS_URL)[0] ?? null,
-        'the request for the creation options',
-      );
-      options.flush(CREATION_OPTIONS);
 
       await eventually(() => service.failure(), 'the refusal to be published');
 
@@ -1255,6 +1312,16 @@ describe('RegisterService', () => {
 
     // Act
     service.begin();
+
+    // The introduction still moves on, and it moves on with nothing in hand.
+    // That is what keeps `unsupported` the passkey step's word: read here
+    // instead, a browser that cannot run WebAuthn would be refused on the
+    // introduction and told nothing about why the way out — an assertion on
+    // `/welcome` — needs the same WebAuthn it does not have.
+    expect(service.step()).toBe('passkey');
+    expect(service.busy()).toBe(false);
+    expect(service.failure()).toBeNull();
+
     service.createPasskey();
 
     // Assert
@@ -1288,8 +1355,12 @@ describe('RegisterService', () => {
   describe('tells an account that already exists from a start that failed', () => {
     it('reads a 409 before the challenge as a conflict', async () => {
       // Arrange
+      // One press, and it is `Continue`. The refusal belongs to the
+      // introduction now: the server answers 409 above its own `IssueAsync`,
+      // so the answer exists at the first press and reading it at the second
+      // means somebody was promised an account under an address, sent through
+      // a screen about authenticators, and refused there.
       service.begin();
-      service.createPasskey();
 
       const options = await eventually(
         () => http.match(OPTIONS_URL)[0] ?? null,
@@ -1310,7 +1381,13 @@ describe('RegisterService', () => {
       expect(service.mayHaveCreatedAccount()).toBe(false);
       // Refused above the challenge, so nothing downstream of it ran.
       expect(service.codes()).toBeNull();
-      expect(service.step()).toBe('passkey');
+      // **And the reader has not moved.** A refusal published against the
+      // passkey step is one somebody has to be walked back from, and this
+      // sentence — this address already has an account — only makes sense
+      // beside the address, which is on the introduction. `begin()` leaves the
+      // step alone on its error branch for exactly that.
+      expect(service.step()).toBe('intro');
+      expect(service.busy()).toBe(false);
       expect(http.match(REGISTRATION_URL)).toHaveLength(0);
     });
 
@@ -1336,7 +1413,6 @@ describe('RegisterService', () => {
     ])('reads $what as a start that failed', async ({ answer }) => {
       // Arrange
       service.begin();
-      service.createPasskey();
 
       const options = await eventually(
         () => http.match(OPTIONS_URL)[0] ?? null,
@@ -1353,7 +1429,152 @@ describe('RegisterService', () => {
       expect(service.failure()).toBe('start-failed');
       expect(service.mayHaveCreatedAccount()).toBe(false);
       expect(service.codes()).toBeNull();
+      // The same standstill the 409 above holds, and it is the half of this
+      // leg's contract a mapper cannot express: `startFailureOf` decides the
+      // *word*, and leaving the step where it was is what makes the word land
+      // on a screen the sentence is true of. `Try again` on the introduction is
+      // another `Continue`; the same press one step on would spend a challenge.
+      expect(service.step()).toBe('intro');
+      expect(service.busy()).toBe(false);
       expect(http.match(REGISTRATION_URL)).toHaveLength(0);
+    });
+  });
+
+  // What `Continue` became, and it is a change of act rather than of copy: the
+  // press that used to move a reader on now asks the server a question first.
+  //
+  // `POST /api/registration/options` answers 409 when the provider subject
+  // already holds an account, and it answers **above** its own
+  // `challengeStore.IssueAsync` — so nothing is minted, nothing is spent, and
+  // the answer already exists at the first press. Asked only from the passkey
+  // step, it reached somebody who had read "your account will be created under
+  // <address>", pressed `Continue`, read a screen about authenticators and
+  // pressed again. The server knew the whole time.
+  //
+  // The four tests below are the four things that press can do. The two
+  // refusals are held one status at a time in the describe above, on the same
+  // request; these are the ones about *where the reader is standing* while it
+  // happens.
+  describe('asks whether an account exists before it moves anybody on', () => {
+    it('makes the request and stays on the introduction', () => {
+      // Act
+      service.begin();
+
+      // Assert
+      // The request left, which is the whole of the change.
+      expect(http.match(OPTIONS_URL)).toHaveLength(1);
+      // And nothing else did. Moving the reader on and asking at the same time
+      // would put the answer back where it was: on a screen whose sentences —
+      // "this address already has an account", "the server never answered" —
+      // are about the address the introduction shows and this one does not.
+      expect(service.step()).toBe('intro');
+      // Said out loud, because this press now waits on a network round trip and
+      // the introduction had nothing to wait on before. A control that renders
+      // unchanged for a second reads as one that did nothing, which is what
+      // invites the second press.
+      expect(service.busy()).toBe(true);
+      expect(service.failure()).toBeNull();
+      // Nothing downstream: no ceremony, no card, no account.
+      expect(ceremonyChallenges).toEqual([]);
+      expect(service.codes()).toBeNull();
+      expect(service.mayHaveCreatedAccount()).toBe(false);
+    });
+
+    it('moves on once the challenge is in hand', async () => {
+      // Act
+      await pressContinue();
+
+      // Assert
+      expect(service.step()).toBe('passkey');
+      expect(service.busy()).toBe(false);
+      expect(service.failure()).toBeNull();
+      // The step moved and nothing secret was made getting there. What the
+      // passkey step is for is still ahead of the reader.
+      expect(ceremonyChallenges).toEqual([]);
+      expect(service.codes()).toBeNull();
+    });
+
+    it('asks once however often Continue is pressed', () => {
+      // Arrange
+      service.begin();
+
+      // Act
+      // The second press, while the first request is still out. A person who
+      // gets no visible answer presses again — it is the most ordinary thing
+      // that happens to a slow control.
+      service.begin();
+
+      // Assert
+      // One challenge. A challenge is a nonce the server persisted, and on this
+      // route it is also the value the account identifier is derived from, so a
+      // second request strands the first: the ceremony would run against
+      // whichever answer landed last and the id derived from the other is an
+      // account nobody can ever sign in to.
+      expect(http.match(OPTIONS_URL)).toHaveLength(1);
+      expect(service.step()).toBe('intro');
+    });
+
+    // **The pair that says the prefetch is real.** Either half alone is
+    // satisfied by a broken flow: an absence of requests is what a press that
+    // did nothing looks like, and a ceremony that ran is what a second fetch
+    // also produces.
+    it('spends the prefetched challenge instead of asking for another', async () => {
+      // Arrange
+      await pressContinue();
+
+      // Act
+      const codes = await runCeremony();
+
+      // Assert
+      // Nothing was asked for. A second options request would spend a second
+      // nonce and leave the first one stranded on the server — and the
+      // `Continue` that fetched it would have bought the reader nothing but a
+      // round trip.
+      expect(
+        http.match(OPTIONS_URL),
+        'a second challenge was asked for on the passkey step.',
+      ).toHaveLength(0);
+      // And the ceremony ran anyway, once, against exactly the challenge that
+      // arrived on the press before it. Deep equality rather than identity: the
+      // options came back through `HttpClient` and are a parsed copy.
+      expect(ceremonyChallenges).toEqual([CREATION_OPTIONS]);
+      expect(codes).toHaveLength(RECOVERY_CODE_SET_SIZE);
+      expect(service.step()).toBe('codes');
+    });
+
+    it('asks for a fresh challenge after a restart', async () => {
+      // Arrange
+      await pressContinue();
+      await runCeremony();
+
+      // Act
+      service.restart();
+      service.createPasskey();
+
+      // Assert
+      // The nonce `Continue` fetched was consumed by the ceremony that ran
+      // before the restart — `RegisterAccountHandler` calls `ConsumeAsync`
+      // above its verifier — so a copy kept here would be handed to the next
+      // ceremony and refused by a server that has already seen it, with a
+      // message naming nothing. `restart()` drops it for that reason.
+      const options = http.match(OPTIONS_URL);
+      expect(
+        options,
+        'the restart re-used the challenge the first ceremony spent.',
+      ).toHaveLength(1);
+
+      options[0].flush(CREATION_OPTIONS);
+
+      const second = await eventually(
+        (): readonly RecoveryCode[] | null => service.codes(),
+        'the second set of recovery codes to be published',
+      );
+
+      // The control: the fresh challenge really was carried into a ceremony,
+      // so the request above is a flow continuing rather than one that asked
+      // for something and stopped.
+      expect(ceremonyChallenges).toHaveLength(2);
+      expect(second).toHaveLength(RECOVERY_CODE_SET_SIZE);
     });
   });
 });

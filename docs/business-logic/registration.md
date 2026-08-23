@@ -459,6 +459,12 @@ credentials, 1 passkey public key, 1 signature counter, 10 recovery-code hashes,
     asked **before** the options call, which is the only position that costs nothing. A browser that
     was never going to finish would otherwise spend a challenge on its way to being told so — and on
     this route the challenge is also what the account identifier is derived from.
+  - **That question is now asked in two places, because the options call moved.** `RegisterService.begin`
+    reads it before *its* request for the same reason, and what it does with a `false` is not what the
+    passkey step does: it advances the step with no options in hand and no word published, leaving the
+    `unsupported` sentence to the screen that has one. Refusing on the introduction instead would be a
+    third sentence for a state already spoken for, and would still have to be repeated below, because
+    a restart re-enters through the passkey step.
 - **Enforced in**: the statement order in `RegisterService.mintUnder`, argued at each line, and by
   `register.service.spec.ts` driving a refusing authenticator and asserting that nothing was
   published, no request was made and no code exists.
@@ -712,7 +718,9 @@ ELSE consume the nonce — from here every outcome has burnt it
   opens.** The welcome screen offers two ways in and **Create account** is the Primary of the two, so
   an existing account holder reaching for it rather than for **Sign in with a passkey** lands on
   `/register` — and the first request that screen makes now comes back `409`. No system sheet, no
-  card of ten codes, and no credential left on the authenticator.
+  card of ten codes, and no credential left on the authenticator. **That request is made by the
+  introduction's own `Continue`**, so the refusal replaces the promise that named the address rather
+  than arriving a screen after it: `begin` asks, and the step moves only on an answer that allows it.
   - **This is not the enumeration oracle a dedicated route would be.** There is still **no route that
     answers "does this subject have an account?"**, and there must not be. What the options leg
     answers is narrower: it refuses *this caller's own* registration, to a caller who arrived holding
@@ -735,16 +743,21 @@ ELSE consume the nonce — from here every outcome has burnt it
   The client tells the two readings of a `409` apart by **what the previous POST ended as** — never by
   whether *Start again* was pressed, and never by the `Detail` text, since all four conflict sentences
   ship under one identical title with no machine-readable code.
-- **A `409` is now rendered on two different steps, and the second one is not a copy of the first.**
-  The options leg's `409` lands while the **passkey** step is showing, with nothing minted and no
-  codes anywhere; the finish leg's lands in place of the codes step. The sentences differ in the one
-  clause a person acts on — the shell's two both say the ten codes just shown open nothing, which is
-  false on the earlier leg — so `passkey-step.component.ts` carries its own, and its own *Go to sign
-  in* beside it. That is a second control rather than a shared one **on purpose**: the two render at
-  different steps and neither can hand its markup to the other, so what a shared owner would save is
-  the address and nothing else, while an output left unbound compiles, lints, passes the step's own
-  spec and ships a dead button — the exact defect this control exists to remove. Both copies are
-  pinned by specs that press the control and read where the router was asked to go.
+- **A `409` is rendered on all three steps, and no two of the sentences are copies.** The options
+  leg's lands on the **introduction**, which is where `RegisterService.begin` asks and where the
+  answer ordinarily arrives — nothing minted, no challenge issued, no sheet opened. It still lands on
+  the **passkey** step for the refetch a restart or a failed ceremony makes, which another tab or
+  another device can have raced in between. The finish leg's lands in place of the codes step. The
+  sentences differ in the one clause a person acts on: the shell's two both say the ten codes just
+  shown open nothing, which is false on the earlier leg; and the passkey step's ends "no passkey was
+  made", which is worth saying where a system sheet was on the screen a moment ago and says nothing
+  at all on the introduction, where no passkey was ever going to be made. So each step carries its
+  own, and its own *Go to sign in* beside it. Those are three controls rather than one shared one
+  **on purpose**: each renders on a different step and none can hand its markup to another, so what a
+  shared owner would save is the address and nothing else, while an output left unbound compiles,
+  lints, passes the step's own spec and ships a dead button — the exact defect this control exists to
+  remove. All three copies are pinned by specs that press the control and read where the router was
+  asked to go.
 - **Both readings of the finish leg's `409` end the flow, and both offer the same way out.**
   `/register` carries no navigation of its own, so a state telling somebody to go and sign in with no
   control on it told them to go somewhere with nothing to press. One *Go to sign in* serves both,
