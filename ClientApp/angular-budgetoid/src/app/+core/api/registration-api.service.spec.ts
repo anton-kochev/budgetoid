@@ -13,7 +13,7 @@ import {
   type TestRequest,
 } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/session-expiry.interceptor';
+import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
 import { mintRecoveryCodeSet } from '@app-core/security/recovery-codes';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { beforeEach, describe, expect, it } from 'vitest';

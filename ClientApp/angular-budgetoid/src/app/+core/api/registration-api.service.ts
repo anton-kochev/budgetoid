@@ -16,7 +16,7 @@ import {
   REGISTRATION_OPTIONS_PATH,
   REGISTRATION_PATH,
 } from '@app-core/interceptors/api-credentials.interceptor';
-import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/session-expiry.interceptor';
+import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
 import type { WrappedAccountKeys } from '@app-core/security/account-keys';
 import type { RecoveryCodeVerifier } from '@app-core/security/recovery-codes';
 import type {
@@ -80,7 +80,9 @@ export type RegistrationRequestBody = PasskeyRegistrationPayload &
 // `HttpContext` below rather than a preference about base classes.
 //
 // Both requests have to carry `EXPECTS_UNAUTHENTICATED`, which rides on a
-// request's context, and `BaseApiService` has no parameter for one. Adding an
+// request's context, and `BaseApiService.post` has no parameter for one — its
+// `get` does, added for the one route two callers read with two different
+// questions, and deliberately not copied down the other verbs. Adding an
 // optional `context` to its `post` would widen the shared path of nine other
 // services so that one caller can use it — a parameter present on every call
 // site that must never be passed on any of them, which is the kind of widening
@@ -103,8 +105,9 @@ export type RegistrationRequestBody = PasskeyRegistrationPayload &
 // provider's bearer, and a second spelling of either one is a silent failure in
 // both directions: a path corrected only here loses the token and meets a 401 on
 // the first call, and one corrected only there hands the token to a route that
-// has moved. That file argues why the definition sits at the enforcing end —
-// the same direction `EXPECTS_UNAUTHENTICATED` already travels into this one.
+// has moved. That file argues why the definition sits at the enforcing end, and
+// why `EXPECTS_UNAUTHENTICATED` — set here, read by an interceptor that reaches
+// services — could not.
 @Injectable({ providedIn: 'root' })
 export class RegistrationApiService {
   private readonly http = inject(HttpClient);

@@ -381,7 +381,15 @@ Load-bearing rules, each explained there or in the linked decision:
   CSRF and locked-session refusal, answered to a browser whose session is intact), always
   re-throws, and skips any request carrying the `EXPECTS_UNAUTHENTICATED` context token — a
   token, not a URL list, because a URL list is a second definition of the anonymous surface kept
-  client-side. See [sessions.md](docs/business-logic/sessions.md).
+  client-side. **The probe carries it and `getMe()` does not, on one route**, which is the whole rule
+  in one pair: the probe asks whether there is a session and a 401 is its answer, while the Settings
+  read is made by somebody signed in and a 401 there is a session that ended. Unmarked, the probe
+  navigated **every** anonymous cold load to `/welcome` from inside the initializer, before any route
+  activated, which made `/register` — the provider's own redirect target — unreachable by URL. The
+  token lives in `expects-unauthenticated.token.ts` rather than in the interceptor that reads it,
+  because the reader depends on `SessionService`, which depends on `MeApiService`, so declaring it in
+  the reader closes a three-module cycle the moment the probe sets it. See
+  [sessions.md](docs/business-logic/sessions.md).
 - **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, or
   image, and no identity-provider profile picture. Typefaces live in `public/fonts/`.
   `src/no-external-origins.spec.ts` reads the production bundle, so `npm test` needs a
@@ -557,7 +565,7 @@ Load-bearing rules, each explained there or in the linked decision:
   it is a button, because this is an exit from a dead flow rather than navigation worth opening in a
   new tab beside a screen holding ten dead codes. And **no `canDeactivate`, no `beforeunload`** — abandoning
   costs nothing and a confirm dialog would say otherwise. Both requests carry
-  `EXPECTS_UNAUTHENTICATED`, its first two callers, or a 401 mid-flow navigates away and destroys ten
+  `EXPECTS_UNAUTHENTICATED`, or a 401 mid-flow navigates away and destroys ten
   codes already written down. The provider `redirectUri` points at `/register`, and **the matching
   entry in the Google Cloud console is part of the change no test can catch**. See
   [registration.md](docs/business-logic/registration.md) and the Registration chapter in

@@ -28,8 +28,15 @@ function refusal(status: number): HttpErrorResponse {
   });
 }
 
+// `getSessionOwner` and not `getMe`, which is the same route asked a different
+// question. The probe's 401 is this call's own answer, so it carries
+// `EXPECTS_UNAUTHENTICATED` and `sessionExpiryInterceptor` leaves it alone; the
+// Settings screen's read of `/api/me` carries nothing and a 401 there is the
+// session ending. Which of the two `probe()` calls is the split, and it is
+// pinned as an interaction in `session-expiry.interceptor.spec.ts` — this stub
+// only has to name the same method the service reaches for.
 class MeApiStub {
-  public getMe = vi.fn((): Observable<MeDto> => of(ME));
+  public getSessionOwner = vi.fn((): Observable<MeDto> => of(ME));
 }
 
 describe('SessionService', () => {
@@ -52,7 +59,7 @@ describe('SessionService', () => {
   it('says nothing about the visitor until an answer arrives', () => {
     // Arrange
     const pending = new Subject<MeDto>();
-    api.getMe.mockReturnValue(pending);
+    api.getSessionOwner.mockReturnValue(pending);
 
     // Act
     expect(service.status()).toBe('unknown');
@@ -64,7 +71,7 @@ describe('SessionService', () => {
 
   it('answers authenticated when the server answers the read', async () => {
     // Arrange
-    api.getMe.mockReturnValue(of(ME));
+    api.getSessionOwner.mockReturnValue(of(ME));
 
     // Act
     await service.probe();
@@ -77,7 +84,7 @@ describe('SessionService', () => {
   // That is evidence, and it is the only kind this class treats as evidence.
   it('answers anonymous when the server refuses the read as unauthenticated', async () => {
     // Arrange
-    api.getMe.mockReturnValue(throwError(() => refusal(401)));
+    api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
 
     // Act
     await service.probe();
@@ -92,7 +99,7 @@ describe('SessionService', () => {
   // file that is correct.
   it('answers anonymous when the server refuses the read outright', async () => {
     // Arrange
-    api.getMe.mockReturnValue(throwError(() => refusal(403)));
+    api.getSessionOwner.mockReturnValue(throwError(() => refusal(403)));
 
     // Act
     await service.probe();
@@ -110,7 +117,7 @@ describe('SessionService', () => {
   // claim about the account made out of a failure to ask.
   it('does not sign a visitor out because the read never reached the server', async () => {
     // Arrange
-    api.getMe.mockReturnValue(throwError(() => NETWORK_FAILURE));
+    api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
 
     // Act
     await service.probe();
@@ -125,7 +132,7 @@ describe('SessionService', () => {
   // "not 200" as "not signed in" passes every test above this line.
   it('answers unreachable when the server fails to answer the read', async () => {
     // Arrange
-    api.getMe.mockReturnValue(throwError(() => refusal(500)));
+    api.getSessionOwner.mockReturnValue(throwError(() => refusal(500)));
 
     // Act
     await service.probe();
@@ -141,7 +148,7 @@ describe('SessionService', () => {
   // `throw` inside the handler needs a test whose name names the consequence.
   it('resolves rather than rejecting when the read fails', async () => {
     // Arrange
-    api.getMe.mockReturnValue(throwError(() => NETWORK_FAILURE));
+    api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
 
     // Act & Assert
     await expect(service.probe()).resolves.toBeUndefined();
@@ -154,7 +161,7 @@ describe('SessionService', () => {
   // pass a test that started at rest.
   it('moves an authenticated visitor to anonymous when the session ends', async () => {
     // Arrange
-    api.getMe.mockReturnValue(of(ME));
+    api.getSessionOwner.mockReturnValue(of(ME));
     await service.probe();
     expect(service.status()).toBe('authenticated');
 
@@ -171,10 +178,10 @@ describe('SessionService', () => {
   // would pass a test that started at rest.
   it('publishes an established session without asking again', async () => {
     // Arrange
-    api.getMe.mockReturnValue(throwError(() => refusal(401)));
+    api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
     await service.probe();
     expect(service.status()).toBe('anonymous');
-    api.getMe.mockClear();
+    api.getSessionOwner.mockClear();
 
     // Act
     service.established();
@@ -187,6 +194,6 @@ describe('SessionService', () => {
     // cost, at the happiest moment of the flow, and with `'unreachable'` among
     // its answers. A person who just created an account would then be shown a
     // client that is not sure they exist.
-    expect(api.getMe).not.toHaveBeenCalled();
+    expect(api.getSessionOwner).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,6 @@
+import { HttpContext } from '@angular/common/http';
 import { Injectable } from '@angular/core';
+import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
 import { map, Observable } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 
@@ -71,8 +73,41 @@ export interface CredentialSummary {
 
 @Injectable({ providedIn: 'root' })
 export class MeApiService extends BaseApiService {
+  // Read by a browser that believes it holds a session — the Settings screen
+  // asking for the address to render. **No `EXPECTS_UNAUTHENTICATED`, and that
+  // is the decision rather than the omission**: a 401 here is the session this
+  // request carried having ended between the cold load and the screen, which is
+  // exactly the fact `sessionExpiryInterceptor` owns, and suppressing it would
+  // leave that person on a screen whose every read now fails with nothing
+  // saying why.
   public getMe(): Observable<MeDto> {
     return this.get<MeDto>('api/me');
+  }
+
+  // The same route, asked the opposite question: *is* there a session, and
+  // whose. It is the request `SessionService.probe()` makes on every cold load,
+  // before the first route activates, from a browser that cannot read the
+  // `HttpOnly` cookie and so has no local evidence at all — which makes a 401
+  // this call's own answer rather than a session ending. It is the purest
+  // member of the class `EXPECTS_UNAUTHENTICATED` names: a request made by a
+  // browser holding no session to lose.
+  //
+  // Without the token every anonymous cold load ends in
+  // `sessionExpiryInterceptor` navigating to `/welcome` from inside the
+  // `APP_INITIALIZER` — before the router has activated anything, so no deep
+  // link in the product is reachable while signed out. `probe()` already
+  // publishes `anonymous` from this refusal itself, so what is suppressed here
+  // is a second, redundant statement of a fact the caller has already made.
+  //
+  // A second method rather than a token on `getMe()`, because the two callers
+  // are asking different things of one route and only the request can tell them
+  // apart. Named for the question and not for the path, so that a reader
+  // choosing between the two is choosing between two meanings of a 401.
+  public getSessionOwner(): Observable<MeDto> {
+    return this.get<MeDto>(
+      'api/me',
+      new HttpContext().set(EXPECTS_UNAUTHENTICATED, true),
+    );
   }
 
   // The export is bytes, never a parsed document, and that is the whole point

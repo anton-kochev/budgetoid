@@ -3,19 +3,24 @@ import {
   HttpErrorResponse,
   HttpRequest,
   HttpResponse,
+  provideHttpClient,
+  withInterceptors,
   type HttpEvent,
   type HttpHandlerFn,
 } from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { MeApiService } from '@app-core/api/me-api.service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
 import { Router } from '@angular/router';
 import { of, throwError } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  EXPECTS_UNAUTHENTICATED,
-  sessionExpiryInterceptor,
-} from './session-expiry.interceptor';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EXPECTS_UNAUTHENTICATED } from './expects-unauthenticated.token';
+import { sessionExpiryInterceptor } from './session-expiry.interceptor';
 
 // The same two origins `api-credentials.interceptor.spec.ts` uses, and for the
 // same reason: the predicate that decides which of them this interceptor may
@@ -243,5 +248,153 @@ describe('sessionExpiryInterceptor', () => {
     expect(outcome.ended).toBe(false);
     expect(outcome.destination).toBeNull();
     expect(outcome.events).toEqual([answer]);
+  });
+});
+
+// `GET /api/me` is read by two callers asking two different questions, and the
+// defect this block exists for is the interaction between them rather than
+// anything either file does alone. `outcomeOf` above hands the interceptor a
+// request this spec built, so it can only ever pin what the interceptor does
+// with a context token — never whether the caller that needed one set it. Here
+// the production `SessionService`, the production `MeApiService` and the
+// production interceptor are wired to each other through the real `HttpClient`,
+// and only the backend, the configuration and the `Router` are swapped.
+//
+// Measured in a browser before it was written: an anonymous cold load of
+// `/register` landed on `/welcome`, with no `RegisterComponent` chunk in the
+// network log, because the probe's own 401 was read as a session ending and
+// `sessionExpiryInterceptor` navigated out of the `APP_INITIALIZER`.
+describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
+  // Everything a test needs to say what the whole chain did, and deliberately
+  // not the interceptor's own arguments: the subject here is which caller's
+  // request carries the token, which is a fact about `MeApiService`.
+  interface Wiring {
+    readonly http: HttpTestingController;
+    readonly session: SessionService;
+    readonly meApi: MeApiService;
+    // Called or not, on the real instance rather than a fake. A stub of
+    // `SessionService` would have this file supply the very transition it
+    // asserts on, and the status it publishes is what test two reads.
+    readonly ended: () => boolean;
+    // Every destination the implementation reached for, through either `Router`
+    // method, normalized by `pathOf`. A list rather than a first call, because
+    // "navigates nowhere" is an assertion about all of them.
+    readonly destinations: () => readonly string[];
+  }
+
+  let wiring: Wiring;
+
+  function wireTheRealChain(): Wiring {
+    const navigateByUrl = vi.fn(
+      (url: string): Promise<boolean> => Promise.resolve(true),
+    );
+    const navigate = vi.fn(
+      (commands: readonly string[]): Promise<boolean> => Promise.resolve(true),
+    );
+    const configuration: Pick<ConfigurationService, 'getConfig'> = {
+      getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
+    };
+
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(withInterceptors([sessionExpiryInterceptor])),
+        provideHttpClientTesting(),
+        { provide: ConfigurationService, useValue: configuration },
+        { provide: Router, useValue: { navigateByUrl, navigate } },
+      ],
+    });
+
+    const session = TestBed.inject(SessionService);
+    // `spyOn` and not a replacement: the real `ended()` still runs, so the
+    // status a test reads afterwards is written by production code.
+    const ended = vi.spyOn(session, 'ended');
+
+    return {
+      http: TestBed.inject(HttpTestingController),
+      session,
+      meApi: TestBed.inject(MeApiService),
+      ended: () => ended.mock.calls.length > 0,
+      destinations: () => [
+        ...navigateByUrl.mock.calls.map(([url]) => pathOf(url)),
+        ...navigate.mock.calls.map(([commands]) => pathOf(commands)),
+      ],
+    };
+  }
+
+  function refuse(): void {
+    wiring.http
+      .expectOne(API_URL)
+      .flush(null, { status: 401, statusText: 'Unauthorized' });
+  }
+
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+    wiring = wireTheRealChain();
+  });
+
+  afterEach(() => {
+    wiring.http.verify();
+    TestBed.resetTestingModule();
+  });
+
+  // The defect itself. The probe is the request that *asks* whether there is a
+  // session, so its 401 is the answer it went to fetch — read as a session
+  // ending it navigates every anonymous visitor to `/welcome` from inside the
+  // `APP_INITIALIZER`, before the router has activated anything, which makes
+  // every deep link in the product unreachable while signed out.
+  it('navigates nowhere and ends no session when the probe is refused', async () => {
+    // Arrange
+    const probed = wiring.session.probe();
+
+    // Act
+    refuse();
+    await probed;
+
+    // Assert
+    expect(wiring.ended()).toBe(false);
+    expect(wiring.destinations()).toEqual([]);
+  });
+
+  // The control for the test above, which without it passes just as well
+  // against a probe that stopped reading the answer at all — or one that never
+  // asked. `probe()` already owns this status, which is why suppressing the
+  // interceptor's second, redundant statement of it costs nothing.
+  it('still publishes the refused probe as an anonymous visitor', async () => {
+    // Arrange
+    const probed = wiring.session.probe();
+
+    // Act
+    refuse();
+    await probed;
+
+    // Assert
+    expect(wiring.session.status()).toBe('anonymous');
+  });
+
+  // The negative control for the split, and the reason the token goes on one
+  // caller rather than on the service. The Settings screen reads the same route
+  // to show the account's email, and it reads it from a browser that believes
+  // it holds a session: there a 401 means the session ended between the cold
+  // load and the screen, and the bounce is the correct answer. Marking
+  // `getMe()` itself — the obvious simplification — would take this behaviour
+  // away and leave that person on a screen whose every read now fails, with
+  // nothing on the page saying why.
+  it('ends the session and leaves for the welcome screen when the settings read of the same route is refused', () => {
+    // Arrange
+    const refusals: unknown[] = [];
+
+    // Act
+    wiring.meApi.getMe().subscribe({
+      error: (error: unknown) => refusals.push(error),
+    });
+    refuse();
+
+    // Assert
+    expect(wiring.ended()).toBe(true);
+    expect(wiring.destinations()).toEqual([WELCOME]);
+    expect(wiring.session.status()).toBe('anonymous');
+    // Still re-thrown, so the screen renders its own failure line rather than
+    // sitting on a loading state under a navigation a guard may cancel.
+    expect(refusals).toHaveLength(1);
   });
 });

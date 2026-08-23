@@ -40,8 +40,16 @@ describe('appConfig', () => {
     // owner of "the session ended", and the second test below watches the real
     // one make that transition; stubbing it would leave that test asserting a
     // value written by this file. Cutting the probe off at the API service
-    // removes the request just as completely — `getMe()` never reaches
+    // removes the request just as completely — `getSessionOwner()` never reaches
     // `HttpClient` — so the first test still sees exactly one request.
+    //
+    // `getSessionOwner` is the method `probe()` calls: the same `/api/me` route
+    // as `getMe`, asked whether there is a session at all rather than for the
+    // address to render, and the only one of the two that carries
+    // `EXPECTS_UNAUTHENTICATED`. Stubbing the wrong one leaves the probe
+    // throwing a `TypeError` that `probe()` swallows into `'unreachable'` —
+    // both tests below still pass, and the silencing this comment describes is
+    // no longer happening.
     const configuration: Pick<ConfigurationService, 'getConfig' | 'load'> = {
       getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
       load: () => Promise.resolve(true),
@@ -49,8 +57,8 @@ describe('appConfig', () => {
     const auth: Pick<AuthService, 'initialize'> = {
       initialize: () => Promise.resolve(),
     };
-    const me: Pick<MeApiService, 'getMe'> = {
-      getMe: () => of({ email: 'visitor@budgetoid.app' }),
+    const me: Pick<MeApiService, 'getSessionOwner'> = {
+      getSessionOwner: () => of({ email: 'visitor@budgetoid.app' }),
     };
     const oAuth: Pick<OAuthService, 'getIdToken'> = {
       getIdToken: () => '',

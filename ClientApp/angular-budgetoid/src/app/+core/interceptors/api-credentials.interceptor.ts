@@ -19,13 +19,17 @@ const CLIENT_NAME = 'budgetoid-web';
 // provider's token to a route that has moved.
 //
 // This direction rather than the other for a reason beyond taste. The
-// interceptor may not import the service: that file imports
-// `EXPECTS_UNAUTHENTICATED` from `session-expiry.interceptor`, which imports
-// `isApiRequest` from this one, so the edge would close a cycle. It is also the
-// arrangement already used on both sides of that pair — `isApiRequest` is
-// exported from here to the other interceptor, and `EXPECTS_UNAUTHENTICATED` is
-// exported from there to `RegistrationApiService`. What an interceptor enforces
-// is declared where it is enforced, and the caller imports it.
+// interceptor may not import the service, because the service imports these two
+// constants from here and the edge back would close the cycle outright.
+//
+// `isApiRequest` below is declared here for the same reason and it survives the
+// same test: its one other reader is `sessionExpiryInterceptor`, and neither
+// this file nor that one imports anything the other reaches. That is what makes
+// "declared where it is enforced" safe here and unsafe generally —
+// `EXPECTS_UNAUTHENTICATED` is set by three services and read by that
+// interceptor, so declaring it inside the reader pulled the reader's imports,
+// `SessionService` among them, into every writer. It lives in
+// `expects-unauthenticated.token.ts` now, which that file argues.
 export const REGISTRATION_OPTIONS_PATH = '/api/registration/options';
 export const REGISTRATION_PATH = '/api/registration';
 

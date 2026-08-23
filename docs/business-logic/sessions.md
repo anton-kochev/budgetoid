@@ -480,8 +480,16 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   on the way back; it is one definition with two callers rather than one interceptor, and that is
   what keeps "one predicate" literally true. The two registration paths are declared there too and
   imported by `RegistrationApiService`, which builds the requests — that direction and not the other,
-  because the service imports `EXPECTS_UNAUTHENTICATED` from the expiry interceptor, which imports
-  the origin predicate from this one, so the opposite edge would close a cycle. Two modules have to
+  because the service already imports two paths from here, so the opposite edge would close a cycle
+  directly. **`EXPECTS_UNAUTHENTICATED` is the same rule reached from the other side and answered
+  differently**: it lives in `expects-unauthenticated.token.ts`, a module holding the token and
+  nothing else, rather than in the interceptor that reads it. Three unrelated services set it and one
+  interceptor reads it, and that interceptor depends on `SessionService`, which depends on
+  `MeApiService` — so declaring the token inside the reader drags the reader's whole import graph
+  into every writer and closes a three-module cycle the moment one of the writers is on that graph.
+  Which is exactly what happened when the session probe became a writer. The origin predicate can
+  stay where it is because both ends of its edge are interceptors and neither reaches the other's
+  services. Two modules have to
   agree about those two strings and a second spelling of either fails silently in both directions: a
   path corrected only in the service loses the bearer and meets a `401` on the flow's first call,
   while a path corrected only in the interceptor hands the provider's token to a route that has
@@ -527,7 +535,17 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   them. A flash of somebody else's screen on every cold load, from a probe that never reached the
   API. `BaseApiService` resolves the base **per request** for exactly this reason — it used to copy
   it at construction, and `SessionService` being in the initializer's `deps` meant that copy was
-  taken before the factory body ran. The **await** is what
+  taken before the factory body ran. **Fixing that address turned a second, latent defect on**, and
+  it is worth the sentence because the first fix is what made it reachable: with the probe finally
+  arriving at the API, its `401` was a real one, and the probe carried no
+  `EXPECTS_UNAUTHENTICATED` — so `sessionExpiryInterceptor` read the answer as a session ending and
+  navigated **every anonymous cold load** to `/welcome`, from inside the initializer, before any
+  route had a chance to activate. `/register` was unreachable by URL, which is the address the
+  identity provider redirects back to. The probe therefore goes through
+  `MeApiService.getSessionOwner()`, which sets the token, and never through `getMe()`, which the
+  Settings screen uses and where a `401` is a session that really has ended. That split is the
+  enforcement, and `session-expiry.interceptor.spec.ts` holds both directions of it — a probe that
+  navigates nowhere, and a Settings read on the same route that still does. The **await** is what
   keeps every guard synchronous — bootstrapping cannot finish while the answer is outstanding — and
   `core.providers.spec.ts` pins both halves separately, because a `void probe()` satisfies one and
   fails the other. `probe()` resolves however the read ends and **never rejects**; a rejection is
@@ -562,9 +580,14 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   whose session is intact, so acting on one ends a live session over a bug in the request builder.
   **Another origin's `401`** is a statement about a token this product does not issue — the app
   reaches the identity provider through the same `HttpClient`, so a sign-out would be caused by a
-  third party. And the **anonymous ceremony routes answer `401` as their own verdict**: a passkey
-  that did not verify, a recovery code that matched nothing. None of those is a session ending,
-  because there is no session yet. The **re-throw** is what keeps this an observer rather than a
+  third party. And a **request whose `401` is its own answer** carries the token: the anonymous
+  ceremony routes — a passkey that did not verify, a recovery code that matched nothing — and **the
+  session probe**, which is the purest case of it, because a `401` there is the very answer the
+  request went to fetch. None of those is a session ending, because there is no session yet. The
+  probe was the one that had to be learned the expensive way: unmarked, every anonymous cold load in
+  the product navigated to `/welcome` from inside the `APP_INITIALIZER`, before any route activated,
+  so `/register` was unreachable by URL — including the address the identity provider redirects back
+  to. The **re-throw** is what keeps this an observer rather than a
   handler; swallowed, the error reaches no caller's `catchError` and the screen that made the
   request sits on its loading line forever, under a navigation a guard may itself cancel.
 - **Enforced in**: `sessionExpiryInterceptor`, registered after `apiCredentialsInterceptor` so the
@@ -574,7 +597,14 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   ending the session of somebody who mistyped a recovery code.
   `app.config.spec.ts` carries a registration pin for this interceptor too, independent of the
   credentials one.
-  - **The token has its first two callers, and they are both legs of registration.**
+  - **Four callers set it, in three services, and they are one class rather than a list.**
+    `RegistrationApiService` on both legs, `SignInApiService` on both assertion legs, and
+    `MeApiService` on the session probe — and the probe is what makes the class worth naming, because
+    it is the only one nobody would think to call a ceremony. What they share is that the browser
+    holds no session to lose and the `401` is the route's answer to *this request*. `getMe()` is the
+    counterexample sitting on the same route: the Settings screen reads it while signed in, so a
+    `401` there really is a session that ended, and it carries no token. One route, two questions,
+    and the token is which question was asked.
     `RegistrationApiService` sets it on the options call and on the request that creates the account,
     each on a **fresh** `HttpContext` because that object is mutable and a shared one would be read
     and written by every registration request in the visit. Both are made by a browser holding no

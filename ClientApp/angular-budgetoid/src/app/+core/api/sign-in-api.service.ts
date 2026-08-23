@@ -10,7 +10,7 @@
 // really that file's, the comment points at it rather than restating it.
 import { HttpClient, HttpContext } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/session-expiry.interceptor';
+import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
 import type {
   PasskeyAssertionPayload,
   PasskeyRequestOptionsJson,
@@ -21,7 +21,9 @@ import type { Observable } from 'rxjs';
 // `BaseApiService` is deliberately not extended, for the reason
 // `registration-api.service.ts` gives at its own class: both requests have to
 // carry `EXPECTS_UNAUTHENTICATED`, that token rides on an `HttpContext`, and
-// that class has no parameter for one. Widening its shared `post` so one caller
+// that class's `post` has no parameter for one — its `get` does, for the one
+// route two callers read asking two different questions, and that is not a
+// precedent the other verbs inherit. Widening its shared `post` so one caller
 // can pass a context would put a parameter on nine other services' call sites
 // that none of them may ever use. What extending would buy is the getter below:
 // `apiBaseUrl` is read here exactly as that class reads it — **per request**,

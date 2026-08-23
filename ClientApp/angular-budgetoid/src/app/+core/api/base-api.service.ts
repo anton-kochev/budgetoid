@@ -1,4 +1,8 @@
-import { HttpClient, HttpHeaders } from '@angular/common/http';
+import {
+  HttpClient,
+  HttpHeaders,
+  type HttpContext,
+} from '@angular/common/http';
 import { inject } from '@angular/core';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { Observable } from 'rxjs';
@@ -31,8 +35,25 @@ export abstract class BaseApiService {
     return this.configuration.getConfig().apiBaseUrl;
   }
 
-  protected get<T>(path: string): Observable<T> {
-    const opts = { headers: BaseApiService.headers() };
+  // The optional `HttpContext` is the one parameter on this shared path that
+  // almost every call site must never pass, and it is here because a *route*
+  // can be read by two callers asking two different questions. `GET /api/me` is
+  // the case: `SessionService.probe()` reads it to find out whether there is a
+  // session at all, so its 401 is the answer it went to fetch and must carry
+  // `EXPECTS_UNAUTHENTICATED`; the Settings screen reads the same route to
+  // render the account's email, from a browser that believes it holds a
+  // session, where a 401 does mean the session ended and the bounce is correct.
+  // A token that rides on the request is the only thing that can tell two calls
+  // to one method apart, so it belongs on the call rather than on the service.
+  //
+  // Only `get` takes one, and `post` deliberately still does not: both anonymous
+  // POST surfaces build their own requests instead of extending this class, for
+  // the reason `registration-api.service.ts` argues at its own class.
+  protected get<T>(path: string, context?: HttpContext): Observable<T> {
+    // `context: undefined` is what a caller that passes nothing produces, and
+    // `HttpRequest` replaces it with a fresh `HttpContext` — so the request an
+    // existing caller makes is byte-for-byte the one it made before.
+    const opts = { context, headers: BaseApiService.headers() };
 
     return this.http.get<T>(`${this.baseUrl}/${path}`, opts);
   }

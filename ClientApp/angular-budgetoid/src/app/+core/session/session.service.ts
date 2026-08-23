@@ -39,7 +39,15 @@ export class SessionService {
   // page. The failure is published as a state, which is the handling.
   public async probe(): Promise<void> {
     try {
-      await firstValueFrom(this.api.getMe());
+      // `getSessionOwner()` and not `getMe()`, which is the same route. That
+      // method carries `EXPECTS_UNAUTHENTICATED`, so the 401 this call went to
+      // fetch reaches the `catch` below and nothing else — without it
+      // `sessionExpiryInterceptor` reads the answer as a session ending and
+      // navigates to `/welcome` from inside the `APP_INITIALIZER`, before the
+      // router has activated anything, which is every anonymous visitor's deep
+      // link. The reading of that 401 belongs to the `catch` below, and is made
+      // once.
+      await firstValueFrom(this.api.getSessionOwner());
       this.statusSignal.set('authenticated');
     } catch (error: unknown) {
       this.statusSignal.set(SessionService.readingOf(error));
