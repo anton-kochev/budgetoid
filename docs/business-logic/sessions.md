@@ -517,8 +517,17 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   initializer costs a redundant state rather than every visitor bounced on every cold load.
 - **Enforced in**: `SessionService` in `+core/session/`, probed from the `APP_INITIALIZER` in
   `core.providers.ts` **after** `config.load()` and **awaited**. The ordering is not stylistic:
-  `BaseApiService` reads `apiBaseUrl` in its constructor and the config holds `''` until `load()`
-  resolves, so an earlier probe sends `GET /api/me` to this app's own origin. The **await** is what
+  the config holds `''` until `load()` resolves, so a probe made before it addresses
+  `GET /api/me` to this app's own origin. **What that origin answers is the part worth writing
+  down**, because it is quieter than anyone predicted and it is why this survived a release: not a
+  404, but **200 with `index.html`** — the dev server's SPA fallback and, in production, Azure's
+  `navigationFallback` behave alike. Under `responseType: 'json'` that body fails to parse, which
+  is not a 401, so the reading is `unreachable`, which both guards admit; the visitor reaches
+  `/app`, the screen paints, its own requests are refused, and `sessionExpiryInterceptor` bounces
+  them. A flash of somebody else's screen on every cold load, from a probe that never reached the
+  API. `BaseApiService` resolves the base **per request** for exactly this reason — it used to copy
+  it at construction, and `SessionService` being in the initializer's `deps` meant that copy was
+  taken before the factory body ran. The **await** is what
   keeps every guard synchronous — bootstrapping cannot finish while the answer is outstanding — and
   `core.providers.spec.ts` pins both halves separately, because a `void probe()` satisfies one and
   fails the other. `probe()` resolves however the read ends and **never rejects**; a rejection is

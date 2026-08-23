@@ -240,8 +240,8 @@ describe('WelcomeComponent', () => {
         // sign-in flow: it provides `SignInService`, and the template reads
         // `busy()` and `failure()` on first paint, so building the component
         // constructs that flow — and with it `SignInApiService` and
-        // `SessionService`, both of which read `apiBaseUrl` out of
-        // `ConfigurationService` in their constructors. The three providers
+        // `SessionService`, both of which reach `ConfigurationService` for the
+        // `apiBaseUrl` they address requests with. The three providers
         // below are what the flow needs to *exist*; nothing in this block
         // presses anything, so none of them is exercised, and the testing
         // backend is here so a screen that started calling out at first paint

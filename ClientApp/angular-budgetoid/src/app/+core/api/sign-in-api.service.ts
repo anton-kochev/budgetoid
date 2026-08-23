@@ -23,13 +23,18 @@ import type { Observable } from 'rxjs';
 // carry `EXPECTS_UNAUTHENTICATED`, that token rides on an `HttpContext`, and
 // that class has no parameter for one. Widening its shared `post` so one caller
 // can pass a context would put a parameter on nine other services' call sites
-// that none of them may ever use. What extending would buy is the line below:
-// `apiBaseUrl` is read here exactly as that class reads it.
+// that none of them may ever use. What extending would buy is the getter below:
+// `apiBaseUrl` is read here exactly as that class reads it — **per request**,
+// never copied at construction, for the reason that class states at its own
+// getter.
 @Injectable({ providedIn: 'root' })
 export class SignInApiService {
   private readonly http = inject(HttpClient);
-  private readonly baseUrl =
-    inject(ConfigurationService).getConfig().apiBaseUrl;
+  private readonly configuration = inject(ConfigurationService);
+
+  private get baseUrl(): string {
+    return this.configuration.getConfig().apiBaseUrl;
+  }
 
   /**
    * Mints the challenge this assertion is signed over.

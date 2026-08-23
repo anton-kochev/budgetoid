@@ -362,9 +362,15 @@ Load-bearing rules, each explained there or in the linked decision:
   See [sessions.md](docs/business-logic/sessions.md).
 - **The client learns who it is by asking, once, before the first route activates.** The session
   cookie is `HttpOnly`, so nothing in the browser can read it. `SessionService.probe()` runs in
-  the `APP_INITIALIZER` **after** `config.load()` — `BaseApiService` reads `apiBaseUrl` in its
-  constructor — and is **awaited**, which is what keeps every guard synchronous and means no
-  guard ever runs against `'unknown'`. `status` is **four-valued and the fourth is the one a
+  the `APP_INITIALIZER` **after** `config.load()` — you cannot ask an address you have not read
+  yet — and is **awaited**, which is what keeps every guard synchronous and means no guard ever
+  runs against `'unknown'`. **Construction order is deliberately not part of that argument any
+  more.** `BaseApiService` used to copy `apiBaseUrl` in its constructor, and `SessionService` sits
+  in the initializer's `deps`, so Angular built it — and its `MeApiService` — to assemble the
+  factory's arguments, *before* the factory body awaited anything. The copy was `''` for the rest
+  of the session while the config request itself had completed on time. It now resolves the base
+  per request, so no service can hold a stale copy and the ordering rests on when the request is
+  made rather than on when a class is built. `status` is **four-valued and the fourth is the one a
   reader will collapse**: 401/403 → `anonymous`, but a network failure, a 500 or a timeout →
   `unreachable`, and **both guards admit `unreachable` and `unknown`**. Only `anonymous` may
   bounce anybody. Reading silence as a refusal throws a person holding a good session out of

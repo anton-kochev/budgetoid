@@ -101,8 +101,8 @@ const SIGN_OUT_URL = `${API_ORIGIN}/api/me/session/revocation`;
 const WELCOME_ROUTE = '/welcome';
 
 // `ConfigurationService` is not `providedIn: 'root'`, and `BaseApiService`
-// reads `apiBaseUrl` out of it in its constructor. `getConfig()` is the whole of
-// what anything under this screen reads.
+// reads `apiBaseUrl` out of it on every request it sends. `getConfig()` is the
+// whole of what anything under this screen reads.
 const CONFIGURATION_STUB = {
   provide: ConfigurationService,
   useValue: { getConfig: () => ({ apiBaseUrl: API_ORIGIN }) },

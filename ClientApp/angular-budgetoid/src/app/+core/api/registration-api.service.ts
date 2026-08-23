@@ -86,11 +86,17 @@ export type RegistrationRequestBody = PasskeyRegistrationPayload &
 // site that must never be passed on any of them, which is the kind of widening
 // the next caller reads as an invitation. What extending would buy is one line:
 // `apiBaseUrl` is read here exactly as that class reads it, from
-// `ConfigurationService`, at construction, so nothing about where the base URL
-// comes from moves. The `Content-Type` header that class attaches is not missed
-// either — the options leg has no body for it to describe, which is the
-// argument `getBlob` already makes in that file, and Angular sets it from the
-// body on the leg that has one.
+// `ConfigurationService`, **per request** — the getter below is that class's
+// getter, and it is a getter for that class's reason. A field initializer would
+// copy whatever the configuration held when this service was built, and `''` is
+// what it holds until `load()` resolves; a service built before that copies the
+// empty string and addresses every later request to this app's own origin,
+// where the static host answers 200 with `index.html`. Nothing constructs this
+// one that early today, which is a fact about today's injection graph rather
+// than a property of this class. The `Content-Type` header that class attaches
+// is not missed either — the options leg has no body for it to describe, which
+// is the argument `getBlob` already makes in that file, and Angular sets it
+// from the body on the leg that has one.
 //
 // **The two paths are imported, not written here.** `apiCredentialsInterceptor`
 // has to recognise the same two routes to decide which requests still carry the
@@ -102,8 +108,11 @@ export type RegistrationRequestBody = PasskeyRegistrationPayload &
 @Injectable({ providedIn: 'root' })
 export class RegistrationApiService {
   private readonly http = inject(HttpClient);
-  private readonly baseUrl =
-    inject(ConfigurationService).getConfig().apiBaseUrl;
+  private readonly configuration = inject(ConfigurationService);
+
+  private get baseUrl(): string {
+    return this.configuration.getConfig().apiBaseUrl;
+  }
 
   /**
    * Mints the challenge a registration answers, and the account identifier is

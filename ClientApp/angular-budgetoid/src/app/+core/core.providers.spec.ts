@@ -100,12 +100,17 @@ describe('provideAppCore', () => {
     expect(boot.calls).toContain('session.probe');
   });
 
-  // `BaseApiService` reads `apiBaseUrl` in its constructor, and the config holds
-  // `''` until `load()` resolves. A probe that started beside the config load
-  // would send `GET /api/me` to `/api/me` on this app's own origin — a 404 from
-  // the static host, read as unreachable, on every cold load — and the
-  // credentials interceptor would classify it as somebody else's origin and
-  // strip the cookie anyway.
+  // The config holds `apiBaseUrl: ''` until `load()` resolves, and a request
+  // addressed with `''` is a same-origin one whenever it is made. A probe that
+  // started beside the config load would therefore ask `/api/me` on this app's
+  // own origin — answered **200 with `index.html`** by the static host's
+  // navigation fallback, unparseable under `responseType: 'json'`, and so read
+  // as unreachable on every cold load — while the credentials interceptor would
+  // classify it as somebody else's origin and strip the cookie anyway.
+  //
+  // Not a construction-order argument any more: `BaseApiService` resolves the
+  // base URL per request, which `base-api.service.spec.ts` pins. The ordering
+  // stands on when the request is *made*.
   it('asks only after the configuration has loaded', async () => {
     // Arrange
     let release = (): void => undefined;

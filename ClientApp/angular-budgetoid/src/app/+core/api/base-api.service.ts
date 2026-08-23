@@ -6,12 +6,29 @@ import { Observable } from 'rxjs';
 type ContentType = 'json';
 
 export abstract class BaseApiService {
-  private readonly http: HttpClient;
-  private readonly baseUrl: string;
+  private readonly http = inject(HttpClient);
+  private readonly configuration = inject(ConfigurationService);
 
-  constructor() {
-    this.http = inject(HttpClient);
-    this.baseUrl = inject(ConfigurationService).getConfig().apiBaseUrl;
+  // Read on every request and deliberately never snapshotted. A field
+  // initializer here would copy whatever the configuration held at the moment
+  // this service was built, and *when* that is depends on who injects it: a
+  // service reached from the `APP_INITIALIZER`'s `deps` is built to make the
+  // factory's arguments, which is before the factory body has awaited
+  // `config.load()`. That copy is `''` — the value `ConfigurationService`
+  // starts at — and `'' + '/api/me'` is a same-origin path, so the request goes
+  // to the static host, which answers **200 with `index.html`** rather than a
+  // 404. Under `responseType: 'json'` that body fails to parse and the read is
+  // published as `unreachable`, which both guards admit, so the visitor sees a
+  // screen whose every later call is refused. Nothing about that is loud, and
+  // nothing about it is dev-only: Azure Static Web Apps' `navigationFallback`
+  // answers the same way.
+  //
+  // A getter costs one object read per request and buys the property that no
+  // construction order can be wrong. `base-api.service.spec.ts` builds this
+  // class the way the initializer does — before the configuration resolves —
+  // and pins where the request went.
+  private get baseUrl(): string {
+    return this.configuration.getConfig().apiBaseUrl;
   }
 
   protected get<T>(path: string): Observable<T> {
