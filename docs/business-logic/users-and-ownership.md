@@ -766,16 +766,18 @@ else won the race". What a constraint name cannot decide is *what went wrong*: a
 duplicates a credential's subject duplicates that user's email along with it, and the user row is
 written first, so the email index reports. Only the re-read separates the two.
 
-- **A control that closed a gap here was deleted with the path it guarded, and the gap is partly
-  reopened.** The census of repository attribution cited, by name, a test that staged an
-  **unrelated** unique violation into `IUserRepository.TryAddAsync`'s two-index catch filter —
+- **A control that closed a gap here was deleted with the path it guarded, and it was replaced
+  rather than merely lost.** The census of repository attribution cited, by name, a test that staged
+  an **unrelated** unique violation into `IUserRepository.TryAddAsync`'s two-index catch filter —
   proving the filter did not claim violations it should let escape. `TryAddAsync` is gone, and with
-  it that test. `RegistrationRepository` narrows on the same two index names and has **no equivalent
-  control at any layer**. Its own census entry argued the missing control was cheap because three of
-  its four indexes are keyed on a user id derived for that one registration and therefore
-  uncontendable — but **that argument does not cover these two**, which are keyed on values a
-  stranger holds, the whole point of both rules. Read this as a hole to close, not as coverage that
-  moved.
+  it that test; `RegistrationRepository` narrows on the same two index names, and
+  `RegistrationRepositoryTests.RegisterAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape`
+  now stages one into it. What moved is the staging, not the property: the deleted control broke a
+  third index on `credentials`, two neighbouring rules on one table, while this one breaks
+  `PK_recovery_code_hashes` on another table entirely. Both are rules about a whole table, which is
+  what lets either stand in for a row a stranger holds — and a per-account rule could not, because
+  the user id every row of a registration carries is derived for that registration alone.
+  [registration.md](registration.md) owns the detail.
 
 The budget branch that runs after this, on every path, is in
 [budgets.md](budgets.md#decision-trees).

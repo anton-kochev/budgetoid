@@ -354,16 +354,24 @@ rows, 1 session and 1 session token.
     in this call carries is derived for **this** registration from a challenge this server minted
     and has just spent. `PK_users` is not narrowed either: at 122 bits off a single-use nonce, two
     registrations reaching one account identifier is not chance.
-  - **Two of the four catches have lost their mis-attribution control, and it has not been
-    replaced.** The repository-attribution census cited by name a test that staged an **unrelated**
-    unique violation into `IUserRepository.TryAddAsync`'s two-index catch filter, proving the filter
-    did not claim violations it should let escape. That method is deleted and the test with it.
-    These four catches include the same two index names and there is **no equivalent control at any
-    layer**. The census entry argued the missing control was cheap because three of its four indexes
-    are keyed on a `user_id` derived for this one registration and therefore uncontendable. That
-    argument is sound and it **does not cover these two**: `IX_users_email` and
-    `IX_credentials_provider_subject` are keyed on values a stranger holds, the entire point of both
-    rules.
+  - **One test controls all four, and it stages a rule kept by a stranger.**
+    `RegistrationRepositoryTests.RegisterAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape`
+    registers a bystander, keeps one of the ten recovery-code **verifiers** it minted, and submits a
+    second registration — different subject, different address, fresh handle, fresh factor ids,
+    fresh account id — with exactly one of its ten hash rows rebuilt from that verifier. The rule it
+    breaks is `PK_recovery_code_hashes`, unique table-wide whoever owns the row, so the refusal
+    arrives from an account the caller has never seen. It asserts the escaping exception is a
+    `23505` naming that key and **none of the four**.
+    - **Why a table-wide rule and not a neighbouring one.** The three indexes above cannot be
+      staged: they are keyed on a `user_id` derived for this registration alone, so nothing this
+      save writes can reach them. `IX_users_email` and `IX_credentials_provider_subject` are keyed
+      on values a stranger holds — the entire point of both rules — and the control has to be
+      breachable the same way to stand in for them.
+    - **Four clauses, one test**, because widening any one of them to the bare SQLSTATE swallows
+      this violation. It was watched failing against the **email** clause specifically, where it
+      reports `EmailTaken` and nothing escapes; the file's other test stayed green, so this is the
+      only thing in the suite that notices. The control it replaces was deleted with
+      `IUserRepository.TryAddAsync`, which carried the same two-index filter.
 - **Source**: `[SOURCE: discussion]`
 
 ---

@@ -4,14 +4,16 @@ using Domain.Budgets;
 using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace IntegrationTests;
 
 /// <summary>
-/// What <see cref="RegistrationRepository" /> does to the context it was handed when a registration is
-/// refused.
+/// What <see cref="RegistrationRepository" /> does when a registration is refused: to the context it was
+/// handed, and to a violation that is none of the four it speaks for.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -147,6 +149,163 @@ public sealed class RegistrationRepositoryTests
         await Assert.That(await verify.SessionTokens.AnyAsync(token => token.UserId == loserId)).IsFalse();
     }
 
+    private const string BystanderSubject = "google-registration-bystander";
+
+    private const string BystanderEmail = "registration-bystander@example.com";
+
+    private const string CollidingSubject = "google-registration-colliding";
+
+    private const string CollidingEmail = "registration-colliding@example.com";
+
+    /// <summary>
+    /// The primary key over <c>recovery_code_hashes.verifier_hash</c>, spelled out rather than read off
+    /// <see cref="RecoveryCodeHashConfiguration" />.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PasskeyRepositoryTests" /> spells <c>IX_users_email</c> out for the same reason: a
+    /// test that took its expectation from the configuration the schema was generated from would agree
+    /// with a renamed constraint the moment it was renamed, and this file's whole subject is what
+    /// PostgreSQL <em>reports</em>. The configuration declares no constant for it — EF's convention
+    /// names it — so there is nothing to read off in any case.
+    /// </remarks>
+    private const string RecoveryCodeHashPrimaryKeyName = "PK_recovery_code_hashes";
+
+    /// <summary>
+    /// A unique violation this repository does not model escapes, instead of being answered as one of
+    /// the four refusals it does.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What it holds: the <c>ConstraintName</c> comparison inside <c>IsUniqueViolationOf</c>, which
+    /// is the whole reason those four <c>catch</c> clauses carry an index name at all.</b> The
+    /// translation half — that each named index becomes its own
+    /// <see cref="RegistrationOutcome" /> — is pinned over HTTP by
+    /// <see cref="AccountRegistrationTests" />. The mis-attribution half was pinned nowhere: widen any
+    /// one of the four <c>when</c> clauses to the bare SQLSTATE and every test in the suite stays
+    /// green, because nothing else stages a <c>23505</c> this method has no sentence for. Widen the
+    /// email clause and this test reds, reporting
+    /// <see cref="RegistrationOutcome.EmailTaken" /> where an exception should have escaped.
+    /// </para>
+    /// <para>
+    /// <b>What it costs when it fires: somebody registering under an address nobody holds is told the
+    /// address is taken</b>, and sent to a sign-in or a password reset for an account that does not
+    /// exist. It is worse than the 500 the escape produces, because a 500 names the real constraint in
+    /// a log and a confident, specific, false 409 names a rule that was never broken — the loop it
+    /// puts a person in has no exit, since no address they can choose is the one really refusing them.
+    /// </para>
+    /// <para>
+    /// <b>Staged on <c>PK_recovery_code_hashes</c> because it is keyed on a value a <em>stranger</em>
+    /// holds.</b> The primary key is <c>verifier_hash</c> and it is unique table-wide regardless of
+    /// owner, so one account's code can refuse another account's registration — which is exactly the
+    /// property that makes the missing control matter for <c>IX_users_email</c> and
+    /// <c>IX_credentials_provider_subject</c>. All three are rules about the whole table, so the row
+    /// that breaks one is routinely a row the refused caller has never seen and could not have
+    /// chosen. A per-account rule could not stand in here: the account id is derived from a spent
+    /// nonce, so nothing this save writes can collide with anything filed under another <c>user_id</c>
+    /// — the argument the repository itself makes about the three indexes it deliberately does not
+    /// narrow on.
+    /// </para>
+    /// <para>
+    /// <b>One of the ten hashes is replaced, never all ten.</b> A uniformly borrowed set would be
+    /// refused by the first row PostgreSQL reached whatever the rule, and the test could not say the
+    /// refusal was the collision rather than a set that was wrong in some other way. Everything else
+    /// on the second registration — the subject, the address, the WebAuthn handle, the eleven factor
+    /// identifiers, the account id — is freshly minted, so exactly one unique rule is breakable and
+    /// the answer cannot turn on which of two violations the server happened to report first.
+    /// </para>
+    /// <para>
+    /// The SQLSTATE is asserted beside the constraint name, which is what keeps this a narrowing test
+    /// rather than a test that any failure escapes: a violation of some entirely different kind would
+    /// satisfy "not one of the four" without ever exercising the filter. And the bystander's rows are
+    /// read back at the end, because every other assertion here is about a row being <em>absent</em> —
+    /// a save that wiped the database would satisfy all of them.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RegisterAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape()
+    {
+        // Arrange — an account that registered normally, and one of the ten verifiers it minted. On its
+        // own context, exactly as its own request would have had: shared with the call under test, the
+        // two sets would meet in the change tracker rather than in the database, and EF refuses a second
+        // entity carrying a tracked primary key with an InvalidOperationException before a statement is
+        // sent. What this test is about is the sentence PostgreSQL sends back.
+        await using RepositoryTestHost host = await StartHostAsync();
+
+        List<byte[]> bystandersVerifiers = [];
+        Guid bystanderId;
+
+        await using (BudgetoidDbContext seedDb = CreateDb(host))
+        {
+            Registration bystander = NewRegistration(
+                BystanderSubject, BystanderEmail, out bystanderId, bystandersVerifiers);
+            RegistrationOutcome seeded = await new RegistrationRepository(seedDb).RegisterAsync(bystander);
+
+            await Assert.That(seeded).IsEqualTo(RegistrationOutcome.Registered);
+        }
+
+        await using BudgetoidDbContext db = CreateDb(host);
+        RegistrationRepository repository = new(db);
+
+        // A second registration that is beyond reproach everywhere the four filters look, carrying one
+        // code the bystander already holds. Built by replacing a single hash rather than by minting the
+        // set around a borrowed verifier, so the other nine stay exactly what NewRegistration produced.
+        Registration fresh = NewRegistration(CollidingSubject, CollidingEmail, out Guid collidingId);
+        RecoveryCodeHash borrowed = RecoveryCodeHash.From(
+            fresh.RecoveryCodesCredential,
+            bystandersVerifiers[0],
+            DateTime.UtcNow);
+        Registration colliding = fresh with
+        {
+            RecoveryCodeHashes = [borrowed, .. fresh.RecoveryCodeHashes.Skip(1)],
+        };
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.RegisterAsync(colliding));
+
+        // Assert — something escaped, which is already the claim: a swallowed violation would have
+        // returned one of the four outcomes and left this null.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+
+        // And it really was a unique violation, on the rule the arrangement staged.
+        await Assert.That(SqlStateOf(escaped)).IsEqualTo(PostgresErrorCodes.UniqueViolation);
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(RecoveryCodeHashPrimaryKeyName);
+
+        // All four, because the claim is that a stranger's violation is dressed up as none of this
+        // repository's four sentences. Three of them named would stay green on a fourth widened to the
+        // bare SQLSTATE, and each of the four answers with a different, equally confident lie.
+        await Assert.That(ConstraintNameOf(escaped))
+            .IsNotEqualTo(CredentialConfiguration.ProviderSubjectIndexName);
+        await Assert.That(ConstraintNameOf(escaped)).IsNotEqualTo(UserConfiguration.EmailIndexName);
+        await Assert.That(ConstraintNameOf(escaped))
+            .IsNotEqualTo(PasskeyPublicKeyConfiguration.WebAuthnCredentialIdIndexName);
+        await Assert.That(ConstraintNameOf(escaped))
+            .IsNotEqualTo(WrappedAccountKeysConfiguration.PrimaryKeyName);
+
+        // Nothing of the refused account landed. Through a fresh context, so this cannot pass by reading
+        // the rows back out of the tracker that queued them, and by that account's own id rather than by
+        // a count — the bystander's rows are still there, so a count would be answering about those.
+        await using BudgetoidDbContext verify = CreateDb(host);
+        await Assert.That(await verify.Users.AnyAsync(user => user.Id == collidingId)).IsFalse();
+        await Assert.That(await verify.Credentials.AnyAsync(credential => credential.UserId == collidingId))
+            .IsFalse();
+        await Assert.That(await verify.Budgets.AnyAsync(budget => budget.UserId == collidingId)).IsFalse();
+        await Assert.That(await verify.RecoveryCodeHashes.AnyAsync(hash => hash.UserId == collidingId))
+            .IsFalse();
+        await Assert.That(await verify.WrappedAccountKeys.AnyAsync(keys => keys.UserId == collidingId))
+            .IsFalse();
+        await Assert.That(await verify.Sessions.AnyAsync(session => session.UserId == collidingId))
+            .IsFalse();
+        await Assert.That(await verify.SessionTokens.AnyAsync(token => token.UserId == collidingId))
+            .IsFalse();
+
+        // And the bystander is untouched, all ten codes of it. Without this, a save that rolled the
+        // whole database back would satisfy every absence assertion above.
+        await Assert.That(await verify.Users.AnyAsync(user => user.Id == bystanderId)).IsTrue();
+        await Assert.That(await verify.RecoveryCodeHashes.CountAsync(hash => hash.UserId == bystanderId))
+            .IsEqualTo(RecoveryCodeSetSize);
+    }
+
     /// <summary>
     /// One whole account, built the way <c>RegisterAccountHandler</c> builds one: the user, its budget,
     /// three credentials, the passkey's material and counter, ten hashes, eleven shares of the account
@@ -165,8 +324,20 @@ public sealed class RegistrationRepositoryTests
     /// account, so a shared value here would make the second registration anywhere in one database a
     /// <c>23505</c> — the same reason <see cref="WrappedKeyFixture" /> is minted per call.
     /// </para>
+    /// <para>
+    /// <paramref name="mintedVerifiers" /> is how a caller gets one of those minted values back, and it
+    /// is an optional collection rather than a second <c>out</c> so that the calls which do not want one
+    /// keep reading exactly as they did. The verifiers are otherwise unreachable: they are hashed inside
+    /// <see cref="RecoveryCodeHash.From" /> and the row hands back only the digest, which is the whole
+    /// design — see that factory. <see cref="RegisterAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape" />
+    /// needs one because a stranger's code is what it stages the collision on.
+    /// </para>
     /// </remarks>
-    private static Registration NewRegistration(string googleSubject, string email, out Guid accountId)
+    private static Registration NewRegistration(
+        string googleSubject,
+        string email,
+        out Guid accountId,
+        ICollection<byte[]>? mintedVerifiers = null)
     {
         accountId = Guid.CreateVersion7();
         DateTime now = DateTime.UtcNow;
@@ -191,10 +362,7 @@ public sealed class RegistrationRepositoryTests
         IReadOnlyList<RecoveryCodeHash> hashes =
         [
             .. Enumerable.Range(0, RecoveryCodeSetSize)
-                .Select(_ => RecoveryCodeHash.From(
-                    recoveryCodes,
-                    RandomNumberGenerator.GetBytes(RecoveryCodeHash.VerifierLength),
-                    now)),
+                .Select(_ => NewCode(recoveryCodes, now, mintedVerifiers)),
         ];
 
         IReadOnlyList<WrappedAccountKeys> wrappedAccountKeys =
@@ -224,6 +392,26 @@ public sealed class RegistrationRepositoryTests
     private const int RecoveryCodeSetSize = 10;
 
     /// <summary>
+    /// One unredeemed code, over a verifier minted here and handed to <paramref name="mintedVerifiers" />
+    /// on the way past when a caller asked for it.
+    /// </summary>
+    /// <remarks>
+    /// A named method rather than a statement lambda inside the collection expression, because the
+    /// verifier has to be named twice — once to record it and once to hash it — and a call that hashed
+    /// a second draw would file a code no caller of this helper holds.
+    /// </remarks>
+    private static RecoveryCodeHash NewCode(
+        Credential recoveryCodes,
+        DateTime now,
+        ICollection<byte[]>? mintedVerifiers)
+    {
+        byte[] verifier = RandomNumberGenerator.GetBytes(RecoveryCodeHash.VerifierLength);
+        mintedVerifiers?.Add(verifier);
+
+        return RecoveryCodeHash.From(recoveryCodes, verifier, now);
+    }
+
+    /// <summary>
     /// One factor's share of the account keys, over a fresh identifier and a well-formed envelope pair.
     /// </summary>
     /// <remarks>
@@ -241,6 +429,52 @@ public sealed class RegistrationRepositoryTests
             envelopes.ContentEnvelope,
             envelopes.IndexEnvelope,
             now);
+    }
+
+    /// <summary>
+    /// Names the constraint PostgreSQL actually refused on, or <see langword="null" /> when the escaping
+    /// exception never reached the database at all.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PasskeyRepositoryTests" />' helper, spelled out here because each file in this folder
+    /// owns the readers its own assertions need.
+    /// </remarks>
+    private static string? ConstraintNameOf(Exception? exception) =>
+        exception is DbUpdateException { InnerException: PostgresException postgresException }
+            ? postgresException.ConstraintName
+            : null;
+
+    /// <summary>
+    /// The SQLSTATE PostgreSQL refused with, or <see langword="null" /> when nothing did. Read beside the
+    /// constraint name so a narrowing test can say the violation it staged really is the kind the filter
+    /// has to tell apart.
+    /// </summary>
+    private static string? SqlStateOf(Exception? exception) =>
+        exception is DbUpdateException { InnerException: PostgresException postgresException }
+            ? postgresException.SqlState
+            : null;
+
+    /// <summary>
+    /// Runs <paramref name="action" /> and hands back whatever escaped, or <see langword="null" /> when
+    /// nothing did.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately untyped, as in <see cref="PasskeyRepositoryTests" />: the question is <i>which</i>
+    /// exception surfaces, so catching a specific one in the helper would decide the answer before the
+    /// assertion reads it — and the failure being watched for here is no exception at all.
+    /// </remarks>
+    private static async Task<Exception?> CaptureAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
     }
 
     /// <summary>

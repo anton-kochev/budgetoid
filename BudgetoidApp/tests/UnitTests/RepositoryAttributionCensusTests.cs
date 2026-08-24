@@ -13,7 +13,7 @@ namespace UnitTests;
 /// bucket is called "pinned elsewhere", and a reader will take that as parity with the repositories
 /// <c>RepositoryConstraintAttributionTests</c> covers — a translation of the repository's own
 /// constraint <b>and</b> a control proving a stranger's violation is not dressed up in its message.
-/// Three entries do not have both halves today. Writing only the file name would hide that behind a
+/// Two entries do not have both halves today. Writing only the file name would hide that behind a
 /// bucket name, which is the same shape of claim this whole census exists to stop: a word that reads
 /// as complete and is not.
 /// </para>
@@ -116,15 +116,18 @@ public sealed record AttributionCensus(
 /// gained the translation half it also turned out to be missing.
 /// </para>
 /// <para>
-/// <b>Then <c>UserRepository.TryAddAsync</c> was deleted with the provisioning path, and its control
-/// went with it — replaced by nothing.</b> The two-name unique filter over
-/// <c>IX_credentials_provider_subject</c> and <c>IX_users_email</c> did not leave the assembly:
-/// <c>RegistrationRepository.RegisterAsync</c> narrows on the same two names, among four, and holds
-/// the mis-attribution half on none of them. So the suite is one control short of where it was, on a
-/// catch shape that is still live, and <b>both</b> entries say so in their own words rather than one
-/// of them going quiet. That is the discipline this member exists for in both directions: a census
-/// that keeps claiming a gap it no longer has is the same defect as one that hides a gap it does
-/// have, and the second is only easier to notice.
+/// <b>Then <c>UserRepository.TryAddAsync</c> was deleted with the provisioning path, its control went
+/// with it, and the replacement was written against the catch shape that survived.</b> The two-name
+/// unique filter over <c>IX_credentials_provider_subject</c> and <c>IX_users_email</c> did not leave
+/// the assembly: <c>RegistrationRepository.RegisterAsync</c> narrows on the same two names, among
+/// four, and <c>RegistrationRepositoryTests</c> now stages a stranger's
+/// <c>PK_recovery_code_hashes</c> violation into it, in
+/// <c>RegisterAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape</c> — one test controlling all
+/// four clauses, because widening any one of them to the bare SQLSTATE swallows that violation. So the
+/// suite is no longer a control short, and <b>both</b> entries say what they hold in their own words
+/// rather than one of them going quiet. This edit is the discipline this member exists for, running
+/// the other way for once: a census that keeps claiming a gap it no longer has is the same defect as
+/// one that hides a gap it does have, and the second is only easier to notice.
 /// </para>
 /// <para>
 /// <b>What is not claimed is that the twelve are now uniformly covered</b> — only that every entry says
@@ -169,33 +172,30 @@ public sealed class RepositoryAttributionCensusTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Two of the seven are
-    /// pinned in both directions on every narrowing they hold — <c>TransactionRepository</c>, and
+    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Three of the seven are
+    /// pinned in both directions on every narrowing they hold — <c>TransactionRepository</c>;
     /// <c>UserRepository</c>, which now holds only one narrowing because the insert that carried its
-    /// other one was deleted with the provisioning path; two — <c>SessionRepository</c> and
-    /// <c>SessionTokenRepository</c> — have nothing to attribute at all, which is a different statement
-    /// and each says so in its own words; two of the three that write
-    /// <c>wrapped_account_keys</c> each gained a <c>factor_id</c> narrowing whose two halves are not
-    /// both in the file named beside it; and the third of them —
-    /// <c>RegistrationRepository</c> — holds the translation half on all four of its narrowings and the
-    /// mis-attribution half on none.
+    /// other one was deleted with the provisioning path; and <c>RegistrationRepository</c>, which holds
+    /// both halves on all four of its narrowings, the second half being <b>one</b> test rather than
+    /// four. Two — <c>SessionRepository</c> and <c>SessionTokenRepository</c> — have nothing to
+    /// attribute at all, which is a different statement and each says so in its own words. The
+    /// remaining two of the three that write <c>wrapped_account_keys</c> each gained a <c>factor_id</c>
+    /// narrowing whose two halves are not both in the file named beside it.
     /// </para>
     /// <para>
     /// <b>The <c>UserRepository</c> entry is the one to read before trusting the shape of this
     /// list.</b> "Both halves on every narrowing it holds" is a true sentence that got easier to say by
     /// losing a narrowing rather than by gaining a control, and the catch shape it lost is still live
-    /// one entry up. Both entries name each other for that reason.
+    /// one entry up — where it now has a control of its own, written against another table's rule
+    /// rather than a third rule on <c>credentials</c>. Both entries name each other for that reason.
     /// </para>
     /// <para>
-    /// That split is stated rather than smoothed over, for the reason the class remarks give about the
-    /// gap this member was added to expose: the mis-attribution control for the new filter is at that
-    /// layer on both of the first two — an unrelated <c>23505</c> reaching either <c>catch</c> would come
-    /// back as a conflict about a factor identifier nobody claimed — while on both the translation is
-    /// pinned only over HTTP, by the route that stages a duplicate identifier end to end. Both entries
-    /// name the test that does it. <c>RegistrationRepository</c> is the entry the other way up, and its
-    /// own line says why the missing control costs less there than it would anywhere else: every unique
-    /// rule it does <b>not</b> narrow is keyed on a <c>user_id</c> derived for that one registration, so
-    /// no row this save writes can breach one.
+    /// The <c>factor_id</c> split is stated rather than smoothed over, for the reason the class remarks
+    /// give about the gap this member was added to expose: the mis-attribution control for the new
+    /// filter is at that layer on both of those two — an unrelated <c>23505</c> reaching either
+    /// <c>catch</c> would come back as a conflict about a factor identifier nobody claimed — while on
+    /// both the translation is pinned only over HTTP, by the route that stages a duplicate identifier
+    /// end to end. Both entries name the test that does it.
     /// </para>
     /// </remarks>
     private static readonly AttributionPin[] PinnedElsewhere =
@@ -244,9 +244,9 @@ public sealed class RepositoryAttributionCensusTests
         new(
             nameof(RegistrationRepository),
             "AccountRegistrationTests",
-            "the translation half on all four narrowings and the mis-attribution half on none of them, "
-            + "and that asymmetry is the whole of what this entry says. RegisterAsync filters on four "
-            + "index names — IX_credentials_provider_subject, IX_users_email, "
+            "both halves on all four narrowings, and the SHAPE of the second half is what this entry "
+            + "says: ONE test controls all four clauses, not one test per clause. RegisterAsync filters "
+            + "on four index names — IX_credentials_provider_subject, IX_users_email, "
             + "IX_passkey_public_keys_webauthn_credential_id and PK_wrapped_account_keys — and each is "
             + "TRANSLATED over HTTP by one test that stages the collision end to end: "
             + "Registration_WhenTheSubjectAlreadyHasAnAccount_Returns409AndChangesNothing, "
@@ -256,22 +256,30 @@ public sealed class RepositoryAttributionCensusTests
             + "Registration_WhenTheAuthenticatorIsAlreadyRegistered_Returns409 and "
             + "Registration_WhenAFactorIdIsAlreadyRegistered_Returns409. Each also asserts that nothing "
             + "was written, which is what a translation test on a save of roughly thirty rows owes. "
-            + "THERE IS NO MIS-ATTRIBUTION CONTROL, at this layer or over HTTP: nothing stages an "
-            + "unrelated unique violation reaching one of these four catches, so an unrelated 23505 "
-            + "dressed up as one of the four sentences would go unreported. Three of the four are "
-            + "narrower than they look — IX_budgets_user_id_name, IX_credentials_user_id_federated and "
-            + "IX_credentials_user_id_recovery_codes are all keyed on a user_id derived for this "
-            + "registration alone and cannot be breached by anything this save writes, which is what "
-            + "keeps the missing control from being the gap it would be on a repository whose rows share "
-            + "an owner with anybody. THE OTHER FOUR ARE NOT SO NARROW, AND ONE OF THEM LOST ITS ONLY "
-            + "CONTROL ELSEWHERE. IX_credentials_provider_subject and IX_users_email are keyed on "
-            + "values a stranger holds — that is the entire point of both rules — and until the "
-            + "provisioning path was deleted the same two-name filter existed on "
-            + "UserRepository.TryAddAsync with a mis-attribution control beside it, staging "
-            + "IX_credentials_user_id_federated as a third neighbouring rule on credentials. That "
-            + "control went with the method it was written against. Nothing in the suite now stages an "
-            + "unrelated 23505 into a two-name credentials/users filter at any layer, so this entry's "
-            + "missing half is the last statement anybody makes about that catch shape"),
+            + "THE MIS-ATTRIBUTION CONTROL IS AT THIS LAYER, in RegistrationRepositoryTests: "
+            + "RegisterAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape registers a bystander "
+            + "account, keeps one of the ten recovery-code VERIFIERS it minted, and submits a second "
+            + "registration — different subject, different email, fresh handle, fresh factor ids, fresh "
+            + "account id — with exactly one of its ten RecoveryCodeHash rows rebuilt from that "
+            + "verifier. The rule it breaks is PK_recovery_code_hashes, the primary key over "
+            + "verifier_hash, unique TABLE-WIDE REGARDLESS OF OWNER, so it is keyed on a value a "
+            + "STRANGER holds — the same property that makes this control matter for IX_users_email and "
+            + "IX_credentials_provider_subject. It asserts that something escaped, that it is a "
+            + "DbUpdateException, that its SQLSTATE is the unique violation, that its ConstraintName IS "
+            + "PK_recovery_code_hashes and that it is NONE of the four names above, plus that nothing of "
+            + "the refused account was written and that the bystander's ten hashes survive. FOUR "
+            + "CLAUSES, ONE TEST, because widening ANY ONE of them to the bare SQLSTATE swallows this "
+            + "violation. That was watched, on the EMAIL clause: with IsUniqueViolationOf(exception, "
+            + "UserConfiguration.EmailIndexName) widened to a bare PostgresException SqlState check, "
+            + "this test failed on its first assertion and "
+            + "RegisterAsync_AfterARefusedRegistration_LeavesTheContextUsable stayed green — this pin is "
+            + "the only thing in the suite that notices the widening. Three of the unique rules this "
+            + "save could meet are narrower than they look — IX_budgets_user_id_name, "
+            + "IX_credentials_user_id_federated and IX_credentials_user_id_recovery_codes are all keyed "
+            + "on a user_id derived for this registration alone and cannot be breached by anything this "
+            + "save writes, which is why RegisterAsync deliberately does not narrow on them AND why the "
+            + "control had to be staged on a table-wide rule: a per-account rule is unbreakable from "
+            + "here, so no arrangement built on one of those three could have reached a catch at all"),
         new(
             nameof(SessionRepository),
             "SessionRepositoryTests",
@@ -320,10 +328,15 @@ public sealed class RepositoryAttributionCensusTests
             + "lived between two neighbouring rules on one table rather than across tables. That "
             + "method and every one of those tests are gone with the middleware. "
             + "The two-name filter itself is not gone: RegistrationRepository.RegisterAsync narrows on "
-            + "the same two index names, among four, and its entry in this list says in its own words "
-            + "that it holds NO mis-attribution control on any of them. So the control this entry used "
-            + "to name is not merely relocated — the catch shape survives in the assembly with nothing "
-            + "left demonstrating that it is as narrow as it claims"),
+            + "the same two index names, among four. THE CONTROL THIS ENTRY USED TO NAME HAS BEEN "
+            + "REPLACED, NOT MERELY LOST — RegistrationRepositoryTests."
+            + "RegisterAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape stages an unrelated "
+            + "23505 into that surviving catch shape, and that entry says so in its own words. The two "
+            + "are not the same control and the difference is worth keeping: the deleted one staged a "
+            + "THIRD INDEX ON credentials, so it sat between two neighbouring rules on one table, while "
+            + "the replacement stages PK_recovery_code_hashes, a rule on another table entirely. Both "
+            + "are table-wide rather than per-account, which is the property that lets either one stand "
+            + "in for a stranger's row"),
     ];
 
     [Test]
