@@ -478,6 +478,81 @@ erDiagram
 - **Enforced in**: the shape of the assertion finish leg's response.
 - **Source**: `[SOURCE: discussion]`
 
+---
+
+- **Rule**: The client has **one** base64url decoder, it is **strict**, and a second lenient one may
+  never appear beside it. `+core/security/base64url.ts` owns both directions;
+  `webauthn-encoding.ts` calls it and lets its refusals **propagate** rather than catching and
+  softening them into a default.
+- **Why**: the obvious lenient reading of base64url — strip padding it was not supposed to get,
+  accept `+` and `/` because they are "the same bits", skip a character it does not recognise — is
+  wrong here for one reason. These bytes are key material and an AEAD envelope, and the peer that
+  reads them is a different decoder in a different language, written to reject exactly what a lenient
+  reading would wave through. So a lenient decoder accepts a wrapped key the server's own decoder
+  refuses, and the symptom does not arrive on the malformed input: it arrives months later, on
+  somebody else's request, as a key that will not unwrap. Skipping an unrecognised character is the
+  worst of them, because it shortens the output **silently** — an envelope keeps its shape and loses
+  a byte.
+  - **The quietest lenience is `atob`'s own, and the decoder closes it rather than documenting it.**
+    A final group of two or three characters carries four or two bits more than the bytes it stands
+    for, and `atob` discards them instead of refusing: `AA` and `AB` both decode to a single zero
+    byte, and only one of them is an encoding of it. Acceptance is therefore defined as *is what this
+    module's encoder would have emitted* — re-encode and compare — which needs no table of
+    trailing-bit masks and cannot be wrong about one.
+  - **The alphabet is refused by omission**, by an anchored pattern over `A–Z a–z 0–9 - _`, so `+`,
+    `/`, `=` and a character no base64 dialect contains at all are all refused by the same test and
+    there is no branch a new dialect could slip past. The empty string is admitted deliberately: zero
+    bytes is a legitimate value.
+  - **Nothing here is caught by a ceremony either.** `toCreationOptions` decodes the challenge, the
+    user handle and every excluded credential id and repairs none of them — a challenge quietly
+    padded out is a ceremony bound to bytes nobody chose, a repaired user handle is 15 bytes where
+    the account's id is 16, and a repaired credential id excludes a credential that does not exist.
+    `WebauthnCeremonyService` keeps the translation **inside** its `try` so the refusal becomes that
+    method's `failed` result rather than escaping past every caller's check on the result.
+- **Enforced in**: `decodeBase64Url`, whose accepted set is exactly `encodeBase64Url` applied to the
+  bytes it returns, and by `webauthn-encoding.ts` importing it and declaring no decoder of its own.
+  The **encoder** carries a second constraint from elsewhere: it is byte-for-byte what a recovery
+  code's verifier crosses the wire as, so a change to it invalidates codes people have written down
+  — see [recovery-codes.md](recovery-codes.md).
+- **Counterexample**: a private `decode` written in a hurry beside a new caller, because "the browser
+  wants bytes". It passes every test written against it, and what it costs is an envelope the server
+  refuses on somebody else's request.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: `isArrayBuffer` is a **brand check** — `Object.prototype.toString.call(value)` against
+  `'[object ArrayBuffer]'` — and never `instanceof`. It has **one definition**, exported from
+  `webauthn-encoding.ts`, and `webauthn-ceremony.service.ts` imports it rather than keeping a copy.
+- **Why**: `instanceof` walks the prototype chain looking for *this realm's* `ArrayBuffer.prototype`,
+  so a buffer built in another realm answers `false` while nothing about it looks wrong — it renders
+  as `[object ArrayBuffer]` and its constructor is named `ArrayBuffer`. Realms are crossed in
+  ordinary places: an iframe, a worker, and this test runner between two modules it loaded
+  separately. The tag every realm's prototype carries answers the same whichever realm built the
+  buffer, and it still excludes a `SharedArrayBuffer`, which renders as `[object SharedArrayBuffer]`
+  and is not something an authenticator response can hold. `ArrayBuffer.isView` beside it needs none
+  of this care and is deliberately left alone — it is defined on the view's own internal slot.
+  - **The two callers fail differently, and the second is why one definition matters.** In `bytesOf`
+    a wrong `false` on genuine bytes reaches a refusal that says "the response carried a member that
+    is not bytes" — a sentence naming the wrong thing about a perfectly good registration, but a
+    sentence. In `prfOutputOf` the same `false` sends the PRF output down the **view** branch, where
+    `.buffer`, `.byteOffset` and `.byteLength` are all `undefined` on an `ArrayBuffer`: the result is
+    an **empty** array and nothing throws. The account's key-encryption key is then derived from zero
+    bytes, identically on every device, and the `fill(0)` meant to clear the secret clears the empty
+    view while the platform's buffer keeps the PRF output. Both halves of the custody rule fail at
+    once, silently.
+  - **A copy would be decoration guarding the most expensive failure in the product.** Revert *this*
+    definition to `instanceof` and twelve specs redden; revert a copy living in the ceremony service
+    and nothing does, because that spec and that module share a realm under this runner. One
+    definition is one thing tests can hold, which is the whole reason it is exported.
+- **Enforced in**: `isArrayBuffer` in `webauthn-encoding.ts`, imported by
+  `webauthn-ceremony.service.ts`, with the argument written at both ends.
+- **Counterexample**: narrowing with `instanceof AuthenticatorAttestationResponse` for the same job
+  one line up. That one is worse still under the runner, which implements no WebAuthn at all, so the
+  class is not a value there and the check is a `ReferenceError` rather than a failed check — which
+  is why the response shapes are narrowed by the members they carry.
+- **Source**: `[SOURCE: discussion]`
+
 ## Workflows & State Transitions
 
 ```mermaid
@@ -553,6 +628,17 @@ derived from the challenge it just spent — [registration.md](registration.md) 
   to.
 - **[Data isolation](../engineering/data-isolation.md)** — this area's two exempt tables and its
   policed one.
+- **The browser's half is two modules and one seam.** `webauthn-encoding.ts` is pure translation
+  between the API's base64url JSON and the browser's `BufferSource` shapes, and is neither a service
+  nor injected — no state, no configuration, no dependency, so a function is the whole of it.
+  `webauthn-ceremony.service.ts` is the one module that touches `navigator.credentials`, and it is
+  **injectable for the reason `FileDownloadService` is**: the platform behind it does not exist under
+  the test runner, so confining it to a class lets every screen above stub the *service* instead of
+  the platform. Everything below the seam stays real — the translation is the encoder's and the
+  derivation is `account-keys.ts`'s, and neither is re-implemented there.
+  - **It takes no `HttpClient` and no other dependency, and that is structural rather than tidy.** A
+    ceremony holding no way to reach the network cannot post the discarded local assertion by
+    accident, today or after somebody adds a convenience method next year.
 - **The authentication pipeline** — nothing runs between authentication and authorization, so the
   two anonymous legs run with no identity **whatever token accompanies them**, which is exactly the
   state the discovery read needs. `AllowAnonymous` is read off the route rather than matched by

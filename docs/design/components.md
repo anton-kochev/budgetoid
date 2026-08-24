@@ -35,6 +35,19 @@ the subset; the recipe and the verification checklist are in `public/fonts/READM
 Destinations: **Home, Transactions, Accounts, Categories, Settings**, plus the **Add**
 action.
 
+**The navigation belongs to a route, not to the root shell.** It is drawn by `ShellComponent`, the
+layout component on the `app` route, and it is the only place in the product that renders a
+navigation at all. So **which screens carry a bar is a fact about the route table**: everything under
+`/app` is a child of that layout and behind `authGuard`, while `/welcome` and `/register` are
+*siblings* of it — a layout mounted there draws over the one set and cannot reach the other, however
+anything reads.
+
+The alternative is a root shell asking the session service whether to draw a bar, and it is wrong
+twice. It answers a question about **identity** where one about **position** was asked, and it keeps
+a signed-in navigation painted over the welcome screen for as long as a stale status says the visitor
+holds a session — on the two screens whose whole job is getting somebody a session in the first
+place.
+
 **Settings is a destination.** It was specified as deliberately *not* one, reachable only by
 typing its URL. That was a product decision and it was overturned: Settings is where signing
 out, the export, the credential list and the recovery-code count live, so a surface with no

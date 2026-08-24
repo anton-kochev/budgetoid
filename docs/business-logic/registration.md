@@ -545,6 +545,53 @@ rows, 1 session and 1 session token.
 
 ---
 
+- **Rule**: **The flow is one route with no `children`, and the service holding its secrets is
+  provided by the component.** `/register` carries `guestGuard`, declares no child routes, and
+  `RegisterComponent` lists `RegisterService` in its own `providers`.
+- **Why**: the two halves answer different questions and neither works alone.
+  - **No `children`, because a step is in-memory state.** The account keys, the eleven
+    key-encryption keys, the ten codes and the eleven sealed envelopes live in a service that dies
+    with the screen, so `/register/codes` as an address would break two things at once: Back would
+    land on a step whose state is already gone, and the address would be a link somebody could open
+    — or be sent — onto a screen whose whole premise is that ten codes were minted moments ago and
+    are on it. The step is a signal inside `register.component.ts`, so no step URL exists to
+    deep-link.
+  - **Component-provided is custody, not a lifetime preference.** Held at the root, the codes of an
+    **abandoned** registration would still be readable from the injector on an unrelated screen an
+    hour later, and there is nowhere in this product they could legitimately be read from. It is the
+    same rule the service keeps from its own end: a value is a signal only if a template renders it,
+    which is why the eleven key-encryption keys never touch the instance and the ten codes — which
+    the codes step must render — are the one secret published there.
+  - **`guestGuard`, because registration has nothing to offer somebody already holding a session**,
+    and reaching the second step would spend a challenge and a passkey to find that out. The
+    provider's `redirectUri` is this same address, so somebody who pressed **Continue with Google**
+    comes back to the screen that uses what they consented to.
+- **Enforced in**: the `register` entry in `app.routes.ts` — `canActivate: [guestGuard]` and no
+  `children`, with the argument written beside it — and the `providers: [RegisterService]` array on
+  `RegisterComponent`. `register.component.spec.ts` pulls the service out of
+  `fixture.debugElement.injector` and drives the real one, so deleting that array reddens rather than
+  silently promoting the secrets to the root injector.
+- **Counterexample**: a `children` array added "so the steps are linkable", which is exactly the
+  property the third step must not have.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **Nothing asks on the way out.** There is no `canDeactivate` guard and no `beforeunload`
+  handler on this flow, and adding either is a regression.
+- **Why**: abandoning costs nothing. Until the last press nothing has been created, and the ten codes
+  on screen are inert verifiers no server has ever seen — so a confirmation dialog would imply the
+  opposite, that something is being lost, on the one screen where a person's caution is already at
+  its highest. The copy says the true thing instead: **"Nothing is saved until the last step."**
+  stands on every step. After the last press there is nothing to guard either, because the screen
+  navigates itself to `/app`.
+- **Enforced in**: the absence, argued in `register.component.ts`'s header so it reads as a decision,
+  and the standing line in every step's copy — see the Registration chapter of
+  [components.md](../design/components.md).
+- **Source**: `[SOURCE: discussion]`
+
+---
+
 - **Rule**: **The identity provider's redirect lands on `/register`, and the matching entry in the
   Google Cloud console's authorized redirect URIs is part of that change.**
 - **Why**: the registration screen is the only surface that can do anything with a fresh provider

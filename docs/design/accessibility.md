@@ -22,6 +22,28 @@ traps); this chapter is what the system adds and what every component must satis
 - Every interactive element shows `2px solid var(--bud-focus-ring)` with
   `outline-offset: 2px` on `:focus-visible`. The token is theme-aware (deep green on
   light, mint on dark) so the ring always clears 3:1 against paper.
+- **No button shows that ring unless `src/styles.scss` puts it there.** Material sets
+  `outline: none` on `.mdc-button`, so until the global block landed no button in the
+  application drew one at all. It is a single `:focus-visible` block naming every
+  interactive selector, written globally rather than per component so it reaches
+  Material's buttons, the hand-rolled ones, and anything a later screen adds.
+  - **Element selectors, not `:where()`.** The rule has to out-specify
+    `.mdc-button { outline: none }` at (0,1,0), and `:where()` contributes zero
+    specificity — so the tidier selector ships a ring that loses the cascade and looks
+    like the rule was never written.
+  - `mat.strong-focus-indicators()` is not included and is not the answer: it draws an
+    inset border on a pseudo-element and has no offset option, so it cannot express the
+    `outline-offset: 2px` above.
+- **`src/focus-ring.spec.ts` proves the rule *ships*, not that it wins.** It reads the
+  emitted production stylesheet and requires one rule carrying both the token and
+  `outline-offset` — both, because a `:focus-visible` selector naming only the token draws
+  a ring flush against the control, where it reads as a border. It reads `.css` only:
+  component styles are inlined into the JavaScript chunks, so a ring written in one
+  component's stylesheet would otherwise satisfy, on its own, a rule about every
+  interactive element in the application. What it cannot see is specificity, source order
+  and contrast — those belong to the keyboard walkthrough below, which no automated check
+  replaces. It needs a build first; see
+  [frontend testing](../engineering/frontend-testing.md).
 - Fields signal focus through their 2px primary border instead of an outer ring; that
   border must remain the only exception.
 - **A checkbox is not a second exception, it is the rule applied to the right element.**
