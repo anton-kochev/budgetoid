@@ -351,38 +351,32 @@ erDiagram
   reverse, because there is no escrow and no administrative override. Telling them at the one moment
   they can still choose a different device is the whole value of the rule.
   - **What this refusal is not**: `prf.enabled` is asserted by the *client*, is covered by no
-    signature, and the server can neither verify it nor ever see the PRF output, which never leaves
-    the authenticator. So this is a **product gate, not a security control** — an upper layer
-    restating a rule for error quality, never for enforcement. There is no adversary for it: the
-    claim is the account holder's own browser describing the account holder's own authenticator, and
-    whoever forges it registers a passkey whose keys they will not be able to derive, harming nobody
-    else. Anything that later needs to *rely* on PRF must key on a value derived through PRF that
-    the server can check — never on this flag, and never on the fact that this endpoint refuses
-    without it.
-  - **The wrapped account keys are not that value, and the difference is worth stating plainly**,
-    because a reader will see them arrive on the same request and conclude the gate has been made
-    real. It has not. The server cannot tell a key-encryption key derived from an authenticator's PRF
-    output from one derived out of a constant a client chose; no member it could be handed would let
-    it, since seeing any part of the derivation is exactly what must never happen. What the wrapped
-    keys buy is a different and smaller thing: a factor that holds no share of the account keys is
-    **unstorable**, so the failure this gate guesses at is at least no longer reachable by a client
-    that simply omitted them. The gate stays, and stays a guess.
-  - **What `enabled: true` means has been sharpened, and the wire is unchanged.** It no longer means
-    "the authenticator advertised the extension"; it means **the client obtained a PRF output for
-    this credential**. That is a stronger claim and a client can only make it by having the bytes in
+    signature, and the server can neither verify it nor ever see the PRF output. So this is a
+    **product gate, not a security control** — an upper layer restating a rule for error quality,
+    never for enforcement. There is no adversary for it: whoever forges the claim registers a passkey
+    whose keys they will not be able to derive, harming nobody else. Anything that later needs to
+    *rely* on PRF must key on a value derived through PRF that the server can check — never on this
+    flag, and never on the fact that this endpoint refuses without it.
+    - **The wrapped account keys are not that value**, though a reader will see them arrive on the
+      same request and conclude the gate has been made real. The server cannot tell a key-encryption
+      key derived from an authenticator's PRF output from one derived out of a constant a client
+      chose, and no member it could be handed would let it, since seeing any part of the derivation
+      is exactly what must never happen. What they buy is smaller: a factor that holds no share of
+      the account keys is **unstorable**, so the failure this gate guesses at is no longer reachable
+      by a client that simply omitted them. The gate stays, and stays a guess.
+  - **`enabled: true` means the client obtained a PRF output for this credential**, not that the
+    authenticator advertised the extension. A client can only make that claim by having the bytes in
     hand — which closes nothing on the server, for the reason above, but does mean this repository's
-    client cannot report `true` about a device it could not derive from. The server's rule, its
-    sentence, and all five of its pinned refusals are untouched; do not "align" them with this
-    paragraph.
-    - **The payload therefore asserts what the client *established*, not what `create()` reported**,
-      and the two are different for a large share of real devices. `toRegistrationPayload` takes the
-      claim as a parameter and the ceremony passes it, because the ceremony is the only code that
-      knows which of the two routes below produced the output. Built from the creation results alone,
-      the payload reports nothing for exactly the authenticators the second route exists for, and the
-      server answers 400 — by which point the account's keys are sealed into twenty-two envelopes and
-      ten recovery codes are on screen, so a device that works perfectly is told to throw them away,
-      on every attempt, because an authenticator's answer at enrolment never changes. The default
-      stays "as reported": a caller holding no output must not be able to claim one by leaving an
+    client cannot report `true` about a device it could not derive from.
+    - **So the payload asserts what the client *established*, not what `create()` reported**, and the
+      two differ for a large share of real devices. `toRegistrationPayload` takes the claim as a
+      parameter and the ceremony passes it, because the ceremony is the only code that knows which of
+      the two routes below produced the output. Built from the creation results alone, the payload
+      reports nothing for exactly the authenticators the second route exists for, and the server
+      answers 400 — by which point the account's keys are sealed into twenty-two envelopes and ten
+      recovery codes are on screen, on every attempt, because an authenticator's answer at enrolment
+      never changes. The default stays "as reported": a caller holding no output must not be able to
+      claim one by leaving an
       argument off.
   - **A conforming client may need two ceremonies to satisfy it, and one of them goes nowhere.**
     Many platform authenticators return no PRF output at creation and do at the first assertion, so
@@ -393,11 +387,9 @@ erDiagram
     different one, which is the failure this whole rule exists to prevent.
     - **An authenticator that answers `enabled: false` is refused immediately, with no second
       prompt.** Absent is not `false`: a credential reporting no `prf` member has said nothing, and a
-      great many of those derive on the first assertion. `false` is the credential stating it does
-      not evaluate the extension at all, and no assertion against it ever will — so running the local
-      `get()` anyway would raise a second system prompt, make the person authenticate again, and
-      refuse them at the end of it with what was already known. The refusal is owed either way; the
-      second prompt is not.
+      great many of those derive on the first assertion, while `false` is the credential stating it
+      does not evaluate the extension at all and no assertion against it ever will. The refusal is
+      owed either way; the second system prompt is not.
     - That local assertion carries `allowCredentials` naming the new credential, because WebAuthn
       throws `NotSupportedError` when `evalByCredential` is present and the list is empty. It does
       **not** contradict the sign-in rule that no `allowCredentials` is ever sent: that rule is about
@@ -406,40 +398,31 @@ erDiagram
       leaves the browser.
   - **The PRF output itself is never sent, and the payload projection is what stops it.**
     `getClientExtensionResults()` carries `prf.results.first` — the output — so the client builds a
-    fresh `{ prf: { enabled } }` rather than forwarding the results object. See
-    [account-keys.md](account-keys.md) for why a filter or a spread is not an acceptable substitute.
-    The claim above changes **which value `enabled` takes**, never how the member is built: an
-    established claim is a fresh literal too, because copying the results object and overwriting one
-    member would start from the value the projection exists to be rid of and carry the output to the
-    server.
+    fresh `{ prf: { enabled } }` rather than forwarding, filtering or spreading the results object;
+    [account-keys.md](account-keys.md) owns why. An established claim is a fresh literal too:
+    copying the results object and overwriting one member would start from the value the projection
+    exists to be rid of.
 - **Enforced in**: `CompleteRegistrationHandler`, deliberately as the **last check on the ceremony
   response**, after `PasskeyRegistrationVerifier.Verify`. Checked earlier, a malformed, replayed or
   wrong-origin response would be told its authenticator cannot hold the keys, which is a lie about
-  the device. The factor identifier and the two envelopes are judged *after* it, and that is the
-  same argument pointing the other way: a client that cannot do PRF cannot have produced a wrapped
-  key either, so those members are very often absent on exactly the requests this gate is for, and
-  judging them first would tell somebody holding a genuinely incapable device that their *payload*
-  was malformed.
+  the device. The factor identifier and the two envelopes are judged *after* it, the same argument
+  pointing the other way: a client that cannot do PRF cannot have produced a wrapped key either, so
+  those members are very often absent on exactly the requests this gate is for, and judging them
+  first would tell somebody holding a genuinely incapable device that their *payload* was malformed.
   `Registration_WhoseOriginIsWrongAndReportsNoPrfResult_IsRefusedForTheOriginRatherThanTheAuthenticator`
-  owns that ordering, so it is held by a named test rather than incidentally by the payload shape
-  other tests happen to send.
-  - **The refusal spends the challenge**, like every refusal that gets past the decode — the ceiling
-    and parse refusals above `ConsumeAsync` do not. So a client that hits this one must return to
-    the options leg for a fresh nonce rather than retrying the same response against the old one.
-    `Registration_RefusedForItsAuthenticator_ThenRetriedOnTheSameChallenge_FindsItSpent` holds it.
-  - **Every shape of silence refuses, and each is pinned.** A client can say nothing in four
-    distinct ways, and none of them may pass: `clientExtensionResults` as JSON null and
-    `prf.enabled: false`
-    (`Registration_WhoseAuthenticatorReportsNoPrfResult_Returns400NamingTheAuthenticator`, two cases
-    because a predicate written against either half alone passes the other), the `prf` object
-    present and empty (`Registration_WhosePrfResultCarriesNoEnabledMember_…`), `prf.enabled`
-    explicitly null (`Registration_WhosePrfResultReportsANullEnabledMember_…`), and the object
-    present with no `prf` member at all
-    (`Registration_WhoseClientExtensionResultsCarryNoPrfMember_…`) — which is the shape a real
-    browser sends, because `getClientExtensionResults()` always returns an object. `Enabled` is
-    `bool?` precisely so all four reach this refusal's sentence instead of the framework's generic
-    400. `Registration_WhoseAuthenticatorReportsAPrfResult_FilesTheCredentialAndItsKeyAndCounter` is
-    the control on the other side, which a handler refusing *everything* would fail.
+  owns that ordering rather than leaving it to the payload shape other tests happen to send.
+  - **The refusal spends the challenge**, like every refusal past the decode — the ceiling and parse
+    refusals above `ConsumeAsync` do not. So a client that hits this one must return to the options
+    leg for a fresh nonce rather than retrying the same response against the old one.
+  - **Every shape of silence refuses, and each is pinned.** A client can say nothing in four distinct
+    ways and none may pass: `clientExtensionResults` as JSON null or `prf.enabled: false` — one test,
+    **two cases**, because a predicate written against either half alone passes the other — the `prf`
+    object present and empty, `prf.enabled` explicitly null, and the object present with no `prf`
+    member at all, which is what a real browser sends, since `getClientExtensionResults()` always
+    returns an object. `Enabled` is `bool?` precisely so all four reach this refusal's sentence
+    instead of the framework's generic 400, and
+    `Registration_WhoseAuthenticatorReportsAPrfResult_FilesTheCredentialAndItsKeyAndCounter` is the
+    control on the other side that a handler refusing *everything* would fail.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -626,7 +609,7 @@ ELSE consume the row — from here every outcome has burnt the nonce
 The registration, account-registration and re-authentication finish legs walk the same ladder with
 their own pools and their own final arms — see the transition table above; the PRF gate is the extra
 check both registering legs carry, after everything else about the response has passed. Only the
-account-registration leg goes further, and what it adds is a card of recovery codes, an eleventh
+account-registration leg goes further, and what it adds is a set of recovery codes, an eleventh
 factor, and an account identifier derived from the challenge it just spent —
 [registration.md](registration.md) owns all three.
 

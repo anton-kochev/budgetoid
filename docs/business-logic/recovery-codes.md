@@ -995,8 +995,8 @@ ELSE                                                               ← first iss
     each. So a person's browser really does mint codes this server never sees, and the show-once
     screen really does show them. See [registration.md](registration.md) and
     [account-keys.md](account-keys.md).
-  - **What has none, and the reason has moved.** `POST /api/me/recovery-codes` is still uncalled, but
-    no longer because of the assertion: this client runs one on `/welcome`, so the five assertion
+  - **What has none, and what actually blocks it.** `POST /api/me/recovery-codes` is uncalled, and
+    **not** for want of an assertion: this client runs one on `/welcome`, so the five assertion
     members are within reach. What blocks it is the sixth member — ten whole submissions, each
     carrying its own wrapped copy of the account's content key and index key. Wrapping them needs
     them unwrapped, and no route hands `wrapped_account_keys` back, so there is nothing on the device
@@ -1016,12 +1016,11 @@ ELSE                                                               ← first iss
     and nothing else — not the printed position beside them, and no header naming the product inside
     a file of secrets — and the codes never enter a live region. See the recovery-code hand-off
     chapter in [components.md](../design/components.md).
-- **Both sessions this area opens are now real, and both hand back a cookie.** A redemption sets one
-  for the code's owner; a regeneration sets one over the new set **only when its sweep ended a live
+- **Both sessions this area opens are real, and both hand back a cookie.** A redemption sets one for
+  the code's owner; a regeneration sets one over the new set **only when its sweep ended a live
   session**, and a first issue *on this route* sets none — that condition is the rule rather than a
-  detail, and a handler minting unconditionally would pass every other test on this path. So the
-  re-establishment rule has stopped being anticipatory: a regeneration really does sign the person
-  back in rather than out.
+  detail, and a handler minting unconditionally would pass every other test on this path. So a
+  regeneration really does sign the person back in rather than out.
   - **A set issued by registration always comes with a session, and that is not a counterexample.**
     That request establishes one unconditionally, over the **passkey** it created and never over the
     recovery-codes credential — so there is no sweep, no condition, and nothing for this rule to be

@@ -81,7 +81,7 @@ erDiagram
   - **Why**: The name is the only thing that distinguishes one named budget from another, so two
     budgets called "Wedding" and "wedding" would be a list the user cannot read. The same index
     carries a second, separate invariant — at most one *unnamed* budget per owner — and that half is
-    what makes provisioning race-safe; it is stated in Business Rules & Invariants below.
+    what makes registration race-safe; it is stated in Business Rules & Invariants below.
     Case-insensitivity contributes nothing there: neither racing row has a name to fold.
   - **Enforced in**: `BudgetConfiguration` puts `name` on the `case_insensitive` collation and adds a
     unique index over `(user_id, name)`, declared `NULLS NOT DISTINCT`.
@@ -298,8 +298,8 @@ erDiagram
 - **Rule**: A user and its default budget are created in **one** `SaveChanges`, together with the
   account's three credentials. There is no heal: a request that resolves an account and finds no
   budget **throws** rather than repairing anything.
-- **Why**: the budget used to go in a second save, which made "a user row with no budget" reachable
-  and bought a find-or-create on every authenticated request to repair it. One save removes the state
+- **Why**: a second save for the budget makes "a user row with no budget" reachable, and paying for
+  it means a find-or-create on every authenticated request to repair it. One save removes the state
   instead of tolerating it, and the atomicity argument is the one
   [users-and-ownership.md](users-and-ownership.md) already makes for the credentials, applied
   verbatim. What that buys beyond the round-trip: no route but the one that creates an account writes
@@ -332,8 +332,9 @@ erDiagram
   identity first, the budget second, because `ResolveUser` clears it — onto the scoped
   `CurrentUser` (`UserId`, `BudgetId`). `HttpContextBudgetContext` exposes `CurrentUser.BudgetId` as
   `IBudgetContext.ResolvedBudgetId`, and `IBudgetContext.BudgetId` — the strict accessor the query
-  filters read — is that value with null rejected, so a request that somehow skipped provisioning
-  fails loudly with `InvalidOperationException` instead of querying with a default budget id. The
+  filters read — is that value with null rejected, so a request whose budget was somehow never
+  resolved fails loudly with `InvalidOperationException` instead of querying with a default budget
+  id. The
   strict form is a default interface member rather than something each implementation writes, because
   the row-level security session variable reads one accessor and the query filters read the other:
   two separately written members could name different budgets and nothing would fail. The nullable

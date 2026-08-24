@@ -38,8 +38,9 @@ authenticates everything else.**
   `NoAccountTitle`.
 - `User.Create` — the factory that minted an account under a fresh identifier — is deleted too, so
   `User.CreateWithId` is the only way to obtain a `User` and it takes an id derived from a ceremony's
-  own challenge. **The prohibition on creating an account anywhere else stopped being a doc comment
-  and became a compile error.**
+  own challenge. **That buys a visible edit, not a compile error**: `CreateWithId` takes a plain
+  `Guid`, so a second creating path is one line that would redden nothing — what it can no longer do
+  is invent an account id without saying so in the diff a reviewer reads.
 - The two claim gates move to `RegistrationClaimGate`, an `IEndpointFilter` on the
   `/api/registration` group, carrying `MissingClaimsTitle` and `UnverifiedEmailTitle`.
 - The bridge scheme is deleted. The session cookie handler is the default, the fallback policy names

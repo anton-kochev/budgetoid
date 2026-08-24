@@ -36,7 +36,7 @@ third path is the newest and the widest: `POST /api/registration` writes **eleve
 passkey's pair and one pair per code — inside the one save that creates the whole account.
 
 **The two halves are joined on one path.** `register.service.ts` — the `/register` flow — obtains a
-PRF output from a real authenticator, draws the account's keys, mints the card, derives eleven
+PRF output from a real authenticator, draws the account's keys, mints the set, derives eleven
 key-encryption keys and posts eleven pairs of envelopes, so an account created there really does own
 a content key and an index key that no server has seen. The other two write paths are still reached
 only by the integration suite: nothing in the browser registers a further passkey or issues a
@@ -568,7 +568,7 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
 - **`recovery-codes.md`** — the code a key-encryption key is derived from, and why it never reaches
   the server. The verifier branch and this one are separated only by HKDF's `info`.
 - **`registration.md`** — the **third** write path, and the only one that writes eleven rows in one
-  save. It is also where the passkey factor's identifier is compared against the card's ten, a rule
+  save. It is also where the passkey factor's identifier is compared against the set's ten, a rule
   no other path needs and none of them could hold.
 - **`passkeys.md`** — the ceremony that supplies the PRF output, and the three members registration
   carries. The registration path refuses an authenticator that reports no enabled `prf` result;
@@ -585,7 +585,7 @@ about why, because a wrapped key it cannot open is a wrapped key it cannot open.
 ## Edge Cases & Known Gotchas
 
 - **The chain reaches a person on one path and stops short on the other two.** `/register` runs the
-  whole of it — ceremony, keys, card, eleven wraps, one request — so `generateAccountKeys`,
+  whole of it — ceremony, keys, set, eleven wraps, one request — so `generateAccountKeys`,
   `wrapAccountKeys`, `keyEncryptionKeyFromPasskey` and `keyEncryptionKeyFromRecoveryCode` all have
   live callers now. `unwrapAccountKeys` does **not**: nothing in this product opens an envelope
   outside a spec, because nothing is encrypted yet, and the day that changes is the day the locked

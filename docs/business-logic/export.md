@@ -156,7 +156,8 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
   `DataExportRefusalTests.Export_ForAnOwnerOfASecondBudget_IsRefusedWithoutABody`, whose control
   `…Export_ForAnOwnerOfTheProvisionedBudgetAlone_IsAnswered` proves the seeding path can produce a
   success.
-- **Example**: an owner of only the provisioned budget receives the complete document with a `200`.
+- **Example**: an owner of only the budget registration created receives the complete document with a
+  `200`.
   The same person handed a second budget out of band gets a bodyless `500` on the next export — and
   keeps getting it until the export can read both.
 - **Counterexample**: a user owning a second budget receives a document listing both budgets with one
@@ -192,7 +193,7 @@ belonging to no tenant. The sixth carries an argument of its own — see the rul
   contract.
 - **Why**: creation order is the meaningful order for an archive and it survives a rename, so two
   exports a week apart diff only where the data changed. `CreatedAtUtc` alone is not a total order —
-  provisioning writes the user and the budget from one `TimeProvider` read — so a tiebreaker is
+  registration writes the user and the budget from one `TimeProvider` read — so a tiebreaker is
   needed, and it is **not** `Id` alone: `IBudgetRepository.FindFirstForUserAsync` already states as
   contract that UUID v7 sorts by creation time under PostgreSQL's `uuid` byte order but **not** under
   .NET's `Guid.CompareTo`.
@@ -417,13 +418,12 @@ rule above.
   `budgetoid-export-{yyyyMMdd}T{HHmmss}Z.json` shape (`settings/export-filename.ts`) — so the saved
   name and the disposition are minted by two clocks and can differ by seconds, and **neither is
   authoritative**.
-- **Two 401s used to reach this route and now there is one.** Every unauthenticated request — no
-  cookie, a cookie naming nothing, a dead session, or a provider bearer this route's policy does not
-  read — is answered by the fallback policy through `UseStatusCodePages`, titled `"Unauthorized"` from
-  the status map alone. The second refusal, a titled `NoAccountTitle` from the provisioning middleware
-  for a valid token naming no account, is gone with the middleware and with the state it described:
-  an authenticated request here cannot name an account that does not exist, because the cookie is only
-  ever issued over a session row written beside one.
+- **Exactly one 401 reaches this route.** Every unauthenticated request — no cookie, a cookie naming
+  nothing, a dead session, or a provider bearer this route's policy does not read — is answered by
+  the fallback policy through `UseStatusCodePages`, titled `"Unauthorized"` from the status map
+  alone. There is no second, titled refusal for a caller naming no account, because an authenticated
+  request here cannot name an account that does not exist: the cookie is only ever issued over a
+  session row written beside one.
   - **And a 403 beside it, from the same policy.** A session that reads no budget
     content is refused here — that arm is in the tree above — and its body carries *no* title at all,
     which is what tells it from the first-party control's 403 on this same route. So the family this

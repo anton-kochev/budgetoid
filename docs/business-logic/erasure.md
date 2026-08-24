@@ -633,16 +633,14 @@ reached anyway completes with `204` — see the never-`404` rule above.
   exactly the wrong layer.
 - **An erased account cannot be resurrected by a token that outlives it, and the mechanism is
   structural rather than a rule some route could forget.** A Google ID token stays valid for up to an
-  hour after the account it names is gone, and account creation used to be a side effect of being
-  authenticated — so a second erasure attempt, an in-flight poll, or a second tab wrote a fresh
-  `users` row carrying the person's email moments after they asked to be forgotten. That is closed
-  twice over now. **A provider token reaches exactly two routes**, both under `/api/registration`,
-  because the fallback authorization policy names the session cookie scheme and only that group's
-  policy names the provider's. And **those two cannot complete without a fresh server-minted challenge
-  and a WebAuthn credential the caller's own authenticator produced**, so a token alone creates
-  nothing however many times it is presented. What used to be a marker on six route groups — with the
-  hole that a client calling a marked route on boot resurrected the account anyway — is now the
-  absence of any other creating path at all. See
+  hour after the account it names is gone, so any path where being authenticated *creates* an account
+  lets a second erasure attempt, an in-flight poll or a second tab write a fresh `users` row carrying
+  the person's email moments after they asked to be forgotten. Two things close it. **A provider
+  token reaches exactly two routes**, both under `/api/registration`, because the fallback
+  authorization policy names the session cookie scheme and only that group's policy names the
+  provider's. And **those two cannot complete without a fresh server-minted challenge and a WebAuthn
+  credential the caller's own authenticator produced**, so a token alone creates nothing however many
+  times it is presented. Any scheme that reinstates creation behind a route marker reopens this. See
   [users-and-ownership.md](users-and-ownership.md) and [registration.md](registration.md).
   - **What a stale token still buys is one new account, and that is not a resurrection.** Somebody
     holding a live provider token after erasing can run `/api/registration` again and create a fresh
@@ -664,14 +662,14 @@ reached anyway completes with `204` — see the never-`404` rule above.
   it. The remnant rule above states the division; read it before touching either side.
 - **A client surface describes an erasure; none can start one, and nothing technical is in the way
   any more.** The account settings screen carries an erasure section — what will be destroyed, that
-  there is no undo, and the backup window above — but its control is **disabled**. The reason used to
-  be that the browser could not run a WebAuthn ceremony. It can: this client creates a passkey on
-  `/register` and asserts one on `/welcome`, so both halves of the gate exist — the route is live and
-  the assertion that authorizes it is a ceremony this client runs. What is missing is narrower and
-  less flattering: the confirmation flow [components.md](../design/components.md) specifies, and the
-  wiring between this button and that assertion. There is still no dialog and no typed confirmation
-  word, so `POST /api/me/erasure` remains reachable only by a caller that builds the assertion
-  itself. The screen says so in its own words — *"Erasing has to be confirmed with a passkey, and
+  there is no undo, and the backup window above — but its control is **disabled**. **Nothing
+  technical blocks it**: the route is live, and the assertion that authorizes it is a ceremony this
+  client already runs, creating a passkey on `/register` and asserting one on `/welcome`. What is
+  missing is narrower and less flattering: the confirmation flow
+  [components.md](../design/components.md) specifies, and the wiring between this button and that
+  assertion. Do not write the copy as though the browser were incapable — it is not. There is still
+  no dialog and no typed confirmation word, so `POST /api/me/erasure` remains reachable only by a
+  caller that builds the assertion itself. The screen says so in its own words — *"Erasing has to be confirmed with a passkey, and
   this screen doesn't ask for one yet."* — and that copy is deliberately **not** the sentence the
   credential and recovery-code sections use: those two wait on unwrapping the account's keys, which
   erasing an account needs nothing of. The wording is owned by

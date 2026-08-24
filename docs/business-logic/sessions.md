@@ -109,36 +109,22 @@ erDiagram
     }
 ```
 
-**`SESSION_TOKEN` is drawn one-to-many because that is what the schema holds**, and the gap between
-that and what the design intends is worth stating rather than drawing over. The primary key is the
-digest, so nothing stops a session from having several token rows, and nothing stops it from having
-none. One-to-one would need either a unique constraint on `session_id` — which would be a real rule
-and is simply not there — or a trigger for the "at least one" half, which
-[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing down.
+**`SESSION_TOKEN` is drawn one-to-many because that is what the schema holds.** The primary key is
+the digest, so nothing stops a session from having several token rows or none. One-to-one would need
+a unique constraint on `session_id` for one half and a trigger for the other, and
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing
+procedural logic down to satisfy "lowest layer".
 
-**What holds one-to-one is the port's shape, and it is stronger than it had to be.**
-`ISessionRepository.AddAsync` takes the session **and** its token, and there is no overload taking a
-session alone — so a session cannot be written without its handle by construction rather than by
-every caller remembering. `ISessionTokenRepository` stays read-only for the same reason, stated from
-the other side: a second way to write a token is a way to produce one naming a session that was never
-committed.
-
-**A second port now writes both rows, and the invariant is untouched because the pairing is what was
-pinned rather than the port.** `IRegistrationRepository.RegisterAsync` writes `sessions` and
-`session_tokens` itself, which is a deliberate departure argued on that port and in
-[registration.md](registration.md): there is no transaction on that path, so a second call to
-`ISessionRepository.AddAsync` — which saves on its own — would be a second transaction and the whole
-account would stop being atomic, silently. What keeps the rule literally true is that
-`Domain.Users.Registration` carries the session **and** its token as required members, so there is
-still no shape of any call in this system that writes one without the other. Read that as the reason
-a third writer is a decision rather than a refactor.
-
-The schema still permits what the application refuses — several tokens for one session, or none — and
-that gap is deliberate rather than an oversight. Closing it would need a unique constraint on
-`session_id` for one half and a trigger for the other, and
-[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing procedural
-logic down to satisfy "lowest layer". So the diagram is drawn one-to-many because that is what the
-database holds, and the sentence above is what makes it one-to-one in fact.
+**The port's shape holds it instead.** `ISessionRepository.AddAsync` takes the session **and** its
+token with no overload taking a session alone, so a session cannot be written without its handle by
+construction rather than by every caller remembering; `ISessionTokenRepository` stays read-only for
+the same reason from the other side, since a second way to write a token is a way to produce one
+naming a session that was never committed. `IRegistrationRepository.RegisterAsync` is a **second
+writer** and the invariant survives, because the pairing was what was pinned rather than the port:
+that path has no transaction, so a second `AddAsync` — which saves on its own — would be a second
+transaction and the account would stop being atomic, silently, while `Domain.Users.Registration`
+carries the session **and** its token as required members. A third writer is a decision rather than a
+refactor.
 
 ## Constraints
 
@@ -232,9 +218,11 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   budget content at all, and **`federated` is the only credential type that cannot**. The rule runs
   that way round rather than the other: a passkey and a set of recovery codes are each a secret in
   the holder's own possession — one held by an authenticator, one written down — so both open a
-  `Full` session. The key custody those secrets are meant to carry is designed and **not built**, so
-  it is not what the rule rests on today. Redeeming a code establishes exactly that session, from the
-  set's own credential — see [recovery-codes.md](recovery-codes.md).
+  `Full` session. The key custody those secrets carry is built and reaches every account there is —
+  registration wraps the account's keys under the passkey and under each of the ten codes — but
+  nothing in the browser *opens* an envelope yet, so possession is still the whole of what the rule
+  rests on. Redeeming a code establishes exactly that session, from the set's own credential — see
+  [recovery-codes.md](recovery-codes.md) and [account-keys.md](account-keys.md).
 - **Enforced in**: `CK_sessions_kind_matches_credential`,
   `(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))`, which is the lowest layer
   that can state the rule declaratively. Without it the rule lived only in the factory while
@@ -457,18 +445,15 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   drops out of sign-in; and an empty `apiBaseUrl` — which is what the config holds until it
   loads — classifies **nothing** as this API, because `''` is a prefix of every string on earth and
   failing open there hands credentials to every request the app makes.
-  - **The bearer did not leave with sign-in; it narrowed, and it is not going to leave.** The
-    sentence this rule used to carry — *until sign-in leaves the identity provider* — was written
-    before registration became provider-authenticated. Sign-in has left, and those two routes
-    authenticate on the provider's scheme and nothing else **permanently**, because an account may
-    not exist without a completed provider exchange and there is no first-party credential to
-    present on the one call that creates the first-party account.
-  - **Narrowing was worth doing even though no other route reads the token.** `RegisterService`
-    discards it at the `201`, but a browser that abandoned registration keeps it for the hour it
-    lives, and what that person usually does next is a passkey sign-in — so both anonymous assertion
-    legs were being handed a provider credential they could not act on. Every hop a credential makes
-    is another log, proxy and error report it can be recorded in, and another handler that could
-    start reading it without anybody deciding to.
+  - **The bearer is permanent on those two routes.** They authenticate on the provider's scheme and
+    nothing else, because an account may not exist without a completed provider exchange and there is
+    no first-party credential to present on the one call that creates the first-party account.
+  - **Narrowing to them was worth doing even though no other route reads the token.**
+    `RegisterService` discards it at the `201`, but a browser that abandoned registration keeps it
+    for the hour it lives, and what that person usually does next is a passkey sign-in — so both
+    anonymous assertion legs were being handed a provider credential they could not act on. Every hop
+    a credential makes is another log, proxy and error report it can be recorded in, and another
+    handler that could start reading it without anybody deciding to.
   - **The order of the two questions is the security property.** Which origin the request is going
     to is settled first; only then which route it is asking for. Reversed — or folded into one path
     test — `https://api.budgetoid.app.attacker.example/api/registration` is a registration request,
@@ -524,32 +509,28 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   rather than after a failed one; it should be unobservable, and admitting it means a deleted
   initializer costs a redundant state rather than every visitor bounced on every cold load.
 - **Enforced in**: `SessionService` in `+core/session/`, probed from the `APP_INITIALIZER` in
-  `core.providers.ts` **after** `config.load()` and **awaited**. The ordering is not stylistic:
-  the config holds `''` until `load()` resolves, so a probe made before it addresses
-  `GET /api/me` to this app's own origin. **What that origin answers is the part worth writing
-  down**, because it is quieter than anyone predicted and it is why this survived a release: not a
-  404, but **200 with `index.html`** — the dev server's SPA fallback and, in production, Azure's
-  `navigationFallback` behave alike. Under `responseType: 'json'` that body fails to parse, which
-  is not a 401, so the reading is `unreachable`, which both guards admit; the visitor reaches
-  `/app`, the screen paints, its own requests are refused, and `sessionExpiryInterceptor` bounces
-  them. A flash of somebody else's screen on every cold load, from a probe that never reached the
-  API. `BaseApiService` resolves the base **per request** for exactly this reason — it used to copy
-  it at construction, and `SessionService` being in the initializer's `deps` meant that copy was
-  taken before the factory body ran. **Fixing that address turned a second, latent defect on**, and
-  it is worth the sentence because the first fix is what made it reachable: with the probe finally
-  arriving at the API, its `401` was a real one, and the probe carried no
-  `EXPECTS_UNAUTHENTICATED` — so `sessionExpiryInterceptor` read the answer as a session ending and
-  navigated **every anonymous cold load** to `/welcome`, from inside the initializer, before any
-  route had a chance to activate. `/register` was unreachable by URL, which is the address the
-  identity provider redirects back to. The probe therefore goes through
-  `MeApiService.getSessionOwner()`, which sets the token, and never through `getMe()`, which the
-  Settings screen uses and where a `401` is a session that really has ended. That split is the
-  enforcement, and `session-expiry.interceptor.spec.ts` holds both directions of it — a probe that
-  navigates nowhere, and a Settings read on the same route that still does. The **await** is what
-  keeps every guard synchronous — bootstrapping cannot finish while the answer is outstanding — and
-  `core.providers.spec.ts` pins both halves separately, because a `void probe()` satisfies one and
-  fails the other. `probe()` resolves however the read ends and **never rejects**; a rejection is
-  not a failed probe but an application that never finishes starting.
+  `core.providers.ts` **after** `config.load()` and **awaited**. Two rules ride on that one call and
+  each is silent when broken.
+  - **The ordering.** The config holds `''` until `load()` resolves, so a probe made before it
+    addresses `GET /api/me` to this app's own origin — which answers neither 404 nor 401 but **200
+    with `index.html`**, the SPA fallback of the dev server and of Azure's `navigationFallback`
+    alike. That body fails to parse under `responseType: 'json'`, which reads as `unreachable`, and
+    both guards admit it — so the visitor reaches `/app`, the screen paints, and its own requests are
+    refused: a flash of somebody else's screen on every cold load. `BaseApiService` resolves the base
+    **per request** so no service can hold a stale copy, which rests the ordering on when the request
+    is made rather than on when a class is built.
+  - **The probe goes through `MeApiService.getSessionOwner()`, which carries
+    `EXPECTS_UNAUTHENTICATED`, and never through `getMe()`.** One route, two questions: the probe
+    asks whether there is a session and a `401` is its answer, while the Settings screen reads the
+    same route signed in and a `401` there is a session that ended. Unmarked, the probe navigates
+    **every anonymous cold load** to `/welcome` from inside the initializer, before any route
+    activates — so `/register`, the address the identity provider redirects back to, is unreachable
+    by URL. `session-expiry.interceptor.spec.ts` holds both directions.
+
+  The **await** is what keeps every guard synchronous — bootstrapping cannot finish while the answer
+  is outstanding — and `core.providers.spec.ts` pins both halves separately, because a `void probe()`
+  satisfies one and fails the other. `probe()` resolves however the read ends and **never rejects**;
+  a rejection is not a failed probe but an application that never finishes starting.
   - **The reading also moves twice mid-visit, and both moves are a *set* rather than a re-probe.**
     `ended()` is called by `sessionExpiryInterceptor` on a `401`; `established()` is called by the
     registration flow on the `201`. Each time the server has just said what it thinks, in the same
@@ -573,22 +554,17 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   and sends the browser to `/welcome`. A `403`, another origin's `401`, and any request carrying the
   `EXPECTS_UNAUTHENTICATED` context token are all left alone. The error is **always re-thrown**.
 - **Why**: a session ending is an application-wide fact — every screen's reads start failing at
-  once — so it is noticed in one place rather than in each caller. That single ownership is why the
-  Settings export no longer carries a word of its own for a lapsed session; the sentence it used to
-  render described a screen the visitor is no longer on. Three exclusions, each silent when wrong.
-  **`403`** is the first-party refusal and the locked-session refusal, both answered to a browser
-  whose session is intact, so acting on one ends a live session over a bug in the request builder.
-  **Another origin's `401`** is a statement about a token this product does not issue — the app
-  reaches the identity provider through the same `HttpClient`, so a sign-out would be caused by a
-  third party. And a **request whose `401` is its own answer** carries the token: the anonymous
-  ceremony routes — a passkey that did not verify, a recovery code that matched nothing — and **the
-  session probe**, which is the purest case of it, because a `401` there is the very answer the
-  request went to fetch. None of those is a session ending, because there is no session yet. The
-  probe was the one that had to be learned the expensive way: unmarked, every anonymous cold load in
-  the product navigated to `/welcome` from inside the `APP_INITIALIZER`, before any route activated,
-  so `/register` was unreachable by URL — including the address the identity provider redirects back
-  to. The **re-throw** is what keeps this an observer rather than a
-  handler; swallowed, the error reaches no caller's `catchError` and the screen that made the
+  once — so it is noticed in one place rather than in each caller, which is why no screen carries a
+  lapsed-session sentence of its own. Three exclusions, each silent when wrong. **`403`** is the
+  first-party refusal and the locked-session refusal, both answered to a browser whose session is
+  intact, so acting on one ends a live session over a bug in the request builder. **Another origin's
+  `401`** is a statement about a token this product does not issue — the app reaches the identity
+  provider through the same `HttpClient`, so a sign-out would be caused by a third party. And a
+  **request whose `401` is its own answer** carries the token: the anonymous ceremony routes — a
+  passkey that did not verify, a recovery code that matched nothing — and the session probe, which is
+  the purest case of it and whose cost when unmarked is the rule above. None of those is a session
+  ending, because there is no session yet. The **re-throw** is what keeps this an observer rather
+  than a handler; swallowed, the error reaches no caller's `catchError` and the screen that made the
   request sits on its loading line forever, under a navigation a guard may itself cancel.
 - **Enforced in**: `sessionExpiryInterceptor`, registered after `apiCredentialsInterceptor` so the
   unwinding puts it nearest the backend. The exclusion is carried on the **request**, as an
@@ -599,21 +575,15 @@ database holds, and the sentence above is what makes it one-to-one in fact.
   credentials one.
   - **Four callers set it, in three services, and they are one class rather than a list.**
     `RegistrationApiService` on both legs, `SignInApiService` on both assertion legs, and
-    `MeApiService` on the session probe — and the probe is what makes the class worth naming, because
-    it is the only one nobody would think to call a ceremony. What they share is that the browser
-    holds no session to lose and the `401` is the route's answer to *this request*. `getMe()` is the
-    counterexample sitting on the same route: the Settings screen reads it while signed in, so a
-    `401` there really is a session that ended, and it carries no token. One route, two questions,
-    and the token is which question was asked.
-    `RegistrationApiService` sets it on the options call and on the request that creates the account,
-    each on a **fresh** `HttpContext` because that object is mutable and a shared one would be read
-    and written by every registration request in the visit. Both are made by a browser holding no
-    session of this product's, so a `401` from either is the server's verdict on *that request* — a
-    provider token that has expired, a challenge that was never issued — and not a session ending.
-    What the token buys is concrete rather than tidy: without it, a `401` on the second leg navigates
-    the person to `/welcome` mid-flow, away from a screen showing ten recovery codes they may already
-    have written down, with no way back to them. It is reachable rather than theoretical, because a
-    provider id token lives an hour and somebody can sit on the codes step for longer than that.
+    `MeApiService` on the session probe — the probe being the one nobody would think to call a
+    ceremony. What they share is that the browser holds no session to lose and the `401` is the
+    route's answer to *this request*; `getMe()` is the counterexample on the same route and carries
+    no token. `RegistrationApiService` builds a **fresh** `HttpContext` per call, because that object
+    is mutable and a shared one would be read and written by every registration request in the visit.
+    What the token buys there is concrete: without it, a `401` on the second leg navigates the person
+    to `/welcome` mid-flow, away from a screen showing ten recovery codes they may already have
+    written down, with no way back to them — reachable rather than theoretical, because a provider id
+    token lives an hour and somebody can sit on the codes step for longer than that.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -704,15 +674,14 @@ database holds, and the sentence above is what makes it one-to-one in fact.
     `Federated` and the federated path mints no cookie. Every test seeds the session and its handle
     directly through the database, and each refusal is paired with a `Full` session on the same
     account against the same route — without that arm, a policy refusing everybody passes.
-  - **The temporary hole this rule used to carry is closed.** A principal that authenticated on any
-    scheme but the cookie's used to satisfy the requirement outright, claim or no claim, because the
-    default scheme was a bridge forwarding a bearer-bearing request to `JwtBearer` — such a principal
-    carried no session and therefore no kind, and a requirement refusing what it did not find would
-    have refused the whole product. The bridge is deleted and the fallback names the cookie scheme, so
-    `AuthorizationMiddleware` re-authenticates against that handler alone. **A principal arriving here
-    with no kind claim is therefore a cookie principal that does not have one — a session this product
-    did not write — and it is refused.** The one policy that still names the provider's scheme is the
-    registration group's, which declares itself and so never reaches this requirement at all.
+  - **A principal arriving here with no kind claim is refused, and nothing escapes on its scheme.**
+    The fallback names the cookie scheme, so `AuthorizationMiddleware` re-authenticates against that
+    handler alone — which makes a claimless principal a cookie principal without one, a session this
+    product did not write. The only policy naming the provider's scheme is the registration group's,
+    which declares itself and so never reaches this requirement. **Do not add an escape for another
+    scheme**: one existed while a bridge forwarded bearer-bearing requests to `JwtBearer`, because
+    such a principal carried no session and therefore no kind, and it was a hole with a comment on it
+    rather than a rule.
 - **Example**: `POST /api/me/session/revocation` answers `204` to a locked session; `GET
   /api/accounts`, `GET /api/me`, `GET /api/me/export`, `GET /api/me/credentials` and `POST
   /api/me/erasure` each answer `403` with a body identical to the others and naming no session,
@@ -811,9 +780,9 @@ enumerated spelling makes at the database — see the first rule above.
   nothing, while a **regeneration** revokes the replaced set's sessions and — when it ended any — opens
   one over the new set in their place, so it is the one path that does both. The condition is the
   sweep's own count, which is why that file argues the `sessionsEnded` contract from the other side.
-- **`user_isolation`** — the same policy `users`, `budgets` and `passkey_signature_counters` carry,
-  keyed on the same session setting. `sessions` is policed on the person rather than on a budget,
-  like each of them.
+- **`user_isolation`** — the same policy `users`, `budgets`, `passkey_signature_counters` and
+  `wrapped_account_keys` carry, keyed on the same session setting. `sessions` is policed on the
+  person rather than on a budget, like each of them.
 - **CORS** — the default policy gains `AllowCredentials()`, because a browser drops a cross-origin
   response carrying a cookie unless the header says so, and drops it **silently**: the request
   succeeded, the server wrote the `Set-Cookie`, and the jar is simply empty afterwards. The
@@ -823,10 +792,9 @@ enumerated spelling makes at the database — see the first rule above.
   API as the signed-in person.
 - **[Users & Ownership](users-and-ownership.md), on the pipeline order** — `FirstPartyRequestMiddleware`
   runs after CORS and before authentication, and **nothing runs between authentication and
-  authorization** any more. The middleware that used to turn a provider token into an account is
-  deleted, along with the markers it read; the cookie handler is the default scheme and the identity
-  is published while authenticating, so the request that reaches a route delegate already names an
-  account that certainly exists.
+  authorization**. The cookie handler is the default scheme and the identity is published while
+  authenticating, so the request that reaches a route delegate already names an account that
+  certainly exists.
 - **`SessionContextInterceptor`** — **not** about a session in this file's sense. It writes
   `app.current_user_id` and `app.current_budget_id` onto each PostgreSQL connection the context
   opens; the PostgreSQL backend session and a `Domain.Sessions.Session` share a word and nothing
@@ -835,20 +803,12 @@ enumerated spelling makes at the database — see the first rule above.
 
 ## Edge Cases & Known Gotchas
 
-- **The loop is closed on the server, and on the client it is closed for two paths.** All four
-  establishing paths mint a handle and set the cookie, a request presenting it is authenticated from
-  it, and sign-out ends it. Every operation in this file is live rather than anticipatory: revoking a
-  passkey really does end that device's access, and a regeneration that swept a live session really
-  does sign the person back in over the new set. **Registration and sign-in both reach a person**:
-  `/register` runs the creation ceremony from a page and `/welcome` runs the assertion, each response
-  sets the cookie, the client publishes the session itself rather than asking again, and every later
-  request that browser makes to this API is authenticated from the cookie. The two paths differ in
-  one way worth stating: sign-in touches the identity provider not at all. The other two establishing
-  routes still have no screen — nothing presents a recovery code or regenerates a set — so they are
-  reached only by the integration suite. **There is no longer any path on which a request is
-  authenticated by anything but the cookie**, the two registration routes aside — and the client no
-  longer sends a bearer anywhere else either, so the set of requests that carry one and the set of
-  routes that read one are now the same two. See
+- **Every operation in this file is live rather than anticipatory**, which is the frame for the
+  gotchas below: revoking a passkey really does end that device's access, and a regeneration that
+  swept a live session really does sign the person back in over the new set. Which of the four
+  establishing paths a person can reach is in the purpose above. One consequence worth stating on its
+  own: the client sends a provider bearer to exactly the two routes that read one, so the set of
+  requests carrying a token and the set of routes accepting one are the same two. See
   [users-and-ownership.md](users-and-ownership.md).
   - **The handle never appears in a response body.** The cookie is `HttpOnly` precisely so that
     nothing else is a handle; no response record carries a token or a session id, and
@@ -872,20 +832,18 @@ enumerated spelling makes at the database — see the first rule above.
     belongs to the attempt that survived. **Registration has no delegate at all** — no transaction
     wraps its write, for the `22P02` reason [registration.md](registration.md) states — so there the
     question does not arise.
-  - **The session cookie is the API's default authentication scheme, and the temporary bridge that
-    stood in front of it is gone.** `Budgetoid.Bridge` was a policy scheme forwarding to the cookie
-    handler when the cookie was present and to `JwtBearer` otherwise, and it existed so the whole
-    existing surface kept working while this area landed one commit at a time. `JwtBearer` stays
-    registered and is reached by exactly **one** policy — the registration group's — so a bearer
-    presented anywhere else authenticates nothing and the request is answered the same `401` an
-    anonymous one gets.
+  - **The session cookie is the API's default authentication scheme, and nothing forwards to another
+    one.** `JwtBearer` stays registered and is reached by exactly **one** policy — the registration
+    group's — so a bearer presented anywhere else authenticates nothing and the request is answered
+    the same `401` an anonymous one gets. A policy scheme that chose a handler per request would put
+    a second way to authenticate an ordinary route back on the table; see `FullSessionRequirement`
+    above for what that costs.
 
-- **`sub` means one thing now: this installation's own account id.** It meant two while a bearer could
-  authenticate an ordinary route — an account id on the cookie path, a provider subject on the bearer
-  path — and nothing brought the two together. The bearer path is gone from every route but the two
-  under `/api/registration`, and those publish no identity at all: the handler derives the account id
-  from the ceremony's own challenge and publishes it after the signature verifies. So there is no
-  longer a request on which the two spellings could meet.
+- **`sub` means exactly one thing: this installation's own account id.** The two registration routes
+  are the only ones a provider bearer reaches and they publish no identity at all — the handler
+  derives the account id from the ceremony's own challenge and publishes it after the signature
+  verifies — so there is no request on which an account id and a provider subject could meet under
+  one claim name.
 
 - **A refused request can leave an identity published behind it.** When a token's digest matches but
   the session is dead, `app.current_user_id` names the account whose handle really did match, on a

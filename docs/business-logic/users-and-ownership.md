@@ -27,9 +27,9 @@ budget, so **the budget, not the user, is the unit of tenancy.** That invariant 
 rules for the money data live in [budgets.md](budgets.md); this area does not duplicate them. What it
 does own is the identity, the two provider claims the one account-creating route reads, the step that
 turns a presented session into an internal user together with the ambient budget for the request, and
-the isolation of the identity rows themselves — `users`, `budgets`, `sessions` and
-`passkey_signature_counters` are the tables scoped to a **user** rather than to a budget, and that
-rule has its canonical statement here.
+the isolation of the identity rows themselves — `users`, `budgets`, `sessions`,
+`passkey_signature_counters` and `wrapped_account_keys` are the tables scoped to a **user** rather
+than to a budget, and that rule has its canonical statement here.
 
 ## Key Entities
 
@@ -114,37 +114,35 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     own data" is a consequence of budget isolation rather than a separate rule.
 
     The tables that name a person are the exception, and they carry their own rule: `users`,
-    `budgets`, `sessions` and `passkey_signature_counters` are policed by a `user_isolation` policy
-    comparing `id` and `user_id` against the session's authenticated user. Budget isolation cannot
-    express that — a budget *is* the tenant, so there is no ambient budget to check a budgets row
-    against — and leaving it to application code would make the tables that name a person the only
-    ones the database does not guard. See
+    `budgets`, `sessions`, `passkey_signature_counters` and `wrapped_account_keys` are policed by a
+    `user_isolation` policy comparing `id` and `user_id` against the session's authenticated user.
+    Budget isolation cannot express that — a budget *is* the tenant, so there is no ambient budget to
+    check a budgets row against — and leaving it to application code would make the tables that name
+    a person the only ones the database does not guard. See
     [ADR 0011](../decisions/0011-police-the-user-owned-tables.md).
 
-    Three tables that name a person are nonetheless **exempt**, and each for the same reason:
-    `credentials`, `passkey_public_keys` and `recovery_code_hashes` are read to work out *who is
-    asking* and *whether it is really them*, before the request has an identity a policy could be
-    keyed on. An exemption is granted to a query but applied to a whole table, so each pins the
-    exact column set its reason was argued over, and a new column there goes red until someone moves
-    it somewhere policed. See
-    [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
-    and [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md). The
-    third is the sharpest of them: a recovery code is redeemed by an **anonymous** request, so the
-    lookup by hash is what establishes the identity, and a policy keyed on `app.current_user_id`
-    would refuse the very query that produces the value it wants to compare against — loudly, with
-    `22P02`, on every redemption. `POST /api/recovery-codes/redemption` is the request that makes
-    that concrete, and the account it publishes is the one the matched row carries rather than one
-    anything asked for.
+    Four tables that name a person are nonetheless **exempt**, and each for the same reason:
+    `credentials`, `passkey_public_keys`, `recovery_code_hashes` and `session_tokens` are read to
+    work out *who is asking* and *whether it is really them*, before the request has an identity a
+    policy could be keyed on. An exemption is granted to a query but applied to a whole table, so
+    each pins the exact column set its reason was argued over, and a new column there goes red until
+    someone moves it somewhere policed. See
+    [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md),
+    [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md) and
+    [ADR 0019](../decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md). The
+    last two are the sharpest, and they are one argument reached from opposite ends: a recovery code
+    is redeemed by an **anonymous** request, a session token is presented by **every authenticated
+    request there is**, and in both the lookup by hash is what establishes the identity — so a policy
+    keyed on `app.current_user_id` would refuse the very query that produces the value it wants to
+    compare against, loudly, with `22P02`.
   - **Enforced in**: the `user_isolation` policies live beside the grants in
     `BudgetoidApp/Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration;
     `SessionContextInterceptor` puts `app.current_user_id` on every connection the context opens, so
     a session that resolved nobody fails with `22P02` rather than reading another person's row. There
     is no EF query filter above them — the budget lookup that follows a session's own resolve runs
     before the ambient budget exists, so `Budgets` is scoped by owner explicitly in
-    `FindFirstForUserAsync`. `credentials`,
-    `passkey_public_keys` and `recovery_code_hashes` are the user-owned tables deliberately left
-    unpoliced: reading one is *how* a request discovers who is asking and whether it is really them,
-    which is also why the credential lookup projects to `credentials.user_id` and never joins `users`.
+    `FindFirstForUserAsync`. The credential lookup projects to `credentials.user_id` and never joins
+    `users`, which is what holds that table's exemption to the reason it was granted for.
     `tests/IntegrationTests/RlsIsolationTests.cs` proves the isolation on both axes and
     `RlsCoverageTests.cs` fails any new table that owes a policy and has none.
 
@@ -159,18 +157,16 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     re-authentication gate in front of erasure refuses it forever. "Leaving the product means actually
     leaving" is the claim [erasure.md](erasure.md) opens with; a single consented creation path is
     what makes it true of every route rather than of the marked ones.
-    - **The hole that used to be recorded here is closed, and it is closed structurally.** A route
-      group carrying a marker still minted an account from a stale token, and that was written down as
-      a gap that would close "when account creation becomes a consented act". This is that. A provider
-      token now reaches exactly **two** routes, both under `/api/registration`, and neither completes
-      without a live server-minted challenge and a WebAuthn credential the caller's own authenticator
-      produced.
+    - **What closes it is structural rather than a check some route could forget.** A provider token
+      reaches exactly **two** routes, both under `/api/registration`, and neither completes without a
+      live server-minted challenge and a WebAuthn credential the caller's own authenticator produced.
+      Any scheme where a marker on a route group permits account creation reopens it: a marked route
+      called on boot mints from a stale token, which is how this was reachable before.
   - **Enforced in**: `RegisterAccountHandler`, and by there being no second factory to reach.
     `User.CreateWithId` takes an identifier derived from the ceremony's own challenge and is the
-    **only** way to obtain a `User`; the factory that minted its own id is deleted, so a route that
-    wanted to create an account would have to add one back — which is the change a reviewer must see.
-    The prohibition stopped being a doc comment and became a compile error, and `Domain/Users/User.cs`
-    is where it is spelled.
+    **only** way to obtain a `User`; the factory that minted its own id is deleted, so a creating
+    path has to name where its account id came from in the diff a reviewer reads. What holds the rule
+    is that review and **not the compiler** — see the invariant below, which owns the argument.
     - **What a provider token now buys, off the route table.** The two registration routes declare a
       policy naming `ProviderAuthentication.SchemeName` and nothing else, so they are the only routes
       `JwtBearer` authenticates at all. Every other route inherits the fallback policy, which names
@@ -209,11 +205,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     account from. `email_verified` decides whether that address may be registered at all: an address
     the provider will not vouch for is one anybody could have typed, and accepting it would let a token
     claim an address its holder never proved.
-    - **Why the rule is now stated about those two routes rather than about every request.** They are
-      the only routes a provider token authenticates at all — the group's policy names the provider's
-      scheme, and everything else names the session cookie's — so there is no other request on which
-      the claims exist to be judged. Nothing was relaxed by narrowing the sentence: what used to run
-      on every bearer request now has no other bearer request to run on.
+    - **Why the rule names those two routes rather than every request.** They are the only routes a
+      provider token authenticates at all — the group's policy names the provider's scheme, and
+      everything else names the session cookie's — so there is no other request on which the claims
+      exist to be judged.
     - **Why here and not in the database**: the rule is about a token, and the database cannot
       inspect one. Pushing it lower would mean procedural logic, which
       [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out. The API
@@ -225,22 +220,11 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     as `true` — `"false"` and `"1"` alike. **The two titles must stay distinct from each other**, which
     is the property `RegistrationClaimGateTests` holds; a caller cannot act on a distinction the
     response does not make.
-    - **Why a filter and not any of the three things that run earlier**, because each is the obvious
-      alternative. A `RequireAssertion` on the group's policy and a custom
-      `IAuthorizationRequirement` both answer **403 with no title**, collapsing two refusals a caller
-      acts on differently into one untitled status. `JwtBearerEvents.OnTokenValidated` can answer 401,
-      but writing a titled `ProblemDetails` from there needs `OnChallenge` written too, and the gate
-      then becomes a property of the **scheme** rather than of the route — invisible to anybody reading
-      the route table, which is where every other rule about who may reach these two routes is
-      declared. And a middleware reading a new marker would rebuild the deleted provisioning
-      middleware under a different name: the same opt-in metadata, the same silence when a group
-      forgets it.
-    - **One accepted behaviour change: a `400` can now overtake the `401`.** A filter runs after model
-      binding, so a caller sending an unverified address **and** a malformed body is answered `400` by
-      the framework where the middleware answered `401`. Nothing in the suite measures the ordering.
-      It is a worse order to be told things in, not a disclosure — a deserialization failure is a fact
-      about the caller's own request and says nothing about what this server stores. See
-      [registration.md](registration.md), which owns the correction this gate's placement is part of.
+    - **Why a filter, why not the three boundaries that run earlier, and what its position costs** —
+      including the `400` that can overtake the `401` — are [registration.md](registration.md)'s,
+      which owns this gate's placement and the correction it is part of. What belongs here is only
+      the half this file's own rules decide: the command has nowhere for the verified-email answer to
+      land, which is why the judgement cannot come down into the Application ring. See the next rule.
 
 - **The verified-email claim is read and never stored.**
   - **Why**: it answers one question — may this address be registered — and once answered it holds
@@ -919,8 +903,9 @@ The budget branch that runs after this, on every path, is in
   stale provider token that minted one there would resurrect the account **holding a full-session
   credential and no passkey**, which is strictly worse than the empty shell the erasure and export
   routes argue about, because such an account can never clear the re-authentication gate in front of
-  erasure again. The refusal is no longer a marker somebody could add by mistake — the two
-  authenticated routes reach `RegisterAccountHandler` through nothing, and the redemption is anonymous.
+  erasure again. The refusal is structural rather than a marker somebody could add by mistake — the
+  two authenticated routes reach `RegisterAccountHandler` through nothing, and the redemption is
+  anonymous.
 - **[Budgets](budgets.md)**: authenticating a session resolves the identity *and* the ambient budget
   in one step, and registration writes both in one save. Everything a user can see hangs off that
   budget, so all tenancy rules — stamping, filtering, name uniqueness, the 404 behaviour — are
@@ -975,7 +960,7 @@ The budget branch that runs after this, on every path, is in
   survives only as long as the order does — a future path that touched `credentials` first would
   reintroduce the cycle without changing a line of the code that documents this.
 
-- **A user with no budget is no longer reachable from any path that creates a user**, because the
+- **A user with no budget is unreachable from any path that creates a user**, because the
   budget arrives in the same save. It is not forbidden by the schema, though: a direct
   `DELETE FROM budgets` still produces it, and the account is then **dead rather than healed** —
   every resolve throws and the person cannot even erase, because the erasure handler reads the ambient
