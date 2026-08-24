@@ -4,8 +4,8 @@
 
 Budgetoid is a **personal budgeting app with no sharing**. A person creates an account once, in a
 single consented act vouched for by Google and completed with a passkey, and signs in with that
-passkey afterwards; then they record money movements so they can see where their money goes. There is
-no admin role and no multi-user visibility: everything a signed-in person reaches belongs to a
+passkey afterwards; then they record money movements so they can see where their money goes. There
+is no admin role and no multi-user visibility: everything a signed-in person reaches belongs to a
 **Budget** they own, and a budget belongs to exactly one user.
 
 A user owns Budgets. A **Budget** owns **Accounts**, against which signed **Transactions** are
@@ -14,39 +14,41 @@ optionally name a **Payee** and select a **Category**. Every Category belongs to
 Group**, while a Transaction may remain uncategorized. **Currencies** are shared ISO-4217 reference
 data — the only reference table shared across every budget.
 
-Today every user has **exactly one budget**, created in the same save as the account: there is no way
-to create, rename, switch or delete one, and the concept never appears in the UI or in a URL. The
-schema is multi-budget-ready anyway, and that gap between what the schema permits and what the release
-does is itself a rule — see [budgets.md](budgets.md).
+Today every user has **exactly one budget**, created in the same save as the account: there is no
+way to create, rename, switch or delete one, and the concept never appears in the UI or in a URL.
+The schema is multi-budget-ready anyway, and that gap between what the schema permits and what the
+release does is itself a rule — see [budgets.md](budgets.md).
 
 Entity factories enforce the field rules the schema cannot state declaratively and application
 handlers enforce cross-entity rules, but whatever the schema can state, it owns: check constraints
 bound account type and money magnitude, composite foreign keys refuse a cross-budget reference
 whatever code path wrote it, and unique indexes are what make name uniqueness and account creation
-race-safe. Immutability is owned down there too: the application connects as a least-privilege role
-whose `UPDATE` privileges are granted per column, so a column left off the list — `budget_id` on
-every owned table, `accounts.currency_code`, `users.created_at_utc`, every column of `budgets` and
-every column of `credentials` — is one PostgreSQL refuses to write at all (see
-[ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). Tenancy is owned down there as
+race-safe.
+
+Immutability is owned down there too: the application connects as a least-privilege role whose
+`UPDATE` privileges are granted per column, so a column left off the list — `budget_id` on every
+owned table, `accounts.currency_code`, `users.created_at_utc`, every column of `budgets` and every
+column of `credentials` — is one PostgreSQL refuses to write at all
+([ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). Tenancy is owned down there as
 well, on both axes. `budget_isolation` policies on the five budget-owned tables mean that role
-reaches no other budget's rows on any statement at all and can insert into no budget but the ambient
-one, so the query filters above them shape the answer rather than hold the boundary (see
-[ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); and the five
+reaches no other budget's rows on any statement and can insert into no budget but the ambient one,
+so the query filters above them shape the answer rather than hold the boundary
+([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); the five
 tables policed on the **user** instead by `user_isolation` — `users`, `budgets`, `sessions`,
 `passkey_signature_counters` and `wrapped_account_keys` — are keyed there because a budget *is* the
-tenant and so has no ambient budget to be checked against (see
-[ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). Carrying `user_id` is not by itself
+tenant and so has no ambient budget to be checked against
+([ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). Carrying `user_id` is not by itself
 what decides it: `credentials`, `passkey_public_keys`, `recovery_code_hashes` and `session_tokens`
-carry one and are policed by neither rule, exempt by written decision because each is read *before*
-the request has an identity a policy could be keyed on (see
-[ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
-and [data isolation](../engineering/data-isolation.md)). That split is a general rule rather than a
-local one: each rule is owned by the lowest layer that can enforce it declaratively, and where one
-deliberately sits higher the doc says why — see
+carry one and are policed by neither, exempt by written decision because each is read *before* the
+request has an identity a policy could be keyed on
+([ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
+and [data isolation](../engineering/data-isolation.md)).
+
+That split is a general rule: each rule is owned by the lowest layer that can enforce it
+declaratively, and where one deliberately sits higher the doc says why — see
 [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md). The central tenancy
-invariant — the budget, not the user, is what everything belongs to — is documented in
-[budgets.md](budgets.md); identity, and the one act that brings it into existence, are in
-[users-and-ownership.md](users-and-ownership.md).
+invariant is documented in [budgets.md](budgets.md); identity, and the one act that brings it into
+existence, are in [users-and-ownership.md](users-and-ownership.md).
 
 ## Glossary
 
@@ -55,13 +57,13 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | **User** | The owner, identified externally by Google `sub` and internally by GUID. On the registration path that GUID is **derived from the ceremony's own challenge** rather than drawn at random, because it is also the WebAuthn user handle the authenticator stores — see [registration.md](registration.md). |
 | **Registration** | The one request that brings an account into existence, and the **only** one: a caller the identity provider vouched for completes a WebAuthn ceremony, and the account, its budget, its three credentials, the passkey's key material, ten recovery-code hashes, eleven wrapped-key rows and the session it signs them in on all land in **one save, or none**. See [registration.md](registration.md). |
 | **Session** | An established sign-in recorded server-side, naming the credential that established it, which the product can end without asking any external party. Four things establish one — a completed account registration, a verified passkey assertion, a redeemed recovery code, and a regeneration of a recovery-code set that was carrying live sessions, which opens one over the new set in their place. All four mint a handle and set the cookie; a request presenting it is authenticated from it, and `POST /api/me/session/revocation` ends it — see [sessions.md](sessions.md). |
-| **Session token** | The handle a session will be presented by — an opaque value stored as `SHA-256(token)` on `session_tokens`, a table of its **own**. It is separate from the session row because it is read *before* the request has an identity, and `sessions` is policed by a policy keyed on the very identity that read produces; everything decided *after* that answer — expiry, revocation — stays on the policed row. It travels in the `__Host-budgetoid-session` cookie, is minted by all four paths that establish a session, and is read on every request presenting one. It never appears in a response body — the cookie is `HttpOnly` so that nothing else is a handle. **Two client screens receive one**: registration and the passkey sign-in on the welcome screen, each of whose responses sets the cookie; nothing in the browser can read the value. See [sessions.md](sessions.md) and [ADR 0019](../decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md). |
+| **Session token** | The handle a session will be presented by — an opaque value stored as `SHA-256(token)` on `session_tokens`, a table of its **own**, because it is read *before* the request has an identity while `sessions` is policed by a policy keyed on the very identity that read produces. Everything decided *after* that answer — expiry, revocation — stays on the policed row. It travels in the `__Host-budgetoid-session` cookie, is minted by all four paths that establish a session, and never appears in a response body — the cookie is `HttpOnly` so that nothing else is a handle. See [sessions.md](sessions.md) and [ADR 0019](../decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md). |
 | **First-party request** | A request carrying a non-empty `X-Budgetoid-Client` header, which every route but `GET /health` requires. The CSRF control a cookie makes necessary: no cross-site form can add a header, and its *value* is deliberately unchecked because a value would be a shared secret shipped to every client. It covers the anonymous routes too — those are the ones that set a cookie. See [sessions.md](sessions.md). |
 | **Passkey** | A WebAuthn discoverable credential held by the user's authenticator. One of the two credential types that open a session reaching budget content — see [passkeys.md](passkeys.md). |
 | **Recovery code** | A secret the account holder writes down, so that losing the authenticator does not mean losing the account. **Minted in the browser; the server never sees one** — what it stores is `SHA-256` of a verifier the client derived. Redeeming one deletes its row, and there is no third state — see [recovery-codes.md](recovery-codes.md). |
 | **Verifier** | `V = HKDF(canonical(code), …)`, exactly 32 bytes, derived on the client from a recovery code and the only thing about that code the server ever receives. The canonicalisation is part of the definition rather than a step in front of it — see [recovery-codes.md](recovery-codes.md). The account's key-encryption key comes off the same code on an **independent** HKDF branch, which is why a code reaching the server would hand the operator that key and a verifier does not. |
 | **Recovery-code set** | The ten codes an account is issued together, standing in the schema as **one** `credentials` row with one `recovery_code_hashes` row per unredeemed code. An account holds at most one set; issuing replaces it rather than adding to it. Registration issues the **first** one, in the same act that creates the account. |
-| **Recovery factor** | One secret an account holder possesses that can get them back into the account — **not** the same as one credential. A registered passkey is one factor; a set of recovery codes is **ten**, because each code is a secret of its own and a person redeems whichever one they still have. A federated credential is neither: it returns claims rather than a secret. Each factor **carries its own wrapped copy of the account's keys**, written in the same save as the credential by the only three paths that create one. One of those three now has a browser flow behind it: registration derives eleven key-encryption keys and wraps eleven copies. Nothing unwraps one outside a spec, because nothing is encrypted yet. See [Account Keys](account-keys.md). |
+| **Recovery factor** | One secret an account holder possesses that can get them back into the account — **not** the same as one credential. A registered passkey is one factor; a set of recovery codes is **ten**, because each code is a secret of its own and a person redeems whichever one they still have. A federated credential is neither: it returns claims rather than a secret. Each factor **carries its own wrapped copy of the account's keys**, written in the same save as the credential by the only three paths that create one. Nothing unwraps one outside a spec, because nothing is encrypted yet. See [Account Keys](account-keys.md). |
 | **Content key** | 32 random bytes an account owns, generated in the browser, that its narrative will be encrypted under. Never transmitted. One per account and never per credential — a key derived per credential would make text written on one authenticator unreadable on another. |
 | **Index key** | 32 random bytes an account owns, drawn independently of the content key, that a blind index over a name will be computed under. Never transmitted. One per account, and the reason is stronger than the content key's: two index keys produce two index values for one name, so the uniqueness constraint stops colliding while appearing to work. |
 | **Key-encryption key** | 32 bytes a recovery factor derives — from an authenticator's PRF output, or from a recovery code — and wraps the account's two keys under. Imported as a **non-extractable** `AES-GCM` key, never transmitted, and never readable back out of the browser's key store. That is a claim about the imported key; the bytes it was derived from exist for the length of the derivation and are zero-filled where it consumes them — see [Account Keys](account-keys.md). |
@@ -75,7 +77,7 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 | **PRF** | The WebAuthn `prf` extension: a secret the authenticator derives and the server never sees. Requested at registration and **required** for one to complete — a registration completes only when the client reports a `prf` result that is present and true, so reporting nothing and reporting `enabled: false` are alike refused. The claim is the client's and unverifiable, so the refusal is a product gate rather than a control; the product stores nothing about it. See [passkeys.md](passkeys.md). |
 | **Relying party** | The site a passkey is bound to, named by its `rpId`. An authenticator signs over `SHA-256(rpId)`, so a credential registered here cannot be asserted anywhere else. |
 | **Locked session** | A session established from a federated credential. `federated` is the **only** credential type that cannot reach budget content, because an authorization exchange returns claims rather than a secret a client can turn into a key. |
-| **Full session** | The kind of session a credential the holder actually possesses opens: a passkey, held by their authenticator, or a set of recovery codes, which they wrote down. The key custody each is meant to carry is built and reaches every account there is: registration is the only way an account exists, and it wraps the account's keys under the passkey and under every one of its ten codes. Nothing in the browser *opens* one yet, so possession is still the whole of the reason the rule holds. Every path that establishes one gives 14 days — a completed `POST /api/registration`, a verified assertion on the sign-in leg, a spent code on `POST /api/recovery-codes/redemption`, and `POST /api/me/recovery-codes` when replacing a set ends any of that set's sessions. |
+| **Full session** | The kind of session a credential the holder actually possesses opens: a passkey, held by their authenticator, or a set of recovery codes, which they wrote down. The key custody each carries reaches every account there is — registration is the only way an account exists, and it wraps the account's keys under the passkey and under every one of its ten codes — but nothing in the browser *opens* one yet, so possession is still the whole of the reason the rule holds. All four establishing paths give 14 days. |
 | **Budget** | A coherent pool of money owned by one user, created for them in the save that creates their account; the unit of tenancy and the thing that owns the money picture. |
 | **Erasure** | Destroying an account and everything owned beneath it, so that no row in any table references the erased user or any budget it owned. Not a status and not a soft delete: nothing is marked, and no row survives to record that it happened — see [erasure.md](erasure.md). |
 | **Export document** | The single JSON object an export answers with: a schema version, the user record, and every budget the user owns, each carrying its accounts, category groups, categories, payees and transactions as nested arrays. Nothing in it is summarized, sampled or paged, and assembling it writes no row — see [export.md](export.md). |
@@ -97,24 +99,24 @@ invariant — the budget, not the user, is what everything belongs to — is doc
 
 ## User roles
 
-There is exactly **one role — the authenticated owner — reached by two tiers of session.** Everything
-below describes an owner signed in on a **full** session, which is what a passkey or a redeemed
-recovery code opens. A **locked** session, which only a federated sign-in opens, is the same person
-with the same ownership and reaches exactly one route: ending itself. Every other route answers
-`403`, including the export and the erasure. That is not a second role — nothing is scoped
+There is exactly **one role — the authenticated owner — reached by two tiers of session.**
+Everything below describes an owner signed in on a **full** session, which is what a passkey or a
+redeemed recovery code opens. A **locked** session, which only a federated sign-in opens, is the
+same person with the same ownership and reaches exactly one route: ending itself. Every other route
+answers `403`, including the export and the erasure. That is not a second role — nothing is scoped
 differently and nobody else is admitted anywhere — it is the same owner whose credential cannot hold
 the account's keys. See [sessions.md](sessions.md).
 
-Within their ambient budget a user manages
-Accounts, Category Groups, and Categories; records, lists, edits and deletes Transactions; lists
-Payees, creates them implicitly by naming one on a transaction, and renames them; and reads global
-Currencies. The budget itself is not manageable — it arrives with the account, never configured. The same
-owner can download a complete copy of everything the server holds about them, can see the address
-the account is registered under, can issue themselves a set of recovery codes and ask how many are
-left, and can destroy the account outright; none of it is behind a support request.
-A visitor with no session reaches the welcome screen — which both starts an account and signs a
-returning person in with their passkey, contacting no third party to do it — and the registration
-flow, the one surface that turns a provider sign-in into an account. Nothing else.
+Within their ambient budget a user manages Accounts, Category Groups, and Categories; records,
+lists, edits and deletes Transactions; lists Payees, creates them implicitly by naming one on a
+transaction, and renames them; and reads global Currencies. The budget itself is not manageable — it
+arrives with the account, never configured. The same owner can download a complete copy of
+everything the server holds about them, can see the address the account is registered under, can
+issue themselves a set of recovery codes and ask how many are left, and can destroy the account
+outright; none of it is behind a support request. A visitor with no session reaches the welcome
+screen — which both starts an account and signs a returning person in with their passkey, contacting
+no third party to do it — and the registration flow, the one surface that turns a provider sign-in
+into an account. Nothing else.
 
 ## Domain area map
 
@@ -142,16 +144,16 @@ references are additionally constrained by composite foreign keys to a row in th
 
 ## Table of contents
 
-- [Users & Ownership](users-and-ownership.md) — identity, the provider claims that gate its creation,
-  and how a request comes to name an account.
-- [Registration](registration.md) — the one request that creates an account, the account
-  identifier it derives rather than chooses, and one of the four paths that open a session.
+- [Users & Ownership](users-and-ownership.md) — identity, the provider claims that gate its
+  creation, and how a request comes to name an account.
+- [Registration](registration.md) — the one request that creates an account, the account identifier
+  it derives rather than chooses, and one of the four paths that open a session.
 - [Passkeys](passkeys.md) — the four WebAuthn ceremonies, and one of the four paths that open a
   session.
 - [Recovery Codes](recovery-codes.md) — the second way back into an account, minted in the browser
   and never seen by the server, and two more paths that open a session.
-- [Account Keys](account-keys.md) — the one pair of keys an account owns, the key-encryption key each
-  recovery factor derives, and the cross-client cryptographic contract.
+- [Account Keys](account-keys.md) — the one pair of keys an account owns, the key-encryption key
+  each recovery factor derives, and the cross-client cryptographic contract.
 - [Sessions](sessions.md) — an established sign-in the product records and can end itself.
 - [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
   and its base currency.
