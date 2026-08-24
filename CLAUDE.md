@@ -55,17 +55,12 @@ Auth is live Google OAuth.
 a user id and default budget id on the scoped `CurrentUser`; `IBudgetContext` exposes the ambient
 budget. **Exactly one path creates an account**: `POST /api/registration`, which creates nothing
 without a passkey and a card of recovery codes, and writes ~30 rows in **one** `SaveChanges`. There
-is no heal, and a resolved account with no budget throws. What makes "one path" true is a
-property of the write surface rather than of the compiler: `RegisterAccountHandler` is the only code
-that brings an account into existence, and it is reachable from that route and nowhere else.
-`User.Create` is deleted, so the surviving `User.CreateWithId` makes a call site say where its id
-came from — but it takes a plain `Guid`, five call sites in the test projects hand it a fresh one
-deliberately, and **a second creating path is one line that would redden nothing**. The deletion
-buys a visible edit, not a compile error — and a reader who believes the compiler holds this rule
-stops looking for the review that does.
+is no heal, and a resolved account with no budget throws. `RegisterAccountHandler` is the only code
+that brings an account into existence — but **nothing in the compiler holds that**: a second
+creating path is one line that would redden nothing, so it is held by review, not by a build error.
 **An authenticated principal naming no account is not a state this pipeline can be in**: a cookie is
 only ever issued over a session row, so the handler answers `NoResult` and the request is challenged
-— a 401 indistinguishable from an anonymous one. See the registration bullet below and
+— a 401 indistinguishable from an anonymous one. See
 [registration.md](docs/business-logic/registration.md). Read
 [data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries.
 Load-bearing rules, each explained there or in the linked decision:
@@ -76,26 +71,14 @@ Load-bearing rules, each explained there or in the linked decision:
 - `users`, `budgets`, `sessions` and `passkey_signature_counters` are policed on the **user** by
   `user_isolation`, not on a budget. `credentials`, `passkey_public_keys`, `webauthn_challenges`,
   `recovery_code_hashes` and `session_tokens` are exempt, each because it is read *before* the request
-  has an identity a
-  policy could be keyed on — so the credential lookup must never join `users`, and a recovery code is
-  found by the hash of the verifier on a request that has said nothing about who is asking. The last
-  is the same argument reached from the opposite end: not somebody who lost their authenticator, but
-  **every authenticated request there is**, which is why the session's *discovery key* is split onto
-  its own exempt table while the expiry and revocation instant it decides nothing without stay on the
-  policed `sessions` row ([ADR 0019](docs/decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md)).
-  **An
-  exempt table scopes nothing**: only the discovery lookup may omit an owner filter, and every other
-  **read** of one must carry its own `where user_id = …`. The destructive statements are an exception
-  to that sentence and not to the rule — EF emits each `DELETE` by primary key, so none of them
-  carries an owner predicate at all. What scopes one is the owner-bearing read that produced its
-  entity, in the same transaction, which is why a delete takes the loaded entity rather than an id,
-  and why `credentials.user_id` immutability is load-bearing twice over. Do not read the port's
-  shape as a narrowing that discriminates: a lookup handed an owner id taken off the row it is
-  about to select by primary key constrains nothing today, and exists to keep the rule literally
-  true and to bite the first caller that takes that id from somewhere else.
-  What holds each exemption to its reason is its **pinned column set**, not the
-  grant matrix — a write-once secret passes any append-only rule — so a new column there means *move
-  the column*, never widen the pin. See
+  has an identity a policy could be keyed on — so the credential lookup must never join `users`.
+  **An exempt table scopes nothing**: only the discovery lookup may omit an owner filter, and every
+  other **read** of one must carry its own `where user_id = …`. Deletes are the exception to that
+  sentence and not to the rule — EF emits each `DELETE` by primary key, so what scopes one is the
+  owner-bearing read that produced its entity in the same transaction, which is why a delete takes
+  the loaded entity rather than an id. What holds each exemption to its reason is its **pinned
+  column set**, not the grant matrix — a write-once secret passes any append-only rule — so a new
+  column there means *move the column*, never widen the pin. See
   [ADR 0011](docs/decisions/0011-police-the-user-owned-tables.md),
   [ADR 0012](docs/decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md)
   and [ADR 0014](docs/decisions/0014-scope-the-credential-delete-in-the-application.md).
@@ -107,32 +90,22 @@ Load-bearing rules, each explained there or in the linked decision:
   `session_tokens` row by the token's digest on a connection naming nobody, *then* `ResolveUser`,
   *then* read the **policed** `sessions` row. Reversed, the policy meets `''::uuid` and every request
   in the product answers `22P02`; **no transaction may wrap any of it**, for the same reason. The API
-  decodes the cookie and looks nothing up — `CompositionBoundaryTests` holds that line and this is the
-  path where crossing it costs most. `ResolveBudget` comes last because `ResolveUser` clears it. Three
-  further rules a reader will try to simplify: every request but `GET /health` must carry a non-empty
-  `X-Budgetoid-Client` header or answer **403** — the CSRF control, unchecked by value on purpose and
-  covering the **anonymous** routes because those are the ones that set a cookie; an **ended** session
-  authenticates on exactly one route, the one that ends sessions, marked with
-  `AcceptsEndedSessionAttribute` and reaching no ambient budget even there; and the default scheme is
-  the cookie's, named **explicitly** by the fallback policy as well so the policy is readable off the
-  route table — `JwtBearer` stays registered and is reached by exactly one policy, registration's.
-  All **four** establishing
-  paths now mint a handle and set the cookie, and three rules hold that: **`ISessionRepository.AddAsync`
-  takes the session *and* its token with no overload taking a session alone**, so a handle-less session
-  is unwritable and `ISessionTokenRepository` can stay read-only; **no response body carries the handle
-  or a session id** — the handlers return the token beside their result through a type the endpoint
-  never serialises, and a census over every type a route returns keeps that true of records added
-  later; and on `POST /api/me/recovery-codes` **a first issue sets no cookie**, only the branch whose
-  sweep ended a live session — registration issues a first set *and* sets one, which is not an
-  exception to that rule but a different route establishing a session of its own.
-  **`ISessionRepository` is no longer the only writer**: `IRegistrationRepository.RegisterAsync` writes
-  both rows itself, because `AddAsync` saves on its own and registration has no transaction, so two
-  calls would be two transactions. What was pinned is the *pairing*, not the port, and it survives —
-  `Registration` carries the session **and** its token. A third writer is a decision, not a detail.
-  `session_tokens` is also the **third** table `GenerateRecoveryCodesHandler`'s
-  never-materialise rule binds, and the only one where it fails loudly (`42501`) — but only when a read
-  materialises entities, so turning one into a projection makes the trap stop biting without making the
-  rule stop applying. See
+  decodes the cookie and looks nothing up — `CompositionBoundaryTests` holds that line. `ResolveBudget`
+  comes last because `ResolveUser` clears it. Four further rules a reader will try to simplify: every
+  request but `GET /health` must carry a non-empty `X-Budgetoid-Client` header or answer **403** — the
+  CSRF control, unchecked by value on purpose and covering the **anonymous** routes because those are
+  the ones that set a cookie; an **ended** session authenticates on exactly one route, the one that
+  ends sessions, marked with `AcceptsEndedSessionAttribute` and reaching no ambient budget even there;
+  the default scheme is the cookie's, named **explicitly** by the fallback policy so it is readable off
+  the route table; and **the session and its token are written as a pair** — `ISessionRepository.AddAsync`
+  has no overload taking a session alone, and `IRegistrationRepository.RegisterAsync`, the second
+  writer, carries both. Each of the **four** establishing paths mints a handle and sets the cookie; on
+  `POST /api/me/recovery-codes` that is only the branch whose sweep ended a live session, because **a
+  first issue sets no cookie**. **No response body carries the handle or a session id**, held by a
+  census over every type a route returns.
+  `session_tokens` is one of the tables `GenerateRecoveryCodesHandler`'s never-materialise rule binds,
+  and the only one where it fails loudly (`42501`) — but only when a read materialises entities, so
+  turning one into a projection makes the trap stop biting without making the rule stop applying. See
   [sessions.md](docs/business-logic/sessions.md) and
   [ADR 0019](docs/decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md).
 - **A session opened by a federated credential reaches one route, and the gate is opt-out.**
@@ -143,78 +116,58 @@ Load-bearing rules, each explained there or in the linked decision:
   `POST /api/me/session/revocation`, read whole off the route table. **Opt-out, unlike its
   neighbour**: `AcceptsEndedSession` is opt-in because a forgotten marker there refuses something and
   is loud, while a forgotten opt-*in* here would hand budget content to a locked session with nothing
-  going red. Polarity follows from which mistake is audible, and that derivation — the only written
-  one in the codebase — was lifted into `AcceptsEndedSessionAttribute` before the third marker was
-  deleted. It sits in the application because no declarative database rule
-  reaches it — `budget_isolation` cannot, since a live locked session resolves an ambient budget like
-  any other, and `GET /api/me/export` reads user-owned `budgets` anyway — which is the
+  going red — polarity follows from which mistake is audible. It sits in the application because no
+  declarative database rule reaches it, the
   [ADR 0002](docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) statement the rule owes.
-  Three things a reader will simplify away: the kind claim is judged by a **round trip** (parse, then
+  Two things a reader will simplify away: the kind claim is judged by a **round trip** (parse, then
   compare the text ordinally against what the parsed member renders as) because `Enum.TryParse` admits
-  `"full"` case-insensitively and `"1"` under every overload; `SessionKindReach.ReadsBudgetContent` is
-  the **one** definition and `Session.ReadsBudgetContent` calls it, so a kind added later cannot be
-  admitted by one caller and refused by the other; and the hole that let a principal from any other
-  scheme satisfy the requirement outright is **closed** — it existed to keep bearer requests working
-  and left with them, so a cookie principal carrying no kind claim is now a session this product did
-  not write. Nothing establishes a locked
-  session today, so the gate is unreachable from any live route and is held entirely by tests that seed
-  one through the database, each pairing its refusal with a `Full` session on the same account.
+  `"full"` case-insensitively and `"1"` under every overload; and `SessionKindReach.ReadsBudgetContent`
+  is the **one** definition that `Session.ReadsBudgetContent` calls, so a kind added later cannot be
+  admitted by one caller and refused by the other. Nothing establishes a locked session today, so the
+  gate is unreachable from any live route and is held entirely by tests that seed one through the
+  database.
 - **Registration is one act and one transaction, and the account id is derived rather than chosen.**
   Two routes under `/api/registration`, authenticated by the **provider scheme and nothing else** —
   not anonymous, because an account may not exist without a completed provider exchange. **That policy
   is the only reason `JwtBearer` is still registered.** The `sub`/`email` and `email_verified` gates
   ride an `IEndpointFilter`, `RegistrationClaimGate`, on that group — **not** in the Application ring,
-  which the handler and `registration.md` both once promised: judging `email_verified` there needs
-  either a `ClaimsPrincipal` in that project, which reading the two claim members at the endpoint
-  exists to prevent, or a member on the command for the answer to land in, which the ownership rules
-  refuse by name. The promise is corrected, not kept. A filter runs after model binding, so a caller
-  with an unverified address **and** a malformed body now gets 400 where the middleware gave 401 —
-  accepted, and a worse order to be told things in rather than a disclosure. The finish leg writes ~30
-  rows across nine relations in **one `SaveChanges`** — three
-  credentials, eleven wrapped-key rows, the session and its token — and **no
-  `ITransactionalExecutor` may wrap it**, for the `22P02` reason the handler now states inline, having
-  inherited it from the deleted provisioning handler.
-  `RegistrationAccountId.For(challenge)` is called by **both** legs over the same nonce, because
-  `user.id` in the creation options is the WebAuthn user handle and the assertion path compares it
-  byte-for-byte against `users.id`: disagree, and every later sign-in from that authenticator is
-  refused permanently with no error naming the cause. It is derived **after** `ConsumeAsync`, never
-  before — the finish leg's only source for those bytes is the client's own `clientDataJSON`, so an
-  earlier derivation is an account id the caller chose. Three more a reader will simplify: the ladder's
-  order is the rule (consume before verify, prf gate after verification, key-custody payload after the
-  prf gate); the passkey's factor id must differ from all ten codes', a rule the primary key would
-  otherwise answer with a sentence naming a factor nobody registered; and the session opens over the
-  **passkey** credential, never the recovery-codes one, which changes nothing a constraint can see and
-  everything a later revocation sweeps. **The options leg refuses a subject that already holds an
-  account, above its own `IssueAsync`** — the browser mints the passkey the instant the device agrees,
-  so a refusal that waits for the finish leg costs a credential the authenticator keeps forever and no
-  relying party can delete. It reads `credentials` by `(provider, subject)`, the exempt discovery shape,
-  on a connection naming nobody, and it is no enumeration oracle because the caller arrived holding a
-  provider-verified token for that exact subject. The **email** conflict cannot move with it — that
-  needs `users`, which is policed — so it closes the common case and not the class, and the finish leg
-  keeps both checks for the race. See [registration.md](docs/business-logic/registration.md) and
+  because judging `email_verified` there needs either a `ClaimsPrincipal` in that project or a member
+  on the command for the answer to land in, and the ownership rules refuse both. The finish leg writes
+  ~30 rows across nine relations in **one `SaveChanges`**, and **no `ITransactionalExecutor` may wrap
+  it**, for the `22P02` reason the handler states inline. Five more a reader will simplify:
+  **`RegistrationAccountId.For(challenge)` is called by both legs over the same nonce** — `user.id` in
+  the creation options is the WebAuthn user handle, compared byte-for-byte against `users.id`, so a
+  disagreement refuses every later sign-in from that authenticator, permanently and with no error
+  naming the cause — and it is derived **after** `ConsumeAsync`, or the account id is one the caller
+  chose. The ladder's order is the rule (consume before verify, prf gate after verification,
+  key-custody payload after the prf gate). The passkey's factor id must **differ from all ten codes'**.
+  The session opens over the **passkey** credential, never the recovery-codes one — invisible to any
+  constraint, decisive for a later revocation sweep. And **the options leg refuses a subject that
+  already holds an account, above its own `IssueAsync`**, because the browser mints the passkey the
+  instant the device agrees and a later refusal costs a credential nobody can delete; it closes the
+  common case and not the class, so the finish leg keeps both checks for the race.
+  See [registration.md](docs/business-logic/registration.md) and
   [ADR 0021](docs/decisions/0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md).
 - EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
   `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
 - **A credential type has exactly one spelling and it is written out, never derived from the member
   name.** `Domain/Users/CredentialTypeSpelling.cs` owns it; the `type` column, every copy of that
   column, `CK_credentials_type` and the `type` member of `GET /api/me/credentials` all read that one
-  definition, which is what makes "the wire agrees with the column" a fact rather than a
-  coincidence — it stopped being one the moment a two-word member was declared and camel-case
-  produced `recoveryCodes` for a column holding `recovery_codes`. Do not answer that with a global
-  `JsonNamingPolicy`: it would silently respell every other enum the API emits. Which spellings a
-  *table* accepts is a separate rule each configuration keeps on top — `passkey_public_keys` and
-  `passkey_signature_counters` take `passkey` or `federated` only, and folding that into the shared
-  type would impose it on everything reading it. `CredentialType` is ordered so `default` is
+  definition, which is what makes "the wire agrees with the column" a fact rather than a coincidence —
+  camel-case would produce `recoveryCodes` for a column holding `recovery_codes`. Do not answer that
+  with a global `JsonNamingPolicy`: it would silently respell every other enum the API emits. Which
+  spellings a *table* accepts is a separate rule each configuration keeps on top — folding it into the
+  shared type would impose it on everything reading it. `CredentialType` is ordered so `default` is
   `Federated`, whose shape the database refuses; `SessionKind` made the same choice for the same
   reason.
-- **The dependency direction is pinned, not described.** Between rings MSBuild's cycle detection
-  already refuses the outward `ProjectReference`; what nothing caught until now is the outward edge
-  that closes no loop — a package on `Application`, a `FrameworkReference` or `Sdk` attribute on
-  `Domain`, `UnitTests` reaching `Api`, a whole new project. `ProjectReferenceGraphTests` renders
-  every csproj declaration as one of fifty-nine rows and pins the set, dropping package *versions*
-  so a routine bump never reddens it. Two guards sit beside it for rules the graph provably cannot
-  express: `CompositionBoundaryTests` (Api may **compose** Infrastructure, never **consume** it — no
-  route delegate takes a persistence port) and `OwnershipKeyImmutabilityTests` (every `UserId` and
+- **The dependency direction is pinned, not described.** MSBuild's cycle detection already refuses
+  the outward `ProjectReference` between rings; what it cannot catch is the outward edge that closes
+  no loop — a package on `Application`, a `FrameworkReference` or `Sdk` attribute on `Domain`,
+  `UnitTests` reaching `Api`, a whole new project. `ProjectReferenceGraphTests` renders every csproj
+  declaration as a row and pins the set, dropping package *versions* so a routine bump never reddens
+  it. Two guards sit beside it for rules the graph provably cannot express:
+  `CompositionBoundaryTests` (Api may **compose** Infrastructure, never **consume** it — no route
+  delegate takes a persistence port) and `OwnershipKeyImmutabilityTests` (every `UserId` and
   `BudgetId` the Domain declares is written once, `init` included). Each ships permanent negative
   controls, so none can pass by having nothing to find. Read
   [dependency direction](docs/engineering/dependency-direction.md) before adding a project or a
@@ -231,8 +184,8 @@ Load-bearing rules, each explained there or in the linked decision:
   consumed by **deleting** its row, never by stamping it, which is why the table holds no `UPDATE`
   grant of any shape. One `credentials` row per **set**, at most one set per account. The generation
   path must never materialise the old set's hash rows: EF would then delete them itself instead of
-  the database's cascade, and unlike `sessions` the role *has* `DELETE` here, so it would succeed
-  silently. See [recovery-codes.md](docs/business-logic/recovery-codes.md) and
+  the database's cascade, and the role *has* `DELETE` here, so it would succeed **silently**.
+  See [recovery-codes.md](docs/business-logic/recovery-codes.md) and
   ADRs [0015](docs/decisions/0015-mint-recovery-codes-on-the-client-and-store-only-a-hash-of-a-verifier.md),
   [0016](docs/decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md),
   [0017](docs/decisions/0017-consume-a-recovery-code-by-deleting-its-row.md).
@@ -242,49 +195,25 @@ Load-bearing rules, each explained there or in the linked decision:
   enforcing nothing. `wrapped_account_keys` is **policed** by `user_isolation`, not exempt: it is read
   after the request has an identity, and it is keyed on **`factor_id`** — a **factor is not a
   credential**: a passkey is one factor, a set of recovery codes is **ten**, because each code derives
-  its own key-encryption key and a person redeems whichever one they still have. Registering a passkey,
-  issuing a set, and registering an account each **require** `factorId` and both envelopes **per
-  factor**, written in the **same** `SaveChanges` as the credential — the third writes **eleven** rows
-  at once, the passkey's pair plus one per code. Read what that buys precisely: the two `NOT NULL`
-  envelope columns make "a row carries both keys or neither" a schema fact, but **"every factor has a
-  row" is not one** — one-to-optional needs a trigger, which ADR 0002 forbids. What holds it is a
-  property of the write surface rather than a count: **every path that creates a factor demands the
-  envelopes and writes them in the credential's own save**, so a path cannot half-comply. Three paths
-  satisfy it today; a fourth that did not would create a keyless factor and redden nothing, which is
-  why the property is the rule and the number is only a fact about today.
-  `factor_id` is client-minted and
-  deliberately **not** `credentials.id` — letting a client choose that id retires ADR 0014's first leg.
-  It arrives in **one spelling**: the lower-case 36-character hyphenated form, no surrounding
-  whitespace, which is what a `Guid` renders as and therefore what every later read hands back. Both
-  write paths call one `CanonicalFactorId.TryParse`, which compares the text **ordinally against
-  `parsed.ToString("D")`** — `Guid.TryParseExact(…, "D")` alone pins nothing, because it admits
-  upper-case and mixed-case hex and trims before it looks at the format. That comparison is not
-  redundant with the parse and is the whole rule: the value is the associated data both envelopes were
-  sealed with, so a client binding to the spelling it sent and handed back another has **both**
-  envelopes stop opening, permanently, with no error naming the cause. This repository's client is safe
-  only because it lower-cases before sealing; the contract is cross-client.
-  Three consequences a reader will try to "fix": the role holds **no `UPDATE` and no `DELETE`** here,
-  so a replaced set's row must leave by the cascade and `GenerateRecoveryCodesHandler`'s
-  never-materialise rule now binds a second table that fails **loudly** with `42501`; the wrapped keys
-  are **not** the verifiable PRF evidence `CompleteRegistrationHandler`'s remarks ask for, because the
-  server cannot tell a key-encryption key derived through PRF from one derived out of a constant; and
-  the client crypto in `+core/security/account-keys.ts` now reaches a person — `register.service.ts`
-  draws the account's keys **once**, wraps them under the passkey's key-encryption key and under one
-  derived from each of the ten codes, and writes eleven pairs of envelopes into a single request. Two
-  custody rules ride on that method rather than on a type: the eleven key-encryption keys are locals
-  that never touch the service instance, and the account keys are zero-filled in a `finally` behind
-  the wrap loop. **Three more copies are wiped where they are consumed** — the 64-byte draw
-  `generateAccountKeys` splits the keys out of, the buffer `importKeyEncryptionKey` hands WebCrypto
-  *and* the material it was handed (that material **is** the key-encryption key, in the clear, on a
-  buffer nothing names), and the plaintext copy `sealEnvelope` gives the cipher. Each is pinned by a
-  spec that spies on the platform and asserts the buffer was non-zero at the moment of the call, so
-  none can pass against an implementation that drew nothing. **Two omissions are deliberate**: the
-  associated data `sealEnvelope` also copies is not secret, and the recovery-code *verifier* branch
-  keeps its copy because a verifier is sent to the server, so clearing it locally buys nothing the
-  wire does not already give away. And the wipe lives at the point of consumption rather than in
-  `hkdfSha256`, which is a general utility several branches call — reshaping it for one caller's
-  hygiene would be an API change paid by every other. What is still uncalled is the *unwrapping*, because no route hands
-  `wrapped_account_keys` back. See
+  its own key-encryption key and a person redeems whichever one they still have. Every path that
+  creates a factor **requires `factorId` and both envelopes, written in the credential's own
+  `SaveChanges`** — registration writes **eleven** rows at once. That property, not a count, is the
+  rule: the two `NOT NULL` columns make "a row carries both keys or neither" a schema fact, but
+  **"every factor has a row" is not one**, so a path that skipped them would create a keyless factor
+  and redden nothing. Four more a reader will try to "fix":
+  `factor_id` is **client-minted and not `credentials.id`**, arriving in **one spelling** that both
+  write paths check with `CanonicalFactorId.TryParse` — an **ordinal** compare against
+  `parsed.ToString("D")`, because `Guid.TryParseExact(…, "D")` admits upper- and mixed-case hex and
+  trims first; the value is the associated data both envelopes were sealed with, so a mismatch stops
+  **both** opening, permanently, with no error naming the cause, and the contract is cross-client.
+  The role holds **no `UPDATE` and no `DELETE`** here, so a replaced set's row leaves by the cascade
+  and `GenerateRecoveryCodesHandler`'s never-materialise rule binds a second table that fails
+  **loudly** (`42501`). The wrapped keys are **not** verifiable PRF evidence — the server cannot tell
+  a key-encryption key derived through PRF from one derived out of a constant. And the client crypto
+  in `+core/security/account-keys.ts` keeps the key-encryption keys as **locals that never touch the
+  service instance** and zero-fills every copy where it is consumed, each wipe pinned by a spec that
+  asserts the buffer was non-zero at the moment of the call. The *unwrapping* is still uncalled,
+  because no route hands `wrapped_account_keys` back. See
   [account-keys.md](docs/business-logic/account-keys.md) and
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
 - **The schema carries no remnant of an erasure and the route table offers no way back** — no
@@ -330,11 +259,9 @@ Load-bearing rules, each explained there or in the linked decision:
 - Angular 21 standalone components (no NgModules)
 - Slice-1 transaction state uses an Angular signal-based service. **NgRx is registered and empty**:
   `provideStore()` and `provideEffects()` take no arguments and no action, reducer, effect or
-  selector remains — the auth scaffolding that was its last consumer is gone, and `+state/` with it.
-  It is kept as the store the next slice reaches for, and because removing it would take
-  `devtools.providers.ts`, the `angular.json` `fileReplacements` entry and `no-devtools.spec.ts` —
-  the guard proving the production bundle registers no state-inspection provider. `@app-state/*`
-  currently resolves to nothing.
+  selector remains; `@app-state/*` resolves to nothing. It is kept as the store the next slice reaches
+  for, and because removing it would take `devtools.providers.ts`, the `angular.json`
+  `fileReplacements` entry and `no-devtools.spec.ts` with it.
 - `+core/` — API services, guards, interceptors, app-wide providers
 - `+shared/` — shared components and utilities
 - Path aliases: `@app-core/*`, `@app-shared/*`, `@app-state/*` (baseUrl is `./src`)
@@ -349,46 +276,33 @@ Load-bearing rules, each explained there or in the linked decision:
   `url.startsWith(apiBaseUrl)` admits `https://api.budgetoid.app.attacker.example`, a name anybody
   can register, and hands it this app's credentials. **The bearer is narrowed by origin first and
   path second, in that order** — a route test on the path alone would hand the provider's token to
-  `…attacker.example/api/registration`. It goes to those two routes because they are the only ones
-  the provider scheme authenticates, and nowhere else because a person who abandons registration
-  still holds the token and their next act is usually a passkey sign-in: a credential travelling
-  further than it is needed is the defect whether or not anything reads it. The cookie and the
-  header are unconditional, because a browser holding a session and no id token is every browser
-  after registration. An empty `apiBaseUrl` classifies nothing as this API. **Neither
-  interceptor's own spec can see whether it is registered** — both call their function directly —
-  so `src/app/app.config.spec.ts` carries one pin per interceptor, and each reddens on its own
-  half only. Without them either registration is deletable with a green suite: the first costs
-  403 on every route, the second costs a lapsed session that never navigates anywhere.
+  `…attacker.example/api/registration`. It reaches those two routes and nowhere else: a credential
+  travelling further than it is needed is the defect whether or not anything reads it. The cookie and
+  the header are unconditional. An empty `apiBaseUrl` classifies nothing as this API. **Neither
+  interceptor's own spec can see whether it is registered** — both call their function directly — so
+  `src/app/app.config.spec.ts` carries one pin per interceptor, each reddening on its own half only.
+  Without them either registration is deletable with a green suite.
   See [sessions.md](docs/business-logic/sessions.md).
 - **The client learns who it is by asking, once, before the first route activates.** The session
   cookie is `HttpOnly`, so nothing in the browser can read it. `SessionService.probe()` runs in
   the `APP_INITIALIZER` **after** `config.load()` — you cannot ask an address you have not read
   yet — and is **awaited**, which is what keeps every guard synchronous and means no guard ever
-  runs against `'unknown'`. **Construction order is deliberately not part of that argument any
-  more.** `BaseApiService` used to copy `apiBaseUrl` in its constructor, and `SessionService` sits
-  in the initializer's `deps`, so Angular built it — and its `MeApiService` — to assemble the
-  factory's arguments, *before* the factory body awaited anything. The copy was `''` for the rest
-  of the session while the config request itself had completed on time. It now resolves the base
-  per request, so no service can hold a stale copy and the ordering rests on when the request is
-  made rather than on when a class is built. `status` is **four-valued and the fourth is the one a
-  reader will collapse**: 401/403 → `anonymous`, but a network failure, a 500 or a timeout →
-  `unreachable`, and **both guards admit `unreachable` and `unknown`**. Only `anonymous` may
-  bounce anybody. Reading silence as a refusal throws a person holding a good session out of
-  their own account over one blinked request, onto a page served by the same server they could
-  not reach — the `null`-is-not-`0` rule of `SettingsService`, one screen over.
-  `sessionExpiryInterceptor` is the **single owner of "the session ended"**, which is why the
-  Settings export no longer has a word of its own for it; it acts on **401 only** (403 is the
-  CSRF and locked-session refusal, answered to a browser whose session is intact), always
-  re-throws, and skips any request carrying the `EXPECTS_UNAUTHENTICATED` context token — a
-  token, not a URL list, because a URL list is a second definition of the anonymous surface kept
-  client-side. **The probe carries it and `getMe()` does not, on one route**, which is the whole rule
-  in one pair: the probe asks whether there is a session and a 401 is its answer, while the Settings
-  read is made by somebody signed in and a 401 there is a session that ended. Unmarked, the probe
-  navigated **every** anonymous cold load to `/welcome` from inside the initializer, before any route
-  activated, which made `/register` — the provider's own redirect target — unreachable by URL. The
-  token lives in `expects-unauthenticated.token.ts` rather than in the interceptor that reads it,
-  because the reader depends on `SessionService`, which depends on `MeApiService`, so declaring it in
-  the reader closes a three-module cycle the moment the probe sets it. See
+  runs against `'unknown'`. `BaseApiService` resolves `apiBaseUrl` **per request**, never copying it
+  into a field, so no service can hold a base that was empty when it was built. `status` is
+  **four-valued and the fourth is the one a reader will collapse**: 401/403 → `anonymous`, but a
+  network failure, a 500 or a timeout → `unreachable`, and **both guards admit `unreachable` and
+  `unknown`** — only `anonymous` may bounce anybody. Reading silence as a refusal throws a person
+  holding a good session out of their own account over one blinked request.
+  `sessionExpiryInterceptor` is the **single owner of "the session ended"**: it acts on **401 only**
+  (403 is the CSRF and locked-session refusal, answered to a browser whose session is intact), always
+  re-throws, and skips any request carrying the `EXPECTS_UNAUTHENTICATED` context token — a token,
+  not a URL list, because a URL list is a second definition of the anonymous surface kept
+  client-side. **The probe carries it and `getMe()` does not, on one route**: the probe asks whether
+  there is a session and a 401 is its answer, while a 401 on the Settings read is a session that
+  ended. Unmarked, the probe navigates every anonymous cold load to `/welcome` from inside the
+  initializer, making `/register` unreachable by URL. The token lives in
+  `expects-unauthenticated.token.ts` rather than in the interceptor that reads it, or it closes a
+  three-module cycle the moment the probe sets it. See
   [sessions.md](docs/business-logic/sessions.md).
 - **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, or
   image, and no identity-provider profile picture. Typefaces live in `public/fonts/`.
@@ -410,62 +324,28 @@ Load-bearing rules, each explained there or in the linked decision:
   `src/security-headers.spec.ts` reads the emitted config and `index.html`. See
   [security headers](docs/engineering/security-headers.md) and
   [ADR 0020](docs/decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md).
-- **No button shows a focus ring unless `src/styles.scss` puts one there.** Material sets
-  `outline: none` on `.mdc-button`, so the book's `2px solid var(--bud-focus-ring)` at
-  `outline-offset: 2px` lives in one global `:focus-visible` block — element selectors, not
-  `:where()`, because it has to out-specify Material. `src/focus-ring.spec.ts` reads the
-  emitted CSS; it proves the rule ships, not that it wins the cascade, and the keyboard
-  walkthrough in [accessibility.md](docs/design/accessibility.md) holds the rest.
-- **The test runner's time zone is pinned** to `Pacific/Kiritimati` in `src/test-setup.ts`,
-  because CI runs at UTC and a date test comparing UTC against local discriminates nothing
-  there. `export-filename.spec.ts` asserts the offset is non-zero, so deleting the pin fails.
-- **`/app/settings` is reached from the shell navigation**, which is a reversal: it shipped
-  deliberately entry-less, and the reason it stopped being deliberate is that signing out, the
-  export, the credential list and the recovery-code count all live here, so an entry-less
-  Settings makes the whole account-management half of the product unreachable without typing a
-  URL. The nav is `ShellComponent`, a layout on the `app` route rather than anything in the
-  root shell — **which routes carry a bar is a fact about the route table**, so `/welcome` and
-  `/register`, being siblings rather than children, cannot draw one however a session status
-  reads. It carries four destinations; **Home and Add are specified and not built**, having no
-  route and no flow respectively. Its icons are the product's first, from a **four-glyph 1.5 kB
-  subset** of Material Symbols Rounded self-hosted in `public/fonts/`, addressed by codepoint
-  rather than ligature and keeping only the `FILL` axis variable, which is what lets one file
-  serve both the outlined and the filled state.
-  The screen itself shows the email from `GET /api/me`, a working export that writes
-  the response bytes to disk **unread** (`responseType: 'blob'` — a JSON round-trip would turn
-  exact `numeric(14,4)` amounts into doubles), a working **Sign out**, and an erasure control that is
-  present and **disabled**. It also lists every credential
-  from `GET /api/me/credentials` — **type and day only**, never an id or a provider subject —
-  with registration present and **disabled** too. **Two different reasons hold those two off and the
-  screen says both** — one sentence pasted over all of them would replace an old falsehood with a new
-  one. Registering a passkey and generating a set would each wrap the account's keys under a new
-  factor, which needs those keys **unwrapped**, and no route hands `wrapped_account_keys` back.
-  Erasing and revoking are blocked by **nothing technical** — `POST /api/me/erasure` and
-  `POST /api/me/credentials/{id}/revocation` both exist and are authorized by an assertion this client
-  now runs; this screen simply does not ask for one. Do not "correct" the erasure copy into saying the
-  browser is incapable: it is not, and it was that sentence which had to be replaced. **Revoke renders only on a row
-  something can revoke**, which is the passkeys: a federated credential is replaced by an email
-  change and a recovery-code set is unrevocable by construction, so neither draws even a disabled
-  button. Every other disabled control on this screen promises a release; one that never could be
-  enabled is the worse lie. Revocability is carried per kind beside that kind's word and caption,
-  in a map declared exhaustive over `CredentialKind`, so a member added without one fails to
-  compile. The day is formatted in the reader's own zone by `credential-registration-date.ts`,
-  never by `DatePipe`: nothing provides `LOCALE_ID`, so `DatePipe` would silently pin every date
-  to `en-US`, and a UTC-formatted day is wrong for fourteen hours of every day under the
-  `Pacific/Kiritimati` test pin. A **Recovery codes** section reads the count from
-  `GET /api/me/recovery-codes` and never writes: six states that no two of which are
-  interchangeable, `null` and `0` never collapsed — a `catchError` returning `of(0)` would tell
-  somebody whose request failed that they have no way back — loading and failure in an
-  unconditional `role="status"` region that is empty at rest, the count rendered outside it, and
-  pluralisation as three template branches because `I18nPluralPipe` would pin plural rules to
-  `en-US` the way `DatePipe` pins days. Generate is present and **disabled**, and it waits on the
-  account's keys rather than on the assertion — the assertion is a ceremony this client now runs, and
-  a set is ten factors each wrapping those keys. `+core/security/recovery-codes.ts` mints codes and derives
-  verifiers with Web Crypto, and its **one caller is registration** — this screen still has none, so
-  a set can be issued only while an account is being created. Its spec stays the only place in the
-  system that can check the 128-bit entropy rule, because the server sees fixed-width opaque
-  bytes. Key
-  rotation and email change render nothing today and are owned by later stories — do not
+- **No button shows a focus ring unless `src/styles.scss` puts one there** — Material sets
+  `outline: none` on `.mdc-button`, so one global `:focus-visible` block with element selectors,
+  never `:where()`, has to out-specify it. See [accessibility.md](docs/design/accessibility.md).
+- **The test runner's time zone is pinned** to `Pacific/Kiritimati`, and **`npm test` needs a prior
+  `npm run build`** because several specs read the emitted bundle. See
+  [frontend testing](docs/engineering/frontend-testing.md).
+- **`/app/settings` is reached from the shell navigation**, `ShellComponent`, a layout on the `app`
+  route — **which routes carry a bar is a fact about the route table**, so `/welcome` and `/register`
+  cannot draw one however a session status reads. Working today: the email from `GET /api/me`, the
+  export, **Sign out**, the credential list from `GET /api/me/credentials` and the recovery-code
+  count. Present and **disabled**: erasure, passkey registration, code generation. Rules the chapters
+  argue and a reader will undo:
+  **Home and Add are specified and not built**; the export writes the response bytes **unread**
+  (`responseType: 'blob'`); the credential list shows **type and day only**, never an id or provider
+  subject; **two different reasons hold the disabled controls off and the screen says both** — do not
+  paste one sentence over all of them, and do not "correct" the erasure copy into saying the browser
+  is incapable; **Revoke renders only on a row something can revoke**, carried per kind in a map
+  declared exhaustive over `CredentialKind`; the day is formatted by `credential-registration-date.ts`
+  and pluralisation is three template branches, never `DatePipe` or `I18nPluralPipe`, because nothing
+  provides `LOCALE_ID`; the count has **six states and `null` is never `0`**; and
+  `+core/security/recovery-codes.ts` has **one caller, registration**, its spec being the only place
+  that can check the 128-bit entropy rule. Key rotation and email change render nothing today — do not
   "complete" the screen. See [export.md](docs/business-logic/export.md),
   [erasure.md](docs/business-logic/erasure.md),
   [recovery-codes.md](docs/business-logic/recovery-codes.md) and the credential-list and
@@ -474,112 +354,70 @@ Load-bearing rules, each explained there or in the linked decision:
   is pure translation between the API's base64url JSON and the browser's `BufferSource` shapes, over
   the **strict** decoder in `base64url.ts` — a second, lenient decoder must never appear beside it.
   `+core/security/webauthn-ceremony.service.ts` is the injectable seam, for the reason
-  `FileDownloadService` is one: the platform it calls does not exist under the test runner. Four rules
+  `FileDownloadService` is one: the platform it calls does not exist under the test runner. Six rules
   it carries, each silent when broken. **The PRF output never crosses the module boundary** — both
-  legs derive through `keyEncryptionKeyFromPasskey` themselves, return a non-extractable `CryptoKey`
-  and zero-fill the bytes, so no screen can log the value that unwraps the account. **The registration
-  payload projects** `getClientExtensionResults()` into a fresh `{prf:{enabled}}` — never forwards,
-  filters or spreads it, because that object carries the PRF output itself. **The claim's *value* is
-  what the client established, not what `create()` reported**, passed to `toRegistrationPayload` by
-  the ceremony because it is the only caller that knows which of the two routes derived: reporting
-  `create()`'s word alone answered `null` for every authenticator that derives on the first assertion,
-  and the server gates on that word — so a working device sealed twenty-two envelopes, showed somebody
-  ten recovery codes, and was told to throw them away, on every attempt. **`create()` returning no
-  PRF output is not a refusal**: one *local* `get()` follows, carrying `allowCredentials` for the new
-  credential (WebAuthn throws `NotSupportedError` without it) and **discarded, never sent** — many
-  platform authenticators only derive from the first assertion. An authenticator reporting
-  `enabled: false` **is** a refusal, immediately, without that second prompt; absent is not `false`.
-  And **`isArrayBuffer` is a brand check,
-  never `instanceof`**: realms differ across an iframe, a worker and this test runner, and a narrowing
-  that silently goes false derives the key from zero bytes on every device alike. **`assertPasskey`
-  asks for PRF too, and the sign-in screen lets the key go**: the wrapped keys open under exactly that
-  value, so a sign-in deriving nothing would authenticate the person and leave every row unreadable
-  the day encryption lands — but nothing on that screen has a use for it yet, and holding it would be
-  holding the account's master key for no reason. `createPasskey` is reached from
-  `register.service.ts` and `assertPasskey` from `welcome/sign-in.service.ts`. See
+  legs derive through `keyEncryptionKeyFromPasskey`, return a non-extractable `CryptoKey` and
+  zero-fill the bytes. **The registration payload projects** `getClientExtensionResults()` into a
+  fresh `{prf:{enabled}}` — never forwards, filters or spreads it, because that object carries the PRF
+  output itself. **The claim's *value* is what the client established, not what `create()` reported**;
+  the server gates on that word, so reporting `create()`'s alone refuses every authenticator that
+  derives on the first assertion. **`create()` returning no PRF output is not a refusal** — one
+  *local* `get()` follows, carrying `allowCredentials` (WebAuthn throws `NotSupportedError` without
+  it) and **discarded, never sent** — but `enabled: false` **is** a refusal, immediately; absent is
+  not `false`. **`isArrayBuffer` is a brand check, never `instanceof`** — a narrowing that silently
+  goes false derives the key from zero bytes. And **`assertPasskey` asks for PRF too, and the sign-in
+  screen lets the key go**: holding the account's master key with no use for it is the defect. See
   [passkeys.md](docs/business-logic/passkeys.md) and
   [account-keys.md](docs/business-logic/account-keys.md).
 - **The recovery-code hand-off is the one screen that shows a secret, and it still mints and posts
   nothing.** `register/steps/codes-step.component` takes ten codes through an `input()`, shows them
   once and raises an output; `RegisterService` is what mints them and what posts. It is reachable as
-  the third step of `/register` and by **no URL of its own**. Four rules, each silent when broken. **The codes never enter a live
-  region** — a `role="status"` holding a list narrates ten secrets as events; one region exists for
-  the one-sentence outcomes and is in the DOM from first paint. **What is saved or copied is the
-  grouped codes and nothing else** — not the printed 1-based index beside them (the obvious
-  implementation builds the payload from the rendered line) and no header naming the product inside
-  a file of secrets. **The acknowledgement gate is in the click handler, not only in the attribute**
-  — Material's click-halt is anchors only, so on a `<button>` `disabledInteractive` leaves DOM
-  `disabled` false and the click arrives; an attribute-only gate creates an account for somebody who
-  acknowledged nothing. And **the consequence is its own block, never the checkbox's label**, which
-  would announce a paragraph as the control's name on every focus. Copy is **Ghost** beside an
-  Outline Save, deliberately quieter, because the clipboard is the worst storage on the device and
-  the sentence beside it says so. See the recovery-code hand-off chapter in
+  the third step of `/register` and by **no URL of its own**. Four rules, each silent when broken.
+  **The codes never enter a live region** — a `role="status"` holding a list narrates ten secrets as
+  events. **What is saved or copied is the grouped codes and nothing else** — not the printed 1-based
+  index beside them, and no header naming the product inside a file of secrets. **The acknowledgement
+  gate is in the click handler, not only in the attribute** — Material's click-halt is anchors only,
+  so on a `<button>` `disabledInteractive` leaves DOM `disabled` false and the click arrives; an
+  attribute-only gate creates an account for somebody who acknowledged nothing. And **the consequence
+  is its own block, never the checkbox's label**, which would announce a paragraph as the control's
+  name on every focus. Copy is **Ghost** beside an Outline Save, deliberately quieter, because the
+  clipboard is the worst storage on the device. See the recovery-code hand-off chapter in
   [components.md](docs/design/components.md), "A secret shown once" in
   [voice.md](docs/design/voice.md), and
   [recovery-codes.md](docs/business-logic/recovery-codes.md).
-- **Registration is one screen, one route and one *creating* request** — the flow also asks the
-  options leg, from either of two presses, and that is not the request the headline counts.
-  `/register` carries `guestGuard` and
-  declares **no `children`**: the step is a signal inside `register.component.ts`, so `/register/codes`
-  is not a URL — a child route would make Back land on a step whose in-memory state is gone and would
-  deep-link a screen whose whole premise is that ten codes were minted moments ago.
-  `RegisterService` is **component-provided**, which is custody rather than lifetime: the account
-  keys, the eleven key-encryption keys and the ten codes die with the screen, and the component spec
-  pulls the service out of `fixture.debugElement.injector` so deleting the `providers` array reddens.
-  Seven rules a reader will simplify. **The introduction's `Continue` is the options request, and
-  the step moves only on an answer** — the leg that refuses a subject already holding an account
-  refuses above its own `IssueAsync`, so the answer exists at the first press, and read at the second
-  it reaches somebody already told their account would be created under a named address. The
-  challenge that press fetches is **taken once** by `createPasskey` and dropped by `restart`, so a
-  spent nonce is never handed back; when there is none in hand — after a restart, or a `Try again`
-  following a failed ceremony — that leg fetches its own, which is why a 409 is still reachable there
-  and why all three steps carry a conflict sentence of their own. A browser that cannot run a
-  ceremony asks for **no** challenge and advances anyway, leaving `unsupported` to the step that has
-  a sentence for it. **A provider token is judged by validity, never by presence**: `providerEmail`
-  answers `null` once the id token's hour is up, so the screen falls to its **Continue with Google**
-  arm instead of promising an account the next press cannot create — and a token that dies while the
-  screen is open publishes `provider-token-refused` on a 401, its own word, because `start-failed`
-  says the server could not be reached and a **Try again** there would attach the same dead token
-  forever. A 403 on that route stays `start-failed`: it is the `X-Budgetoid-Client` refusal, which no
-  provider exchange repairs. Nothing schedules a silent refresh and that omission is the rule — a
-  hidden iframe on `accounts.google.com` for the life of every tab, to keep alive a credential used
-  once. **The device agrees before anything is minted** — cancelling the
-  system sheet is the common case, and minting first leaves ten live codes in a browser for a flow
-  that ended. **One code's four submitted members are built in one scope from one code**, never zipped
-  from parallel arrays: a mispairing satisfies every type, count and round trip, and is discovered by
-  somebody who redeemed a code and found the account still locked. **There is no retry of the POST,
-  only a restart of the whole ceremony**, because the challenge is spent before anything is verified.
-  **`refused`/`conflict` and `unknown` are never collapsed** — a 400 and a 409 are
-  certainly-not-created so the codes on screen are certainly dead, while a lost answer may have
-  committed all thirty rows, and telling that person to discard their codes discards the only key to
-  an account they cannot make more codes for. **A 409 has two readings, and what tells them apart is
-  what the previous request *ended as* — never whether a button was pressed.** The server sends four
-  distinct sentences in `ProblemDetails.Detail` under an identical `Title` with no machine-readable
-  code, so matching on the text is forbidden and the client renders two states, not four; which of
-  the two is decided by `mayHaveCreatedAccount`, set only in the POST's error branch and only for
-  `unknown`. Forking on a `Start again` press instead is the bug this replaced: that control is
-  offered from **two** failure states, so a 400 followed by a restart and a 409 told somebody their
-  first attempt had created an account when nothing had been written. A 400 and a 409 are judgements
-  and close the question; a lost answer opens it for the rest of the visit and nothing later closes
-  it. Both readings carry **one** control out — a control written twice is one somebody forgets — and
-  it is a button, because this is an exit from a dead flow rather than navigation worth opening in a
-  new tab beside a screen holding ten dead codes. And **no `canDeactivate`, no `beforeunload`** — abandoning
-  costs nothing and a confirm dialog would say otherwise. Both requests carry
-  `EXPECTS_UNAUTHENTICATED`, or a 401 mid-flow navigates away and destroys ten
-  codes already written down. The provider `redirectUri` points at `/register`, and **the matching
-  entry in the Google Cloud console is part of the change no test can catch**. See
+- **Registration is one screen, one route and one *creating* request** — the options leg, asked from
+  either of two presses, is not the request the headline counts. `/register` carries `guestGuard`,
+  declares **no `children`** (the step is a signal in `register.component.ts`), and provides
+  `RegisterService` **on the component** — custody, not lifetime: the account keys, the eleven
+  key-encryption keys and the ten codes die with the screen. Rules the chapters argue and a reader
+  will undo:
+  **the introduction's `Continue` is the options request** and the step moves only on an answer; the
+  challenge is **taken once** and dropped by `restart`, so a 409 stays reachable from all three steps
+  and each carries a conflict sentence; a browser that cannot run a ceremony asks for **no** challenge
+  and advances to the step holding `unsupported`; **a provider token is judged by validity, never by
+  presence**, so a dead one publishes `provider-token-refused` while a 403 stays `start-failed`;
+  **the device agrees before anything is minted**; **one code's four submitted members are built in one
+  scope from one code**, never zipped from parallel arrays; **there is no retry of the POST, only a
+  restart**; **`refused`/`conflict` and `unknown` are never collapsed**, and **a 409 has two readings
+  told apart by what the previous request *ended as*** — never by whether a button was pressed —
+  decided by `mayHaveCreatedAccount`; **no `canDeactivate`, no `beforeunload`**; and both requests
+  carry `EXPECTS_UNAUTHENTICATED`, or a 401 mid-flow destroys ten codes already written down.
+  **Nothing schedules a silent refresh, and that omission is the rule** — a hidden iframe on the
+  provider for the life of every tab, to keep alive a credential used once. The provider `redirectUri`
+  points at `/register`, and **the matching entry in the Google Cloud console is part of the change no
+  test can catch**. See
   [registration.md](docs/business-logic/registration.md) and the Registration chapter in
   [components.md](docs/design/components.md).
 - **Welcome carries two actions and exactly one of them is Primary.** `Create account` routes to
   `/register`; `Sign in with a passkey` is an Outline running the assertion through a
-  component-provided `SignInService`. **The provider button is gone from this screen** — the provider
-  is contacted once, on the registration screen's introduction step, and the sentence saying Google
-  "is used only to sign you in" left with it. There is **no `/sign-in` route**: one control, no
+  component-provided `SignInService`. **No provider button here** — the provider is contacted once, on
+  the registration screen's introduction step. There is **no `/sign-in` route**: one control, no
   fields, because the authenticator is the form. Two rules a reader will break. **The screen says one
   thing however a sign-in was refused** — the server answers unknown credential, bad signature,
-  untrusted origin, spent challenge, counter regression and user-handle mismatch with one byte-identical
-  401 on purpose, so a client that varied its sentence would rebuild the credential-enumeration oracle
-  the server refuses to be. And **`refused` is not `unknown`**: a refusal means this passkey does not
+  untrusted origin, spent challenge, counter regression and user-handle mismatch with one
+  byte-identical 401 on purpose, so a client that varied its sentence would rebuild the
+  credential-enumeration oracle the server refuses to be. And **`refused` is not `unknown`**: a
+  refusal means this passkey does not
   work here and the person should try another way in, while an unreachable server means try again in a
   minute. Both assertion legs are **anonymous** and both carry `EXPECTS_UNAUTHENTICATED`, or a 401 —
   the route's own verdict — is read as a session that lapsed. See
