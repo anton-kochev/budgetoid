@@ -51,9 +51,14 @@ would put the value that unwraps the account's whole keyspace into a variable an
 - **Index key** — 32 random bytes, generated in the browser, drawn independently of the content key.
   Never transmitted.
 - **Key-encryption key** — 32 bytes derived from a recovery factor by HKDF-SHA-256, imported as a
-  **non-extractable** `AES-GCM` `CryptoKey`. Never transmitted, and never readable back out of the
-  browser's key store. The **bytes it was imported from** are a different thing and they do exist —
+  **non-extractable** `AES-GCM` `CryptoKey` through `importAesGcmKey`. **Any other width is
+  refused rather than trusted**: that function throws on material that is not exactly 32 bytes, so
+  the width is enforced in code and not merely written down here — which it has to be, because
+  WebCrypto would take 16 and 24 bytes as a quieter AES without a word. Never transmitted, and
+  never readable back out of the browser's key store. The **bytes it was imported from** are a
+  different thing and they do exist —
   two buffers per derivation, both zero-filled where the import consumes them. See
+  [The one import](#the-one-import-and-the-five-decisions-it-holds) and
   [What becomes of the bytes](#what-becomes-of-the-bytes).
 - **Wrapped key** — the versioned envelope below over a 32-byte key. Exactly 61 bytes. The only one
   of the four that ever reaches the server.
@@ -339,6 +344,46 @@ holding both vectors is the only way to see that.
 | associated data | `budgetoid/key-envelope/spec/v1` |
 | envelope (61 bytes) | `01a0a1a2a3a4a5a6a7a8a9aaab6699feaec14e8438eaec0d588bf74e51e03dcb830622d4fb0497bc1de336eb9e21d4cc389d668944133ecec0a071274d` |
 
+### The one import, and the five decisions it holds
+
+`importAesGcmKey`, in `+core/security/account-keys.ts`, is **the one place in this client where
+bytes become an AES-GCM key, whichever key they are.** Both key-encryption-key derivations go
+through it, and so does anything that has to turn one of the account's own keys — which
+`generateAccountKeys` and `unwrapAccountKeys` hand back as `Uint8Array`, never as a key object —
+into something a cipher will take. It is exported for that reason. The alternative is not a weaker
+version of it; it is a second `crypto.subtle.importKey` written by hand beside it, holding **none**
+of the five decisions below — of which only non-extractability would be noticed downstream. Such an
+import would take AES-128, carry `wrapKey` in its usages and leave the caller's bytes on the heap,
+and it would work perfectly, forever.
+
+- **The width.** Material that is not exactly `ACCOUNT_KEY_BYTES` is refused, and the check is
+  written against that constant rather than a literal `32`, or it would go on enforcing a number
+  the module had stopped believing in. Measured on Node's implementation, `importKey` accepts 16
+  and 24 bytes as AES-128 and AES-192 and refuses every other non-32 width with `DataError` — so
+  the two widths nothing else objects to are exactly the two that silently downgrade an account for
+  the rest of its life, sealing and opening without complaint the whole time.
+- **The usage list.** `encrypt` and `decrypt`, and nothing else. A list also carrying
+  `wrapKey`/`unwrapKey` opens a second path out for key objects, unrelated to the bytes this import
+  is refusing to give up.
+- **Non-extractability.** `extractable: false`, which is why the derivations return a `CryptoKey`
+  at all, and the one of the five anything downstream would notice being dropped — because
+  `sealNarrativeField` refuses an extractable key.
+- **The defensive copy.** The material is copied onto a buffer whose type WebCrypto's
+  `BufferSource` accepts, for the reason `key-envelope.ts` states at length: narrowing by copying
+  asserts nothing about the caller's buffer, where a cast would.
+- **The death of the bytes.** Both copies — the one made here and the caller's `material` — are
+  zero-filled in a `finally`, on the **refusal** path as well as the success one, because the
+  width check sits inside the `try`.
+
+**One rule here is held by nothing but itself.** That `finally` runs after an `await` on
+`importKey`, not after a bare `return` of its promise: WebCrypto reads the buffer asynchronously,
+so a returned promise would let the wipe run while the import was still in flight and the key
+would be imported from zeros. **Measured: dropping the `await` leaves every case in
+`account-keys.spec.ts` green**, because the runner is Node and Node's implementation reads the
+buffer synchronously. So say it plainly — this rule is held **by construction**, by the shape of
+the code and the comment sitting on it, and **not by observation**. A reader who "tidies" the
+`await` away will find the whole suite agreeing with them.
+
 ### What becomes of the bytes
 
 **The boundary claim and the byte claim are two claims, and only the first holds by construction.**
@@ -354,10 +399,12 @@ Three buffers hold a secret long enough to matter, and each is cleared where it 
   left to a caller: the two keys are *copies* of regions of that draw precisely so that a caller
   wiping one does not wipe the other, and it is that copying which puts the originals somewhere no
   caller can name.
-- **The copy `importKeyEncryptionKey` makes for WebCrypto, and the material it was handed.** That
-  material is the key-encryption key itself, in the clear, on a buffer nothing outside the call
-  names once `importKey` has been given it. Both derivations share this one import, so a
-  registration runs eleven derivations through it.
+- **The copy `importAesGcmKey` makes for WebCrypto, and the material it was handed.** That
+  material is a key in the clear — the key-encryption key itself on both derivation branches — on a
+  buffer nothing outside the call names once `importKey` has been given it. Both derivations share
+  this one import, so a registration runs eleven derivations through it, and the wipe covers the
+  refusal as well as the success. See
+  [The one import](#the-one-import-and-the-five-decisions-it-holds).
 - **The plaintext copy `sealEnvelope` hands the cipher**, cleared once the cipher resolves and never
   before: WebCrypto reads the buffer asynchronously, so a wipe placed ahead of the `await` seals
   zeros. One registration wraps two account keys under eleven factors, so twenty-two of these pass
@@ -570,13 +617,18 @@ about why.
   a key; a caller that only wants the assertion takes the payload and lets the key go.
 - **The base64url decoder is strict, and the client's is stricter than the server's, deliberately.**
   It refuses padding, the standard alphabet's `+` and `/`, any character outside the URL-safe set,
-  an impossible length, and a non-canonical trailing group. `PasskeyEncoding.TryDecode` accepts
-  padding, because `Base64Url` does and the looser bound is the one that never refuses a member a
-  client legitimately encoded. Nothing is lost by the difference — the column stores decoded bytes,
-  so a padded envelope and an unpadded one become the same row. The strictness is a rule about what
-  *this* client emits, not a claim about what the server admits; a lenient decoder here would accept
-  a wrapped key the server's decoder rejects, and the symptom would arrive months later as a key
-  that will not unwrap.
+  an impossible length, and a non-canonical trailing group. `PasskeyEncoding.TryDecode` admits
+  **two** things this client will not emit: **padding**, and **whitespace anywhere in the string** —
+  measured: `AAAA AAAA`, a tab, a newline and a leading space each validate and decode to the same
+  bytes as `AAAAAAAA`. Both come from `Base64Url`, and the looser bound is the one that never
+  refuses a member a client legitimately encoded. The full argument, and why neither leniency buys a
+  way past the ceiling, is in [ciphertext-envelope.md](ciphertext-envelope.md) — stated once there
+  because it is a fact about the shared decoder rather than about wrapped keys, and because two
+  chapters describing one decoder differently is worse than one describing it short. Nothing is lost
+  by the difference — the column stores decoded bytes, so a padded envelope and an unpadded one
+  become the same row. The strictness is a rule about what *this* client emits, not a claim about
+  what the server admits; a lenient decoder here would accept a wrapped key the server's decoder
+  rejects, and the symptom would arrive months later as a key that will not unwrap.
 - **The PRF eval input is read by the ceremony, and a drift in it is silent.** Both legs send it as
   the `prf` extension's evaluation input, so it decides what every authenticator hands back — and a
   drifted value locks every account out with no error naming the cause, because the key-encryption

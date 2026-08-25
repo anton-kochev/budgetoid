@@ -95,23 +95,39 @@ erDiagram
   - **Why**: these three widths are what a client's AES-GCM implementation slices on. A byte
     moved from the nonce to the tag keeps the total length and produces envelopes that open
     perfectly against themselves and against nothing else.
-  - **Enforced in**: `key-envelope.ts` on the client, which builds the layout from three
-    exported widths rather than from a literal; `Domain/Security/CiphertextEnvelope` on the
-    server, whose `MinimumLength` is const arithmetic over the three parts. Each of the three
-    widths and the version value are pinned as literals in `CiphertextEnvelopeTests` — the one
-    place in that file where a literal is correct, because a test computing the sum from the
-    same constants it is checking agrees with any three numbers the type later chooses.
+  - **Enforced in**: `key-envelope.ts` on the client, which builds the layout from named
+    constants rather than from literals — **two** of them exported, `ENVELOPE_NONCE_BYTES` and
+    `ENVELOPE_TAG_BYTES`, while the version's own width is the private `VERSION_BYTES = 1`.
+    The module's third export, `ENVELOPE_VERSION`, is the version **value** and not a width;
+    the two must not be read as a set of three. Keeping `VERSION_BYTES` private is argued at
+    its declaration: it is the arithmetic the format is made of rather than a setting, so a
+    reader who needs it can read the layout and a writer who wants to change it is changing
+    the format. `Domain/Security/CiphertextEnvelope` holds the same layout on the server, its
+    `MinimumLength` being const arithmetic over the three parts. Each of the three widths and
+    the version value are pinned as literals in `CiphertextEnvelopeTests` — the one place in
+    that file where a literal is correct, because a test computing the sum from the same
+    constants it is checking agrees with any three numbers the type later chooses.
 
 - **Every nonce MUST be freshly drawn from a cryptographically secure random source, once per
   operation. This is a requirement of the contract, not an implementation detail.**
-  - **Why**: a counter starting at zero per factor is an ordinary, defensible choice for an
-    implementer reading only the layout — and it repeats immediately, because **both of a
-    factor's envelopes are sealed under the same key-encryption key**. Two GCM ciphertexts
-    under one (key, nonce) give `C₁ ⊕ C₂ = P₁ ⊕ P₂` and hand out the GHASH subkey with it,
-    which turns every tag under that key into something an attacker can forge. Nothing
-    observable goes wrong: both clients still open each other's envelopes, and every frozen
-    vector still passes. Stating it only where a nonce happens to be drawn would leave the
-    second implementation to reinvent it.
+  - **Why**: a counter is an ordinary, defensible choice for an implementer reading only the
+    layout, and **nothing in this format gives them grounds to reject it** — which is why the
+    rule is stated here rather than left where a nonce happens to be drawn. Two GCM
+    ciphertexts under one (key, nonce) give `C₁ ⊕ C₂ = P₁ ⊕ P₂` and hand out the GHASH subkey
+    with it, which turns every tag under that key into something an attacker can forge.
+    Nothing observable goes wrong on the way there: both clients still open each other's
+    envelopes, and every frozen vector still passes. **Both consumers reach the failure, and
+    the counter that looks safest is the one the larger consumer breaks.**
+    - On the **wrapped-key** side a counter per factor repeats on the very next operation,
+      because both of a factor's envelopes are sealed under the same key-encryption key.
+      That is the loudest case and also the smallest one: an account seals roughly
+      twenty-two of these envelopes in its whole life.
+    - The **narrative** side is the one that dominates. Every field of every row is sealed
+      under **one** content key, once per field per save, for the life of the account — so a
+      counter scoped per *row* never repeats within that row and collides against every other
+      row on the account, and a counter scoped per *field* collides on the second save of that
+      field. There is no scope at which a counter under a single account-wide key is safe, and
+      a reader of the layout alone has nothing to tell them so.
   - **Enforced in**: `sealEnvelope`, which draws from `crypto.getRandomValues` and from
     nowhere else. `narrative-cipher.spec.ts` seals the same string twice under one key and one
     binding and compares the **nonce region** — not the whole envelope, because a counter that
@@ -309,7 +325,10 @@ Better a named gap than a check that looks like it closed one.
 ### Nothing normalises, and the normalisation this product will need is a different transform
 
 The client seals exactly what was typed, NFD included, and hands back the same code points
-rather than the ones they render as. Measured on the `mixed-width` vector's plaintext —
+rather than the ones they render as — **for every well-formed string, which is the one
+qualification this claim needs**: an unpaired surrogate is replaced at the crossing into UTF-8,
+before the cipher, and [Edge Cases](#edge-cases--known-gotchas) states that in full. Measured on
+the `mixed-width` vector's plaintext —
 `Café €250` with two emoji — that is **20 UTF-8 bytes in NFC and 21 in NFD**, because `U+00E9`
 is the one code point in it with a canonical decomposition.
 
@@ -338,18 +357,35 @@ Two types split the job:
   version come from the domain, the ceiling comes from the caller — which is what keeps the
   edge and the format from drifting apart.
 
-**The ceiling is applied twice, and the second application is why that type exists.** The
-shared base64url decoder bounds the *encoded* text against an allowance computed in the
-**padded** form, which overshoots the true ceiling by up to two characters. Measured: with a
-ceiling of **29** bytes the allowance is **40** characters, and a **30**-byte envelope encodes
-to exactly 40 — so it passes every check that can be made on text. Re-applying the ceiling to
-the **decoded** length is the only thing that catches it. Deleting that line silently widens
-every field's limit by a byte or two, and a ceiling that admits more than it names is not a
-ceiling.
+**The ceiling is applied once, and not by that type.** The shared base64url decoder bounds
+the *encoded* text against an allowance computed in the **padded** form, which overshoots the
+true ceiling by up to two characters. Measured: with a ceiling of **29** bytes the allowance
+is **40** characters, and a **30**-byte envelope encodes to exactly 40 — so it passes every
+check that can be made on text. `PasskeyEncoding.TryDecode` therefore measures the decoded
+buffer as well, immediately after the decode, and that second comparison is what makes the
+number a caller names the number it gets. It lives in the decoder because the decoder is what
+creates the slack, so it is the lowest layer that can close it declaratively; left to each
+caller it would be closed at whichever of them remembered, and a limit widened by a byte or
+two is invisible in every other. Measured before it existed: six of `PasskeyPayloadLimits`'
+seven members admitted one or two bytes past what they declared — 1024 admitted 1026, 512
+admitted 513, 64 admitted 66 — and `CredentialIdBytes` was the only one that did not.
 
-**The wrapped-key path never noticed this, and that is the reason it went unnoticed.** Its
-exact 61-byte width sits behind the same decode and catches the slack. A member holding only a
-**floor** has nothing behind it.
+**`CiphertextEnvelopeText` deliberately does not re-apply it**, and says so where the second
+comparison would go: "a second comparison against `maxDecodedBytes` would be one rule with
+two owners." The owner that got edited would be whichever one the next reader opened.
+
+**So what that type exists for is the framing, not the ceiling.** It is the one place a
+decoded buffer meets the format's *floor* and its *version byte*, in that order and taken
+from the type that owns them, for every sealed member the API accepts as text. It still
+declares no number of its own. Fold it away and those two rules are restated in each caller
+that decodes a sealed member, which is exactly the drift a shared edge exists to prevent.
+
+**The wrapped-key path never showed the symptom, which is why the slack went unnoticed as
+long as it did.** Its exact 61-byte width sat behind the same decode and refused the one or
+two extra bytes the text-side allowance let through, so the only member carrying a
+post-decode rule of its own was also the only one that could not be over-admitted. A member
+holding nothing but a **floor** has nothing behind it. Today the decoder refuses those bytes
+first, so the width never sees them.
 
 ### Why the wrapped-key entity keeps its own exact width
 
@@ -359,11 +395,14 @@ shared floor for it would weaken an equality into a lower bound, and what it wou
 catching is the band the shared rules cannot see — an envelope of 29 to 60 bytes clears the
 format's floor, carries the right version byte, and is still not a wrapped key.
 
-Only the *short* side of that is genuinely held here today. An envelope **wider** than 61 is
-refused by the shared ceiling before the width is consulted, because that ceiling and this
-width are the same number by agreement across two rings rather than by construction. The day
-they part, the over-long value reaches the width again — which is why the check stays an
-inequality against the width rather than a lower bound of its own.
+Only the *short* side of that is reachable today. An envelope **wider** than 61 is refused by
+the shared ceiling before the width is consulted, and the ceiling and the width are the same
+number **by construction**: `PasskeyPayloadLimits.WrappedKeyBytes` is declared as
+`WrappedAccountKeys.EnvelopeLength`, so the ceiling *is* the width rather than a second
+number that happens to agree with it. The upper half of this check is therefore unreachable,
+and it stays written as an inequality against the width rather than as a lower bound of its
+own: it becomes reachable again the day somebody replaces that derivation with a separate
+literal — one silent step, and then a loud one when the two numbers part.
 
 Folding the width the other way — into the shared format — would refuse every narrative entry
 longer than an empty one, and the person would find out by not being able to save what they
@@ -432,9 +471,13 @@ flipped bit anywhere, and bytes that authenticate but are not UTF-8. That last d
 `U+FFFD`, which reads as damaged text a person typed, is indistinguishable from it, and gets
 written straight back on the next save.
 
-**The server's step** is the same on both consumers: decode base64url within a ceiling,
-re-apply the ceiling to the decoded length, then the floor and the version. The wrapped-key
-path adds its exact width on top. Nothing on that side opens anything.
+**The server's step**, on the one consumer that exists there today: decode base64url within a
+ceiling — which the decoder applies to the encoded text and then to the buffer it produced —
+and then the floor and the version. `CiphertextEnvelopeText` has exactly one caller,
+`WrappedKeyEnvelope`, which adds its exact width on top. **The narrative side is the next
+story's work**: nothing in the API decodes a narrative envelope today, and when something does
+it reaches the same member with a ceiling of its own rather than a second decode. Nothing on
+that side opens anything.
 
 ## Decision Trees
 
@@ -483,8 +526,11 @@ caller was not given.
 - **[recovery-codes.md](recovery-codes.md)** and **[passkeys.md](passkeys.md)** — where the
   key-encryption keys that seal the wrapped copies come from. Neither reaches this format
   directly.
-- **[registration.md](registration.md)** — the one live path that writes envelopes today:
-  eleven factors, twenty-two wrapped keys, in one save.
+- **[registration.md](registration.md)** — the only envelope-writing path a screen reaches:
+  eleven factors, twenty-two wrapped keys, in one save. It is one of **three** production
+  handlers that write envelopes — `RegisterAccountHandler`, `CompleteRegistrationHandler` and
+  `GenerateRecoveryCodesHandler` — and the other two are still reached only by the integration
+  suite. [account-keys.md](account-keys.md) is where the three are counted.
 
 ## Edge Cases & Known Gotchas
 
@@ -496,12 +542,31 @@ caller was not given.
 - **An empty plaintext is legal and seals to exactly 29 bytes.** A reader tempted to treat
   "too short" as "empty is not allowed" would refuse a value the format produces. The spec
   seals an empty string and opens it back, which is the half that stops the misreading.
-- **The client's base64url decoder is stricter than the server's, deliberately.** It refuses
-  padding, the standard alphabet's `+` and `/`, any character outside the URL-safe set, an
-  impossible length, and a non-canonical trailing group; the server accepts padding, because
-  the looser bound is the one that never refuses a member a client legitimately encoded.
-  Nothing is lost by the difference — the column stores decoded bytes. The strictness is a rule
-  about what *this* client emits, not a claim about what the server admits.
+- **`openNarrativeField` does not hand back exactly what was sealed for a *lone surrogate*, and
+  the loss happens before the cipher rather than in the reader.** `TextEncoder` substitutes
+  U+FFFD for an unpaired surrogate — measured: `'café \uD83D'` comes back `'café �'` — so what
+  is sealed is already the replacement, and the reader returns exactly what was sealed. The
+  strict decoder cannot object either, because those bytes *are* valid UTF-8, which is the
+  whole reason the substitution is invisible. And it is **permanent**: the next save re-seals
+  the replacement, and nothing later can tell that a surrogate pair was ever there. The
+  concrete path is a caller rather than a codec fault, and it follows from the rule that this
+  format holds **no cap of its own** — a caller slicing narrative text to fit a column or a
+  preview is exactly the caller who splits a pair: `'lunch 🍕'.slice(0, 7)` seals and returns
+  `'lunch �'`. Text that has to be shortened is shortened **by code point**, never by UTF-16
+  unit.
+- **The client's base64url decoder is stricter than the server's, deliberately — and the list
+  of what the server lets through has to be complete.** The client refuses padding, the
+  standard alphabet's `+` and `/`, any character outside the URL-safe set, an impossible
+  length, and a non-canonical trailing group. `Base64Url.IsValid`, which the server decodes
+  through, admits **two** things the client will not emit: **padding**, and **whitespace
+  anywhere in the string**. Measured: `AAAA AAAA`, a tab, a newline and a leading space each
+  validate and decode to the same bytes as `AAAAAAAA`. Stopping this list at padding is a
+  defect of its own, because the list is normative. Neither leniency buys a way past the
+  ceiling: whitespace spends the character budget like any other character, so the decoded
+  length cannot grow because of it. Nothing is lost by the difference either — the column
+  stores decoded bytes. The looser bound is the one that never refuses a member a client
+  legitimately encoded, and the strictness is a rule about what *this* client emits, not a
+  claim about what the server admits.
 - **A wrong encoder is invisible on ASCII.** Every assertion that can be made inside one client
   passes for a client that is consistently wrong about UTF-8. Only the frozen `mixed-width`
   vector separates the readings, and only because AES-GCM makes the ciphertext length equal to

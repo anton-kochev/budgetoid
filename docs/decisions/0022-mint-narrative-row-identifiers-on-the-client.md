@@ -13,9 +13,9 @@ is exactly what makes a ciphertext moved to another row fail to authenticate rat
 decrypt into something. See [ciphertext-envelope.md](../business-logic/ciphertext-envelope.md).
 
 The grammar therefore needs the row's identifier **at the moment the client seals**, and on an
-insert the client does not have one. Every row id in this schema is minted server-side inside a
-Domain factory: `Transaction.Create`, `Payee`, `Account`, `Category`, `CategoryGroup` and
-`Budget` each call `Guid.CreateVersion7()` and assign the result to `Id`. So on the path that
+insert the client does not have one. Every row a narrative field could be bound to takes its id
+server-side inside a Domain factory: `Transaction.Create`, `Payee`, `Account`, `Category`,
+`CategoryGroup` and `Budget` each call `Guid.CreateVersion7()` and assign the result to `Id`. So on the path that
 matters most — creating a row whose narrative is encrypted — the client seals before the row
 exists, and **the row half of the binding is unreachable**.
 
@@ -39,9 +39,22 @@ when it slips.
    on `credentials`, whose deletes are issued by primary key against a table carrying no
    row-level security policy, and which is why that id stays server-minted (ADR 0014).
 
-2. **Version 7, not version 4.** Every identifier in this schema is a version-7 UUID, which is
-   time-ordered and therefore locally clustered in an index. A row id drawn any other way keeps
-   uniqueness and loses that locality on the tables that will hold the most rows.
+2. **Version 7, not version 4.** Every identifier a Domain factory mints is a version-7 UUID
+   — `Transaction`, `Payee`, `Account`, `Category`, `CategoryGroup`, `Budget`, `Session` and
+   `Credential` all assign `Guid.CreateVersion7()` — which is time-ordered and therefore
+   locally clustered in an index. A row id drawn any other way keeps uniqueness and loses that
+   locality on the tables that will hold the most rows.
+
+   **That is not "every identifier in the schema", and the two exceptions are deliberate.**
+   `factor_id` is minted on the client by `factor-id.ts` with `crypto.randomUUID()` — version
+   4 — for the reason set out below. And `users.id` is neither version: it is derived by
+   `RegistrationAccountId.For` from the registration challenge and stamped **version 8**,
+   RFC 9562's own slot for a value an application derived rather than drew, because the two
+   legs of the ceremony have to reach one identifier without carrying it between them. That
+   file records the trade in its own words — the scatter on the `users` primary key is a real
+   cost, paid on the rarest insert in the product, and `Guid.CreateVersion7()` "is not an
+   option here at any price: it is not a function of its input at all, which is the entire
+   requirement."
 
    **Nothing in the compiler, the database or the test suite tells a version-7 UUID from a
    version-4 one, so this half is held by review** — the same answer `CLAUDE.md` gives about a
@@ -115,7 +128,7 @@ all to avoid a value the client can produce in one call.
 **`crypto.randomUUID`, which mints version 4 only.** Available in every browser this app runs
 in, needs no library, and keeps uniqueness — the argument for leaving the budget id out of the
 narrative grammar survives on 122 random bits alone. What it loses is **index locality**: every
-other identifier in this schema is version 7 and clusters by creation time, and narrative rows
+identifier a Domain factory mints is version 7 and clusters by creation time, and narrative rows
 are the ones there will be most of. It is the closest of the five, and it is rejected on that
 one property rather than on correctness.
 
