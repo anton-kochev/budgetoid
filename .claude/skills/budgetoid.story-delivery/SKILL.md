@@ -28,6 +28,27 @@ workflow noticing. Anything named here that is *not* part of the repository — 
 skill — is a name that may change. Where a rule turns on one, state the rule so it survives the
 name: ask what the tool answers rather than what it is called.
 
+## How hard to run this
+
+Every step below is worth doing; not every step is worth doing at full depth on every story, and
+reading this file as "always do the maximum" is a misreading that costs days. Three properties of
+the work decide the depth, and any one of them is enough:
+
+- **The change has no migration.** A byte format, a derived key, an identifier spelling — anything a
+  later reader cannot fix by editing a row. Getting it wrong is permanent.
+- **Breaking the rule has no loud symptom.** Nothing throws, no test reddens, no log names it; the
+  cost arrives months later as "this will not open" with nothing pointing at the cause.
+- **A second implementation will read the artifact.** A contract another client, another language or
+  another team implements from is a specification, and a specification that is merely *usually* true
+  is worse than none.
+
+With none of those present — a screen, a query, a handler whose mistakes are visible the first time
+somebody runs it — take the loop, one review, and the same-commit doc rule, and stop. The
+mutation tables, the adversarial passes and the two-agent red/green split are for the cases above.
+One story that hit all three returned two real defects and nineteen false claims for roughly twenty
+agent round trips; the same effort on ordinary work buys correspondingly less, and the honest
+version of this skill says so rather than letting thoroughness read as diligence.
+
 ## Preconditions
 
 A brief exists. If `/budgetoid.story-context <n>` has not run in this session, say so and run it —
@@ -91,6 +112,25 @@ Requirements on top of the loop:
   a provable-fail control" reliably gets read as *prove the test matches* — four times running,
   agents shipped guards that passed against the exact mutation they existed to catch. Demand the
   table and the same agents deliver it, including proof that the positive control itself fires.
+- **Every brief that writes a test or a production file carries one question: "what wrong
+  implementation still passes this?"** Not in review — in the brief, to the test's author *and* to
+  the code's, because each answers it about the other's work and neither answers it about their own
+  unprompted. This is the single highest-yield line in the workflow. One story ran it in every brief
+  and it returned eight defects that three careful readings had missed: associated data built inline
+  past the refusal that was supposed to guard it, a normalisation and a trim before sealing, a guard
+  checked *after* the cipher it was guarding, a version byte read only relatively so its absolute
+  value was pinned by nothing, and a width rule whose four cases were refused by the platform in
+  three of them. Phrasing decides the yield: "write a test proving this works" returns a decoration,
+  "break this so nothing notices" returns a finding. Require the answer as a list, and require the
+  agent to say which items it *ran* and which it reasoned.
+- **When a finding lands, look for its class before you fix its instance.** The second search is
+  nearly free — the first already produced the method and the arithmetic — and the same defect sits
+  elsewhere far more often than not. One story found a ceiling that admitted more than it declared,
+  closed it at one call site, and left six; found a substitution that tested the wrong rule in a unit
+  test, fixed it, and left four cases across two integration files saying the same thing; and built
+  a scan for a duplicated literal whose own exemption already contained one. Grep for the *shape* of
+  the defect, not for the file it was found in. A fix that names a class of mistake in its commit
+  message and closes one member of it is worse than no fix, because the message reads as coverage.
 - **A claim is measured or it is tagged; there is no tier in between.** This binds docs, code
   comments and commit messages alike, because this repository's prose *argues* — it names the
   rejected alternative and the change that would redden a test — so a wrong sentence misleads
@@ -131,6 +171,21 @@ The trigger this skill adds: a **changed rule** moves its doc, and anything a fu
 not infer from the code gets a decision-log entry — especially a deliberate absence, which always
 reads as an oversight to whoever finds it next.
 
+**A rule that moves invalidates prose that never named it.** Grep for the symbol and you will miss
+most of the damage: what goes stale is every sentence that argued from the *order* the checks used
+to run in. One story moved a bound one ring down and left four arguments false — none of them
+mentioned either type by name; they said things like "arrives at the width check having passed
+everything before it". Three more were created by the pass that came to remove them, one in the same
+round. So after any change that reorders, relocates or subsumes a rule, re-read the arguments
+*around* it, including the ones you wrote an hour ago. Nothing in the build sees this: the compiler
+knows who calls a function and nobody knows who cites it in a sentence.
+
+Two habits that cost nothing and stop most of it. **Never quote another file verbatim** — a
+paraphrase ages honestly, a quotation goes stale the first time its source is edited and reddens
+nothing. And **cite by construction, not by line number**: line numbers rot faster, names rot
+slower, and the rule is that both rot, so the citation should be the thing a reader can still find
+after either.
+
 ## 4 · Verify
 
 Run the gates `CLAUDE.md` defines, in the order it defines them.
@@ -146,6 +201,16 @@ sent to fix.
 
 Re-run the suite **after** committing, not only before. A pre-commit formatter rewrites staged files,
 so the tree you verified is not always the tree that landed.
+
+**Run the integration suite alone, and read the exception type rather than the count.** It starts
+PostgreSQL in a container, so every full run competes for the machine with whatever agents are
+building. Measured on one unchanged tree: four consecutive runs gave 4, 2, 1 and 0 failures, and a
+later one gave **565 of 1403** — every failure a connect timeout, not one `AssertionException` —
+with the next run green. Load was the variable, not the code. A red run therefore proves nothing
+until you have looked at what was thrown; a run with hundreds of failures is more likely to be the
+machine than the change, which is the opposite of the instinct. Check `uptime` before you conclude
+anything, and do not overlap a suite run with a writing agent — the wait is cheaper than the hour
+spent hunting a regression in code that has no caller yet.
 
 ## 5 · Commit
 
