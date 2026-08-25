@@ -1,0 +1,52 @@
+{
+  "_what": "Frozen known-answer vectors for the encryption of a narrative field. A client that reproduces these byte for byte agrees with every other client on what goes on the wire; a client that does not is the one in the wrong, and a red result names which input changed rather than meaning a constant here should be updated. The envelope is version(1) || nonce(12) || ciphertext || tag(16), stored in a column and carried on the wire as unpadded base64url. Version 0x01 is AES-256-GCM with a 96-bit nonce and a 128-bit tag, and is the only version defined. AES-GCM ciphertext is the length of its plaintext, so an envelope is exactly 29 bytes longer than what it seals - a width that follows from the plaintext, never a cap. Every nonce a real client uses must be freshly drawn from a cryptographically secure random source; the fixed nonces below exist only so that these answers are reproducible.",
+  "_whatThisIsNot": "This is not the complete vector registry for this product. The generic envelope vector and the two key-encryption-key vectors - the passkey branch and the recovery-code branch - still live in docs/business-logic/account-keys.md under 'Frozen known-answer vectors', together with the associated-data vector for a wrapped key and the recovery-code verifier, because the specs that read them are outside this change and may not be edited by it. Read this file as the narrative-field chapter of a registry kept in two places, never as the whole of it. A second implementation needs both.",
+  "_plaintextIsHex": "plaintextUtf8Hex is normative: it is the exact byte sequence a client seals. plaintextForHumans is illustrative, is there so a person opening this file can see what the vector is about, and must never be sealed, re-encoded or used to regenerate anything. The reason is concrete rather than pedantic. A JSON string cannot distinguish NFC from NFD, and an editor may silently re-normalise it on save; since nothing normalises narrative text before sealing - the client stores exactly what was typed, deliberately - the byte sequence is the contract and the readable string is only a caption on it. plaintextForHumans is in fact the one value in this file written as characters rather than as codes, which makes it the one value ordinary tooling can silently damage: where it and plaintextUtf8Hex ever disagree, the hex is right and the caption is the casualty. The same argument is why every other value here is hexadecimal, and why no separator anywhere in this file is written as a character. A raw U+001F does not survive ordinary tooling at all. It was silently swallowed twice while these vectors were produced, once on a file write and once on a mutation of the generating source, and each time it left behind a plausible-looking string with the separator simply gone and no error of any kind - associated data that would have been wrong in a way no reader could see. Whoever opens this file and wants to 'simplify' a hex value into a readable literal is proposing to reintroduce exactly that failure.",
+  "_associatedDataGrammar": "Associated data for a narrative field is the UTF-8 encoding of: \"budgetoid/field/v1\" 0x1F <table> 0x1F <column> 0x1F <rowId>. 0x1F is the ASCII unit separator, U+001F, written here as a code and never as a character. It cannot occur in any of the four fields, so no length prefixes are needed. rowId is the canonical lower-case 36-character hyphenated UUID and is refused in every other spelling - not braced, not parenthesised, not undashed, not upper-case or mixed-case hex, and not with leading or trailing whitespace - because the associated data is the binding itself: a client that sealed under one spelling and rebuilt another finds its own ciphertext unopenable, permanently, with no error naming the cause. Associated data is not carried inside the envelope. It is rebuilt from wherever the ciphertext was found, and that is precisely what makes a ciphertext moved to another row, another column or another table fail to authenticate rather than decrypt into something. All three failures - wrong key, wrong binding, altered bytes - are one indistinguishable error by design, so a caller learns the value is unusable and learns nothing about why.",
+  "contentKeyHex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+  "vectors": [
+    {
+      "name": "associated-data-only",
+      "_why": "The binding alone, with no cipher over it. Every sealed vector below fails with one indistinguishable authentication error, so an implementation that has the associated data wrong cannot tell that from a key or a mode it has wrong. This vector is what separates the two halves: green here and red below means the cipher, red here means the binding, and no other vector can make that distinction.",
+      "binding": {
+        "table": "transactions",
+        "column": "description",
+        "rowId": "0192f8a1-7c3d-7e00-8b2a-3f4d5e6a7b8c"
+      },
+      "aadHex": "6275646765746f69642f6669656c642f76311f7472616e73616374696f6e731f6465736372697074696f6e1f30313932663861312d376333642d376530302d386232612d336634643565366137623863",
+      "aadLength": 80
+    },
+    {
+      "name": "ascii",
+      "_why": "The simplest sealed case, over the same binding as the vector above so that the two share every input but the cipher. Pure ASCII, so nothing here depends on the encoder being right - that is the next vector's job. What this one pins is the envelope layout, the nonce placement, the tag width and the unpadded base64url rendering, on a plaintext where a disagreement can only come from one of those.",
+      "binding": {
+        "table": "transactions",
+        "column": "description",
+        "rowId": "0192f8a1-7c3d-7e00-8b2a-3f4d5e6a7b8c"
+      },
+      "aadHex": "6275646765746f69642f6669656c642f76311f7472616e73616374696f6e731f6465736372697074696f6e1f30313932663861312d376333642d376530302d386232612d336634643565366137623863",
+      "aadLength": 80,
+      "plaintextUtf8Hex": "436f6666656520776974682044616e61",
+      "plaintextForHumans": "Coffee with Dana",
+      "nonceHex": "d0d1d2d3d4d5d6d7d8d9dadb",
+      "envelopeHex": "01d0d1d2d3d4d5d6d7d8d9dadb766bbb65713c09fbd16a726a9ea92bebf706ee14c3cb26b3e2bb2805c63940d1",
+      "wire": "AdDR0tPU1dbX2Nna23Zru2VxPAn70Wpyap6pK-v3Bu4Uw8sms-K7KAXGOUDR"
+    },
+    {
+      "name": "mixed-width",
+      "_why": "The case that catches an encoder that is not UTF-8. The plaintext deliberately spans one-, two-, three- and four-byte UTF-8 sequences, the last of which is also a UTF-16 surrogate pair. Its code points are U+0043 U+0061 U+0066 U+00E9 U+0020 U+20AC U+0032 U+0035 U+0030 U+0020 U+2615 U+1F9FE - twelve code points, thirteen UTF-16 code units, twenty UTF-8 bytes. Measured over this exact string: UTF-8 gives 20 bytes; a charCodeAt loop emitting UTF-16LE gives 26; a latin1 truncation gives 13 and mangles the emoji, whose surrogate pair collapses to the two bytes 3e fe; and NFD instead of NFC gives 21, because U+00E9 is the one code point here with a canonical decomposition - the euro sign, the hot beverage and the receipt have none. All four counts were computed twice, independently, before being written down. The trap is that a self-consistent wrong encoder still round-trips: it seals and reopens its own ciphertext perfectly, so no test inside a single client can see the fault. What actually catches it is the ciphertext LENGTH, which AES-GCM makes equal to the plaintext length, and a length is only meaningful against a value some other implementation produced. That is what this vector is - the second, cross-client line, and the only one of the three that a client cannot satisfy by being consistently wrong. One transcription trap worth naming: the currency sign is U+20AC EURO SIGN and not U+20B4 HRYVNIA SIGN. The two differ by a single UTF-8 byte, e282ac against e282b4, and produce a completely different ciphertext with every other input identical.",
+      "binding": {
+        "table": "payees",
+        "column": "name",
+        "rowId": "0192f8a1-7c3d-7e00-9c4e-5a6b7c8d9e0f"
+      },
+      "aadHex": "6275646765746f69642f6669656c642f76311f7061796565731f6e616d651f30313932663861312d376333642d376530302d396334652d356136623763386439653066",
+      "aadLength": 67,
+      "plaintextUtf8Hex": "436166c3a920e282ac32353020e29895f09fa7be",
+      "plaintextForHumans": "Café €250 ☕🧾",
+      "nonceHex": "d0d1d2d3d4d5d6d7d8d9dadc",
+      "envelopeHex": "01d0d1d2d3d4d5d6d7d8d9dadcffb379bd82571cf35370d5c4dc9f0a15863a78e2dfcdd424db045cd1a03323173e8ece1e",
+      "wire": "AdDR0tPU1dbX2Nna3P-zeb2CVxzzU3DVxNyfChWGOnji383UJNsEXNGgMyMXPo7OHg"
+    }
+  ]
+}
