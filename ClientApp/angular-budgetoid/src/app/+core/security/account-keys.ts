@@ -51,6 +51,7 @@
 // Nothing here is a service and nothing here is injected. There is no state, no
 // configuration and no dependency, so a function is the whole of it; a class would
 // only add a way to hold key material alive past the ceremony that produced it.
+import { buildAssociatedData } from './associated-data';
 import { decodeBase64Url, encodeBase64Url } from './base64url';
 import { hkdfSha256 } from './hkdf';
 import { openEnvelope, sealEnvelope } from './key-envelope';
@@ -125,17 +126,6 @@ export interface WrappedAccountKeys {
   /** Unpadded base64url over an envelope. */
   readonly wrappedIndexKey: string;
 }
-
-// ASCII's unit separator, spelled by its code point rather than typed. A literal
-// control character is invisible in every tool a reviewer would read this file
-// in, which is the one property a byte of a frozen format cannot afford.
-//
-// It cannot occur in any of the three fields it separates — the prefix is a
-// literal, the factor id is a canonical UUID, and the purpose is one of two words
-// — so the fields cannot run into one another and no length prefix is needed.
-// That is a claim about the *fields*, which is why `canonicalFactorId` below
-// checks the only one whose shape a caller chooses.
-const UNIT_SEPARATOR = String.fromCharCode(0x1f);
 
 // The canonical spelling, and the ways a caller may write it. **The client
 // mints these identifiers**, and that is the decision ADR 0018 §4 exists to
@@ -306,10 +296,15 @@ export function wrappedKeyAssociatedData(
   factorId: string,
   purpose: WrappedKeyPurpose,
 ): Uint8Array {
-  const canonical = canonicalFactorId(factorId);
-
-  return utf8.encode(
-    `${WRAPPED_KEY_AAD_PREFIX}${UNIT_SEPARATOR}${canonical}${UNIT_SEPARATOR}${purpose}`,
+  // The join and the separator are `associated-data.ts`'s, shared with the one
+  // other grammar this client seals under. What stays here is what this grammar
+  // is made of: these three fields, in this order — and the claim that none of
+  // them can contain the separator, which is why `canonicalFactorId` checks the
+  // only one whose shape a caller chooses.
+  return buildAssociatedData(
+    WRAPPED_KEY_AAD_PREFIX,
+    canonicalFactorId(factorId),
+    purpose,
   );
 }
 
