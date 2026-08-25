@@ -216,6 +216,22 @@ Load-bearing rules, each explained there or in the linked decision:
   because no route hands `wrapped_account_keys` back. See
   [account-keys.md](docs/business-logic/account-keys.md) and
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
+- **One AEAD envelope serves both consumers, and its associated data is never carried inside it.**
+  `version(1) ‖ nonce(12) ‖ ciphertext ‖ tag(16)`, `0x01` for AES-256-GCM, unpadded base64url on the
+  wire; twenty-nine bytes is a **floor**, not a width. `Domain/Security/CiphertextEnvelope` owns the
+  framing and `Application/Security/CiphertextEnvelopeText` re-applies the caller's ceiling to the
+  **decoded** length — the encoded bound is computed padded and overshoots by up to two characters,
+  which only the wrapped-key path's exact width was catching. Because associated data is rebuilt
+  from wherever a ciphertext was found, the wrapped-key grammar **folds** a UUID's spelling while
+  the narrative grammar **refuses** one: folding defends against values arriving from elsewhere,
+  emitting one spelling is a property of values this client mints, and neither is a mistake to
+  correct into the other. The eight narrative `table × column` pairs are a **runtime list with the
+  type derived from it**, so a ninth entry reddens two cases — a member unioned onto the derived
+  type reddens nothing and is held by review, as is the row id being version 7. **Nothing is
+  encrypted today and nothing calls the narrative codec**; do not delete it for want of a caller,
+  and do not relax it to make a later screen easier. See
+  [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md) and
+  [ADR 0022](docs/decisions/0022-mint-narrative-row-identifiers-on-the-client.md).
 - **The schema carries no remnant of an erasure and the route table offers no way back** — no
   soft-delete flag, tombstone, deletion record, anonymized remnant or archived copy, and no route
   that restores, undeletes or reactivates an account. Three gates, and each holds a different half:

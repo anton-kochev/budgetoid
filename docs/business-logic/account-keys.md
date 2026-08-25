@@ -258,25 +258,22 @@ The steps are ordered and the order matters: folding before upper-casing would l
 rather than `110`. The same canonical form feeds the verifier the server stores; the two derivations
 differ only in HKDF's `info`.
 
-**Envelope** — the byte sequence stored in a column and carried on the wire as unpadded base64url:
+**Envelope** — the shared AEAD framing, its version byte, its wire form and the rules every
+client implements it under are stated once in
+[ciphertext-envelope.md](ciphertext-envelope.md), because a second consumer now reads the same
+format and two copies of a layout drift silently. What belongs to *this* document is the one
+number that follows from the payload: over a 32-byte key the envelope is exactly **61 bytes** —
+a width, not a cap, because AES-GCM ciphertext is the length of its plaintext. That equality is
+the entity's own rule and is enforced on top of the shared framing, which carries a floor and no
+width at all.
 
-```
-version (1 byte) || nonce (12 bytes) || ciphertext || tag (16 bytes)
-```
-
-Version `0x01` is AES-256-GCM with a 96-bit nonce and a 128-bit tag, and is the only version
-defined. Over a 32-byte key the envelope is therefore exactly **61 bytes** — a width, not a cap,
-because AES-GCM ciphertext is the length of its plaintext.
-
-**Every nonce MUST be freshly drawn from a cryptographically secure random source, and this is a
-requirement of the contract rather than an implementation detail.** A counter starting at zero per
-factor is an ordinary, defensible choice for an implementer reading only the layout above — and it
-repeats immediately, because **both of a factor's envelopes are sealed under the same key-encryption
-key**. Two GCM ciphertexts under one (key, nonce) give
-`C_content ⊕ C_index = contentKey ⊕ indexKey`, which destroys the independence of the two account
-keys that this design's whole correctness argument rests on, and hands out the GHASH subkey with it.
-Nothing observable goes wrong: both clients still open each other's envelopes, and every frozen
-vector below still passes.
+**Nonce freshness is a rule of the format and is argued in
+[ciphertext-envelope.md](ciphertext-envelope.md).** What this document owns is why a repeat is
+especially cheap to reach here: **both of a factor's envelopes are sealed under the same
+key-encryption key**, so a counter starting at zero per factor repeats on the very next
+operation, and two GCM ciphertexts under one (key, nonce) give
+`C_content ⊕ C_index = contentKey ⊕ indexKey` — which destroys the independence of the two
+account keys that this design's whole correctness argument rests on.
 
 **Associated data** of a wrapped key:
 
@@ -525,6 +522,13 @@ about why.
 
 ## Integration Points
 
+- **[ciphertext-envelope.md](ciphertext-envelope.md)** — the shared framing, the wire form, and
+  the second consumer of it. One note before anybody makes the two grammars agree: **the
+  narrative grammar refuses a UUID spelling that this one folds**, deliberately. The factor id
+  is minted by this client before any server has seen it, so folding is a defence against a
+  value arriving from elsewhere; a narrative row id is whatever the row just read handed back,
+  in the one spelling it comes in, so a fold there could only invent a second spelling of a
+  value that has one — at the sealing end, where the damage is unrecoverable.
 - **`recovery-codes.md`** — the code a key-encryption key is derived from, and why it never reaches
   the server. The verifier branch and this one are separated only by HKDF's `info`.
 - **`registration.md`** — the **third** write path, and the only one that writes eleven rows in one

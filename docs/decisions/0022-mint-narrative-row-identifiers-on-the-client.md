@@ -1,0 +1,142 @@
+# ADR 0022 — Mint narrative row identifiers on the client
+
+- **Status:** Accepted
+- **Date:** 2026-08-25
+- **Area:** Domain / Client (encryption bindings, identifier custody)
+
+## Context
+
+A narrative field is sealed under the account's content key and bound to **where it lives**:
+the table, the column and the row. That binding is the associated data, and associated data is
+not carried inside the envelope — it is rebuilt from wherever the ciphertext was found, which
+is exactly what makes a ciphertext moved to another row fail to authenticate rather than
+decrypt into something. See [ciphertext-envelope.md](../business-logic/ciphertext-envelope.md).
+
+The grammar therefore needs the row's identifier **at the moment the client seals**, and on an
+insert the client does not have one. Every row id in this schema is minted server-side inside a
+Domain factory: `Transaction.Create`, `Payee`, `Account`, `Category`, `CategoryGroup` and
+`Budget` each call `Guid.CreateVersion7()` and assign the result to `Id`. So on the path that
+matters most — creating a row whose narrative is encrypted — the client seals before the row
+exists, and **the row half of the binding is unreachable**.
+
+Dropping the row from the grammar is not an option available here: without it, every row in a
+column is interchangeable with every other, which is the exact case the binding requirement
+names.
+
+## Decision
+
+**A narrative row identifier is minted by the client, in the canonical lower-case
+36-character hyphenated spelling of a version-7 UUID, and the server refuses every other
+spelling rather than normalising one.**
+
+This is the call [ADR 0018](0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
+already made for `factor_id`, made again for the same reason and with the same consequence
+when it slips.
+
+1. **Client-minted, because the alternative has no moment to run in.** The value has to be
+   known to the sealing client before the row exists. Nothing about a row id is secret and
+   nothing depends on the server having chosen it — the id's unguessability does real work only
+   on `credentials`, whose deletes are issued by primary key against a table carrying no
+   row-level security policy, and which is why that id stays server-minted (ADR 0014).
+
+2. **Version 7, not version 4.** Every identifier in this schema is a version-7 UUID, which is
+   time-ordered and therefore locally clustered in an index. A row id drawn any other way keeps
+   uniqueness and loses that locality on the tables that will hold the most rows.
+
+   **Nothing in the compiler, the database or the test suite tells a version-7 UUID from a
+   version-4 one, so this half is held by review** — the same answer `CLAUDE.md` gives about a
+   second account-creating path, and for the same reason: it is one line that would redden
+   nothing. Stated plainly so the next reader does not go looking for the check that catches it.
+   No column type, check constraint or policy can see a version nibble; the client predicate
+   `isCanonicalFactorId` deliberately inspects neither the version nor the variant nibble, and
+   argues for that at its own declaration — a rule invented at that layer starts refusing valid
+   identifiers the day the authority over them changes its mind; and the server's canonical
+   parse compares a *spelling*, not a version. A minter reaching for `crypto.randomUUID()` would
+   satisfy every one of them and quietly give up the property this clause exists for.
+
+   **Which is exactly what `factor_id` does, and the two answers are not in conflict.**
+   `factor-id.ts` mints with `crypto.randomUUID()` — version 4 — and that is right there. The
+   difference is **count, not the presence of an index**: `factor_id` *is* a primary key and has
+   an index, but an account holds eleven factors in its whole life, so insert locality is a
+   property nobody can measure on it. An account holds thousands of transactions. The same
+   trade-off, weighed at two scales, lands on two answers — so the narrative minter is a new
+   function rather than a second caller of `mintFactorId`.
+
+3. **One spelling, and the server refuses rather than repairs.** The identifier is what the
+   associated data was built from, so a client that sealed under one spelling and rebuilt
+   another finds its own ciphertext unopenable — permanently, in both directions, with no error
+   anywhere naming the cause. The two sides agree on the bytes by the server **never storing a
+   value whose rendering differs from what it was sent**, which is a stronger property than any
+   normalisation: a client that spells it another way is turned away at the write rather than
+   discovering months later that its text does not open.
+
+   The narrative grammar refuses a non-canonical row id for the same reason and **does not
+   fold** one, which is the deliberate opposite of the wrapped-key grammar next door. That is
+   not an inconsistency — folding defends against a value arriving from elsewhere, while
+   emitting one spelling is a property of values a client mints — and both directions are
+   argued in [ciphertext-envelope.md](../business-logic/ciphertext-envelope.md).
+
+### Scope of this decision, stated exactly
+
+This decision fixes **the rule, the canonical form, and the grammar that consumes it**. The
+narrative grammar exists and refuses a non-canonical row id today.
+
+**A client-side minter for narrative row ids, the changes to the six Domain factories, and the
+server-side parse that refuses a non-canonical row id arrive with the work that encrypts the
+eight columns.** Nothing in the API accepts a client-supplied row id today, and no code path
+mints one for a narrative field. Read this document as the decision those changes will be built
+to, not as a description of a surface that is already there.
+
+## Alternatives considered
+
+**Insert the row, then seal, then update it.** Keeps every identifier server-minted and needs
+no new contract. Two writes per created row, and — worse — a window in which the row holds the
+person's text **in plaintext**, which is the property the encryption exists to remove. A
+failure between the two writes leaves it there permanently.
+
+**Bind the column and not the row.** The cheapest grammar, and it does close the swap between a
+category's name and its description. It leaves a ciphertext free to move between rows of one
+column, which is the case the binding requirement names outright: every payee name in the
+account becomes interchangeable with every other, and a shuffle is a silent, successful
+decryption rather than a failure.
+
+**Ask the server for an identifier per field, or per row, before sealing.** Keeps ids
+server-assigned and hands the client a value in time. A round trip per row created, on the
+screen where a person is typing — the cost lands exactly where it is most visible, and it buys
+a property (server authority over the value) that nothing here needs.
+
+**A Hi/Lo endpoint handing out blocks of pre-minted identifiers.** The same idea with the round
+trips amortised, and it is a real pattern. It solves *server authority over the identifier*,
+which is the thing this decision does not need: the ids are not secret, nothing checks who
+minted one, and no rule anywhere depends on the server having chosen it. It costs an endpoint,
+a block-allocation table or sequence, an exhaustion story and a client-side reservation cache,
+all to avoid a value the client can produce in one call.
+
+**`crypto.randomUUID`, which mints version 4 only.** Available in every browser this app runs
+in, needs no library, and keeps uniqueness — the argument for leaving the budget id out of the
+narrative grammar survives on 122 random bits alone. What it loses is **index locality**: every
+other identifier in this schema is version 7 and clusters by creation time, and narrative rows
+are the ones there will be most of. It is the closest of the five, and it is rejected on that
+one property rather than on correctness.
+
+## Consequences
+
+- **A narrative row identifier joins `factor_id` as a value the client chooses.** The two are
+  the only ones, and the reasons are the same in shape: an identifier that has to be known
+  before the row it names exists. `credentials.id` stays server-minted, and ADR 0014's argument
+  for that is untouched.
+- **The canonical-spelling rule now has two subjects.** Whatever refuses a non-canonical row id
+  server-side must compare the supplied text **ordinally against what the parsed value renders
+  as** — the rule `CanonicalFactorId.TryParse` already keeps — because `Guid.TryParseExact` with
+  `"D"` admits upper- and mixed-case hex and trims before it reads the format at all. On the
+  client the question is already answered once, by `isCanonicalFactorId` in `factor-id.ts`,
+  which `narrative-cipher.ts` imports under an alias rather than restating.
+- **Two of this decision's three clauses are enforceable and one is not.** The spelling is
+  refused at the write and at the seal; client custody is a fact about which side calls the
+  minter. The **version** is held by review alone, for the reasons the Decision states — so it
+  is a choice inside a minter and a paragraph in this file, and there is nothing to add to the
+  schema that would make it more than that.
+- **A mis-spelled identifier is the worst failure mode in this format and it is silent on both
+  sides of the wire.** The write succeeds, every response says success, and the person finds out
+  on the day the text stops opening. That is why the refusal sits at the sealing end as well as
+  at the write, and why neither end folds.
