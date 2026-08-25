@@ -29,7 +29,7 @@
 // nothing else left to look at.
 //
 // Inside the file it is bytes twice per derivation — what `hkdfSha256` returns,
-// and the copy `importKeyEncryptionKey` hands WebCrypto — and both are now
+// and the copy `importAesGcmKey` hands WebCrypto — and both are now
 // zero-filled at the point they are consumed, in a `finally`, because the path
 // that skips a wipe is the path where something already went wrong. The material
 // is wiped where it is *used* rather than where it was made, so `hkdfSha256` stays
@@ -61,10 +61,17 @@ import { RECOVERY_CODE_BRANCH_INFO } from './recovery-codes';
 /**
  * Width of each account key, in bytes.
  *
- * Thirty-two is AES-256, which is what `key-envelope.ts` seals with. Sixteen
- * would import, seal and open just as happily — the envelope carries no statement
- * about its key's width — so this number is the only place the strength of every
- * envelope the account ever writes is decided.
+ * Thirty-two is AES-256, which is what `key-envelope.ts` seals with. Nothing
+ * downstream would object to less: the envelope carries no statement about its
+ * key's width, and sixteen bytes import, seal and open just as happily as an
+ * AES-128 key.
+ *
+ * So this number is where the strength of every envelope the account ever writes
+ * is decided, and {@link importAesGcmKey} is where that decision is *enforced* —
+ * it refuses any material of another width, which is the only reason the sentence
+ * above is a rule rather than a hope. The two move together: widen this and the
+ * seam widens with it; enforce it somewhere else as well and there are two
+ * answers to how strong an account's envelopes are.
  */
 export const ACCOUNT_KEY_BYTES = 32;
 
@@ -223,7 +230,7 @@ export async function keyEncryptionKeyFromPasskey(
     ACCOUNT_KEY_BYTES,
   );
 
-  return importKeyEncryptionKey(material);
+  return importAesGcmKey(material);
 }
 
 /**
@@ -268,7 +275,7 @@ export async function keyEncryptionKeyFromRecoveryCode(
     ACCOUNT_KEY_BYTES,
   );
 
-  return importKeyEncryptionKey(material);
+  return importAesGcmKey(material);
 }
 
 /**
@@ -354,25 +361,53 @@ export async function unwrapAccountKeys(
   return { contentKey, indexKey };
 }
 
-// The one import of a key-encryption key, shared by both derivations so neither
-// can drift into an extractable one on its own.
-//
-// `extractable: false` is the reason these functions return a `CryptoKey` at all.
-// `encrypt` and `decrypt` and nothing else: this key wraps and unwraps the
-// account's keys through the envelope, and a usage list that also carried
-// `wrapKey`/`unwrapKey` would open a second path out for key objects, unrelated to
-// the bytes this import is refusing to give up.
-//
-// **This is where a key-encryption key stops being bytes, so it is where both
-// copies of those bytes die.** `owned` is the account's wrapping key in the clear
-// on a buffer no name outside this call refers to once `importKey` has been
-// handed it; `material` is the same value one step earlier, and the function is
-// its last consumer. Wiping the caller's array here rather than teaching
-// `hkdfSha256` to hand out a disposable is deliberate: HKDF is a general utility
-// with other callers, and reshaping its signature for one caller's hygiene is an
-// API change every other caller pays for. Consuming code owning the wipe is also
-// the honest reading — the material dies where it is used, not where it was made.
-async function importKeyEncryptionKey(
+/**
+ * Imports {@link ACCOUNT_KEY_BYTES} of raw material as a non-extractable AES-GCM
+ * key, wipes the material, or rejects.
+ *
+ * **The one place in this client where bytes become an AES-GCM key, whichever
+ * key they are.** Both key-encryption-key derivations above go through it, and so
+ * does anything that has to turn one of the account's own keys — which
+ * {@link generateAccountKeys} and {@link unwrapAccountKeys} hand back as
+ * `Uint8Array`, never as a key object — into something a cipher will take. That
+ * makes it the one place five decisions are taken together: the algorithm, the
+ * width, the usage list, the non-extractability, and the death of the raw bytes.
+ *
+ * The concentration is the point. The alternative is not a weaker version of this
+ * function, it is a second `crypto.subtle.importKey` written by hand beside it,
+ * holding **none** of the five — and of the five, only the non-extractability
+ * would be noticed downstream, because `sealNarrativeField` refuses an
+ * extractable key. A hand-written import that took AES-128, added `wrapKey` to
+ * the usages and left the caller's bytes on the heap would work perfectly,
+ * forever, with nothing anywhere naming the moment the account's envelopes got
+ * weaker.
+ *
+ * **The width is refused rather than trusted, and that is what makes
+ * {@link ACCOUNT_KEY_BYTES}' claim true.** WebCrypto will not do it: measured on
+ * Node's implementation, `importKey` accepts 16 and 24 bytes as AES-128 and
+ * AES-192 and refuses every other non-32 width with `DataError` — so the two
+ * widths nothing else objects to are exactly the two that silently downgrade an
+ * account for the rest of its life, sealing and opening without complaint the
+ * whole time.
+ *
+ * `extractable: false` is the reason the derivations return a `CryptoKey` at all.
+ * `encrypt` and `decrypt` and nothing else: this key works through the envelope,
+ * and a usage list that also carried `wrapKey`/`unwrapKey` would open a second
+ * path out for key objects, unrelated to the bytes this import is refusing to
+ * give up.
+ *
+ * **This is where material stops being bytes, so it is where both copies of those
+ * bytes die** — including on the refusal, because the path that skips a wipe is
+ * the path where something already went wrong. `owned` is the value in the clear
+ * on a buffer no name outside this call refers to once `importKey` has been
+ * handed it; `material` is the same value one step earlier, and this function is
+ * its last consumer. Wiping the caller's array here rather than teaching
+ * `hkdfSha256` to hand out a disposable is deliberate: HKDF is a general utility
+ * with other callers, and reshaping its signature for one caller's hygiene is an
+ * API change every other caller pays for. Consuming code owning the wipe is also
+ * the honest reading — the material dies where it is used, not where it was made.
+ */
+export async function importAesGcmKey(
   material: Uint8Array,
 ): Promise<CryptoKey> {
   // Copied onto a buffer WebCrypto's `BufferSource` accepts, for the reason
@@ -381,6 +416,17 @@ async function importKeyEncryptionKey(
   const owned = Uint8Array.from(material);
 
   try {
+    // Inside the `try`, so the refusal is wiped by the same `finally` the success
+    // is. Against `ACCOUNT_KEY_BYTES` and never against a literal: the constant is
+    // where the width is decided and this is the enforcement of that decision, so
+    // a check written as `!== 32` would go on enforcing a number the module had
+    // stopped believing in.
+    if (owned.length !== ACCOUNT_KEY_BYTES) {
+      throw new Error(
+        `A key can only be imported from exactly ${ACCOUNT_KEY_BYTES} bytes of material, not ${owned.length}.`,
+      );
+    }
+
     // `await` rather than returning the promise: the wipe has to happen after
     // WebCrypto has read the buffer, and a bare `return` would run the `finally`
     // while `importKey` was still in flight.

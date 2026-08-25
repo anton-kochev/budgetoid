@@ -30,6 +30,7 @@ import {
   PASSKEY_PRF_EVAL_INPUT,
   WRAPPED_KEY_AAD_PREFIX,
   generateAccountKeys,
+  importAesGcmKey,
   keyEncryptionKeyFromPasskey,
   keyEncryptionKeyFromRecoveryCode,
   unwrapAccountKeys,
@@ -38,7 +39,7 @@ import {
 } from './account-keys';
 import * as accountKeysModule from './account-keys';
 import { decodeBase64Url } from './base64url';
-import { sealEnvelope } from './key-envelope';
+import { openEnvelope, sealEnvelope } from './key-envelope';
 import { recoveryCodeVerifier } from './recovery-codes';
 
 const utf8 = new TextEncoder();
@@ -635,6 +636,354 @@ describe('a key-encryption key', () => {
   });
 });
 
+// The one door from raw bytes to a key, and the seam the column encryption has
+// to cross. What holds the properties today is `importKeyEncryptionKey`, and it
+// is **private**: it is reachable only through the two key-encryption-key
+// derivations, and `crypto.subtle.importKey` appears exactly twice in the
+// application outside specs — here and in `hkdf.ts`. So a caller that wants to
+// encrypt a column with the account's content key — which
+// `generateAccountKeys` and `unwrapAccountKeys` hand back as `Uint8Array`, never
+// as a `CryptoKey` — has no way to get a key object except by writing a second
+// `importKey` of its own, beside this one and holding none of what this one
+// holds.
+//
+// Five properties, and the guard on the far side of that seam holds exactly
+// one. Measured against the shipped code: a key imported `extractable: true` is
+// refused — that is the one — while a key imported `extractable: false` with
+// usages `['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']` is accepted, a
+// **sixteen byte** AES-128 key is accepted and round-trips, the account keys
+// arrive as `Uint8Array` and never as a key object, and their raw bytes are
+// still alive and non-zero after an import has read them. The width, the usage
+// list and the wipe are therefore held nowhere at all; non-extractability is
+// held once, downstream, and is pinned here as well because here is where the
+// key is *made* and a guard on a caller cannot speak for a key no caller
+// inspected.
+//
+// The width is also a claim to make true again. `ACCOUNT_KEY_BYTES` says of
+// itself that it is "the only place the strength of every envelope the account
+// ever writes is decided", and a sixteen-byte key importing, sealing and opening
+// without complaint is what makes that false: the strength is decided by
+// whatever bytes reach an import. A refusal here is what puts the decision back
+// where the constant says it lives.
+//
+// **The name.** `importKeyEncryptionKey` stops being true the moment an account
+// key goes through it, and `importAccountKey` would be the same untruth pointing
+// the other way — a factor's key-encryption key is not one of the account's two
+// keys. `importAesGcmKey` names what comes out and stays quiet about whose
+// secret went in, which is the only thing the two consumers have in common. It
+// also names the algorithm, and the algorithm is pinned below, so a reader
+// reaching for this to import an HKDF or an HMAC key is told by the name that
+// this is not that door.
+describe('importing raw bytes as a key', () => {
+  // **Which of these cases try this code, and which try WebCrypto.** Measured
+  // on the runner's implementation: `importKey` refuses 0, 15, 20, 31, 33 and 64
+  // raw bytes with `DataError`, and accepts 16, 24 and 32 as AES-128, AES-192
+  // and AES-256. So three of the five cases below are refused by the platform
+  // whatever this module does, and they say nothing about `importAesGcmKey` at
+  // all. They stay because a member that also refuses what the platform would
+  // refuse costs nothing and reads honestly — but they must not be mistaken for
+  // evidence.
+  //
+  // **The two that put this module on trial are 16 and 24**, and they are the
+  // whole reason the width rule exists: they are the widths every layer
+  // downstream accepts without a word. A check narrowed to "refuse sixteen"
+  // leaves 24 green and every other case in this list green with it, and the
+  // account writes AES-192 for the rest of its life.
+  //
+  // The bound itself is `ACCOUNT_KEY_BYTES` and never the number it currently
+  // holds — the constant is where the strength is decided, and this is the
+  // enforcement of that decision. The guard inside each case is what says so: a
+  // constant that ever became one of these widths would leave the list pinning
+  // the *accepted* width as refused, and the guard reddens first.
+  it.each([
+    {
+      width: 16,
+      why: 'AES-128, which WebCrypto imports happily — nothing else refuses it',
+    },
+    {
+      width: 24,
+      why: 'AES-192, the other width the platform calls perfectly legal',
+    },
+    {
+      width: ACCOUNT_KEY_BYTES - 1,
+      why: 'one byte short, which the platform refuses on its own',
+    },
+    {
+      width: ACCOUNT_KEY_BYTES + 1,
+      why: 'one byte long, which the platform refuses on its own',
+    },
+    {
+      width: 0,
+      why: 'nothing at all, which the platform refuses on its own',
+    },
+  ])('refuses material of $width bytes — $why', async ({ width }) => {
+    // Arrange
+    // Filled rather than left zero, so nothing here can be refused for being
+    // empty when it should have been refused for being the wrong width.
+    expect(width).not.toBe(ACCOUNT_KEY_BYTES);
+    const material = new Uint8Array(width).fill(0xa5);
+
+    // Act
+    // Called from inside a `then` rather than directly: a width check is most
+    // naturally written as an `if` at the top of the function, and in a
+    // non-`async` function that `throw` lands synchronously. That is still a
+    // refusal, and this shape reads it as one instead of failing the test with
+    // the very exception it asked for.
+    const importing = Promise.resolve().then(() => importAesGcmKey(material));
+
+    // Assert
+    // Sixteen and twenty-four are the cases that have to be refused *here*,
+    // because nothing else refuses them: WebCrypto imports both, and the guard
+    // on the far side of this seam was measured accepting a sixteen-byte key
+    // and round-tripping under it. The account then writes AES-128 or AES-192
+    // for the rest of its life, with nothing anywhere naming the moment it
+    // started.
+    await expect(importing).rejects.toThrow();
+
+    // And the refusal ends the bytes as well. The width check sits inside the
+    // module's `try` precisely so that one `finally` serves both paths, and the
+    // argument is the one the module already makes about its own `finally`s:
+    // the path that skips a wipe is the path where something has already gone
+    // wrong. A key of the wrong width is still a secret — a sixteen-byte one is
+    // a working AES-128 key somebody's account keys could be sealed under.
+    //
+    // On the zero-width case this assertion degenerates to `'' === ''` and holds
+    // nothing; that case carries the refusal and only the refusal.
+    expect(toHex(material)).toBe('00'.repeat(width));
+  });
+
+  it('accepts exactly the account key width and hands back a CryptoKey', async () => {
+    // Arrange
+    const material = new Uint8Array(ACCOUNT_KEY_BYTES).fill(0xa5);
+
+    // Act
+    const key = await importAesGcmKey(material);
+
+    // Assert
+    // The refusals above are only worth having if the accepted width is
+    // accepted — a check written as `!== 32` on a module whose constant said
+    // something else would pass every case above and no account would ever get
+    // a key at all.
+    expect(key).toBeInstanceOf(CryptoKey);
+    expect(key.type).toBe('secret');
+
+    // `length` is in bits, and it is the one place the width that was accepted
+    // shows up in the object rather than in a buffer nothing keeps.
+    expect(key.algorithm).toEqual({
+      name: 'AES-GCM',
+      length: ACCOUNT_KEY_BYTES * 8,
+    });
+  });
+
+  it('returns a key made of the material it was given and no other', async () => {
+    // Arrange
+    // Every other test in this block reads the key's *shape* — the algorithm,
+    // the width, the flag, the usages — and a shape is exactly what an
+    // implementation that imported thirty-two zeros, or a fresh random draw,
+    // also has. Nothing so far would tell them apart, and the symptom in
+    // production would be an account whose columns are sealed under a key
+    // nothing can rebuild.
+    //
+    // The reference is imported through `crypto.subtle.importKey` directly, from
+    // a copy of the material taken **before** the call. Both halves matter: an
+    // independent import is what makes this a second opinion rather than the
+    // module agreeing with itself, and the copy is what survives the wipe —
+    // reading `material` afterwards would build the reference out of zeros and
+    // the test would fail for a reason that has nothing to do with the key.
+    //
+    // The material is a spec-local counter, structured so a byte landing in the
+    // wrong place shows in the hex of a failure, and non-zero throughout so that
+    // "a key of zeros" is a value it can be told apart from. It is nothing's
+    // real key, so naming it here breaks no rule this file keeps about not
+    // naming key material.
+    const material = Uint8Array.from(
+      { length: ACCOUNT_KEY_BYTES },
+      (ignored, index) => index + 1,
+    );
+    const reference = await importAesKey(overOwnBuffer(material));
+    const plaintext = fromHex(GOLDEN_PLAINTEXT);
+    const associatedData = utf8.encode(GOLDEN_SPEC_ASSOCIATED_DATA);
+
+    // Act
+    // Sealed under the key this module returned, opened under the independent
+    // one. Cross-opening rather than comparing two envelopes byte for byte, for
+    // two reasons: it needs **no mock at all** — a byte comparison would have to
+    // fix the nonce through the `getRandomValues` spy, and this file already
+    // warns at `sealedUnder` how much damage a nonce mock left standing does —
+    // and the failure it produces is production's own. Two keys that disagree
+    // fail GCM's authentication, which is the same refusal a corrupted envelope
+    // gives and the same one a person would meet on the day their columns
+    // stopped opening.
+    const key = await importAesGcmKey(material);
+    const envelope = await sealEnvelope(key, plaintext, associatedData);
+    const opened = await openEnvelope(reference, envelope, associatedData);
+
+    // Assert
+    // The plaintext comes back, so the two keys are the same key, so the module
+    // imported the bytes it was handed.
+    //
+    // This is also the only thing in the suite that could catch a dropped
+    // `await` before `importKey`, and it catches it **by construction rather
+    // than by measurement**: wiping while the import is in flight makes the key
+    // out of zeros, and a key of zeros fails here. Measured on this runtime the
+    // dropped `await` still produces a correct key, because WebCrypto reads the
+    // buffer synchronously — so this test stays green on Node however the module
+    // is written. On an engine that reads asynchronously it is the assertion
+    // that goes red, and the only one.
+    expect(toHex(opened)).toBe(toHex(plaintext));
+  });
+
+  it('hands back a key whose bytes cannot come back out', async () => {
+    // Arrange
+    const material = new Uint8Array(ACCOUNT_KEY_BYTES).fill(0xa5);
+
+    // Act
+    const key = await importAesGcmKey(material);
+    const reading = crypto.subtle.exportKey('raw', key);
+
+    // Assert
+    // Two observations of one property, and they are not the same observation.
+    // The flag is what the import asked for; the rejection is what the platform
+    // does about it. The first alone would pass on a key some other path built
+    // with the flag set and the material still readable through a second handle,
+    // and the second alone would pass on a platform that refused the export for
+    // an unrelated reason. Together they are the module's boundary claim —
+    // "what leaves this module is a non-extractable `CryptoKey`, never bytes" —
+    // checked at the point the key is made rather than at the point it is used.
+    expect(key.extractable).toBe(false);
+    await expect(reading).rejects.toThrow();
+  });
+
+  it('gives the key exactly the two usages, sorted, and no third', async () => {
+    // Arrange
+    const material = new Uint8Array(ACCOUNT_KEY_BYTES).fill(0xa5);
+
+    // Act
+    const key = await importAesGcmKey(material);
+
+    // Assert
+    // Sorted, so this cannot be satisfied by a list that merely starts the same
+    // way. `['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']` is the list the
+    // review measured being accepted on the far side of this seam, and it is
+    // the list a second `importKey` written by hand is most likely to carry —
+    // it looks like the more capable option and costs nothing visible. Why the
+    // list is closed is argued at `importAesGcmKey`'s own declaration and is not
+    // restated here.
+    expect([...key.usages].sort()).toEqual(['decrypt', 'encrypt']);
+  });
+
+  it('hands WebCrypto a copy of its own and leaves the caller no bytes', async () => {
+    // Arrange
+    // The shape is the one the derivation's own wipe test uses, for the same
+    // reason: no caller can observe either wipe through anything the module
+    // hands back, so the buffer is reached at the platform boundary instead.
+    // The bytes are read twice there — a snapshot at the moment `importKey` was
+    // called, and the live view afterwards. The first reading is what makes a
+    // green result unavailable to an implementation that imported an empty
+    // buffer, or imported nothing at all and returned a key it made some other
+    // way; without it, "all zeros afterwards" is a property of a buffer that
+    // never held anything.
+    //
+    // It deliberately does not pin the *value*: this file names no key's bytes,
+    // and the account's content key is exactly the value it must go on not
+    // naming.
+    //
+    // The buffer's **identity** is read at the same boundary, and it is what
+    // holds the defensive copy. Without `Uint8Array.from(material)` the buffer
+    // WebCrypto is handed simply *is* the caller's array, and then both readings
+    // below pass on a module that copies nothing: it held something at the
+    // import and holds zeros after, because it is the array the wipe was always
+    // going to reach. What is lost with the copy is the `BufferSource`
+    // narrowing — a caller's `Uint8Array` may be a view over a
+    // `SharedArrayBuffer` — and any protection from a caller that mutates its
+    // own buffer while the import is in flight.
+    //
+    // What none of this can see: whether the wipe ran *after* WebCrypto finished
+    // reading. The snapshot is taken synchronously inside `importKey`, before
+    // any `finally` could run, so an implementation that dropped the `await` and
+    // wiped while the promise was still in flight passes both readings — and on
+    // this runtime, which reads the buffer synchronously, it even produces a
+    // correct key. On an engine that reads asynchronously every key would be
+    // made of zeros, silently and everywhere at once. That rule is held by the
+    // `await` in the module and by nothing in this file.
+    const material = new Uint8Array(ACCOUNT_KEY_BYTES).fill(0xa5);
+    const realImportKey = crypto.subtle.importKey;
+
+    let importedMaterial: Uint8Array = new Uint8Array(0);
+    let atImportTime: Uint8Array = new Uint8Array(0);
+    let importedFrom: ArrayBufferLike | null = null;
+    let aesImports = 0;
+
+    const importer = vi
+      .spyOn(crypto.subtle, 'importKey')
+      .mockImplementation(
+        (format, keyData, algorithm, extractable, keyUsages) => {
+          // On the algorithm rather than on a call index, so that an `'HKDF'`
+          // import added inside this function later cannot silently move which
+          // call is being measured.
+          if (algorithm === 'AES-GCM') {
+            aesImports += 1;
+            importedMaterial = liveBytes(keyData);
+            atImportTime = Uint8Array.from(importedMaterial);
+            importedFrom = ArrayBuffer.isView(keyData)
+              ? keyData.buffer
+              : keyData;
+          }
+
+          // Called through, never faked: the import under measurement has to be
+          // the real one, or the buffer being read is one nothing ever consumed
+          // and the wipe is being observed on a value WebCrypto never saw.
+          return realImportKey.call(
+            crypto.subtle,
+            format,
+            keyData,
+            algorithm,
+            extractable,
+            keyUsages,
+          );
+        },
+      );
+
+    // Act
+    try {
+      await importAesGcmKey(material);
+    } finally {
+      // Restored before the assertions, so a failure below does not leave
+      // `crypto.subtle.importKey` spied for every test after this one.
+      importer.mockRestore();
+    }
+
+    // Assert
+    // One AES-GCM key was imported, from a full-width buffer that held
+    // something.
+    expect(aesImports).toBe(1);
+    expect(atImportTime).toHaveLength(ACCOUNT_KEY_BYTES);
+    expect(
+      Array.from(atImportTime).filter((byte) => byte === 0),
+    ).not.toHaveLength(ACCOUNT_KEY_BYTES);
+
+    // And it was the module's own buffer, never the caller's. Compared by the
+    // underlying `ArrayBuffer` rather than by the view, so that handing
+    // WebCrypto a `subarray` of the caller's array — a new object over the same
+    // memory, and no copy at all — fails here too. Without the copy every other
+    // assertion in this test still passes: the buffer the wipe reaches and the
+    // buffer WebCrypto read are then the same one, so of course it held
+    // something before and holds zeros after.
+    expect(importedFrom).not.toBeNull();
+    expect(importedFrom).not.toBe(material.buffer);
+
+    // And both copies are gone: the buffer WebCrypto was handed, and the
+    // caller's own array. The second is the one that matters to the caller this
+    // export exists for — an account key arrives here as bytes somebody else
+    // owns, and if this function does not end them, the value that decrypts
+    // every column the account ever wrote stays on the heap for as long as the
+    // tab lives.
+    expect(toHex(importedMaterial)).toBe('00'.repeat(ACCOUNT_KEY_BYTES));
+    expect(material).toHaveLength(ACCOUNT_KEY_BYTES);
+    expect(toHex(material)).toBe('00'.repeat(ACCOUNT_KEY_BYTES));
+  });
+});
+
 // The associated data is
 //
 //   "budgetoid/wrapped-key/v1" || 0x1F || <factor id> || 0x1F || <purpose>
@@ -911,6 +1260,11 @@ describe('the module surface', () => {
     // is a red test and a conversation rather than a diff nobody read.
     const expected = [
       'generateAccountKeys',
+      // The private import, exported. It is a new name and therefore a
+      // conversation, which is what this pin is for: the argument for opening it
+      // is that the alternative is a *second* `importKey` written beside it,
+      // holding none of the width, usage and wiping rules this one holds.
+      'importAesGcmKey',
       'keyEncryptionKeyFromPasskey',
       'keyEncryptionKeyFromRecoveryCode',
       'unwrapAccountKeys',

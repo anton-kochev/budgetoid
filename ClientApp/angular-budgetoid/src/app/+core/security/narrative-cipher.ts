@@ -44,10 +44,11 @@
 //
 // **Nothing is normalised and nothing is trimmed.** What was typed is what is
 // sealed, NFD included, and what comes back is the same code points rather than
-// the ones they render as. The normalisation this product does need belongs to
-// the blind index, where the transform is a different one — case folding over a
-// compatibility form — and folding the two together here would store text
-// nobody wrote.
+// the ones they render as — for every well-formed string, which is the one
+// qualification this claim needs and which `openNarrativeField` states in full.
+// The normalisation this product does need belongs to the blind index, where the
+// transform is a different one — case folding over a compatibility form — and
+// folding the two together here would store text nobody wrote.
 //
 // Nothing here is a service and nothing here is injected: no state, no
 // configuration, no dependency, so a function is the whole of it.
@@ -208,6 +209,8 @@ export function narrativeFieldAssociatedData(
  * A fresh nonce per call, drawn by {@link sealEnvelope}. The text crosses into
  * bytes as UTF-8 and is otherwise untouched — not normalised, not trimmed, not
  * capped — so the ciphertext is exactly as long as the UTF-8 of what was typed.
+ * The one exception is the crossing itself: an unpaired surrogate is replaced by
+ * U+FFFD here, permanently, and {@link openNarrativeField} argues why.
  *
  * Rejects on an extractable key and on a row id in any spelling but the
  * canonical one, before the cipher is reached in either case.
@@ -251,9 +254,25 @@ export async function sealNarrativeField(
  * not UTF-8. Every one of them is one indistinguishable failure to a caller, on
  * purpose.
  *
- * Returns exactly the code points that were sealed. Normalising on the way out
- * would hand a caller text that no longer matches what it stored, and the next
- * save would write the folded form over the original.
+ * Returns every **well-formed** string byte for byte, NFD included. Nothing is
+ * normalised on the way out: doing it would hand a caller text that no longer
+ * matches what it stored, and the next save would write the folded form over the
+ * original.
+ *
+ * **A lone surrogate does not survive, and the loss happens before the cipher
+ * rather than here.** `TextEncoder.encode` substitutes U+FFFD for an unpaired
+ * surrogate — measured: `'café \uD83D'` comes back `'café �'` — so what is
+ * sealed is already the replacement, and this function returns exactly what was
+ * sealed. The strict decoder cannot catch it either: those bytes *are* valid
+ * UTF-8, which is the whole reason the substitution is invisible. And it is
+ * permanent, because the next save re-seals the U+FFFD; nothing later can tell
+ * that a surrogate pair was ever there.
+ *
+ * The concrete path is worth naming, because this module deliberately holds no
+ * length rule (see the head of the file): a caller that slices narrative text to
+ * fit a column or a preview is exactly the caller that can split a surrogate pair
+ * — `'lunch 🍕'.slice(0, 7)` seals and returns `'lunch �'`. A caller that
+ * has to shorten text must do it by code point, not by UTF-16 unit.
  */
 export async function openNarrativeField(
   contentKey: CryptoKey,
