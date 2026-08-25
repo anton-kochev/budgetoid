@@ -138,7 +138,7 @@ const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
  * Builds the associated data one narrative field is bound to:
  *
  * ```text
- * "budgetoid/field/v1" || 0x1F || <table> || 0x1F || <column> || 0x1F || <rowId>
+ * {@link NARRATIVE_FIELD_AAD_PREFIX} || 0x1F || <table> || 0x1F || <column> || 0x1F || <rowId>
  * ```
  *
  * in UTF-8.
