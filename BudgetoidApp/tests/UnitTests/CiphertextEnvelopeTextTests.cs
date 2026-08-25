@@ -60,10 +60,17 @@ namespace UnitTests;
 /// length, so nothing but a version check separates them from one this deployment can interpret.
 /// </item>
 /// <item>
-/// "base64url, and only base64url" —
+/// "not standard base64's two extra characters" —
 /// <see cref="TryDecode_WithTextOutsideTheBase64UrlAlphabet_Refuses"/> against
 /// <see cref="TryDecode_WithAPaddedEncoding_Decodes"/>, which pins the half of the alphabet rule that
-/// is easy to over-tighten.
+/// is easy to over-tighten. The claim is deliberately that narrow. The refusing case substitutes
+/// <c>+</c> and <c>/</c>, so what it proves is that those two are refused — not that the decoder
+/// accepts base64url and nothing else, which is a broader claim than any case here supports.
+/// Measured, the decoder is looser than the broader claim would be:
+/// <see cref="Base64Url.IsValid(ReadOnlySpan{char})"/> skips whitespace wherever it appears, so
+/// <c>AAAA AAAA</c>, a leading space, an embedded tab and a trailing newline all validate and decode
+/// to the same bytes as <c>AAAAAAAA</c>. Nothing here covers that and no case is being added for it:
+/// the statement that needs narrowing is the normative one, and it is being corrected where it lives.
 /// </item>
 /// <item>
 /// "the ceiling is a ceiling on <em>decoded</em> bytes" —
@@ -377,12 +384,18 @@ public sealed class CiphertextEnvelopeTextTests
     /// check the text can carry.
     /// </para>
     /// <para>
-    /// <see cref="Application.Passkeys.WrappedKeyEnvelope"/> meets the same slack and closes it with an
-    /// exact width — its own comment names the arithmetic, 62 bytes into 83 characters against an
-    /// allowance of 84. This type has no width to close it with, only a floor, so nothing catches an
-    /// over-long value but <c>decoded.Length &lt;= maxDecodedBytes</c>. A ceiling that admits more than
-    /// it names is not a ceiling, and the per-field limits arriving later are the numbers a field's own
-    /// refusal will be written from.
+    /// <see cref="Application.Passkeys.WrappedKeyEnvelope"/> meets the same slack and keeps an exact
+    /// width, but not for the wide side: its own comment says "the ceiling and the width are the same
+    /// 61 bytes here", so an over-wide envelope is refused for the ceiling and is gone before the width
+    /// is consulted. What that width earns its place on is the <em>short</em> side — the band its
+    /// comment names, where "a 29- to 60-byte envelope clears the floor, clears the ceiling, carries
+    /// the right version, and is still not a wrapped key". This type has no width to close such a band
+    /// with, only a floor, so the wide side is the whole of what it can refuse, and what refuses it is
+    /// the <c>bytes.Length &gt; maxDecodedBytes</c> comparison
+    /// <see cref="Application.Passkeys.PasskeyEncoding.TryDecode"/> makes after decoding — reached
+    /// through here rather than restated here, which is what that method's own remarks give as the
+    /// reason it lives in the decoder. A ceiling that admits more than it names is not a ceiling, and
+    /// the per-field limits arriving later are the numbers a field's own refusal will be written from.
     /// </para>
     /// <para>
     /// The envelope is well-formed in every other respect — a legal length, the version byte this

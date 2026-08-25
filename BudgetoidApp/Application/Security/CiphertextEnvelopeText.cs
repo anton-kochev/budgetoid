@@ -58,24 +58,12 @@ public static class CiphertextEnvelopeText
 
         // Reused rather than re-spelled: base64url is the one alphabet every binary member of this API
         // crosses JSON in, and two decoders with different bounds is a difference nobody meant. The
-        // ceiling is judged there before the alphabet is validated and before anything is allocated,
-        // which is the argument that member makes for taking one at all.
+        // whole ceiling is that member's — the encoded text before anything is allocated, and the
+        // decoded buffer once it exists, because the first of those is computed in the padded form and
+        // overshoots by up to two bytes. Nothing is re-applied here: a second comparison against
+        // maxDecodedBytes would be one rule with two owners, and the one that got edited would be
+        // whichever the next reader happened to open.
         if (!PasskeyEncoding.TryDecode(value, maxDecodedBytes, out byte[]? decoded))
-        {
-            return false;
-        }
-
-        // The gate above does NOT imply this one, and this comparison is the whole reason this type
-        // exists. PasskeyEncoding bounds the *encoded* text against MaxEncodedLength(maxDecodedBytes),
-        // computed in the padded form, which overshoots the true ceiling by up to two characters: with
-        // a ceiling of 29 bytes the allowance is 40 characters, and a 30-byte envelope encodes to
-        // exactly 40. It therefore passes every check that can be made on text.
-        //
-        // WrappedKeyEnvelope meets the same slack and closes it with an exact width sitting behind
-        // this call. Here there is no width — only a floor — so nothing else in the chain can see an
-        // over-long envelope, and deleting this line silently widens every field's limit by a byte or
-        // two. A ceiling that admits more than it names is not a ceiling.
-        if (decoded.Length > maxDecodedBytes)
         {
             return false;
         }

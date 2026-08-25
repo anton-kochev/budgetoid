@@ -1234,9 +1234,12 @@ public sealed class PasskeyCeremonyTests
     /// <para>
     /// Both sides of the width, because neither may be repaired: a padded or truncated envelope is a
     /// well-formed row holding bytes whose tag cannot verify, and the account looks registered until
-    /// the day somebody needs the keys. One byte over is the case a payload ceiling cannot cover for
-    /// this member — 62 bytes encodes to 83 characters against an allowance of 84 — so it arrives at
-    /// the width check having passed everything before it.
+    /// the day somebody needs the keys. One byte over never reaches the width: it clears the
+    /// encoded-length gate — 62 bytes is 83 characters against an allowance of 84 — and is then
+    /// refused by <c>PasskeyEncoding.TryDecode</c>, which measures the decoded buffer against the
+    /// ceiling the caller named, here <c>PasskeyPayloadLimits.WrappedKeyBytes</c>, the same 61 bytes
+    /// the width is. What the width covers instead is the short side, the 29-to-60-byte band that
+    /// clears the format's floor and the ceiling alike; both sides are gone before a column sees them.
     /// </para>
     /// <para>
     /// Every case is driven against each of the two members on its own. The columns are written from
@@ -2078,10 +2081,23 @@ public sealed class PasskeyCeremonyTests
     /// A wrapped key member with exactly one fault in it and everything else about it right.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Both width cases carry the version byte, so the width is the only thing wrong with either.
-    /// The alphabet case is a well-formed envelope's text with its leading character replaced by one
+    /// The alphabet case is a well-formed envelope's text with one character replaced by one
     /// base64url does not define — the character a client that reached for the standard encoder emits
     /// — so it is the right length and refused for its alphabet alone.
+    /// </para>
+    /// <para>
+    /// <b>That character sits at index 4, and the position is the whole of what makes the case prove
+    /// anything.</b> Base64 carries three decoded bytes per four characters, so characters 0-3 hold
+    /// bytes 0-2 — the version among them. Measured on this fixture: put the character at index 0 and a
+    /// decoder that skipped the alphabet check reads the text as standard base64, where <c>+</c> is 62,
+    /// and gets a leading byte of <b>249</b>. The envelope comes back refused for its version, the case
+    /// stays green, and the alphabet has been tested by nothing. At index 4 the damage lands in bytes
+    /// 3-5, which are random filler: the same decoder reads 61 bytes leading with the version byte and
+    /// would <em>accept</em> them, so a refusal has exactly one source left.
+    /// <c>WrappedKeyEnvelopeTests</c> keeps its own substitution off the leading group for this reason.
+    /// </para>
     /// </remarks>
     private static string MalformedEnvelopeText(MalformedEnvelope fault) => fault switch
     {
@@ -2089,8 +2105,10 @@ public sealed class PasskeyCeremonyTests
             EnvelopeText(WrappedAccountKeys.EnvelopeLength - 1, WrappedAccountKeys.EnvelopeVersion),
         MalformedEnvelope.OneByteTooWide =>
             EnvelopeText(WrappedAccountKeys.EnvelopeLength + 1, WrappedAccountKeys.EnvelopeVersion),
-        MalformedEnvelope.OutsideTheAlphabet => OutsideTheBase64UrlAlphabet
-            + EnvelopeText(WrappedAccountKeys.EnvelopeLength, WrappedAccountKeys.EnvelopeVersion)[1..],
+        MalformedEnvelope.OutsideTheAlphabet => EnvelopeText(
+                WrappedAccountKeys.EnvelopeLength, WrappedAccountKeys.EnvelopeVersion)
+            .Remove(4, 1)
+            .Insert(4, OutsideTheBase64UrlAlphabet.ToString()),
         _ => throw new ArgumentOutOfRangeException(nameof(fault), fault, "No text is defined for this fault."),
     };
 

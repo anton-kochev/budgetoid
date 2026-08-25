@@ -19,6 +19,10 @@ namespace Application.Passkeys;
 /// <para>
 /// Bounds are stated in decoded bytes and converted where they are applied, because the size that
 /// matters is the buffer, and the text a caller sends is about four characters per three bytes of it.
+/// That conversion rounds up, so <see cref="PasskeyEncoding.TryDecode"/> measures the decoded buffer
+/// as well as the text: <b>every number below is the number admitted, not a byte or two under it.</b>
+/// Read that as a property of the decoder rather than of any member here — cutting the second
+/// comparison would widen six of these seven without touching a line in this file.
 /// </para>
 /// </remarks>
 public static class PasskeyPayloadLimits
@@ -52,9 +56,11 @@ public static class PasskeyPayloadLimits
     /// The product verifies two algorithms and nothing else. An ES256 signature is DER-encoded and
     /// tops out near 72 bytes; an RS256 signature is exactly the modulus length, so 256 bytes for the
     /// 2048-bit keys authenticators actually issue. 512 bytes is the 4096-bit RSA key this product
-    /// accepts at its largest — which makes this the one limit here that is an exact bound and not a
-    /// padded one: it is 1.0x the longest signature that can legitimately arrive, not several times
-    /// it. There is nothing to reclaim by lowering it; a smaller number refuses a real key.
+    /// accepts at its largest — which makes this one of the two bounds here with no slack in it, the
+    /// other being <see cref="WrappedKeyBytes"/>: it is 1.0x the longest signature that can
+    /// legitimately arrive, not several times it. There is nothing to reclaim by lowering it; a smaller
+    /// number refuses a real key. And nothing to lose by trusting it, either — a signature of 513 bytes
+    /// is refused, because the decoded length is compared and not only the text it arrived as.
     /// </remarks>
     public const int SignatureBytes = 512;
 
@@ -73,8 +79,10 @@ public static class PasskeyPayloadLimits
     /// </summary>
     /// <remarks>
     /// This product's handles are the 16 bytes of a user id, and WebAuthn caps a user handle at 64
-    /// bytes, so 64 is the protocol's own ceiling rather than a chosen one. A handle the authenticator
-    /// stored years ago is compared, never trusted, but there is no size above this that could match.
+    /// bytes, so 64 is the protocol's own ceiling rather than a chosen one — and it is the ceiling
+    /// applied, 65 and 66 bytes included, because the decoded length is compared and not only the text
+    /// it arrived as. A handle the authenticator stored years ago is compared, never trusted, but there
+    /// is no size above this that could match.
     /// </remarks>
     public const int UserHandleBytes = 64;
 
@@ -112,8 +120,9 @@ public static class PasskeyPayloadLimits
     /// A <b>width</b> and not a padded ceiling — the only other member here that is exact is
     /// <see cref="SignatureBytes"/>. AES-GCM ciphertext is the length of its plaintext and the plaintext
     /// is a 32-byte key, so an envelope over a wrapped key has exactly one legal size and there is no
-    /// slack to leave. Note that it still only bounds the <em>encoded</em> length where it is applied,
-    /// which is why <see cref="WrappedKeyEnvelope"/> checks the decoded width separately.
+    /// slack to leave. Applied as a ceiling it now refuses the wide side exactly, 62 bytes included;
+    /// what it cannot say is that 61 is also a floor, which is why
+    /// <see cref="WrappedKeyEnvelope"/> keeps an equality of its own.
     /// </para>
     /// </remarks>
     public const int WrappedKeyBytes = WrappedAccountKeys.EnvelopeLength;

@@ -287,9 +287,22 @@ public sealed class CiphertextEnvelopeTests
     /// Every other case reads the version <em>relatively</em> — <c>Version - 1</c>, <c>Version + 1</c>,
     /// or a buffer carrying <c>Version</c> in its leading byte — so every one of them moves when the
     /// constant moves. Mutating <see cref="CiphertextEnvelope.Version"/> from 1 to 2 was run against
-    /// the suite and failed nothing: the matrix simply began testing 1 and 3, the accepting cases began
-    /// building buffers led by <c>0x02</c>, and the all-zero buffer stayed refused because 2 is not 0.
-    /// A file wholly green over a format that is no longer the one it describes.
+    /// <em>this file</em> and failed nothing in it: the matrix simply began testing 1 and 3, the
+    /// accepting cases began building buffers led by <c>0x02</c>, and the all-zero buffer stayed
+    /// refused because 2 is not 0. A file wholly green over a format that is no longer the one it
+    /// describes.
+    /// </para>
+    /// <para>
+    /// <b>The rest of the suite is not silent, and the claim above is about this file only.</b>
+    /// <c>WrappedAccountKeysConfiguration</c> interpolates
+    /// <see cref="WrappedAccountKeys.EnvelopeVersion"/> — which is defined as
+    /// <see cref="CiphertextEnvelope.Version"/> — into
+    /// <c>CK_wrapped_account_keys_wrapped_content_key_version</c> and its index-key twin, and
+    /// <c>BudgetoidDbContextConstructionTests</c> pins the rendered constraint as literal text,
+    /// <c>get_byte(wrapped_content_key, 0) = 1</c> included, so the same mutation reddens there. That
+    /// is an integration test over a built model; this is a unit test over a constant. The number is
+    /// worth a refusal that does not need the model constructed to notice it, and one that names the
+    /// version rather than a check constraint.
     /// </para>
     /// <para>
     /// <b>And the cost of that is not a red build.</b> This number is the contract with every client

@@ -93,8 +93,9 @@ public sealed class SessionCookieAuthenticationHandler(
         // codebase's one base64url reader, it judges the length before validating and decoding — the
         // ordering an anonymous surface needs, argued in full over there — and a decoder written again
         // here is how the two dialects start disagreeing about which strings are handles. What the
-        // ceiling cannot say is the exact width: 33 bytes encode to text it admits, so the equality
-        // below is a separate check and not a restatement.
+        // ceiling cannot say is that the width is exact: it refuses 33 bytes, but a handle of 31 or of
+        // one is under every bound it owns, so the equality below is a separate check and not a
+        // restatement.
         if (!PasskeyEncoding.TryDecode(presented, SessionToken.TokenLength, out byte[]? token)
             || token.Length != SessionToken.TokenLength)
         {

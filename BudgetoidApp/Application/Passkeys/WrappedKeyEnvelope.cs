@@ -58,10 +58,12 @@ public static class WrappedKeyEnvelope
         // ceiling — the ceiling and the width are the same 61 bytes here — and they refuse one shorter
         // than the format's 29-byte floor, so an over-long envelope is already gone by the time it
         // reaches this line, and gone for the ceiling rather than for the width. What no shared rule
-        // can see is the gap between the two: a 30- to 60-byte envelope clears the floor, clears the
-        // ceiling, carries the right version, and is still not a wrapped key. AES-GCM ciphertext is the
-        // length of its plaintext and the plaintext is a 32-byte key, so this member has exactly one
-        // legal size and the floor is not it.
+        // can see is the band between the two: a 29- to 60-byte envelope clears the floor, clears the
+        // ceiling, carries the right version, and is still not a wrapped key. 29 is in that band and
+        // not below it — the floor is a version, a nonce and a tag with no ciphertext between them, so
+        // an envelope of exactly 29 bytes is well-formed. AES-GCM ciphertext is the length of its
+        // plaintext and the plaintext is a 32-byte key, so this member has exactly one legal size and
+        // the floor is not it.
         //
         // Written as an inequality against the width rather than a lower bound of its own, so that both
         // sides stay refused however the shared ceiling later moves. Neither side is padded or

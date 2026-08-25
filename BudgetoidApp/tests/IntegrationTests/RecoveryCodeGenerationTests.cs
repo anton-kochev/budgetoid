@@ -999,9 +999,12 @@ public sealed class RecoveryCodeGenerationTests
     /// <para>
     /// Both sides of the width, because neither may be repaired: a padded or truncated envelope is a
     /// well-formed row holding bytes whose tag cannot verify, and the account looks recoverable until
-    /// the day somebody needs the keys. One byte over is the case a payload ceiling cannot cover for
-    /// this member — 62 bytes encodes to 83 characters against an allowance of 84 — so it arrives at
-    /// the width check having passed everything before it.
+    /// the day somebody needs the keys. One byte over never reaches the width: it clears the
+    /// encoded-length gate — 62 bytes is 83 characters against an allowance of 84 — and is then
+    /// refused by <c>PasskeyEncoding.TryDecode</c>, which measures the decoded buffer against the
+    /// ceiling the caller named, here <c>PasskeyPayloadLimits.WrappedKeyBytes</c>, the same 61 bytes
+    /// the width is. What the width covers instead is the short side, the 29-to-60-byte band that
+    /// clears the format's floor and the ceiling alike; both sides are gone before a column sees them.
     /// </para>
     /// <para>
     /// Every case is driven against each of the two members on its own. The columns are written from
@@ -2196,9 +2199,12 @@ public sealed class RecoveryCodeGenerationTests
     /// </summary>
     /// <remarks>
     /// Both width cases carry the version byte, so the width is the only thing wrong with either. The
-    /// alphabet case is a well-formed envelope's text with its leading character replaced by one
+    /// alphabet case is a well-formed envelope's text with one character replaced by one
     /// base64url does not define — the character a client that reached for the standard encoder emits —
-    /// so it is the right length and refused for its alphabet alone.
+    /// so it is the right length and refused for its alphabet alone. <b>That character sits at index 4
+    /// and not at 0</b>, because a substitution inside the leading group changes the decoded version
+    /// byte, and the envelope would then be refused for its version with the alphabet tested by
+    /// nothing. <c>PasskeyCeremonyTests.MalformedEnvelopeText</c> carries the arithmetic.
     /// </remarks>
     private static string MalformedEnvelopeText(MalformedEnvelope fault) => fault switch
     {
@@ -2206,8 +2212,10 @@ public sealed class RecoveryCodeGenerationTests
             EnvelopeText(WrappedAccountKeys.EnvelopeLength - 1, WrappedAccountKeys.EnvelopeVersion),
         MalformedEnvelope.OneByteTooWide =>
             EnvelopeText(WrappedAccountKeys.EnvelopeLength + 1, WrappedAccountKeys.EnvelopeVersion),
-        MalformedEnvelope.OutsideTheAlphabet => OutsideTheBase64UrlAlphabet
-            + EnvelopeText(WrappedAccountKeys.EnvelopeLength, WrappedAccountKeys.EnvelopeVersion)[1..],
+        MalformedEnvelope.OutsideTheAlphabet => EnvelopeText(
+                WrappedAccountKeys.EnvelopeLength, WrappedAccountKeys.EnvelopeVersion)
+            .Remove(4, 1)
+            .Insert(4, OutsideTheBase64UrlAlphabet.ToString()),
         _ => throw new ArgumentOutOfRangeException(nameof(fault), fault, "No text is defined for this fault."),
     };
 

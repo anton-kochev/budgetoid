@@ -70,12 +70,23 @@ public sealed class WrappedAccountKeys
     /// <para>
     /// <b>Computed from <see cref="CiphertextEnvelope.MinimumLength"/> rather than written out, and it
     /// stays a <see langword="const"/>.</b> The version, nonce and tag widths are the shared format's
-    /// to state; what this entity adds is the one plaintext it seals. A literal <c>61</c> here would be
-    /// a second place the framing is spelled, and the two would agree only for as long as nobody
-    /// touched either. <see langword="const"/> and not a computed property because
-    /// <c>WrappedKeyEnvelopeTests</c> and <c>PasskeyCeremonyTests</c> read this in
-    /// <c>[Arguments(...)]</c> and in a default parameter value, neither of which admits anything but a
-    /// constant expression.
+    /// to state; what this entity adds is the one plaintext it seals, so the arithmetic is the sentence
+    /// a reader needs and <c>61</c> is not.
+    /// </para>
+    /// <para>
+    /// <b>The arithmetic is a way of saying it, not the thing that holds it.</b> Measured: writing
+    /// <c>61</c> out here instead leaves the unit suite green, because nothing in the build derives one
+    /// of these numbers from the other. What catches a drift is two pins that do not follow an edit —
+    /// <c>CiphertextEnvelopeTests.WrappedKeyWidth_IsTheMinimumOverA32ByteKey</c>, which asserts this is
+    /// both literally 61 <em>and</em> <see cref="CiphertextEnvelope.MinimumLength"/> plus 32, and
+    /// <c>WrappedAccountKeysTests</c>, which builds every envelope it feeds this factory from a literal
+    /// <c>61</c> of its own. Move the format's widths and the first goes red; move this constant and
+    /// both do. Do not read the expression as the guard and delete either.
+    /// </para>
+    /// <para>
+    /// <see langword="const"/> and not a computed property because <c>WrappedKeyEnvelopeTests</c> and
+    /// <c>PasskeyCeremonyTests</c> read this in <c>[Arguments(...)]</c> and in a default parameter
+    /// value, neither of which admits anything but a constant expression.
     /// </para>
     /// </remarks>
     public const int EnvelopeLength = CiphertextEnvelope.MinimumLength + KeyBytes;
@@ -93,11 +104,18 @@ public sealed class WrappedAccountKeys
     /// <para>
     /// <b>An alias for <see cref="CiphertextEnvelope.Version"/>, not a second declaration of it.</b> A
     /// wrapped key and an encrypted narrative field are the same format over different plaintexts, so
-    /// two independent version bytes could only ever disagree — and a disagreement would be invisible,
-    /// because each side would keep accepting what it wrote itself. The name survives the move on
-    /// purpose: it is read from the persistence check constraints, three Application refusal sentences
-    /// and the integration suite, and it stays a <see langword="const"/> for the reason
-    /// <see cref="EnvelopeLength"/> gives.
+    /// the entity has no version of its own to state. The name survives the move on purpose: it is read
+    /// from the persistence check constraints, three Application refusal sentences and the integration
+    /// suite, and it stays a <see langword="const"/> for the reason <see cref="EnvelopeLength"/> gives.
+    /// </para>
+    /// <para>
+    /// <b>The alias is not what keeps the two bytes equal, for the reason
+    /// <see cref="EnvelopeLength"/> gives about its own arithmetic.</b> Measured: writing <c>1</c> out
+    /// here leaves the unit suite green. Two independent pins are what would notice —
+    /// <c>CiphertextEnvelopeTests.Version_IsTheOneVersionDefined</c>, which asserts the format's byte is
+    /// literally 1, and <c>WrappedAccountKeysTests</c>, which builds accepted envelopes from a literal
+    /// <c>1</c> of its own and would refuse them all if this constant moved. Neither follows an edit to
+    /// the constant it checks, which is the whole of why they are literals.
     /// </para>
     /// </remarks>
     public const byte EnvelopeVersion = CiphertextEnvelope.Version;

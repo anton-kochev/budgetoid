@@ -37,17 +37,25 @@ namespace UnitTests;
 /// them is covered here, and the split is measured rather than reasoned. Write the width so that it
 /// admits an envelope that is too <em>short</em> and exactly one case reddens, the 60-byte one. Write
 /// it so that it admits one that is too <em>long</em> and <b>nothing reddens at all</b>: the 62-byte
-/// value is refused by the shared ceiling in <c>CiphertextEnvelopeText</c> before this type's width is
-/// consulted, so that half of the claim is held by a neighbouring type and not by this file. A
+/// value is refused by the ceiling inside <see cref="PasskeyEncoding.TryDecode"/> — the
+/// <c>bytes.Length &gt; maxDecodedBytes</c> comparison it makes on the buffer it has just decoded —
+/// before this type's width is consulted. <c>CiphertextEnvelopeText</c> is only on the path and says so
+/// itself: "Nothing is re-applied here: a second comparison against maxDecodedBytes would be one rule
+/// with two owners." So that half of the claim is held two types away and not by this file, and a
 /// reviewer who reads the case as covering both would skip a mutation that catches nothing.
 /// </item>
 /// <item>
-/// "and the width stays an inequality" — the upper half is unreachable only while
-/// <see cref="PasskeyPayloadLimits.WrappedKeyBytes"/> and
-/// <see cref="WrappedAccountKeys.EnvelopeLength"/> hold the same number, which they do by agreement
-/// across two rings rather than by construction. The day they part, the over-long envelope reaches the
-/// width again — so the check is not narrowed to a lower bound of its own, and the case keeps
-/// asserting the side that currently proves nothing.
+/// "and the width stays an inequality" — the upper half is unreachable <em>by construction</em>, and
+/// the honest version of that is a weaker risk than a disagreement between two rings.
+/// <see cref="PasskeyPayloadLimits.WrappedKeyBytes"/> is not a second number that happens to equal
+/// <see cref="WrappedAccountKeys.EnvelopeLength"/>; it is declared as it, in one line, so the ceiling
+/// cannot drift away from the width. What the inequality is kept for is that the derivation is a single
+/// line: replace it with a literal and widen that literal, and the over-long envelope reaches the width
+/// again. That is a smaller risk than two rings disagreeing, and it is stated as the smaller one — the
+/// first of those two edits changes no number and would be caught by nothing, but the second parts the
+/// two constants and reddens <see cref="WrappedKeyCeiling_IsTheDomainsEnvelopeWidth"/>, which is the
+/// one place that asserts they agree. So the width is not narrowed to a lower bound of its own, and the
+/// case keeps asserting the side that proves nothing today.
 /// </item>
 /// <item>
 /// "the leading byte is the version" — the pair
@@ -57,9 +65,17 @@ namespace UnitTests;
 /// version check is a real check rather than the width check wearing another name.
 /// </item>
 /// <item>
-/// "base64url, and only base64url" — <see cref="TryDecode_WithTextOutsideTheBase64UrlAlphabet_Refuses"/>
+/// "not standard base64's two extra characters" —
+/// <see cref="TryDecode_WithTextOutsideTheBase64UrlAlphabet_Refuses"/>
 /// against <see cref="TryDecode_WithAPaddedEncodingOfAWellFormedEnvelope_Decodes"/>, which pins the
-/// half of the alphabet rule that is easy to over-tighten.
+/// half of the alphabet rule that is easy to over-tighten. The claim is deliberately that narrow. The
+/// refusing case substitutes <c>+</c> and <c>/</c>, so what it proves is that those two are refused —
+/// not that the decoder accepts base64url and nothing else, which is a broader claim than any case
+/// here supports. Measured, the decoder is looser than the broader claim would be:
+/// <c>System.Buffers.Text.Base64Url.IsValid</c> skips whitespace wherever it appears, so
+/// <c>AAAA AAAA</c>, a leading space, an embedded tab and a trailing newline all validate and decode to
+/// the same bytes as <c>AAAAAAAA</c>. Nothing here covers that and no case is being added for it: the
+/// statement that needs narrowing is the normative one, and it is being corrected where it lives.
 /// </item>
 /// </list>
 /// </remarks>
@@ -69,9 +85,15 @@ public sealed class WrappedKeyEnvelopeTests
     /// A well-formed envelope decodes to exactly the bytes that were encoded.
     /// </summary>
     /// <remarks>
-    /// The content is asserted, not the length. A decoder that returned a fresh buffer of the right
-    /// size — or the caller's text truncated to it — satisfies every other test in this file, and the
-    /// value it hands back is a key nobody will try to unwrap until the day they need it.
+    /// The content is asserted, not the length, because the value handed back is a key nobody will try
+    /// to unwrap until the day they need it: a decoder returning a fresh buffer of the right size, or
+    /// the caller's text truncated to it, has to be caught here rather than by the person who needs the
+    /// key. It is not the only case that would catch one —
+    /// <see cref="TryDecode_WithAPaddedEncodingOfAWellFormedEnvelope_Decodes"/> and
+    /// <see cref="TryDecode_WithTheVersionByteAloneSetOnAnOtherwiseEmptyEnvelope_Decodes"/> assert
+    /// their own bytes too, so all three redden together on that mutation. The refusal cases carry the
+    /// other half — each asserts the <c>out</c> parameter came back <see langword="null"/> — so between
+    /// them what a refusal hands back and what an acceptance hands back are both pinned.
     /// </remarks>
     [Test]
     public async Task TryDecode_WithAWellFormedEnvelope_ReturnsExactlyThoseBytes()
@@ -167,19 +189,33 @@ public sealed class WrappedKeyEnvelopeTests
     /// Standard base64's two extra characters are refused, even in text of the right length.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <c>+</c> and <c>/</c> are what base64url replaces with <c>-</c> and <c>_</c>, and they are
     /// substituted into an otherwise perfect encoding rather than produced by re-encoding: a random
     /// value run through <c>Convert.ToBase64String</c> need contain neither character, so that
     /// arrangement would pass against a decoder with no alphabet check at all. The length is untouched,
-    /// which is what makes this a refusal for the alphabet and not for the width.
+    /// so the width cannot be what refuses this.
+    /// </para>
+    /// <para>
+    /// <b>The indices are 4 and 5 because anything inside the leading group makes this case prove
+    /// nothing.</b> Base64 carries three decoded bytes per four characters, so characters 0-3 hold
+    /// bytes 0-2 — the version among them. Measured on this fixture: substitute at 0 and 1, and a
+    /// decoder that skipped the alphabet check reads the text as standard base64, where <c>+</c> is 62
+    /// and <c>/</c> is 63, and gets a leading byte of <b>251</b>. That value comes back refused for its
+    /// version, this case stays green, and nothing about the alphabet has been tested. At 4 and 5 the
+    /// damage lands in bytes 3-5, which are filler: the same decoder reads 61 bytes leading with 1 and
+    /// <em>accepts</em> the value, so a refusal has exactly one source left.
+    /// <c>CiphertextEnvelopeTextTests</c> keeps its own substitution off the leading group for the same
+    /// reason and argues it there.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task TryDecode_WithTextOutsideTheBase64UrlAlphabet_Refuses()
     {
         // Arrange
         char[] mangled = [.. Base64UrlText.Encode(Envelope(0xC0))];
-        mangled[0] = '+';
-        mangled[1] = '/';
+        mangled[4] = '+';
+        mangled[5] = '/';
 
         // Act
         bool accepted = WrappedKeyEnvelope.TryDecode(new string(mangled), out byte[]? envelope);
@@ -208,11 +244,16 @@ public sealed class WrappedKeyEnvelopeTests
     /// bytes clears the format's floor, carries the right version byte, and is still not a wrapped key.
     /// </para>
     /// <para>
-    /// The upper side is unreachable from this member only while
-    /// <see cref="PasskeyPayloadLimits.WrappedKeyBytes"/> and
-    /// <see cref="WrappedAccountKeys.EnvelopeLength"/> are the same number. Let those two part and it
-    /// comes back, which is why the check stays an inequality against the width rather than a lower
-    /// bound of its own, and why this case keeps asserting both sides.
+    /// The upper side is unreachable by construction rather than by coincidence:
+    /// <see cref="PasskeyPayloadLimits.WrappedKeyBytes"/> is declared as
+    /// <see cref="WrappedAccountKeys.EnvelopeLength"/>, not set to the same value beside it, so the
+    /// ceiling has no way to drift away from the width. The check stays an inequality against the width
+    /// anyway, for a narrower reason than drift: that derivation is one line, and a ceiling written as
+    /// a literal and then widened would hand the upper side back to this check. Narrowed to a lower
+    /// bound of its own, the width would have nothing left to catch it with — which is why this case
+    /// keeps asserting both sides while one of them proves nothing. The widening itself is not silent:
+    /// it parts the two constants, and <see cref="WrappedKeyCeiling_IsTheDomainsEnvelopeWidth"/>
+    /// asserts they agree.
     /// </para>
     /// </remarks>
     [Test]
@@ -339,8 +380,12 @@ public sealed class WrappedKeyEnvelopeTests
     /// The rule <see cref="PasskeyPayloadLimits.CredentialIdBytes"/> already keeps: a member the wire
     /// accepted but the entity could never store is text decoded for nothing, and a separate number
     /// here would only be a way for the two to disagree. Pinned rather than left implicit because the
-    /// alias is invisible at every call site — a later edit to a bare literal reads as tuning a limit,
-    /// and this is the only place that would notice.
+    /// derivation is invisible at every call site, where the ceiling reads as a limit somebody may
+    /// tune. <b>What this catches is the two numbers parting, not the derivation being replaced.</b>
+    /// Write <c>61</c> in place of the derivation and this stays green — the assertion is still true —
+    /// and only widening that literal afterwards turns it red. Which is the right half to guard: the
+    /// second edit is the one that changes what the API accepts, and it is also the one that hands the
+    /// upper side of <see cref="TryDecode_WithAnEnvelopeOfTheWrongWidth_Refuses"/> something to do.
     /// </remarks>
     [Test]
     public async Task WrappedKeyCeiling_IsTheDomainsEnvelopeWidth()
