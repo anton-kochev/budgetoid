@@ -66,10 +66,22 @@ public static class PasskeyEncoding
     /// The longest base64url text that can encode <paramref name="decodedBytes"/> bytes.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The padded form, four characters per three bytes rounded up, even though base64url omits the
     /// padding: <see cref="Base64Url"/> accepts a padded value, so the looser of the two lengths is
-    /// the one that never refuses a member a client legitimately encoded. It overshoots by at most two
-    /// characters, which no ceiling here is tight enough to care about.
+    /// the one that never refuses a member a client legitimately encoded.
+    /// </para>
+    /// <para>
+    /// <b>It overshoots by up to two characters, which means this is not a bound on decoded bytes and
+    /// must not be read as one.</b> Measured: text that fits inside the allowance this returns for a
+    /// ceiling of 29 bytes decodes to 30. A caller that needs the ceiling it named to be the ceiling it
+    /// gets has to compare the length again after decoding — which is what
+    /// <see cref="Application.Security.CiphertextEnvelopeText"/> does, and it is the only thing standing
+    /// between a per-field limit and a limit a byte or two wider than anybody wrote.
+    /// <see cref="WrappedKeyEnvelope"/> closes the same gap from the other side, with the exact width
+    /// its own member happens to have. Nothing closes it for a member that has only a floor, so a new
+    /// caller of this method owes its own post-decode comparison.
+    /// </para>
     /// </remarks>
     public static int MaxEncodedLength(int decodedBytes)
     {

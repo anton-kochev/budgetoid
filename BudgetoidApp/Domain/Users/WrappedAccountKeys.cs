@@ -1,4 +1,5 @@
 using Domain.Common;
+using Domain.Security;
 
 namespace Domain.Users;
 
@@ -45,28 +46,61 @@ namespace Domain.Users;
 public sealed class WrappedAccountKeys
 {
     /// <summary>
-    /// The only legal width of an envelope over a 32-byte key:
-    /// <c>1 (version) + 12 (nonce) + 32 (ciphertext) + 16 (tag)</c>.
+    /// The width of the plaintext inside either envelope — one AES-256 key.
     /// </summary>
     /// <remarks>
+    /// Private because it is a fact about this entity's payload and not about the format. The shared
+    /// framing carries no width at all: narrative text seals to whatever length it happens to be, so a
+    /// 32 published beside <see cref="CiphertextEnvelope.MinimumLength"/> would read like part of the
+    /// format to the next caller of it.
+    /// </remarks>
+    private const int KeyBytes = 32;
+
+    /// <summary>
+    /// The only legal width of an envelope over a 32-byte key: the shared framing stretched over one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
     /// <b>A width, not a cap.</b> AES-GCM ciphertext is exactly the length of its plaintext, and the
     /// plaintext is a 32-byte key, so an envelope over a wrapped account key has one legal size and
     /// both sides of the bound are refused. Refused rather than padded or truncated: either repair
     /// would store a well-formed row holding an envelope whose tag cannot verify, and the account would
     /// look registered until the day somebody needed the keys.
+    /// </para>
+    /// <para>
+    /// <b>Computed from <see cref="CiphertextEnvelope.MinimumLength"/> rather than written out, and it
+    /// stays a <see langword="const"/>.</b> The version, nonce and tag widths are the shared format's
+    /// to state; what this entity adds is the one plaintext it seals. A literal <c>61</c> here would be
+    /// a second place the framing is spelled, and the two would agree only for as long as nobody
+    /// touched either. <see langword="const"/> and not a computed property because
+    /// <c>WrappedKeyEnvelopeTests</c> and <c>PasskeyCeremonyTests</c> read this in
+    /// <c>[Arguments(...)]</c> and in a default parameter value, neither of which admits anything but a
+    /// constant expression.
+    /// </para>
     /// </remarks>
-    public const int EnvelopeLength = 61;
+    public const int EnvelopeLength = CiphertextEnvelope.MinimumLength + KeyBytes;
 
     /// <summary>
     /// The one envelope version defined today (IFR-007): AES-256-GCM, 96-bit nonce, 128-bit tag.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The version is refused <em>here</em> rather than left to the client because the successor does
     /// not exist: a row carrying version 2 is a client claiming a contract this deployment has never
     /// implemented, and storing it would file bytes no version of this system can interpret. The
     /// database restates this bound and the width one; this factory is where the mistake is cheap.
+    /// </para>
+    /// <para>
+    /// <b>An alias for <see cref="CiphertextEnvelope.Version"/>, not a second declaration of it.</b> A
+    /// wrapped key and an encrypted narrative field are the same format over different plaintexts, so
+    /// two independent version bytes could only ever disagree — and a disagreement would be invisible,
+    /// because each side would keep accepting what it wrote itself. The name survives the move on
+    /// purpose: it is read from the persistence check constraints, three Application refusal sentences
+    /// and the integration suite, and it stays a <see langword="const"/> for the reason
+    /// <see cref="EnvelopeLength"/> gives.
+    /// </para>
     /// </remarks>
-    public const byte EnvelopeVersion = 1;
+    public const byte EnvelopeVersion = CiphertextEnvelope.Version;
 
     private WrappedAccountKeys()
     {

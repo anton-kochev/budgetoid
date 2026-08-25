@@ -33,8 +33,21 @@ namespace UnitTests;
 /// <list type="bullet">
 /// <item>
 /// "exactly 61 bytes, a width and not a cap" —
-/// <see cref="TryDecode_WithAnEnvelopeOfTheWrongWidth_Refuses"/> takes the bound from both sides, so a
-/// check written <c>&gt;=</c> or <c>&lt;=</c> fails exactly one case rather than none.
+/// <see cref="TryDecode_WithAnEnvelopeOfTheWrongWidth_Refuses"/> asserts both sides, but only one of
+/// them is covered here, and the split is measured rather than reasoned. Write the width so that it
+/// admits an envelope that is too <em>short</em> and exactly one case reddens, the 60-byte one. Write
+/// it so that it admits one that is too <em>long</em> and <b>nothing reddens at all</b>: the 62-byte
+/// value is refused by the shared ceiling in <c>CiphertextEnvelopeText</c> before this type's width is
+/// consulted, so that half of the claim is held by a neighbouring type and not by this file. A
+/// reviewer who reads the case as covering both would skip a mutation that catches nothing.
+/// </item>
+/// <item>
+/// "and the width stays an inequality" — the upper half is unreachable only while
+/// <see cref="PasskeyPayloadLimits.WrappedKeyBytes"/> and
+/// <see cref="WrappedAccountKeys.EnvelopeLength"/> hold the same number, which they do by agreement
+/// across two rings rather than by construction. The day they part, the over-long envelope reaches the
+/// width again — so the check is not narrowed to a lower bound of its own, and the case keeps
+/// asserting the side that currently proves nothing.
 /// </item>
 /// <item>
 /// "the leading byte is the version" — the pair
@@ -181,11 +194,26 @@ public sealed class WrappedKeyEnvelopeTests
     /// refused, from both sides.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// AES-GCM ciphertext is the length of its plaintext and the plaintext is a 32-byte key, so the
     /// envelope has one legal size and both sides of it are wrong. Refused rather than padded or
     /// truncated: either repair stores a well-formed row holding an envelope whose tag cannot verify,
-    /// and the account looks registered until somebody needs the keys. Note that the wider of the two
-    /// values still fits under the encoded-length ceiling, so it can only be caught by a width check.
+    /// and the account looks registered until somebody needs the keys.
+    /// </para>
+    /// <para>
+    /// <b>The two cases no longer fail for the same reason, and the narrow one is now what this width
+    /// is for.</b> The shared decode step refuses anything over the ceiling it was handed, and here
+    /// that ceiling and this width are the same 61 bytes, so the wider value is gone before the width
+    /// is ever consulted. What no shared rule can see is the band beneath it: an envelope of 29 to 60
+    /// bytes clears the format's floor, carries the right version byte, and is still not a wrapped key.
+    /// </para>
+    /// <para>
+    /// The upper side is unreachable from this member only while
+    /// <see cref="PasskeyPayloadLimits.WrappedKeyBytes"/> and
+    /// <see cref="WrappedAccountKeys.EnvelopeLength"/> are the same number. Let those two part and it
+    /// comes back, which is why the check stays an inequality against the width rather than a lower
+    /// bound of its own, and why this case keeps asserting both sides.
+    /// </para>
     /// </remarks>
     [Test]
     [Arguments(WrappedAccountKeys.EnvelopeLength - 1)]
