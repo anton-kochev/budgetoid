@@ -33,10 +33,11 @@
 // `no-devtools.spec.ts` read the build output: the claim is about the shape of
 // what was written, and nothing that runs can observe it.
 //
-// It reads `src/` and needs no build. `src/` is what a reviewer reads and what
-// the rule is about; the bundler inlines a `const` string into each of its use
-// sites, so the emitted JavaScript cannot tell a copy from an import and would
-// answer this question wrongly whichever way it answered it.
+// It reads `src/` — and, in the last case, one file under `docs/` — and needs
+// no build. `src/` is what a reviewer reads and what the rule is about; the
+// bundler inlines a `const` string into each of its use sites, so the emitted
+// JavaScript cannot tell a copy from an import and would answer this question
+// wrongly whichever way it answered it.
 //
 // Two limits, stated rather than papered over. This catches the literal, not a
 // value assembled at runtime out of pieces — `'budgetoid/' + …` split across
@@ -47,6 +48,26 @@
 // the JSDoc that draws the grammar points at the constant with `{@link}` rather
 // than quoting it — and the first case below is written the way it is to keep
 // that true.
+//
+// **One copy is outside `src/`, it is allowed to exist, and the last case binds
+// it rather than hunting it.** `docs/business-logic/ciphertext-envelope.md`
+// writes the grammar out in the prefix's own letters, and it is right to: that
+// chapter is normative, it is what a second implementation reads, and a
+// contract nobody may spell is not a contract. So the fix is *not* to widen the
+// scan over `docs/` and exempt the chapter — an absence check whose one
+// exemption is the only document in scope has nothing left to find, and the
+// exemption is the first thing a later reader widens. The last case reads the
+// chapter and asserts the grammar it publishes *carries* the constant. A
+// positive binding, because what is being guarded is agreement lost, not a copy
+// gained.
+//
+// The polarity is why it is worth a case at all. The requirements fix the
+// binding property and never the grammar, so the chapter is the only statement
+// of these letters a second client can implement from — and the governing
+// constraint says a client that departs from the specification is the one in
+// the wrong. A chapter that drifts from this module therefore does not go
+// harmlessly stale: it declares the **correct** client defective, and every
+// implementation built from it seals bytes this one cannot open.
 import {
   mkdirSync,
   mkdtempSync,
@@ -128,6 +149,38 @@ function modulesTypingThePrefix(root: string): string[] {
 // value with two spellings has none; the same holds for its own rule.
 function strangersAmong(carriers: readonly string[]): string[] {
   return carriers.filter((path) => path !== owner);
+}
+
+// The normative chapter, the one place outside this module that may spell the
+// prefix. From a spec `process.cwd()` is the Angular project directory, so the
+// chapter is two levels up — the same climb `narrative-cipher.spec.ts` makes to
+// reach the frozen vectors, and read from `docs/` for the same reason: a
+// contract transcribed into a spec is a second copy of the contract, and the
+// copy that drifts still passes its own file.
+const chapterPath = join(
+  process.cwd(),
+  '..',
+  '..',
+  'docs',
+  'business-logic',
+  'ciphertext-envelope.md',
+);
+
+// The chapter's narrative-grammar line, found by its field list and never by
+// the prefix. A matcher that located the line by looking for the constant could
+// only ever report that the constant is where the constant is; located by the
+// fields, the line is still found when the prefix on it has drifted, which is
+// the only state worth reporting.
+//
+// It takes the document as an argument for the reason `modulesTypingThePrefix`
+// takes a root: the drift control below has to run this exact function over a
+// document broken on purpose, and a function closed over the real chapter could
+// only be checked against the text it is asserting about.
+function narrativeGrammarLines(document: string): string[] {
+  return document
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.includes('<rowId>') && line.includes('0x1F'));
 }
 
 describe('the narrative-field associated-data prefix', () => {
@@ -274,5 +327,70 @@ describe('the narrative-field associated-data prefix', () => {
       // the temporary directory.
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('opens the grammar the normative chapter publishes', () => {
+    // Arrange
+    const chapter = readFileSync(chapterPath, 'utf8');
+
+    // The grammar's first field, assembled from the constant. The quotes are
+    // part of what the chapter publishes and not incidental formatting: they
+    // are how that line tells a literal from a placeholder, every other field
+    // on it being written in angle brackets.
+    const opening = `"${NARRATIVE_FIELD_AAD_PREFIX}" ||`;
+
+    // Act
+    const grammarLines = narrativeGrammarLines(chapter);
+
+    // Assert
+    // Controls on the read, before any claim about what it found. A wrong path
+    // throws, but a right path to the wrong document reads perfectly well, and
+    // an anchor matching nothing is indistinguishable from a chapter that
+    // dropped the grammar — a clean result either way. These three say the file
+    // was found, that it is the chapter meant, and that exactly one line in it
+    // is the narrative grammar rather than the wrapped-key one beside it.
+    expect(chapter).toContain('**This chapter is normative.**');
+    expect(chapter).toContain('### Two grammars, one join');
+    expect(grammarLines).toHaveLength(1);
+
+    const [grammar] = grammarLines;
+
+    // The binding itself: the published grammar opens with this constant.
+    // Anchored to that line rather than searched for over the document, because
+    // an unanchored `chapter.includes(…)` is satisfied by a *mention* anywhere
+    // in five hundred lines — so a grammar block bumped to a successor while
+    // one prose sentence still names the old version stays green. That exact
+    // defect was found and fixed in `associated-data.spec.ts` on this story,
+    // which is why it is spelled out here rather than trusted to be obvious.
+    //
+    // The needle rides along in the message, for the reason it does above.
+    //
+    // Indexed reads are reached through `?.` rather than through a `!`. The
+    // project does not compile with `noUncheckedIndexedAccess` today, so both
+    // elements type as `string` and nothing forces the question — but the day
+    // that flag is turned on, the shortest way back to green is the non-null
+    // assertion, and a `!` here would be a claim about a line read off disk.
+    // Optional chaining answers `undefined`, which fails both assertions in the
+    // right direction: neither `undefined` is `true` nor is it `false`.
+    expect(
+      grammar?.startsWith(opening),
+      `the chapter's narrative grammar does not open with: ${opening}`,
+    ).toBe(true);
+
+    // And the anchor is not what is doing the passing. The same matcher and the
+    // same needle over a chapter whose prefix — and nothing else — has drifted
+    // still finds one grammar line and refuses it. Without this half, a needle
+    // derived wrongly (`'||'`, or an empty string) reports agreement with any
+    // grammar line at all, including one naming a version this module never
+    // heard of.
+    const driftedLines = narrativeGrammarLines(
+      chapter.replaceAll(
+        NARRATIVE_FIELD_AAD_PREFIX,
+        `${NARRATIVE_FIELD_AAD_PREFIX}x`,
+      ),
+    );
+
+    expect(driftedLines).toHaveLength(1);
+    expect(driftedLines[0]?.startsWith(opening)).toBe(false);
   });
 });

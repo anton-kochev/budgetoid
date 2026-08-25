@@ -546,7 +546,7 @@ describe('a key-encryption key', () => {
     // it is true of anything else — it states that inside the file the material
     // is bytes twice per derivation, and that both copies are zero-filled where
     // they are consumed. This test holds up one of those two wipes.
-    // `importKeyEncryptionKey` copies the derived material with
+    // `importAesGcmKey` copies the derived material with
     // `Uint8Array.from(material)` and hands the copy to WebCrypto, and until
     // its `finally` runs that copy is the account's key-encryption key in the
     // clear, on a buffer no name in the program refers to once `importKey` has
@@ -636,35 +636,45 @@ describe('a key-encryption key', () => {
   });
 });
 
-// The one door from raw bytes to a key, and the seam the column encryption has
-// to cross. What holds the properties today is `importKeyEncryptionKey`, and it
-// is **private**: it is reachable only through the two key-encryption-key
-// derivations, and `crypto.subtle.importKey` appears exactly twice in the
-// application outside specs — here and in `hkdf.ts`. So a caller that wants to
-// encrypt a column with the account's content key — which
+// The one door from raw bytes to a key, and the seam the column encryption
+// crosses. `importAesGcmKey` is that door and it is the only one: outside specs
+// `crypto.subtle.importKey` appears exactly twice in the application, here and
+// in `hkdf.ts`, and the second imports HKDF input keying material rather than an
+// AES key. Both key-encryption-key derivations go through it, and so does
+// anything that has to turn one of the account's own keys — which
 // `generateAccountKeys` and `unwrapAccountKeys` hand back as `Uint8Array`, never
-// as a `CryptoKey` — has no way to get a key object except by writing a second
-// `importKey` of its own, beside this one and holding none of what this one
-// holds.
+// as a key object — into something a cipher will take.
 //
-// Five properties, and the guard on the far side of that seam holds exactly
-// one. Measured against the shipped code: a key imported `extractable: true` is
-// refused — that is the one — while a key imported `extractable: false` with
-// usages `['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']` is accepted, a
-// **sixteen byte** AES-128 key is accepted and round-trips, the account keys
-// arrive as `Uint8Array` and never as a key object, and their raw bytes are
-// still alive and non-zero after an import has read them. The width, the usage
-// list and the wipe are therefore held nowhere at all; non-extractability is
-// held once, downstream, and is pinned here as well because here is where the
-// key is *made* and a guard on a caller cannot speak for a key no caller
-// inspected.
+// **That there is one door is the argument, and the argument outlives the change
+// that made it one.** A second `crypto.subtle.importKey` is four lines, anybody
+// can write it beside this one, and it would hold none of what this holds. That
+// is not a hypothesis about careless people: until this function was exported
+// there was no other way to turn an account key into a key object at all, so the
+// work that encrypts columns had exactly that four-line move in front of it.
 //
-// The width is also a claim to make true again. `ACCOUNT_KEY_BYTES` says of
-// itself that it is "the only place the strength of every envelope the account
-// ever writes is decided", and a sixteen-byte key importing, sealing and opening
-// without complaint is what makes that false: the strength is decided by
-// whatever bytes reach an import. A refusal here is what puts the decision back
-// where the constant says it lives.
+// Five properties, and the guard on the far side of the seam holds one.
+// Measured against `narrative-cipher.ts` as it stands: it refuses a key that is
+// `extractable` — that is the one — while it accepts a key whose usages also
+// carry `wrapKey`/`unwrapKey`, accepts a **sixteen byte** AES-128 key and
+// round-trips under it, and never sees an account key as anything but
+// `Uint8Array`. The other four are held **here and nowhere else**: the width by
+// the check against `ACCOUNT_KEY_BYTES` inside the module's `try`, the usage
+// list and the `extractable: false` flag by the arguments of its single
+// `importKey` call, and the death of both copies of the bytes by the `finally`
+// that ends them. Each is a line or two, and a line or two is what a refactor
+// removes without noticing — which is what every test below exists to make
+// impossible. Non-extractability is pinned in both places deliberately: a guard
+// on the caller cannot speak for a key no caller ever inspects.
+//
+// The width is also what makes `ACCOUNT_KEY_BYTES` a decision rather than a
+// hope. Its own documentation says the strength of every envelope the account
+// ever writes is decided by that number and *enforced* by `importAesGcmKey`, and
+// the enforcement is the check these cases exercise — paraphrased rather than
+// quoted, because a sentence copied out of another file goes stale the first
+// time that file is edited and nothing goes red. Nothing else in the system
+// would object to less: a sixteen-byte key imports, seals and opens without
+// complaint, so without a refusal here the strength would be decided by whatever
+// bytes happened to reach an import.
 //
 // **The name.** `importKeyEncryptionKey` stops being true the moment an account
 // key goes through it, and `importAccountKey` would be the same untruth pointing
@@ -973,11 +983,14 @@ describe('importing raw bytes as a key', () => {
     expect(importedFrom).not.toBe(material.buffer);
 
     // And both copies are gone: the buffer WebCrypto was handed, and the
-    // caller's own array. The second is the one that matters to the caller this
-    // export exists for — an account key arrives here as bytes somebody else
-    // owns, and if this function does not end them, the value that decrypts
-    // every column the account ever wrote stays on the heap for as long as the
-    // tab lives.
+    // caller's own array. The second is the one that matters to a caller
+    // holding an account key — those bytes live in somebody else's variable,
+    // and if this function does not end them, the value that decrypts every
+    // column the account ever wrote stays on the heap for as long as the tab
+    // lives. Nothing outside this module calls `importAesGcmKey` today, which
+    // is the reason the rule needs a test rather than a reader: the first
+    // caller will arrive long after the argument for the `finally` has stopped
+    // being fresh in anybody's memory.
     expect(toHex(importedMaterial)).toBe('00'.repeat(ACCOUNT_KEY_BYTES));
     expect(material).toHaveLength(ACCOUNT_KEY_BYTES);
     expect(toHex(material)).toBe('00'.repeat(ACCOUNT_KEY_BYTES));
@@ -1260,10 +1273,12 @@ describe('the module surface', () => {
     // is a red test and a conversation rather than a diff nobody read.
     const expected = [
       'generateAccountKeys',
-      // The private import, exported. It is a new name and therefore a
-      // conversation, which is what this pin is for: the argument for opening it
-      // is that the alternative is a *second* `importKey` written beside it,
-      // holding none of the width, usage and wiping rules this one holds.
+      // The module's one AES-GCM import, open rather than private, and open on
+      // purpose: the alternative to opening it is a *second* `importKey`
+      // written beside it by whoever needs a key object next, holding none of
+      // the width, usage, extractability and wiping rules this one holds. That
+      // trade is why it is in this set, and this set is where a later reader
+      // finds the trade argued instead of inferred.
       'importAesGcmKey',
       'keyEncryptionKeyFromPasskey',
       'keyEncryptionKeyFromRecoveryCode',

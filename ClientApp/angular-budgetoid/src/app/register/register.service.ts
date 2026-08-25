@@ -522,11 +522,16 @@ export class RegisterService {
           // eleven of them exist during this method and none of them outlives
           // it, whatever a later reader adds to this class. They are
           // non-extractable by construction as well —
-          // `account-keys.ts`'s `importKeyEncryptionKey` is the one import both
-          // derivations share and it passes `extractable: false` — so neither
-          // half of that rests on the other. Named rather than cited by line:
-          // that function has already moved once under a comment pointing at
-          // where it used to be, and a name survives the next edit above it.
+          // `account-keys.ts`'s exported `importAesGcmKey` is the one import
+          // both derivations share and it passes `extractable: false` — so
+          // neither half of that rests on the other. It is no longer only the
+          // key-encryption keys' door: it is the one place in this client
+          // where bytes become an AES-GCM key, whichever key they are, and it
+          // refuses any material that is not `ACCOUNT_KEY_BYTES` wide. Named
+          // rather than cited by line: that function has already moved once
+          // under a comment pointing at where it used to be, and a name
+          // survives the next edit above it — though not a rename, which this
+          // line has already been corrected for once.
           codes.push({ verifier, factorId, ...wrapped });
         }
 
