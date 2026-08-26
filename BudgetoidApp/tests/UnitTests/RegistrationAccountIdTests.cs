@@ -73,7 +73,7 @@ public sealed class RegistrationAccountIdTests
     /// The arrangement most likely to produce the all-zero identifier under a truncating implementation,
     /// which is why the "never empty" claim is driven against it as well as against a real vector. The
     /// all-zero uuid is the one value two accounts reach independently, and
-    /// <c>CanonicalFactorId.TryParse</c> already refuses it for that reason one layer over.
+    /// <c>CanonicalIdentifier.TryParse</c> already refuses it for that reason one layer over.
     /// </remarks>
     private const string AllZeroChallenge =
         "0000000000000000000000000000000000000000000000000000000000000000";

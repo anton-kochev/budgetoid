@@ -1,5 +1,6 @@
 using Application.Abstractions;
 using Application.Passkeys.Verification;
+using Application.Security;
 using Domain.Common;
 using Domain.Users;
 
@@ -154,10 +155,10 @@ public sealed class CompleteRegistrationHandler(
         // these refusals are only reached once it has passed and the payload is the only thing left they
         // can be about.
         //
-        // One spelling of the identifier and no more, judged by CanonicalFactorId because this path and
+        // One spelling of the identifier and no more, judged by CanonicalIdentifier because this path and
         // recovery-code generation write the same column and must not drift on what that spelling is.
         // The rule is shared; this sentence is not — it is worded for the person registering a device.
-        if (!CanonicalFactorId.TryParse(command.FactorId, out Guid factorId))
+        if (!CanonicalIdentifier.TryParse(command.FactorId, out Guid factorId))
         {
             throw Refused(
                 "factorId must be a uuid in the lower-case 36-character hyphenated form with no "

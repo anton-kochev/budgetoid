@@ -82,7 +82,7 @@ public sealed class FullSessionRequirementHandler : AuthorizationHandler<FullSes
     /// </summary>
     /// <remarks>
     /// <b>The round trip is the rule, and a bare <c>Enum.TryParse</c> is not a substitute for it</b> — the
-    /// same argument <c>CanonicalFactorId</c> makes about a format that is not a spelling. Two families of
+    /// same argument <c>CanonicalIdentifier</c> makes about a format that is not a spelling. Two families of
     /// value get in without it. The obvious call is the case-insensitive overload, which admits
     /// <c>"full"</c>; and <em>every</em> overload accepts a numeric string, so <c>"1"</c> parses to
     /// <see cref="SessionKind.Full" /> under the case-sensitive one too. The claim is written by

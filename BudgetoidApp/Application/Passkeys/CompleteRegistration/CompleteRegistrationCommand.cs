@@ -43,7 +43,7 @@ namespace Application.Passkeys.CompleteRegistration;
 /// hyphenated form with no surrounding whitespace, which is what a <see cref="Guid"/> renders as and
 /// therefore what every later read hands back. This contract is cross-client, and a value the browser
 /// cannot recognise as the bytes it bound is a factor whose envelopes never open. Enforced by
-/// <see cref="Application.Passkeys.CanonicalFactorId.TryParse"/>, which compares the text against what
+/// <see cref="Application.Security.CanonicalIdentifier.TryParse"/>, which compares the text against what
 /// the parsed value renders as — <see cref="Guid.TryParseExact(string, string, out Guid)"/> under
 /// <c>"D"</c> admits upper-case and mixed-case hex and trims whitespace before it reads the format at
 /// all, so the format alone does not pin a spelling.

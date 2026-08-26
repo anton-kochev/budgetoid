@@ -14,7 +14,7 @@ namespace UnitTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Shared rather than per handler</b>, for the reason <c>CanonicalFactorId</c> and
+/// <b>Shared rather than per handler</b>, for the reason <c>CanonicalIdentifier</c> and
 /// <c>WrappedKeyEnvelope</c> already give for the members inside it: two callers accepting a set of
 /// recovery codes are not two decisions about what a set is. They write the same rows and the same
 /// key-custody columns, so a rule that drifted on one path would file bytes the other path would have

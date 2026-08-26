@@ -1,5 +1,6 @@
 using Application.Passkeys;
 using Application.RecoveryCodes.GenerateRecoveryCodes;
+using Application.Security;
 using Domain.Users;
 using ValidationException = Domain.Common.ValidationException;
 
@@ -27,7 +28,7 @@ public readonly record struct PresentedCode(
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>One definition rather than one per handler</b>, the shape <see cref="CanonicalFactorId"/> and
+/// <b>One definition rather than one per handler</b>, the shape <see cref="CanonicalIdentifier"/> and
 /// <see cref="WrappedKeyEnvelope"/> already hold for the members inside it, and for the same reason: two
 /// callers accepting a set of recovery codes are not two decisions about what a set is. They write the
 /// same rows and the same key-custody columns, so a rule that drifted on one path would file bytes the
@@ -189,12 +190,12 @@ public static class RecoveryCodeSetValidation
                 + $"{RecoveryCodeHash.VerifierLength} bytes.");
         }
 
-        // One spelling of the identifier and no more, judged by CanonicalFactorId because this path and
+        // One spelling of the identifier and no more, judged by CanonicalIdentifier because this path and
         // passkey registration write the same column and must not drift on what that spelling is. The
         // rule is shared; this sentence is not — it names which of the ten codes to correct. The all-zero
         // uuid is worse here than on the other path: ten codes would send it ten times and the set would
         // take itself down on its own insert.
-        if (!CanonicalFactorId.TryParse(submission.FactorId, out Guid factorId))
+        if (!CanonicalIdentifier.TryParse(submission.FactorId, out Guid factorId))
         {
             throw Refused(
                 CodeMember(field, ordinal, nameof(RecoveryCodeSubmission.FactorId)),

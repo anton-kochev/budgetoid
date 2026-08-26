@@ -1,4 +1,3 @@
-using Application.Passkeys;
 using Application.Passkeys.CompleteRegistration;
 using Application.RecoveryCodes.GenerateRecoveryCodes;
 using Domain.Sessions;
@@ -27,8 +26,8 @@ namespace Application.Registration;
 /// tells somebody whose authenticator genuinely cannot do PRF that their <em>payload</em> was malformed.
 /// <see cref="FactorId"/> is a <see cref="string"/> for one more reason: the framework parses more
 /// spellings of a uuid than this contract accepts, so a <see cref="Guid"/> member would silently widen
-/// the wire format past what <see cref="CanonicalFactorId"/> allows — and that value is the associated
-/// data both envelopes were sealed with.
+/// the wire format past what <see cref="Application.Security.CanonicalIdentifier"/> allows — and that
+/// value is the associated data both envelopes were sealed with.
 /// </para>
 /// <para>
 /// <b><see cref="Codes"/> is ten whole submissions, never ten verifiers beside one factor and one

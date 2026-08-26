@@ -2,6 +2,7 @@ using Application.Abstractions;
 using Application.Passkeys;
 using Application.Passkeys.Verification;
 using Application.RecoveryCodes;
+using Application.Security;
 using Application.Sessions;
 using Application.Users;
 using Domain.Budgets;
@@ -213,7 +214,7 @@ public sealed class RegisterAccountHandler(
         //    Each refusal is keyed under the member the caller can correct, which is what separates rungs
         //    8 and 9 from the ten envelope pairs inside rung 10: the passkey's two are corrected under
         //    their own names, and a code's under that code's own submission.
-        if (!CanonicalFactorId.TryParse(command.FactorId, out Guid factorId))
+        if (!CanonicalIdentifier.TryParse(command.FactorId, out Guid factorId))
         {
             throw Refused(
                 nameof(RegisterAccountCommand.FactorId),
