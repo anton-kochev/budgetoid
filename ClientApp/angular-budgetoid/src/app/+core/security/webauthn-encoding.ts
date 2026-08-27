@@ -22,11 +22,13 @@
 // is at {@link serverWord} together with the cost, which is not the one a reader
 // expects.
 //
-// This module ships with a spec and **no caller**, exactly as `account-keys.ts`
-// and `recovery-codes.ts` do, and for the same reason: the screens that run
-// these ceremonies — registering a passkey, signing in with one — are later
-// stories. Its spec is meanwhile the only place several of these rules can be
-// checked at all.
+// **This module used to ship with a spec and no caller, and that sentence is
+// spent.** The screens it was waiting on exist: `register.service.ts` and
+// `sign-in.service.ts` reach it through `webauthn-ceremony.service.ts`, and
+// `registration-api.service.ts` and `sign-in-api.service.ts` carry its JSON
+// shapes. Its spec is still the only place several of these rules can be
+// checked, because a ceremony neither screen can run under the test runner
+// cannot observe them.
 //
 // Nothing here is a service and nothing here is injected. There is no state, no
 // configuration and no dependency, so a function is the whole of it; the seam

@@ -55,24 +55,47 @@
        render a loading line above a list that had arrived in between. -->
   @let credentials = credentialRows();
 
-  <!-- Two sentences, because the two dead controls in this section are not
-       waiting on the same thing, and one sentence covering both would replace a
-       falsehood with a falsehood.
+  <!-- Two sentences, because the two dead controls in this section are still
+       not waiting on the same thing — but the line between them has moved, and
+       where it moved to is worth writing down.
 
        **Register a passkey** waits on the account's keys. A new passkey is a new
        *factor*, and every factor stores its own wrapped copy of the account's
        content key and index key — so registering one means wrapping those keys,
-       which needs them unwrapped. No route hands `wrapped_account_keys` back, so
-       there is nothing on this device to wrap with. It is emphatically **not**
-       the ceremony: this browser creates a passkey on `/register` and asserts one
-       on `/welcome`, so a sentence saying it cannot would be telling a person
-       their browser cannot do what it did on the way in.
+       and `wrapAccountKeys` takes them as **bytes**.
 
-       **Revoke** waits on this screen. `POST /api/me/credentials/{id}/revocation`
-       exists, the assertion that authorizes it is a ceremony this client runs,
-       and nothing here asks for one — the same shape the erasure section is in,
-       which is why it is written in the erasure section's words rather than in
-       these.
+       The sentence this replaces said Budgetoid could not unlock them in the
+       browser, which was true for exactly as long as no route handed the
+       envelopes back. The commits that landed `GET /api/me/account-keys` and
+       `AccountKeyCustodyService` ended that: this same browser opens both
+       envelopes on every passkey sign-in, one screen earlier. What is left is
+       narrower, and it is not nothing — custody holds what it opened as two
+       non-extractable `CryptoKey` objects behind no accessor, on purpose, so
+       there is no route back to bytes from anything this tab is holding. Bytes
+       come from unwrapping again, under a key-encryption key derived from a
+       factor the person presents *here*; this screen asks for no ceremony, so
+       there is no such key, and a `create()` on its own would mint a factor
+       with nothing to put in it.
+
+       It is emphatically **not** the browser: this client creates a passkey on
+       `/register` and asserts one on `/welcome`, so a sentence saying it cannot
+       would be telling a person their browser cannot do what it did on the way
+       in — which is what the old sentence had turned into.
+
+       **Revoke** waits on this screen too, and on nothing else.
+       `POST /api/me/credentials/{id}/revocation` exists, the assertion that
+       authorizes it is a ceremony this client runs, and nothing here asks for
+       one — the same shape the erasure section is in, which is why it is written
+       in the erasure section's words rather than in these.
+
+       **Both sentences therefore end at the same place, and they still differ in
+       what the passkey is *for*.** There it authorizes an act that cannot be
+       taken back; here it opens the keys the new factor has to be given a copy
+       of. That is a different fact rather than a rephrasing, and it is the one
+       that answers "why can't I just add another way in": the thing that would
+       open the keys is the thing a person who has lost their only passkey no
+       longer has. One sentence pasted over both sites would stop the screen
+       saying it.
 
        Both above the list and both as visible prose rather than a title or an
        aria-describedby: the controls they explain are disabled, so they are out
@@ -81,8 +104,8 @@
        three times on an account with three credentials. -->
   <p class="s-prose">
     This gives a new way to sign in its own copy of your account&rsquo;s keys,
-    and Budgetoid can&rsquo;t unlock those keys in the browser yet. The button
-    stays off until it can.
+    and making that copy takes a passkey this screen doesn&rsquo;t ask for yet.
+    The button stays off until it does.
   </p>
   <p class="s-prose">
     Revoking has to be confirmed with a passkey, and this screen doesn&rsquo;t
@@ -284,21 +307,30 @@
        point rather than a copy-paste: generating a set is *ten* factors at once
        — each code derives its own key-encryption key — so it waits on exactly
        what registering a passkey waits on, the account's content key and index
-       key unwrapped on this device, and on nothing else. The sentence names no
+       key as bytes on this device, and on nothing else. The sentence names no
        specific action for the same reason it can be repeated here at all.
+
+       Why that is still out of reach is argued in full beside the credential
+       list and deliberately not restated here. The short of it: the keys are
+       handed back by `GET /api/me/account-keys` and opened on every passkey
+       sign-in, so this browser plainly can unlock them — what it cannot do is
+       reach them as bytes from anything the tab is holding, because custody
+       keeps them as non-extractable `CryptoKey` objects behind no accessor.
+       Bytes take a factor presented on this screen, and this screen asks for
+       none.
 
        It does not say the browser cannot run a passkey check, because it can:
        `/register` creates a credential and `/welcome` asserts one. The
        assertion this route also needs is the half this client can already
-       produce.
+       produce; what is missing is a screen that asks for it.
 
        Visible prose above the control, never a title, a tooltip or an
        aria-describedby: the button is disabled, so it is out of the tab order
        and anything hung on it is read to nobody. -->
   <p class="s-prose">
     This gives a new way to sign in its own copy of your account&rsquo;s keys,
-    and Budgetoid can&rsquo;t unlock those keys in the browser yet. The button
-    stays off until it can.
+    and making that copy takes a passkey this screen doesn&rsquo;t ask for yet.
+    The button stays off until it does.
   </p>
 
   <!-- Outline rather than Destructive even though generating replaces an

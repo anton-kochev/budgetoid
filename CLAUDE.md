@@ -215,13 +215,25 @@ Load-bearing rules, each explained there or in the linked decision:
   asserts the buffer was non-zero at the moment of the call. **`GET /api/me/account-keys` is the one
   route that hands these rows back, and it is narrowed by the session's *credential*, never by the
   account** — one pair for a passkey, ten for a set of codes — because a passkey session given all
-  eleven would hold ten envelopes it can never open, and a later factor added without re-encrypting
-  needs no wider read: by then the browser holds the unwrapped keys and wraps that factor itself.
+  eleven would hold ten envelopes it can never open. A later factor needs no wider read either, and
+  **not** because an unlocked tab could wrap it: `AccountKeyCustodyService` holds two non-extractable
+  `CryptoKey`s (`encrypt`/`decrypt` and `sign`, **no `wrapKey`**) that no member hands back, while
+  `wrapAccountKeys` takes the account keys as **bytes** — which died inside those imports. Adding a
+  factor therefore costs a fresh ceremony, and a ceremony opens the factor it **presents**, which is
+  the one this route already returns.
   **An empty array, never a 404** — no session, an ended session and somebody else's session are one
-  indistinguishable answer, and a 404 would rebuild the enumeration oracle. The *unwrapping* is still
-  uncalled, and the reason is now the browser rather than the server: the route it was waiting on
-  exists, so what remains is the client wiring, and nothing is encrypted for it to open. Do not
-  delete the module for want of a caller. See
+  indistinguishable answer, and a 404 would rebuild the enumeration oracle. **There are two import
+  doors, not one**: `importAesGcmKey` and `importHmacSha256Key`, because the index key is
+  HMAC-SHA-256 and the platform refuses each key object in the other's role. The claim was never a
+  count — it is that **every** import sits behind a door holding all five decisions (algorithm,
+  width, usage list, non-extractability, the death of the bytes), which two doors keep and a
+  hand-written import beside a caller destroys; `key-import-single-source.spec.ts` reads the source
+  tree and pins the two owner files (`account-keys.ts`, `hkdf.ts`; three call sites). On the HMAC
+  door the shared `requireAccountKeyWidth` is the **only** guard there is — measured, HMAC
+  `importKey` accepts 1, 15, 31, 33 and 64 bytes and signs a full tag under every one, refusing only
+  zero, while AES refuses everything but 16, 24 and 32 — so that one check is all that stands between
+  a truncated key and a blind index that keys perfectly, never collides, and is wrong for the life of
+  the account. See
   [account-keys.md](docs/business-logic/account-keys.md) and
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
 - **One AEAD envelope serves both consumers, and its associated data is never carried inside it.**
@@ -390,9 +402,45 @@ Load-bearing rules, each explained there or in the linked decision:
   it) and **discarded, never sent** — but `enabled: false` **is** a refusal, immediately; absent is
   not `false`. **`isArrayBuffer` is a brand check, never `instanceof`** — a narrowing that silently
   goes false derives the key from zero bytes. And **`assertPasskey` asks for PRF too, and the sign-in
-  screen lets the key go**: holding the account's master key with no use for it is the defect. See
-  [passkeys.md](docs/business-logic/passkeys.md) and
+  screen *spends* the key rather than letting it go**: `SignInService` reads it and hands it on in
+  **one statement** to `AccountKeyCustodyService.unlock`, never naming it on a field, a signal or a
+  local of its own. See [passkeys.md](docs/business-logic/passkeys.md) and
   [account-keys.md](docs/business-logic/account-keys.md).
+- **The account's keys are held per tab by one root-provided service, and every clause of that was a
+  decision.** `AccountKeyCustodyService` reads `GET /api/me/account-keys`, tries **every** entry
+  under its own `factorId` (a passkey session gets one, a recovery-codes session ten — `entries[0]`
+  works forever on the first kind and tells the second that their valid code opened nothing), and
+  keeps what opened as two `CryptoKey`s on `#` fields with **no accessor**, read by nothing today
+  because nothing is encrypted. `providedIn: 'root'` **breaks the component-provided habit
+  deliberately**: `RegisterService` and `SignInService` hold an *attempt*, which should die with its
+  screen, while these are state of the **session**, which outlives every screen. Route-providing on
+  `app` is the near miss and must not be taken — `guestGuard` bouncing an authenticated visitor off
+  `/welcome` destroys that injector, so a stray navigation discards the keys and locks the account
+  with no ceremony left on screen and nothing red. **Nothing is persisted and nothing is shared
+  across tabs**: a non-extractable `CryptoKey` is structured-cloneable, so IndexedDB and
+  `BroadcastChannel` both *work* and both are refused — the first makes the account's decryption
+  capability outlive the browser closing, so the device plus a live cookie reads the narrative with
+  no factor presented, and the second unlocks a tab in which nobody presented one. Say so in the
+  docs, or the next reader who learns `CryptoKey` is cloneable reads the absence as an oversight.
+  **A page reload therefore locks the *account*** — a browser holding no content key, which is
+  FR-065's word and **not** a locked session (that is a federated credential's row, what
+  `sessions.md` means by "locked" throughout); vacuously satisfied today because nothing is
+  encrypted, and the locked screen and the unlock control are a later story. **`unlock` returns
+  `void` as enforcement** — awaitable, it lands a round trip between a verified assertion and the app
+  and one refactor later grows a `catch`, at which point a key that did not open has become an
+  authentication that failed. Custody calls nothing on `SessionService`, and `'unopened'` and
+  `'unreachable'` never collapse. Clearing has **one owner**, `SessionService.ended()` — never an
+  `effect()` (it fires on construction, and its only honest predicate would have to lock on
+  `unreachable` too) and never the callers. Registration hands the pair over as **objects** on the
+  201 (`adopt`) rather than re-reading through the route: re-reading needs the passkey's
+  key-encryption key to survive the codes step — the same power one step removed — puts a round trip
+  and a new failure mode on the happiest path in the product, and verifies nothing, because a passkey
+  session's read returns the passkey factor's pair alone and never the ten code pairs where the
+  pairing hazard lives. Two clearing lines (`restart()` and the failed POST) **cannot be shown to
+  fail** — the minting writes the keys before the payload `create()` requires, so no stale pair is
+  readable — and are kept as depth, not deleted as dead. See
+  [account-keys.md](docs/business-logic/account-keys.md) and
+  [sessions.md](docs/business-logic/sessions.md).
 - **The recovery-code hand-off is the one screen that shows a secret, and it still mints and posts
   nothing.** `register/steps/codes-step.component` takes ten codes through an `input()`, shows them
   once and raises an output; `RegisterService` is what mints them and what posts. It is reachable as
@@ -412,9 +460,10 @@ Load-bearing rules, each explained there or in the linked decision:
 - **Registration is one screen, one route and one *creating* request** — the options leg, asked from
   either of two presses, is not the request the headline counts. `/register` carries `guestGuard`,
   declares **no `children`** (the step is a signal in `register.component.ts`), and provides
-  `RegisterService` **on the component** — custody, not lifetime: the account keys, the eleven
-  key-encryption keys and the ten codes die with the screen. Rules the chapters argue and a reader
-  will undo:
+  `RegisterService` **on the component** — custody, not lifetime: the eleven key-encryption keys, the
+  ten codes and an *abandoned* attempt's account keys all die with the screen. The one thing that
+  outlives it is a **created** account's key pair, handed to `AccountKeyCustodyService` on the 201 by
+  `adopt` and never on any other outcome. Rules the chapters argue and a reader will undo:
   **the introduction's `Continue` is the options request** and the step moves only on an answer; the
   challenge is **taken once** and dropped by `restart`, so a 409 stays reachable from all three steps
   and each carries a conflict sentence; a browser that cannot run a ceremony asks for **no** challenge

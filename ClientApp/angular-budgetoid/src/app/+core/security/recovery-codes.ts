@@ -23,11 +23,20 @@
 // `webauthn-ceremony.service.ts`, `create()` on `/register` and `get()` on
 // `/welcome`. Issuing a set is **ten new factors**, and each stores its own
 // wrapped copy of the account's content key and index key, so issuing one means
-// wrapping those keys — which needs them unwrapped, and no route hands
-// `wrapped_account_keys` back. There is nothing on that screen to wrap with.
-// What follows is that somebody who spends their card cannot yet mint another,
-// which is the cost `register.service.ts` weighs when it refuses to read a lost
-// answer as a refusal.
+// wrapping those keys — which needs them as *bytes*.
+//
+// The old reason for that being impossible has gone: `GET /api/me/account-keys`
+// hands the envelopes back and `AccountKeyCustodyService` opens them on every
+// passkey sign-in. What it keeps is two non-extractable `CryptoKey` objects, no
+// member returns one, and neither carries `wrapKey` among its usages — so the
+// bytes a wrap needs can only come from unwrapping again, under a
+// key-encryption key derived from a factor the person presents there and then.
+// That is a ceremony `/app/settings` does not run, which is also what leaves it
+// without the fresh assertion the route's other five members want. So the
+// blocker is that screen, not the server and not this module. What follows is
+// unchanged: somebody who spends their card cannot yet mint another, which is
+// the cost `register.service.ts` weighs when it refuses to read a lost answer as
+// a refusal.
 //
 // It follows the shape of `export-filename.ts` and
 // `credential-registration-date.ts` — a pure module tested in place.

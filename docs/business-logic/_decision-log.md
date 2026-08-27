@@ -8,6 +8,83 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-27 — The account's keys are held for the session, in one tab, and nowhere a reload survives
+
+**Context:** the entry below gave the wrapped account keys a route to come back through, and closed
+with "the client still calls nothing". This is the client. A browser that had just proved a passkey
+held a key-encryption key and a route it never asked, and a browser that had just created an account
+held the two keys in the clear on a screen it was about to navigate away from. The question this
+entry settles is not *how* to open an envelope — `unwrapAccountKeys` had been written and pinned for
+some time — but **who holds the result, for how long, and what a page load does to it.**
+
+**Decision:** **`AccountKeyCustodyService` holds the account's content key and index key as
+non-extractable `CryptoKey` objects, `providedIn: 'root'`, for the life of the document and no
+longer.** A passkey sign-in hands it a key-encryption key and it reads the envelopes back and opens
+them; registration hands it the pair directly on the `201`. It reports lockedness and a failure word
+and returns nothing else.
+
+**Root-provided, and that breaks the component-provided habit on purpose.** `RegisterService` and
+`SignInService` are provided on their screens because an abandoned *attempt* should die with the
+screen that abandoned it. These keys are not an attempt: they are state of the **session**, and a
+session outlives every screen — a person unlocks once and stays unlocked while they move around the
+app. Route-providing on `app` is the near miss and is worse than it reads: `guestGuard` bounces an
+authenticated visitor off `/welcome`, that bounce destroys the `app` injector, and a back button or
+a bookmark then discards both keys and locks the account with no ceremony on screen to unlock it
+again — with nothing red and no symptom but an account that was readable a moment ago. The price of
+root-providing is that ending custody has to be a method, which is why clearing has exactly one
+owner: `SessionService.ended()`.
+
+**Per tab, never shared and never persisted, and this half has to be written down because it is an
+absence.** A non-extractable `CryptoKey` is **structured-cloneable**, so both IndexedDB and a
+`BroadcastChannel` hand-off work with no byte ever exposed, and the next person who learns that will
+read their absence as an oversight rather than as a refusal. IndexedDB is the expensive one: it
+makes the account's decryption capability outlive the browser closing, so whoever has the device and
+a live cookie reads the narrative with **no factor presented**, and every check in the product still
+passes while the requirement fails. A `BroadcastChannel` is weaker and wrong the same way one step
+down — it unlocks a tab in which nobody presented anything. What the refusals buy is the property
+the design rests on: **a page reload locks the account, and getting back in costs a ceremony.**
+
+**That reload leaves a *locked account*, which is not a locked session.** The two words are kept
+apart deliberately: a locked account is a browser that does not hold the content key, while a locked
+session is a row a federated credential opened. The state is vacuously satisfied today, because
+nothing in this product is encrypted; the screen that says so and the control that leaves it are a
+later story.
+
+**Alternatives considered:**
+
+- **Component-provided, like its two neighbours.** Consistent, and wrong for the same reason
+  route-providing is: it ties the account's keys to a screen, so the first navigation away locks the
+  account.
+- **Route-provided on `app`.** The tidiest-looking answer — the keys would belong to the part of the
+  route table that renders budget content. Rejected above: `guestGuard` makes the router able to
+  destroy them silently.
+- **Persist the keys in IndexedDB so a reload does not lock the account.** Rejected: it is the one
+  change that makes an unlocked account survive the browser closing, and nothing about a stored
+  non-extractable key looks wrong to any check this product has.
+- **Hand the keys to a second tab over a `BroadcastChannel`.** Rejected: a tab that presented no
+  factor would be unlocked by one that did.
+- **Have registration discard its pair and re-read `wrapped_account_keys` through the route.** The
+  more principled-looking option, and rejected on three counts: it needs the passkey's
+  key-encryption key to survive the codes step on some instance, which is the same power one step
+  removed; it puts a round trip and a new failure mode on the happiest path in the product; and the
+  verification it appears to buy is illusory, because a passkey session's read returns the **passkey
+  factor's pair alone** and never exercises the ten code pairs, which is exactly where the
+  mispairing hazard lives.
+- **Let `unlock` return a promise.** Rejected as a signature, not as an implementation detail: the
+  caller is a sign-in, somebody would await it, and one refactor later that `await` grows a `catch`
+  — turning a key that did not open into an authentication that failed. Only `anonymous` may bounce
+  anybody out of an account, and a factor that opened nothing is not that.
+- **Lock the keys from an `effect()` over the session status rather than inside `ended()`.**
+  Rejected: it fires on construction, so whether it wipes an already-adopted pair is decided by
+  injection order, and the only honest predicate available to it locks on `unreachable` too —
+  destroying both keys over one blinked request.
+
+**Affected areas:** [account-keys.md](account-keys.md), [sessions.md](sessions.md),
+[passkeys.md](passkeys.md), [recovery-codes.md](recovery-codes.md),
+[ciphertext-envelope.md](ciphertext-envelope.md), [_overview.md](_overview.md).
+
+---
+
 ## 2026-08-27 — The wrapped account keys get a reader, narrowed by the credential that opened the session
 
 **Context:** the 2026-08-13 entry below recorded "no endpoint returns a wrapped key" as one of four

@@ -42,25 +42,38 @@ const BACKUP_WINDOW =
 // **Two, not one, and the difference is the whole point.** Three controls on
 // this screen used to say the browser cannot run a passkey ceremony. It can:
 // `/register` creates one and `/welcome` asserts one, so every copy of that
-// sentence is now telling a person their browser cannot do something it just
-// did. But the four disabled controls are not blocked by the same thing:
+// sentence was telling a person their browser cannot do something it just did.
+// The four disabled controls are still not blocked by the same thing:
 //
-//   - **Register a passkey** and **Generate recovery codes** are genuinely
-//     blocked. Each has to hand a *new factor* its own wrapped copy of the
-//     account's content key and index key, and wrapping needs those keys
-//     unwrapped — which nothing hands back. `account-keys.md` calls unlocking
-//     them later work.
-//   - **Erase everything** and the per-row **Revoke** are blocked by nothing
-//     technical. `POST /api/me/erasure` and
+//   - **Register a passkey** and **Generate recovery codes** each have to hand
+//     a *new factor* its own wrapped copy of the account's content key and
+//     index key, and wrapping takes those keys as **bytes**. Unlocking them is
+//     no longer what is missing: `GET /api/me/account-keys` hands the envelopes
+//     back and `AccountKeyCustodyService` opens both on every passkey sign-in,
+//     one screen earlier. What custody holds afterwards is two non-extractable
+//     `CryptoKey` objects behind no accessor, so there is no route back to
+//     bytes from anything this tab is holding. Bytes come from unwrapping
+//     again, under a key-encryption key derived from a factor the person
+//     presents *here* — and this screen asks for no ceremony, so there is no
+//     such key.
+//   - **Erase everything** and the per-row **Revoke** wait on this screen too.
+//     `POST /api/me/erasure` and
 //     `POST /api/me/credentials/{id}/revocation` both exist, and the assertion
-//     that authorizes them is a ceremony this client now runs. They are simply
-//     not wired to this screen, and the destructive act still needs the
-//     confirmation flow `components.md` specifies.
+//     that authorizes them is a ceremony this client runs. They are simply not
+//     wired here, and the destructive act still needs the confirmation flow
+//     `components.md` specifies.
 //
-// One sentence pasted over all three sites would replace one falsehood with
-// another, which is what the tests below are shaped to refuse.
+// **Both pairs now end at the same place — a passkey this screen does not ask
+// for — and the two sentences still differ in what the passkey is *for*.** In
+// Revoke and Erase it authorizes an act that cannot be taken back; in Register
+// and Generate it opens the keys the new factor has to be given a copy of. That
+// is a different fact rather than a rephrasing, and it is the one that answers
+// "why can't I just add another way in": the thing that would open the keys is
+// the thing a person who has lost their only passkey no longer has. One
+// sentence pasted over all the sites would stop the screen saying it, which is
+// what the tests below are shaped to refuse.
 const ACCOUNT_KEYS_EXPLANATION =
-  'This gives a new way to sign in its own copy of your account’s keys, and Budgetoid can’t unlock those keys in the browser yet. The button stays off until it can.';
+  'This gives a new way to sign in its own copy of your account’s keys, and making that copy takes a passkey this screen doesn’t ask for yet. The button stays off until it does.';
 const ERASURE_EXPLANATION =
   'Erasing has to be confirmed with a passkey, and this screen doesn’t ask for one yet. The button stays off until it does.';
 
@@ -71,7 +84,7 @@ const ERASURE_EXPLANATION =
 // renders rather than against what the file happens to contain.
 const ACCOUNT_KEYS_PHRASES = [
   'its own copy of your account’s keys',
-  'can’t unlock those keys in the browser yet',
+  'making that copy takes a passkey this screen doesn’t ask for yet',
 ] as const;
 const ERASURE_PHRASES = [
   'has to be confirmed with a passkey',
@@ -481,8 +494,19 @@ describe('SettingsComponent', () => {
     // These two are the genuinely blocked pair, and they are blocked by the
     // same missing thing: each creates a factor, every factor stores its own
     // wrapped copy of the account's content key and index key, and wrapping
-    // needs those keys unwrapped. No route hands `wrapped_account_keys` back,
-    // so there is nothing on this device to wrap with.
+    // needs those keys as bytes.
+    //
+    // **What blocks them is narrower than "the browser cannot do it", and this
+    // pin is what keeps the sentence on the narrow reason.** The envelopes come
+    // back from `GET /api/me/account-keys` and `AccountKeyCustodyService` opens
+    // both on every passkey sign-in, so this browser demonstrably unlocks them
+    // one screen earlier. Custody then holds them as two non-extractable
+    // `CryptoKey` objects behind no accessor: there is no route back to bytes
+    // from anything this tab is holding, so the bytes a wrap takes can only come
+    // from unwrapping again, under a key-encryption key derived from a factor
+    // the person presents on this screen — and this screen asks for no ceremony.
+    // Changing the copy therefore moves `ACCOUNT_KEYS_PHRASES` and the template
+    // together, in one commit; changing either alone reddens this test.
     for (const phrase of ACCOUNT_KEYS_PHRASES) {
       expect(
         credentials,
@@ -536,9 +560,15 @@ describe('SettingsComponent', () => {
 
     // The comparison that is the test. The cheapest wrong implementation is one
     // sentence pasted at all three sites, and it passes every `toContain` on
-    // this screen: erasure is not waiting on the account's keys — nothing about
-    // deleting rows needs one unwrapped — and the two blocked controls are not
-    // waiting on a confirmation this screen could add tomorrow.
+    // this screen. The two sentences do end at the same place — each waits on a
+    // passkey this screen does not ask for — and they are still different facts,
+    // because the passkey plays a different part in each. Here it would
+    // authorize an act that cannot be taken back, and nothing about deleting
+    // rows needs a key unwrapped; there it would open the account's content key
+    // and index key, which custody holds as non-extractable `CryptoKey` objects
+    // and which the new factor has to be given a copy of as bytes. Collapsing
+    // the two erases the answer to "why can't I just add another way in", so the
+    // split is kept deliberately and this assertion is what keeps it.
     expect(
       erase,
       'the erasure section explains itself with the account-keys sentence.',
@@ -1340,7 +1370,10 @@ describe('SettingsComponent', () => {
     // where.
     expect(registerButton).not.toBeNull();
     expect(registerButton?.disabled).toBe(true);
-    expect(normalize(section)).toContain(ACCOUNT_KEYS_EXPLANATION);
+    expect(
+      normalize(section),
+      sentenceMismatch(normalize(section), ACCOUNT_KEYS_EXPLANATION),
+    ).toContain(ACCOUNT_KEYS_EXPLANATION);
     // The ceremony is no longer the blocker and the sentence may not say it is.
     // This client runs one on `/welcome` and another on `/register`.
     expect(normalize(section)).not.toContain(STALE_CEREMONY_CLAIM);
@@ -1362,7 +1395,16 @@ describe('SettingsComponent', () => {
     // once per entry by a screen reader in browse mode and is three paragraphs
     // of the same words on an account with three credentials — which is the
     // reason it sits above the list, and which a `toContain` cannot see.
-    expect(occurrencesOf(section, ACCOUNT_KEYS_EXPLANATION)).toBe(1);
+    // The count alone fails as `expected +0 to be 1`, which names neither the
+    // sentence nor the screen. Zero and many are different defects and read
+    // differently.
+    const said = occurrencesOf(section, ACCOUNT_KEYS_EXPLANATION);
+    expect(
+      said,
+      said === 0
+        ? sentenceMismatch(section, ACCOUNT_KEYS_EXPLANATION)
+        : 'the account-keys sentence is repeated inside the credential list.',
+    ).toBe(1);
   });
 
   it('says it before the controls it explains', () => {
@@ -1381,7 +1423,16 @@ describe('SettingsComponent', () => {
     // the explanation before the dead control rather than after it, and someone
     // who reaches the control first has already been told why it is off. Below
     // the buttons the sentence is an apology; above them it is an instruction.
-    expect(explanation).not.toBeNull();
+    //
+    // A bare `expected null not to be null` says nothing about which sentence
+    // went missing, and the two ways this can be null read differently: the
+    // section may not carry the sentence at all, or it may carry it split
+    // across elements so no single one *is* it.
+    expect(
+      explanation,
+      sentenceMismatch(normalize(section), ACCOUNT_KEYS_EXPLANATION) ||
+        'no single element on this screen carries the account-keys sentence.',
+    ).not.toBeNull();
     expect(firstInert).not.toBeNull();
     expect(precedes(explanation, firstInert)).toBe(true);
   });
@@ -2026,7 +2077,10 @@ describe('SettingsComponent', () => {
     // Generating a set is ten factors at once — each code derives its own
     // key-encryption key — so it waits on the same thing registering a passkey
     // does, and on nothing else.
-    expect(normalize(section)).toContain(ACCOUNT_KEYS_EXPLANATION);
+    expect(
+      normalize(section),
+      sentenceMismatch(normalize(section), ACCOUNT_KEYS_EXPLANATION),
+    ).toContain(ACCOUNT_KEYS_EXPLANATION);
     expect(normalize(section)).not.toContain(STALE_CEREMONY_CLAIM);
   });
 
@@ -2038,7 +2092,11 @@ describe('SettingsComponent', () => {
 
     // Assert
     // Below the button the sentence is an apology; above it, an instruction.
-    expect(explanation).not.toBeNull();
+    expect(
+      explanation,
+      sentenceMismatch(normalize(section), ACCOUNT_KEYS_EXPLANATION) ||
+        'no single element on this screen carries the account-keys sentence.',
+    ).not.toBeNull();
     expect(precedes(explanation, generate)).toBe(true);
     // And as visible prose, never hung on the control: a disabled button is out
     // of the tab order, so a title or aria-describedby on it is read to nobody.
@@ -2654,6 +2712,37 @@ function buttonNamed(
 // the whole argument for where this screen puts its explanation.
 function occurrencesOf(text: string, sentence: string): number {
   return text.split(sentence).length - 1;
+}
+
+// Where a pinned sentence and the screen part company, as a message rather than
+// as two paragraphs to diff by eye. `toContain` on a sentence this long reports
+// the whole expected string beside the whole section text and marks nothing, so
+// a one-word rewrite fails as two near-identical blocks and the reader spends
+// the next ten minutes finding the word. This walks the longest prefix of the
+// pin the section still carries and prints the next few characters of each side
+// of it. Empty when the section does carry the sentence, so a caller can fall
+// back to a message about the *other* reason its assertion failed.
+function sentenceMismatch(actual: string, expected: string): string {
+  if (actual.includes(expected)) {
+    return '';
+  }
+
+  let matched = 0;
+  while (
+    matched < expected.length &&
+    actual.includes(expected.slice(0, matched + 1))
+  ) {
+    matched += 1;
+  }
+
+  const divergence = actual.indexOf(expected.slice(0, matched)) + matched;
+
+  return [
+    'the section does not carry the pinned sentence.',
+    `agreed up to: …${expected.slice(Math.max(0, matched - 40), matched)}`,
+    `pin then says: ${expected.slice(matched, matched + 40)}…`,
+    `screen says:   ${actual.slice(divergence, divergence + 40)}…`,
+  ].join('\n');
 }
 
 // The element whose own text *is* the sentence — the paragraph carrying it,

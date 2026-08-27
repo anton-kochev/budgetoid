@@ -230,14 +230,12 @@ GRANT UPDATE (revoked_at_utc) ON sessions TO budgetoid_app;
 -- above exists to refuse. Signing out is stamping revoked_at_utc on the session, not removing its
 -- handle.
 --
--- INSERT IS GRANTED FOR A WRITER NO APPLICATION CODE PROVIDES YET, and this file's header tells the
--- next reader to grant only what a table needs, so the exception is stated rather than left to look
--- like coverage — the same tension wrapped_account_keys states one block down about its SELECT. No
--- path issues a token today: none of the three establishing responses carries a handle to the session
--- it created, and the API still authenticates every request from the identity provider's token. The
--- writer arrives with the route that mints one, and it will write the token in the SAME SaveChanges as
--- its session, which is why there is no second port method for it and must not be one — a token row
--- committed apart from its session names a session that may never exist.
+-- INSERT HAS TWO WRITERS, AND WHAT THEY SHARE IS THE RULE WORTH WRITING DOWN HERE: a token row is
+-- written in the SAME SaveChanges as the session it opens. SessionRepository.AddAsync takes the pair
+-- and has no overload taking a session alone, and RegistrationRepository.RegisterAsync carries both
+-- among the rows one registration commits at once. So there is no port method that writes a token by
+-- itself, and there must not be one — a token committed apart from its session names a session that
+-- may never exist, and a session committed without one is an account no cookie can be issued over.
 --
 -- Note what a column added here would land on, because it is the same mismatch as credentials': the
 -- exemption is granted to one QUERY and applied by PostgreSQL to the whole TABLE. The pinned column
@@ -373,12 +371,14 @@ GRANT SELECT, INSERT, DELETE ON webauthn_challenges TO budgetoid_app;
 -- Note what a column added here would land on, because it is the same mismatch as credentials': the
 -- exemption is granted to one QUERY and applied by PostgreSQL to the whole TABLE. The pinned column
 -- set in RowLevelSecurityCoverage is what holds it to its reason, and the columns it pins are what
--- the lookup needs before an identity exists. A wrapped key is the one this table will be offered
--- first — Story 12.1 wraps the account's keys under every recovery factor, and this is the obvious
--- place to put the recovery-code copy. It is the wrong place, for the reason the pin exists: a
--- wrapped key is read AFTER redemption has answered who is asking, so it belongs on a table carrying
--- user_id, which the coverage rule polices by itself with no argument needed. When the pin goes red
--- the fix is to MOVE THE COLUMN, never to widen the pin.
+-- the lookup needs before an identity exists. A wrapped key is the column this table was offered
+-- first, and it is the worked example rather than the hypothetical one: the account's keys are wrapped
+-- under every recovery factor, a set's ten codes are ten factors, and their rows are already here — so
+-- filing the ten wrapped copies beside them reads as the obvious thing to do. It was the wrong place,
+-- for the reason the pin exists: a wrapped key is read AFTER redemption has answered who is asking, so
+-- it belongs on a table carrying user_id, which the coverage rule polices by itself with no argument
+-- needed. It went to wrapped_account_keys, the block directly below, which opens by saying so. When
+-- the pin goes red the fix is to MOVE THE COLUMN, never to widen the pin.
 REVOKE ALL ON recovery_code_hashes FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 
@@ -402,9 +402,16 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 -- an optimisation: an account holding a passkey and a set of codes has eleven rows across two
 -- credentials, and a passkey session handed all eleven would hold ten envelopes it can never open —
 -- material travelling further than it is needed, which is a defect whether or not anything reads it.
--- That narrowing does not have to widen when a later factor is added without re-encrypting, either:
--- by then the browser is already holding the unwrapped content and index keys, so it wraps the new
--- factor itself and never reads another factor's envelopes.
+-- That narrowing does not have to widen when a later factor is added, either, and the reason is the
+-- opposite of the tempting one. An unlocked tab CANNOT wrap a new factor from what it is holding:
+-- AccountKeyCustodyService keeps the account's two keys as non-extractable CryptoKey objects imported
+-- with usages ['encrypt','decrypt'] and ['sign'] — no wrapKey — and no member of it hands either back,
+-- while wrapAccountKeys takes the account keys as BYTES, and those died inside the same imports that
+-- produced the key objects. That unreachability is the custody design rather than a gap in it. So
+-- adding a factor costs a fresh ceremony on the screen that adds it, and a ceremony yields the
+-- key-encryption key of the factor being PRESENTED — whose envelopes are exactly what this route
+-- already hands back. The read stays on the session's credential because that is the only factor
+-- anybody at the keyboard can open, not because a browser kept something.
 --
 -- The other readers are the row-level-security isolation tests, and an endpoint answering correctly
 -- is not evidence about them: a policed table whose isolation nothing exercises is a policy nobody

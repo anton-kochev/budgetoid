@@ -97,14 +97,23 @@ by the client — and deliberately not `credentials.id`. That column is the tabl
    is the one operation that would ever rewrite these two columns, and it must arrive with its own
    argument for the grant it needs.
 
-   **`SELECT` is granted to a reader that is not production code, and that is a real tension worth
-   naming rather than glossing.** The paragraph above argues that withholding a privilege until
+   **`SELECT` was granted to a reader that was not production code, and that was a real tension
+   worth naming rather than glossing.** The paragraph above argues that withholding a privilege until
    something uses it costs nothing while granting an unused one leaves a standing capability with no
-   reader to explain it — and then `SELECT` is granted to the row-level-security probes and to nothing
-   else. The difference that decides it: without the grant, the policy could never be *observed*, so
-   the isolation this whole decision rests on would be asserted and unchecked. An ungranted `UPDATE`
-   leaves nothing unobservable; an ungranted `SELECT` does. When the unlock story arrives it will
-   bring the production reader this grant is already sized for, and this paragraph should go with it.
+   reader to explain it — and then `SELECT` was granted to the row-level-security probes and to
+   nothing else. The difference that decided it: without the grant, the policy could never be
+   *observed*, so the isolation this whole decision rests on would be asserted and unchecked. An
+   ungranted `UPDATE` leaves nothing unobservable; an ungranted `SELECT` does. This paragraph said it
+   should go when the unlock story brought the production reader the grant was already sized for.
+
+   **Amended: that reader has arrived, and the grant is now ordinary.** `GET /api/me/account-keys`
+   reads the table on behalf of a signed-in browser — see the Consequences below, which record its
+   shape and the two rules a later reader will undo. So `SELECT` no longer needs the tension argued
+   for it, and nothing else in this item moved: still no `UPDATE`, still no `DELETE`. What the
+   paragraph leaves behind on purpose is the *test* it justified. The probes keep the grant honest in
+   a way the endpoint cannot: an application read answering correctly says nothing about what the
+   policy refused, so a policed table whose isolation only production exercises is a policy nobody
+   has watched fire.
 
    No `DELETE`: revoking a factor removes its keys by the cascade from `credentials`, which runs with
    the referencing table owner's privileges rather than the application role's.

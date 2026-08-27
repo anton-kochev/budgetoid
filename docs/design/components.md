@@ -372,17 +372,36 @@ list semantics — without it nobody hears "list, 2 items".
 **What ships today.** The list renders every kind the union carries, the recovery-code set's row
 included, and renders one it does not as **Sign-in method**, captioned **Added** and carrying no
 action. **Register a passkey** (below the list) and **Revoke** (on the revocable rows, which is the
-passkeys) are both Outline and **disabled** — and **they are not waiting on the same thing**, which
-is why the section carries two sentences and not one. The ceremony is not what either of them waits
-on: this client creates a passkey on `/register` and asserts one on `/welcome`.
+passkeys) are both Outline and **disabled**, and the section carries two sentences and not one. The
+browser's ability to run a ceremony is not what either of them waits on: this client creates a
+passkey on `/register` and asserts one on `/welcome`.
 
 - **Register a passkey** waits on the account's keys. A passkey is a *factor*, every factor stores
-  its own wrapped copy of the account's content key and index key, and wrapping them needs them
-  unwrapped — which no route hands back. Its sentence names no specific action, because the recovery
-  codes section below is blocked by exactly the same thing and says exactly the same words:
+  its own wrapped copy of the account's content key and index key, and wrapping them needs those
+  keys as **bytes**. Its sentence names no specific action, because the recovery codes section below
+  is blocked by the same thing and says the same words:
 
-  > This gives a new way to sign in its own copy of your account's keys, and Budgetoid can't unlock
-  > those keys in the browser yet. The button stays off until it can.
+  > This gives a new way to sign in its own copy of your account's keys, and making that copy takes
+  > a passkey this screen doesn't ask for yet. The button stays off until it does.
+
+  **The second clause says what is actually missing, and it is narrower than what it replaced.**
+  The retired sentence — *"and Budgetoid can't unlock those keys in the browser yet"* — was true
+  only while no route handed the wrapped keys back. `GET /api/me/account-keys` does, and
+  `AccountKeyCustodyService` opens both envelopes on every passkey sign-in, so a person who read it
+  was being told their browser could not do what it had just done one screen earlier. What is left:
+  custody holds the opened keys as non-extractable key objects behind no accessor, so reaching bytes
+  means unwrapping again under a key-encryption key derived from a factor presented *here* — a
+  ceremony this screen does not ask for, on top of the `create()` the new passkey needs.
+
+  **Two sentences, and the boundary between them moved rather than dissolved.** All four inert
+  controls now end at the same clause — this screen asks for no passkey — so the split is no
+  longer *browser* against *screen*. It is what the passkey is **for**: on Revoke and Erase it
+  authorizes an act that cannot be taken back, here it opens the keys the new factor has to be
+  given a copy of. That is a different fact rather than a rephrasing, and it is the one that
+  answers *why can't I just add another way in* — the thing that would open the keys is exactly
+  what somebody who has lost their only passkey no longer has. Collapsing the two would take that
+  answer off the screen, so it is specified as two. Both the quote above and
+  `ACCOUNT_KEYS_PHRASES` in `settings.component.spec.ts` move with the template, in one commit.
 
 - **Revoke** waits on this screen. `POST /api/me/credentials/{id}/revocation` is live and the fresh
   assertion that authorizes it is a ceremony this client runs; nothing here asks for one. That is
@@ -539,11 +558,15 @@ the credential registration and revocation controls already use on this screen.
   left the tab order. It is **word for word** the sentence above the credential list, and that is
   the specification rather than an accident: generating a set is ten factors at once — each code
   derives its own key-encryption key — so it waits on precisely what registering a passkey waits on,
-  the account's content key and index key unwrapped on this device. The sentence names no specific
+  the account's content key and index key as bytes on this device. The sentence names no specific
   action so that it can be true in both places:
 
-  > This gives a new way to sign in its own copy of your account's keys, and Budgetoid can't unlock
-  > those keys in the browser yet. The button stays off until it can.
+  > This gives a new way to sign in its own copy of your account's keys, and making that copy takes
+  > a passkey this screen doesn't ask for yet. The button stays off until it does.
+
+  **What the second clause names is the missing ceremony, not a missing capability** — the argument
+  is made once under *Register a passkey* in the credential-list chapter above and is not repeated
+  here. What does not change is that the two sites keep one sentence between them and move together.
 
   It does **not** say the browser cannot run a passkey check. It can: `/register` creates a
   credential and `/welcome` asserts one, and the assertion this route also demands is the half the
@@ -580,11 +603,17 @@ state, not an unfinished one, and *What replaces this when generation lands* abo
 arrives with the button — nothing here asks for it to be made live on its own. The client holds the
 generator that mints a code and derives its verifier from that code's canonical form, and the
 registration flow is its one caller; nothing on **this** screen calls it, and the API service has no
-member that posts a set. **The reason is no longer the assertion.** That route takes six members —
-five of a fresh WebAuthn assertion, which this client can produce, and ten whole code submissions,
-each carrying its own wrapped copy of the account's two keys. It is the wrapping that nothing here
-can do, because nothing hands the keys back to unwrap. Redeeming a code has no surface in the app at
-all.
+member that posts a set. **The reason is no longer the assertion, and it is no longer the route
+either.** That route takes six members — five of a fresh WebAuthn assertion, which this client can
+produce, and ten whole code submissions, each carrying its own wrapped copy of the account's two
+keys. `GET /api/me/account-keys` hands the wrapped keys back and the browser opens them on every
+passkey sign-in, so the sentence this section used to carry — nothing hands the keys back to unwrap
+— stopped being true and has been rewritten at both sites. What is left is narrower and is what the
+shipped copy now says: the opened keys are held as non-extractable key objects behind no accessor, a
+wrap takes bytes, and getting bytes means unwrapping again under a factor presented on **this**
+screen, which asks for no ceremony. So this section waits on the ceremony Erase waits on, and needs
+one thing more from it — the key-encryption key that ceremony derives. Redeeming a code has no
+surface in the app at all.
 
 **The show-once surface exists and this section is not where it lives.** It is the last step of the
 registration flow below, and that flow drives it: somebody creating an account is shown ten codes

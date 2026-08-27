@@ -189,10 +189,12 @@ required members. A third writer is a decision rather than a refactor.
   provider's holder could read — which is why a federated credential opens a session reaching no
   budget content, and **`federated` is the only credential type that cannot**. The rule runs that
   way round: a passkey and a set of recovery codes are each a secret in the holder's own possession,
-  so both open a `Full` session. The key custody those secrets carry is built and reaches every
-  account there is — registration wraps the account's keys under the passkey and under each of the
-  ten codes — but nothing in the browser *opens* an envelope yet, so possession is still the whole
-  of what the rule rests on. See [recovery-codes.md](recovery-codes.md) and
+  so both open a `Full` session. **The key custody those secrets carry is exercised on one of the
+  two**: a passkey sign-in derives a key-encryption key from the assertion's PRF branch, opens the
+  envelopes filed under that credential and holds the account's two keys for the visit, so a
+  federated credential's inability to do any of that is a difference the client can now demonstrate
+  rather than only argue. Nothing redeems a code in a browser yet, so the recovery-code half of the
+  same claim is still carried by possession alone. See [recovery-codes.md](recovery-codes.md) and
   [account-keys.md](account-keys.md).
 - **Enforced in**: `CK_sessions_kind_matches_credential`,
   `(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))`, the lowest layer that can
@@ -479,18 +481,36 @@ required members. A third writer is a decision rather than a refactor.
   **never rejects**; a rejection is not a failed probe but an application that never finishes
   starting.
   - **The reading also moves twice mid-visit, and both moves are a *set* rather than a re-probe.**
-    `ended()` is called by `sessionExpiryInterceptor` on a `401`; `established()` is called by the
-    registration flow on the `201`. Each time the server has just said what it thinks, in the same
-    breath as the cookie it set or the refusal it answered, so asking again would replace an answer
-    with a guess over a network that may itself be the problem. On the establishing side a re-probe
-    also costs a round trip at the happiest moment of the flow and can come back `unreachable` — a
+    `ended()` is called by `sessionExpiryInterceptor` on a `401` and by the Settings screen's sign
+    out; `established()` is called by the registration flow on the `201` and by the sign-in flow on
+    the assertion's answer. Each time the server has just said what it thinks, in the same breath as
+    the cookie it set or the refusal it answered, so asking again would replace an answer with a
+    guess over a network that may itself be the problem. On the establishing side a re-probe also
+    costs a round trip at the happiest moment of the flow and can come back `unreachable` — a
     **third** reading of a fact already stated.
-  - **The order at the end of registration is the requirement, not the tidiness.** The session is
-    published **before** the navigation to `/app`; published after, the guard judges that address
-    against a stale `anonymous` and bounces the person straight out of the account they have just
-    created — a defect that reproduces every time and reads as a routing problem.
+  - **`ended()` is the single owner of "the account's keys go too", and `established()` deliberately
+    owns nothing.** A session ending is where `AccountKeyCustodyService.lock()` is called, in that
+    one method rather than at each of its callers: a third path added later by somebody thinking
+    about sign-out rather than about key material clears the keys for free, where two copies at the
+    call sites would leave that path holding an ended session whose content key is still readable
+    from the root injector for the life of the tab — with nothing red either way. It is **not** an
+    `effect()` over `status`: that fires on construction, so whether it wipes a set already adopted
+    would be decided by injection order, and the only honest predicate available to it is "lock on
+    `anonymous`" — locking on `unreachable` would destroy both keys over one blinked request and
+    demand a full WebAuthn ceremony to get them back, which is the failure the fourth state exists
+    to prevent, reappearing one layer down. The mirror is that a session *beginning* says nothing
+    about which factor opened it, so `established()` unlocks nothing and the two flows that do know
+    hand the keys over themselves. See [account-keys.md](account-keys.md).
+  - **The order at the end of an establishing flow is the requirement, not the tidiness.** The
+    session is published **before** the navigation to `/app`; published after, the guard judges that
+    address against a stale `anonymous` and bounces the person straight out of the account they have
+    just opened — a defect that reproduces every time and reads as a routing problem.
     `register.component.spec.ts` records the reading at the instant the navigation is asked for, the
-    only way to see the ordering at all.
+    only way to see the ordering at all. **Both flows that end this way keep the same three
+    statements in the same order**: publish the session, hand the account's keys to custody,
+    navigate. The custody call sits between them rather than after the navigation because
+    `/welcome` and `/register` are discarded by that navigation, and it is **not awaited** — `unlock`
+    returns `void` precisely so a round trip cannot land between a verified assertion and the app.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -723,6 +743,13 @@ ELSE                                                    ← an unenumerated futu
   browser open", which is why that route is narrowed by the session's credential rather than by the
   account. A session this request cannot see answers an empty array there and never a `404`, for the
   same reason a dead cookie is answered identically to a forged one here.
+  - **Two words share a spelling and must not share a meaning.** A **locked session** is what this
+    file means throughout: a row a federated credential opened, a fact about what the *server* will
+    answer. A **locked account** is that file's word for a browser that does not hold the content
+    key, which is the state every tab starts in and which a page reload returns to, on a session
+    that is perfectly live. The custody a session's credential can carry is the account keys'
+    subject; **the session's own lifetime is not custody's** — the keys end at a sign-out, at a
+    `401` and at a page load, and only the first two of those are anything this file records.
 - **`user_isolation`** — the same policy `users`, `budgets`, `passkey_signature_counters` and
   `wrapped_account_keys` carry, keyed on the same session setting.
 - **CORS** — the default policy gains `AllowCredentials()`, because a browser drops a cross-origin

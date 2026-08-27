@@ -562,11 +562,14 @@ erDiagram
   secrets are meant to carry now has its cryptography, its write paths **and one browser flow that
   produces it** — `/register` derives a key-encryption key from each of the ten codes it mints and
   files eleven wrapped pairs in the same save as the account, and registration is the only way an
-  account comes to exist, so **every** account has its keys wrapped under both kinds of secret. What
-  is missing is the rest of the browser surface: nothing redeems a code, nothing issues a
-  replacement set, and nothing unwraps anything — the envelopes now have a route that hands them
-  back, `GET /api/me/account-keys`, and no client code that calls it.
-  Custody is what makes the rule durable; possession is still the whole of why it holds today.
+  account comes to exist, so **every** account has its keys wrapped under both kinds of secret.
+  **The reading half is built and reached only from the other kind of secret**: a passkey sign-in
+  opens the envelopes filed under its own credential and holds the account's keys for the visit, and
+  the same class would open a redeemed code's ten — one entry or ten is a difference it was written
+  for. What is missing is the browser surface in front of it: nothing redeems a code and nothing
+  issues a replacement set, so no code has ever derived a key-encryption key outside `/register` and
+  a spec. Custody is what makes the rule durable; on this credential possession is still the whole
+  of why it holds today.
   - **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule
     rather than a coincidence.** A set of codes is a secret its holder possesses exactly as an
     authenticator is, and reaches exactly as far, so a session expiring sooner here would tell

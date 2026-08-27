@@ -73,14 +73,19 @@
 // way through a derivation — is what "door" means here, and it is the reason the
 // third call is not a counter-example to the two.
 //
-// The **unwrapping** here has a spec and no caller: no route hands
-// `wrapped_account_keys` back yet, so nothing redeems a factor. Everything else is
-// live — `register.service.ts` draws the account's keys and wraps them under a
-// passkey and under each of ten recovery codes, and
-// `webauthn-ceremony.service.ts` derives the passkey branch's key-encryption key
-// on both legs of a ceremony. The spec remains the only place several of these
-// rules can be checked at all: the frozen vectors are what a second implementation
-// has to reproduce, and a non-extractable key has no other witness.
+// **Every function here has a live caller, the unwrapping included.**
+// `register.service.ts` draws the account's keys and wraps them under a passkey
+// and under each of ten recovery codes; `webauthn-ceremony.service.ts` derives
+// the passkey branch's key-encryption key on both legs of a ceremony; and
+// `unwrapAccountKeys` is reached by `AccountKeyCustodyService` on every passkey
+// sign-in, over the entries `GET /api/me/account-keys` hands back. So "keep it,
+// something is waiting" is no longer the reason to keep any of it.
+//
+// What is still uncalled is anything that *uses* an opened key — nothing seals a
+// field and nothing computes an index, because nothing in this product is
+// encrypted. The spec remains the only place several of these rules can be
+// checked at all: the frozen vectors are what a second implementation has to
+// reproduce, and a non-extractable key has no other witness.
 //
 // Nothing here is a service and nothing here is injected. There is no state, no
 // configuration and no dependency, so a function is the whole of it; a class would

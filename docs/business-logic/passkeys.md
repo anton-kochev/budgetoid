@@ -660,7 +660,11 @@ derived from the challenge it just spent — [registration.md](registration.md) 
   page — `createPasskey` on `+core/security/webauthn-ceremony.service.ts` is called there.
   `/welcome` runs the **assertion**: `SignInService` calls `assertPasskey`, posts what the
   authenticator signed, and the cookie that comes back is what carries the person into the app — the
-  identity provider is not part of that exchange at all. What still has no screen is the
+  identity provider is not part of that exchange at all. **That leg's PRF output is spent rather
+  than discarded**: the key-encryption key it derives is handed straight to
+  `AccountKeyCustodyService`, which reads the envelopes filed under the credential that just
+  authenticated and opens the account's two keys — see [account-keys.md](account-keys.md). What
+  still has no screen is the
   **re-authentication** the erasure, revocation and recovery-code-generation gates need, and the
   registration of a **further** passkey. Those two routes are reached today only by the integration
   suite. **Account creation is gated on a passkey, on the only path there is**, so **no account has

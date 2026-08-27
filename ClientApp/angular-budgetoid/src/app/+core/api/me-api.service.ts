@@ -215,15 +215,20 @@ export class MeApiService extends BaseApiService {
   // collapsing them is the one defect this whole path is shaped to prevent.
   //
   // There is deliberately **no** counterpart that generates a set, and the
-  // reason has moved. `POST /api/me/recovery-codes` takes six members: the five
-  // of a fresh WebAuthn assertion, which this client *can* now produce —
-  // `webauthn-ceremony.service.ts` runs one — and ten whole code submissions,
-  // each carrying its own wrapped copy of the account's content key and index
-  // key. It is that sixth member nothing here can build: wrapping the account's
-  // keys needs them unwrapped, and no route hands `wrapped_account_keys` back.
-  // A method for it would be API surface no test could execute — a signature
-  // that compiles, is called by nothing, and is wrong in a way nothing on the
-  // screen would show.
+  // reason has moved twice. `POST /api/me/recovery-codes` takes six members:
+  // the five of a fresh WebAuthn assertion, which this client *can* now
+  // produce — `webauthn-ceremony.service.ts` runs one — and ten whole code
+  // submissions, each carrying its own wrapped copy of the account's content
+  // key and index key. That sixth member is no longer blocked on the *server*:
+  // `getAccountKeys` below reads the envelopes, and
+  // `account-key-custody.service.ts` opens them on every passkey sign-in. It is
+  // blocked on what custody keeps — two non-extractable `CryptoKey` objects
+  // behind no accessor — while a wrap takes bytes. Getting bytes means
+  // unwrapping again under a key-encryption key derived from a factor somebody
+  // presents, which is the same ceremony the other five members want and which
+  // `/app/settings` does not run. A method for it would be API surface no test
+  // could execute — a signature that compiles, is called by nothing, and is
+  // wrong in a way nothing on the screen would show.
   public getRecoveryCodes(): Observable<number> {
     return this.get<unknown>('api/me/recovery-codes').pipe(
       map((body) => {

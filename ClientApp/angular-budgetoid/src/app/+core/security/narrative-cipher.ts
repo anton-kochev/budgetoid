@@ -12,13 +12,16 @@
 // cross-client contract, so it can be pinned against an answer computed outside
 // this codebase — `docs/business-logic/vectors/narrative-field-v1.json` — before
 // a single column holds an envelope, and a format is far cheaper to agree on
-// before it has data written under it than after. `unwrapAccountKeys` ships on
-// the same terms, and `account-keys.md` says so **twice** on purpose: once at
-// the top ("Unwrapping outside a spec, the locked state, the blind index and the
-// encryption of any narrative field are all later work") and again under Edge
-// Cases ("`unwrapAccountKeys` does **not**: nothing in this product opens an
-// envelope outside a spec"). Saying it once invites the reader who lands in the
-// other place to read the module as dead code and delete it.
+// before it has data written under it than after.
+//
+// **`unwrapAccountKeys` used to ship on the same terms and no longer does**:
+// `AccountKeyCustodyService` calls it on every passkey sign-in, over what
+// `GET /api/me/account-keys` hands back. These two functions are therefore the
+// last of the security modules with no caller but a spec, and the argument
+// above has to stand on its own rather than on a neighbour keeping it company.
+// `account-keys.md` states the boundary that survived: what remains uncalled is
+// anything that *uses* an opened key — nothing seals a field and nothing
+// computes an index — which is this module and the blind index, in that order.
 //
 // **Associated data is not carried inside the envelope.** It is rebuilt from
 // wherever the ciphertext was found — this table, this column, this row — which

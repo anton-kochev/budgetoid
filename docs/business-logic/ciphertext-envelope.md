@@ -49,9 +49,14 @@ caller but `narrative-cipher.spec.ts`. That is a deliberate order rather than a 
 behind: the format is a cross-client contract, so it can be pinned against an answer computed
 outside this codebase before a single column holds an envelope, and a format is far cheaper to
 agree on before it has data written under it than after. The same is said again under
-[Edge Cases](#edge-cases--known-gotchas), for the reason `account-keys.md` says it twice about
-`unwrapAccountKeys`: whoever lands in one place and not the other reads the module as dead
-code and deletes it.
+[Edge Cases](#edge-cases--known-gotchas), because whoever lands in one place and not the other
+reads the module as dead code and deletes it.
+
+**The other consumer is in a different position, and the difference is worth holding on to.**
+Wrapped account keys are sealed on every registration and **opened on every passkey sign-in**, so
+this framing has a live reader as well as a live writer. What that buys the narrative side is
+nothing at all — a format exercised by one consumer is not a format checked for the other, since
+the two grammars differ and only the frozen vectors speak to both.
 
 ## Key Entities
 
@@ -535,13 +540,14 @@ caller was not given.
 ## Edge Cases & Known Gotchas
 
 - **Nothing is encrypted today and nothing calls the narrative functions.** `sealNarrativeField`
-  and `openNarrativeField` have no caller but their spec, and `unwrapAccountKeys` has none
-  either — though for a **different** reason, which is worth keeping straight: the narrative
-  pair waits on there being a ciphertext anywhere in the product, while the unwrapping waits
-  only on the browser, `GET /api/me/account-keys` having arrived to hand it an envelope.
-  **Do not delete these modules because nothing calls them, and do not relax
-  anything here to make a later screen easier to write.** The format is a contract with every
-  client that will ever seal an envelope; it is being agreed while agreement is still cheap.
+  and `openNarrativeField` have no caller but their spec. **The wrapped-key side is the
+  counter-example rather than a companion, and citing the two together is the mistake to avoid**:
+  `unwrapAccountKeys` is called on every passkey sign-in, because what it needed was a route to hand
+  it an envelope and a class to hold what came out, and it has both. The narrative pair waits on
+  something else entirely — a ciphertext existing anywhere in the product.
+  **Do not delete these two because nothing calls them, and do not relax anything here to make a
+  later screen easier to write.** The format is a contract with every client that will ever seal an
+  envelope; it is being agreed while agreement is still cheap.
 - **An empty plaintext is legal and seals to exactly 29 bytes.** A reader tempted to treat
   "too short" as "empty is not allowed" would refuse a value the format produces. The spec
   seals an empty string and opens it back, which is the half that stops the misreading.

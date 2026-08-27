@@ -129,10 +129,17 @@ backups for up to seven days.
 It also lists **every way of signing in** — each entry its type in words and the day behind
 it, and nothing more. A recovery-code set is one of those entries, because redeeming a code
 opens a full session the way the other kinds do. Registering and revoking are present and
-**disabled**, and **not for the same reason**, which is why the section carries two sentences
-rather than one: registering a passkey would give a new factor its own wrapped copy of the
-account's keys, and no route hands those keys back to unwrap; revoking waits on this screen
-asking for an assertion, exactly as erasure does. Each sentence sits
+**disabled**, and the section carries two sentences rather than one. Registering a passkey would
+give a new factor its own wrapped copy of the account's keys, and wrapping takes those keys as
+bytes; revoking waits on this screen asking for an assertion, exactly as erasure does. **Both
+sentences now end at the same clause and the split survives on a different distinction.**
+`GET /api/me/account-keys` hands the envelopes back and the browser opens them on every passkey
+sign-in, so the registration sentence no longer claims Budgetoid cannot unlock them — it says that
+making the new copy takes a passkey this screen does not ask for. The opened keys are held as
+non-extractable key objects behind no accessor, so reaching bytes means unwrapping again under a
+factor presented here. What keeps the two sentences apart is what the passkey is for: authorizing
+an act that cannot be undone, against opening the keys a new factor must be given a copy of — the
+fact that explains why an account whose only passkey is gone cannot add another. Each sentence sits
 above the list rather than beside each row, so a screen reader hears it once
 instead of once per entry. An entry nothing can ever revoke carries no button at all, not even
 a disabled one.
@@ -140,9 +147,10 @@ a disabled one.
 Between that list and Export sits **Recovery codes**, which says how many are left and
 nothing more — no code, no part of one, no identifier, no date. It reads and never writes:
 its Generate control is present and **disabled** on the account-keys argument word for word,
-a set being ten factors that each wrap those keys — so generating
-a set **from here** and redeeming one are unbuilt, as are key rotation, the email-change action
-and the erasure confirmation dialog. Showing a set once is built and lives elsewhere — the last
+a set being ten factors that each wrap those keys — and it carries that argument's sentence with
+it, so the two sites are always rewritten together. Generating a set **from here** and redeeming
+one are unbuilt, as are key rotation, the email-change action and the erasure confirmation
+dialog. Showing a set once is built and lives elsewhere — the last
 step of registration, where the account's first set is issued. The section sits there and
 nowhere else because Export and Erase are a pair and nothing goes between them. The bullets
 above stay as written because they are the target, not a description of what shipped.

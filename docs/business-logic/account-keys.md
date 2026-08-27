@@ -27,22 +27,29 @@ index keys produce two blind index values for one name, the uniqueness constrain
 and a person signing in from a second device silently accumulates duplicate payees while the
 constraint appears to work.
 
-**What is built today is the cryptography, the three write paths that store its output, and the one
-route that reads it back.** The client can generate the keys, derive a key-encryption key from
-either kind of factor, wrap both keys under it and unwrap them again; the server refuses to register
-a passkey, issue a set of recovery codes, **or create an account** unless the request carries a
-factor identifier and both wrapped keys for every factor it brings into existence, and files them in
-the same save as the credential. `GET /api/me/account-keys` hands a signed-in browser back the
-envelopes belonging to the credential that opened its session — see
+**What is built today is the cryptography, the three write paths that store its output, the one
+route that reads it back, and the browser that holds what comes out of it.** The client can generate
+the keys, derive a key-encryption key from either kind of factor, wrap both keys under it and unwrap
+them again; the server refuses to register a passkey, issue a set of recovery codes, **or create an
+account** unless the request carries a factor identifier and both wrapped keys for every factor it
+brings into existence, and files them in the same save as the credential.
+`GET /api/me/account-keys` hands a signed-in browser back the envelopes belonging to the credential
+that opened its session — see
 [The one route that hands them back](#the-one-route-that-hands-them-back).
 
-**The two halves are joined on one path.** `register.service.ts` obtains a PRF output from a real
-authenticator, draws the account's keys, mints the set, derives eleven key-encryption keys and posts
-eleven pairs of envelopes, so an account created there really does own a content key and an index
-key that no server has seen. The other two write paths are still reached only by the integration
-suite. Unwrapping outside a spec, the locked state, the blind index and the encryption of any
-narrative field are all later work — no screen decrypts anything, because nothing is encrypted yet
-and no client code calls the route that would hand it an envelope to open.
+**The circle is closed on two paths, and each closes it differently.** `register.service.ts` obtains
+a PRF output from a real authenticator, draws the account's keys, mints the set, derives eleven
+key-encryption keys and posts eleven pairs of envelopes, so an account created there really does own
+a content key and an index key that no server has seen — and on the `201` it hands the pair it
+already holds straight to custody, with no round trip. `sign-in.service.ts` takes the other route:
+the assertion's PRF branch gives it a key-encryption key, it hands that to custody, and custody
+reads the envelopes back and opens them. The other two write paths are still reached only by the
+integration suite.
+
+**What is *not* built is anything that uses the keys.** Nothing in this product is encrypted, so no
+screen decrypts, no blind index is computed and no field is sealed. What exists is the **custody** —
+[The one class that holds them](#the-one-class-that-holds-them) — and the operations that will
+delegate to it arrive with the epic that needs them.
 
 **The PRF output never leaves the ceremony module.** `createPasskey` and `assertPasskey` each derive
 through `keyEncryptionKeyFromPasskey` themselves and hand back a **non-extractable `CryptoKey`**,
@@ -62,7 +69,7 @@ would put the value that unwraps the account's whole keyspace into a variable an
   never readable back out of the browser's key store. The **bytes it was imported from** are a
   different thing and they do exist —
   two buffers per derivation, both zero-filled where the import consumes them. See
-  [The one import](#the-one-import-and-the-five-decisions-it-holds) and
+  [The two doors](#the-two-doors-and-the-five-decisions-each-holds) and
   [What becomes of the bytes](#what-becomes-of-the-bytes).
 - **Wrapped key** — the versioned envelope below over a 32-byte key. Exactly 61 bytes. The only one
   of the four that ever reaches the server.
@@ -75,6 +82,16 @@ would put the value that unwraps the account's whole keyspace into a variable an
   as one credential. A passkey is one factor and one credential. A set of recovery codes is one
   credential and **ten** factors, because each code is a secret of its own. That distinction is what
   the primary key records: `credential_id` is an ordinary column and repeats ten times for a set.
+- **Locked account** — not a stored thing at all: an account whose **browser** does not hold the
+  content key. Every tab starts in it, because nothing about the keys survives a page load, and
+  presenting a factor is what leaves it. **It is not a locked session**, which is a different word
+  for a different thing: a locked session is one a federated credential opened, a fact about a row in
+  `sessions` and about what the *server* will answer — see [sessions.md](sessions.md). A person on a
+  full session whose tab was reloaded is signed in and their account is locked, which is the ordinary
+  case and would read as a contradiction under one word. The other direction cannot arise: a
+  federated credential derives no key-encryption key, so nothing that opens a locked session could
+  ever unlock an account. Blurring the two costs a reader the whole distinction, and the two chapters
+  sit on either side of it.
 
 Deliberately **absent** from anything this module produces: any representation of an unwrapped key
 on the wire, any key-encryption key outside the browser, any PRF output, and any recovery code.
@@ -206,6 +223,23 @@ erDiagram
     claim that the value never exists as bytes: it does, twice per derivation, inside the module.
     That those bytes do not outlive the call is a separate and weaker kind of rule — a wipe somebody
     wrote rather than an absence nothing can undo.
+
+- **An opened account key MUST NOT be persisted, and MUST NOT be shared with another tab.** Custody
+  is per document and dies with it.
+  - **Why**: a non-extractable `CryptoKey` is **structured-cloneable**, so both are reachable with
+    no byte ever exposed and a reader who learns that will read their absence as an oversight rather
+    than as a decision. IndexedDB is the expensive one: it makes the account's decryption capability
+    outlive the browser closing, so whoever has the device and a live cookie reads the narrative
+    with **no factor presented at all** — the requirement that a locked account stays locked failing
+    while every check in the product still passes, because nothing about a stored key looks wrong.
+    A `BroadcastChannel` hand-off is weaker and still wrong for the same reason one step down: it
+    unlocks a tab in which nobody presented anything. What is left is the property the design rests
+    on — **a page reload locks the account, and getting back in costs a ceremony.**
+  - **Enforced in**: the absence, and the absence is all there is. Nothing in the client writes a
+    key anywhere, and no test can prove a `BroadcastChannel` will not be added tomorrow. What
+    narrows it is that `AccountKeyCustodyService` holds both keys on ECMAScript `#` fields with no
+    accessor, so there is no supported way to *read* one back out in order to send it — a caller
+    would have to add the member first, which is the change this constraint is addressed to.
 
 - **The PRF eval input, the two `info` strings and the associated-data prefix MUST NOT be edited.**
   - **Why**: each carries a `/v1` suffix, and a change to any of them changes every value derived
@@ -352,36 +386,69 @@ holding both vectors is the only way to see that.
 | associated data | `budgetoid/key-envelope/spec/v1` |
 | envelope (61 bytes) | `01a0a1a2a3a4a5a6a7a8a9aaab6699feaec14e8438eaec0d588bf74e51e03dcb830622d4fb0497bc1de336eb9e21d4cc389d668944133ecec0a071274d` |
 
-### The one import, and the five decisions it holds
+### The two doors, and the five decisions each holds
 
-`importAesGcmKey`, in `+core/security/account-keys.ts`, is **the one place in this client where
-bytes become an AES-GCM key, whichever key they are.** Both key-encryption-key derivations go
-through it, and so does anything that has to turn one of the account's own keys — which
-`generateAccountKeys` and `unwrapAccountKeys` hand back as `Uint8Array`, never as a key object —
-into something a cipher will take. It is exported for that reason. The alternative is not a weaker
-version of it; it is a second `crypto.subtle.importKey` written by hand beside it, holding **none**
-of the five decisions below — of which only non-extractability would be noticed downstream. Such an
-import would take AES-128, carry `wrapKey` in its usages and leave the caller's bytes on the heap,
-and it would work perfectly, forever.
+**A door is where bytes become a key an account uses**, and `+core/security/account-keys.ts` has
+two of them: `importAesGcmKey` and `importHmacSha256Key`. They are two because the account's two
+keys are two different kinds of key. The content key encrypts, so it goes through the AES-GCM door,
+and so does every key-encryption key. The index key is what a blind index is computed under, which
+is HMAC-SHA-256 and not a cipher at all, so it goes through the HMAC door. The platform agrees:
+measured on this runner, `sign` under a key imported as AES-GCM and `encrypt` under a key imported
+as HMAC are both refused with `InvalidAccessError`. So the shorter route — sending the index key
+through `importAesGcmKey` because that line is already written — hands back an object that cannot
+compute a single index and cannot be corrected afterwards, since by then it is non-extractable and
+the bytes are zeroes.
 
-- **The width.** Material that is not exactly `ACCOUNT_KEY_BYTES` is refused, and the check is
-  written against that constant rather than a literal `32`, or it would go on enforcing a number
-  the module had stopped believing in. Measured on Node's implementation, `importKey` accepts 16
-  and 24 bytes as AES-128 and AES-192 and refuses every other non-32 width with `DataError` — so
-  the two widths nothing else objects to are exactly the two that silently downgrade an account for
-  the rest of its life, sealing and opening without complaint the whole time.
-- **The usage list.** `encrypt` and `decrypt`, and nothing else. A list also carrying
-  `wrapKey`/`unwrapKey` opens a second path out for key objects, unrelated to the bytes this import
-  is refusing to give up.
-- **Non-extractability.** `extractable: false`, which is why the derivations return a `CryptoKey`
-  at all, and the one of the five anything downstream would notice being dropped — because
-  `sealNarrativeField` refuses an extractable key.
+**The number of doors is not the claim, and a reader who reads it as one will draw the wrong
+conclusion from a third.** What matters is that the count is not **zero**: the alternative to a
+door is not a weaker door, it is a `crypto.subtle.importKey` written out by hand beside the caller
+that needed it, holding **none** of the five decisions below. That is four lines, it compiles, and
+it returns a perfectly good `CryptoKey`. Of the five, only a wrong *algorithm* is ever mentioned by
+anything — and it is mentioned at the first call rather than at the import, by which time the
+material has been wiped or not according to nobody's rule. A width silently downgraded, a usage
+list widened to `wrapKey`, an extractable key and a copy of the bytes left on the heap all work,
+forever, and are wrong for the life of the account. Two doors keep the claim; a third written by
+hand destroys it.
+
+- **The width.** Material that is not exactly `ACCOUNT_KEY_BYTES` is refused, by
+  `requireAccountKeyWidth`, which both doors call and neither restates — one decision, one
+  enforcement of it, however many doors are added later. The check is written against that constant
+  rather than a literal `32`, or it would go on enforcing a number the module had stopped believing
+  in. **How much work that check is doing differs enormously between the two doors**, and the
+  difference is the next rule down.
+- **The usage list.** `encrypt` and `decrypt` on the AES door; **`sign` and nothing else** on the
+  HMAC one. A cipher list also carrying `wrapKey`/`unwrapKey` opens a second path out for key
+  objects, unrelated to the bytes the import is refusing to give up. The HMAC omission is
+  `verify`, and it is the one a reader adds without stopping, because HMAC has two halves and a key
+  that does one looks unfinished: a blind index is computed here and *compared* on the server, so
+  there is no verification for a browser to perform, and what `verify` would add is an oracle
+  answering a boolean about a tag somebody else supplied, under the key that keys the account's
+  entire search space.
+- **Non-extractability.** `extractable: false` on both, which is why the derivations return a
+  `CryptoKey` at all, and the one of the five anything downstream would notice being dropped —
+  because `sealNarrativeField` refuses an extractable key.
 - **The defensive copy.** The material is copied onto a buffer whose type WebCrypto's
   `BufferSource` accepts, for the reason `key-envelope.ts` states at length: narrowing by copying
   asserts nothing about the caller's buffer, where a cast would.
-- **The death of the bytes.** Both copies — the one made here and the caller's `material` — are
-  zero-filled in a `finally`, on the **refusal** path as well as the success one, because the
-  width check sits inside the `try`.
+- **The death of the bytes.** Both copies — the one the door makes and the caller's `material` —
+  are zero-filled in a `finally`, on the **refusal** path as well as the success one, because
+  `requireAccountKeyWidth` is called from **inside** each door's `try`. Lifting that call above the
+  `try` is the tidier-looking arrangement, reddens nothing, and leaves rejected key material on the
+  heap.
+
+**On the HMAC door the width check is not one guard among several. It is the only one.** The AES
+door has the platform underneath it — measured, `importKey` accepts 16 and 24 bytes as AES-128 and
+AES-192 and refuses every other non-32 width with `DataError`, so the module's own check there is
+closing a gap two widths wide. HMAC has no such rule and wants none, which is correct of HMAC and
+fatal here: **measured, `importKey` accepts 1, 15, 16, 24, 31, 32, 33 and 64 bytes as an
+HMAC-SHA-256 key and signs a full 32-byte tag under every one of them, and refuses exactly one
+width — zero — with `DataError`.** So truncated material imports, signs, and yields a blind index
+that is stable, collision-free and keyed under a secret that is not the account's index key. Every
+row the account ever writes is indexed under it; nothing anywhere names the moment it started; and
+there is no way back once the rows exist, because a blind index cannot be recomputed without the
+plaintext it was taken over. The platform *records* the width, on `key.algorithm.length`, and
+nothing in this client reads it — which is the shape of the whole hazard: the mistake is visible
+and unwatched.
 
 **One rule here is held by nothing but itself.** That `finally` runs after an `await` on
 `importKey`, not after a bare `return` of its promise: WebCrypto reads the buffer asynchronously,
@@ -391,6 +458,18 @@ would be imported from zeros. **Measured: dropping the `await` leaves every case
 buffer synchronously. So say it plainly — this rule is held **by construction**, by the shape of
 the code and the comment sitting on it, and **not by observation**. A reader who "tidies" the
 `await` away will find the whole suite agreeing with them.
+
+**Where the doors are written is pinned, and where they are *not* written is what the pin is for.**
+`key-import-single-source.spec.ts` reads the source tree and requires `crypto.subtle.importKey` to
+appear in exactly two non-spec files, each carrying its reason: `account-keys.ts`, holding the two
+doors, and `hkdf.ts`, which is **not** a door — it imports input keying material for a derivation
+and hands back a key whose only usage is `deriveBits`, so nothing can seal, sign or export under it.
+Two files, three call sites. Three limits are stated there rather than papered over: it catches a
+member access and not a call assembled at runtime; it is a rule *between* files, so a third door
+written **inside** `account-keys.ts` passes it and is caught only by that module's export census,
+and only if the door is exported; and it says nothing about what an owner's imports do. Specs are
+exempt, and that exemption is not a convenience — a non-extractable key has no witness but a spy at
+the platform boundary, so every spec that pins a door has to name the function.
 
 ### What becomes of the bytes
 
@@ -407,12 +486,14 @@ Three buffers hold a secret long enough to matter, and each is cleared where it 
   left to a caller: the two keys are *copies* of regions of that draw precisely so that a caller
   wiping one does not wipe the other, and it is that copying which puts the originals somewhere no
   caller can name.
-- **The copy `importAesGcmKey` makes for WebCrypto, and the material it was handed.** That
-  material is a key in the clear — the key-encryption key itself on both derivation branches — on a
-  buffer nothing outside the call names once `importKey` has been given it. Both derivations share
-  this one import, so a registration runs eleven derivations through it, and the wipe covers the
-  refusal as well as the success. See
-  [The one import](#the-one-import-and-the-five-decisions-it-holds).
+- **The copy a door makes for WebCrypto, and the material it was handed.** That material is a key
+  in the clear — the key-encryption key itself on both derivation branches, and one of the account's
+  own two keys wherever a door is called on the pair — on a buffer nothing outside the call names
+  once `importKey` has been given it. Both derivations share the AES door, so a registration runs
+  eleven derivations through it, and the wipe covers the refusal as well as the success. **Both
+  doors wipe, identically**, which is what makes it safe for a caller to hand the pair straight into
+  the two of them in one statement and keep no name for the bytes: registration and custody each do
+  exactly that. See [The two doors](#the-two-doors-and-the-five-decisions-each-holds).
 - **The plaintext copy `sealEnvelope` hands the cipher**, cleared once the cipher resolves and never
   before: WebCrypto reads the buffer asynchronously, so a wipe placed ahead of the `await` seals
   zeros. One registration wraps two account keys under eleven factors, so twenty-two of these pass
@@ -441,18 +522,27 @@ made.
 
 ### The one client that produces them
 
-There is exactly one place in this product where an account's keys exist in the clear, and it is the
-registration flow. Four rules govern what it does with them, and each is invisible when broken.
+There is exactly one place in this product where an account's keys exist **as bytes**, and it is the
+registration flow. Five rules govern what it does with them, and each is invisible when broken.
 
-**The account keys are drawn once for the whole set, and wiped as soon as the eleven wraps are
-done.** One `generateAccountKeys()` call sits outside every loop; the two buffers are zero-filled in
-a `finally`, so a wrap that rejects halfway does not leave them alive — and the draw those two
-buffers were split out of is wiped by `generateAccountKeys` itself, because this flow cannot name
-it. Drawing a pair **per factor** is the mistake worth naming: it satisfies every type, count, round
-trip and constraint the database holds, and it gives the second factor a second, incompatible
-account. Keeping the keys "for the encryption epic" is the other temptation and has no upside at
-all: nothing on this client encrypts anything yet, every path that retries re-draws them, and the
-epic that needs them will unwrap them from an envelope as every later session must.
+**The account keys are drawn once for the whole set, and stop being bytes as soon as the eleven
+wraps are done.** One `generateAccountKeys()` call sits outside every loop; the two buffers are
+zero-filled in a `finally`, so a wrap that rejects halfway does not leave them alive — and the draw
+those two buffers were split out of is wiped by `generateAccountKeys` itself, because this flow
+cannot name it. Drawing a pair **per factor** is the mistake worth naming: it satisfies every type,
+count, round trip and constraint the database holds, and it gives the second factor a second,
+incompatible account.
+
+**What the flow keeps past the wraps is two `CryptoKey` objects and never the bytes**, and the
+distinction is the whole of why keeping anything is defensible. The pair goes through both doors —
+the content key through the AES one, the index key through the HMAC one — in one statement that
+names no local for the material, and both doors zero-fill what they were handed on the rejecting
+path as thoroughly as on the succeeding one. So what survives that statement is two objects no API
+in the platform reads back out, held on an ECMAScript `#` field: unreachable by
+`(service as never)['accountKeys']`, unwalked by `JSON.stringify`, invisible to a devtools panel.
+They are cleared by `restart()` and by every failure of the POST, beside the assembled body, and
+**not** cleared on the `201` — by then custody is holding the same two objects and the screen is
+being navigated away from.
 
 **The eleven key-encryption keys are locals and never touch the service instance.** Each is an
 expression handed straight to the wrap, so none outlives the method whatever a later reader adds to
@@ -552,6 +642,101 @@ repository loads entities that rules are applied to, and on this table loading o
 `AccountKeysEndpointTests` drives the whole of it over real HTTP, because half of what is measured
 is *which session the request arrives as*.
 
+**The browser reads it in one place**, `MeApiService.getAccountKeys`, whose only caller is
+`AccountKeyCustodyService`. Two refusals guard the body rather than one, and both matter here more
+than on the neighbouring reads: a body that is not a list is a route or a proxy answering something
+else entirely, while an **entry** missing its identifier or one of its two envelopes is a version
+skew on the right route. The per-entry check is what stops the second from being read as the first
+kind of failure — an absent member reaches `decodeBase64Url` as `undefined` and throws *inside the
+trial loop*, where a throw already means "this factor is not the one, try the next", so a malformed
+body would be answered with "present another factor" and an account would be declared unopenable by
+its own key custody with nothing naming the cause. It is deliberately **not** a check of the
+envelopes' shape: width, version byte and alphabet belong to the decoder and the envelope, and a
+second, weaker copy of them at the boundary would be a second definition of what an envelope is.
+The read carries **no** `EXPECTS_UNAUTHENTICATED`: this request is made by a browser that believes
+it holds a session, so a `401` is that session having ended, which is the one fact
+`sessionExpiryInterceptor` owns.
+
+### The one class that holds them
+
+`AccountKeyCustodyService` in `+core/security/` is where the account's two keys live once a factor
+has opened them, and the one place in this client that holds them past the ceremony that produced
+them. It reports two things and returns nothing else: a three-word `status` — `locked`, `unlocking`,
+`unlocked` — and, when an attempt ended without custody, an `unlockFailure`. Six decisions are worth
+the words, and every one of them is silent when reversed.
+
+**It is root-provided, and that breaks the habit of the two services beside it deliberately.**
+`RegisterService` and `SignInService` are provided on their screens, and that is right for them: an
+attempt somebody abandoned should die with the screen that abandoned it rather than being readable
+from an injector an hour later. These keys are not an attempt. They are state of the **session**,
+which outlives every screen in the product — the whole point is that a person unlocks once and stays
+unlocked while they move around the app.
+
+**Route-providing on `app` is the near miss, and it is worse than it looks.** It reads as the tidier
+answer: the keys would belong to the part of the route table that renders budget content and would
+be dropped on the way out of it. What it actually does is hand their lifetime to the router.
+`guestGuard` bounces an authenticated visitor off `/welcome`, and that bounce destroys and recreates
+the `app` injector — so a back button, a bookmark or a stray redirect discards both keys and locks
+the account with **no ceremony on screen to unlock it again**. Nothing goes red. The only visible
+symptom is an account that was readable a moment ago and is not now. The cost of root-providing is
+that ending custody has to be a method rather than a lifetime, because an injector nobody destroys
+cannot forget anything on its own.
+
+**Ending custody has one owner, and it is `SessionService.ended()`.** Two paths end a session today
+— `sessionExpiryInterceptor` on a `401`, and the Settings screen's sign-out — and a third will be
+added by somebody thinking about sign-out rather than about key material. Placed in that one method,
+the third path clears the keys for free; placed in the two callers, it does not, and the symptom is
+an ended session whose content key is still readable from the root injector for the life of the tab,
+with nothing red either way. **Not an `effect()` over the session status**, which is the tidier shape
+and is wrong twice: it fires on construction, so whether it wipes a set already adopted is decided
+by injection order, and the only honest predicate it could carry is "lock on `anonymous`" — locking
+on `unreachable` destroys both keys over one blinked request and demands a full WebAuthn ceremony to
+get them back. `established()` deliberately clears nothing: a session beginning says nothing about
+which factor opened it, and the two paths that know hand the keys over themselves.
+
+**A key that will not open is not an authentication failure, and custody never calls anything on
+`SessionService`.** The dependency runs one way — the session class reaches for custody, custody
+reaches for nothing on it — which is also what keeps the two modules out of an import cycle.
+Publishing `anonymous` from a failed unlock would sign somebody out of an account they are
+demonstrably inside: the server answered, the session is live, and what failed is the factor they
+presented. The two failure words are **never collapsed** for the same reason `SignInService` keeps
+`refused` apart from `unknown` and `SessionService` keeps `anonymous` apart from `unreachable` — the
+same rule three times, because the mistake is available at all three:
+
+- `unopened` — the envelopes were read and none opened under the factor presented, including the
+  case where the list came back empty. The way forward is another factor.
+- `unreachable` — no usable answer came back at all: a network that reached no server, a `5xx`, a
+  timeout, a body this client refused. The way forward is the same factor again in a minute.
+
+**`unlock` returns `void`, and that is enforcement rather than a signature that happens to be
+convenient.** A `Promise<void>` is awaitable, and its caller is a sign-in: somebody would await it,
+a round trip would land on the path between a verified assertion and the app, and one refactor later
+that `await` grows a `catch` — at which point a key that did not open has become an authentication
+that failed. Unreturned, the attempt is observable only through `status` and `unlockFailure`, which
+are exactly the two facts a caller is entitled to. The key-encryption key is a **parameter and never
+a field** for the neighbouring reason: retained, this class could re-unlock with no factor presented
+at all, which destroys the property the whole design rests on.
+
+**Every entry is tried in turn, each under its own `factorId`.** A passkey session is answered with
+one entry and a recovery-codes session with ten, so the list of one is what a reader optimises into
+`entries[0]` — and it works, forever, on every passkey account in the product. What it does to the
+other kind is read code #1's envelopes under code #7's key-encryption key: the open fails to
+authenticate, the loop that would have found the right pair is not there, and somebody who redeemed
+a valid code is told their account cannot be opened. Twenty AEAD attempts is a cost nobody can
+measure. The associated data is rebuilt from `entry.factorId` and never from anything this client
+remembers, because that identifier **is** what the envelopes were sealed against.
+
+**Registration transfers the keys as objects, and does not re-read them through the route.** On the
+`201` it calls `adopt`, handing over the two `CryptoKey`s it is already holding. The rejected
+alternative is the interesting half, because it looks like the more principled one — drop them, let
+custody read `wrapped_account_keys` back and open them under a key-encryption key derived from the
+passkey just registered. Three things are wrong with it. It needs the passkey's key-encryption key
+to survive the codes step on some instance, which is **the same power one step removed**. It puts a
+round trip and a new failure mode on the happiest path in the product, whose entire purpose is to
+arrive back where it started. And the verification it appears to buy is illusory: a passkey
+session's read hands back the **passkey factor's pair alone** and never exercises the ten code
+pairs, which is precisely where the mispairing hazard the registration loop is built around lives.
+
 ### What the database can and cannot hold to account
 
 `wrapped_account_keys` refuses an envelope that is not 61 bytes and one whose leading byte is not
@@ -562,9 +747,10 @@ lives in the associated data.
 
 ## Workflows & State Transitions
 
-Steps 1–4 are the client module. The registration flow reaches all four; nothing else in the browser
-reaches any of them. Steps 5 and 6 are the server: the three write routes refuse a request without
-step 5, and step 6 is the only way anything gets back out.
+Steps 1–4 are the client module and step 7 is the browser holding what came out of it. The
+registration flow reaches 1, 2, 3 and 7; a passkey sign-in reaches 2, 4 and 7. Steps 5 and 6 are the
+server: the three write routes refuse a request without step 5, and step 6 is the only way anything
+gets back out.
 
 1. **Minting an account's keys.** 64 bytes are drawn in one call and split into two independent
    copies. No further state exists — the keys live only in memory.
@@ -596,8 +782,14 @@ step 5, and step 6 is the only way anything gets back out.
 6. **Handing them back.** `GET /api/me/account-keys` returns the envelopes filed under the
    credential that opened the calling session — one entry for a passkey, ten for a set of recovery
    codes — and an empty array for anything it cannot see. It is the only read of
-   `wrapped_account_keys` the application makes, and no client code calls it yet. See
+   `wrapped_account_keys` the application makes, and the browser's one caller is custody. See
    [The one route that hands them back](#the-one-route-that-hands-them-back).
+
+7. **Holding them.** Both keys are imported through their own door and kept as `CryptoKey` objects
+   for the life of the document, on `AccountKeyCustodyService`. A sign-in reaches this through step
+   4; registration reaches it directly, by handing over the pair it drew. It ends at a sign-out, at
+   a `401`, and at a page load — **nothing about it is written anywhere a reload survives**. See
+   [The one class that holds them](#the-one-class-that-holds-them).
 
 **Both registering paths validate the wrapped keys after the `prf` gate, and the ordering is a
 rule.** A client that cannot do PRF cannot have produced a wrapped key either, so those members are
@@ -641,6 +833,17 @@ database could have decrypted with it before redeeming too.
 All three are one symptom by design: the client learns the value is not usable and learns nothing
 about why.
 
+**An unlock did not end in custody. What does the browser say?**
+
+- some entry opened → `unlocked`, and nothing is said at all
+- the read came back and no entry opened, **including an empty list** → `unopened`. The next step is
+  another factor. An empty list is not a third word: the route answers `[]` both for a session it
+  cannot see and for a credential carrying no factors, indistinguishably and on purpose, so there is
+  nothing to tell apart and a third word would claim a difference this client was never told
+- the read never produced a usable answer — no server, a `5xx`, a timeout, a body this client
+  refused → `unreachable`. The next step is the same factor again in a minute
+- **never**: sign the person out. Neither word is a statement about the session
+
 ## Integration Points
 
 - **[ciphertext-envelope.md](ciphertext-envelope.md)** — the shared framing, the wire form, and
@@ -667,18 +870,39 @@ about why.
   `user_isolation`. Its `SELECT` grant now has two kinds of reader: the route above, and the two
   isolation tests, which do not become redundant beside it — an endpoint answering correctly says
   nothing about what the policy refused.
+- **[sessions.md](sessions.md)** — where custody begins and ends. A session opening does **not**
+  unlock an account: the two paths that know which factor was presented hand the keys over
+  themselves, and `SessionService.established()` clears nothing. A session *ending* does lock one,
+  from `ended()` and from nowhere else. That file also owns the word **locked session**, which is a
+  different thing from the locked account defined under [Key Entities](#key-entities).
 
 ## Edge Cases & Known Gotchas
 
-- **The chain reaches a person on one path and stops short on the other two.** `/register` runs the
-  whole of it, so `generateAccountKeys`, `wrapAccountKeys`, `keyEncryptionKeyFromPasskey` and
-  `keyEncryptionKeyFromRecoveryCode` all have live callers. `unwrapAccountKeys` does **not**:
-  nothing in this product opens an envelope outside a spec, because nothing is encrypted yet, and
-  the day that changes is the day the locked state and the blind index arrive with it. **What it is
-  waiting on is now the browser rather than the server** — the route that hands an envelope back
-  exists and no client code calls it — so do not read the module as dead code and delete it, and do
-  not relax the server's demand for the envelopes to make one of those screens easier to write
-  later.
+- **Every function in the module has a live caller, so "keep it, something is waiting" is not the
+  reason to keep any of it.** `/register` reaches `generateAccountKeys`, `wrapAccountKeys`,
+  `keyEncryptionKeyFromRecoveryCode` and both doors; the ceremony reaches
+  `keyEncryptionKeyFromPasskey` on both of its legs; and `unwrapAccountKeys` is called by
+  `AccountKeyCustodyService` on every passkey sign-in. What is still uncalled is anything that
+  **uses** an opened key — nothing seals a field and nothing computes an index, because nothing in
+  this product is encrypted — which is why the two keys sit on `#` fields that no member of this
+  client reads. Do not answer that by adding an accessor, and do not relax the server's demand for
+  the envelopes to make a later screen easier to write.
+- **Two clearing lines in the registration flow cannot be shown to fail, and they stay.** `restart()`
+  and the failed-POST branch each drop the account keys beside the assembled body. Neither can be
+  driven into producing a stale pair, because the minting writes the keys **before** the payload
+  `create()` requires: there is no ordering in which a second attempt could read the first attempt's
+  keys, so no test can distinguish the lines being there from the lines being gone. They are depth
+  over a hazard the ordering already closes — written down here so the next reader deletes them as a
+  decision rather than as dead weight, and so that whoever reorders the minting knows what those two
+  lines start protecting.
+- **Nothing outside custody can see which door either key came through.** No public member returns a
+  key, so a spec can observe `status` and `unlockFailure` and nothing else — which means an
+  implementation that sent the index key through the AES door would report `unlocked` exactly as the
+  right one does, and go on doing so until something tried to compute an index. The registration
+  side is different only because `adopt` is a seam: a spec can stand in for custody and read the two
+  objects it is handed. That asymmetry is the cost of the rule under
+  [The one class that holds them](#the-one-class-that-holds-them) — an accessor would close it and
+  would hand any caller the key that decrypts the account.
 - **The PRF output is never sent, and one line is what stops it.** `getClientExtensionResults()`
   carries `prf.results.first`, which *is* the PRF output. `toRegistrationPayload` therefore
   **projects** — it builds a new `{ prf: { enabled } }` rather than passing the results object
@@ -688,12 +912,19 @@ about why.
   that would look ordinary in a log, a proxy and a review. The **value** of `enabled` is a separate
   question and the caller answers it — the ceremony reports what it established rather than what
   `create()` returned; see [passkeys.md](passkeys.md).
-- **Signing in derives a key-encryption key too, and that is a decision.** The cheaper reading — a
-  sign-in only has to prove who is asking, so ask for no PRF and derive nothing — is what a reader
-  will propose, and it is wrong for the day encryption lands: the wrapped account keys are opened
-  under exactly that value, so an assertion that derived nothing would authenticate the person and
-  leave every row on their account unreadable. Both ceremony legs ask for the input and both return
-  a key; a caller that only wants the assertion takes the payload and lets the key go.
+- **Signing in derives a key-encryption key too, and spends it rather than merely deriving it.**
+  The cheaper reading — a sign-in only has to prove who is asking, so ask for no PRF and derive
+  nothing — is what a reader will propose, and it is wrong: the wrapped account keys open under
+  exactly that value, so an assertion that derived nothing would authenticate the person and leave
+  every row on their account unreadable. `SignInService` takes the key and hands it straight on, in
+  **one statement**, to `AccountKeyCustodyService.unlock` — never assigning it to a field, a signal
+  or a local, so there is no name a later line could copy it from. That call is not awaited and is
+  wrapped in a `try` that swallows: `unlock` is documented not to throw and this does not take that
+  on trust, because an exception out of an RxJS `next` handler is not routed to the `error` callback
+  beside it, so a throwing custody would strand somebody holding a valid session cookie on
+  `/welcome` with the screen saying nothing. The failure is **not** published on the sign-in screen
+  either — that screen says one thing however a sign-in was refused, and a sentence that varied by
+  whether a key opened would rebuild the credential-enumeration oracle the server refuses to be.
 - **The base64url decoder is strict, and the client's is stricter than the server's, deliberately.**
   It refuses padding, the standard alphabet's `+` and `/`, any character outside the URL-safe set,
   an impossible length, and a non-canonical trailing group. `PasskeyEncoding.TryDecode` admits
