@@ -29,7 +29,7 @@
 // nothing else left to look at.
 //
 // Inside the file it is bytes twice per derivation — what `hkdfSha256` returns,
-// and the copy `importAesGcmKey` hands WebCrypto — and both are now
+// and the copy a door below hands WebCrypto — and both are now
 // zero-filled at the point they are consumed, in a `finally`, because the path
 // that skips a wipe is the path where something already went wrong. The material
 // is wiped where it is *used* rather than where it was made, so `hkdfSha256` stays
@@ -38,6 +38,40 @@
 // on purpose: a verifier is sent to the server, so wiping it locally buys nothing
 // the wire has not already given away. A key-encryption key goes nowhere, which is
 // the whole reason it is worth the `finally`.
+//
+// **There are two doors from bytes to a key, and the number that matters about
+// them is that it is not zero.** `importAesGcmKey` is one, `importHmacSha256Key`
+// is the other, and they are separate because the account's two keys are two
+// different kinds of key: the content key encrypts, and the index key is what a
+// blind index is computed under, which is HMAC-SHA-256 and not a cipher at all.
+// The platform agrees, and refuses to let either stand in for the other —
+// measured on this runner, `sign` under a key imported as AES-GCM and `encrypt`
+// under a key imported as HMAC are both refused with `InvalidAccessError`. The
+// earlier version of this file argued there was *one* place where bytes become a
+// key. That was never the claim worth making, because the count was never the
+// point: what a second door costs is nothing, and what a *zeroth* would cost is
+// everything the paragraph below lists. Two doors keep the claim. A third
+// written by hand beside the caller that needed it destroys it.
+//
+// Each door holds five decisions in one place — the algorithm, the width, the
+// usage list, the non-extractability, and the death of the raw bytes — and a
+// hand-written `crypto.subtle.importKey` beside a caller holds **none** of the
+// five. That is not a remark about carelessness. It is four lines, it compiles,
+// it returns a perfectly good `CryptoKey`, and of the five only a wrong
+// *algorithm* is ever mentioned by anything — and it is mentioned at the first
+// call, not at the import, by which time the material has been wiped or not
+// according to nobody's rule. A width silently downgraded, a usage list widened
+// to `wrapKey`, an extractable key and a copy of the bytes left on the heap all
+// work, forever, and are wrong for the life of the account.
+//
+// **`crypto.subtle.importKey` is written in two non-spec files today, this one
+// and `hkdf.ts`, and in three places across them.** Both of this file's are
+// doors. `hkdf.ts`'s is not: it imports input keying material for a derivation
+// and gets back an `HKDF` key whose only usage is `deriveBits`, so nothing can
+// seal, sign or export under it and nothing can mistake it for a key the account
+// uses. That distinction — a usable cipher or MAC key, versus material on its
+// way through a derivation — is what "door" means here, and it is the reason the
+// third call is not a counter-example to the two.
 //
 // The **unwrapping** here has a spec and no caller: no route hands
 // `wrapped_account_keys` back yet, so nothing redeems a factor. Everything else is
@@ -67,11 +101,18 @@ import { RECOVERY_CODE_BRANCH_INFO } from './recovery-codes';
  * AES-128 key.
  *
  * So this number is where the strength of every envelope the account ever writes
- * is decided, and {@link importAesGcmKey} is where that decision is *enforced* —
+ * is decided, and `requireAccountKeyWidth` is where that decision is *enforced* —
  * it refuses any material of another width, which is the only reason the sentence
- * above is a rule rather than a hope. The two move together: widen this and the
+ * above is a rule rather than a hope. Both doors call it and neither restates it,
+ * so the width of an account key has one decision and one enforcement of it
+ * however many doors are added later. The two move together: widen this and the
  * seam widens with it; enforce it somewhere else as well and there are two
  * answers to how strong an account's envelopes are.
+ *
+ * It bounds the index key too, which is not an envelope and has no strength this
+ * number obviously governs. That is deliberate: an account's two keys are drawn
+ * from one call of one width, and giving the index key a width of its own would
+ * mean two numbers to keep true of one draw.
  */
 export const ACCOUNT_KEY_BYTES = 32;
 
@@ -370,12 +411,13 @@ export async function unwrapAccountKeys(
  * does anything that has to turn one of the account's own keys — which
  * {@link generateAccountKeys} and {@link unwrapAccountKeys} hand back as
  * `Uint8Array`, never as a key object — into something a cipher will take. That
- * makes it the one place five decisions are taken together: the algorithm, the
- * width, the usage list, the non-extractability, and the death of the raw bytes.
+ * makes it, like {@link importHmacSha256Key} beside it, a place where five
+ * decisions are taken together: the algorithm, the width, the usage list, the
+ * non-extractability, and the death of the raw bytes.
  *
  * The concentration is the point. The alternative is not a weaker version of this
- * function, it is a second `crypto.subtle.importKey` written by hand beside it,
- * holding **none** of the five — and of the five, only the non-extractability
+ * function, it is another `crypto.subtle.importKey` written by hand beside a
+ * caller, holding **none** of the five — and of the five, only the non-extractability
  * would be noticed downstream, because `sealNarrativeField` refuses an
  * extractable key. A hand-written import that took AES-128, added `wrapKey` to
  * the usages and left the caller's bytes on the heap would work perfectly,
@@ -389,6 +431,11 @@ export async function unwrapAccountKeys(
  * widths nothing else objects to are exactly the two that silently downgrade an
  * account for the rest of its life, sealing and opening without complaint the
  * whole time.
+ *
+ * The check itself is `requireAccountKeyWidth`, shared with
+ * {@link importHmacSha256Key}. Here it closes a two-width gap the platform leaves
+ * open; there it is the *entire* guard, because HMAC accepts every width there
+ * is. One rule, two doors, and very different amounts of work.
  *
  * `extractable: false` is the reason the derivations return a `CryptoKey` at all.
  * `encrypt` and `decrypt` and nothing else: this key works through the envelope,
@@ -417,15 +464,9 @@ export async function importAesGcmKey(
 
   try {
     // Inside the `try`, so the refusal is wiped by the same `finally` the success
-    // is. Against `ACCOUNT_KEY_BYTES` and never against a literal: the constant is
-    // where the width is decided and this is the enforcement of that decision, so
-    // a check written as `!== 32` would go on enforcing a number the module had
-    // stopped believing in.
-    if (owned.length !== ACCOUNT_KEY_BYTES) {
-      throw new Error(
-        `A key can only be imported from exactly ${ACCOUNT_KEY_BYTES} bytes of material, not ${owned.length}.`,
-      );
-    }
+    // is — the position matters as much as the check, and the helper's own note
+    // says why.
+    requireAccountKeyWidth(owned);
 
     // `await` rather than returning the promise: the wipe has to happen after
     // WebCrypto has read the buffer, and a bare `return` would run the `finally`
@@ -434,6 +475,73 @@ export async function importAesGcmKey(
       'encrypt',
       'decrypt',
     ]);
+  } finally {
+    owned.fill(0);
+    material.fill(0);
+  }
+}
+
+/**
+ * Imports {@link ACCOUNT_KEY_BYTES} of raw material as a non-extractable
+ * HMAC-SHA-256 key, wipes the material, or rejects.
+ *
+ * **The one place in this client where bytes become an HMAC key**, and the door
+ * the account's index key goes through. A blind index is
+ * `HMAC-SHA-256(indexKey, …)` — the index key is not a cipher key, and the
+ * platform will not let it be used as one either way round: measured on this
+ * runner, `sign` under a key imported as AES-GCM and `encrypt` under a key
+ * imported as HMAC are both refused with `InvalidAccessError`. So the shorter
+ * route — sending the index key through {@link importAesGcmKey} because it is
+ * already written — hands back an object that cannot compute a single index and
+ * cannot be corrected afterwards, because by then it is non-extractable and the
+ * bytes are zeroes.
+ *
+ * **Here the width check is not one guard among several. It is the only one.**
+ * {@link importAesGcmKey} has the platform underneath it — AES accepts 16, 24 and
+ * 32 raw bytes and refuses every other width with `DataError` — so the module's
+ * own check there is closing a gap two widths wide. HMAC has no such rule and
+ * wants none, which is correct of HMAC and fatal here: measured, `importKey`
+ * accepts 1, 15, 16, 24, 31, 32, 33 and 64 bytes as an HMAC-SHA-256 key and signs
+ * a full 32-byte tag under every one of them, and refuses exactly one width —
+ * zero — with `DataError`. Truncated material therefore imports, signs, and
+ * yields a blind index that is stable, collision-free and keyed under a secret
+ * that is not the account's index key. Every row the account ever writes is
+ * indexed under it; nothing anywhere names the moment it started; and there is no
+ * way back once the rows exist, because a blind index cannot be recomputed
+ * without the plaintext it was taken over. The width is *recorded* by the
+ * platform, on `key.algorithm.length`, and read by nothing in this client — which
+ * is the shape of the whole hazard: the mistake is visible and unwatched.
+ *
+ * **`['sign']` and nothing else, and the omission is `verify`.** It is the usage
+ * a reader adds without stopping, because HMAC has two halves and a key that only
+ * does one looks unfinished. A blind index is computed and *compared* — this
+ * client derives the value, the server matches rows on it — so there is no
+ * verification for a browser to perform. What `verify` would add is a second path
+ * out of this key: one that answers a boolean about a tag somebody else supplied,
+ * under the key that keys the account's entire search space, and that answers it
+ * one call at a time to whoever is asking.
+ *
+ * Everything else is {@link importAesGcmKey}'s reasoning and is not restated
+ * here: the copy onto a buffer no caller names, `extractable: false`, the `await`
+ * that keeps the wipe behind WebCrypto's read of it, and the `finally` that ends
+ * both copies of the bytes on the refusing path exactly as thoroughly as on the
+ * succeeding one.
+ */
+export async function importHmacSha256Key(
+  material: Uint8Array,
+): Promise<CryptoKey> {
+  const owned = Uint8Array.from(material);
+
+  try {
+    requireAccountKeyWidth(owned);
+
+    return await crypto.subtle.importKey(
+      'raw',
+      owned,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
   } finally {
     owned.fill(0);
     material.fill(0);
@@ -498,4 +606,39 @@ function canonicalFactorId(factorId: string): string {
   }
 
   return groups.slice(1).join('-');
+}
+
+// Refuses material that is not exactly `ACCOUNT_KEY_BYTES` wide.
+//
+// One function rather than an `if` at the top of each door, because two doors
+// reading the same constant are two places for the enforcement to drift off the
+// decision, and the drift is available in both directions: a bound relaxed on one
+// door only, or — far likelier — a third door written later with no check at all,
+// because whoever writes it will be importing an algorithm that raised no
+// objection while they were testing it.
+//
+// **Called from inside each door's `try`, never above it.** That is what puts the
+// refusal under the same `finally` as the success, so material rejected for being
+// the wrong width dies exactly as thoroughly as material that became a key.
+// Lifting this call out of the `try` — the tidier-looking arrangement, validation
+// before work — is a one-line edit that reddens nothing and leaves the rejected
+// bytes on the heap for the collector to get to whenever it does.
+//
+// The bound is the constant and never the number it currently holds, and the
+// message interpolates it for the same reason: this is the enforcement of a
+// decision taken at `ACCOUNT_KEY_BYTES`, so a check or a sentence written as `32`
+// would go on enforcing, and explaining, a number the module had stopped
+// believing in.
+//
+// It takes the material rather than a length so that no caller can pass the
+// wrong one of two numbers in scope — `owned.length` and `material.length` are
+// equal at every call site today, and a helper taking a `number` would be one
+// copy-paste away from a door that checks the width of a buffer it is not
+// importing.
+function requireAccountKeyWidth(material: Uint8Array): void {
+  if (material.length !== ACCOUNT_KEY_BYTES) {
+    throw new Error(
+      `A key can only be imported from exactly ${ACCOUNT_KEY_BYTES} bytes of material, not ${material.length}.`,
+    );
+  }
 }

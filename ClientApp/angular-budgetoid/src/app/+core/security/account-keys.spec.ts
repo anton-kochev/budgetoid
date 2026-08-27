@@ -31,6 +31,7 @@ import {
   WRAPPED_KEY_AAD_PREFIX,
   generateAccountKeys,
   importAesGcmKey,
+  importHmacSha256Key,
   keyEncryptionKeyFromPasskey,
   keyEncryptionKeyFromRecoveryCode,
   unwrapAccountKeys,
@@ -636,21 +637,37 @@ describe('a key-encryption key', () => {
   });
 });
 
-// The one door from raw bytes to a key, and the seam the column encryption
-// crosses. `importAesGcmKey` is that door and it is the only one: outside specs
-// `crypto.subtle.importKey` appears exactly twice in the application, here and
-// in `hkdf.ts`, and the second imports HKDF input keying material rather than an
-// AES key. Both key-encryption-key derivations go through it, and so does
-// anything that has to turn one of the account's own keys — which
-// `generateAccountKeys` and `unwrapAccountKeys` hand back as `Uint8Array`, never
-// as a key object — into something a cipher will take.
+// The AES-GCM door from raw bytes to a key, and the seam the column encryption
+// crosses. **It is one of two.** `importHmacSha256Key` is the other, and the
+// account's index key goes through that one — so the sentence this comment used
+// to carry, that `importAesGcmKey` "is that door and it is the only one", is
+// false, and was false from the moment a blind index needed a key of its own.
 //
-// **That there is one door is the argument, and the argument outlives the change
-// that made it one.** A second `crypto.subtle.importKey` is four lines, anybody
-// can write it beside this one, and it would hold none of what this holds. That
-// is not a hypothesis about careless people: until this function was exported
-// there was no other way to turn an account key into a key object at all, so the
-// work that encrypts columns had exactly that four-line move in front of it.
+// The count that survives is a count of **files**, and it is the one worth
+// keeping: outside specs `crypto.subtle.importKey` is written in two non-spec
+// files, this module and `hkdf.ts`, in three call sites across them — two here,
+// one there. `hkdf.ts`'s is not a door. It imports input keying material for a
+// derivation and hands back a key whose only usage is `deriveBits`, so nothing
+// can seal, sign or export under it and nothing can mistake it for a key the
+// account uses. That distinction is what "door" means here, and it is why the
+// third call site is not a counter-example to the two files.
+// `key-import-single-source.spec.ts` is what holds the file count, over the
+// source text, because nothing that runs can observe where a call was written.
+//
+// Both key-encryption-key derivations go through this one, and so does anything
+// that has to turn the account's **content** key — which `generateAccountKeys`
+// and `unwrapAccountKeys` hand back as `Uint8Array`, never as a key object —
+// into something a cipher will take.
+//
+// **That the doors are counted at all is the argument, and it outlived the
+// change from one to two.** A third `crypto.subtle.importKey` is four lines,
+// anybody can write it beside these two, and it would hold none of what they
+// hold. That is not a hypothesis about careless people: until this function was
+// exported there was no other way to turn an account key into a key object at
+// all, so the work that encrypts columns had exactly that four-line move in
+// front of it — and the index key, when it arrived, was written as a second
+// *door* rather than as that move, which is the whole of the difference this
+// paragraph is about.
 //
 // Five properties, and the guard on the far side of the seam holds one.
 // Measured against `narrative-cipher.ts` as it stands: it refuses a key that is
@@ -997,6 +1014,344 @@ describe('importing raw bytes as a key', () => {
   });
 });
 
+// The other door, and the one the account's **index key** goes through. A blind
+// index is `HMAC-SHA-256(indexKey, …)`, so the index key is not a cipher key and
+// the platform will not let it stand in for one in either direction — measured
+// on this runner, `sign` under a key imported as AES-GCM is refused with
+// `InvalidAccessError` and `encrypt` under a key imported as HMAC is refused
+// with the same. The two doors are therefore not a duplication anybody can
+// collapse: sending the index key through `importAesGcmKey` because it is
+// already written hands back an object that cannot compute a single index, and
+// cannot be corrected afterwards, because by then the key is non-extractable and
+// the material is zeroes.
+//
+// **Here the width check is not one guard among several. It is the only one, and
+// the first case below is the most important assertion in this file.** The AES
+// door has the platform underneath it — 16, 24 and 32 raw bytes are accepted and
+// every other width is refused with `DataError` — so the module's own check
+// there closes a gap exactly two widths wide. HMAC has no such rule and wants
+// none, which is correct of HMAC and fatal here. Measured on this runner:
+// `importKey` accepts 1, 15, 16, 24, 31, 32, 33 and 64 bytes as an
+// HMAC-SHA-256 key, signs a full 32-byte tag under every one of them, and
+// refuses exactly one width — zero — with `DataError`. So a truncated index key
+// imports, signs, and yields a blind index that is stable, collision-free and
+// keyed under a secret that is not the account's index key. Every row the
+// account ever writes is indexed under it, nothing anywhere names the moment it
+// started, and there is no way back once the rows exist, because a blind index
+// cannot be recomputed without the plaintext it was taken over. The width is
+// *recorded* by the platform, on `key.algorithm.length`, and read by nothing in
+// this client — the mistake is visible and unwatched, which is the shape of the
+// whole hazard.
+//
+// That is why the first case measures the platform before it measures the
+// module. A list of widths this door refuses says nothing on its own: three
+// entries of the AES door's own list are refused by WebCrypto whatever that
+// module does, and the block above says so. Here **every** entry would be
+// accepted by WebCrypto, and each case proves it by importing the same width
+// through `crypto.subtle` and signing under it before asking this door the same
+// question.
+describe('importing raw bytes as an HMAC key', () => {
+  // The algorithm as WebCrypto takes it, written once here rather than at each
+  // call. It is a spec-local reference importer's argument and not a copy of the
+  // module's decision: what the module chose is read back off the returned key
+  // in the case below, which is the only reading that could disagree with it.
+  const HMAC_SHA_256: HmacImportParams = { name: 'HMAC', hash: 'SHA-256' };
+
+  // Something to sign, so a tag exists to compare. Not a merchant name and not
+  // anything shaped like one: nothing in this client computes a blind index yet,
+  // and a fixture that looked like the real input would read as a claim that it
+  // does.
+  const MESSAGE = utf8.encode('budgetoid/account-keys/spec/hmac-message');
+
+  it.each([
+    {
+      width: 1,
+      why: 'a single byte, which HMAC treats as a perfectly good key',
+    },
+    { width: 15, why: 'one short of AES-128, refused by nothing at all' },
+    {
+      width: 16,
+      why: 'AES-128, which the door beside this one also has to refuse',
+    },
+    {
+      width: 24,
+      why: 'AES-192, the other width the AES door has to refuse alone',
+    },
+    { width: ACCOUNT_KEY_BYTES - 1, why: 'one byte short of the account key' },
+    { width: ACCOUNT_KEY_BYTES + 1, why: 'one byte long' },
+    { width: 64, why: 'twice the width, which HMAC hashes down and accepts' },
+  ])(
+    'refuses material of $width bytes, which HMAC itself imports and signs under — $why',
+    async ({ width }) => {
+      // Arrange
+      // The guard the AES door's list carries, for the same reason: a constant
+      // that ever became one of these widths would leave the list pinning the
+      // *accepted* width as refused, and this reddens first.
+      expect(width).not.toBe(ACCOUNT_KEY_BYTES);
+
+      // Filled rather than left zero, so nothing here can be refused for being
+      // empty when it should have been refused for its width.
+      const material = new Uint8Array(width).fill(0xa5);
+
+      // The platform's answer first, and on a copy, because the door below wipes
+      // what it is handed. This is the half that makes the refusal below
+      // evidence about *this module*: WebCrypto imports this width without a
+      // word and signs a full-length tag under it, so nothing between here and a
+      // stored blind index would ever object. Delete the module's width check
+      // and the account is indexed under a truncated secret for the rest of its
+      // life, with every layer downstream reporting success.
+      const platformKey = await crypto.subtle.importKey(
+        'raw',
+        overOwnBuffer(material),
+        HMAC_SHA_256,
+        false,
+        ['sign'],
+      );
+      const tag = await crypto.subtle.sign('HMAC', platformKey, MESSAGE);
+
+      expect(tag.byteLength).toBe(32);
+
+      // Act
+      // Through a `then` for the reason the AES door's list gives: a width check
+      // is most naturally written as an `if` at the top of the function, and in
+      // a non-`async` function that `throw` lands synchronously. This shape
+      // reads it as a refusal instead of failing the test with the very
+      // exception it asked for.
+      const importing = Promise.resolve().then(() =>
+        importHmacSha256Key(material),
+      );
+
+      // Assert
+      await expect(importing).rejects.toThrow();
+
+      // And the refusal ends the caller's bytes as well, which is the reason the
+      // width check sits inside the module's `try` rather than above it. Lifting
+      // it out is a one-line edit that reddens nothing else in this file and
+      // leaves rejected key material on the heap — and material of the wrong
+      // width is still a secret: a sixteen-byte one is a working key somebody's
+      // index could already have been computed under.
+      expect(toHex(material)).toBe('00'.repeat(width));
+    },
+  );
+
+  it('refuses the one width HMAC itself refuses, and ends nothing it was not given', async () => {
+    // Arrange
+    // Zero is the single width the platform will not take — measured, it answers
+    // `DataError` — so this case says nothing about the module and stays anyway,
+    // for the reason the AES door keeps its own platform-refused entries: a
+    // member that also refuses what the platform refuses costs nothing and reads
+    // honestly. It must not be mistaken for evidence.
+    const material = new Uint8Array(0);
+
+    // Act
+    const importing = Promise.resolve().then(() =>
+      importHmacSha256Key(material),
+    );
+
+    // Assert
+    await expect(importing).rejects.toThrow();
+    expect(material).toHaveLength(0);
+  });
+
+  it('accepts exactly the account key width and hands back an HMAC-SHA-256 key', async () => {
+    // Arrange
+    const material = new Uint8Array(ACCOUNT_KEY_BYTES).fill(0xa5);
+
+    // Act
+    const key = await importHmacSha256Key(material);
+
+    // Assert
+    // The refusals above are only worth having if the accepted width is
+    // accepted. And the algorithm is read back off the key rather than assumed:
+    // it is the one place the module's two decisions — which primitive, and
+    // which hash under it — are observable at all, and a door that imported
+    // SHA-1 or SHA-512 under the same name would pass every other case here
+    // while computing an index nothing else in the system can reproduce.
+    expect(key).toBeInstanceOf(CryptoKey);
+    expect(key.type).toBe('secret');
+    expect(key.algorithm).toEqual({
+      name: 'HMAC',
+      hash: { name: 'SHA-256' },
+      // In bits, and it is the platform's own record of the width that was
+      // accepted — the value the hazard above is invisible in, because nothing
+      // in this client reads it. Here it is read once.
+      length: ACCOUNT_KEY_BYTES * 8,
+    });
+  });
+
+  it('returns a key made of the material it was given and no other', async () => {
+    // Arrange
+    // The shape assertions above are all satisfied by an implementation that
+    // imported thirty-two zeros, or a fresh random draw. Nothing else here would
+    // tell them apart, and the symptom in production is an account whose blind
+    // index is keyed under something nothing can rebuild — which is unrecoverable
+    // rather than merely wrong, because an index cannot be recomputed without the
+    // plaintext it was taken over.
+    //
+    // The reference is imported through `crypto.subtle.importKey` directly, from
+    // a copy taken **before** the call. Both halves matter: an independent import
+    // is what makes this a second opinion rather than the module agreeing with
+    // itself, and the copy is what survives the wipe.
+    //
+    // The material is a spec-local counter — nothing's real key, non-zero
+    // throughout so "a key of zeros" is a value it can be told apart from.
+    const material = Uint8Array.from(
+      { length: ACCOUNT_KEY_BYTES },
+      (ignored, index) => index + 1,
+    );
+    const reference = await crypto.subtle.importKey(
+      'raw',
+      overOwnBuffer(material),
+      HMAC_SHA_256,
+      false,
+      ['sign'],
+    );
+
+    // Act
+    const key = await importHmacSha256Key(material);
+    const underKey = await crypto.subtle.sign('HMAC', key, MESSAGE);
+    const underReference = await crypto.subtle.sign('HMAC', reference, MESSAGE);
+
+    // Assert
+    // Two tags over one message agree only if the two keys are one key, so this
+    // says the module imported the bytes it was handed. Compared as hex so a
+    // failure names the byte rather than printing two buffers.
+    expect(toHex(new Uint8Array(underKey))).toBe(
+      toHex(new Uint8Array(underReference)),
+    );
+  });
+
+  it('hands back a key whose bytes cannot come back out', async () => {
+    // Arrange
+    const material = new Uint8Array(ACCOUNT_KEY_BYTES).fill(0xa5);
+
+    // Act
+    const key = await importHmacSha256Key(material);
+    const reading = crypto.subtle.exportKey('raw', key);
+
+    // Assert
+    // Two observations of one property, as at the AES door: the flag is what the
+    // import asked for, the rejection is what the platform does about it. The
+    // refusal is asserted without naming it — measured on this runtime the
+    // `DOMException` comes back with `name` reading `InvalidAccessException`,
+    // which is not a name any specification promises, so a test that pinned it
+    // would be pinning this runtime rather than the property.
+    expect(key.extractable).toBe(false);
+    await expect(reading).rejects.toThrow();
+  });
+
+  it('gives the key one usage, and the one it withholds is verify', async () => {
+    // Arrange
+    const material = new Uint8Array(ACCOUNT_KEY_BYTES).fill(0xa5);
+
+    // Act
+    const key = await importHmacSha256Key(material);
+    const tag = await crypto.subtle.sign('HMAC', key, MESSAGE);
+    const verifying = crypto.subtle.verify('HMAC', key, tag, MESSAGE);
+
+    // Assert
+    // `verify` is the usage a reader adds without stopping — HMAC has two halves
+    // and a key that only does one looks unfinished. A blind index is computed
+    // and *compared*: this client derives the value and the server matches rows
+    // on it, so there is no verification for a browser to perform. What `verify`
+    // would add is a second path out of this key — one that answers a boolean
+    // about a tag somebody else supplied, under the key that keys the account's
+    // entire search space, one call at a time to whoever is asking.
+    //
+    // The list and the platform's enforcement of it are both read, and they are
+    // not the same observation: the first is what the module asked for, the
+    // second is the door being shut. Measured, the refusal is
+    // `InvalidAccessError`; a widened usage list opens it, silently, and nothing
+    // else in this file would notice.
+    expect([...key.usages]).toEqual(['sign']);
+    await expect(verifying).rejects.toThrow();
+  });
+
+  it('hands WebCrypto a copy of its own and leaves the caller no bytes', async () => {
+    // Arrange
+    // The shape the AES door's wipe test uses, for the same reason: no caller can
+    // observe the wipe through anything the module hands back, so the buffer is
+    // reached at the platform boundary instead. What is different here is the
+    // branch — the AES door is found by an algorithm that is the string
+    // `'AES-GCM'`, and this one by an object whose `name` is `'HMAC'`, so the two
+    // spies cannot see each other's imports even when both doors run inside one
+    // call, which is exactly what happens in `account-key-custody.service.ts`.
+    const material = new Uint8Array(ACCOUNT_KEY_BYTES).fill(0xa5);
+    const realImportKey = crypto.subtle.importKey;
+
+    let importedMaterial: Uint8Array = new Uint8Array(0);
+    let atImportTime: Uint8Array = new Uint8Array(0);
+    let importedFrom: ArrayBufferLike | null = null;
+    let hmacImports = 0;
+
+    const importer = vi
+      .spyOn(crypto.subtle, 'importKey')
+      .mockImplementation(
+        (format, keyData, algorithm, extractable, keyUsages) => {
+          if (
+            typeof algorithm === 'object' &&
+            'name' in algorithm &&
+            algorithm.name === 'HMAC'
+          ) {
+            hmacImports += 1;
+            importedMaterial = liveBytes(keyData);
+            atImportTime = Uint8Array.from(importedMaterial);
+            importedFrom = ArrayBuffer.isView(keyData)
+              ? keyData.buffer
+              : keyData;
+          }
+
+          // Called through, never faked: the import under measurement has to be
+          // the real one, or the buffer being read is one nothing ever consumed.
+          return realImportKey.call(
+            crypto.subtle,
+            format,
+            keyData,
+            algorithm,
+            extractable,
+            keyUsages,
+          );
+        },
+      );
+
+    // Act
+    try {
+      await importHmacSha256Key(material);
+    } finally {
+      // Restored before the assertions, so a failure below does not leave
+      // `crypto.subtle.importKey` spied for every test after this one.
+      importer.mockRestore();
+    }
+
+    // Assert
+    // One HMAC key was imported, from a full-width buffer that held something —
+    // without this reading, "all zeros afterwards" is a property of a buffer that
+    // never held anything.
+    expect(hmacImports).toBe(1);
+    expect(atImportTime).toHaveLength(ACCOUNT_KEY_BYTES);
+    expect(
+      Array.from(atImportTime).filter((byte) => byte === 0),
+    ).not.toHaveLength(ACCOUNT_KEY_BYTES);
+
+    // And it was the module's own buffer, never the caller's. Compared by the
+    // underlying `ArrayBuffer`, so that handing WebCrypto a `subarray` of the
+    // caller's array — a new object over the same memory, and no copy at all —
+    // fails here too.
+    expect(importedFrom).not.toBeNull();
+    expect(importedFrom).not.toBe(material.buffer);
+
+    // Both copies are gone. The caller's is the one that matters: the index key
+    // arrives here in somebody else's variable — today
+    // `account-key-custody.service.ts`'s `keys.indexKey`, which nothing else
+    // names and nothing else can wipe — and if this function does not end those
+    // bytes, the value that keys the account's whole search space stays on the
+    // heap for as long as the tab lives.
+    expect(toHex(importedMaterial)).toBe('00'.repeat(ACCOUNT_KEY_BYTES));
+    expect(material).toHaveLength(ACCOUNT_KEY_BYTES);
+    expect(toHex(material)).toBe('00'.repeat(ACCOUNT_KEY_BYTES));
+  });
+});
+
 // The associated data is
 //
 //   "budgetoid/wrapped-key/v1" || 0x1F || <factor id> || 0x1F || <purpose>
@@ -1280,6 +1635,17 @@ describe('the module surface', () => {
       // trade is why it is in this set, and this set is where a later reader
       // finds the trade argued instead of inferred.
       'importAesGcmKey',
+      // The module's one HMAC import, and the door the account's **index key**
+      // goes through. It is here for the same trade `importAesGcmKey` is here
+      // for, and it is a second name rather than a second argument to the first
+      // because the platform refuses to let either key stand in for the other:
+      // measured on this runner, `sign` under a key imported as AES-GCM is
+      // refused with `InvalidAccessError`. So the shorter route — sending the
+      // index key through the door that was already written — hands back an
+      // object that cannot compute a single blind index and cannot be corrected
+      // afterwards, the key being non-extractable and the material zeroes by the
+      // time anybody notices.
+      'importHmacSha256Key',
       'keyEncryptionKeyFromPasskey',
       'keyEncryptionKeyFromRecoveryCode',
       'unwrapAccountKeys',

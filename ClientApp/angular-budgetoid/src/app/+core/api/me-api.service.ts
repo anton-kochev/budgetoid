@@ -1,6 +1,7 @@
 import { HttpContext } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
+import type { WrappedAccountKeys } from '@app-core/security/account-keys';
 import { map, Observable } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 
@@ -69,6 +70,59 @@ export interface CredentialSummary {
   // attribute; the reader's calendar day is computed from it separately by
   // `credential-registration-date.ts`, which is the only place that converts.
   createdAtUtc: string;
+}
+
+// One factor's row of `wrapped_account_keys`, as the three members cross the
+// wire: the identifier the two envelopes were sealed against, and the envelopes.
+// Nothing else — no credential id, no user id, no registration instant — and the
+// route is specified never to grow one.
+//
+// **Composed from `WrappedAccountKeys` rather than restating its two members**,
+// which is the whole reason this file reaches into `+core/security` at all. That
+// interface is what `unwrapAccountKeys` takes, so an entry read here is passed
+// straight to it; two hand-written copies of `wrappedContentKey` and
+// `wrappedIndexKey` would let one be renamed while the other went on compiling
+// against a body it no longer describes. The import is `import type`, so nothing
+// of the crypto module reaches the bundle this file already sits in.
+//
+// An intersection rather than an `interface extends`: there is one member to
+// add, and the composition says so without inventing a hierarchy.
+export type AccountKeyEntry = WrappedAccountKeys & {
+  // The canonical lower-case hyphenated spelling the row was stored in. It **is**
+  // the associated data both envelopes were sealed with, so it travels beside
+  // them and is never derived, normalised or prettified on the way past.
+  readonly factorId: string;
+};
+
+// The boundary check `isRecoveryCodeCount` argues for, on a body where a
+// coercion is even quieter.
+//
+// Every member is a string that is about to be fed to a decoder and an AEAD
+// open. A missing one arrives at `decodeBase64Url` as `undefined`, which throws
+// *inside the trial loop* — where a throw already means "this factor is not the
+// one, try the next" — so a malformed body would be read as a person presenting
+// the wrong factor and answered with "present another factor". That is the
+// failure this refusal exists to prevent: not a wrong pixel, but the account
+// declared unopenable by its own key custody, with nothing naming the cause.
+//
+// So the check is per entry and not merely over the collection, unlike
+// `getCredentials` — a credential row is total in what it renders and a
+// malformed entry spoils one row, while here an entry has no partial use at all.
+// It is deliberately **not** a check of the envelopes' shape: width, version
+// byte and alphabet are `decodeBase64Url`'s and `openEnvelope`'s rules, and a
+// second, weaker copy of them here would be a second definition of what an
+// envelope is.
+function isAccountKeyEntry(entry: unknown): entry is AccountKeyEntry {
+  return (
+    typeof entry === 'object' &&
+    entry !== null &&
+    'factorId' in entry &&
+    typeof entry.factorId === 'string' &&
+    'wrappedContentKey' in entry &&
+    typeof entry.wrappedContentKey === 'string' &&
+    'wrappedIndexKey' in entry &&
+    typeof entry.wrappedIndexKey === 'string'
+  );
 }
 
 @Injectable({ providedIn: 'root' })
@@ -180,6 +234,60 @@ export class MeApiService extends BaseApiService {
         }
 
         return body.remaining;
+      }),
+    );
+  }
+
+  // The wrapped account keys filed under the credential that opened this
+  // session — one entry for a passkey, ten for a set of recovery codes, and an
+  // **empty array** for a session the server cannot see. That last one is not an
+  // error and must never be turned into one here: never established, already
+  // ended and belonging to somebody else are one indistinguishable answer on
+  // purpose, and a caller that told them apart would rebuild the enumeration
+  // oracle the route refuses to be.
+  //
+  // **No `EXPECTS_UNAUTHENTICATED`, and that is the decision rather than the
+  // omission** — `getMe()`'s case, one line for one line. This request is made
+  // by a browser that believes it holds a session, so a 401 is that session
+  // having ended, which is the one fact `sessionExpiryInterceptor` owns.
+  // Marking it would suppress the only true reading and leave somebody on a
+  // screen whose every later read fails with nothing saying why.
+  //
+  // The list is `readonly` from here down for the reason `getCredentials`'s is:
+  // its order is the server's statement, and nothing in the client sorts,
+  // filters or appends to it. The consumer walks the whole of it — see
+  // `account-key-custody.service.ts`, which tries each entry in turn under its
+  // own `factorId`.
+  public getAccountKeys(): Observable<readonly AccountKeyEntry[]> {
+    return this.get<unknown>('api/me/account-keys').pipe(
+      map((body) => {
+        // Two refusals rather than one, because the two say different things to
+        // whoever reads the message: a body that is not a list is a route or a
+        // proxy answering something else entirely, while a malformed entry is a
+        // version skew on a route that *is* the right one.
+        if (!Array.isArray(body)) {
+          throw new Error(
+            'The account-key response did not arrive as a list of factors.',
+          );
+        }
+
+        // Re-typed to `readonly unknown[]` before the members are judged, and
+        // the line is load-bearing rather than ceremony. `Array.isArray` over an
+        // `unknown` narrows to `any[]`, and every element of an `any[]` is
+        // assignable to anything — so the return below would compile with the
+        // check underneath it deleted, and the only thing standing between a
+        // malformed body and a caller would be a runtime guard nothing in the
+        // types required. Named as `unknown[]`, the narrowing `every` performs
+        // is what makes the return type true.
+        const entries: readonly unknown[] = body;
+
+        if (!entries.every(isAccountKeyEntry)) {
+          throw new Error(
+            'The account-key response carried a factor missing its identifier or one of its two envelopes.',
+          );
+        }
+
+        return entries;
       }),
     );
   }
