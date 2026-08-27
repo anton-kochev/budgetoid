@@ -1,6 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, Signal, inject, signal } from '@angular/core';
 import { MeApiService } from '@app-core/api/me-api.service';
+import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { firstValueFrom } from 'rxjs';
 
 // Four states, and the fourth is the one a reader will collapse into the third.
@@ -27,6 +28,16 @@ export type SessionStatus =
 @Injectable({ providedIn: 'root' })
 export class SessionService {
   private readonly api = inject(MeApiService);
+  // **The dependency runs one way and must keep doing so.** This class reaches
+  // for custody; custody reaches for nothing on this class, and says so in its
+  // own header — a key that will not open is not a session that ended, so
+  // publishing `anonymous` from there would sign somebody out of an account
+  // they are demonstrably inside. That asymmetry is what keeps the two modules
+  // out of an import cycle: the edge exists here and nowhere in the other
+  // direction, and `account-key-custody.service.spec.ts` provides a
+  // `SessionService` stub purely so a call that appeared would land somewhere
+  // countable.
+  private readonly custody = inject(AccountKeyCustodyService);
 
   private readonly statusSignal = signal<SessionStatus>('unknown');
 
@@ -61,6 +72,32 @@ export class SessionService {
   // an answer with a guess.
   public ended(): void {
     this.statusSignal.set('anonymous');
+
+    // **Custody ends where the session does, and it ends here rather than at
+    // each caller.** Two paths end a session today —
+    // `sessionExpiryInterceptor` on a 401 and `SettingsService.leave()` — and a
+    // third will be added by somebody thinking about sign-out rather than about
+    // key material. Put in this method, that third path clears the account's
+    // keys for free; put in the two callers, it does not, and the symptom is an
+    // ended session whose content key is still readable from the root injector
+    // for the life of the tab. Nothing goes red about it either way.
+    //
+    // **Not an `effect()` over {@link status}, and the temptation is real** —
+    // one reaction beside the signal reads tidier than a call inside a method.
+    // It fires on construction, so whether it wipes a set that has already been
+    // adopted is decided by injection order, which nothing here controls. And
+    // the only honest predicate it could carry is "lock on `'anonymous'`":
+    // locking on `'unreachable'` destroys both keys over one blinked request
+    // and demands a full WebAuthn ceremony to get them back, which is exactly
+    // the failure `auth.guard.ts` and `guest.guard.ts` exist to prevent,
+    // reappearing one layer down. That asymmetry is already written twice, in
+    // the guards and in {@link readingOf}; writing it a third time is how the
+    // third copy drifts.
+    //
+    // {@link established} deliberately clears nothing. A session beginning says
+    // nothing about which factor opened it, and the two paths that know —
+    // registration and sign-in — hand the keys over themselves.
+    this.custody.lock();
   }
 
   // The mirror of `ended()`, called when a leg that establishes a session has

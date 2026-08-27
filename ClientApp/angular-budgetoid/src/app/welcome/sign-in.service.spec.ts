@@ -20,6 +20,18 @@
 // `WebauthnCeremonyService`, because `available()` and `assertPasskey()` both
 // touch `navigator.credentials`, which this runner does not implement. Nothing
 // below that seam is replaced.
+//
+// **`AccountKeyCustodyService` is deliberately *not* the second stub.** It is
+// the real root-provided instance with a spy laid over `unlock` that calls
+// through, and the difference decides whether one of the tests below is worth
+// anything. A stub would swallow the request custody makes — and that request
+// is exactly what `signs a returning visitor in without touching the identity
+// provider` has to keep counting, because a census that stops seeing a request
+// the flow makes is no longer a census. Spied and called through, the same
+// object answers both questions: what the flow handed over, and what left the
+// browser because of it. Only the two cases that need `unlock` to *fail* or to
+// be *counted alone* override the implementation, and each says so where it
+// does it.
 import { provideHttpClient } from '@angular/common/http';
 import {
   HttpTestingController,
@@ -30,6 +42,7 @@ import { isSignal, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
+import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import {
   WebauthnCeremonyService,
   type PasskeyAssertionCeremony,
@@ -42,12 +55,25 @@ import type {
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import {
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+  type MockInstance,
+} from 'vitest';
 import { SignInService } from './sign-in.service';
 
 const API_ORIGIN = 'https://api.test';
 const OPTIONS_URL = `${API_ORIGIN}/api/passkeys/assertion/options`;
 const ASSERTION_URL = `${API_ORIGIN}/api/passkeys/assertion`;
+// The third address a sign-in reaches, and the newest. It is not part of
+// authenticating anybody: the session is already established by the time this
+// leaves, and it is `AccountKeyCustodyService` going to fetch the envelopes the
+// key-encryption key derived a moment ago is the only thing that can open.
+const ACCOUNT_KEYS_URL = `${API_ORIGIN}/api/me/account-keys`;
 
 // What `POST /api/passkeys/assertion/options` answers with: four members and
 // deliberately not a fifth. **There is no `allowCredentials` and none may be
@@ -265,6 +291,13 @@ describe('SignInService', () => {
   let http: HttpTestingController;
   let service: SignInService;
   let session: SessionService;
+  // The real service, spied where the flow touches it. What the spy adds over
+  // reading `custody.status()` is *which key* and *when*: the status word says
+  // an attempt started, and the whole of the rule below is that the attempt
+  // started from the object the authenticator derived and started after the
+  // server said yes.
+  let custody: AccountKeyCustodyService;
+  let unlock: MockInstance<AccountKeyCustodyService['unlock']>;
   let provider: ProviderStub;
   // The key-encryption key the authenticator would derive. Held where the tests
   // can reach it so that `asks the authenticator for the value that opens the
@@ -354,6 +387,15 @@ describe('SignInService', () => {
 
     http = TestBed.inject(HttpTestingController);
     session = TestBed.inject(SessionService);
+    // Resolved before the service under test, though it need not be: the flow
+    // holds the *instance* and the spy is laid over that instance's method, so
+    // the order of these three lines changes nothing. Written this way because
+    // a reader should not have to work that out.
+    custody = TestBed.inject(AccountKeyCustodyService);
+    // Calling through, which is the default and is load-bearing here rather
+    // than incidental — see the header. `mockImplementation` appears twice
+    // below and nowhere else.
+    unlock = vi.spyOn(custody, 'unlock');
     service = TestBed.inject(SignInService);
   });
 
@@ -408,12 +450,29 @@ describe('SignInService', () => {
       'the navigation into the app',
     );
 
+    // **The third request, and this census moved to account for it rather
+    // than relaxing to stop seeing it.** Two requests were the whole of a
+    // sign-in until custody was wired, and the line below said so. The 200 now
+    // hands the key-encryption key to `AccountKeyCustodyService`, which goes
+    // and reads this session's wrapped envelopes — one more request, leaving
+    // this browser, and therefore one this file owes an entry for. The
+    // alternative on offer was to stub custody away, which would have made the
+    // old line pass again by making the census blind to a request the flow
+    // makes. Matched, named and put through the same origin check as the other
+    // two; left outstanding on purpose, because whether it is ever answered is
+    // `does not wait for the keys to sign anybody in`'s business.
+    const accountKeys = await eventually(
+      () => http.match(ACCOUNT_KEYS_URL)[0] ?? null,
+      "the read of this session's wrapped account keys",
+    );
+    seen.push(accountKeys.request.urlWithParams);
+
     // Assert
-    // Two requests left this browser and both went to Budgetoid's own API.
-    // Origins, not prefixes: `https://api.test.attacker.example` is a name
+    // Three requests left this browser and all three went to Budgetoid's own
+    // API. Origins, not prefixes: `https://api.test.attacker.example` is a name
     // anybody can register and `startsWith` admits it, which is the rule
     // `apiCredentialsInterceptor` states one layer down.
-    expect(seen).toEqual([OPTIONS_URL, ASSERTION_URL]);
+    expect(seen).toEqual([OPTIONS_URL, ASSERTION_URL, ACCOUNT_KEYS_URL]);
 
     for (const url of seen) {
       expect(new URL(url).origin, `${url} is not this API's origin.`).toBe(
@@ -422,7 +481,7 @@ describe('SignInService', () => {
     }
 
     // And nothing else left at all. `match` removes what it returns, so an
-    // empty list here is every request the flow made beyond the two above —
+    // empty list here is every request the flow made beyond the three above —
     // a discovery document, a token endpoint, a profile picture.
     expect(http.match(() => true)).toHaveLength(0);
 
@@ -487,6 +546,169 @@ describe('SignInService', () => {
     expect(
       findings({ held: signal(keyEncryptionKey) }, 'probe', isKeyLike),
     ).toEqual(['probe.held()']);
+  });
+
+  // The other end of the same sentence. The test above says this service keeps
+  // no key; this one says it does not simply drop it either — the key travels,
+  // once, to the one place in the client entitled to hold it, and it travels at
+  // the one instant that is correct.
+  it('hands the key the authenticator derived to custody, and not a moment earlier', async () => {
+    // Arrange
+    const assertion = await driveToAssertion();
+
+    // The ceremony has finished and the key exists. **This is the instant a
+    // reader would hand it over and the instant that would be wrong.** A
+    // verified assertion sitting in an outgoing request body is not a session:
+    // the server has not looked at it yet and can still answer 401. Custody
+    // taken here leaves the account's keys held on a root-provided singleton
+    // inside a browser the server then refused — for the life of the tab, with
+    // `refused` on the screen and nothing anywhere going red.
+    expect(unlock).not.toHaveBeenCalled();
+
+    // Act
+    assertion.flush(SESSION_BODY);
+
+    await eventually(
+      () => navigations[0] ?? null,
+      'the navigation into the app',
+    );
+
+    // Assert
+    // Once, and the count is not pedantry. A second call runs `#forget` again,
+    // which drops both keys and republishes `'unlocking'` — so an account that
+    // was open a moment ago closes and reopens, and every read taken in that
+    // window is taken against a locked account.
+    expect(unlock).toHaveBeenCalledTimes(1);
+
+    // **The same object, by identity, and `toBe` rather than
+    // `toHaveBeenCalledWith`.** Deep equality would compare a `CryptoKey`'s
+    // three readable members — algorithm, extractability, usages — and every
+    // key this door produces agrees on all three, so a service that derived a
+    // *second* key, or re-imported one, or handed over the one a previous press
+    // left behind, would satisfy the friendlier matcher exactly. Identity is
+    // all that is checkable here, because non-extractability means no API in
+    // the platform reads a key's bytes back out, and it is also all that
+    // matters: this account's envelopes open under the value the
+    // authenticator's PRF produced and under nothing else, so the wrong key is
+    // an authenticated person whose every row is unreadable, permanently, with
+    // no error naming the cause.
+    expect(unlock.mock.calls[0]?.[0]).toBe(keyEncryptionKey);
+  });
+
+  it('hands nothing to custody when the server refuses the assertion', async () => {
+    // Arrange
+    const assertion = await driveToAssertion();
+
+    // Act
+    assertion.flush(null, { status: 401, statusText: 'Unauthorized' });
+
+    await eventually(() => service.failure(), 'the refusal to be published');
+
+    // Assert
+    expect(unlock).not.toHaveBeenCalled();
+
+    // And no read went looking for envelopes, which is the half that a caller
+    // reaching for `/api/me/account-keys` itself would still get wrong. A
+    // browser the server has just refused holds no session it would honour, so
+    // the read comes back 401 — on a request carrying no
+    // `EXPECTS_UNAUTHENTICATED`, which is `sessionExpiryInterceptor` reading a
+    // refused sign-in as a session that ended and navigating to the screen the
+    // person is already standing on.
+    expect(http.match(ACCOUNT_KEYS_URL)).toHaveLength(0);
+    expect(custody.status()).toBe('locked');
+  });
+
+  // **A key that will not open is not a sign-in that failed**, and the two
+  // statements the flow makes after handing custody the key are what that
+  // sentence costs.
+  //
+  // The failure mode is not hypothetical and it is not caught by the `error`
+  // callback sitting six lines away. An exception thrown out of an RxJS `next`
+  // handler is **not** routed to the `error` callback beside it — it is
+  // reported out of band as an unhandled error, and `next()` returns to the
+  // producer as if nothing happened. What it does do is what any throw does:
+  // the statements after it in the same handler never run. So an unguarded
+  // custody call that threw would leave somebody holding a valid session cookie
+  // stranded on `/welcome`, with `busy` already cleared and the screen saying
+  // nothing at all, because as far as this service is concerned the sign-in
+  // succeeded. That is the whole justification for the `try` in production, and
+  // this is the test that holds it there.
+  //
+  // Swallowed and deliberately not published: this screen says one thing
+  // however a sign-in was refused, and a sentence that varied by whether a key
+  // opened would rebuild the credential-enumeration oracle the server answers
+  // one byte-identical 401 to avoid being.
+  it('signs a visitor in even when custody blows up', async () => {
+    // Arrange
+    // One of the two places in this file that replaces the implementation
+    // rather than watching it, and the reason is that no arrangement of the
+    // *real* service throws: `unlock` catches every way an attempt can end and
+    // publishes it as a state. The rule is about the seam and not about today's
+    // implementation of the far side of it.
+    unlock.mockImplementation(() => {
+      throw new Error('the wrapped keys could not be read');
+    });
+
+    const assertion = await driveToAssertion();
+
+    // Act
+    assertion.flush(SESSION_BODY);
+
+    await eventually(
+      () => navigations[0] ?? null,
+      'the navigation into the app',
+    );
+
+    // Assert
+    // It really did throw, which is what stops this passing over a mock that
+    // was never reached.
+    expect(unlock).toHaveBeenCalledTimes(1);
+    expect(unlock.mock.results[0]?.type).toBe('throw');
+
+    // And the sign-in is untouched by it, in all four of the ways it could have
+    // been damaged: the person is in the app, the client agrees they are signed
+    // in, the screen says nothing new, and the button is live again.
+    expect(navigations).toEqual(['/app']);
+    expect(session.status()).toBe('authenticated');
+    expect(service.failure()).toBeNull();
+    expect(service.busy()).toBe(false);
+  });
+
+  // `unlock` returns `void` so that there is nothing to await, and this is what
+  // that buys. Awaited, a round trip would sit on the path between a verified
+  // assertion and the app — and one refactor later the `await` grows a `catch`,
+  // at which point a key that did not open is an authentication that failed.
+  // Only `anonymous` may bounce anybody out of an account.
+  it('does not wait for the keys to sign anybody in', async () => {
+    // Arrange
+    const assertion = await driveToAssertion();
+
+    // Act
+    assertion.flush(SESSION_BODY);
+
+    const read = await eventually(
+      () => http.match(ACCOUNT_KEYS_URL)[0] ?? null,
+      "the read of this session's wrapped account keys",
+    );
+
+    // Assert
+    // **The read is never answered.** Everything below is asserted with it
+    // still outstanding, which is the only arrangement that can tell "did not
+    // wait" from "waited and the answer was quick".
+    expect(read.request.method).toBe('GET');
+    expect(custody.status()).toBe('unlocking');
+
+    // And the person is already inside the app, with the flow finished.
+    expect(navigations).toEqual(['/app']);
+    expect(session.status()).toBe('authenticated');
+    expect(service.busy()).toBe(false);
+    expect(service.failure()).toBeNull();
+
+    // The signature half of it, read off the call rather than off the type. A
+    // `Promise` here is a value somebody can await, and the first thing anybody
+    // awaiting it would write is the `catch` the paragraph above argues must
+    // not exist.
+    expect(unlock.mock.results[0]?.value).toBeUndefined();
   });
 
   // One word, whatever happened.

@@ -78,8 +78,10 @@ export type UnlockFailure = 'unopened' | 'unreachable';
 
 @Injectable({ providedIn: 'root' })
 export class AccountKeyCustodyService {
-  // **ECMAScript `#` fields, not TypeScript `private`, and this is the one place
-  // in `src/` that uses them.** `private` is a compile-time annotation and
+  // **ECMAScript `#` fields, not TypeScript `private`, and this is the first of
+  // the two places in `src/` that use them** — `register.service.ts` is the
+  // other, and holds the same pair between the wrapping and the 201 for the
+  // same reason. `private` is a compile-time annotation and
   // nothing else: it is erased on the way out, so `(custody as never)['contentKey']`
   // reads the field at runtime with the compiler's blessing, and so does any
   // devtools panel, any `JSON.stringify` of the instance and any structured

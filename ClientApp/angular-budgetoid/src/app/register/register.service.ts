@@ -13,9 +13,11 @@
 // local or a private field. A signal on an injectable is one `effect()` away
 // from being logged by somebody who wanted to debug a re-render, and these are
 // the values that unlock the account. That rule is why the key-encryption keys
-// never touch `this` at all, why the account keys are wiped inside the method
-// that draws them, and why the ten codes — which the codes step must render —
-// are the one secret published here.
+// never touch `this` at all, why the account keys' **bytes** are wiped inside
+// the method that draws them, why what survives that method is two opaque
+// `CryptoKey` objects on a `#` field no reflective API can reach, and why the
+// ten codes — which the codes step must render — are the one secret published
+// here.
 //
 // The ordering rules below are each load-bearing and each argued at the line
 // that implements them. `RegisterAccountHandler.cs` is the other half of most of
@@ -28,8 +30,11 @@ import {
   type RecoveryCodeSubmissionBody,
   type RegistrationRequestBody,
 } from '@app-core/api/registration-api.service';
+import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import {
   generateAccountKeys,
+  importAesGcmKey,
+  importHmacSha256Key,
   keyEncryptionKeyFromRecoveryCode,
   wrapAccountKeys,
 } from '@app-core/security/account-keys';
@@ -111,6 +116,10 @@ export class RegisterService {
   private readonly api = inject(RegistrationApiService);
   private readonly ceremony = inject(WebauthnCeremonyService);
   private readonly session = inject(SessionService);
+  // Root-provided, unlike this service, and that is the whole difference
+  // between an attempt and a session: this flow dies with the screen, and the
+  // keys it hands over on the 201 have to outlive it.
+  private readonly custody = inject(AccountKeyCustodyService);
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
 
@@ -179,6 +188,39 @@ export class RegisterService {
   // — but it is the request that creates an account, and one that outlives its
   // outcome is one somebody will eventually re-send.
   private pending: RegistrationRequestBody | null = null;
+
+  // The account's two keys, imported, waiting for the 201 that makes the
+  // account they belong to real.
+  //
+  // **One field holding both, and never two fields.** The two are drawn
+  // together, wrapped together and handed over together, and a pair of nullable
+  // fields would admit a state — one key held, the other not — that no path
+  // produces and every reader downstream would then have to rule out. Here
+  // "both or neither" is what the type says, so {@link create} has one question
+  // to ask.
+  //
+  // **A `#` field, and this is the second place in `src/` that spells private
+  // this way** — `account-key-custody.service.ts` is the first and argues it in
+  // full. TypeScript's `private` is erased on the way out, so an ordinary field
+  // here would be an own property of the instance: readable by
+  // `(service as never)['accountKeys']`, walked by `JSON.stringify`, carried by
+  // a structured clone, and shown by any devtools panel. What it would be
+  // showing is the pair that decrypts everything the account ever writes. Every
+  // other field on this class is `private` and right to be, because none of
+  // them is that.
+  //
+  // **A field and not a signal**, the header rule of this file: no template
+  // renders these and none may.
+  //
+  // Cleared by {@link restart} and on any failure of the POST, beside
+  // {@link pending} in both places — the body and the keys are made in one
+  // breath and an attempt that ended keeps neither. Not cleared on the 201:
+  // {@link AccountKeyCustodyService} is holding the same two objects by then
+  // and the screen is being navigated away from.
+  #accountKeys: {
+    readonly contentKey: CryptoKey;
+    readonly indexKey: CryptoKey;
+  } | null = null;
 
   // The challenge {@link begin} fetched, waiting for the press that spends it.
   //
@@ -356,6 +398,12 @@ export class RegisterService {
     // below are how this application stops lying about who the visitor is. A
     // subscription cancelled on destroy would leave a created account behind a
     // client still calling itself anonymous.
+    // Read before the request is made rather than inside the handler, so the
+    // pair the account is created with is the pair this call started from —
+    // and so the `null` case is one branch here instead of a question the
+    // success path has to ask at its busiest moment.
+    const keys = this.#accountKeys;
+
     this.api.register(body).subscribe({
       next: () => {
         this.pending = null;
@@ -369,6 +417,7 @@ export class RegisterService {
         // mirror of that: dropped before the navigation, it is dropped while a
         // request may still be leaving with a bearer attached to it.
         this.session.established();
+        this.adopt(keys);
         this.auth.forgetProviderToken();
         void this.router.navigateByUrl('/app');
       },
@@ -376,6 +425,14 @@ export class RegisterService {
         const failure = RegisterService.failureOf(error);
 
         this.pending = null;
+        // **Beside the body, on every way this can end badly**, including the
+        // `unknown` one where the account may exist after all. Keeping them for
+        // that case is the tempting edit and it is wrong twice: nothing here can
+        // adopt keys for an account it cannot confirm, and the way back into an
+        // account that may have been created is a passkey assertion on
+        // `/welcome`, which derives its own key-encryption key and unwraps from
+        // the row this attempt would have written.
+        this.#accountKeys = null;
         this.busySignal.set(false);
 
         // **Published here, from the answer, and nowhere else.** This is what
@@ -417,6 +474,13 @@ export class RegisterService {
     }
 
     this.pending = null;
+    // With the body, because they are the body's pair: the envelopes in it were
+    // sealed under factor identifiers this attempt minted, and the next attempt
+    // mints eleven new ones over two new keys. Kept, they would be adopted on
+    // the *next* attempt's 201 — the account would be created under the second
+    // draw and unlocked with the first, which opens nothing, permanently, with
+    // nothing anywhere naming the cause.
+    this.#accountKeys = null;
     // **The prefetched challenge goes with everything else**, or the promise in
     // the paragraph above is false the one time it is load-bearing. The nonce
     // {@link begin} fetched is consumed by the ceremony that ran before this
@@ -427,6 +491,54 @@ export class RegisterService {
     this.codesSignal.set(null);
     this.failureSignal.set(null);
     this.stepSignal.set('passkey');
+  }
+
+  // Hands the account's keys to the service that holds them for the session.
+  //
+  // **No round trip, and that is the whole reason `adopt` exists.** This
+  // browser drew the pair, wrapped it eleven times and posted the envelopes a
+  // moment ago; asking the server to hand those envelopes back — to open them
+  // under a key-encryption key derived from a passkey this device has only just
+  // registered — would be a request whose entire purpose is to arrive back
+  // where it started, on the happiest path in the product, with a failure mode
+  // attached.
+  //
+  // **Called on the 201 and never at ceremony time**, which is the position a
+  // reader will move it to. Adopting when the keys are drawn needs three
+  // clearing sites — the restart, the failed POST, and a destroy hook this
+  // service does not have — and the one that gets forgotten leaves the keys of
+  // an account that was never created in a root singleton for the life of the
+  // tab, with nothing on screen and nothing red.
+  //
+  // The `try` is for the reason `sign-in.service.ts` states over its own
+  // custody call: an exception out of this subscriber's `next` is not routed to
+  // the `error` callback beside it, and the statements after this one — the
+  // token being forgotten, the navigation into the app — would simply not run.
+  // Somebody would be left on the register screen holding a created account and
+  // a card of live codes, with the screen saying nothing because nothing
+  // failed.
+  //
+  // `null` is unreachable today: {@link create} refuses without {@link pending}
+  // and the two are written in one breath. It is a branch rather than a `!`
+  // because a non-null assertion here would be a claim about a coupling two
+  // methods apart, and the honest thing to do with an account whose keys are
+  // missing is to leave it locked — every screen this client has renders
+  // without them, and the way in is another factor.
+  private adopt(
+    keys: {
+      readonly contentKey: CryptoKey;
+      readonly indexKey: CryptoKey;
+    } | null,
+  ): void {
+    if (keys === null) {
+      return;
+    }
+
+    try {
+      this.custody.adopt(keys.contentKey, keys.indexKey);
+    } catch {
+      // Nothing. See above.
+    }
   }
 
   // The ceremony, the keys, the codes and the eleven wraps — the whole of what
@@ -535,16 +647,47 @@ export class RegisterService {
           codes.push({ verifier, factorId, ...wrapped });
         }
 
-        // **The account keys are wiped here and kept for nothing.** A reader
-        // will want to hold them "for the encryption epic": nothing on this
-        // client encrypts anything yet, every path that retries re-draws them,
-        // and the epic that needs them will unwrap them from an envelope the
-        // way every other session will have to. Keeping 64 bytes of the
-        // account's whole keyspace alive for a feature that does not exist is
-        // the one decision available here with no upside at all. They are also
-        // locals rather than a field, which is the same rule the eleven
-        // key-encryption keys follow — a value that never lives on the instance
-        // cannot outlive the call.
+        // **The account keys become keys here, and this is the last place
+        // their bytes exist.**
+        //
+        // The paragraph that used to stand here refused to keep them at all,
+        // and its objection was to keeping *bytes*: sixty-four of them, the
+        // account's whole keyspace, alive on an instance for a feature that did
+        // not exist. That objection no longer reaches, because after these two
+        // statements there are no bytes. Both doors zero-fill the material they
+        // are handed — on the rejecting path as thoroughly as on the succeeding
+        // one — so what this method leaves behind is two non-extractable
+        // `CryptoKey` objects, which no API in the platform reads back out.
+        //
+        // The alternative it argued for is the one a reader will now propose in
+        // reverse: drop these and let the app re-read `wrapped_account_keys`
+        // through the route once the session exists. It costs a round trip on
+        // the happiest path in the product, adds a failure mode there, and buys
+        // a verification that is illusory — a passkey session's read hands back
+        // the **passkey** factor's pair alone and never exercises the ten code
+        // pairs, which is precisely where the mispairing hazard the loop above
+        // is built around lives. It also needs the passkey's key-encryption key
+        // to survive the codes step on some instance, which is the same power
+        // one step removed.
+        //
+        // **Two doors, because the two keys are two different keys.** The
+        // content key encrypts, so it goes through the AES-GCM door; the index
+        // key is what a blind index is computed under, which is HMAC-SHA-256,
+        // and sending it through `importAesGcmKey` because that line is already
+        // written hands back an object that cannot compute a single index and
+        // cannot be corrected afterwards.
+        const [contentKey, indexKey] = await Promise.all([
+          importAesGcmKey(keys.contentKey),
+          importHmacSha256Key(keys.indexKey),
+        ]);
+
+        this.#accountKeys = { contentKey, indexKey };
+
+        // Kept, and now belt to the doors' braces: both buffers were wiped by
+        // the imports above, and the `finally` below wipes them again on the
+        // path where one of the imports rejected. A wipe of a buffer that is
+        // already zeroes costs nothing; the line that is missing the day
+        // somebody replaces a door is what these cost nothing to prevent.
         keys.contentKey.fill(0);
         keys.indexKey.fill(0);
 

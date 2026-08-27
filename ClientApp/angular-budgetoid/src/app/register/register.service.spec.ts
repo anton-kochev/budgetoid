@@ -32,8 +32,11 @@ import {
 import { isSignal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
+import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import {
   ACCOUNT_KEY_BYTES,
+  importAesGcmKey,
+  importHmacSha256Key,
   keyEncryptionKeyFromRecoveryCode,
   unwrapAccountKeys,
   type WrappedAccountKeys,
@@ -62,7 +65,7 @@ import type {
 } from '@app-core/security/webauthn-encoding';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RegisterService } from './register.service';
 
 // **The account keys' zero-filling has no witness in this runner, and it is not
@@ -506,9 +509,130 @@ function custodyFindings(
   return [];
 }
 
+// Where the account's keys go once the account exists, replaced by three
+// counters.
+//
+// **Stubbed rather than spied-and-called-through**, unlike
+// `sign-in.service.spec.ts`, and the difference is that `adopt` makes no
+// request: there is nothing for a census of outgoing traffic to lose by
+// replacing it. What the stub buys is the two `CryptoKey` objects themselves,
+// held where the fingerprints below can interrogate them.
+//
+// All three members, because two of the rules here are about what did *not*
+// happen. `unlock` from this flow would be a browser that just wrote eleven
+// envelopes going back to read them, and `lock` would be a registration that
+// ended by throwing away the keys it had just created — neither is a call a
+// spy on `adopt` alone could see.
+class CustodyStub {
+  public adopt = vi.fn<(contentKey: CryptoKey, indexKey: CryptoKey) => void>();
+  public unlock = vi.fn<(keyEncryptionKey: CryptoKey) => void>();
+  public lock = vi.fn<() => void>();
+}
+
+function touchedMembersOf(custody: CustodyStub): readonly string[] {
+  return (['adopt', 'unlock', 'lock'] as const).filter(
+    (name) => custody[name].mock.calls.length > 0,
+  );
+}
+
+// **How an opaque key is identified, and the only way one can be.** A
+// `CryptoKey` out of either door is non-extractable, so no API in the platform
+// reads its bytes back — which is the property the whole design rests on and
+// also, for a moment, the reason nothing could check *which* pair reached
+// custody.
+//
+// What is left is that both primitives are deterministic. AES-GCM under a fixed
+// key, nonce and plaintext produces one ciphertext and only ever that one;
+// HMAC-SHA-256 over a fixed message produces one tag. So a key can be
+// fingerprinted by using it, and two fingerprints agree exactly when the two
+// keys hold the same bytes. Neither constant below is a secret and neither is
+// reused for anything: the nonce is spent on one plaintext per key, in a test,
+// against material that exists for the length of a test.
+const FINGERPRINT_NONCE = new Uint8Array(ENVELOPE_NONCE_BYTES).fill(0x5a);
+const FINGERPRINT_MESSAGE = new TextEncoder().encode(
+  'budgetoid/spec/which-pair-reached-custody',
+);
+
+// The content key, used as a content key. It comes out of `importAesGcmKey`
+// with `encrypt` among its usages, so this is the key doing the one thing it
+// exists to do.
+async function contentFingerprint(key: CryptoKey): Promise<string> {
+  const sealed = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: FINGERPRINT_NONCE },
+    key,
+    FINGERPRINT_MESSAGE,
+  );
+
+  return encodeBase64Url(new Uint8Array(sealed));
+}
+
+// The index key, used as an index key. A blind index is an HMAC, so signing is
+// exactly what the key was imported for — and a key that came through the wrong
+// door cannot reach this function at all, which is a second assertion the two
+// tests below get for free.
+async function indexFingerprint(key: CryptoKey): Promise<string> {
+  const mac = await crypto.subtle.sign('HMAC', key, FINGERPRINT_MESSAGE);
+
+  return encodeBase64Url(new Uint8Array(mac));
+}
+
+// The hash a key's algorithm names, or `null` for an algorithm that names none.
+//
+// Narrowed rather than asserted. `key.algorithm` is typed `KeyAlgorithm`, which
+// declares a name and nothing else, and `as HmacKeyAlgorithm` would *claim* the
+// shape at exactly the point where the interesting answer is that the shape is
+// something else — a content key sent through the wrong door has no `hash` at
+// all, and the assertion would turn that into an undefined dereference instead
+// of a finding.
+function hashNameOf(key: CryptoKey): string | null {
+  const algorithm: unknown = key.algorithm;
+
+  if (typeof algorithm !== 'object' || algorithm === null) {
+    return null;
+  }
+
+  if (!('hash' in algorithm)) {
+    return null;
+  }
+
+  const hash: unknown = algorithm.hash;
+
+  if (typeof hash !== 'object' || hash === null || !('name' in hash)) {
+    return null;
+  }
+
+  return typeof hash.name === 'string' ? hash.name : null;
+}
+
+// The pair one factor's two envelopes actually carry, as keys of the same two
+// kinds custody is handed. This is the account's real pair, recovered the way
+// the product will recover it — off the wire, under the key-encryption key that
+// factor derives — and it is what every claim about *which* pair is measured
+// against.
+async function pairFrom(
+  factor: BodyFactor,
+  keyEncryptionKey: CryptoKey,
+): Promise<{ readonly contentKey: CryptoKey; readonly indexKey: CryptoKey }> {
+  const opened = await unwrapAccountKeys(
+    keyEncryptionKey,
+    factor.wrapped,
+    factor.factorId,
+  );
+
+  // Through the production doors, which wipe the material they are handed on
+  // the way past. Nothing here needs the bytes afterwards, and a fixture that
+  // kept them would be this file holding the account's whole keyspace for the
+  // rest of the run.
+  return {
+    contentKey: await importAesGcmKey(opened.contentKey),
+    indexKey: await importHmacSha256Key(opened.indexKey),
+  };
+}
+
 describe('RegisterService', () => {
   let http: HttpTestingController;
   let service: RegisterService;
+  let custody: CustodyStub;
   // The passkey factor's key-encryption key, held where the tests can reach it.
   // A wrap is only observable by opening it, and this is the key the passkey
   // factor's pair was sealed under — there is nothing else to look at.
@@ -531,6 +655,7 @@ describe('RegisterService', () => {
 
   beforeEach(async () => {
     keyEncryptionKey = await importKeyEncryptionKey();
+    custody = new CustodyStub();
     ceremonyAvailable = true;
     ceremonyOutcome = {
       ok: true,
@@ -597,6 +722,13 @@ describe('RegisterService', () => {
           useValue: { getConfig: () => ({ apiBaseUrl: API_BASE_URL }) },
         },
         { provide: WebauthnCeremonyService, useValue: ceremony },
+        // Root-provided in production, and listed here anyway — overriding the
+        // real one rather than resolving it. The real service would take the
+        // keys perfectly well and then hold them where nothing in this file can
+        // ask it anything about them, because no public member of it returns a
+        // key and none ever will. The stub is the only seam through which
+        // "which pair reached custody" is a question at all.
+        { provide: AccountKeyCustodyService, useValue: custody },
         // Component-provided in production, so it is listed rather than
         // resolved from the root injector.
         RegisterService,
@@ -1134,6 +1266,240 @@ describe('RegisterService', () => {
       'probe.keys.contentKey',
       'probe.stray',
     ]);
+  });
+
+  // **The keys reach custody on the 201 and at no earlier instant.**
+  //
+  // They have existed since the ceremony: drawn once, wrapped eleven times,
+  // imported through their two doors, and sitting on the instance while ten
+  // codes are on screen. That is where a reader will move the hand-over to,
+  // because it is where the values are. Moving it there needs three clearing
+  // sites — the restart, the failed POST, and a destroy hook this service does
+  // not have — and the one that gets forgotten leaves the keys of an account
+  // that was never created on a root-provided singleton for the life of the
+  // tab, with nothing on screen and nothing red.
+  //
+  // The other half of the case is *which* pair arrived, and it is checkable at
+  // all only because both keys are deterministic when used. See the
+  // fingerprints above.
+  it('hands the account keys to custody when the account is created', async () => {
+    // Arrange
+    const { request, codes } = await driveToRegistration();
+    const factors = factorsOf(objectBodyOf(request));
+
+    // The whole card is minted, the body is assembled, the request is in
+    // flight — and nothing has been created. Custody has been told nothing.
+    expect(codes).toHaveLength(RECOVERY_CODE_SET_SIZE);
+    expect(touchedMembersOf(custody)).toEqual([]);
+
+    // Act
+    request.flush(null, { status: 201, statusText: 'Created' });
+
+    await eventually(
+      () => navigations[0] ?? null,
+      'the navigation into the app',
+    );
+
+    // Assert
+    // Once, and nothing else was said. `unlock` here would be a browser going
+    // back to read envelopes it wrote thirty milliseconds ago — the round trip
+    // `adopt` exists to make unnecessary — and `lock` would be a registration
+    // that ended by throwing away what it had just created.
+    expect(touchedMembersOf(custody)).toEqual(['adopt']);
+    expect(custody.adopt).toHaveBeenCalledTimes(1);
+
+    const [contentKey, indexKey] = custody.adopt.mock.calls[0];
+
+    // **Two keys of two kinds, and the second one is the assertion a reader
+    // will delete.** The content key encrypts, so it comes through the AES-GCM
+    // door. The index key is what a blind index is computed under, and a blind
+    // index is HMAC-SHA-256 — so sending it through `importAesGcmKey` because
+    // that call is already written a line above produces an object that cannot
+    // sign a single index, cannot be corrected afterwards, and is wrong in a
+    // way nothing else in this suite looks at. It costs one line to say so.
+    expect(contentKey.algorithm.name).toBe('AES-GCM');
+    expect(indexKey.algorithm.name).toBe('HMAC');
+    expect(hashNameOf(indexKey)).toBe('SHA-256');
+
+    // Non-extractable, both, which is what stops a later caller reading the
+    // account's whole keyspace out of the service holding it.
+    expect(contentKey.extractable).toBe(false);
+    expect(indexKey.extractable).toBe(false);
+
+    // And they are the account's own pair — the one the eleven envelopes in the
+    // body were sealed over — rather than two keys of the right shape. Measured
+    // against the *first recovery code's* factor rather than the passkey's,
+    // because the passkey's key-encryption key is a fixture this file holds
+    // across every attempt while a code's is derived from a code that was minted
+    // for this attempt alone. Opening under it proves the pair came from this
+    // drawing and no other.
+    const account = await pairFrom(factors[1], await keyOf(1, codes));
+
+    expect(
+      await contentFingerprint(contentKey),
+      'Custody was handed a content key the account’s envelopes do not ' +
+        'carry.',
+    ).toBe(await contentFingerprint(account.contentKey));
+    expect(
+      await indexFingerprint(indexKey),
+      'Custody was handed an index key the account’s envelopes do not ' +
+        'carry.',
+    ).toBe(await indexFingerprint(account.indexKey));
+  });
+
+  // **The sharpest case in the file, and the one whose failure names nothing.**
+  //
+  // An abandoned attempt drew its own pair and wrapped it under eleven factor
+  // identifiers that died with it. Carried forward, that pair is adopted on the
+  // *second* attempt's 201 — and the account is then created under one drawing
+  // and unlocked with another. Every envelope in `wrapped_account_keys` belongs
+  // to the second pair; the browser is holding the first. Nothing on either
+  // side of the wire can see it: the set validates, the account is created, a
+  // session is handed over, the screen goes to `/app`. What is broken is every
+  // read the account will ever do, permanently, with no error naming the cause.
+  //
+  // The fingerprints are what make this checkable rather than merely stated:
+  // both attempts hand custody two `CryptoKey` objects of identical shape, and
+  // shape is the whole of what an opaque key reveals.
+  it('adopts the pair the account was created under, never an abandoned one', async () => {
+    // Arrange
+    const abandoned = await driveToCodes();
+
+    // The restart lands on the passkey step, so the next press fetches its own
+    // challenge: the one `Continue` prefetched was spent by the ceremony that
+    // has just run.
+    service.restart();
+
+    const kept = await runCeremonyFetchingAChallenge();
+
+    service.create();
+
+    const request = await eventually(
+      () => http.match(REGISTRATION_URL)[0] ?? null,
+      'the registration request',
+    );
+    const factors = factorsOf(objectBodyOf(request));
+
+    // Act
+    request.flush(null, { status: 201, statusText: 'Created' });
+
+    await eventually(
+      () => navigations[0] ?? null,
+      'the navigation into the app',
+    );
+
+    // Assert
+    // Two attempts really happened, which is what stops everything below
+    // passing over a run that restarted into nothing. Twenty distinct codes:
+    // the second draw shares not one value with the first.
+    expect(abandoned).toHaveLength(RECOVERY_CODE_SET_SIZE);
+    expect(kept).toHaveLength(RECOVERY_CODE_SET_SIZE);
+    expect(new Set<string>([...abandoned, ...kept]).size).toBe(
+      2 * RECOVERY_CODE_SET_SIZE,
+    );
+
+    expect(custody.adopt).toHaveBeenCalledTimes(1);
+
+    const [contentKey, indexKey] = custody.adopt.mock.calls[0];
+
+    // The pair the *posted* body carries, opened under a code from the set the
+    // person was left holding. If the abandoned attempt's keys had been carried
+    // forward, both fingerprints would differ and neither would say why —
+    // which is exactly the failure mode in production, and the reason the
+    // messages below have to name it.
+    const account = await pairFrom(factors[1], await keyOf(1, kept));
+
+    expect(
+      await contentFingerprint(contentKey),
+      'The account was created under one drawing of the keys and unlocked ' +
+        'with another.',
+    ).toBe(await contentFingerprint(account.contentKey));
+    expect(
+      await indexFingerprint(indexKey),
+      'The account was created under one drawing of the keys and unlocked ' +
+        'with another.',
+    ).toBe(await indexFingerprint(account.indexKey));
+  });
+
+  // **Nothing is adopted for an account that was not created**, and the two
+  // statuses are here for opposite reasons.
+  //
+  // A 400 is a judgement: the request was read and refused, nothing was
+  // written, and there is no account these keys could belong to. A 500 leaves
+  // the question open — the thirty rows may have committed and had the answer
+  // lost coming back — and keeping the keys "just in case" is the tempting
+  // edit. It is wrong twice over: nothing here can adopt keys for an account it
+  // cannot confirm exists, and the way back into an account that may have been
+  // created is a passkey assertion on `/welcome`, which derives its own
+  // key-encryption key and unwraps from the row this attempt would have
+  // written. Custody taken on a guess is custody nobody can verify or clear.
+  describe('adopts nothing from a registration the server did not create', () => {
+    it.each([
+      {
+        status: 400,
+        statusText: 'Bad Request',
+        why: 'the request was judged and refused',
+      },
+      {
+        status: 500,
+        statusText: 'Internal Server Error',
+        why: 'the answer says nothing about what was written',
+      },
+    ])('adopts nothing when $why', async ({ status, statusText }) => {
+      // Arrange
+      const { request } = await driveToRegistration();
+
+      // Act
+      request.flush(null, { status, statusText });
+
+      await eventually(() => service.failure(), 'the failure to be published');
+
+      // Assert
+      expect(touchedMembersOf(custody)).toEqual([]);
+      expect(navigations).toEqual([]);
+    });
+  });
+
+  // The same argument `sign-in.service.spec.ts` makes over its own custody
+  // call, on the other flow that makes one — and here the stakes are higher,
+  // because two statements follow the hand-over rather than one.
+  //
+  // An exception thrown out of an RxJS `next` handler is **not** routed to the
+  // `error` callback beside it: it is reported out of band as an unhandled
+  // error, and `next()` returns to the producer as though nothing happened.
+  // What it does do is what any throw does — the statements after it never run.
+  // Unguarded, a custody that threw would leave the provider's bearer token
+  // still held and the navigation never made: somebody standing on the register
+  // screen holding a created account and a card of live codes, with the screen
+  // saying nothing, because as far as this service is concerned the
+  // registration succeeded.
+  it('finishes the registration even when custody blows up', async () => {
+    // Arrange
+    custody.adopt.mockImplementation(() => {
+      throw new Error('the account keys could not be taken into custody');
+    });
+
+    const { request } = await driveToRegistration();
+
+    // Act
+    request.flush(null, { status: 201, statusText: 'Created' });
+
+    await eventually(
+      () => navigations[0] ?? null,
+      'the navigation into the app',
+    );
+
+    // Assert
+    // It really did throw, which is what stops this passing over a mock that
+    // was never reached.
+    expect(custody.adopt).toHaveBeenCalledTimes(1);
+    expect(custody.adopt.mock.results[0].type).toBe('throw');
+
+    // And the flow is untouched by it: the person is in the app, the screen
+    // says nothing new, and the button is live again.
+    expect(navigations).toEqual(['/app']);
+    expect(service.failure()).toBeNull();
+    expect(service.busy()).toBe(false);
   });
 
   it('refuses to post the same registration twice', async () => {

@@ -1,6 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { MeApiService, type MeDto } from '@app-core/api/me-api.service';
+import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionService } from './session.service';
@@ -39,14 +40,47 @@ class MeApiStub {
   public getSessionOwner = vi.fn((): Observable<MeDto> => of(ME));
 }
 
+// The account's keys, replaced by three counters. **Every member, not just
+// `lock`**, because the two rules below are a matched pair — one says this class
+// must reach for custody and the other says it must not — and only a census can
+// state the second one as "nothing at all happened" rather than as "the member I
+// happened to think of was not called". A `SessionService` that grew an
+// `unlock` or an `adopt` call would slip past a spy on `lock` alone.
+class CustodyStub {
+  public unlock = vi.fn((): void => undefined);
+  public adopt = vi.fn((): void => undefined);
+  public lock = vi.fn((): void => undefined);
+}
+
+// Which of the three was reached, by name. A failure that says
+// `[ 'lock' ]` where `[]` was expected names the mutation; `toHaveBeenCalled`
+// would only say `true`.
+function touchedMembersOf(custody: CustodyStub): readonly string[] {
+  return (['unlock', 'adopt', 'lock'] as const).filter(
+    (name) => custody[name].mock.calls.length > 0,
+  );
+}
+
 describe('SessionService', () => {
   let service: SessionService;
   let api: MeApiStub;
+  let custody: CustodyStub;
 
   beforeEach(() => {
     api = new MeApiStub();
+    custody = new CustodyStub();
     TestBed.configureTestingModule({
-      providers: [{ provide: MeApiService, useValue: api }],
+      providers: [
+        { provide: MeApiService, useValue: api },
+        // Stubbed rather than real, unlike `sign-in.service.spec.ts`, and for
+        // the opposite reason: nothing here is interested in what custody
+        // *does*, only in whether this class told it to. The real service would
+        // answer both questions and would also go and read
+        // `/api/me/account-keys` over an `MeApiService` stub that has no such
+        // member, which is a failure about the fixture rather than about the
+        // rule.
+        { provide: AccountKeyCustodyService, useValue: custody },
+      ],
     });
     service = TestBed.inject(SessionService);
   });
@@ -172,6 +206,37 @@ describe('SessionService', () => {
     expect(service.status()).toBe('anonymous');
   });
 
+  // **Custody ends where the session does, and it ends in this method rather
+  // than at each caller.** Two paths end a session today —
+  // `sessionExpiryInterceptor` on a 401 and `SettingsService.leave()` — and a
+  // third will be written by somebody thinking about sign-out rather than about
+  // key material. Owned here, that third path clears the account's keys for
+  // free. Owned by the callers, it does not, and the symptom is an ended
+  // session whose content key is still sitting on the root injector for the
+  // life of the tab, readable by anything with an injector — with nothing on
+  // screen and nothing red to say so.
+  //
+  // Arranged from a session that was genuinely established rather than from
+  // rest, for the same reason the test above is: the transition that matters is
+  // the mid-visit one.
+  it('drops the account keys when the session ends', async () => {
+    // Arrange
+    api.getSessionOwner.mockReturnValue(of(ME));
+    await service.probe();
+    expect(touchedMembersOf(custody)).toEqual([]);
+
+    // Act
+    service.ended();
+
+    // Assert
+    expect(custody.lock).toHaveBeenCalledTimes(1);
+
+    // And it locked rather than doing anything else with them. `unlock` here
+    // would be this class asking for a factor nobody presented; `adopt` would
+    // be it handing over keys it does not have and could not have.
+    expect(touchedMembersOf(custody)).toEqual(['lock']);
+  });
+
   // The mirror of the transition above, and the half a reader will implement as
   // a re-probe. Arranged from `'anonymous'` reached by a real refusal, because
   // an implementation that only ever sets `'authenticated'` from `'unknown'`
@@ -195,5 +260,58 @@ describe('SessionService', () => {
     // its answers. A person who just created an account would then be shown a
     // client that is not sure they exist.
     expect(api.getSessionOwner).not.toHaveBeenCalled();
+  });
+
+  // **The asymmetry is the point, and it is the half a reader will "finish".**
+  // `ended()` locks; `established()` deliberately does nothing to custody, and
+  // pairing them up — one method clears, so surely its mirror should too —
+  // wipes exactly the keys that were just handed over.
+  //
+  // The timing is what makes it fatal rather than merely wasteful. Both
+  // establishing paths call `established()` and hand keys over in the same
+  // breath, one statement apart: registration adopts the pair it drew, and
+  // sign-in unlocks under the key the authenticator derived. A `lock()` here
+  // lands either immediately before that hand-over — bumping the generation, so
+  // an unlock already in flight resolves into a world that has moved and drops
+  // what it opened — or immediately after it, destroying the adopted pair
+  // outright. Both leave a signed-in person locked out of their own content
+  // with no ceremony on screen to open it again, and neither reddens anything
+  // that exists without this test.
+  it('keeps the account keys when a session is established', async () => {
+    // Arrange
+    api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
+    await service.probe();
+    expect(service.status()).toBe('anonymous');
+
+    // Act
+    service.established();
+
+    // Assert
+    expect(service.status()).toBe('authenticated');
+
+    // Nothing whatever was said to custody. Written as the census rather than
+    // as `expect(custody.lock).not.toHaveBeenCalled()`, because the rule is
+    // that a session beginning says nothing about which factor opened it — the
+    // two paths that know hand the keys over themselves — and that rule refuses
+    // every member equally.
+    expect(touchedMembersOf(custody)).toEqual([]);
+  });
+
+  // The same rule reached from the state that most tempts a reflex. A probe
+  // that could not reach the server has learned nothing about the visitor, so
+  // it may not act on their behalf either — and locking here would destroy both
+  // keys over one blinked request and demand a full WebAuthn ceremony to get
+  // them back. It is `auth.guard.ts`'s and `guest.guard.ts`'s refusal to bounce
+  // anybody on `'unreachable'`, one layer down, where the cost is higher.
+  it('does not drop the account keys because a probe never reached the server', async () => {
+    // Arrange
+    api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
+
+    // Act
+    await service.probe();
+
+    // Assert
+    expect(service.status()).toBe('unreachable');
+    expect(touchedMembersOf(custody)).toEqual([]);
   });
 });

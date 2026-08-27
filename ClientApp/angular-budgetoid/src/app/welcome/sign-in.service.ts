@@ -11,13 +11,15 @@
 // start.
 //
 // **Nothing secret lives on this instance.** The assertion is a local, the
-// key-encryption key is dropped where it is received, and the two signals below
-// hold a boolean and one of seven words. That is what makes the state of this
-// service safe to render.
+// key-encryption key is handed on in the statement it is read and never given a
+// name this class could assign from, and the two signals below hold a boolean
+// and one of seven words. That is what makes the state of this service safe to
+// render.
 import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, Signal, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { SignInApiService } from '@app-core/api/sign-in-api.service';
+import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import {
   WebauthnCeremonyService,
   type PasskeyCeremonyFailure,
@@ -61,6 +63,11 @@ export class SignInService {
   private readonly api = inject(SignInApiService);
   private readonly ceremony = inject(WebauthnCeremonyService);
   private readonly session = inject(SessionService);
+  // Root-provided, unlike this service and unlike everything else it is
+  // injected with, and the difference is the point: what this screen produces
+  // is state of the **session**, and a session outlives the screen that opened
+  // it. `account-key-custody.service.ts` argues the scope at length.
+  private readonly custody = inject(AccountKeyCustodyService);
   private readonly router = inject(Router);
 
   private readonly busySignal = signal(false);
@@ -133,25 +140,31 @@ export class SignInService {
         return;
       }
 
-      // **The key-encryption key is taken and dropped, and both halves of that
-      // are decisions.**
+      // **The key-encryption key is taken and handed straight on, in one
+      // statement, and both halves of that are decisions.**
       //
       // `assertPasskey` asks for PRF and derives a key because the account's
       // wrapped envelopes open under exactly that value and under nothing else:
       // a sign-in that derived nothing would authenticate the person and leave
-      // every row on the account unreadable the day encryption lands. The
-      // cheaper assertion is the one a reader will propose, because the
-      // signature the server verifies needs no PRF output at all.
+      // every row on the account unreadable. The cheaper assertion is the one a
+      // reader will propose, because the signature the server verifies needs no
+      // PRF output at all.
       //
-      // And nothing on this screen has a use for the key yet, so holding it is
-      // holding the account's master key for no reason, in a place one
-      // `effect()` or one devtools panel can read. A reader will want to park it
-      // on a field "for the encryption epic": the epic that needs it will run
-      // its own assertion or unwrap from a session that did, the way every other
-      // caller will have to. Reading only `payload` off the result is what makes
-      // the drop structural rather than a habit — the key is never given a name
-      // here that a later line could assign from.
-      this.post(ceremony.value.payload);
+      // And having derived it, this service still may not *keep* it. It travels
+      // as an argument — through here, into {@link post}, into
+      // `AccountKeyCustodyService.unlock` — and is never assigned to a field, a
+      // signal or a local of this method. Both members are read in the one
+      // statement below for exactly that reason: there is no name here a later
+      // line could assign from, which is what makes the rule structural rather
+      // than a habit. A key parked on this instance is the account's master key
+      // sitting one `effect()` or one devtools panel away from being read, on a
+      // screen whose whole state is otherwise safe to render.
+      //
+      // **Custody is the session's, not this screen's**, which is why the key
+      // goes to a root-provided service rather than being held here for the
+      // rest of the visit: `/welcome` is discarded by the navigation this flow
+      // ends with.
+      this.post(ceremony.value.payload, ceremony.value.keyEncryptionKey);
     } catch {
       // Nothing above throws in the ordinary course: the ceremony answers with a
       // result rather than an exception. A rejection here is therefore something
@@ -163,18 +176,24 @@ export class SignInService {
   }
 
   // The last leg, and the only one that can end with somebody inside the app.
-  private post(payload: PasskeyAssertionPayload): void {
+  //
+  // `keyEncryptionKey` is a parameter and reaches nothing but the call below.
+  private post(
+    payload: PasskeyAssertionPayload,
+    keyEncryptionKey: CryptoKey,
+  ): void {
     this.api.assert(payload).subscribe({
       next: () => {
         this.busySignal.set(false);
 
-        // **This order, and the pair is the reason.** Publishing the session
-        // first means `authGuard` reads `'authenticated'` when the navigation
-        // below asks it — navigate first and the guard judges `/app` against a
-        // stale `'anonymous'` and bounces the person straight back out of the
-        // account they just opened. `register.service.ts` states the same rule
-        // at the same point in its own flow.
+        // **This order, and each pair of neighbours is the reason.** Publishing
+        // the session first means `authGuard` reads `'authenticated'` when the
+        // navigation below asks it — navigate first and the guard judges `/app`
+        // against a stale `'anonymous'` and bounces the person straight back out
+        // of the account they just opened. `register.service.ts` states the same
+        // rule at the same point in its own flow.
         this.session.established();
+        this.unlock(keyEncryptionKey);
         void this.router.navigateByUrl('/app');
       },
       error: (error: unknown) => {
@@ -182,6 +201,42 @@ export class SignInService {
         this.failureSignal.set(SignInService.failureOf(error));
       },
     });
+  }
+
+  // Opens the account's keys, and cannot do anything else.
+  //
+  // **Not awaited, and there is nothing to await**: `unlock` returns `void` on
+  // purpose, and its own doc argues why. Awaited, a round trip would land
+  // between a verified assertion and the app; one refactor later the `await`
+  // grows a `catch`, and a key that did not open becomes an authentication that
+  // failed. Only `anonymous` may bounce anybody out of an account, and a factor
+  // that opened nothing is not that.
+  //
+  // **Not in the `APP_INITIALIZER` either.** A cold load holds no
+  // key-encryption key, so a probe there would spend a round trip on every cold
+  // load fetching envelopes it has nothing to open — on the one path that is
+  // awaited and that every guard's synchronicity depends on. The moment a
+  // browser holds the key is this one.
+  //
+  // **The `try` is what keeps the two lines around this call independent of it.**
+  // `unlock` is documented not to throw, and this method does not take that on
+  // trust: an exception out of the `next` handler is not routed to the `error`
+  // callback beside it, it is reported as an unhandled rejection and the
+  // statements after it never run — so a throwing custody would strand somebody
+  // holding a valid session cookie on `/welcome`, with the screen saying
+  // nothing because the sign-in did not fail. Swallowed, and deliberately not
+  // published: this screen says one thing however a sign-in was refused, the
+  // server answers every refusal with one byte-identical 401 on purpose, and a
+  // sentence that varied by whether a key opened would rebuild the
+  // credential-enumeration oracle the server refuses to be. What the failure is
+  // readable from is `AccountKeyCustodyService.unlockFailure`, which is a fact
+  // about a factor rather than about a sign-in.
+  private unlock(keyEncryptionKey: CryptoKey): void {
+    try {
+      this.custody.unlock(keyEncryptionKey);
+    } catch {
+      // Nothing. See above.
+    }
   }
 
   // The ceremony's five words, mapped one for one. A `switch` over the closed
