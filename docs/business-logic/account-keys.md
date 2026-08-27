@@ -33,9 +33,8 @@ the keys, derive a key-encryption key from either kind of factor, wrap both keys
 them again; the server refuses to register a passkey, issue a set of recovery codes, **or create an
 account** unless the request carries a factor identifier and both wrapped keys for every factor it
 brings into existence, and files them in the same save as the credential.
-`GET /api/me/account-keys` hands a signed-in browser back the envelopes belonging to the credential
-that opened its session — see
-[The one route that hands them back](#the-one-route-that-hands-them-back).
+`GET /api/me/account-keys` hands a signed-in browser back the envelopes of **every factor the account
+holds** — see [The one route that hands them back](#the-one-route-that-hands-them-back).
 
 **The circle is closed on two paths, and each closes it differently.** `register.service.ts` obtains
 a PRF output from a real authenticator, draws the account's keys, mints the set, derives eleven
@@ -594,43 +593,78 @@ third is a timeline of somebody's recovery history beside their key material. Th
 back in the canonical lower-case hyphenated spelling it was stored in, because it **is** the
 associated data both envelopes were sealed with — the rule the write paths already keep.
 
-**It is narrowed by the credential that opened the session, never by the account, and that is a
-decision rather than an optimisation.** A passkey session gets one pair; a recovery-codes session
-gets ten, because a factor is not a credential — the distinction under
-[Key Entities](#key-entities), which is what makes the answer a list at all rather than a pair. An
-account holding both kinds has eleven rows across two credentials, and handing all eleven
-to a passkey session would give it ten envelopes it can never open: material travelling further than
-it is needed, which is a defect whether or not anything reads it.
+**It is keyed on the account, never on a credential, and that is a decision rather than a
+convenience.** The keys belong to the *account*; a credential is only one way into it. An account
+holding a passkey and a set of recovery codes has **eleven** rows across two credentials, and all
+eleven come back — the count is the entry-per-factor distinction under
+[Key Entities](#key-entities), which is what makes the answer a list at all rather than a pair.
 
-**The claim is read at the edge, and only a session id travels inward.** `AccountKeyEndpoints` takes
-the `session_id` claim this request's own authentication produced and builds `GetAccountKeysQuery`
-from it; no `ClaimsPrincipal` crosses into the Application ring, which is why that query carries an
-id where `ListCredentialsQuery` and `GetSignedInUserQuery` carry nothing — the account they are
-scoped to comes from `IUserContext`, and *which credential opened this session* is the one thing the
-context cannot supply. `GetAccountKeysHandler` resolves that session, takes the credential off it,
-and asks `IAccountKeyReadService.ListForCredentialAsync` — a port the Application ring declares and
-`AccountKeyReadService` implements one ring out — for that credential's rows on the account
-`IUserContext` names, **not** the account the session row happens to carry: the two cannot disagree,
-but only one of them is the value row-level security is keyed on. Nothing in the request names a
-session, a credential or an account, so there is no identifier on the wire for a caller to
-substitute.
+**The reason is that a ceremony can present any of the account's factors, and the client cannot know
+in advance which one it will be.** Re-authentication looks a passkey up **by account**:
+`PasskeyReauthentication` calls `IPasskeyRepository.FindByWebAuthnCredentialIdForUserAsync` with
+`IUserContext.UserId`, never with the session's credential. And the assertion options carry **no
+`allowCredentials`** — `PasskeyRequestOptions` and `BeginReauthenticationHandler` each state that as a
+decision — so the *authenticator* chooses which credential answers. A read keyed on anything narrower
+than the account therefore refuses a factor that was just presented and just verified.
 
-**That narrowing does not have to widen when a factor is added later**, which is the objection worth
-answering before somebody "fixes" the route for good reasons. Registering a passkey or issuing a set
-of codes onto an existing account without re-encrypting anything happens in a browser that has
-**already unwrapped** the content key and the index key through the factor it is signed in with, so
-it wraps the new factor under a key-encryption key of its own and never needs to read another
-factor's envelopes. A route returning every factor would be a wider read serving a step that does
-not need one.
+**The failure that shape produced is reachable and silent.** Somebody signs in by redeeming a recovery
+code, so `RedeemRecoveryCodeHandler` opens the session over the recovery-codes credential. They then
+ask for a new set of codes, which `GenerateRecoveryCodesHandler` gates on a fresh **passkey**
+assertion. The ceremony yields the passkey's key-encryption key; a credential-narrowed read hands back
+the ten recovery-code envelopes; every unwrap fails to authenticate, and the client tells the person
+to present another factor having just been given a perfectly valid one. Every row is correct, every
+status code is a `200`, and nothing on the server sees it happen.
 
-**A session this request cannot see answers an empty array — never a `404`.** Never established,
-already ended, and belonging to somebody else are one indistinguishable answer on purpose, and this
-is the single most likely thing a later reader corrects, because "nothing found → 404" is right
-almost everywhere else. Here it is the enumeration oracle rebuilt: the moment "no rows" answers
-differently from those, a caller learns which of them happened, on the one route that names an
-account's key custody. A credential holding no factor rows answers the same empty array, and means
-the credential was revoked or the account erased between this request authenticating and this read
-running — a race rather than a corruption, on a read taken for display.
+**What widening costs is real and is accepted.** A caller now receives envelopes it holds nothing to
+open — material travelling further than the request needs it. Two things make that acceptable. The
+operator already holds every one of these rows, so nothing is disclosed to the party this design
+defends against. And a factor's envelopes open **only** under a key-encryption key derived from that
+factor — a PRF output inside an authenticator, or a code written on a card — so an entry the caller
+cannot open is ciphertext bound to associated data it cannot reproduce. What is genuinely new is the
+*count*: the answer now says how many factors the account holds, which the same principal can already
+assemble from `GET /api/me/credentials` and `GET /api/me/recovery-codes`.
+
+**Nothing is read off the request at all, and the route is shorter for it.** `AccountKeyEndpoints`
+used to take the `session_id` claim its own authentication produced and hand it inward; there is now
+no claim to read and no id to parse, so `GetAccountKeysQuery` declares no member — the same shape
+`ListCredentialsQuery`, `GetSignedInUserQuery`, `CountRecoveryCodesQuery` and `ExportDataQuery` keep,
+and for the same reason: the thing they are scoped to is the account, which comes from `IUserContext`.
+No `ClaimsPrincipal` crosses into the Application ring. `GetAccountKeysHandler` asks
+`IAccountKeyReadService.ListForAccountAsync` — a port the Application ring declares and
+`AccountKeyReadService` implements one ring out — for that account's rows, naming the owner explicitly
+even though `user_isolation` would scope the read anyway, because a policy makes a wrong query answer
+*empty* rather than *correct*.
+
+**The route reads no session, which also means it can hold no liveness rule.** Whether a session is
+live is the authentication pipeline's answer, applied before any handler is reached. That used to be a
+restraint written in a comment; it is now structural, because there is no session in reach to check.
+`AccountKeysEndpointTests` pins that the pipeline still refuses a revoked session here.
+
+**`Cache-Control: no-store` is stated on this route and nowhere else.** `SecurityHeadersMiddleware`
+declines to own a global value and says why — no endpoint in the application states its cacheability,
+so the question is open rather than delegated. This is the one endpoint that returns key material, so
+it is the one that answers for itself. It is a direct header write rather than a second
+`Response.OnStarting` callback: Kestrel runs those LIFO and abandons the whole stack on the first
+throw, so a second one would both overwrite this header and put the four security headers behind its
+own failure.
+
+**An empty array, never a `404` — but not for the reason the narrowed route gave.** The old argument
+was an enumeration oracle: a `404` would have told a caller that a guessed session id named a real
+row. That argument does **not** survive the widening, because nothing is narrowed by an identifier a
+caller could guess and an authenticated request can only ever ask about its own account. What holds now
+is the client. `AccountKeyCustodyService` reads an empty list as `unopened` — "present another factor"
+— and reads any failed read, a `404` included, as `unreachable`, whose advice is "try the same factor
+again in a minute". A `404` would hand somebody whose account holds nothing openable the one
+instruction that can never work.
+
+**Four ways to reach an empty answer, and the fourth is one this chapter used to deny.** The account
+holds no recovery factor at all — a state no path reaches today, since registration creates eleven
+factors or creates nothing. It was erased between this request authenticating and this read running.
+Its factor-bearing credentials were revoked in that window, each revocation taking its wrapped rows by
+the cascade from `credentials`. Or **a factor exists whose wrapped row was never written**: that every
+path creating a factor writes its row in the same `SaveChanges` is a property of the three write paths
+that exist, not a fact the schema holds — see the *MUST* constraint above, which says so in the same
+words — so a fourth path that skipped them would create a keyless factor and redden nothing.
 
 **`AccountKeyReadService` projects and materialises nothing**, for the reason the never-materialise
 rule under [Workflows](#workflows--state-transitions) gives: the role holds no `DELETE` on this
@@ -639,8 +673,10 @@ cascade of its own, which is exactly why getting this wrong here would surface o
 instead. It is a **read service** rather than a member on a repository for that reason too — a
 repository loads entities that rules are applied to, and on this table loading one is the hazard.
 
-`AccountKeysEndpointTests` drives the whole of it over real HTTP, because half of what is measured
-is *which session the request arrives as*.
+`AccountKeysEndpointTests` drives the whole of it over real HTTP, because half of what is measured is
+*which session the request arrives as* — including the case the narrowed shape could not express: an
+account holding a passkey **and** a set of recovery codes, signed in with one of them, is handed all
+eleven factors.
 
 **The browser reads it in one place**, `MeApiService.getAccountKeys`, whose only caller is
 `AccountKeyCustodyService`. Two refusals guard the body rather than one, and both matter here more
@@ -717,12 +753,13 @@ are exactly the two facts a caller is entitled to. The key-encryption key is a *
 a field** for the neighbouring reason: retained, this class could re-unlock with no factor presented
 at all, which destroys the property the whole design rests on.
 
-**Every entry is tried in turn, each under its own `factorId`.** A passkey session is answered with
-one entry and a recovery-codes session with ten, so the list of one is what a reader optimises into
-`entries[0]` — and it works, forever, on every passkey account in the product. What it does to the
-other kind is read code #1's envelopes under code #7's key-encryption key: the open fails to
-authenticate, the loop that would have found the right pair is not there, and somebody who redeemed
-a valid code is told their account cannot be opened. Twenty AEAD attempts is a cost nobody can
+**Every entry is tried in turn, each under its own `factorId`.** An account holding one passkey and
+nothing else is answered with one entry, so the list of one is what a reader optimises into
+`entries[0]` — and it works, forever, on that kind of account. An ordinary account is answered with
+eleven, of which exactly one opens under the factor just presented. What `entries[0]` does there is
+read some other factor's envelopes under this factor's key-encryption key: the open fails to
+authenticate, the loop that would have found the right pair is not there, and somebody who presented a
+valid factor is told their account cannot be opened. Twenty-two AEAD attempts is a cost nobody can
 measure. The associated data is rebuilt from `entry.factorId` and never from anything this client
 remembers, because that identifier **is** what the envelopes were sealed against.
 
@@ -733,9 +770,11 @@ custody read `wrapped_account_keys` back and open them under a key-encryption ke
 passkey just registered. Three things are wrong with it. It needs the passkey's key-encryption key
 to survive the codes step on some instance, which is **the same power one step removed**. It puts a
 round trip and a new failure mode on the happiest path in the product, whose entire purpose is to
-arrive back where it started. And the verification it appears to buy is illusory: a passkey
-session's read hands back the **passkey factor's pair alone** and never exercises the ten code
-pairs, which is precisely where the mispairing hazard the registration loop is built around lives.
+arrive back where it started. And the verification it appears to buy is illusory — which is still true
+now that the read spans the account. It hands back all eleven pairs, but the browser is holding the
+**passkey's** key-encryption key and nothing else, so only the passkey factor's pair is ever opened
+and the ten code pairs go untouched, which is precisely where the mispairing hazard the registration
+loop is built around lives.
 
 ### What the database can and cannot hold to account
 
@@ -779,9 +818,9 @@ gets back out.
    because those eleven land on one primary key in one save — and projects the set's rows from the
    one validated list rather than zipping them from three. See [registration.md](registration.md).
 
-6. **Handing them back.** `GET /api/me/account-keys` returns the envelopes filed under the
-   credential that opened the calling session — one entry for a passkey, ten for a set of recovery
-   codes — and an empty array for anything it cannot see. It is the only read of
+6. **Handing them back.** `GET /api/me/account-keys` returns the envelopes of every factor the
+   authenticated account holds — one entry per registered passkey, ten per set of recovery codes, so
+   eleven for an ordinary account — and an empty array when it holds none. It is the only read of
    `wrapped_account_keys` the application makes, and the browser's one caller is custody. See
    [The one route that hands them back](#the-one-route-that-hands-them-back).
 
@@ -837,9 +876,9 @@ about why.
 
 - some entry opened → `unlocked`, and nothing is said at all
 - the read came back and no entry opened, **including an empty list** → `unopened`. The next step is
-  another factor. An empty list is not a third word: the route answers `[]` both for a session it
-  cannot see and for a credential carrying no factors, indistinguishably and on purpose, so there is
-  nothing to tell apart and a third word would claim a difference this client was never told
+  another factor. An empty list is not a third word: it means the account holds no wrapped rows this
+  request can see, and the four ways that happens are indistinguishable to a client, so a third word
+  would claim a difference this client was never told
 - the read never produced a usable answer — no server, a `5xx`, a timeout, a body this client
   refused → `unreachable`. The next step is the same factor again in a minute
 - **never**: sign the person out. Neither word is a statement about the session

@@ -394,24 +394,28 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 -- the other redundant, and withdrawing the grant takes both down together.
 --
 -- The application reader is GET /api/me/account-keys, which hands a signed-in browser the wrapped
--- content key and wrapped index key of every factor filed under THE CREDENTIAL THAT OPENED THIS
--- SESSION — one pair for a passkey, ten for a set of recovery codes, because a factor is not a
--- credential. It reaches the table through AccountKeyReadService.ListForCredentialAsync, which
--- PROJECTS over AsNoTracking and materialises no entity, for the reason the NO DELETE block below
--- gives. Narrowing to the session's credential rather than to the account is a decision rather than
--- an optimisation: an account holding a passkey and a set of codes has eleven rows across two
--- credentials, and a passkey session handed all eleven would hold ten envelopes it can never open —
--- material travelling further than it is needed, which is a defect whether or not anything reads it.
--- That narrowing does not have to widen when a later factor is added, either, and the reason is the
--- opposite of the tempting one. An unlocked tab CANNOT wrap a new factor from what it is holding:
--- AccountKeyCustodyService keeps the account's two keys as non-extractable CryptoKey objects imported
--- with usages ['encrypt','decrypt'] and ['sign'] — no wrapKey — and no member of it hands either back,
--- while wrapAccountKeys takes the account keys as BYTES, and those died inside the same imports that
--- produced the key objects. That unreachability is the custody design rather than a gap in it. So
--- adding a factor costs a fresh ceremony on the screen that adds it, and a ceremony yields the
--- key-encryption key of the factor being PRESENTED — whose envelopes are exactly what this route
--- already hands back. The read stays on the session's credential because that is the only factor
--- anybody at the keyboard can open, not because a browser kept something.
+-- content key and wrapped index key of EVERY FACTOR THE AUTHENTICATED ACCOUNT HOLDS — one pair per
+-- registered passkey and ten per set of recovery codes, so eleven for an ordinary account, because a
+-- factor is not a credential. It reaches the table through AccountKeyReadService.ListForAccountAsync,
+-- which PROJECTS and materialises no entity, for the reason the NO DELETE block below gives.
+-- The statement's only predicate is the owner, which is also the seek: IX_wrapped_account_keys_user_id
+-- exists for exactly it.
+--
+-- KEYED ON THE ACCOUNT AND NOT ON THE SESSION'S CREDENTIAL, and that is the correction of a shape this
+-- file used to argue for. The old argument was that a browser can only ever hold a key-encryption key
+-- derived from the factor its own session was opened with, so a wider answer would be material
+-- travelling further than it is needed. That is false, and two things in the repository say so:
+-- PasskeyReauthentication looks a passkey up BY ACCOUNT — FindByWebAuthnCredentialIdForUserAsync takes
+-- IUserContext.UserId, never the session's credential — and the assertion options carry NO
+-- allowCredentials, so the AUTHENTICATOR chooses which of the account's credentials answers a ceremony.
+-- Redeem a recovery code, then ask for a new set (which is gated on a fresh passkey assertion) and the
+-- narrowed read hands back the ten code envelopes while the browser is holding the passkey's key. Every
+-- row correct, a 200, and an account that will not open; nothing on the server sees it.
+--
+-- What the widening costs is real and is accepted. A caller now receives entries it holds nothing to
+-- open. The operator already holds every one of these rows, so nothing is disclosed to the party this
+-- table's policy defends against, and a factor's envelopes open ONLY under a key-encryption key derived
+-- from that factor — a secret this database has never stored in any form.
 --
 -- The other readers are the row-level-security isolation tests, and an endpoint answering correctly
 -- is not evidence about them: a policed table whose isolation nothing exercises is a policy nobody

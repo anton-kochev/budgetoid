@@ -190,10 +190,10 @@ required members. A third writer is a decision rather than a refactor.
   budget content, and **`federated` is the only credential type that cannot**. The rule runs that
   way round: a passkey and a set of recovery codes are each a secret in the holder's own possession,
   so both open a `Full` session. **The key custody those secrets carry is exercised on one of the
-  two**: a passkey sign-in derives a key-encryption key from the assertion's PRF branch, opens the
-  envelopes filed under that credential and holds the account's two keys for the visit, so a
-  federated credential's inability to do any of that is a difference the client can now demonstrate
-  rather than only argue. Nothing redeems a code in a browser yet, so the recovery-code half of the
+  two**: a passkey sign-in derives a key-encryption key from the assertion's PRF branch, reads the
+  account's wrapped rows, opens the one pair that key was sealed against and holds the account's two
+  keys for the visit — so a federated credential's inability to do any of that is a difference the
+  client can now demonstrate rather than only argue. Nothing redeems a code in a browser yet, so the recovery-code half of the
   same claim is still carried by possession alone. See [recovery-codes.md](recovery-codes.md) and
   [account-keys.md](account-keys.md).
 - **Enforced in**: `CK_sessions_kind_matches_credential`,
@@ -640,9 +640,10 @@ required members. A third writer is a decision rather than a refactor.
   `POST /api/me/erasure` each answer `403` with a body identical to the others and naming no
   session, credential or kind. Two 403s live on this path and they must stay distinguishable to a
   reader: the first-party control's carries its own title, this one carries none.
-  - **The account-keys refusal is the one this rule reads most literally.** A federated credential
-    can derive no key-encryption key, so a locked session reaching that route would be handed
-    envelopes it holds nothing to open. It is pinned by
+  - **The account-keys refusal is the one this rule reads most literally**, and the widening made it
+    more so rather than less. A federated credential can derive no key-encryption key, so a locked
+    session reaching that route would be handed **every** wrapped row on the account and hold nothing
+    to open any of them. It is pinned by
     `AccountKeysEndpointTests.AccountKeys_ForALockedSession_AreRefusedWithForbidden`, which pairs
     the refusal with a `Full` session on the same account, so a gate refusing everybody cannot
     pass it.
@@ -736,20 +737,22 @@ ELSE                                                    ← an unenumerated futu
   when it ended any — opens one over the new set in their place, so it is the one path that does
   both. The condition is the sweep's own count, which is why that file argues the `sessionsEnded`
   contract from the other side.
-- **[Account Keys](account-keys.md)** — `GET /api/me/account-keys` is the **second** route to read
-  the session id off the claim its own request's authentication produced, after the sign-out this
-  file argues, and the first to care **which credential** the session was opened over. Everywhere
-  else a session answers only "who is asking"; there it also answers "which envelopes can this
-  browser open", which is why that route is narrowed by the session's credential rather than by the
-  account. A session this request cannot see answers an empty array there and never a `404`, for the
-  same reason a dead cookie is answered identically to a forged one here.
+- **[Account Keys](account-keys.md)** — `GET /api/me/account-keys` reads **no session at all**, and
+  the sign-out route this file argues is once again the only one that reads the `session_id` claim its
+  own request's authentication produced. That route briefly narrowed its answer to the credential the
+  session was opened over, on the theory that a browser can only ever hold a key-encryption key
+  derived from the factor its own session began with. It cannot: a ceremony can present **any** of the
+  account's factors — re-authentication looks a passkey up by account and the assertion options carry
+  no `allowCredentials`, so the authenticator chooses — so a session tells that route nothing it may
+  act on. A session here answers "who is asking" and nothing more, which is what it answers
+  everywhere else in the product.
   - **Two words share a spelling and must not share a meaning.** A **locked session** is what this
     file means throughout: a row a federated credential opened, a fact about what the *server* will
     answer. A **locked account** is that file's word for a browser that does not hold the content
     key, which is the state every tab starts in and which a page reload returns to, on a session
-    that is perfectly live. The custody a session's credential can carry is the account keys'
-    subject; **the session's own lifetime is not custody's** — the keys end at a sign-out, at a
-    `401` and at a page load, and only the first two of those are anything this file records.
+    that is perfectly live. What a *factor* can open is the account keys' subject; **the session's
+    own lifetime is not custody's** — the keys end at a sign-out, at a `401` and at a page load, and
+    only the first two of those are anything this file records.
 - **`user_isolation`** — the same policy `users`, `budgets`, `passkey_signature_counters` and
   `wrapped_account_keys` carry, keyed on the same session setting.
 - **CORS** — the default policy gains `AllowCredentials()`, because a browser drops a cross-origin

@@ -1,26 +1,25 @@
 using Application.AccountKeys;
 using Application.AccountKeys.GetAccountKeys;
-using Domain.Sessions;
 using Domain.Users;
 using UnitTests.Fakes;
 
 namespace UnitTests;
 
 /// <summary>
-/// What the handler behind the account-keys read hands back: every factor the session's credential
-/// holds, an empty list for the two ways there is nothing to hand back, and the one pair of
-/// arguments it may reach the read service with.
+/// What the handler behind the account-keys read hands back: every factor the <b>account</b> holds,
+/// across every credential it holds them under; an empty list when it holds none; and the one argument
+/// it may reach the read service with.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Unit tests rather than endpoint tests, and the ten-row case is why.</b> The failure these exist
-/// to refuse is an implementation that answers <em>one</em> row where the credential holds ten — a
-/// <c>SingleOrDefault</c>, a <c>FirstOrDefault</c>, a return type of <c>FactorEnvelopes?</c>. Every
-/// one of those is correct for every passkey in the product, and the symptom of the recovery-code
-/// case is a person who has already lost their authenticator redeeming a code, being handed a
-/// session, and finding the account still locked. Nothing on the server sees that happen, so there is
-/// no log line, no status code and no row to assert against; only a fixture holding ten factors and a
-/// count can say it.
+/// <b>Unit tests rather than endpoint tests, and the two counting cases are why.</b> The failures these
+/// exist to refuse are an implementation that answers <em>one</em> row where a credential holds ten — a
+/// <c>SingleOrDefault</c>, a <c>FirstOrDefault</c>, a return type of <c>FactorEnvelopes?</c> — and one
+/// that answers <em>one credential's</em> rows where the account holds eleven across two. Every one of
+/// those is correct for an account holding a single passkey, and the symptom of the others is a person
+/// who has already lost their authenticator redeeming a code, being handed a session, and finding the
+/// account still locked. Nothing on the server sees that happen, so there is no log line, no status code
+/// and no row to assert against; only a fixture holding the real shape and a count can say it.
 /// </para>
 /// <para>
 /// <b>Neither envelope is ever compared as part of a whole <see cref="FactorEnvelopes" />.</b> The
@@ -33,110 +32,146 @@ namespace UnitTests;
 /// <c>ToArray()</c>, which is how <c>PasskeyPublicKeyTests</c> already compares this shape.
 /// </para>
 /// <para>
-/// <b>No assertion here is about a sequence.</b> The port promises rows ordered by factor id, and
-/// what that promise buys is determinism rather than a particular order: <c>uuid</c> collation orders
-/// bytes in PostgreSQL and <see cref="Guid.CompareTo(Guid)" /> does not, so the same expectation
-/// written against a real database would disagree with an in-memory one while both were right.
-/// <see cref="InMemoryAccountKeyReadService" /> therefore does not sort, and these tests compare
-/// factor ids as a set — both sides put through the same .NET ordering, which is order-insensitive
-/// rather than order-asserting. Ordering as such belongs to the read service's own tests, over a
-/// database.
+/// <b>No assertion here is about a sequence.</b> The port promises rows ordered by factor id, and what
+/// that promise buys is determinism rather than a particular order; the corrected argument for that —
+/// including what <see cref="Guid.ToByteArray()" /> does that <see cref="Guid.CompareTo(Guid)" /> does
+/// not — is stated once on <c>GetAccountKeysHandler</c> and is not restated here.
+/// <see cref="InMemoryAccountKeyReadService" /> therefore does not sort, and these tests compare factor
+/// ids as a set — both sides put through the same .NET ordering, which is order-insensitive rather than
+/// order-asserting. Ordering as such belongs to the read service's own tests, over a database.
 /// </para>
 /// <para>
-/// <b>"Already ended" is not a separate arrangement here, and the reason is the repository.</b>
-/// <see cref="ISessionRepository.FindByIdAsync" /> carries no <c>revoked_at_utc</c> predicate — the
-/// real one says so at length, and <see cref="InMemorySessionRepository" /> copies it deliberately —
-/// so a revoked session comes back as an entity rather than as <see langword="null" />. Seeding one
-/// and expecting an empty answer would be asking this handler to hold a liveness rule it does not
-/// own, and would fail a correct implementation. What is modelled below is the answer all three
-/// unreachable sessions genuinely share: the repository returning <see langword="null" />.
+/// <b>No session is arranged anywhere in this file, and that is structural rather than a tidy-up.</b>
+/// The handler took an <c>ISessionRepository</c> while the answer was narrowed to the credential that
+/// opened the session, and the narrowing was wrong: re-authentication looks a credential up <em>by
+/// account</em> and the assertion options carry no <c>allowCredentials</c>, so the authenticator decides
+/// which factor answers a ceremony and the read may not be narrower than the account.
+/// <c>GetAccountKeysHandler</c> carries the argument in full. What used to be tested here — that a
+/// session id the repository answered <see langword="null" /> for produced an empty list rather than a
+/// throw — has no subject left: there is no id, no lookup and no null. Whether a session is live is the
+/// <b>authentication pipeline's</b> answer, and <c>AccountKeysEndpointTests</c> is where that is now
+/// pinned, over a request, which is the only place it was ever observable.
 /// </para>
 /// </remarks>
 public sealed class GetAccountKeysHandlerTests
 {
     /// <summary>
+    /// One account, a passkey and a set of recovery codes, eleven factors across the two — and all
+    /// eleven come back.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The case that would have caught the defect this handler was changed to fix.</b> While the read
+    /// was narrowed to the credential that opened the session, an account in exactly this state — the
+    /// state every real account is in — was answered one credential's rows, and which credential the
+    /// browser could actually open was decided by an authenticator the server never hears from. Ten
+    /// factors are filed under the set and one under the passkey, so an implementation that narrowed to
+    /// either credential is red on the count, and one that narrowed to the <em>larger</em> is red on the
+    /// bytes as well.
+    /// </para>
+    /// <para>
+    /// Every seeded factor carries envelopes nothing else in the fixture carries, so an implementation
+    /// that reached the right count by repeating one row is red on the bytes rather than green on the
+    /// number.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheAccountHoldsFactorsUnderTwoCredentials_ReturnsAllOfThem()
+    {
+        // Arrange — one account; ten factors under its set of recovery codes and one under its passkey.
+        Guid userId = Guid.CreateVersion7();
+        Guid recoveryCodes = Credential.CreateRecoveryCodes(userId, UtcNow).Id;
+        Guid passkey = Credential.CreatePasskey(userId, UtcNow).Id;
+
+        InMemoryAccountKeyReadService readService = new();
+        FactorEnvelopes[] codeFactors = [.. Enumerable.Range(0, FactorsPerRecoveryCodeSet).Select(Factor)];
+        FactorEnvelopes passkeyFactor = Factor(FactorsPerRecoveryCodeSet);
+
+        foreach (FactorEnvelopes factor in codeFactors)
+        {
+            readService.Seed(userId, recoveryCodes, factor);
+        }
+
+        readService.Seed(userId, passkey, passkeyFactor);
+
+        FactorEnvelopes[] seeded = [.. codeFactors, passkeyFactor];
+
+        GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
+
+        // Act
+        FactorEnvelopes[] returned = [.. await handler.HandleAsync(new GetAccountKeysQuery())];
+
+        // Assert — the count first, because narrowing to either credential is what this refuses and
+        // both wrong answers are a number.
+        await Assert.That(returned.Length).IsEqualTo(FactorsPerRecoveryCodeSet + 1);
+
+        await AssertCarriesExactlyAsync(returned, seeded);
+    }
+
+    /// <summary>
     /// A set of recovery codes is one credential and ten factors, and all ten come back.
     /// </summary>
     /// <remarks>
-    /// The load-bearing case. Each seeded factor carries envelopes nothing else in the fixture
-    /// carries, so an implementation that answered the right count by repeating one row is red on the
-    /// bytes rather than green on the number.
+    /// Kept beside the eleven-factor case above rather than folded into it, because the two refuse
+    /// different implementations. That one refuses a read narrowed to a credential; this one refuses a
+    /// read that collapses a credential's rows to one — <c>SingleOrDefault</c>, <c>FirstOrDefault</c>, a
+    /// nullable single-pair return — which is the shape that is correct for every passkey in the product
+    /// and drops nine of every ten recovery-code envelopes. Neither implies the other, and an
+    /// implementation with both defects is red here on the count and red above it on both.
     /// </remarks>
     [Test]
-    public async Task HandleAsync_WhenTheSessionsCredentialHoldsTenFactors_ReturnsAllTen()
+    public async Task HandleAsync_WhenOneCredentialHoldsTenFactors_ReturnsAllTen()
     {
         // Arrange — one account, one recovery-code credential, ten wrapped rows filed under it.
         Guid userId = Guid.CreateVersion7();
-        Credential credential = Credential.CreateRecoveryCodes(userId, UtcNow);
-        Session session = Session.Establish(credential, UtcNow, UtcNow.AddHours(1));
-
-        InMemorySessionRepository sessions = new();
-        await sessions.AddAsync(session);
+        Guid recoveryCodes = Credential.CreateRecoveryCodes(userId, UtcNow).Id;
 
         InMemoryAccountKeyReadService readService = new();
         FactorEnvelopes[] seeded = [.. Enumerable.Range(0, FactorsPerRecoveryCodeSet).Select(Factor)];
 
         foreach (FactorEnvelopes factor in seeded)
         {
-            readService.Seed(userId, credential.Id, factor);
+            readService.Seed(userId, recoveryCodes, factor);
         }
 
-        GetAccountKeysHandler handler = new(new StubUserContext(userId), sessions, readService);
+        GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
 
         // Act
-        FactorEnvelopes[] returned = [.. await handler.HandleAsync(new GetAccountKeysQuery(session.Id))];
+        FactorEnvelopes[] returned = [.. await handler.HandleAsync(new GetAccountKeysQuery())];
 
         // Assert — the count first, because it is the whole defect: SingleOrDefault, FirstOrDefault
         // and a nullable return each answer one here and are correct for every passkey.
         await Assert.That(returned.Length).IsEqualTo(FactorsPerRecoveryCodeSet);
 
-        // The ids as a set, put through the same ordering on both sides so this is order-insensitive
-        // rather than an assertion about which factor comes first.
-        await Assert.That(returned.Select(factor => factor.FactorId).Order())
-            .IsEquivalentTo(seeded.Select(factor => factor.FactorId).Order());
-
-        // The bytes, per factor, through ToArray. Comparing two FactorEnvelopes whole would answer a
-        // question about buffers rather than about key material.
-        foreach (FactorEnvelopes expected in seeded)
-        {
-            FactorEnvelopes actual = returned.Single(factor => factor.FactorId == expected.FactorId);
-
-            await Assert.That(actual.WrappedContentKey.ToArray())
-                .IsEquivalentTo(expected.WrappedContentKey.ToArray());
-            await Assert.That(actual.WrappedIndexKey.ToArray())
-                .IsEquivalentTo(expected.WrappedIndexKey.ToArray());
-        }
+        await AssertCarriesExactlyAsync(returned, seeded);
     }
 
     /// <summary>
-    /// The positive control for the two empty-answer cases below: a populated read comes back
-    /// populated, with the bytes that were stored.
+    /// The positive control for the empty-answer case below: a populated read comes back populated,
+    /// with the bytes that were stored.
     /// </summary>
     /// <remarks>
-    /// Without it those two are decorations — a handler that returned an empty list unconditionally,
-    /// one whose null check had been written the wrong way round, one that never reached the read
-    /// service at all, satisfies both perfectly. It takes a case that returns to tell a guard apart
-    /// from a wall. A passkey rather than a set of codes, so the one-factor shape is also stated.
+    /// Without it that case is a decoration — a handler that returned an empty list unconditionally, or
+    /// that never reached the read service at all, satisfies it perfectly. It takes a case that returns
+    /// to tell a guard apart from a wall. A passkey rather than a set of codes, so the one-factor shape
+    /// is also stated, and the envelope's version and width are read here because this is the only test
+    /// that looks at a single row whole.
     /// </remarks>
     [Test]
-    public async Task HandleAsync_WhenTheSessionsCredentialHoldsOneFactor_ReturnsThatFactorsEnvelopes()
+    public async Task HandleAsync_WhenTheAccountHoldsOneFactor_ReturnsThatFactorsEnvelopes()
     {
         // Arrange
         Guid userId = Guid.CreateVersion7();
-        Credential credential = Credential.CreatePasskey(userId, UtcNow);
-        Session session = Session.Establish(credential, UtcNow, UtcNow.AddHours(1));
-
-        InMemorySessionRepository sessions = new();
-        await sessions.AddAsync(session);
+        Guid passkey = Credential.CreatePasskey(userId, UtcNow).Id;
 
         FactorEnvelopes stored = Factor(0);
         InMemoryAccountKeyReadService readService = new();
-        readService.Seed(userId, credential.Id, stored);
+        readService.Seed(userId, passkey, stored);
 
-        GetAccountKeysHandler handler = new(new StubUserContext(userId), sessions, readService);
+        GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
 
         // Act
-        FactorEnvelopes[] returned = [.. await handler.HandleAsync(new GetAccountKeysQuery(session.Id))];
+        FactorEnvelopes[] returned = [.. await handler.HandleAsync(new GetAccountKeysQuery())];
 
         // Assert
         await Assert.That(returned.Length).IsEqualTo(1);
@@ -154,133 +189,119 @@ public sealed class GetAccountKeysHandlerTests
     }
 
     /// <summary>
-    /// A session id the repository answers <see langword="null" /> for is an empty list, never a
-    /// throw.
+    /// An account holding no factor rows is an empty list, not a throw.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Never established and belonging to another account arrive here as the same
-    /// <see langword="null" /> — the second because <c>user_isolation</c> makes a stranger's row
-    /// <em>not found</em> rather than found and rejected — and they must stay indistinguishable. A
-    /// refusal keyed on the null would tell a caller that a guessed id names a real row, on the one
-    /// route that names an account's key custody.
+    /// An empty collection is the honest shape of "nothing came back", and this read is taken for
+    /// display. <c>GetAccountKeysHandler</c> enumerates the four ways the state is reached — including
+    /// the one its earlier text denied, a factor whose wrapped row was never written, which the schema
+    /// permits even though no path in the product produces it.
     /// </para>
     /// <para>
-    /// The store is not empty and the read service is not empty, which is the half that makes this
-    /// more than a null check: a handler that ignored the query's id and took whatever session it
-    /// could find would be handed a credential holding envelopes, and would answer them.
+    /// <b>The read service is not empty, and that is the half that makes this more than a null check.</b>
+    /// It holds a full account's worth of rows filed under <em>another</em> account, so a handler that
+    /// answered every row it had — the shape the fake would have if it accepted its owner argument and
+    /// dropped it — is red here rather than green on an empty store.
     /// </para>
     /// </remarks>
     [Test]
-    public async Task HandleAsync_WhenNoSessionIsFoundForTheId_ReturnsAnEmptyList()
+    public async Task HandleAsync_WhenTheAccountHoldsNoFactorRows_ReturnsAnEmptyList()
     {
-        // Arrange — a live session and its envelopes exist; the query names a different id.
+        // Arrange — the asking account holds nothing; a bystander account holds eleven factors.
         Guid userId = Guid.CreateVersion7();
-        Credential credential = Credential.CreatePasskey(userId, UtcNow);
-        Session other = Session.Establish(credential, UtcNow, UtcNow.AddHours(1));
-
-        InMemorySessionRepository sessions = new();
-        await sessions.AddAsync(other);
+        Guid bystanderId = Guid.CreateVersion7();
+        Guid bystanderCodes = Credential.CreateRecoveryCodes(bystanderId, UtcNow).Id;
+        Guid bystanderPasskey = Credential.CreatePasskey(bystanderId, UtcNow).Id;
 
         InMemoryAccountKeyReadService readService = new();
-        readService.Seed(userId, credential.Id, Factor(0));
+        foreach (int ordinal in Enumerable.Range(0, FactorsPerRecoveryCodeSet))
+        {
+            readService.Seed(bystanderId, bystanderCodes, Factor(ordinal));
+        }
 
-        GetAccountKeysHandler handler = new(new StubUserContext(userId), sessions, readService);
+        readService.Seed(bystanderId, bystanderPasskey, Factor(FactorsPerRecoveryCodeSet));
+
+        GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
 
         // Act — awaiting is itself the "never a throw" half of the claim.
-        IReadOnlyList<FactorEnvelopes> returned =
-            await handler.HandleAsync(new GetAccountKeysQuery(Guid.CreateVersion7()));
+        IReadOnlyList<FactorEnvelopes> returned = await handler.HandleAsync(new GetAccountKeysQuery());
 
         // Assert
         await Assert.That(returned).IsEmpty();
     }
 
     /// <summary>
-    /// A credential holding no factor rows is an empty list too, not a throw.
-    /// </summary>
-    /// <remarks>
-    /// An empty collection is the honest shape of "nothing came back", and this read is taken for
-    /// display. The state is not one the product can be left in at rest — every path that brings a
-    /// factor into existence writes its wrapped row in the credential's own <c>SaveChanges</c> — so
-    /// an empty answer means the credential was revoked, or the account erased, between this request
-    /// authenticating and this read running. That is a race, not a corruption.
-    /// </remarks>
-    [Test]
-    public async Task HandleAsync_WhenTheCredentialHoldsNoFactorRows_ReturnsAnEmptyList()
-    {
-        // Arrange — a session the handler can find, and a read service holding rows for a different
-        // credential, so an implementation that answered every row it had would be red rather than
-        // green on an empty store.
-        Guid userId = Guid.CreateVersion7();
-        Credential credential = Credential.CreatePasskey(userId, UtcNow);
-        Session session = Session.Establish(credential, UtcNow, UtcNow.AddHours(1));
-
-        InMemorySessionRepository sessions = new();
-        await sessions.AddAsync(session);
-
-        InMemoryAccountKeyReadService readService = new();
-        readService.Seed(userId, Credential.CreateRecoveryCodes(userId, UtcNow).Id, Factor(0));
-
-        GetAccountKeysHandler handler = new(new StubUserContext(userId), sessions, readService);
-
-        // Act
-        IReadOnlyList<FactorEnvelopes> returned =
-            await handler.HandleAsync(new GetAccountKeysQuery(session.Id));
-
-        // Assert
-        await Assert.That(returned).IsEmpty();
-    }
-
-    /// <summary>
-    /// The read service is reached with the resolved account and the session's own credential, and
-    /// with nothing else.
+    /// The read service is reached with the resolved account, once, and with nothing else.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>The only test that can catch a dropped owner argument, and it is not "was called".</b>
-    /// <c>wrapped_account_keys</c> is policed by <c>user_isolation</c>, so an implementation
-    /// filtering on the credential alone would still never return another account's rows: the policy
-    /// makes a wrong query answer <em>empty</em>, not <em>incorrect</em>. There is therefore no
+    /// <b>The only test that can catch a dropped or wrong owner argument, and it is not "was
+    /// called".</b> <c>wrapped_account_keys</c> is policed by <c>user_isolation</c>, so an
+    /// implementation that named no owner at all would still never return another account's rows: the
+    /// policy makes a wrong query answer <em>empty</em>, not <em>incorrect</em>. There is therefore no
     /// database state that distinguishes the two and no integration test that can, which leaves the
-    /// arguments as the whole observable. Weakened to a call count, this test would pass on the very
+    /// argument as the whole observable. Weakened to a call count, this test would pass on the very
     /// implementation it exists to refuse.
     /// </para>
     /// <para>
-    /// A second credential and a second session are seeded for the same account so that "the
-    /// session's credential" is measured rather than "the only credential in the fixture". The
-    /// account being read from <see cref="Application.Abstractions.IUserContext" /> rather than from
-    /// <c>Session.UserId</c> is deliberately <em>not</em> claimed here: the two cannot disagree — the
-    /// policy is what let the row be visible and it compares against the value the context published
-    /// — so no test can tell them apart, and that choice is held by review.
+    /// The count is asserted beside the value because the read is the request: a handler that asked
+    /// twice — once per credential, say, on the way to a union — would be reading the same rows through
+    /// two round trips on the one route that returns key material.
+    /// </para>
+    /// <para>
+    /// Rows are seeded under two credentials of the asking account and under a second account, so the
+    /// resolved id is measured rather than "the only account in the fixture".
     /// </para>
     /// </remarks>
     [Test]
-    public async Task HandleAsync_ReadsTheEnvelopesForTheResolvedAccountAndTheSessionsCredential()
+    public async Task HandleAsync_ReadsTheEnvelopesForTheResolvedAccountOnce()
     {
         // Arrange
         Guid userId = Guid.CreateVersion7();
-        Credential passkey = Credential.CreatePasskey(userId, UtcNow);
-        Credential recoveryCodes = Credential.CreateRecoveryCodes(userId, UtcNow);
-        Session passkeySession = Session.Establish(passkey, UtcNow, UtcNow.AddHours(1));
-        Session recoveryCodeSession = Session.Establish(recoveryCodes, UtcNow, UtcNow.AddHours(1));
-
-        InMemorySessionRepository sessions = new();
-        await sessions.AddAsync(recoveryCodeSession);
-        await sessions.AddAsync(passkeySession);
+        Guid bystanderId = Guid.CreateVersion7();
 
         InMemoryAccountKeyReadService readService = new();
-        readService.Seed(userId, passkey.Id, Factor(0));
-        readService.Seed(userId, recoveryCodes.Id, Factor(1));
+        readService.Seed(userId, Credential.CreatePasskey(userId, UtcNow).Id, Factor(0));
+        readService.Seed(userId, Credential.CreateRecoveryCodes(userId, UtcNow).Id, Factor(1));
+        readService.Seed(bystanderId, Credential.CreatePasskey(bystanderId, UtcNow).Id, Factor(2));
 
-        GetAccountKeysHandler handler = new(new StubUserContext(userId), sessions, readService);
+        GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
 
         // Act
-        await handler.HandleAsync(new GetAccountKeysQuery(passkeySession.Id));
+        await handler.HandleAsync(new GetAccountKeysQuery());
 
-        // Assert — one read, and both of its arguments.
+        // Assert — one read, and its only argument.
         await Assert.That(readService.Asked.Count).IsEqualTo(1);
-        await Assert.That(readService.Asked[0].UserId).IsEqualTo(userId);
-        await Assert.That(readService.Asked[0].CredentialId).IsEqualTo(passkey.Id);
+        await Assert.That(readService.Asked[0]).IsEqualTo(userId);
+    }
+
+    /// <summary>
+    /// That <paramref name="returned" /> is exactly <paramref name="seeded" />: the same factor ids as a
+    /// set, and each factor's two envelopes compared as bytes.
+    /// </summary>
+    /// <remarks>
+    /// The ids go through the same .NET ordering on both sides, so this is order-insensitive rather than
+    /// an assertion about which factor comes first. The envelopes are compared through
+    /// <c>ToArray()</c> per factor, because comparing two <see cref="FactorEnvelopes" /> whole would
+    /// answer a question about buffers rather than about key material.
+    /// </remarks>
+    private static async Task AssertCarriesExactlyAsync(
+        IReadOnlyList<FactorEnvelopes> returned,
+        IReadOnlyList<FactorEnvelopes> seeded)
+    {
+        await Assert.That(returned.Select(factor => factor.FactorId).Order())
+            .IsEquivalentTo(seeded.Select(factor => factor.FactorId).Order());
+
+        foreach (FactorEnvelopes expected in seeded)
+        {
+            FactorEnvelopes actual = returned.Single(factor => factor.FactorId == expected.FactorId);
+
+            await Assert.That(actual.WrappedContentKey.ToArray())
+                .IsEquivalentTo(expected.WrappedContentKey.ToArray());
+            await Assert.That(actual.WrappedIndexKey.ToArray())
+                .IsEquivalentTo(expected.WrappedIndexKey.ToArray());
+        }
     }
 
     /// <summary>
@@ -297,13 +318,13 @@ public sealed class GetAccountKeysHandlerTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The distinguishability is what makes the ten-row case measure ten rows: envelopes built from a
-    /// shared constant would let an implementation that answered one row ten times satisfy every
+    /// The distinguishability is what makes the counting cases measure rows: envelopes built from a
+    /// shared constant would let an implementation that answered one row eleven times satisfy every
     /// byte assertion.
     /// </para>
     /// <para>
     /// The factor id is a version-4 <see cref="Guid" /> rather than a version-7 one on purpose. A
-    /// client mints it, so version 4 is what actually arrives; and minting ten in a loop with
+    /// client mints it, so version 4 is what actually arrives; and minting eleven in a loop with
     /// <see cref="Guid.CreateVersion7" /> would make seed order and ascending order the same
     /// sequence, which is exactly the coincidence that would let an order-asserting expectation slip
     /// in here and then break the day it was written against PostgreSQL's byte collation.

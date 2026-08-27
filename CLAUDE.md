@@ -213,16 +213,24 @@ Load-bearing rules, each explained there or in the linked decision:
   in `+core/security/account-keys.ts` keeps the key-encryption keys as **locals that never touch the
   service instance** and zero-fills every copy where it is consumed, each wipe pinned by a spec that
   asserts the buffer was non-zero at the moment of the call. **`GET /api/me/account-keys` is the one
-  route that hands these rows back, and it is narrowed by the session's *credential*, never by the
-  account** — one pair for a passkey, ten for a set of codes — because a passkey session given all
-  eleven would hold ten envelopes it can never open. A later factor needs no wider read either, and
-  **not** because an unlocked tab could wrap it: `AccountKeyCustodyService` holds two non-extractable
-  `CryptoKey`s (`encrypt`/`decrypt` and `sign`, **no `wrapKey`**) that no member hands back, while
-  `wrapAccountKeys` takes the account keys as **bytes** — which died inside those imports. Adding a
-  factor therefore costs a fresh ceremony, and a ceremony opens the factor it **presents**, which is
-  the one this route already returns.
-  **An empty array, never a 404** — no session, an ended session and somebody else's session are one
-  indistinguishable answer, and a 404 would rebuild the enumeration oracle. **There are two import
+  route that hands these rows back, and it is keyed on the *account*, never on a credential** — every
+  factor, so eleven for an account holding a passkey and a set of codes. It was narrowed to the
+  session's credential once and that was **wrong**: `PasskeyReauthentication` looks a passkey up **by
+  account** and the assertion options carry **no `allowCredentials`**, so the *authenticator* chooses
+  which credential answers a ceremony and the client cannot know in advance which one. Redeem a code,
+  then ask for a new set — gated on a fresh **passkey** assertion — and the narrow read returns the ten
+  code envelopes to a browser holding the passkey's key: correct rows, a 200, and an account that will
+  not open, with nothing on the server seeing it. The cost of widening is that a caller receives
+  entries it cannot open; accepted, because the operator already holds every one of these rows and a
+  factor's envelopes open **only** under a key-encryption key derived from that factor. The handler
+  therefore takes **no `ISessionRepository`**, the query declares **no member**, and the route reads
+  **no claim**. It states **`Cache-Control: no-store`** for itself — a direct write, never a second
+  `Response.OnStarting` callback, which would displace `SecurityHeadersMiddleware`'s four headers.
+  **An empty array, never a 404 — but no longer for the oracle reason**, which the widening retired:
+  what keeps it is `AccountKeyCustodyService`, which reads `[]` as "present another factor" and any
+  failed read as "try again in a minute". Four causes reach an empty answer and the fourth is a
+  **keyless factor**, which is representable exactly because "every factor has a row" is not a schema
+  fact. **There are two import
   doors, not one**: `importAesGcmKey` and `importHmacSha256Key`, because the index key is
   HMAC-SHA-256 and the platform refuses each key object in the other's role. The claim was never a
   count — it is that **every** import sits behind a door holding all five decisions (algorithm,
@@ -408,8 +416,9 @@ Load-bearing rules, each explained there or in the linked decision:
   [account-keys.md](docs/business-logic/account-keys.md).
 - **The account's keys are held per tab by one root-provided service, and every clause of that was a
   decision.** `AccountKeyCustodyService` reads `GET /api/me/account-keys`, tries **every** entry
-  under its own `factorId` (a passkey session gets one, a recovery-codes session ten — `entries[0]`
-  works forever on the first kind and tells the second that their valid code opened nothing), and
+  under its own `factorId` (an account holding one passkey gets one entry, an ordinary account eleven
+  — `entries[0]` works forever on the first kind and tells the second that their valid factor opened
+  nothing), and
   keeps what opened as two `CryptoKey`s on `#` fields with **no accessor**, read by nothing today
   because nothing is encrypted. `providedIn: 'root'` **breaks the component-provided habit
   deliberately**: `RegisterService` and `SignInService` hold an *attempt*, which should die with its
@@ -434,9 +443,9 @@ Load-bearing rules, each explained there or in the linked decision:
   `unreachable` too) and never the callers. Registration hands the pair over as **objects** on the
   201 (`adopt`) rather than re-reading through the route: re-reading needs the passkey's
   key-encryption key to survive the codes step — the same power one step removed — puts a round trip
-  and a new failure mode on the happiest path in the product, and verifies nothing, because a passkey
-  session's read returns the passkey factor's pair alone and never the ten code pairs where the
-  pairing hazard lives. Two clearing lines (`restart()` and the failed POST) **cannot be shown to
+  and a new failure mode on the happiest path in the product, and verifies nothing — the read returns
+  all eleven pairs, but the browser holds only the **passkey's** key-encryption key, so the ten code
+  pairs where the pairing hazard lives are still never opened. Two clearing lines (`restart()` and the failed POST) **cannot be shown to
   fail** — the minting writes the keys before the payload `create()` requires, so no stale pair is
   readable — and are kept as depth, not deleted as dead. See
   [account-keys.md](docs/business-logic/account-keys.md) and

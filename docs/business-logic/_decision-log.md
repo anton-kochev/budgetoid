@@ -8,6 +8,52 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-28 — The account-keys read is keyed on the account, reversing the credential narrowing
+
+**Context:** reverses the decision of 2026-08-27 below, "The wrapped account keys get a reader,
+narrowed by the credential that opened the session". That entry's central argument was that only the
+rows under the credential which just authenticated can be opened by anything the browser is holding.
+The argument is false, and two things already in the repository say so.
+
+**`PasskeyReauthentication` looks a passkey up by *account*.** It calls
+`IPasskeyRepository.FindByWebAuthnCredentialIdForUserAsync` with `IUserContext.UserId`, never with the
+session's credential. And the assertion options carry **no `allowCredentials`** — `PasskeyRequestOptions`
+and `BeginReauthenticationHandler` each state that as a decision — so the **authenticator** chooses
+which of the account's credentials answers a ceremony. The client cannot know in advance which one it
+will be.
+
+**The failure is reachable and silent.** Somebody signs in by redeeming a recovery code, so the session
+opens over the recovery-codes credential. They ask for a new set of codes, which is gated on a fresh
+**passkey** assertion. The ceremony yields the passkey's key-encryption key; the narrowed read hands
+back the ten recovery-code envelopes; every unwrap fails, and the client tells them to present another
+factor having just been given a valid one. Every row is correct, the status is `200`, and nothing on
+the server sees it.
+
+**Decision:** **`GET /api/me/account-keys` returns the envelopes of every factor the authenticated
+account holds** — one entry per registered passkey and ten per set of recovery codes, so eleven for an
+ordinary account. The response shape is unchanged; only the number of entries is. The account is the
+unit the keys belong to, and a read keyed on anything narrower refuses a factor that was just verified.
+
+**What widening costs, and why it is accepted.** A caller now receives entries it holds nothing to
+open. The operator already holds every one of these rows, so nothing is disclosed to the party the
+design defends against, and a factor's envelopes open **only** under a key-encryption key derived from
+that factor. What is genuinely new is the count, which the same principal can already assemble from
+`GET /api/me/credentials` and `GET /api/me/recovery-codes`.
+
+**Consequences.** The handler no longer needs a session at all: `ISessionRepository` is gone,
+`GetAccountKeysQuery` declares no member, and the endpoint reads no claim. The `404`-versus-empty rule
+survives its own reason dying — there is no guessable identifier left and therefore no enumeration
+oracle, and what keeps `200 []` now is that the client reads an empty list as "present another factor"
+and any failed read as "try again in a minute". `Cache-Control: no-store` is stated on this route, the
+one endpoint in the product that returns key material. And a keyless factor is conceded as a fourth
+cause of an empty answer: "every factor has a row" is a property of the three write paths that exist,
+not a fact the schema holds.
+
+**Affected areas:** [account-keys.md](account-keys.md), [sessions.md](sessions.md),
+[ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
+
+---
+
 ## 2026-08-27 — The account's keys are held for the session, in one tab, and nowhere a reload survives
 
 **Context:** the entry below gave the wrapped account keys a route to come back through, and closed

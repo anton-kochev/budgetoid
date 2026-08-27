@@ -1,5 +1,3 @@
-using System.Security.Claims;
-using Api.Infrastructure;
 using Application.AccountKeys;
 using Application.AccountKeys.GetAccountKeys;
 using Application.Passkeys;
@@ -8,6 +6,28 @@ namespace Api.Endpoints;
 
 public static class AccountKeyEndpoints
 {
+    /// <summary>
+    /// The one response header this route states for itself, and the one endpoint in the application
+    /// that has a reason to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="Api.Infrastructure.SecurityHeadersMiddleware" /> refuses to write a blanket
+    /// <c>Cache-Control</c> and says why: no endpoint here states its cacheability, so the question is
+    /// open rather than delegated, and settling it globally would settle it in the one place that knows
+    /// least about what was returned. This is the endpoint that closes that sentence for itself — it is
+    /// the only route in the product that returns key material, so it is the only one whose body must
+    /// not be written to a shared cache, a disk cache or a back-button restore.
+    /// </para>
+    /// <para>
+    /// <b><c>no-store</c> alone, not the longer incantation.</b> <c>no-cache</c> permits storage and
+    /// requires revalidation, which is the opposite of what is wanted; <c>private</c> permits a browser
+    /// cache; <c>max-age=0</c> without <c>no-store</c> permits a stale-serving cache to keep the bytes.
+    /// The four together are a superstition that reads as more careful and stores more.
+    /// </para>
+    /// </remarks>
+    private const string NoStore = "no-store";
+
     public static IEndpointRouteBuilder MapAccountKeyEndpoints(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
@@ -18,7 +38,7 @@ public static class AccountKeyEndpoints
         // "/api/passkeys" — a set of recovery codes files ten of these rows and runs no ceremony.
         RouteGroupBuilder group = endpoints.MapGroup("/api/me");
 
-        // NO METADATA OF ANY KIND, and each absence is its own decision.
+        // NO AUTHORIZATION METADATA OF ANY KIND, and each absence is its own decision.
         //
         // No RequireAuthorization: the application's fallback policy covers every route declaring
         // nothing, and restating it here would make the one line that defines the anonymous surface
@@ -33,37 +53,44 @@ public static class AccountKeyEndpoints
         // It mints nothing: RegisterAccountHandler is the only code that brings an account into
         // existence, reachable only from POST /api/registration/registration.
         group.MapGet("/account-keys", async (
-            HttpContext httpContext,
+            HttpResponse response,
             GetAccountKeysHandler handler,
             CancellationToken cancellationToken) =>
         {
-            // Off the claim this request's own authentication produced, never off a body, a route or
-            // a query string — the shape SessionEndpoints uses for the same value. There is therefore
-            // no session id on the wire for a caller to substitute, which is what makes "the
-            // credential that opened THIS session" a property of the shape rather than of a check.
+            // NOTHING IS READ OFF THE REQUEST, AND THAT IS THE SHAPE RATHER THAN AN OMISSION. This
+            // route used to read the session_id claim its own authentication produced and hand it
+            // inward, because the answer was narrowed to the credential that opened that session.
+            // The answer is now the account's, which IUserContext already resolves one ring down, so
+            // there is no claim to read, no id to parse and no branch for a principal that carries
+            // one shaped wrongly. GetAccountKeysHandler carries the argument for the widening.
             //
-            // A principal carrying no such claim authenticated some other way, and gets the same
-            // empty array below rather than a refusal, for the reason that return states.
-            if (!Guid.TryParse(
-                    httpContext.User.FindFirstValue(SessionCookieAuthenticationHandler.SessionIdClaimType),
-                    out Guid sessionId))
-            {
-                return TypedResults.Ok(Array.Empty<AccountKeyEntry>());
-            }
+            // A ClaimsPrincipal still never crosses into the Application ring; there is simply
+            // nothing left at this edge that would want one.
+            //
+            // Cache-Control is written HERE rather than in SecurityHeadersMiddleware, which argues at
+            // length for owning no global value, and it is a DIRECT WRITE rather than a second
+            // Response.OnStarting callback. That middleware registers the only OnStarting callback in
+            // the application and says what a second one costs: Kestrel runs them LIFO and abandons
+            // the whole stack on the first throw, so an added callback both overwrites this route's
+            // header and puts the four security headers behind its own failure. A direct write is
+            // safe here because that callback assigns only its own four names and touches nothing
+            // else on the response. The one path where the header is lost is a 500 — the exception
+            // handler's Response.Clear() takes it — and the body written there is a ProblemDetails
+            // carrying no key material, which is the case a cache is welcome to keep.
+            response.Headers.CacheControl = NoStore;
 
             IReadOnlyList<FactorEnvelopes> factors = await handler.HandleAsync(
-                new GetAccountKeysQuery(sessionId),
+                new GetAccountKeysQuery(),
                 cancellationToken);
 
             // 200 WITH AN EMPTY ARRAY, NEVER 404 — and this is the single most likely thing a later
             // reader "fixes", because "nothing found → 404" is the right instinct almost everywhere
-            // else. An empty answer is what a request whose session was never established, whose
-            // session has already ended, and whose session belongs to somebody else all receive,
-            // indistinguishably. The moment "no rows" answers differently from those, a caller learns
-            // which of them happened — and on the one route that names an account's key custody, that
-            // is the whole of what an attacker wanted. GetAccountKeysHandler refuses to be that
-            // oracle one ring down; a 404 minted here would rebuild it above the handler that
-            // declined to.
+            // else. The reason is no longer the enumeration oracle the narrowed route carried; it is
+            // the client. AccountKeyCustodyService reads an empty list as "present another factor"
+            // and reads any failed read — a 404 included — as "try the same factor again in a
+            // minute", so a 404 would give somebody whose account holds nothing openable the one
+            // instruction that can never work. GetAccountKeysHandler enumerates the four ways an
+            // empty answer is reached.
             //
             // Base64url is applied at this edge and nowhere below it: the Application ring carries an
             // envelope as bytes and the wire spelling is the API's business, which is the mirror of
@@ -96,11 +123,14 @@ public static class AccountKeyEndpoints
     /// <b>No fourth member may be added, and each obvious candidate is refused for its own reason.</b>
     /// <c>credentialId</c> is the id a revocation route addresses a credential by and the join
     /// <c>account-keys.md</c> deliberately does not give a client — a browser locates its pair by
-    /// trying each in turn, so an id here is a capability handed over for no use. <c>userId</c> is the
-    /// value every policy in the database is keyed on and the one identifier a response body may never
-    /// carry into a client log. <c>createdAtUtc</c> is a usage record beside key material: it says when
-    /// each of an account's ten codes was issued, which is a timeline of somebody's recovery history
-    /// that the screen reading this endpoint has no use for.
+    /// trying each in turn, so an id here is a capability handed over for no use. It is also the
+    /// member a reader will reach for <em>now</em> that the answer spans an account's credentials,
+    /// on the grounds that a client could then skip the entries it cannot open; it could not, because
+    /// which credential a ceremony answered with is exactly what the client does not know.
+    /// <c>userId</c> is the value every policy in the database is keyed on and the one identifier a
+    /// response body may never carry into a client log. <c>createdAtUtc</c> is a usage record beside
+    /// key material: it says when each of an account's ten codes was issued, which is a timeline of
+    /// somebody's recovery history that the screen reading this endpoint has no use for.
     /// </para>
     /// <para>
     /// <see cref="FactorId" /> leaves as a <see cref="Guid" /> so the serializer renders the canonical

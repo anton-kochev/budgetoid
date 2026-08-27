@@ -208,8 +208,8 @@ Enforced today:
 - **None of the user-owned entities carries a query filter** — `Budget`, `User`, `Credential`,
   `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`, `RecoveryCodeHash`, `WrappedAccountKeys`,
   and the challenge row. A read of one that is not a discovery lookup therefore names its owner in
-  the statement: `AccountKeyReadService.ListForCredentialAsync` filters on `user_id` beside
-  `credential_id` even though `user_isolation` appends the same comparison underneath it, for the
+  the statement: `AccountKeyReadService.ListForAccountAsync` filters on `user_id` — its only
+  predicate — even though `user_isolation` appends the same comparison underneath it, for the
   reason `ExportReadService.ListOwnedBudgetsAsync` below does the same — a policy makes a wrong
   query answer *empty*, not *correct*, so the copy in the statement is the one that survives a
   policy missed on a table added later. The discovery lookups are the deliberate exception, argued
@@ -283,7 +283,7 @@ every passkey sign-in failing to find the credential it just verified. `currenci
 their exemption rests on belonging to no tenant rather than on being read before an identity exists, so
 a policy landing on either fails loudly on a session that names somebody. `wrapped_account_keys` is
 the newest policed table, and its `SELECT` grant now answers to two kinds of reader:
-`AccountKeyReadService.ListForCredentialAsync`, behind `GET /api/me/account-keys`, and the two
+`AccountKeyReadService.ListForAccountAsync`, behind `GET /api/me/account-keys`, and the two
 isolation tests — `Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser` and
 `Database_RefusesAWrappedKeyReadOnASessionNamingNobody` — which the endpoint does not make
 redundant, because they remain the only statements that have watched the policy *refuse* anything

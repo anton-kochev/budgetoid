@@ -108,7 +108,7 @@ by the client — and deliberately not `credentials.id`. That column is the tabl
 
    **Amended: that reader has arrived, and the grant is now ordinary.** `GET /api/me/account-keys`
    reads the table on behalf of a signed-in browser — see the Consequences below, which record its
-   shape and the two rules a later reader will undo. So `SELECT` no longer needs the tension argued
+   shape and the narrowing that was tried and corrected. So `SELECT` no longer needs the tension argued
    for it, and nothing else in this item moved: still no `UPDATE`, still no `DELETE`. What the
    paragraph leaves behind on purpose is the *test* it justified. The probes keep the grant honest in
    a way the endpoint cannot: an application read answering correctly says nothing about what the
@@ -187,18 +187,33 @@ that proves identity and unlocks nothing.
   in the same deploy — see [migrations.md](../engineering/migrations.md) and `DEPLOYMENT.md`.
 - **The factor identifier now crosses the wire in the *other* direction, and this decision has been
   waiting to have that consequence.** `GET /api/me/account-keys` hands a signed-in browser the
-  envelopes filed under the credential that opened its session, each beside the `factor_id` they
-  were sealed against — one entry for a passkey, ten for a set of recovery codes, which is the
-  primary-key choice above showing up in a response shape. The id leaves as a `Guid`, so the
-  serializer renders exactly the canonical lower-case hyphenated spelling the write paths compare
-  ordinally for: a response that re-spelled it would reproduce, on the way out, the permanent and
-  unnamed failure that rule exists to prevent. This is the endpoint the decision said would have to
-  argue for itself in place, and the arguments live in
-  [account-keys.md](../business-logic/account-keys.md). Two of them are the ones a later reader will
-  undo — the read is narrowed by the session's **credential** and not by the account, and a session
-  it cannot see answers an **empty array** rather than a `404`. Nothing else here moved: the table
-  still holds no `UPDATE` and no `DELETE`, and the read projects rather than materialising, so it
-  cannot become the change-tracker cascade those absences are aimed at.
+  envelopes of **every factor the account holds**, each beside the `factor_id` they were sealed
+  against — one entry per registered passkey and ten per set of recovery codes, so eleven for an
+  ordinary account, which is the primary-key choice above showing up in a response shape. The id
+  leaves as a `Guid`, so the serializer renders exactly the canonical lower-case hyphenated spelling
+  the write paths compare ordinally for: a response that re-spelled it would reproduce, on the way
+  out, the permanent and unnamed failure that rule exists to prevent. This is the endpoint the
+  decision said would have to argue for itself in place, and the arguments live in
+  [account-keys.md](../business-logic/account-keys.md). Nothing else here moved: the table still
+  holds no `UPDATE` and no `DELETE`, and the read projects rather than materialising, so it cannot
+  become the change-tracker cascade those absences are aimed at.
+- **The read was briefly narrowed to the credential that opened the session, and that shipped before
+  it was corrected.** It is recorded here because the argument for it reads well and will be made
+  again. The theory was that a browser can only ever be holding a key-encryption key derived from the
+  factor its own session began with, so a wider answer would be material travelling further than the
+  request needs it. It is false: `PasskeyReauthentication` looks a passkey up **by account**, and the
+  assertion options carry no `allowCredentials`, so the **authenticator** chooses which of the
+  account's credentials answers a ceremony. Redeem a recovery code, then ask for a new set — which is
+  gated on a fresh passkey assertion — and the narrowed read hands back the ten code envelopes while
+  the browser holds the passkey's key. Nothing on the server sees it: correct rows, a `200`, and an
+  account that will not open. The widening is accepted at its real cost, which is that a caller now
+  receives entries it cannot open; the operator already holds every one of those rows, and a factor's
+  envelopes open only under a key-encryption key derived from that factor.
+- **The `404`-versus-empty rule outlived its own reason and is kept for a different one.** A session
+  a request could not see used to answer an empty array so that a `404` could not tell a caller their
+  guessed id named a real row. Keyed on the account there is no guessable identifier and no oracle;
+  what keeps `200 []` now is the client, which reads an empty list as "present another factor" and
+  reads any failed read — a `404` included — as "try the same factor again in a minute".
 - **`factor_id` is unique across the table rather than per account.** A collision between two accounts
   therefore surfaces as the same refusal as a collision within one. The value is 122 random bits, so
   this is a statement about what the schema guarantees rather than about an event anyone will see.

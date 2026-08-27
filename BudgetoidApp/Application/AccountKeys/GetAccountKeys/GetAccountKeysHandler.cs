@@ -1,91 +1,109 @@
 using Application.Abstractions;
-using Domain.Sessions;
 
 namespace Application.AccountKeys.GetAccountKeys;
 
 /// <summary>
-/// Hands the browser the wrapped copies of the account's content key and index key that the credential
-/// which opened this session can derive a key-encryption key for.
+/// Hands the browser the wrapped copies of the account's content key and index key that <b>every factor
+/// the account holds</b> stores — one row per registered passkey, ten per set of recovery codes.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Two reads, in this order.</b> Resolve the session named by
-/// <see cref="GetAccountKeysQuery.SessionId" /> through
-/// <see cref="ISessionRepository.FindByIdAsync" />, take <c>Session.CredentialId</c> off it, then read
-/// the envelopes for <c>(userContext.UserId, credentialId)</c> through
-/// <see cref="IAccountKeyReadService.ListForCredentialAsync" />. The credential is the whole reason the
-/// session is read at all: an account holding a passkey and a set of recovery codes has eleven wrapped
-/// rows across two credentials, and only the ones under the credential that just authenticated can be
-/// opened by anything the browser is holding.
+/// <b>One read, and its only input is <see cref="IUserContext.UserId" />.</b> The account is the unit the
+/// keys belong to, so the account is what the read is keyed on; nothing about the request narrows it
+/// further, and there is no second identifier for anything to disagree about.
 /// </para>
 /// <para>
-/// <b><see cref="ISessionRepository.FindByIdAsync" /> deliberately carries no owner predicate — do not
-/// add one above it.</b> Its own remarks give the reason: <c>sessions</c> is policed by
-/// <c>user_isolation</c>, so PostgreSQL appends the owner comparison underneath the read and somebody
-/// else's session is <em>not found</em> rather than found and rejected. A filter here would be a second
-/// source of tenancy able to disagree with the policy, and the first disagreement is a request that can
-/// read its own session through one and not the other.
+/// <b>It used to be narrowed by the credential that opened the session, and that was wrong.</b> The
+/// narrowing rested on "the browser can only ever be holding a key-encryption key derived from the
+/// factor its own session was opened with", and two things that exist today say otherwise. Re-authentication
+/// looks a passkey up <em>by account</em> —
+/// <c>PasskeyReauthentication</c> calls <c>IPasskeyRepository.FindByWebAuthnCredentialIdForUserAsync</c>
+/// with <see cref="IUserContext.UserId" /> and never with the session's credential — and the assertion
+/// options carry <b>no <c>allowCredentials</c></b>, which <c>PasskeyRequestOptions</c> and
+/// <c>BeginReauthenticationHandler</c> each state as a decision. So the <em>authenticator</em> chooses
+/// which of the account's credentials answers a ceremony, and the client cannot know in advance which one
+/// it will be. A read keyed on anything narrower than the account therefore refuses a factor that was
+/// just presented and just verified.
 /// </para>
 /// <para>
-/// <b>The owner argument to the read service comes from <see cref="IUserContext.UserId" />, not from
-/// <c>Session.UserId</c>.</b> The two cannot disagree — the policy is what let the session row be
-/// visible at all, and it compares against the very value the context published — but one of them is the
-/// publication the row-level-security model itself reads, and the other is a column that happens to
-/// agree with it. Taking the one the policy is keyed on keeps a single answer to "who is this request",
-/// which is the same discipline <c>AuthenticatedSession</c> keeps by refusing to hand back a budget id.
+/// <b>The failure that follows is reachable and silent.</b> Somebody signs in by redeeming a recovery
+/// code, so the session is opened over the recovery-codes credential —
+/// <c>RedeemRecoveryCodeHandler</c> establishes it over the set. They then ask for a new set of codes,
+/// which <c>GenerateRecoveryCodesHandler</c> gates on a fresh <em>passkey</em> assertion. The ceremony
+/// yields the passkey's key-encryption key; a credential-narrowed read hands back the ten recovery-code
+/// envelopes; every unwrap fails to authenticate, and the client tells the person to present another
+/// factor having just been given a perfectly valid one. Nothing on the server sees any of it happen:
+/// every row is correct, every status code is a 200, and the only symptom is an account that will not
+/// open.
 /// </para>
 /// <para>
-/// <b>A session this request cannot see answers an empty list, never a throw.</b> Never established,
-/// already ended, and belonging to another account all arrive as <see langword="null" /> from the
-/// repository and must stay indistinguishable from one another — that indistinguishability is what stops
-/// a caller learning that a session id is real but not theirs, and a refusal keyed on the
-/// <see langword="null" /> would re-open exactly that oracle on the one route that names an account's
-/// key custody.
+/// <b>What widening costs, stated rather than waved past.</b> A caller now receives envelopes it holds
+/// nothing to open — ten of them where a passkey session used to get one. That is material travelling
+/// further than the request needs it, which is a real cost and not one to pretend away. It is accepted
+/// for two reasons. The operator already holds every one of these rows, so widening discloses nothing to
+/// the party the design is defending against. And a factor's envelopes open <b>only</b> under a
+/// key-encryption key derived from that factor — a secret this server has never seen, being a PRF output
+/// inside an authenticator or a recovery code written on a card — so an entry the caller cannot open is
+/// ciphertext bound to associated data it cannot reproduce. What is left is the <em>count</em>: the
+/// answer now says how many factors the account holds. That is a fact about the caller's own account
+/// which the same principal can already assemble from <c>GET /api/me/credentials</c> and
+/// <c>GET /api/me/recovery-codes</c>, so it is not a capability this route introduces.
 /// </para>
 /// <para>
-/// <b>It asks nothing about whether the session is live, and must not start.</b>
-/// <see cref="ISessionRepository.FindByIdAsync" /> hands back a revoked or expired session as an
-/// entity rather than filtering it — its own remarks and
-/// <c>Infrastructure/Repositories/SessionRepository.cs</c> both say so deliberately — because whether
-/// a session is live is <see cref="Session.IsActiveAt" />'s answer, and the <b>authentication
-/// pipeline</b> is what applies it, before any handler in this ring is reached. An
-/// <c>IsActiveAt</c> or <c>RevokedAtUtc is null</c> check added here would be a second copy of that
-/// rule sitting behind the first, and the copy that drifts is the one deciding whether a request is
-/// authenticated at all. <b>This handler's own tests would not catch one being added</b>, which was
-/// measured rather than assumed: every session they seed is live and unrevoked, so a check on
-/// <c>RevokedAtUtc</c> was applied here and all 717 unit tests stayed green. A check reading ambient
-/// wall-clock time is the one exception, and it is not the tests holding the rule either — the
-/// fixture's instants are fixed calendar dates, so such a check goes red once they fall in the past,
-/// which is the fixture ageing rather than a case that models a revoked session. What holds the line
-/// is the route table and review, and this paragraph is the only place that says so.
+/// <b>The owner argument comes from <see cref="IUserContext.UserId" />, and that is the value
+/// row-level security is keyed on.</b> <c>wrapped_account_keys</c> is policed by <c>user_isolation</c>,
+/// which compares against the very id the context published, so naming it here keeps a single answer to
+/// "who is this request" — and the explicit predicate stays even though the policy would scope the read
+/// anyway, because a policy makes a wrong query answer <em>empty</em> rather than <em>correct</em>. See
+/// <see cref="IAccountKeyReadService.ListForAccountAsync" />.
 /// </para>
 /// <para>
-/// <b>A credential holding no factor rows answers an empty list too</b>, and for the reason
-/// <c>ListCredentialsHandler</c> gives about its own: an empty collection is the honest shape of
-/// "nothing came back", and this read is taken for display. The state is not one the product can be left
-/// in at rest — every path that brings a factor into existence writes its wrapped row in the same
-/// <c>SaveChanges</c> as the credential — so an empty answer means the credential was revoked, or the
-/// account erased, between this request authenticating and this read running. That is a race, not a
-/// corruption, and a handler that threw on it would be a rule keyed on a read taken for display.
+/// <b>It asks nothing about whether the session is live, and now there is nothing here to ask with.</b>
+/// Whether a session is live is <c>Session.IsActiveAt</c>'s answer and the <b>authentication pipeline</b>
+/// is what applies it, before any handler in this ring is reached. That used to be a restraint — this
+/// handler held an <c>ISessionRepository</c> and had to be told not to use it for liveness — and it is
+/// now structural: the dependency is gone, so a second copy of that rule cannot be written here without
+/// first re-introducing a session. <c>AccountKeysEndpointTests</c> pins that the pipeline still refuses a
+/// revoked session on this route, which nothing did while the rule was only a paragraph.
 /// </para>
 /// <para>
-/// <b>The answer is a list because a factor is not a credential, and it must never be written as "the"
-/// pair.</b> A passkey is one credential and one factor: one row. A set of recovery codes is one
-/// credential and <b>ten</b> factors, because each code derives its own key-encryption key and a person
-/// redeems whichever one they still have. <c>SingleOrDefault</c>, <c>FirstOrDefault</c>, or a return type
-/// of <c>FactorEnvelopes?</c> would each be correct for every passkey in the product and would drop nine
-/// of every ten recovery-code envelopes — the exact failure that moved <c>wrapped_account_keys</c>'
-/// primary key from <c>credential_id</c> to <c>factor_id</c>, and one whose symptom is a person who has
-/// already lost their authenticator redeeming a code, being handed a session, and finding the account
-/// still locked. Nothing on the server can see it happen.
+/// <b>An account holding no factor rows answers an empty list, not a throw</b>, for the reason
+/// <c>ListCredentialsHandler</c> gives about its own: an empty collection is the honest shape of "nothing
+/// came back", and this read is taken for display. There are four ways to reach it, and the fourth is one
+/// this file used to deny.
+/// </para>
+/// <list type="number">
+/// <item>The account holds no recovery factor at all. No path reaches that state today — registration
+/// creates eleven factors in one act or creates nothing — but nothing in the schema forbids it.</item>
+/// <item>The account was erased between this request authenticating and this read running.</item>
+/// <item>Its factor-bearing credentials were revoked in that same window; each revocation takes its
+/// wrapped rows with it by the cascade from <c>credentials</c>.</item>
+/// <item><b>A factor exists whose wrapped row was never written.</b> The earlier text here called that
+/// state unreachable, on the grounds that every path creating a factor writes its row in the same
+/// <c>SaveChanges</c> as the credential. That is a property of the three write paths that exist, not a
+/// fact the schema holds: the two <c>NOT NULL</c> columns make "a row carries both keys or neither" a
+/// schema fact, and <c>CLAUDE.md</c> is explicit that <b>"every factor has a row" is not one</b> — a
+/// fourth write path that skipped them would create a keyless factor and redden nothing. So a keyless
+/// factor is a state this answer can be reporting, and a handler that treated an empty list as
+/// impossible would be wrong about its own domain.</item>
+/// </list>
+/// <para>
+/// <b>Empty is still answered as <c>200 []</c> and never a <c>404</c>, but not for the reason it used to
+/// be.</b> The old argument was an enumeration oracle: a 404 would have told a caller that a guessed
+/// session id named a real row. That argument does <em>not</em> survive the widening — nothing is
+/// narrowed by an identifier a caller could guess, and an authenticated request can only ever ask about
+/// its own account. What holds now is the client. <c>AccountKeyCustodyService</c> reads an empty list as
+/// <c>unopened</c> — "present another factor" — and reads any failed read at all, a 404 included, as
+/// <c>unreachable</c>, whose advice is "try the same factor again in a minute". So a 404 would hand
+/// somebody whose account genuinely holds nothing openable the one instruction that can never work.
 /// </para>
 /// <para>
 /// <b>The order is <c>FactorEnvelopes.FactorId</c> ascending, and what that buys is determinism rather
 /// than a meaning.</b> The client tries each pair in turn and the associated data decides which one
 /// opens, so no sequence is more useful to a caller than another; what a caller does need is that two
-/// reads of unchanged rows agree, which an unordered read of a ten-row set does not promise. The primary
-/// key is the sort because it cannot tie, so no second key is needed. The <em>particular</em> sequence
-/// is still not part of the contract, though the reason usually given for that is false:
+/// reads of unchanged rows agree, which an unordered read of an eleven-row set does not promise. The
+/// primary key is the sort because it cannot tie, so no second key is needed. The <em>particular</em>
+/// sequence is still not part of the contract, though the reason usually given for that is false:
 /// <see cref="Guid.CompareTo(Guid)" /> <b>is</b> a byte comparison of the canonical RFC 4122 form —
 /// over 200,000 random pairs on .NET 10 it disagreed with big-endian byte order zero times — so a
 /// .NET sort and a PostgreSQL <c>order by</c> are expected to agree, granted that <c>uuid_cmp</c> is
@@ -95,6 +113,15 @@ namespace Application.AccountKeys.GetAccountKeys;
 /// ordered differently from <see cref="Guid.CompareTo(Guid)" /> on close to half of them. So a
 /// hand-rolled comparison, or an expected order built in a test out of those bytes, matches neither
 /// side. Determinism is what a caller may rest on; which factor comes first is what none of them may.
+/// </para>
+/// <para>
+/// <b>The answer is a list because a factor is not a credential, and it must never be written as "the"
+/// pair.</b> A passkey is one credential and one factor: one row. A set of recovery codes is one
+/// credential and <b>ten</b> factors, because each code derives its own key-encryption key and a person
+/// redeems whichever one they still have. <c>SingleOrDefault</c>, <c>FirstOrDefault</c>, or a return type
+/// of <c>FactorEnvelopes?</c> would each be correct for an account holding one passkey and nothing else,
+/// and would drop nine of every ten recovery-code envelopes — the exact failure that moved
+/// <c>wrapped_account_keys</c>' primary key from <c>credential_id</c> to <c>factor_id</c>.
 /// </para>
 /// <para>
 /// <b>It takes no <c>ILogger</c>, and must never take one</b>, for the reason
@@ -107,43 +134,25 @@ namespace Application.AccountKeys.GetAccountKeys;
 /// there is nothing to trade against.
 /// </para>
 /// <para>
-/// <b>No <c>ITransactionalExecutor</c>, and this is not an oversight.</b> Two reads and no write: there
-/// is no unit of work to make atomic, and a snapshot spanning them would buy nothing, since a credential
-/// revoked between them is the empty answer described above rather than a torn one. Opening a
-/// transaction here would also put the authentication path's ordering trap back in play — a transaction
-/// configures its connection when it opens, and every policed statement inside one opened before the
-/// identity was published meets <c>''::uuid</c> and raises <c>22P02</c>. That is the rule
-/// <c>CLAUDE.md</c> states and <c>RegisterAccountHandler</c>, <c>CompleteAssertionHandler</c> and
-/// <c>RedeemRecoveryCodeHandler</c> each restate inline; nothing here is worth re-opening it for.
+/// <b>No <c>ITransactionalExecutor</c>, and this is not an oversight.</b> One read and no write: there is
+/// no unit of work to make atomic. Opening a transaction here would also put the authentication path's
+/// ordering trap back in play — a transaction configures its connection when it opens, and every policed
+/// statement inside one opened before the identity was published meets <c>''::uuid</c> and raises
+/// <c>22P02</c>. That is the rule <c>CLAUDE.md</c> states and <c>RegisterAccountHandler</c>,
+/// <c>CompleteAssertionHandler</c> and <c>RedeemRecoveryCodeHandler</c> each restate inline; nothing here
+/// is worth re-opening it for.
 /// </para>
 /// </remarks>
 public sealed class GetAccountKeysHandler(
     IUserContext userContext,
-    ISessionRepository sessionRepository,
     IAccountKeyReadService readService)
     : IQueryHandler<GetAccountKeysQuery, IReadOnlyList<FactorEnvelopes>>
 {
-    public async Task<IReadOnlyList<FactorEnvelopes>> HandleAsync(
+    public Task<IReadOnlyList<FactorEnvelopes>> HandleAsync(
         GetAccountKeysQuery query,
-        CancellationToken cancellationToken = default)
-    {
-        // No owner predicate above this read, and no liveness check below it: user_isolation scopes
-        // the row, and whether the session is live was decided by the authentication pipeline that
-        // let this request reach a handler at all.
-        Session? session = await sessionRepository.FindByIdAsync(query.SessionId, cancellationToken);
-
-        // Never established, already ended, and belonging to somebody else all arrive here as the
-        // same null and stay indistinguishable — a refusal keyed on it is the oracle.
-        if (session is null)
-        {
-            return [];
-        }
-
-        // The owner from the context the policy is keyed on, the credential from the session. Every
-        // factor under that credential, which is one row for a passkey and ten for a set of codes.
-        return await readService.ListForCredentialAsync(
-            userContext.UserId,
-            session.CredentialId,
-            cancellationToken);
-    }
+        CancellationToken cancellationToken = default) =>
+        // The owner from the context the policy is keyed on, and nothing else. Every factor the account
+        // holds — one row per passkey, ten per set of codes — because a ceremony can present any of
+        // them and the authenticator, not this request, decides which.
+        readService.ListForAccountAsync(userContext.UserId, cancellationToken);
 }

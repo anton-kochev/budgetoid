@@ -896,9 +896,9 @@ ELSE                                                               ← first iss
     **not** for want of an assertion: this client runs one on `/welcome`. What blocks it is the
     sixth member — ten whole submissions, each carrying its own wrapped copy of the account's
     content key and index key. Wrapping them needs them unwrapped, and while
-    `GET /api/me/account-keys` now hands this session's envelopes back, nothing in the browser reads
-    that route or opens what it returns: the block moved from the server to the client rather than
-    lifting. **That is a different block from the erasure control's**, and the
+    `GET /api/me/account-keys` now hands back every factor's envelopes and `AccountKeyCustodyService`
+    opens them on a passkey sign-in, nothing on this path reaches that custody: the block moved from
+    the server to the client rather than lifting. **That is a different block from the erasure control's**, and the
     settings screen says so in different words: erasing waits on a confirmation flow this screen has
     not been given, generating waits on the keys. `POST /api/recovery-codes/redemption` has no
     client route at all: nothing anywhere canonicalises a typed code or presents a verifier. The

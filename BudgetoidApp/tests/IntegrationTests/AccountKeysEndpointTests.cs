@@ -12,16 +12,16 @@ namespace IntegrationTests;
 
 /// <summary>
 /// That a signed-in browser can read back the wrapped copies of the account's content key and index key
-/// that <b>the credential which opened this session</b> can derive a key-encryption key for — one pair
-/// for a passkey, ten for a set of recovery codes — and nobody else's, ever.
+/// that <b>every factor the account holds</b> stores — one pair per registered passkey, ten per set of
+/// recovery codes, across every credential they hang off — and nobody else's, ever.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Driven over real HTTP rather than against <c>GetAccountKeysHandler</c>, because half of what is
-/// measured here is <em>which session the request arrives as</em>. Nothing in the request names a
-/// session, a credential or an account: the session id is read off the claim this request's own
-/// authentication produced, and the owner off the resolved context. A handler tested in isolation would
-/// be handed both of the things these tests exist to check the pipeline produces.
+/// measured here is <em>which account the request arrives as</em>. Nothing in the request names a
+/// session, a credential or an account: the owner is read off the context this request's own
+/// authentication resolved. A handler tested in isolation would be handed the thing these tests exist to
+/// check the pipeline produces, and would be asked for liveness the pipeline owns.
 /// </para>
 /// <para>
 /// <b>No test here names a type belonging to this endpoint</b> — no request record, no response record,
@@ -33,22 +33,26 @@ namespace IntegrationTests;
 /// naming it cannot make a test agree with the thing it measures.
 /// </para>
 /// <para>
-/// <b>Every arrangement seeds a <em>second</em> credential holding factors of its own, and that is the
-/// load-bearing half of the file.</b> An account really does hold a passkey and a set of recovery codes
-/// at once — eleven wrapped rows across two credentials — and only the rows under the credential that
-/// just authenticated can be opened by anything the browser is holding. With one credential seeded,
-/// "this credential's rows" and "this account's rows" are the same set, `user_isolation` scopes both
-/// identically, and a read that dropped the credential predicate entirely would be green everywhere.
+/// <b>The two reading tests seed a <em>second</em> credential holding factors of its own, and it must
+/// arrive.</b> That is the reverse of what this file used to claim, and the reversal is the change.
+/// An account really does hold a passkey and a set of recovery codes at once — eleven wrapped rows
+/// across two credentials — and <em>which</em> of them the browser can open is decided by an
+/// authenticator this server never hears from: re-authentication looks a credential up by account and
+/// the assertion options carry no <c>allowCredentials</c>. So a read narrowed to the credential that
+/// opened the session refuses a factor that was just presented and just verified, and the second
+/// credential is what makes that narrowing visible. With one credential seeded, "this credential's rows"
+/// and "this account's rows" are the same set and every narrowing is green.
 /// </para>
 /// <para>
-/// <b><see cref="AccountKeys_ForARecoveryCodesSession_CarryAllTenFactorsWithTheirOwnEnvelopes" /> is the
-/// most important test in this file</b>, and it is the reason the seeding had to change.
+/// <b><see cref="AccountKeys_ForARecoveryCodesSession_CarryAllElevenFactorsOfTheAccount" /> is the
+/// most important test in this file</b>, and it carries two claims that fail independently.
 /// <c>wrapped_account_keys</c> is keyed on <c>factor_id</c> and a set of recovery codes files
 /// <b>ten</b> rows under one <c>credential_id</c>, so a projection reaching for
 /// <c>SingleOrDefault</c> — or a response type of one pair rather than a list — is correct for every
-/// passkey in the product and drops nine of every ten recovery-code envelopes. Nothing on the server can
-/// see that happen: it surfaces in a browser months later, on the day somebody who has already lost
-/// their authenticator redeems a code, is handed a session, and finds the account still locked.
+/// passkey in the product and drops nine of every ten recovery-code envelopes; and the eleventh row,
+/// under the passkey beside the set, is the one a credential-narrowed read drops. Nothing on the server
+/// can see either happen: they surface in a browser months later, on the day somebody who has already
+/// lost their authenticator redeems a code, is handed a session, and finds the account still locked.
 /// </para>
 /// <para>
 /// <b>The envelopes are minted per row rather than filled, and that is the second half of the same
@@ -73,6 +77,12 @@ public sealed class AccountKeysEndpointTests
 {
     private const string AccountKeysPath = "/api/me/account-keys";
 
+    /// <summary>
+    /// The neighbouring route that returns no key material, used as the control for the one response
+    /// header this endpoint states for itself.
+    /// </summary>
+    private const string CredentialsPath = "/api/me/credentials";
+
     /// <summary>The account under test in most of the file.</summary>
     private const string Subject = "google-account-keys";
 
@@ -86,6 +96,16 @@ public sealed class AccountKeysEndpointTests
     private const int RequiredCodeCount = 10;
 
     /// <summary>
+    /// How many factors an ordinary account holds: a set of recovery codes and one registered passkey.
+    /// </summary>
+    /// <remarks>
+    /// Derived from <see cref="RequiredCodeCount" /> rather than written as <c>11</c>, so the two numbers
+    /// cannot drift apart — and named at all because "eleven" is the claim the widening turns on, and a
+    /// bare literal beside a bare <c>10</c> reads as an arbitrary fixture size.
+    /// </remarks>
+    private const int FactorsPerAccount = RequiredCodeCount + 1;
+
+    /// <summary>
     /// A factor identifier whose hex carries letters in every group, so that "the canonical lower-case
     /// hyphenated spelling" is a claim with something to be wrong about. The all-digit UUID a random
     /// mint occasionally produces renders identically in either case, and a test seeded with one would
@@ -94,8 +114,8 @@ public sealed class AccountKeysEndpointTests
     private static readonly Guid LetteredFactorId = new("c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6");
 
     /// <summary>
-    /// A passkey session is handed exactly one pair, and it is the pair filed under the credential that
-    /// opened it.
+    /// A passkey session is handed the account's factors, including the one filed under a credential
+    /// that did not open it.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -106,17 +126,26 @@ public sealed class AccountKeysEndpointTests
     /// for somebody and that something comes through it.
     /// </para>
     /// <para>
-    /// <b>The second credential is what makes "that credential's" mean anything.</b> It holds a factor of
-    /// its own on the same account, under the same <c>user_id</c>, so a read scoped by owner alone — the
-    /// scoping <c>user_isolation</c> would supply underneath any statement at all — hands back two pairs
-    /// and fails here. Without it the strongest wrong implementation in the file passes.
+    /// <b>The second credential's factor is asserted to <em>arrive</em>, and that reverses what this test
+    /// used to claim.</b> It previously read the same arrangement and required the bystander's factor to
+    /// be absent from the body, on the theory that only the credential which opened the session can
+    /// derive a key-encryption key the browser is holding. That theory is false in this product:
+    /// <c>PasskeyReauthentication</c> looks a credential up by account and the assertion options carry no
+    /// <c>allowCredentials</c>, so the authenticator picks which of the account's credentials answers,
+    /// and the session's credential is not it in the one flow that matters —
+    /// generating a new set of codes from a session a code opened. The old expectation therefore pinned
+    /// the defect. <c>GetAccountKeysHandler</c> carries the argument.
+    /// </para>
+    /// <para>
+    /// The smallest shape of the widening: two credentials, one factor each. The eleven-row shape is
+    /// <see cref="AccountKeys_ForARecoveryCodesSession_CarryAllElevenFactorsOfTheAccount" />'s.
     /// </para>
     /// </remarks>
     [Test]
-    public async Task AccountKeys_ForAPasskeySession_CarryTheSessionCredentialsOnePair()
+    public async Task AccountKeys_ForAPasskeySession_CarryEveryFactorTheAccountHolds()
     {
         // Arrange — a session opened by a passkey, one factor under that passkey, and a second
-        // credential on the same account carrying a factor that must not arrive.
+        // credential on the same account carrying a factor that must arrive with it.
         await using PostgresTestHost host = await StartSignedInHostAsync();
         ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
 
@@ -137,36 +166,50 @@ public sealed class AccountKeysEndpointTests
 
         // One comparison rather than a count and a lookup: rendered whole, sorted and joined, it says
         // "exactly these factors carrying exactly these envelopes" — so a dropped row, a duplicated row,
-        // a stranger's row and a swapped envelope each arrive named in the failure message.
-        await Assert.That(ArrivedRows(await ReadArrayAsync(response))).IsEqualTo(ExpectedRows(own));
-
-        // And the other credential's factor is nowhere in the body at all, not merely absent from the
-        // member this test reads.
-        await Assert.That(await ReadPayloadAsync(signedIn.Client)).DoesNotContain(bystander[0].FactorId);
+        // a stranger's row and a swapped envelope each arrive named in the failure message. Both
+        // credentials' factors are on the expected side, which is the whole retarget.
+        await Assert.That(ArrivedRows(await ReadArrayAsync(response)))
+            .IsEqualTo(ExpectedRows([.. own, .. bystander]));
     }
 
     /// <summary>
-    /// A session opened by a set of recovery codes is handed all ten factors, each carrying its own pair.
+    /// An account holding a passkey beside a set of recovery codes, asked on a session one of the codes
+    /// opened, is handed all <b>eleven</b> factors, each carrying its own pair.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>The count is the smaller half of what this measures.</b> Ten distinct factor identifiers refuse
-    /// a <c>SingleOrDefault</c>, a <c>FirstOrDefault</c> and a nullable single-pair return type; ten
-    /// distinct <em>pairs of envelopes</em>, matched per row, refuse a projection that answers the right
-    /// number of rows with one row's bytes repeated, or with the pairs rotated against the identifiers.
-    /// The second of those is invisible to any count and to any assertion over identifiers alone, and it
-    /// is the one that puts a browser in front of an envelope whose associated data it cannot rebuild.
+    /// <b>The shape every real account is in, and the flow the narrowing broke.</b> Somebody redeems a
+    /// recovery code, so the session opens over the set; they ask for a new set, which is gated on a
+    /// fresh <em>passkey</em> assertion, so the key-encryption key the browser now holds is the
+    /// passkey's. A read narrowed to the session's credential hands back the ten code envelopes and not
+    /// the one that can be opened — every unwrap fails and the client tells a person who has just
+    /// presented a valid factor to present another. This test is the eleventh row.
     /// </para>
     /// <para>
-    /// The ten identifiers are asserted distinct in the arrangement rather than taken on trust. They are
-    /// minted independently, and a seeder that reused one would leave the comparison below reading nine
-    /// rows against nine — a green result over an arrangement that never happened.
+    /// <b>The count is the smaller half of what this measures.</b> Ten distinct factor identifiers refuse
+    /// a <c>SingleOrDefault</c>, a <c>FirstOrDefault</c> and a nullable single-pair return type; eleven
+    /// refuse a read keyed on a credential; and eleven distinct <em>pairs of envelopes</em>, matched per
+    /// row, refuse a projection that answers the right number of rows with one row's bytes repeated, or
+    /// with the pairs rotated against the identifiers. The last of those is invisible to any count and to
+    /// any assertion over identifiers alone, and it is the one that puts a browser in front of an
+    /// envelope whose associated data it cannot rebuild.
+    /// </para>
+    /// <para>
+    /// <b>It previously required the passkey's factor to be absent</b>, which was the narrowing written
+    /// down as an expectation. The assertion moved to the other side of the comparison rather than being
+    /// deleted, so the file still says something about that row.
+    /// </para>
+    /// <para>
+    /// The eleven identifiers are asserted distinct in the arrangement rather than taken on trust. They
+    /// are minted independently, and a seeder that reused one would leave the comparison below reading
+    /// ten rows against ten — a green result over an arrangement that never happened.
     /// </para>
     /// </remarks>
     [Test]
-    public async Task AccountKeys_ForARecoveryCodesSession_CarryAllTenFactorsWithTheirOwnEnvelopes()
+    public async Task AccountKeys_ForARecoveryCodesSession_CarryAllElevenFactorsOfTheAccount()
     {
-        // Arrange — the session opens over the set, which is the credential the ten rows hang off.
+        // Arrange — the session opens over the set, which is the credential the ten rows hang off, and a
+        // passkey beside it carries the eleventh.
         await using PostgresTestHost host = await StartSignedInHostAsync();
         ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(
             Subject, opensWith: CredentialType.RecoveryCodes);
@@ -175,23 +218,27 @@ public sealed class AccountKeysEndpointTests
         await admin.OpenAsync();
         Guid setCredentialId = await SessionCredentialIdAsync(admin, signedIn.UserId);
 
-        WrappedKeyFixture[] own = await SeedFactorsAsync(host, setCredentialId, RequiredCodeCount);
-        WrappedKeyFixture[] bystander = await SeedBystanderCredentialAsync(host, signedIn.UserId, count: 1);
+        WrappedKeyFixture[] codeFactors = await SeedFactorsAsync(host, setCredentialId, RequiredCodeCount);
+        WrappedKeyFixture[] passkeyFactor = await SeedBystanderCredentialAsync(
+            host, signedIn.UserId, count: 1);
+        WrappedKeyFixture[] own = [.. codeFactors, .. passkeyFactor];
 
-        // The arrangement really is ten distinct factors, or the comparison below reads fewer rows than
-        // it thinks it does and passes for a reason that has nothing to do with the endpoint.
+        // The arrangement really is eleven distinct factors, or the comparison below reads fewer rows
+        // than it thinks it does and passes for a reason that has nothing to do with the endpoint.
         await Assert.That(own.Select(factor => factor.FactorId).Distinct(StringComparer.Ordinal).Count())
-            .IsEqualTo(RequiredCodeCount);
+            .IsEqualTo(FactorsPerAccount);
 
         // Act
         HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(ArrivedRows(await ReadArrayAsync(response))).IsEqualTo(ExpectedRows(own));
 
-        // And nothing of the passkey beside the set arrived.
-        await Assert.That(await ReadPayloadAsync(signedIn.Client)).DoesNotContain(bystander[0].FactorId);
+        // The count on its own line, so a read that dropped the credential it was not opened on names
+        // the number rather than printing eleven rendered rows against ten.
+        JsonArray entries = await ReadArrayAsync(response);
+        await Assert.That(entries.Count).IsEqualTo(FactorsPerAccount);
+        await Assert.That(ArrivedRows(entries)).IsEqualTo(ExpectedRows(own));
     }
 
     /// <summary>
@@ -538,7 +585,7 @@ public sealed class AccountKeysEndpointTests
     }
 
     /// <summary>
-    /// A credential holding no factors is answered <c>200</c> with an empty array, and never a 404.
+    /// An account holding no factors is answered <c>200</c> with an empty array, and never a 404.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -547,11 +594,13 @@ public sealed class AccountKeysEndpointTests
     /// It is also the answer a reader will argue for on the grounds that the state should not exist.
     /// </para>
     /// <para>
-    /// <b>A 404 would rebuild the enumeration oracle this endpoint refuses to be.</b> An empty answer is
-    /// what a request whose session was never established, whose session has already ended, and whose
-    /// session belongs to somebody else all receive, indistinguishably. The moment "no rows" answers
-    /// differently from those, a caller learns which of them happened — and on the one route that names
-    /// an account's key custody, that is the whole of what an attacker wanted.
+    /// <b>The reason is the client, and it is no longer the enumeration oracle.</b> That argument rested
+    /// on the answer being narrowed by a session id a caller could guess; nothing is narrowed by a
+    /// caller-supplied identifier now, and an authenticated request can only ever ask about its own
+    /// account. What holds is downstream: <c>AccountKeyCustodyService</c> reads an empty list as
+    /// <c>unopened</c> — "present another factor" — and reads any failed read at all, a 404 included, as
+    /// <c>unreachable</c>, whose advice is "try the same factor again in a minute". A 404 would hand
+    /// somebody whose account genuinely holds nothing openable the one instruction that can never work.
     /// </para>
     /// <para>
     /// <b>Both halves are stated</b>, because "not 404" is not the same claim as "200 with an empty
@@ -561,9 +610,9 @@ public sealed class AccountKeysEndpointTests
     /// </para>
     /// </remarks>
     [Test]
-    public async Task AccountKeys_ForACredentialWithNoFactors_IsAnEmptyArrayAndNeverANotFound()
+    public async Task AccountKeys_ForAnAccountWithNoFactors_IsAnEmptyArrayAndNeverANotFound()
     {
-        // Arrange — a signed-in account whose session credential has had nothing filed against it. The
+        // Arrange — a signed-in account that has had nothing filed against any of its credentials. The
         // set arm of the seeding writes one credentials row and no wrapped keys, which is exactly this
         // state without anything having to be deleted to reach it.
         await using PostgresTestHost host = await StartSignedInHostAsync();
@@ -578,6 +627,112 @@ public sealed class AccountKeysEndpointTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(response.Content.Headers.ContentType!.MediaType).IsEqualTo("application/json");
         await Assert.That((await ReadArrayAsync(response)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The response is <c>Cache-Control: no-store</c>, and the neighbouring route beside it is not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The one endpoint in the product that returns key material, and the only one that states its own
+    /// cacheability.</b> <c>SecurityHeadersMiddleware</c> argues at length for owning no global value, so
+    /// this header exists in exactly one place — a direct write in the route delegate — and nothing else
+    /// in the suite reads it. Until this test, the header was held by an argument in a comment: deleting
+    /// the line reddened nothing anywhere, and the bytes would have gone on being served into a shared
+    /// cache, a disk cache and a back-button restore with every assertion in this file still green.
+    /// </para>
+    /// <para>
+    /// <b>Compared to the exact string rather than through
+    /// <see cref="System.Net.Http.Headers.CacheControlHeaderValue" />.</b> A parsed read would answer
+    /// <c>NoStore</c> true for <c>no-store, no-cache, private, max-age=0</c> as readily as for
+    /// <c>no-store</c> alone, and the endpoint's own remarks refuse that spelling on the grounds that the
+    /// four together read as more careful and store more — <c>no-cache</c> permits storage,
+    /// <c>private</c> permits a browser cache, and <c>max-age=0</c> without <c>no-store</c> permits a
+    /// stale-serving cache to keep the bytes. An exact comparison is the only one that can say so.
+    /// </para>
+    /// <para>
+    /// <b>The neighbouring route is the control, and without it this test passes on the thing the
+    /// middleware refuses to be.</b> A blanket <c>Cache-Control</c> written for every response would
+    /// satisfy the assertion above while settling the question in the one place that knows least about
+    /// what was returned. <c>GET /api/me/credentials</c> is the nearest route that carries no key
+    /// material, so it is the one that must come back with no such header at all.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_AreAnsweredWithNoStore()
+    {
+        // Arrange — a populated answer, so the header is read off a response that really carried key
+        // material rather than off an empty array.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorsAsync(host, await SessionCredentialIdAsync(admin, signedIn.UserId), count: 1);
+
+        // Act
+        HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
+        HttpResponseMessage neighbour = await signedIn.Client.GetAsync(CredentialsPath);
+
+        // Assert — the status first on both, so a header missing because the request failed reads as the
+        // failure it is.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(HeaderOf(response, "Cache-Control")).IsEqualTo("no-store");
+
+        await Assert.That(neighbour.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(HeaderOf(neighbour, "Cache-Control")).IsEqualTo(string.Empty);
+    }
+
+    /// <summary>
+    /// A handle whose session has been revoked is refused, and the same client was answered a moment
+    /// earlier.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The handler deliberately asks nothing about liveness, and nothing pinned that the pipeline
+    /// still does.</b> While <c>GetAccountKeysHandler</c> held an <c>ISessionRepository</c> the rule was
+    /// a restraint written in a comment — "do not use this for liveness" — and the widening removed the
+    /// dependency, which makes the restraint structural but leaves the <em>other</em> half unheld: that
+    /// something, somewhere, still refuses a dead handle on the one route returning key material.
+    /// <c>SessionCookieAuthenticationTests</c> makes that claim over its own route, and a route is not
+    /// covered by a claim made about a different one — this route could acquire
+    /// <c>AcceptsEndedSession</c>, or be moved outside the fallback policy, with that file still green.
+    /// </para>
+    /// <para>
+    /// <b>The live request is the control and it comes first.</b> A route that refused everybody, a route
+    /// behind a policy nobody can clear, and a seeded cookie that never worked all satisfy the refusal on
+    /// their own; only the same client, on the same route, answered <c>200</c> before the row was stamped
+    /// makes the 401 a verdict on the revocation.
+    /// </para>
+    /// <para>
+    /// <b>Revoked rather than expired, and stamped through SQL rather than by waiting.</b> Revocation is
+    /// a column the application role may write and expiry is a clock nothing here can move; stamping
+    /// <c>revoked_at_utc</c> is the state a sign-out and a credential revocation both leave behind, and
+    /// it is reached in one statement. The count of stamped rows is asserted, because an <c>update</c>
+    /// that matched nothing would leave the second request answering 401 for no reason at all — and a
+    /// second matched row would mean the account was seeded twice.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_ForARevokedSession_AreRefusedWithUnauthorized()
+    {
+        // Arrange — a signed-in account with a factor to hand back, so the control has a body.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorsAsync(host, await SessionCredentialIdAsync(admin, signedIn.UserId), count: 1);
+
+        // Act — the same client and the same route, either side of the stamp.
+        HttpResponseMessage live = await signedIn.Client.GetAsync(AccountKeysPath);
+        int stamped = await RevokeSessionsOfAsync(admin, signedIn.UserId);
+        HttpResponseMessage ended = await signedIn.Client.GetAsync(AccountKeysPath);
+
+        // Assert — the control first, so a broken control is not hidden behind the refusal it qualifies.
+        await Assert.That(live.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(stamped).IsEqualTo(1);
+        await Assert.That(ended.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
     }
 
     /// <summary>
@@ -754,6 +909,49 @@ public sealed class AccountKeysEndpointTests
     private static string Join(IEnumerable<string> rows) =>
         string.Join("\n", rows.Order(StringComparer.Ordinal));
 
+    /// <summary>
+    /// One response header read as raw text, or the empty string when the response carries none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Raw rather than through the typed accessor, because the typed one folds the difference the
+    /// cache-control test is about: <c>CacheControlHeaderValue.NoStore</c> is true for the four-directive
+    /// spelling as well as for <c>no-store</c> alone.
+    /// </para>
+    /// <para>
+    /// Both collections are asked. <see cref="HttpResponseMessage.Headers" /> is where a general header
+    /// lands, but a value the framework classified as a content header would otherwise read as absent —
+    /// and "absent" is exactly what the control below asserts, so a lookup that could miss a present
+    /// header would make the control pass over the thing it exists to refuse.
+    /// </para>
+    /// </remarks>
+    private static string HeaderOf(HttpResponseMessage response, string name) =>
+        response.Headers.TryGetValues(name, out IEnumerable<string>? values)
+            ? string.Join(", ", values)
+            : response.Content.Headers.TryGetValues(name, out IEnumerable<string>? contentValues)
+                ? string.Join(", ", contentValues)
+                : string.Empty;
+
+    /// <summary>
+    /// Stamps <c>revoked_at_utc</c> on every live session of one account, on the container superuser,
+    /// and answers how many rows it reached.
+    /// </summary>
+    /// <remarks>
+    /// The instant is a second in the past rather than <c>now()</c>, so a comparison written as strictly
+    /// "before" cannot read the row as still live on a clock that has not ticked.
+    /// </remarks>
+    private static async Task<int> RevokeSessionsOfAsync(NpgsqlConnection admin, Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            "update sessions set revoked_at_utc = @revokedAt "
+            + "where user_id = @userId and revoked_at_utc is null",
+            admin);
+        command.Parameters.AddWithValue("revokedAt", DateTime.UtcNow.AddSeconds(-1));
+        command.Parameters.AddWithValue("userId", userId);
+
+        return await command.ExecuteNonQueryAsync();
+    }
+
     /// <summary>One envelope member, decoded and rendered as hex so a failure prints the bytes.</summary>
     private static string DecodedHex(JsonObject row, string member) =>
         Convert.ToHexString(Base64UrlText.Decode(row[member]!.GetValue<string>()));
@@ -850,7 +1048,8 @@ public sealed class AccountKeysEndpointTests
 
     /// <summary>
     /// Files a second credential on an existing account, with factors of its own — the rows that must
-    /// never arrive.
+    /// arrive beside the session credential's, and whose absence is the defect this file was retargeted
+    /// to catch.
     /// </summary>
     /// <remarks>
     /// A passkey, because it is the credential type the seeder can add more than one of: an account holds
