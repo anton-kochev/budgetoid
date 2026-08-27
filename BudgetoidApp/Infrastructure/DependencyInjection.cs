@@ -1,4 +1,5 @@
 using Application.Abstractions;
+using Application.AccountKeys;
 using Application.Accounts;
 using Application.Categories;
 using Application.CategoryGroups;
@@ -52,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<ICategoryReadService, CategoryReadService>();
         services.AddScoped<IUserAccountReadService, UserAccountReadService>();
         services.AddScoped<ICredentialReadService, CredentialReadService>();
+        services.AddScoped<IAccountKeyReadService, AccountKeyReadService>();
         services.AddScoped<IRecoveryCodeReadService, RecoveryCodeReadService>();
         services.AddScoped<IExportReadService, ExportReadService>();
         services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();

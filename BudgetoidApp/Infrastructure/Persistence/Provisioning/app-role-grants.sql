@@ -389,14 +389,26 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 -- The table therefore needs no entry in RowLevelSecurityCoverage.Exemptions — that absence is the
 -- mechanism working, not an omission, and it is the whole of the argument. Nothing is re-argued here.
 --
--- SELECT IS GRANTED FOR A READER NO APPLICATION CODE PROVIDES, and this file's header tells the next
--- reader to grant only what a table needs, so the exception is stated rather than left to look like
--- coverage. No application code reads this table today: there is no unlock path, no client ceremony
--- able to produce a key-encryption key, and deliberately no endpoint that returns a wrapped key —
--- the story that needs one argues for it in place.
+-- SELECT IS GRANTED FOR TWO KINDS OF READER, and this file's header tells the next reader to grant
+-- only what a table needs, so both are named rather than left to look like coverage. Neither makes
+-- the other redundant, and withdrawing the grant takes both down together.
 --
--- The readers are the row-level-security isolation tests, and a policed table whose isolation nothing
--- exercises is a policy nobody has watched fire.
+-- The application reader is GET /api/me/account-keys, which hands a signed-in browser the wrapped
+-- content key and wrapped index key of every factor filed under THE CREDENTIAL THAT OPENED THIS
+-- SESSION — one pair for a passkey, ten for a set of recovery codes, because a factor is not a
+-- credential. It reaches the table through AccountKeyReadService.ListForCredentialAsync, which
+-- PROJECTS over AsNoTracking and materialises no entity, for the reason the NO DELETE block below
+-- gives. Narrowing to the session's credential rather than to the account is a decision rather than
+-- an optimisation: an account holding a passkey and a set of codes has eleven rows across two
+-- credentials, and a passkey session handed all eleven would hold ten envelopes it can never open —
+-- material travelling further than it is needed, which is a defect whether or not anything reads it.
+-- That narrowing does not have to widen when a later factor is added without re-encrypting, either:
+-- by then the browser is already holding the unwrapped content and index keys, so it wraps the new
+-- factor itself and never reads another factor's envelopes.
+--
+-- The other readers are the row-level-security isolation tests, and an endpoint answering correctly
+-- is not evidence about them: a policed table whose isolation nothing exercises is a policy nobody
+-- has watched fire.
 -- Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser is the one this grant exists
 -- for: it reads the table as this role on a session naming one owner and asserts that the other
 -- owner's row is not there, which is the only statement in the system that has watched user_isolation

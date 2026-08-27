@@ -27,18 +27,22 @@ index keys produce two blind index values for one name, the uniqueness constrain
 and a person signing in from a second device silently accumulates duplicate payees while the
 constraint appears to work.
 
-**What is built today is the cryptography and the three write paths that store its output.** The
-client can generate the keys, derive a key-encryption key from either kind of factor, wrap both keys
-under it and unwrap them again; the server refuses to register a passkey, issue a set of recovery
-codes, **or create an account** unless the request carries a factor identifier and both wrapped keys
-for every factor it brings into existence, and files them in the same save as the credential.
+**What is built today is the cryptography, the three write paths that store its output, and the one
+route that reads it back.** The client can generate the keys, derive a key-encryption key from
+either kind of factor, wrap both keys under it and unwrap them again; the server refuses to register
+a passkey, issue a set of recovery codes, **or create an account** unless the request carries a
+factor identifier and both wrapped keys for every factor it brings into existence, and files them in
+the same save as the credential. `GET /api/me/account-keys` hands a signed-in browser back the
+envelopes belonging to the credential that opened its session — see
+[The one route that hands them back](#the-one-route-that-hands-them-back).
 
 **The two halves are joined on one path.** `register.service.ts` obtains a PRF output from a real
 authenticator, draws the account's keys, mints the set, derives eleven key-encryption keys and posts
 eleven pairs of envelopes, so an account created there really does own a content key and an index
 key that no server has seen. The other two write paths are still reached only by the integration
 suite. Unwrapping outside a spec, the locked state, the blind index and the encryption of any
-narrative field are all later work — no screen decrypts anything, because nothing is encrypted yet.
+narrative field are all later work — no screen decrypts anything, because nothing is encrypted yet
+and no client code calls the route that would hand it an envelope to open.
 
 **The PRF output never leaves the ceremony module.** `createPasskey` and `assertPasskey` each derive
 through `keyEncryptionKeyFromPasskey` themselves and hand back a **non-extractable `CryptoKey`**,
@@ -167,7 +171,11 @@ erDiagram
     hold one — and by there being no server-side type for any of them. What *does* cross is the same
     three members on each of three routes: a factor identifier and two envelopes, each of which the
     server can check the shape of and open none of. On `POST /api/registration` that triple arrives
-    eleven times over.
+    eleven times over. The **outbound** direction is held by `KeyMaterialSecrecyTests`, a census over
+    every member of every type a route serialises: what leaves on `GET /api/me/account-keys` is that
+    same triple, sealed, and the census carries a written argument for each of the two envelopes
+    rather than one sentence covering both — the two are the same width, carry the same version, and
+    are indistinguishable to every check this server owns.
 
 - **A factor identifier MUST be one spelling on the wire.** The write paths accept a UUID in the
   **lower-case** 36-character hyphenated form with no surrounding whitespace, and nothing else — not
@@ -485,6 +493,65 @@ That is the deliberate counterpart to `account-keys.ts` tolerating several spell
 them — folding defends against values arriving from elsewhere, while emitting one spelling is a
 property of the values this client creates.
 
+### The one route that hands them back
+
+`GET /api/me/account-keys` answers a **list**, one entry per factor, each carrying that factor's
+identifier and its two envelopes as unpadded base64url — `factorId`, `wrappedContentKey`,
+`wrappedIndexKey`, and nothing else in either direction. No credential id, no user id and no
+registration instant: the first is a capability the browser has no use for, since it locates its
+pair by trying each in turn; the second is the value every policy in the database is keyed on; the
+third is a timeline of somebody's recovery history beside their key material. The identifier goes
+back in the canonical lower-case hyphenated spelling it was stored in, because it **is** the
+associated data both envelopes were sealed with — the rule the write paths already keep.
+
+**It is narrowed by the credential that opened the session, never by the account, and that is a
+decision rather than an optimisation.** A passkey session gets one pair; a recovery-codes session
+gets ten, because a factor is not a credential — the distinction under
+[Key Entities](#key-entities), which is what makes the answer a list at all rather than a pair. An
+account holding both kinds has eleven rows across two credentials, and handing all eleven
+to a passkey session would give it ten envelopes it can never open: material travelling further than
+it is needed, which is a defect whether or not anything reads it.
+
+**The claim is read at the edge, and only a session id travels inward.** `AccountKeyEndpoints` takes
+the `session_id` claim this request's own authentication produced and builds `GetAccountKeysQuery`
+from it; no `ClaimsPrincipal` crosses into the Application ring, which is why that query carries an
+id where `ListCredentialsQuery` and `GetSignedInUserQuery` carry nothing — the account they are
+scoped to comes from `IUserContext`, and *which credential opened this session* is the one thing the
+context cannot supply. `GetAccountKeysHandler` resolves that session, takes the credential off it,
+and asks `IAccountKeyReadService.ListForCredentialAsync` — a port the Application ring declares and
+`AccountKeyReadService` implements one ring out — for that credential's rows on the account
+`IUserContext` names, **not** the account the session row happens to carry: the two cannot disagree,
+but only one of them is the value row-level security is keyed on. Nothing in the request names a
+session, a credential or an account, so there is no identifier on the wire for a caller to
+substitute.
+
+**That narrowing does not have to widen when a factor is added later**, which is the objection worth
+answering before somebody "fixes" the route for good reasons. Registering a passkey or issuing a set
+of codes onto an existing account without re-encrypting anything happens in a browser that has
+**already unwrapped** the content key and the index key through the factor it is signed in with, so
+it wraps the new factor under a key-encryption key of its own and never needs to read another
+factor's envelopes. A route returning every factor would be a wider read serving a step that does
+not need one.
+
+**A session this request cannot see answers an empty array — never a `404`.** Never established,
+already ended, and belonging to somebody else are one indistinguishable answer on purpose, and this
+is the single most likely thing a later reader corrects, because "nothing found → 404" is right
+almost everywhere else. Here it is the enumeration oracle rebuilt: the moment "no rows" answers
+differently from those, a caller learns which of them happened, on the one route that names an
+account's key custody. A credential holding no factor rows answers the same empty array, and means
+the credential was revoked or the account erased between this request authenticating and this read
+running — a race rather than a corruption, on a read taken for display.
+
+**`AccountKeyReadService` projects and materialises nothing**, for the reason the never-materialise
+rule under [Workflows](#workflows--state-transitions) gives: the role holds no `DELETE` on this
+table, so a tracked row a later cascade walks into dies with `42501`. A read-only request has no
+cascade of its own, which is exactly why getting this wrong here would surface on some later request
+instead. It is a **read service** rather than a member on a repository for that reason too — a
+repository loads entities that rules are applied to, and on this table loading one is the hazard.
+
+`AccountKeysEndpointTests` drives the whole of it over real HTTP, because half of what is measured
+is *which session the request arrives as*.
+
 ### What the database can and cannot hold to account
 
 `wrapped_account_keys` refuses an envelope that is not 61 bytes and one whose leading byte is not
@@ -496,7 +563,8 @@ lives in the associated data.
 ## Workflows & State Transitions
 
 Steps 1–4 are the client module. The registration flow reaches all four; nothing else in the browser
-reaches any of them. Step 5 is the server, and all three routes refuse a request without it.
+reaches any of them. Steps 5 and 6 are the server: the three write routes refuse a request without
+step 5, and step 6 is the only way anything gets back out.
 
 1. **Minting an account's keys.** 64 bytes are drawn in one call and split into two independent
    copies. No further state exists — the keys live only in memory.
@@ -524,6 +592,12 @@ reaches any of them. Step 5 is the server, and all three routes refuse a request
    comparison the other two paths have no need of** — the passkey's identifier against the ten,
    because those eleven land on one primary key in one save — and projects the set's rows from the
    one validated list rather than zipping them from three. See [registration.md](registration.md).
+
+6. **Handing them back.** `GET /api/me/account-keys` returns the envelopes filed under the
+   credential that opened the calling session — one entry for a passkey, ten for a set of recovery
+   codes — and an empty array for anything it cannot see. It is the only read of
+   `wrapped_account_keys` the application makes, and no client code calls it yet. See
+   [The one route that hands them back](#the-one-route-that-hands-them-back).
 
 **Both registering paths validate the wrapped keys after the `prf` gate, and the ordering is a
 rule.** A client that cannot do PRF cannot have produced a wrapped key either, so those members are
@@ -590,7 +664,9 @@ about why.
   — where the wrapped copies live, why the factor identifier is its own column, and why the table
   holds no `UPDATE` or `DELETE` grant.
 - **[data-isolation.md](../engineering/data-isolation.md)** — `wrapped_account_keys` is policed by
-  `user_isolation`, and the two isolation tests that read it are what justify its `SELECT` grant.
+  `user_isolation`. Its `SELECT` grant now has two kinds of reader: the route above, and the two
+  isolation tests, which do not become redundant beside it — an endpoint answering correctly says
+  nothing about what the policy refused.
 
 ## Edge Cases & Known Gotchas
 
@@ -598,8 +674,11 @@ about why.
   whole of it, so `generateAccountKeys`, `wrapAccountKeys`, `keyEncryptionKeyFromPasskey` and
   `keyEncryptionKeyFromRecoveryCode` all have live callers. `unwrapAccountKeys` does **not**:
   nothing in this product opens an envelope outside a spec, because nothing is encrypted yet, and
-  the day that changes is the day the locked state and the blind index arrive with it. Do not relax
-  the server's demand for the envelopes to make one of those screens easier to write later.
+  the day that changes is the day the locked state and the blind index arrive with it. **What it is
+  waiting on is now the browser rather than the server** — the route that hands an envelope back
+  exists and no client code calls it — so do not read the module as dead code and delete it, and do
+  not relax the server's demand for the envelopes to make one of those screens easier to write
+  later.
 - **The PRF output is never sent, and one line is what stops it.** `getClientExtensionResults()`
   carries `prf.results.first`, which *is* the PRF output. `toRegistrationPayload` therefore
   **projects** — it builds a new `{ prf: { enabled } }` rather than passing the results object

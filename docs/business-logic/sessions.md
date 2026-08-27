@@ -615,10 +615,17 @@ required members. A third writer is a decision rather than a refactor.
     forwarded bearer-bearing requests to `JwtBearer`, and it was a hole with a comment on it rather
     than a rule.
 - **Example**: `POST /api/me/session/revocation` answers `204` to a locked session;
-  `GET /api/accounts`, `GET /api/me`, `GET /api/me/export`, `GET /api/me/credentials` and
+  `GET /api/accounts`, `GET /api/me`, `GET /api/me/export`, `GET /api/me/credentials`,
+  `GET /api/me/account-keys` and
   `POST /api/me/erasure` each answer `403` with a body identical to the others and naming no
   session, credential or kind. Two 403s live on this path and they must stay distinguishable to a
   reader: the first-party control's carries its own title, this one carries none.
+  - **The account-keys refusal is the one this rule reads most literally.** A federated credential
+    can derive no key-encryption key, so a locked session reaching that route would be handed
+    envelopes it holds nothing to open. It is pinned by
+    `AccountKeysEndpointTests.AccountKeys_ForALockedSession_AreRefusedWithForbidden`, which pairs
+    the refusal with a `Full` session on the same account, so a gate refusing everybody cannot
+    pass it.
 - **Counterexample**: refusing a locked session by publishing no ambient budget for it. It looks
   equivalent and is not — the export reads `budgets` by `user_id`, so it would sail through, and
   every other route would fail with a raw exception rather than a refusal.
@@ -709,6 +716,13 @@ ELSE                                                    ← an unenumerated futu
   when it ended any — opens one over the new set in their place, so it is the one path that does
   both. The condition is the sweep's own count, which is why that file argues the `sessionsEnded`
   contract from the other side.
+- **[Account Keys](account-keys.md)** — `GET /api/me/account-keys` is the **second** route to read
+  the session id off the claim its own request's authentication produced, after the sign-out this
+  file argues, and the first to care **which credential** the session was opened over. Everywhere
+  else a session answers only "who is asking"; there it also answers "which envelopes can this
+  browser open", which is why that route is narrowed by the session's credential rather than by the
+  account. A session this request cannot see answers an empty array there and never a `404`, for the
+  same reason a dead cookie is answered identically to a forged one here.
 - **`user_isolation`** — the same policy `users`, `budgets`, `passkey_signature_counters` and
   `wrapped_account_keys` carry, keyed on the same session setting.
 - **CORS** — the default policy gains `AllowCredentials()`, because a browser drops a cross-origin

@@ -161,8 +161,10 @@ that proves identity and unlocks nothing.
   as the application role on a session naming one owner and asserts the other owner's row is absent;
   `Database_RefusesAWrappedKeyReadOnASessionNamingNobody` pins the `22P02` an unset
   `app.current_user_id` reaches the policy as. Both go red the day the policy goes and the day the
-  grant goes, which is why `app-role-grants.sql` names them where it justifies granting `SELECT` to a
-  table no application code reads yet.
+  grant goes, which is why `app-role-grants.sql` names them where it justifies granting `SELECT`.
+  They keep that sentence now that an endpoint reads the table as well: an application read
+  answering correctly says nothing about what the policy refused, and a policed table whose
+  isolation nothing exercises is a policy nobody has watched fire.
 - **Every column is refused an `UPDATE` individually.**
   `Database_RefusesEveryUpdateOnAWrappedAccountKey_WhileStillAllowingInsert` states it column by
   column, each `42501` paired with a permitted insert on the same connection so the refusal cannot be
@@ -174,9 +176,20 @@ that proves identity and unlocks nothing.
   is open and production holds no data; the window is *not* closed by this change, because further
   schema work in this epic follows. Regenerating obliges resetting production's `__EFMigrationsHistory`
   in the same deploy — see [migrations.md](../engineering/migrations.md) and `DEPLOYMENT.md`.
-- **No endpoint returns a wrapped key, on purpose.** Nothing can unlock anything yet: there is no
-  client ceremony able to produce a key-encryption key and no ciphertext to read. The story that needs
-  such an endpoint argues for it in place, where its own threat model can be stated.
+- **The factor identifier now crosses the wire in the *other* direction, and this decision has been
+  waiting to have that consequence.** `GET /api/me/account-keys` hands a signed-in browser the
+  envelopes filed under the credential that opened its session, each beside the `factor_id` they
+  were sealed against — one entry for a passkey, ten for a set of recovery codes, which is the
+  primary-key choice above showing up in a response shape. The id leaves as a `Guid`, so the
+  serializer renders exactly the canonical lower-case hyphenated spelling the write paths compare
+  ordinally for: a response that re-spelled it would reproduce, on the way out, the permanent and
+  unnamed failure that rule exists to prevent. This is the endpoint the decision said would have to
+  argue for itself in place, and the arguments live in
+  [account-keys.md](../business-logic/account-keys.md). Two of them are the ones a later reader will
+  undo — the read is narrowed by the session's **credential** and not by the account, and a session
+  it cannot see answers an **empty array** rather than a `404`. Nothing else here moved: the table
+  still holds no `UPDATE` and no `DELETE`, and the read projects rather than materialising, so it
+  cannot become the change-tracker cascade those absences are aimed at.
 - **`factor_id` is unique across the table rather than per account.** A collision between two accounts
   therefore surfaces as the same refusal as a collision within one. The value is 122 random bits, so
   this is a statement about what the schema guarantees rather than about an event anyone will see.

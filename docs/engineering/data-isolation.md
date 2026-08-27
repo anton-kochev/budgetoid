@@ -206,7 +206,14 @@ Enforced today:
   wrote it. This proves internal consistency only; *which* budget a write lands in is still the
   filter's and `IBudgetContext`'s job alone.
 - **None of the user-owned entities carries a query filter** — `Budget`, `User`, `Credential`,
-  `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`, `RecoveryCodeHash`, and the challenge row.
+  `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`, `RecoveryCodeHash`, `WrappedAccountKeys`,
+  and the challenge row. A read of one that is not a discovery lookup therefore names its owner in
+  the statement: `AccountKeyReadService.ListForCredentialAsync` filters on `user_id` beside
+  `credential_id` even though `user_isolation` appends the same comparison underneath it, for the
+  reason `ExportReadService.ListOwnedBudgetsAsync` below does the same — a policy makes a wrong
+  query answer *empty*, not *correct*, so the copy in the statement is the one that survives a
+  policy missed on a table added later. The discovery lookups are the deliberate exception, argued
+  as their own rule further down.
   The lookup that resolves the ambient budget
   runs before a budget id exists, so every query over `Budgets` must scope by owner explicitly
   — `BudgetRepository.FindFirstForUserAsync` and `ExportReadService.ListOwnedBudgetsAsync`, which are
@@ -275,11 +282,12 @@ adding `user_isolation` to `credentials` leaves `RlsCoverageTests` entirely gree
 every passkey sign-in failing to find the credential it just verified. `currencies` and `__EFMigrationsHistory` need no such control —
 their exemption rests on belonging to no tenant rather than on being read before an identity exists, so
 a policy landing on either fails loudly on a session that names somebody. `wrapped_account_keys` is
-the newest policed table and the one whose grant depends on these tests existing: nothing in the
-application reads it yet, so `Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser`
-and `Database_RefusesAWrappedKeyReadOnASessionNamingNobody` are the only statements that have
-watched its policy decide anything, and `app-role-grants.sql` names them where it justifies granting
-`SELECT` at all),
+the newest policed table, and its `SELECT` grant now answers to two kinds of reader:
+`AccountKeyReadService.ListForCredentialAsync`, behind `GET /api/me/account-keys`, and the two
+isolation tests — `Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser` and
+`Database_RefusesAWrappedKeyReadOnASessionNamingNobody` — which the endpoint does not make
+redundant, because they remain the only statements that have watched the policy *refuse* anything
+here. `app-role-grants.sql` names both kinds where it justifies granting `SELECT` at all),
 `tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so any
 new table without the policy its ownership calls for, or without a stated exemption, fails —
 including one carrying neither ownership column, and one that is a view or materialized view),

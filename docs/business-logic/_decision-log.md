@@ -8,6 +8,50 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-27 — The wrapped account keys get a reader, narrowed by the credential that opened the session
+
+**Context:** the 2026-08-13 entry below recorded "no endpoint returns a wrapped key" as one of four
+deliberate absences, and said the story needing one would argue for it in place, where its own threat
+model could be stated. This is that story. Every account created since registration became one
+consented act owns a content key and an index key wrapped under eleven factors, and nothing on the
+server would hand any of them back, so a browser that had signed in held a key-encryption key and
+nothing to use it on.
+
+**Decision:** **`GET /api/me/account-keys` returns the envelopes filed under the credential that
+opened the calling session, and nothing else about them.** One entry for a passkey, ten for a set of
+recovery codes; each carries the factor identifier both envelopes were sealed against and the two
+envelopes as unpadded base64url. No credential id, no user id, no registration instant.
+
+**Narrowed by the credential rather than by the account, and that is the decision rather than an
+optimisation.** An account holding a passkey and a set of codes has eleven rows across two
+credentials, and only the ones under the credential that just authenticated can be opened by anything
+the browser is holding. Returning all eleven would hand a passkey session ten envelopes it can never
+open — material travelling further than it is needed, which is a defect whether or not anything reads
+it. The narrowing also does not have to widen for the story that adds a factor without re-encrypting:
+that browser has **already** unwrapped the content and index keys through the factor it signed in
+with, so it wraps the new factor itself and never reads another factor's envelopes. Without that
+sentence written down, the next reader widens the route for good reasons.
+
+**An empty array, never a `404`.** A session that was never established, one that has already ended,
+and one belonging to somebody else are one indistinguishable answer on purpose. This is the single
+most likely thing a later reader corrects, because "not found → 404" is right almost everywhere else;
+here it rebuilds the enumeration oracle, on the one route that names an account's key custody. A
+credential holding no factor rows answers the same empty array — a revocation or an erasure that
+landed between authenticating and reading, which is a race rather than a corruption.
+
+**Consequences.** The client still calls nothing: what `unwrapAccountKeys` was waiting on has moved
+from the server to the browser, and the module stays uncalled until a screen needs it. The `SELECT`
+grant on `wrapped_account_keys` now answers to two kinds of reader, and the two row-level-security
+isolation tests keep their sentence — an application read answering correctly says nothing about what
+the policy refused.
+
+**Affected areas:** [account-keys.md](account-keys.md), [sessions.md](sessions.md),
+[recovery-codes.md](recovery-codes.md), [ciphertext-envelope.md](ciphertext-envelope.md),
+[data-isolation.md](../engineering/data-isolation.md),
+[ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
+
+---
+
 ## 2026-08-21 — Sign in with a passkey, not with Google
 
 **Context:** two ways into this product stood beside each other, and only one of them was consented

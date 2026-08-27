@@ -564,7 +564,8 @@ erDiagram
   files eleven wrapped pairs in the same save as the account, and registration is the only way an
   account comes to exist, so **every** account has its keys wrapped under both kinds of secret. What
   is missing is the rest of the browser surface: nothing redeems a code, nothing issues a
-  replacement set, and nothing unwraps anything, because no route hands `wrapped_account_keys` back.
+  replacement set, and nothing unwraps anything — the envelopes now have a route that hands them
+  back, `GET /api/me/account-keys`, and no client code that calls it.
   Custody is what makes the rule durable; possession is still the whole of why it holds today.
   - **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule
     rather than a coincidence.** A set of codes is a secret its holder possesses exactly as an
@@ -891,8 +892,10 @@ ELSE                                                               ← first iss
   - **What has none, and what actually blocks it.** `POST /api/me/recovery-codes` is uncalled, and
     **not** for want of an assertion: this client runs one on `/welcome`. What blocks it is the
     sixth member — ten whole submissions, each carrying its own wrapped copy of the account's
-    content key and index key. Wrapping them needs them unwrapped, and no route hands
-    `wrapped_account_keys` back. **That is a different block from the erasure control's**, and the
+    content key and index key. Wrapping them needs them unwrapped, and while
+    `GET /api/me/account-keys` now hands this session's envelopes back, nothing in the browser reads
+    that route or opens what it returns: the block moved from the server to the client rather than
+    lifting. **That is a different block from the erasure control's**, and the
     settings screen says so in different words: erasing waits on a confirmation flow this screen has
     not been given, generating waits on the keys. `POST /api/recovery-codes/redemption` has no
     client route at all: nothing anywhere canonicalises a typed code or presents a verifier. The

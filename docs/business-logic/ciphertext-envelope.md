@@ -535,8 +535,11 @@ caller was not given.
 ## Edge Cases & Known Gotchas
 
 - **Nothing is encrypted today and nothing calls the narrative functions.** `sealNarrativeField`
-  and `openNarrativeField` have no caller but their spec, and `unwrapAccountKeys` is in the
-  same position. **Do not delete these modules because nothing calls them, and do not relax
+  and `openNarrativeField` have no caller but their spec, and `unwrapAccountKeys` has none
+  either — though for a **different** reason, which is worth keeping straight: the narrative
+  pair waits on there being a ciphertext anywhere in the product, while the unwrapping waits
+  only on the browser, `GET /api/me/account-keys` having arrived to hand it an envelope.
+  **Do not delete these modules because nothing calls them, and do not relax
   anything here to make a later screen easier to write.** The format is a contract with every
   client that will ever seal an envelope; it is being agreed while agreement is still cheap.
 - **An empty plaintext is legal and seals to exactly 29 bytes.** A reader tempted to treat

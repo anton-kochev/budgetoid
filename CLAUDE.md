@@ -212,8 +212,16 @@ Load-bearing rules, each explained there or in the linked decision:
   a key-encryption key derived through PRF from one derived out of a constant. And the client crypto
   in `+core/security/account-keys.ts` keeps the key-encryption keys as **locals that never touch the
   service instance** and zero-fills every copy where it is consumed, each wipe pinned by a spec that
-  asserts the buffer was non-zero at the moment of the call. The *unwrapping* is still uncalled,
-  because no route hands `wrapped_account_keys` back. See
+  asserts the buffer was non-zero at the moment of the call. **`GET /api/me/account-keys` is the one
+  route that hands these rows back, and it is narrowed by the session's *credential*, never by the
+  account** — one pair for a passkey, ten for a set of codes — because a passkey session given all
+  eleven would hold ten envelopes it can never open, and a later factor added without re-encrypting
+  needs no wider read: by then the browser holds the unwrapped keys and wraps that factor itself.
+  **An empty array, never a 404** — no session, an ended session and somebody else's session are one
+  indistinguishable answer, and a 404 would rebuild the enumeration oracle. The *unwrapping* is still
+  uncalled, and the reason is now the browser rather than the server: the route it was waiting on
+  exists, so what remains is the client wiring, and nothing is encrypted for it to open. Do not
+  delete the module for want of a caller. See
   [account-keys.md](docs/business-logic/account-keys.md) and
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md).
 - **One AEAD envelope serves both consumers, and its associated data is never carried inside it.**

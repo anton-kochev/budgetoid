@@ -1,3 +1,4 @@
+using Application.AccountKeys.GetAccountKeys;
 using Application.Accounts.CreateAccount;
 using Application.Accounts.DeleteAccount;
 using Application.Accounts.GetAccount;
@@ -78,6 +79,7 @@ public static class DependencyInjection
         services.AddScoped<ExportDataHandler>();
         services.AddScoped<GetSignedInUserHandler>();
         services.AddScoped<ListCredentialsHandler>();
+        services.AddScoped<GetAccountKeysHandler>();
         services.AddScoped<RevokeSessionsForCredentialHandler>();
         services.AddScoped<AuthenticateSessionHandler>();
         services.AddScoped<RevokeSessionHandler>();

@@ -710,6 +710,23 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over an assertion signature, verified with a published public key"),
         new("AccountErasureEndpoints.ErasureRequest", "UserHandle",
             "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("AccountKeyEndpoints.AccountKeyEntry", "WrappedContentKey",
+            "a response member: base64url over the 61-byte envelope holding the account's CONTENT key, "
+            + "sealed under the key-encryption key of one factor of the credential that opened this "
+            + "session. It is key material leaving the server, and that is this route rather than a leak: "
+            + "the key that would open it is derived in the browser from a recovery factor — an "
+            + "authenticator's prf output, or a recovery code — and neither of those ever reaches this "
+            + "server, so the operator handing these bytes back cannot unseal them and never could. What "
+            + "the census refuses is an UNSEALED key crossing the wire; a sealed one crossing is the "
+            + "design"),
+        new("AccountKeyEndpoints.AccountKeyEntry", "WrappedIndexKey",
+            "a response member: base64url over the same envelope holding the account's INDEX key — the "
+            + "one a blind index over a name is computed under — sealed under the SAME factor's "
+            + "key-encryption key and bound to a different purpose in its associated data. Written out "
+            + "rather than pointed at its neighbour because the two are the same width, carry the same "
+            + "version and are indistinguishable to every check this server owns: one argument covering "
+            + "both would be a single sentence answering for two values nothing here can tell apart, "
+            + "which is the confusion that associated data exists to prevent"),
         new("CategoryEndpoints.UpdateCategoryRequest", "Description",
             "a person's own note about one of their categories"),
         new("CategoryEndpoints.UpdateCategoryRequest", "Name",

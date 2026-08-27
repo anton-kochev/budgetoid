@@ -607,16 +607,40 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// database into a <c>23505</c> — which is exactly the refusal one test here is reading and no
     /// other test wants to meet by accident.
     /// </para>
+    /// <para>
+    /// <b>The two envelopes are the caller's to choose as well, and the default pair is only
+    /// distinguishable <em>by column</em>.</b> <see cref="SeededContentKeyFiller" /> and
+    /// <see cref="SeededIndexKeyFiller" /> differ from each other, so a read that returns a row's index
+    /// envelope where its content envelope belongs is visible — but they are the same two values on
+    /// every row this seeder writes, so a read that returns <em>row A's</em> envelope for <em>row B</em>
+    /// is not. That is invisible for exactly as long as every account holds one factor, and a set of
+    /// recovery codes holds ten. A caller seeding more than one row against one credential therefore
+    /// has to name envelopes of its own — <c>WrappedKeyFixture</c> mints a pair whose bytes are random
+    /// per call and whose second byte says which of the two an envelope is, which is both halves at
+    /// once. Declared last, and optional, so every existing call site keeps compiling and keeps seeding
+    /// exactly what it seeds today.
+    /// </para>
     /// </remarks>
-    public Task<Guid> SeedWrappedAccountKeysAsync(Guid credentialId, Guid factorId) =>
-        SeedWrappedAccountKeysOnAsync(ConnectionString, credentialId, factorId);
+    public Task<Guid> SeedWrappedAccountKeysAsync(
+        Guid credentialId,
+        Guid factorId,
+        byte[]? wrappedContentKey = null,
+        byte[]? wrappedIndexKey = null) =>
+        SeedWrappedAccountKeysOnAsync(
+            ConnectionString,
+            credentialId,
+            factorId,
+            wrappedContentKey: wrappedContentKey,
+            wrappedIndexKey: wrappedIndexKey);
 
     /// <inheritdoc cref="SeedOwnerOnAsync" />
     internal static async Task<Guid> SeedWrappedAccountKeysOnAsync(
         string connectionString,
         Guid credentialId,
         Guid factorId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        byte[]? wrappedContentKey = null,
+        byte[]? wrappedIndexKey = null)
     {
         await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
         Credential credential = await db.Credentials
@@ -624,8 +648,8 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
             credential,
             factorId,
-            WrappedKeyEnvelope(SeededContentKeyFiller),
-            WrappedKeyEnvelope(SeededIndexKeyFiller),
+            wrappedContentKey ?? WrappedKeyEnvelope(SeededContentKeyFiller),
+            wrappedIndexKey ?? WrappedKeyEnvelope(SeededIndexKeyFiller),
             SeedInstant));
         await db.SaveChangesAsync(cancellationToken);
 
@@ -633,8 +657,10 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// The fillers the two seeded envelopes carry. Different from each other so a read-back naming the
-    /// wrong column is visible by eye, and neither is the filler a probe writes.
+    /// The fillers the two seeded envelopes carry when a caller names neither. Different from each other
+    /// so a read-back naming the wrong <b>column</b> is visible by eye, and neither is the filler a probe
+    /// writes. They are the same on every row, so telling one <b>row</b> from another needs envelopes the
+    /// caller supplies — see <see cref="SeedWrappedAccountKeysAsync" />.
     /// </summary>
     public const byte SeededContentKeyFiller = 0xC0;
 
