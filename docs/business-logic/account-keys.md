@@ -449,14 +449,23 @@ plaintext it was taken over. The platform *records* the width, on `key.algorithm
 nothing in this client reads it — which is the shape of the whole hazard: the mistake is visible
 and unwatched.
 
-**One rule here is held by nothing but itself.** That `finally` runs after an `await` on
-`importKey`, not after a bare `return` of its promise: WebCrypto reads the buffer asynchronously,
-so a returned promise would let the wipe run while the import was still in flight and the key
-would be imported from zeros. **Measured: dropping the `await` leaves every case in
-`account-keys.spec.ts` green**, because the runner is Node and Node's implementation reads the
-buffer synchronously. So say it plainly — this rule is held **by construction**, by the shape of
-the code and the comment sitting on it, and **not by observation**. A reader who "tidies" the
-`await` away will find the whole suite agreeing with them.
+**One rule here is held by nothing but itself, and the reason it was written down turns out to be
+false.** That `finally` runs after an `await` on `importKey` rather than after a bare `return` of
+its promise, and the argument used to be that WebCrypto reads the buffer asynchronously, so a
+returned promise would let the wipe run mid-import and the key would be imported from zeros.
+**Measured, and it does not happen**: `importKey` copies `keyData` in its synchronous prologue, so
+importing the same 32 bytes with the `await` and without it yields byte-identical key material —
+read back through an extractable import, and confirmed under the HMAC door by two identical tags
+that are both unequal to the tag a zero key signs. Dropping the `await` also leaves every case in
+`account-keys.spec.ts` green, which is the same finding from the other side.
+
+Keeping it is still right, for two smaller reasons that are worth stating in place of the wrong
+one. A rejection thrown inside the frame keeps the door in the stack trace, where a returned
+promise rejects with the door's name nowhere on it. And the correctness of a bare `return` would
+rest on a detail of the platform's prologue that nothing here states and no test can observe. So
+say it plainly — this rule is held **by construction**, by the shape of the code and the comment
+sitting on it, and **not by observation**. A reader who "tidies" the `await` away will find the
+whole suite agreeing with them, and nothing about the account will be worse.
 
 **Where the doors are written is pinned, and where they are *not* written is what the pin is for.**
 `key-import-single-source.spec.ts` reads the source tree and requires `crypto.subtle.importKey` to
@@ -493,10 +502,18 @@ Three buffers hold a secret long enough to matter, and each is cleared where it 
   doors wipe, identically**, which is what makes it safe for a caller to hand the pair straight into
   the two of them in one statement and keep no name for the bytes: registration and custody each do
   exactly that. See [The two doors](#the-two-doors-and-the-five-decisions-each-holds).
-- **The plaintext copy `sealEnvelope` hands the cipher**, cleared once the cipher resolves and never
-  before: WebCrypto reads the buffer asynchronously, so a wipe placed ahead of the `await` seals
-  zeros. One registration wraps two account keys under eleven factors, so twenty-two of these pass
-  through a single sign-up.
+- **The plaintext copy `sealEnvelope` hands the cipher**, cleared in a `finally` once the cipher has
+  resolved. The argument for that position used to be that WebCrypto reads the buffer
+  asynchronously, so a wipe placed ahead of the `await` would seal zeros. **Measured, and it does
+  not happen**: `encrypt` copies the plaintext in its synchronous prologue, so clearing the buffer
+  the instant the call has returned its promise yields a ciphertext byte-identical to clearing it
+  after the promise resolves — and neither is the ciphertext of an all-zero plaintext of the same
+  width, which is the control that makes "identical" mean anything. It is the import doors' finding
+  one file over, about the same prologue, so this ordering is held **by construction** and not by
+  observation: it stays for the stack trace, and because an earlier wipe would rest on a platform
+  detail nothing here states and no test can observe. Hoist it and the suite stays green. The wipe
+  itself is not the negotiable part. One registration wraps two account keys under eleven factors,
+  so twenty-two of these pass through a single sign-up.
 
 Each is pinned by a spec that takes the buffer at the platform boundary and reads it **twice** —
 once at the call, asserting it held key material that was not already zero, and once after. The
@@ -653,9 +670,10 @@ was an enumeration oracle: a `404` would have told a caller that a guessed sessi
 row. That argument does **not** survive the widening, because nothing is narrowed by an identifier a
 caller could guess and an authenticated request can only ever ask about its own account. What holds now
 is the client. `AccountKeyCustodyService` reads an empty list as `unopened` — "present another factor"
-— and reads any failed read, a `404` included, as `unreachable`, whose advice is "try the same factor
-again in a minute". A `404` would hand somebody whose account holds nothing openable the one
-instruction that can never work.
+— and reads a `404` as `unreachable`, whose advice is "try the same factor again in a minute". A
+`404` would hand somebody whose account holds nothing openable the one instruction that can never
+work. The refusals the client *does* tell apart are `401` and `403`, which are `unauthenticated`;
+a `404` is not among them precisely because it says nothing about this browser's session.
 
 **Four ways to reach an empty answer, and the fourth is one this chapter used to deny.** The account
 holds no recovery factor at all — a state no path reaches today, since registration creates eleven
@@ -689,9 +707,27 @@ body would be answered with "present another factor" and an account would be dec
 its own key custody with nothing naming the cause. It is deliberately **not** a check of the
 envelopes' shape: width, version byte and alphabet belong to the decoder and the envelope, and a
 second, weaker copy of them at the boundary would be a second definition of what an envelope is.
-The read carries **no** `EXPECTS_UNAUTHENTICATED`: this request is made by a browser that believes
-it holds a session, so a `401` is that session having ended, which is the one fact
-`sessionExpiryInterceptor` owns.
+
+**The read carries `EXPECTS_UNAUTHENTICATED`, and that is custody's own rule enforced from the
+outside.** `AccountKeyCustodyService` never calls anything on `SessionService`, because a key that
+will not open is not a session that ended — and while this request was unmarked it made that call
+anyway, through `sessionExpiryInterceptor`, over an edge no import graph shows. On the sign-in path
+the damage arrived at the best moment of the flow: the assertion answers `200`,
+`SessionService.established()` publishes `authenticated`, custody's read leaves, the router is sent
+to `/app`, and a `401` on that read then publishes `anonymous` and navigates to `/welcome`. Being
+later, it wins. The person lands anonymous on the welcome screen holding a cookie the server issued
+a moment earlier, and the screen says **nothing**, because `SignInService` is provided on that
+screen and the fresh instance has published no failure. A `401` that reproduces is a loop with no
+exit and no sentence. Suppressed, the fact is deferred rather than lost: if the session really has
+ended, the next unmarked read — the Settings email, the credential list, the export — answers `401`
+from a screen that renders its own failure line. The token rides on the **method** and not on an
+`HttpContext` a caller passes, which is the opposite of `getMe()`/`getSessionOwner()` and for the
+reason that pair exists — there, one route is read by two callers asking two different questions;
+here there is one caller, one question, and a `context?` parameter would advertise otherwise and let
+the next caller restore the defect by omission.
+`session-expiry.interceptor.spec.ts` wires the real chain and pins that a refused account-key read
+navigates nowhere and ends no session, beside the `GET /api/me` pair that makes the same point in
+both directions.
 
 ### The one class that holds them
 
@@ -735,14 +771,32 @@ which factor opened it, and the two paths that know hand the keys over themselve
 reaches for nothing on it — which is also what keeps the two modules out of an import cycle.
 Publishing `anonymous` from a failed unlock would sign somebody out of an account they are
 demonstrably inside: the server answered, the session is live, and what failed is the factor they
-presented. The two failure words are **never collapsed** for the same reason `SignInService` keeps
+presented. The three failure words are **never collapsed** for the same reason `SignInService` keeps
 `refused` apart from `unknown` and `SessionService` keeps `anonymous` apart from `unreachable` — the
 same rule three times, because the mistake is available at all three:
 
 - `unopened` — the envelopes were read and none opened under the factor presented, including the
   case where the list came back empty. The way forward is another factor.
 - `unreachable` — no usable answer came back at all: a network that reached no server, a `5xx`, a
-  timeout, a body this client refused. The way forward is the same factor again in a minute.
+  `404` this route never gives, a timeout, a body this client refused. The way forward is the same
+  factor again in a minute.
+- `unauthenticated` — the server *answered*, and the answer was that this browser may not read
+  these envelopes: a `401`, or the `403` a locked session and the CSRF control give. Neither of the
+  other two words is true of it. `unreachable`'s advice is to retry, and a `401` will not change on
+  its own — there is no session, so there are no envelopes, this minute or any other — and it is
+  false by that word's own definition, since a `401` is a usable answer from a server that was
+  reached. `unopened`'s advice is another factor, and the factor was never judged. The way forward
+  is to sign in again, which is a third next step and therefore a third word.
+
+**The third word arrived with the context token above and is its other half.** While the read was
+unmarked, a `401` was answered by the interceptor navigating away, so whatever custody published
+about it was read by nobody; marked, this is the only place that answer is read at all. The
+`401`/`403` reading is written out in `AccountKeyCustodyService` rather than borrowed from
+`SessionService.readingOf`, which makes the same judgement four lines away: importing it is the one
+thing this class may not do, because that edge closes the cycle and puts the rule above one call
+away from being undone by somebody reusing what was already there. The words differ on purpose too —
+`anonymous` is a statement about *who is asking*, `unauthenticated` is a statement about *this
+read* — which is what keeps the two copies from being folded together later.
 
 **`unlock` returns `void`, and that is enforcement rather than a signature that happens to be
 convenient.** A `Promise<void>` is awaitable, and its caller is a sign-in: somebody would await it,
@@ -879,9 +933,12 @@ about why.
   another factor. An empty list is not a third word: it means the account holds no wrapped rows this
   request can see, and the four ways that happens are indistinguishable to a client, so a third word
   would claim a difference this client was never told
-- the read never produced a usable answer — no server, a `5xx`, a timeout, a body this client
-  refused → `unreachable`. The next step is the same factor again in a minute
-- **never**: sign the person out. Neither word is a statement about the session
+- the read never produced a usable answer — no server, a `5xx`, a `404`, a timeout, a body this
+  client refused → `unreachable`. The next step is the same factor again in a minute
+- the server refused the read itself — a `401`, or the `403` a locked session or the CSRF control
+  gives → `unauthenticated`. The next step is signing in again, and it is neither of the two above:
+  retrying cannot help, and no other factor can either
+- **never**: sign the person out. No word here is a statement about the session
 
 ## Integration Points
 

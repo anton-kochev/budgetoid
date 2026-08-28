@@ -138,8 +138,25 @@ export async function sealEnvelope(
       ownedPlaintext,
     );
   } finally {
-    // After the cipher has resolved, never before: WebCrypto reads the buffer
-    // asynchronously, so a wipe placed ahead of the `await` seals zeros.
+    // The wipe runs after the cipher has resolved, and **the reason is not the
+    // one this comment used to give.** It claimed WebCrypto reads the buffer
+    // asynchronously, so a wipe placed ahead of the `await` would seal zeros.
+    // **Measured: false.** `encrypt` copies the plaintext in its synchronous
+    // prologue, so clearing the buffer the instant the call has returned its
+    // promise — before anything is awaited — yields a ciphertext byte-identical
+    // to clearing it here, and neither of them is the ciphertext of an all-zero
+    // plaintext of the same width, which is the control that makes "identical"
+    // mean anything. It is the same finding the two import doors in
+    // `account-keys.ts` carry, about the same prologue.
+    //
+    // The ordering stays, for two smaller reasons worth saying in place of the
+    // wrong one. A rejection surfaces inside this frame, so `sealEnvelope` is on
+    // the stack trace; and an earlier wipe would rest the plaintext's fate on a
+    // detail of the platform's prologue that nothing in this repository states
+    // and no test can observe. So say it plainly: **nothing holds this line.**
+    // Hoist the wipe above the `await` and the whole suite agrees with you — it
+    // is a rule of construction rather than of observation. The wipe itself is
+    // not the negotiable part of it.
     ownedPlaintext.fill(0);
   }
 

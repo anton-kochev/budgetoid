@@ -227,8 +227,9 @@ Load-bearing rules, each explained there or in the linked decision:
   **no claim**. It states **`Cache-Control: no-store`** for itself — a direct write, never a second
   `Response.OnStarting` callback, which would displace `SecurityHeadersMiddleware`'s four headers.
   **An empty array, never a 404 — but no longer for the oracle reason**, which the widening retired:
-  what keeps it is `AccountKeyCustodyService`, which reads `[]` as "present another factor" and any
-  failed read as "try again in a minute". Four causes reach an empty answer and the fourth is a
+  what keeps it is `AccountKeyCustodyService`, which reads `[]` as "present another factor" and a
+  failed read as one of **two** other next steps — a 401 or a 403 as "sign in again", everything
+  else as "try again in a minute". Four causes reach an empty answer and the fourth is a
   **keyless factor**, which is representable exactly because "every factor has a row" is not a schema
   fact. **There are two import
   doors, not one**: `importAesGcmKey` and `importHmacSha256Key`, because the index key is
@@ -437,10 +438,24 @@ Load-bearing rules, each explained there or in the linked decision:
   encrypted, and the locked screen and the unlock control are a later story. **`unlock` returns
   `void` as enforcement** — awaitable, it lands a round trip between a verified assertion and the app
   and one refactor later grows a `catch`, at which point a key that did not open has become an
-  authentication that failed. Custody calls nothing on `SessionService`, and `'unopened'` and
-  `'unreachable'` never collapse. Clearing has **one owner**, `SessionService.ended()` — never an
+  authentication that failed. Custody calls nothing on `SessionService`, and **`'unopened'`,
+  `'unreachable'` and `'unauthenticated'` are three different next steps for a person** — present
+  another factor, the same factor again in a minute, sign in again — so collapsing any two sends
+  somebody down a road that cannot help them: a 401 or a 403 is a usable answer from a server that
+  was reached, so `unreachable`'s advice can never come true of it, and no factor was judged, so
+  `unopened`'s cannot either. A 404 stays `unreachable`. That 401/403 reading is **written out in
+  custody rather than imported from `SessionService.readingOf`**, which makes the same judgement
+  four lines away: the import closes a cycle, and it puts the rule the whole class is built on one
+  call from being undone by somebody reusing what was already there. The words differ from the
+  session's on purpose too — `anonymous` is about *who is asking*, `unauthenticated` about *this
+  read* — which is what keeps the two copies from being folded together later. Any of it is readable
+  only because `getAccountKeys()` carries `EXPECTS_UNAUTHENTICATED` **on the method**: one route,
+  one caller, one meaning for a 401, unlike `getMe()`/`getSessionOwner()`, where two callers ask two
+  questions of one route and only the request can tell them apart. Clearing has **one owner**,
+  `SessionService.ended()` — never an
   `effect()` (it fires on construction, and its only honest predicate would have to lock on
-  `unreachable` too) and never the callers. Registration hands the pair over as **objects** on the
+  `unreachable` and `unauthenticated` too — destroying the keys over one blinked request, and
+  demanding a full ceremony to get them back) and never the callers. Registration hands the pair over as **objects** on the
   201 (`adopt`) rather than re-reading through the route: re-reading needs the passkey's
   key-encryption key to survive the codes step — the same power one step removed — puts a round trip
   and a new failure mode on the happiest path in the product, and verifies nothing — the read returns

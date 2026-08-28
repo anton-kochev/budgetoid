@@ -17,12 +17,15 @@
 // reports `unlocked`", and the arrangements are built so that a wrong
 // implementation cannot reach that word.
 import { HttpErrorResponse } from '@angular/common/http';
+import { EnvironmentInjector, createEnvironmentInjector } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
   MeApiService,
   type AccountKeyEntry,
 } from '@app-core/api/me-api.service';
 import { SessionService } from '@app-core/session/session.service';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -83,6 +86,55 @@ async function settled(custody: AccountKeyCustodyService): Promise<void> {
   await vi.waitFor(() => {
     expect(custody.status()).not.toBe('unlocking');
   });
+}
+
+// The service's own source, for the two rules below that nothing running can
+// observe. `process.cwd()` is the project root under this runner, the same
+// anchor `key-import-single-source.spec.ts` uses, and `src/` is read rather
+// than the emitted bundle: the claim is about what a reviewer reads, and a
+// minifier that renamed a `#` field would answer the question wrongly whichever
+// way it answered it.
+const CUSTODY_SOURCE = join(
+  process.cwd(),
+  'src',
+  'app',
+  '+core',
+  'security',
+  'account-key-custody.service.ts',
+);
+
+// The text of one method's body, or a throw.
+//
+// It brackets on the declaration line and on the first line that is exactly a
+// closing brace at method indentation, which is what makes the result *this*
+// method rather than the file — and the file is the failure mode that matters:
+// a reader who "simplified" this to `source.includes(…)` would have written a
+// guard that passes against the very edit it exists to catch, because the two
+// assignments it looks for also appear, in another form, in `#hold`.
+//
+// The throw is deliberate and is not an error path. A method that was renamed
+// or reshaped is a change to the thing being pinned, and the honest answer is a
+// red bar naming it rather than a silent pass over a region that no longer
+// exists.
+function bodyOf(source: string, declaration: string): string {
+  const opened = source.indexOf(declaration);
+
+  if (opened === -1) {
+    throw new Error(
+      `account-key-custody.service.ts no longer declares \`${declaration}\`, so this rule is pinned against nothing.`,
+    );
+  }
+
+  const rest = source.slice(opened + declaration.length);
+  const closed = rest.indexOf('\n  }');
+
+  if (closed === -1) {
+    throw new Error(
+      `\`${declaration}\` has no closing brace at method indentation, so its body could not be read.`,
+    );
+  }
+
+  return rest.slice(0, closed);
 }
 
 // A key-encryption key of a stated seed, through the module's own door.
@@ -528,5 +580,316 @@ describe('AccountKeyCustodyService', () => {
         Array.from(new Uint8Array(region.length)),
       );
     }
+  });
+
+  // **The index key goes through the HMAC door, and the shorter route through
+  // `importAesGcmKey` is silent.** It compiles, it returns a perfectly good
+  // `CryptoKey`, and this service reports `unlocked` exactly as it does now —
+  // the object it hands custody simply cannot sign a single blind index, and by
+  // then it is non-extractable and the bytes are zeroes, so there is no
+  // correcting it afterwards. Measured on this runner, `sign` under an AES-GCM
+  // key and `encrypt` under an HMAC key are both refused with
+  // `InvalidAccessError`, which is what makes the wrong door permanent rather
+  // than merely wrong.
+  //
+  // Nothing about it is observable from outside the service — no member returns
+  // a key — so the algorithms are read where they cross the platform boundary,
+  // by the same spy the case above uses and for the same reason: a fake would
+  // make every assertion here a statement about the fake.
+  //
+  // The neighbouring case counts the imports and is blind to this: two imports
+  // is still two when both of them are `'AES-GCM'`.
+  it('imports the content key as a cipher key and the index key as a MAC key', async () => {
+    // Arrange
+    const keys = generateAccountKeys();
+    const kek = await keyEncryptionKey(0x84);
+    const entries = [await entryFor(kek, FIRST_FACTOR_ID, keys)];
+
+    api.getAccountKeys.mockReturnValue(of(entries));
+
+    // Installed after the fixtures, so the key-encryption key and the two
+    // envelopes above — which go through the doors themselves — are not in the
+    // census.
+    const realImportKey = crypto.subtle.importKey;
+    const algorithms: string[] = [];
+
+    const importer = vi
+      .spyOn(crypto.subtle, 'importKey')
+      .mockImplementation(
+        (format, keyData, algorithm, extractable, keyUsages) => {
+          algorithms.push(
+            typeof algorithm === 'string' ? algorithm : algorithm.name,
+          );
+
+          return realImportKey.call(
+            crypto.subtle,
+            format,
+            keyData,
+            algorithm,
+            extractable,
+            keyUsages,
+          );
+        },
+      );
+
+    // Act
+    try {
+      custody.unlock(kek);
+      await settled(custody);
+    } finally {
+      importer.mockRestore();
+    }
+
+    // Assert
+    expect(custody.status()).toBe('unlocked');
+
+    // Sorted, because the two imports are issued in one `Promise.all` and their
+    // order is the platform's business rather than this rule's. One of each,
+    // and no third: an implementation that sent both keys through one door is
+    // caught by the *set* and not by the count.
+    expect([...algorithms].sort()).toEqual(['AES-GCM', 'HMAC']);
+  });
+
+  // **One instance for the whole application, and the widening that breaks it
+  // is one word.** `providedIn: 'any'` reads as the harmless relaxation — it is
+  // literally "whatever injector asks" — and what it does is give every lazily
+  // loaded part of the route table its own custody. A person unlocks the
+  // account on `/welcome`, walks into `/app`, and the screen there asks an
+  // instance that has never held a key. Nothing goes red; the only symptom is
+  // an account that was readable a moment ago and is not now, with no ceremony
+  // on screen to open it again.
+  //
+  // The same word is what makes route-providing on `app` wrong, which this
+  // class's header argues at length. This is that argument made executable.
+  it('is one instance however many injectors ask for it', () => {
+    // Arrange
+    // A child of the application's environment injector — the shape a lazily
+    // loaded route creates. Under `'root'` a request from here resolves to the
+    // instance the root already holds; under `'any'` it builds a second one.
+    const child = createEnvironmentInjector(
+      [],
+      TestBed.inject(EnvironmentInjector),
+    );
+
+    // Act
+    const fromChild = child.get(AccountKeyCustodyService);
+
+    // Assert
+    expect(fromChild).toBe(custody);
+  });
+
+  // **A stale attempt's failure may not speak for a world that has moved**, and
+  // this is the case where the two halves of that rule fail together.
+  //
+  // `#fail` sets `status` to `'locked'` *without* nulling the keys, because the
+  // attempt it is reporting on never held any. So a failure published out of
+  // turn does not merely say the wrong word: it says `'locked'` while the
+  // fields hold a newer generation's keys, and every reader of `status()` is
+  // then wrong about what this service is holding.
+  //
+  // Two edits reach it, and both are the kind somebody makes while tidying:
+  //
+  //   * dropping `#fail`'s generation guard, and
+  //   * having `adopt()` call `#hold` directly instead of `#forget` first —
+  //     which looks redundant, since `#hold` sets the same status and clears
+  //     the same failure. What it drops is the generation bump, and the bump is
+  //     the only part of `#forget` that `#hold` does not repeat.
+  //
+  // The read is a `Subject` rather than an `of`, so the attempt is genuinely in
+  // flight when `adopt()` lands rather than merely early in a microtask queue.
+  it('keeps adopted keys when an attempt that started earlier fails later', async () => {
+    // Arrange
+    const answer = new Subject<readonly AccountKeyEntry[]>();
+    const kek = await keyEncryptionKey(0x85);
+    const contentKey = await keyEncryptionKey(0x86);
+    const indexKey = await keyEncryptionKey(0x87);
+
+    api.getAccountKeys.mockReturnValue(answer);
+
+    // Act
+    custody.unlock(kek);
+    expect(custody.status()).toBe('unlocking');
+
+    custody.adopt(contentKey, indexKey);
+    expect(custody.status()).toBe('unlocked');
+
+    // The attempt now finishes, and finishes badly: an empty list is
+    // `unopened`, which is the branch that publishes through `#fail`.
+    answer.next([]);
+    answer.complete();
+
+    // `settled` cannot be used: the status left `'unlocking'` at the `adopt()`
+    // above, so it would return before the attempt had run at all.
+    await flush(10);
+
+    // Assert
+    // Still holding what the caller handed over, and blaming nobody. A stale
+    // `unopened` here would lock an account whose keys this service is
+    // demonstrably holding, and would blame a factor that was never presented.
+    expect(custody.status()).toBe('unlocked');
+    expect(custody.unlockFailure()).toBeNull();
+  });
+
+  // **A read the server refused is neither of the other two words**, and once
+  // the request stopped routing its 401 into `sessionExpiryInterceptor` this is
+  // the only place that answer can be read at all.
+  //
+  //   * `unreachable` advises the same factor again in a minute. A 401 will
+  //     never change on its own: there is no session, so there are no envelopes
+  //     to read, this minute or any other. It is also false by that word's own
+  //     definition — a 401 is a usable answer, arrived from a server that was
+  //     reached.
+  //   * `unopened` advises another factor. Also wrong, and worse: the factor
+  //     was never judged. Nothing this person presents opens an account the
+  //     server will not talk about.
+  //
+  // 403 joins it rather than getting a fourth word, because the two share a
+  // next step exactly: the locked-session refusal and the CSRF refusal both
+  // mean this browser may not read these envelopes, and no amount of retrying
+  // or of hunting for a recovery card changes that. Signing in again does.
+  it.each([
+    { status: 401, why: 'the server named nobody' },
+    { status: 403, why: 'the server named somebody who may not read them' },
+  ])(
+    'reads a refused read as unauthenticated when $why',
+    async ({ status }) => {
+      // Arrange
+      api.getAccountKeys.mockReturnValue(
+        throwError(() => new HttpErrorResponse({ status })),
+      );
+      const kek = await keyEncryptionKey(0x88);
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('unauthenticated');
+
+      // **And still nothing on `SessionService`.** The word changed; the rule did
+      // not. A read the server refused is the one failure that looks most like a
+      // session ending, which is exactly why this assertion belongs on this case:
+      // the tidy answer to a 401 is to publish `anonymous` from here, and that
+      // would sign somebody out from a service the session class reaches *into*.
+      expect(session.ended).not.toHaveBeenCalled();
+      expect(session.established).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { status: 0, why: 'the request never reached a server' },
+    { status: 404, why: 'the route answered as though it did not exist' },
+    { status: 500, why: 'the server is up and broken' },
+  ])('still reads $why as unreachable', async ({ status }) => {
+    // Arrange
+    // The control for the split above, and it is the half that keeps the new
+    // word from swallowing the old one. A `#fail('unauthenticated')` written
+    // for every failed read passes both cases above perfectly.
+    //
+    // A `404` is in here deliberately: this route answers an empty array and
+    // never a `404`, so one arriving is a proxy or a deployment answering for
+    // it — not a statement about this browser's session, and not one about the
+    // factor either.
+    api.getAccountKeys.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status })),
+    );
+    const kek = await keyEncryptionKey(0x89);
+
+    // Act
+    custody.unlock(kek);
+    await settled(custody);
+
+    // Assert
+    expect(custody.unlockFailure()).toBe('unreachable');
+  });
+
+  // **This case reads source text rather than behaviour, and says so.**
+  //
+  // `#forget` dropping its two `= null` assignments is the central promise of
+  // this class broken — `lock()` is documented to *drop* the keys, not merely
+  // to stop admitting to them — and there is no way to observe it from outside.
+  // That is by design and is the property the class is built on: no public
+  // member returns a key, `#` fields are unreachable from outside the class
+  // body by the language, and the header argues at length that an accessor
+  // added to make this checkable would be the very defect it is checking for.
+  // So the only witness is the shape of what was written.
+  //
+  // What this cannot catch, stated rather than papered over:
+  //
+  //   * a `#forget` that nulls the fields and then puts the keys back — the
+  //     text is a presence check, not a reading of what the method does;
+  //   * a third key field added later and not nulled, because the two names are
+  //     written here rather than derived from the class;
+  //   * the assignments moved into a helper `#forget` calls, which is a correct
+  //     refactor this case would call a failure. That is the cost of the
+  //     technique and it is accepted: a red bar that a reader has to think
+  //     about is the right price for a rule with no other witness.
+  describe('the keys are dropped, not merely disowned', () => {
+    it('nulls both key fields inside #forget', () => {
+      // Arrange, Act
+      const forget = bodyOf(
+        readFileSync(CUSTODY_SOURCE, 'utf8'),
+        '#forget(status: AccountKeyStatus): number {',
+      );
+
+      // Assert
+      expect(
+        forget,
+        '#forget no longer drops the content key, so `lock()` stops admitting to a key it is still holding',
+      ).toContain('this.#contentKey = null;');
+      expect(
+        forget,
+        '#forget no longer drops the index key, so `lock()` stops admitting to a key it is still holding',
+      ).toContain('this.#indexKey = null;');
+    });
+
+    it('would report a #forget that had stopped nulling them', () => {
+      // Arrange
+      // The negative control, and the case that makes the one above worth
+      // anything. Both assertions there are green over a `bodyOf` that returned
+      // the whole file — `#hold` is three lines away and mentions both field
+      // names — so this plants exactly that trap: a `#forget` with the
+      // assignments removed, and another method that still carries them.
+      const mutated = [
+        '  #forget(status: AccountKeyStatus): number {',
+        '    this.#failure.set(null);',
+        '    this.#status.set(status);',
+        '    this.#generation += 1;',
+        '',
+        '    return this.#generation;',
+        '  }',
+        '',
+        '  #reset(): void {',
+        '    this.#contentKey = null;',
+        '    this.#indexKey = null;',
+        '  }',
+      ].join('\n');
+
+      // Act
+      const forget = bodyOf(
+        mutated,
+        '#forget(status: AccountKeyStatus): number {',
+      );
+
+      // Assert
+      expect(forget).not.toContain('this.#contentKey = null;');
+      expect(forget).not.toContain('this.#indexKey = null;');
+      // And the extractor really did read a region rather than nothing at all,
+      // which is what stops this control passing over a `bodyOf` that returned
+      // an empty string for every input.
+      expect(forget).toContain('this.#generation += 1;');
+    });
+
+    it('refuses to pin a method that is no longer declared', () => {
+      // Arrange, Act, Assert
+      // The third control. `bodyOf` throwing is the whole reason a rename does
+      // not silently retire the rule — a helper that answered `''` for a
+      // missing declaration would leave both cases above green forever the day
+      // `#forget` was renamed.
+      expect(() => bodyOf('class Empty {}', '#forget(')).toThrow(
+        /no longer declares/,
+      );
+    });
   });
 });

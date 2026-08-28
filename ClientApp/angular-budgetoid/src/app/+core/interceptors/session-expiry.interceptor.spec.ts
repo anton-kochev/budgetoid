@@ -28,6 +28,9 @@ import { sessionExpiryInterceptor } from './session-expiry.interceptor';
 // have to be able to disagree about it.
 const API_BASE_URL = 'https://api.budgetoid.app';
 const API_URL = `${API_BASE_URL}/api/me`;
+// The third route this block reaches, and the only one whose 401 belongs to
+// nobody: it is read by `AccountKeyCustodyService` and by nothing else.
+const ACCOUNT_KEYS_URL = `${API_BASE_URL}/api/me/account-keys`;
 const OTHER_ORIGIN_URL =
   'https://accounts.google.com/.well-known/openid-configuration';
 
@@ -321,10 +324,14 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
     };
   }
 
-  function refuse(): void {
+  function refuseAt(url: string): void {
     wiring.http
-      .expectOne(API_URL)
+      .expectOne(url)
       .flush(null, { status: 401, statusText: 'Unauthorized' });
+  }
+
+  function refuse(): void {
+    refuseAt(API_URL);
   }
 
   beforeEach(() => {
@@ -395,6 +402,50 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
     expect(wiring.session.status()).toBe('anonymous');
     // Still re-thrown, so the screen renders its own failure line rather than
     // sitting on a loading state under a navigation a guard may cancel.
+    expect(refusals).toHaveLength(1);
+  });
+
+  // **The second defect of the same shape, on a third route, and it lands at
+  // the worst possible moment.** `AccountKeyCustodyService` reads
+  // `GET /api/me/account-keys` immediately after a sign-in: the assertion
+  // answers 200, `SessionService.established()` publishes `authenticated`,
+  // custody's read leaves, and the router is sent to `/app`. A 401 on that read
+  // — a cookie that has not landed yet, Safari's storage rules, a session that
+  // died between two requests — is read by this interceptor as a session
+  // ending, so `ended()` publishes `anonymous` and a second navigation leaves
+  // for `/welcome`. Being later, it wins.
+  //
+  // What the person sees is an anonymous welcome screen, holding a session
+  // cookie the server issued a moment ago, saying **nothing**: `SignInService`
+  // is provided on that screen, so the instance carrying `failure()` died with
+  // the previous one and the fresh one has published nothing. A 401 that
+  // reproduces is a loop with no exit and no sentence.
+  //
+  // The rule this restores is custody's own: it never calls anything on
+  // `SessionService`, because a key that will not open is not a session that
+  // ended. Unmarked, the request makes that call anyway, through an edge no
+  // import graph shows.
+  it('navigates nowhere and ends no session when the account-key read is refused', () => {
+    // Arrange
+    const refusals: unknown[] = [];
+
+    // Act
+    wiring.meApi.getAccountKeys().subscribe({
+      error: (error: unknown) => refusals.push(error),
+    });
+    refuseAt(ACCOUNT_KEYS_URL);
+
+    // Assert
+    expect(wiring.ended()).toBe(false);
+    expect(wiring.destinations()).toEqual([]);
+    // And the client still believes what the server told it one request ago.
+    // This is the half that says the suppression is not a sign-out written
+    // quietly: nothing about the session moved.
+    expect(wiring.session.status()).toBe('unknown');
+
+    // Still re-thrown, because the request's own caller is entitled to know it
+    // failed — `AccountKeyCustodyService` reads exactly this to publish a
+    // failure word of its own.
     expect(refusals).toHaveLength(1);
   });
 });

@@ -525,8 +525,15 @@ required members. A third writer is a decision rather than a refactor.
   intact, so acting on one ends a live session over a bug in the request builder. **Another origin's
   `401`** is a statement about a token this product does not issue — the app reaches the identity
   provider through the same `HttpClient`, so a sign-out would be caused by a third party. And a
-  **request whose `401` is its own answer** carries the token: the anonymous ceremony routes and the
-  session probe. None of those is a session ending, because there is no session yet. The
+  **request whose `401` is its own answer** carries the token: the anonymous ceremony routes, the
+  session probe, and `GET /api/me/account-keys`. For the first two there is no session yet, so
+  there is none to end. **The third is the one that does not fit that sentence**, and it carries the
+  token anyway: `AccountKeyCustodyService` is its only caller and never calls anything on
+  `SessionService`, because a key that will not open is not a session that ended — unmarked, the
+  request made that call through this interceptor instead, over an edge no import graph shows, and
+  raced a just-signed-in person off `/app` and onto a `/welcome` that had nothing to say. If the
+  session genuinely has ended, the next unmarked read says so from a screen that can render it. See
+  [account-keys.md](account-keys.md). The
   **re-throw** keeps this an observer rather than a handler; swallowed, the error reaches no
   caller's `catchError` and the screen that made the request sits on its loading line forever.
 - **Enforced in**: `sessionExpiryInterceptor`, registered after `apiCredentialsInterceptor` so the

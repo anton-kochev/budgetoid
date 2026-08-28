@@ -35,6 +35,7 @@
 // the honest shape anyway — the browser can end a session in ways no injector
 // observes, and a page reload ends custody whatever this class does, because
 // nothing here is written anywhere a reload survives.
+import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, Signal, inject, signal } from '@angular/core';
 import {
   MeApiService,
@@ -60,21 +61,34 @@ import {
 export type AccountKeyStatus = 'locked' | 'unlocking' | 'unlocked';
 
 /**
- * Why an unlock did not end in custody, and the two are **never** collapsed.
+ * Why an unlock did not end in custody, and the three are **never** collapsed.
  *
  *   * `unopened` — the keys were read and none of them opened under the factor
  *     presented. The way forward is another factor.
  *   * `unreachable` — no usable answer came back at all: a network that never
  *     reached a server, a 5xx, a timeout, a body this client refused. The way
  *     forward is the same factor again in a minute.
+ *   * `unauthenticated` — the server *answered*, and the answer was that this
+ *     browser may not read these envelopes: a 401, or the 403 a locked session
+ *     and the CSRF control give. The way forward is neither of the other two —
+ *     signing in again is the only thing that changes it.
  *
  * Collapsed, one person is sent hunting for a recovery card over a network that
  * blinked, and the other is sent around a loop that can only ever refuse them.
  * It is `SignInService`'s `refused`/`unknown` split one layer down, and
  * `SessionService`'s `anonymous`/`unreachable` split one layer up — the same
  * rule three times, because the mistake is available at all three.
+ *
+ * **The third word arrived with `EXPECTS_UNAUTHENTICATED` on the read**, and it
+ * is that change's other half rather than an extra state. While the request was
+ * unmarked, a 401 was answered by `sessionExpiryInterceptor` navigating to
+ * `/welcome`, so whatever this class published about it was never read by
+ * anybody. Marked, this is the only place that answer is read at all — and
+ * `unreachable` is false about it by that word's own definition, since a 401 is
+ * a usable answer from a server that was reached. A rule its own vocabulary
+ * contradicts is one somebody eventually "corrects" in the wrong direction.
  */
-export type UnlockFailure = 'unopened' | 'unreachable';
+export type UnlockFailure = 'unopened' | 'unreachable' | 'unauthenticated';
 
 @Injectable({ providedIn: 'root' })
 export class AccountKeyCustodyService {
@@ -227,13 +241,13 @@ export class AccountKeyCustodyService {
 
     try {
       entries = await firstValueFrom(this.#api.getAccountKeys());
-    } catch {
-      // Every way the read can end badly is one word, and it is not `unopened`.
-      // A refused body belongs here too, and deliberately: this client could not
-      // read what came back, which says nothing whatever about the factor the
-      // person presented, and telling them to go and find their recovery card
-      // over a version skew is the worse of the two wrong answers.
-      this.#fail('unreachable', generation);
+    } catch (error: unknown) {
+      // Never `unopened`: nothing about a read that did not come back says
+      // anything about the factor the person presented, and telling them to go
+      // and find their recovery card over a version skew is the worse of the
+      // two wrong answers. A refused *body* is `unreachable` for exactly that
+      // reason — this client could not read what came back.
+      this.#fail(AccountKeyCustodyService.failureOf(error), generation);
 
       return;
     }
@@ -350,6 +364,39 @@ export class AccountKeyCustodyService {
     this.#indexKey = indexKey;
     this.#failure.set(null);
     this.#status.set('unlocked');
+  }
+
+  // How a failed read is read, and the two branches are the only two this
+  // class can tell apart.
+  //
+  // **It is written here rather than borrowed from `SessionService`**, which
+  // makes the same 401/403 reading four lines away. Importing it is the one
+  // thing this class may not do: the dependency runs one way, and the moment
+  // custody reaches into the session module the two are in a cycle and the rule
+  // the whole class is built on — a key that will not open is not a session
+  // that ended — is one `readingOf` call away from being broken by somebody
+  // reusing what is already there. Two small copies that cannot reach each
+  // other are the cheaper mistake than one shared reading that closes the edge.
+  //
+  // The words differ from `SessionService`'s on purpose, too, which is what
+  // stops the copies being folded together later: that class reads a refusal as
+  // `anonymous`, a statement about *who is asking*. This one reads it as
+  // `unauthenticated`, a statement about *this read* — published while the
+  // session status is untouched, because only the interceptor and the sign-out
+  // path may move that.
+  private static failureOf(error: unknown): UnlockFailure {
+    if (
+      error instanceof HttpErrorResponse &&
+      (error.status === 401 || error.status === 403)
+    ) {
+      return 'unauthenticated';
+    }
+
+    // Status `0` for a request that never reached a server, every 5xx, a
+    // timeout, a `404` this route never gives, and the refusal `getAccountKeys`
+    // makes over a body it could not read — which is not an `HttpErrorResponse`
+    // at all and lands here for that reason as much as for its meaning.
+    return 'unreachable';
   }
 
   #fail(failure: UnlockFailure, generation: number): void {

@@ -221,8 +221,12 @@ export class SignInService {
   // **The `try` is what keeps the two lines around this call independent of it.**
   // `unlock` is documented not to throw, and this method does not take that on
   // trust: an exception out of the `next` handler is not routed to the `error`
-  // callback beside it, it is reported as an unhandled rejection and the
-  // statements after it never run — so a throwing custody would strand somebody
+  // callback beside it. **Measured on this runner: it is rethrown
+  // synchronously on a macrotask** — `uncaughtException` in Node,
+  // `window.onerror` in a browser, and not an unhandled *rejection*, because no
+  // promise is involved — and `next()` returns to the producer as though
+  // nothing happened. What it does do is what any throw does: the statements
+  // after it never run. So a throwing custody would strand somebody
   // holding a valid session cookie on `/welcome`, with the screen saying
   // nothing because the sign-in did not fail. Swallowed, and deliberately not
   // published: this screen says one thing however a sign-in was refused, the

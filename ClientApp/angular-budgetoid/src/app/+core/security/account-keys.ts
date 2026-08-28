@@ -473,9 +473,22 @@ export async function importAesGcmKey(
     // says why.
     requireAccountKeyWidth(owned);
 
-    // `await` rather than returning the promise: the wipe has to happen after
-    // WebCrypto has read the buffer, and a bare `return` would run the `finally`
-    // while `importKey` was still in flight.
+    // `await` rather than returning the promise, and **the reason is not the
+    // one this comment used to give.** It claimed the wipe had to wait for
+    // WebCrypto to read the buffer, and that a bare `return` would seal the
+    // material's fate mid-import. **Measured: false.** `importKey` copies
+    // `keyData` in its synchronous prologue, so importing with the `await` and
+    // without it yields byte-identical key material — read back through an
+    // extractable import, and confirmed under the HMAC door by two identical
+    // tags that are both unequal to the tag a zero key signs.
+    //
+    // The `await` stays for two smaller reasons, and they are worth saying
+    // instead. A rejection thrown inside this frame keeps this function in the
+    // stack trace, where a returned promise would reject with the door's name
+    // nowhere on it. And the correctness of a bare `return` would rest on a
+    // detail of the platform's prologue that nothing in this repository states
+    // and no test could observe — which is precisely why **nothing holds this
+    // line**: remove the `await` and the whole suite agrees with you.
     return await crypto.subtle.importKey('raw', owned, 'AES-GCM', false, [
       'encrypt',
       'decrypt',
@@ -527,10 +540,10 @@ export async function importAesGcmKey(
  * one call at a time to whoever is asking.
  *
  * Everything else is {@link importAesGcmKey}'s reasoning and is not restated
- * here: the copy onto a buffer no caller names, `extractable: false`, the `await`
- * that keeps the wipe behind WebCrypto's read of it, and the `finally` that ends
- * both copies of the bytes on the refusing path exactly as thoroughly as on the
- * succeeding one.
+ * here: the copy onto a buffer no caller names, `extractable: false`, the
+ * `await` — kept for the stack trace rather than for the wipe, which is
+ * measured not to need it — and the `finally` that ends both copies of the
+ * bytes on the refusing path exactly as thoroughly as on the succeeding one.
  */
 export async function importHmacSha256Key(
   material: Uint8Array,

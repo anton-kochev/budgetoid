@@ -4,9 +4,34 @@ import {
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MeApiService, type MeDto } from './me-api.service';
+import {
+  MeApiService,
+  type AccountKeyEntry,
+  type MeDto,
+} from './me-api.service';
+
+const ACCOUNT_KEYS_URL = 'https://api.test/api/me/account-keys';
+
+// One row of `wrapped_account_keys` as it crosses the wire. The two envelopes
+// are not real ones and nothing here opens them: this file is about the
+// boundary check, and what the check reads is the *presence and type* of three
+// members. Width, version byte and alphabet belong to `decodeBase64Url` and
+// `openEnvelope`, and a second copy of them at this boundary would be a second
+// definition of what an envelope is.
+const ENTRY = {
+  factorId: 'c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6',
+  wrappedContentKey: 'AQIDBAUGBwgJCgsMDQ4PEA',
+  wrappedIndexKey: 'EBESExQVFhcYGRobHB0eHw',
+} satisfies AccountKeyEntry;
+
+const SECOND_ENTRY = {
+  factorId: '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0',
+  wrappedContentKey: 'ICEiIyQlJicoKSorLC0uLw',
+  wrappedIndexKey: 'MDEyMzQ1Njc4OTo7PD0-Pw',
+} satisfies AccountKeyEntry;
 
 describe('MeApiService', () => {
   let http: HttpTestingController;
@@ -336,6 +361,225 @@ describe('MeApiService', () => {
 
     // Assert
     expect(bodies).toEqual([listed, []]);
+  });
+
+  // `GET /api/me/account-keys` had no case at all until this block, and the
+  // hole was not academic: replacing the whole of the guard below with a cast
+  // left the suite green. The method's own comment argues hard for refusing a
+  // malformed body rather than repairing it, and nothing held the argument.
+  //
+  // What is at stake here is worse than a wrong pixel. Every member is a string
+  // about to be fed to a decoder and an AEAD open, and an absent one reaches
+  // `decodeBase64Url` as `undefined` — which throws *inside*
+  // `AccountKeyCustodyService`'s trial loop, where a throw already means "this
+  // factor is not the one, try the next". So a body this client should have
+  // refused is read instead as the person having presented the wrong factor,
+  // and the account is declared unopenable by its own key custody with nothing
+  // anywhere naming the cause.
+  it('reads the wrapped keys of every factor as they arrived', () => {
+    // Arrange
+    let received: readonly AccountKeyEntry[] | undefined;
+    let failure: unknown;
+
+    // Act
+    api.getAccountKeys().subscribe({
+      next: (value) => {
+        received = value;
+      },
+      error: (error: unknown) => {
+        failure = error;
+      },
+    });
+    const request = http.expectOne(ACCOUNT_KEYS_URL);
+
+    // Assert
+    expect(request.request.method).toBe('GET');
+
+    request.flush([ENTRY, SECOND_ENTRY]);
+
+    // Both entries, in the order the server sent them, member for member. The
+    // list is the server's statement and nothing in this client sorts, filters
+    // or appends to it — and the *order* matters to nobody, which is exactly
+    // why a boundary that quietly reordered would never be noticed.
+    expect(received).toEqual([ENTRY, SECOND_ENTRY]);
+    expect(failure).toBeUndefined();
+  });
+
+  it('reads a session with no factors as an empty list rather than a failure', () => {
+    // Arrange
+    // The control for every refusal below, and the one value most likely to be
+    // refused by an over-eager guard. `[]` is the answer the route gives for a
+    // session it cannot see *and* for a credential carrying no factors,
+    // indistinguishably and on purpose. `AccountKeyCustodyService` reads it as
+    // `unopened` — "present another factor" — so a boundary that threw here
+    // would turn a real answer into `unreachable`, whose advice is "try the
+    // same factor again in a minute", for a state that will never change on its
+    // own.
+    let received: readonly AccountKeyEntry[] | undefined;
+    let failure: unknown;
+
+    // Act
+    api.getAccountKeys().subscribe({
+      next: (value) => {
+        received = value;
+      },
+      error: (error: unknown) => {
+        failure = error;
+      },
+    });
+    http.expectOne(ACCOUNT_KEYS_URL).flush([]);
+
+    // Assert
+    expect(received).toEqual([]);
+    expect(failure).toBeUndefined();
+  });
+
+  it('refuses an account-key response that is not a list of factors', () => {
+    // Arrange
+    let received: readonly AccountKeyEntry[] | undefined;
+    let failure: unknown;
+
+    // Act
+    api.getAccountKeys().subscribe({
+      next: (value) => {
+        received = value;
+      },
+      error: (error: unknown) => {
+        failure = error;
+      },
+    });
+    http.expectOne(ACCOUNT_KEYS_URL).flush({ factors: [ENTRY] });
+
+    // Assert
+    // **The message, and not merely that something threw.** Deleting this
+    // refusal does not stop the request failing — `entries.every` on an object
+    // throws a `TypeError` one line later and lands in the same `error`
+    // callback — so `toBeInstanceOf(Error)` alone pins nothing here. What the
+    // two refusals exist for is that they say different things to whoever reads
+    // them: a body that is not a list is a route or a proxy answering something
+    // else entirely, while a malformed entry is a version skew on the right
+    // route. That distinction is the behaviour, so it is what is asserted.
+    expect(failure).toBeInstanceOf(Error);
+    expect(String(failure)).toContain('list of factors');
+    expect(received).toBeUndefined();
+  });
+
+  it.each([
+    {
+      why: 'the identifier the envelopes were sealed against is missing',
+      entry: {
+        wrappedContentKey: ENTRY.wrappedContentKey,
+        wrappedIndexKey: ENTRY.wrappedIndexKey,
+      },
+    },
+    {
+      why: 'the content key envelope is missing',
+      entry: {
+        factorId: ENTRY.factorId,
+        wrappedIndexKey: ENTRY.wrappedIndexKey,
+      },
+    },
+    {
+      why: 'the index key envelope is missing',
+      entry: {
+        factorId: ENTRY.factorId,
+        wrappedContentKey: ENTRY.wrappedContentKey,
+      },
+    },
+    {
+      why: 'a member arrived as something that is not a string',
+      entry: { ...ENTRY, factorId: 42 },
+    },
+    {
+      why: 'an entry is not an object at all',
+      entry: null,
+    },
+  ])('refuses an account-key entry when $why', ({ entry }) => {
+    // Arrange
+    // Per entry and not merely over the collection, unlike `getCredentials`. A
+    // credential row is total in what it renders, so a malformed *entry* there
+    // spoils one row; here an entry has no partial use at all — two thirds of a
+    // factor opens nothing.
+    let received: readonly AccountKeyEntry[] | undefined;
+    let failure: unknown;
+
+    // Act
+    api.getAccountKeys().subscribe({
+      next: (value) => {
+        received = value;
+      },
+      error: (error: unknown) => {
+        failure = error;
+      },
+    });
+    // The malformed entry sits *behind* a well-formed one, so a guard that
+    // judged only the head of the list passes nothing here.
+    http.expectOne(ACCOUNT_KEYS_URL).flush([ENTRY, entry]);
+
+    // Assert
+    // The entry refusal's own sentence, for the reason the case above gives:
+    // the two messages are what tell a version skew apart from a proxy
+    // answering something else, and a check that only asked whether *something*
+    // threw would accept either in place of the other.
+    expect(failure).toBeInstanceOf(Error);
+    expect(String(failure)).toContain('envelopes');
+    expect(received).toBeUndefined();
+  });
+
+  // **The account-key read carries `EXPECTS_UNAUTHENTICATED`, and the reason is
+  // custody's own rule read from the outside.**
+  //
+  // `AccountKeyCustodyService` never calls anything on `SessionService`,
+  // because a key that will not open is not a session that ended. Unmarked,
+  // this request routes its own 401 into `sessionExpiryInterceptor` — the
+  // single owner of "the session ended" — which calls `session.ended()` and
+  // navigates to `/welcome`. On the sign-in path that navigation races the one
+  // to `/app` and wins, being later: a person whose assertion the server just
+  // accepted lands anonymous on the welcome screen, with the screen saying
+  // nothing at all because the sign-in did not fail. A deterministic 401 there
+  // is a loop.
+  //
+  // Suppressed, the fact is not lost — it is deferred to a request that can
+  // say something about it. If the session really has ended, the next read the
+  // person makes answers 401 from a screen that renders its own failure line.
+  it('marks the account-key read as one whose refusal is not a session ending', () => {
+    // Act
+    api.getAccountKeys().subscribe({ error: () => undefined });
+    const request = http.expectOne(ACCOUNT_KEYS_URL);
+
+    // Assert
+    expect(request.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+
+    request.flush([]);
+  });
+
+  it('leaves the account record read unmarked', () => {
+    // Arrange
+    // The control, and the half that makes the pin above mean something. A
+    // token set on `BaseApiService.get` — or on this service — satisfies the
+    // case above perfectly while suppressing every genuine session ending in
+    // the product. The Settings screen reads `GET /api/me` from a browser that
+    // believes it holds a session, so a 401 there *is* the session having
+    // ended, and the bounce is the correct answer.
+    //
+    // `getSessionOwner()` reads the same route and is marked, which is the
+    // whole reason the two methods exist: only the request can tell two
+    // callers of one route apart.
+    // Act
+    api.getMe().subscribe({ error: () => undefined });
+    const unmarked = http.expectOne('https://api.test/api/me');
+
+    // Assert
+    expect(unmarked.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(false);
+
+    unmarked.flush({ email: 'owner@budgetoid.test' });
+
+    api.getSessionOwner().subscribe({ error: () => undefined });
+    const marked = http.expectOne('https://api.test/api/me');
+
+    expect(marked.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+
+    marked.flush({ email: 'owner@budgetoid.test' });
   });
 
   // There is deliberately no test for a generate/POST method: the service has

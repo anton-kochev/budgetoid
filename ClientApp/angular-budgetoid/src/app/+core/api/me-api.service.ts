@@ -251,12 +251,37 @@ export class MeApiService extends BaseApiService {
   // purpose, and a caller that told them apart would rebuild the enumeration
   // oracle the route refuses to be.
   //
-  // **No `EXPECTS_UNAUTHENTICATED`, and that is the decision rather than the
-  // omission** — `getMe()`'s case, one line for one line. This request is made
-  // by a browser that believes it holds a session, so a 401 is that session
-  // having ended, which is the one fact `sessionExpiryInterceptor` owns.
-  // Marking it would suppress the only true reading and leave somebody on a
-  // screen whose every later read fails with nothing saying why.
+  // **It carries `EXPECTS_UNAUTHENTICATED`, and that is not `getMe()`'s case
+  // turned around — it is custody's own rule, enforced from the outside.**
+  //
+  // `AccountKeyCustodyService` is the only caller, and it never calls anything
+  // on `SessionService`, because a key that will not open is not a session that
+  // ended. Unmarked, this request routes its own 401 into
+  // `sessionExpiryInterceptor` — the single owner of "the session ended" —
+  // which makes that call anyway, through an edge no import graph shows. On the
+  // sign-in path the damage is immediate: the assertion answers 200,
+  // `session.established()` runs, custody's read leaves, the router is sent to
+  // `/app`, and a 401 on that read then publishes `anonymous` and navigates to
+  // `/welcome`. Being later, it wins. The person lands anonymous on the welcome
+  // screen holding a session cookie the server had just issued, with the screen
+  // saying nothing — `SignInService` is component-provided, so its `failure()`
+  // is a fresh `null` — and a 401 that reproduces is a loop.
+  //
+  // **The fact is deferred, not lost.** If the session has genuinely ended, the
+  // next read the person makes — the Settings email, the credential list, the
+  // export — answers 401 unmarked, and the interceptor acts then, from a screen
+  // that renders its own failure line. What is given up is a few seconds of
+  // knowing; what is bought is that nobody is thrown out of an account over a
+  // cookie that had not landed yet.
+  //
+  // **The token rides on the method rather than on an `HttpContext` the caller
+  // passes**, which is the opposite of `getMe()`/`getSessionOwner()` and for
+  // the reason that pair exists: there, one route is read by two callers asking
+  // two different questions, and only the request can tell them apart. Here
+  // there is one caller and one question, and the meaning of a 401 is fixed by
+  // the route — a key read made by a browser that already believes it is signed
+  // in. A `context?` parameter would advertise the opposite, and the next
+  // caller that omitted it would restore the defect silently.
   //
   // The list is `readonly` from here down for the reason `getCredentials`'s is:
   // its order is the server's statement, and nothing in the client sorts,
@@ -264,7 +289,10 @@ export class MeApiService extends BaseApiService {
   // `account-key-custody.service.ts`, which tries each entry in turn under its
   // own `factorId`.
   public getAccountKeys(): Observable<readonly AccountKeyEntry[]> {
-    return this.get<unknown>('api/me/account-keys').pipe(
+    return this.get<unknown>(
+      'api/me/account-keys',
+      new HttpContext().set(EXPECTS_UNAUTHENTICATED, true),
+    ).pipe(
       map((body) => {
         // Two refusals rather than one, because the two say different things to
         // whoever reads the message: a body that is not a list is a route or a
