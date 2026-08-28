@@ -25,10 +25,11 @@ namespace IntegrationTests;
 /// </para>
 /// <para>
 /// <b>No test here names a type belonging to this endpoint</b> — no request record, no response record,
-/// no handler, no read service. They address the route over HTTP and read the wire body, so while the
-/// route is unmapped they fail on the status assertion against a real 404 rather than failing to
-/// compile, which is the difference between a red test that is telling us something and one that is
-/// telling us nothing. The one production type the arrangements name is <see cref="CredentialType" />,
+/// no handler, no read service. They address the route over HTTP and read the wire body, so nothing
+/// that happens to the endpoint can take one of them out of the build: unmap the route, rename the
+/// response record or drop a member from it and every test here still compiles and fails on a status
+/// or on a body, which is the difference between a red test that is telling us something and one that
+/// is telling us nothing. The one production type the arrangements name is <see cref="CredentialType" />,
 /// to say which credential opens a seeded session; it belongs to no part of this endpoint's contract, so
 /// naming it cannot make a test agree with the thing it measures.
 /// </para>
@@ -300,7 +301,7 @@ public sealed class AccountKeysEndpointTests
 
         // Every arriving row, against the pair its own factor was sealed with. Read out of the seeded set
         // by factor identifier rather than by position, so this says nothing about ordering — which
-        // AccountKeys_ForARecoveryCodesSession_CarryAllTenFactorsWithTheirOwnEnvelopes has already
+        // AccountKeys_ForARecoveryCodesSession_CarryAllElevenFactorsOfTheAccount has already
         // compared as a set, and which the endpoint promises nothing particular about.
         await Assert.That(entries.Count).IsEqualTo(RequiredCodeCount);
         foreach (JsonNode? entry in entries)
@@ -519,10 +520,25 @@ public sealed class AccountKeysEndpointTests
     /// that <c>account-keys.md</c> deliberately does <em>not</em> give a client — a browser locates its
     /// pair by trying each in turn, so an id here is a capability handed over for no use.
     /// <c>userId</c> is the value every policy in the database is keyed on and the one identifier a
-    /// response body may never carry into a client log. <c>createdAtUtc</c> is a usage record beside key
-    /// material: it says when each of an account's ten codes was issued, which is a timeline of somebody's
-    /// recovery history that the screen reading this endpoint has no use for — the same argument
-    /// <c>ProhibitedColumnVocabulary</c> makes against a <c>last_login</c>.
+    /// response body may never carry into a client log. <c>createdAtUtc</c> is refused on the flattest
+    /// ground of the three: <b>whoever is asking already has that instant.</b> Every one of these rows
+    /// carries the creation instant of the credential it hangs off — the three write paths that produce
+    /// one (<c>RegisterAccountHandler</c>, <c>CompleteRegistrationHandler</c> and
+    /// <c>GenerateRecoveryCodesHandler</c>) each take a single clock reading and stamp the credential and
+    /// all of its factors from it in one save — and <c>GET /api/me/credentials</c>, which this very
+    /// session reaches under this very fallback policy, answers with that same instant as the
+    /// credential's <c>createdAtUtc</c>. So the member would disclose nothing the client is not already
+    /// entitled to read, and would buy that nothing by widening a response made of key material.
+    /// </para>
+    /// <para>
+    /// <b>Two reasons that used to be given here are false, written down so that neither is restored.</b>
+    /// The first was that the member exposes a timeline of somebody's recovery history. There is no
+    /// timeline: a set's ten codes are written from one clock reading in one <c>SaveChanges</c>, so all
+    /// ten share a single instant and no sequence of issuings exists for a member to leak. The second was
+    /// that this is the argument <c>ProhibitedColumnVocabulary</c> makes against a <c>last_login</c>. It
+    /// is not — that vocabulary refuses records of <em>use</em>, which is the category
+    /// <c>last_login</c> is classified under, and it lets <c>created_at_utc</c> through, which is why the
+    /// table behind this route is allowed to carry one at all.
     /// </para>
     /// <para>
     /// Read over the ten-factor arrangement and reduced to the <em>distinct</em> shapes, so it says "every
@@ -805,14 +821,12 @@ public sealed class AccountKeysEndpointTests
     /// caught by nothing else, because that test issues no request.
     /// </para>
     /// <para>
-    /// <b>It is green today, and for a reason that has nothing to do with what it will measure once the
-    /// route exists — so a reader who runs it now and sees green is not seeing it work.</b> The fallback
-    /// policy is applied by the authorization middleware to requests that match <em>no endpoint at all</em>,
-    /// so this request is answered 401 by a pipeline that has never heard of <c>/api/me/account-keys</c>,
-    /// exactly as it would answer 401 to <c>/api/me/anything-else</c>. Nothing about that green says the
-    /// route is authenticated, or that it is mapped, or that it exists. It starts saying something the
-    /// moment the route is mapped, and from that moment it is the only request-driven check that the
-    /// fallback policy still covers it.
+    /// <b>The refusal is the fallback policy's, and it lands on a mapped route.</b> <c>Program.cs</c>
+    /// calls <c>MapAccountKeyEndpoints</c>, and that group states no authorization metadata of any kind
+    /// — no <c>RequireAuthorization</c>, no <c>AllowAnonymous</c> — so this request matches a real
+    /// endpoint and is challenged by the policy covering every route that declares nothing. That is
+    /// what makes the paragraph above a claim about <em>this</em> route rather than about the pipeline
+    /// in general.
     /// </para>
     /// </remarks>
     [Test]

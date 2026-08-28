@@ -128,9 +128,23 @@ public static class AccountKeyEndpoints
     /// on the grounds that a client could then skip the entries it cannot open; it could not, because
     /// which credential a ceremony answered with is exactly what the client does not know.
     /// <c>userId</c> is the value every policy in the database is keyed on and the one identifier a
-    /// response body may never carry into a client log. <c>createdAtUtc</c> is a usage record beside
-    /// key material: it says when each of an account's ten codes was issued, which is a timeline of
-    /// somebody's recovery history that the screen reading this endpoint has no use for.
+    /// response body may never carry into a client log. <c>createdAtUtc</c> is refused for the dullest
+    /// reason of the three: <b>the caller is already holding it.</b> Every one of these rows carries its
+    /// credential's own instant — each of the three paths that writes one reads the clock once and
+    /// stamps the credential and its factors from that single value in a single <c>SaveChanges</c>
+    /// (<see cref="Application.Registration.RegisterAccountHandler" />,
+    /// <see cref="Application.Passkeys.CompleteRegistration.CompleteRegistrationHandler" />,
+    /// <see cref="Application.RecoveryCodes.GenerateRecoveryCodes.GenerateRecoveryCodesHandler" />) —
+    /// and <c>GET /api/me/credentials</c>, which the same session reaches under the same fallback
+    /// policy, returns exactly that instant as its own <c>createdAtUtc</c>. The member would therefore
+    /// disclose no fact the client cannot already read, and widen a key-material response to say it.
+    /// </para>
+    /// <para>
+    /// <b>It is not a recovery timeline, and the argument that used to stand here said it was.</b> A
+    /// set's ten codes are written in one save from one clock read, so they carry one instant and not
+    /// ten; there is no sequence of issuings for a member here to expose. Nor is it the <c>last_login</c>
+    /// that <c>ProhibitedColumnVocabulary</c> refuses — that vocabulary bans records of <em>use</em> and
+    /// permits <c>created_at_utc</c>, which is why the table this route reads has one.
     /// </para>
     /// <para>
     /// <see cref="FactorId" /> leaves as a <see cref="Guid" /> so the serializer renders the canonical

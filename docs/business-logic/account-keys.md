@@ -606,7 +606,12 @@ identifier and its two envelopes as unpadded base64url — `factorId`, `wrappedC
 `wrappedIndexKey`, and nothing else in either direction. No credential id, no user id and no
 registration instant: the first is a capability the browser has no use for, since it locates its
 pair by trying each in turn; the second is the value every policy in the database is keyed on; the
-third is a timeline of somebody's recovery history beside their key material. The identifier goes
+third is **already in the caller's hands**, because every one of these rows carries its credential's
+own instant — one clock read and one `SaveChanges` per write path — and `GET /api/me/credentials`
+returns exactly that instant to the same session. It is **not** a recovery timeline: a set's ten
+codes share one instant rather than carrying ten, so there is no sequence of issuings to disclose,
+and the member would only widen a key-material response to repeat a fact the client can already
+read. The identifier goes
 back in the canonical lower-case hyphenated spelling it was stored in, because it **is** the
 associated data both envelopes were sealed with — the rule the write paths already keep.
 
