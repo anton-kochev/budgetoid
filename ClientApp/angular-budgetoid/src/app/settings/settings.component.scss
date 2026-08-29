@@ -67,6 +67,15 @@
   min-height: 1lh;
 }
 
+// The Account keys region's last child. Same rule as `.s-count` above and the
+// same one line box: nothing below it moves when an answer arrives. Its own
+// class rather than a second use of `.s-count`, because that one's argument is
+// written about a number that is blank until it loads, and this one is a
+// sentence that is absent until the keys are held.
+.s-held {
+  min-height: 1lh;
+}
+
 .s-facts {
   display: grid;
   gap: var(--bud-space-1);

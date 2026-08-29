@@ -86,6 +86,48 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.slice().buffer;
 }
 
+// The buffer a `BufferSource` is a window onto, and a sentence for anything
+// else. Identity is the whole point of the callers below, so this returns the
+// buffer itself rather than a reading of its contents: two buffers holding the
+// same bytes are exactly the case being told apart.
+function bufferBehind(source: unknown): ArrayBufferLike {
+  if (source instanceof ArrayBuffer) {
+    return source;
+  }
+
+  if (ArrayBuffer.isView(source)) {
+    return source.buffer;
+  }
+
+  throw new Error('the derivation was handed something that is not bytes');
+}
+
+// What each HKDF import was handed, in call order and **by reference**.
+//
+// `hkdf.ts` passes its `ikm` argument straight to
+// `crypto.subtle.importKey('raw', ikm, 'HKDF', …)`, so this is the last point
+// the PRF output can be observed before it stops being bytes — and the first
+// point at which a copy taken anywhere upstream has become visible, because a
+// copy is a different buffer however equal its contents.
+//
+// Filtered to `'HKDF'` deliberately. `importAesGcmKey` calls the same platform
+// method a moment later and **does** copy, by design: `Uint8Array.from(material)`
+// onto a buffer no caller names. That copy is of *derived* material, not of the
+// PRF output, and folding the two imports together here would make this
+// instrument report a wipe-safe design as a leak.
+//
+// The spy calls through — the derivation these tests observe is the derivation
+// that ships, and a mocked `importKey` would leave every seal below comparing
+// values nothing produced.
+function watchDerivationInputs(): () => readonly ArrayBufferLike[] {
+  const importDoor = vi.spyOn(crypto.subtle, 'importKey');
+
+  return (): readonly ArrayBufferLike[] =>
+    importDoor.mock.calls
+      .filter((call) => call[2] === 'HKDF')
+      .map((call) => bufferBehind(call[1]));
+}
+
 // Everything reachable from a value, rendered as text: strings as themselves,
 // bytes as hex, objects walked. A `CryptoKey` contributes nothing — its
 // properties live on the prototype and its material lives nowhere JavaScript can
@@ -602,12 +644,20 @@ describe('WebauthnCeremonyService', () => {
     }
   });
 
-  it('sends nothing anywhere: neither ceremony touches the network', async () => {
+  it('sends nothing anywhere: no ceremony of the three touches the network', async () => {
     // Arrange
     // The other half of "discarded", and the half that is about the bytes
-    // rather than about the payload. Both legs are run — the registration one
-    // through its second, local assertion, which is the request that must never
-    // be posted — while every door out of the page is watched.
+    // rather than about the payload. All three legs are run — the registration
+    // one through its second, local assertion, and the unlock, which is a whole
+    // ceremony nobody ever sends — while every door out of the page is watched.
+    //
+    // **A census that stops seeing a leg is no longer a census.** This is the
+    // only runtime witness that `deriveKeyFromLocalAssertion` never talks to a
+    // server, and it is a witness only because the leg is driven here: a third
+    // method left out of this body would be covered by the reassuring name of
+    // this test and by nothing else. So it is edited rather than copied — a
+    // second census beside this one would let the two disagree about which legs
+    // exist.
     //
     // This is deliberately not a claim about the service's constructor.
     // `HttpClient` is `providedIn: 'root'`, so no injector can be asked to
@@ -630,6 +680,12 @@ describe('WebauthnCeremonyService', () => {
       }),
     );
     ceremonyValue(await service.assertPasskey(SERVER_REQUEST_OPTIONS));
+    get.mockResolvedValue(
+      assertionCredential({
+        prf: { results: { first: prfOutput(ASSERTION_PRF_BYTES).buffer } },
+      }),
+    );
+    ceremonyValue(await service.deriveKeyFromLocalAssertion());
 
     // Assert
     // Named rather than counted, so a failure says which door was opened.
@@ -1156,9 +1212,9 @@ describe('WebauthnCeremonyService', () => {
     const result = await service.assertPasskey(SERVER_REQUEST_OPTIONS);
 
     // Assert
-    // The same mapping on the other leg, written out rather than assumed: the
-    // two ceremonies are separate code paths and a branch added to one is not a
-    // branch added to the other.
+    // The same mapping on this leg, written out rather than assumed: every
+    // ceremony here has its own `catch`, so a branch added to one is not a
+    // branch added to any of the others.
     expect(ceremonyFailure(result)).toBe('cancelled');
   });
 
@@ -1223,5 +1279,523 @@ describe('WebauthnCeremonyService', () => {
 
     // Assert
     expect(ceremonyFailure(result)).toBe('failed');
+  });
+
+  it('derives the key the account’s envelopes already open under', async () => {
+    // Arrange
+    // The acceptance criterion for the third leg, and the only claim about it
+    // that can be stated without reference to its implementation: somebody whose
+    // page reloaded presents the same authenticator and gets back the key their
+    // wrapped envelopes were sealed under. Nothing on the server verifies this
+    // ceremony and nothing needs to — a factor that is not this account's
+    // derives a key that opens none of the account's envelopes, so the envelopes
+    // are the proof and the assertion is not.
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    const keyEncryptionKey = ceremonyValue(
+      await service.deriveKeyFromLocalAssertion(),
+    );
+
+    // Assert
+    // Sealing under both keys is the only comparison a non-extractable key
+    // admits, and it catches the three failures worth catching here: a
+    // derivation re-implemented beside this leg, an HKDF `info` that drifted off
+    // `PASSKEY_KEY_ENCRYPTION_KEY_INFO`, and a branch that derived from the
+    // wrong bytes. Each of the three produces a perfectly good key that opens
+    // nothing, on a device that authenticated perfectly.
+    const expected = await keyEncryptionKeyFromPasskey(ASSERTION_PRF_BYTES);
+    expect(await sealedUnder(keyEncryptionKey)).toBe(
+      await sealedUnder(expected),
+    );
+
+    // One line rather than a test of its own: non-extractability is a property
+    // of the key this leg hands back, not a behaviour of the leg, and it travels
+    // the same derivation both other legs do.
+    expect(keyEncryptionKey.extractable).toBe(false);
+
+    // **One ceremony, and this line is the only thing that says so on the
+    // succeeding path.** The count is asserted on the `no-prf` case below, which
+    // leaves the happy path open — and measured, an implementation that ran a
+    // second, redundant `get()` after deriving passed every other case on this
+    // list. What that costs is paid in biometric prompts: two gestures for one
+    // unlock, on the screen a person reaches by doing nothing worse than
+    // reloading the page.
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks a local unlock to evaluate the account’s own PRF input', async () => {
+    // Arrange
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    // Read off `account-keys.ts` and never typed again, for the reason the
+    // registration leg's twin states: the value decides what every authenticator
+    // hands back, so a second copy is a second place for it to drift and the
+    // drift locks out every account that wrapped under the old one.
+    const request = localAssertionRequest();
+    const first = request.extensions?.prf?.eval?.first;
+    expect(first).toBeDefined();
+    expect(toHex(bytesOf(first))).toBe(
+      toHex(utf8.encode(PASSKEY_PRF_EVAL_INPUT)),
+    );
+
+    // `eval` and not `evalByCredential`, which is the registration leg's shape
+    // and wrong here: that map is keyed on a credential the device made a moment
+    // earlier, and this leg holds no credential at all — the whole point is that
+    // the authenticator chooses which passkey answers. Keyed on a guess, the
+    // extension is evaluated for a credential that may not be the one presented,
+    // or is refused outright.
+    expect(request.extensions?.prf?.evalByCredential).toBeUndefined();
+  });
+
+  it('names no relying party, so the browser answers for the page it is on', async () => {
+    // Arrange
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    // **`in`, and not `toBeUndefined()`.** The wrong implementation this test
+    // exists for is the tidy one: route the leg through `assertPasskey` with a
+    // hand-built options object, which passes almost every other case on this
+    // list. `toRequestOptions` always *sets* `rpId`, so under
+    // `toBeUndefined()` that implementation ships — the member is present and
+    // holds whatever the hand-built object put there, which is a relying-party
+    // id invented on the client. There is no such value here to invent from:
+    // `passkey-relying-party-id` is the server's, frozen at `budgetoid.app`, and
+    // a client that guesses it wrong runs a ceremony no credential answers.
+    // Omitted, the browser fills it in from the page's own origin, which is the
+    // only source that cannot be wrong.
+    expect('rpId' in localAssertionRequest()).toBe(false);
+  });
+
+  it('names no credential, so the authenticator chooses which passkey answers', async () => {
+    // Arrange
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    // A separate test from the relying party's, because two different wrong
+    // implementations sit behind the two absences. This one is the registration
+    // leg's `localPrfOutput` copied down here: that leg *must* name a
+    // credential, because it holds one it made a moment ago and `evalByCredential`
+    // is refused without a list. This leg holds none — it is a discoverable
+    // assertion, as the sign-in's is, and the authenticator is what chooses
+    // which passkey answers. A list built from anything the client could reach
+    // for would narrow the ceremony to one credential and refuse the person
+    // their other ones, which is the same mistake `GET /api/me/account-keys` was
+    // narrowed by and had to be widened back out of.
+    //
+    // `in` for the shape rather than for the value, and **not** for the reason
+    // the relying party's twin gives — measured, an implementation routing
+    // through `assertPasskey` does not fail this case at all, because
+    // `toRequestOptions` has four members and no `allowCredentials` among them.
+    // Only the `rpId` test catches that one. What this form catches is the
+    // options object assembled by spreading a shared base and blanking the
+    // member — `{ ...base, allowCredentials: undefined }` — where the browser
+    // is handed a present member and `toBeUndefined()` reports the absence this
+    // leg needs as though it were there.
+    expect('allowCredentials' in localAssertionRequest()).toBe(false);
+  });
+
+  it('demands user verification, which no server told it to', async () => {
+    // Arrange
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    // A literal, and the one member of the three this leg invents rather than
+    // omits. Every other ceremony in the product takes the word off options the
+    // server minted; there are no options here, so leaving it out is not
+    // neutral — WebAuthn's default is `'preferred'`, and every authenticator
+    // that can skip the biometric then does, silently. The person gets their
+    // account's content key back for a gesture that proved nothing about who was
+    // holding the device, which is the entire event this leg exists to require.
+    expect(localAssertionRequest().userVerification).toBe('required');
+  });
+
+  it('carries three members and no fourth', async () => {
+    // Arrange
+    // The two absences above are named one at a time because each has its own
+    // wrong implementation behind it. This case holds the **class** they are
+    // instances of, and it was added because the class was open: measured, an
+    // options object carrying a `timeout` passed every other case on this list.
+    // A number there is a third copy of a value the server owns on the other two
+    // legs — it drifts against them silently, and the day it is shorter than the
+    // real one somebody's unlock times out on a device that was working.
+    //
+    // Read whole rather than asserted member by member, so the next member
+    // somebody adds has to be argued into this list instead of arriving unseen.
+    // A ceremony whose parameters this client invents is exactly where a
+    // fourth one would look harmless.
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    expect(Object.keys(localAssertionRequest()).sort()).toEqual([
+      'challenge',
+      'extensions',
+      'userVerification',
+    ]);
+  });
+
+  it('signs over a thirty-two-byte challenge drawn from the platform’s generator', async () => {
+    // Arrange
+    // Width and source in one case, because they are one decision: this
+    // challenge is verified by nothing — the assertion is discarded — so it is
+    // not a protocol constant but the floor below which "fresh" stops meaning
+    // anything, and a value drawn from a source somebody can walk is no fresher
+    // than a constant. The same rule `account-keys.ts` holds for the account's
+    // own keys, for the same reason: `Math.random` passes every shape-based
+    // check while being seeded from a value the page does not control and short
+    // enough to enumerate.
+    const insecure = vi.spyOn(Math, 'random');
+    const secure = vi.spyOn(crypto, 'getRandomValues');
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    expect(bytesOf(localAssertionRequest().challenge)).toHaveLength(32);
+    expect(secure).toHaveBeenCalled();
+    expect(insecure).not.toHaveBeenCalled();
+  });
+
+  it('draws a new challenge on every attempt', async () => {
+    // Arrange
+    // The control on the test above, and not a restatement of it: a challenge
+    // drawn once into a module constant is thirty-two bytes from the platform's
+    // generator on the first unlock and a replay on every one after it. Nothing
+    // in this leg would notice — the assertion is discarded, so no verifier ever
+    // sees the value twice — which is exactly why it is worth a test now rather
+    // than the day somebody decides this assertion is worth sending.
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    await service.deriveKeyFromLocalAssertion();
+    get.mockResolvedValue(
+      assertionCredential({
+        prf: { results: { first: prfOutput(ASSERTION_PRF_BYTES).buffer } },
+      }),
+    );
+    await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    // No empty-array fallback on the second read: an attempt that never happened
+    // has to fail this test by name rather than quietly compare two empty
+    // strings and pass.
+    const first = toHex(bytesOf(localAssertionRequest().challenge));
+    const second = toHex(bytesOf(get.mock.calls[1]?.[0]?.publicKey?.challenge));
+    expect(second).not.toBe(first);
+  });
+
+  it('refuses an authenticator that derived nothing', async () => {
+    // Arrange
+    // **There is deliberately no second route here, and nobody may add one.**
+    // The registration leg has two because `create()` is not an assertion and
+    // many authenticators derive only on the first one — this leg *is* an
+    // assertion, so a second would be the same ceremony run twice, raising a
+    // second system prompt on the way to the answer it already has. What it
+    // would cost is paid by the person: two biometric prompts to be told their
+    // device cannot open their account.
+    //
+    // And the word is `no-prf` rather than `failed`: the ceremony succeeded and
+    // the authenticator answered. What it cannot do is hold this account's keys,
+    // which is a sentence about the device and not about the request.
+    get.mockResolvedValue(assertionCredential({}));
+
+    // Act
+    const result = await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    expect(ceremonyFailure(result)).toBe('no-prf');
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a dismissed prompt as cancelled', async () => {
+    // Arrange
+    // `NotAllowedError` is what a browser raises when the person closes the
+    // sheet, and also when the ceremony times out. Neither says anything about
+    // the authenticator, and this leg is the one place the distinction is most
+    // visible to somebody: a locked screen that reported `failed` for a sheet
+    // they dismissed on purpose tells them something is wrong with the app.
+    //
+    // Written out on this leg rather than inherited from the other two, for the
+    // reason the assertion leg's twin gives: a branch added to one leg is not a
+    // branch added to another, and this method has its own `get`, its own
+    // narrowing and its own catch.
+    get.mockRejectedValue(
+      new DOMException('The operation was aborted.', 'NotAllowedError'),
+    );
+
+    // Act
+    const result = await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    expect(ceremonyFailure(result)).toBe('cancelled');
+  });
+
+  it('reports anything else as failed', async () => {
+    // Arrange
+    // A separate test from the dismissal, because the two words are two
+    // different sentences and a catch-all that answered `cancelled` for
+    // everything would pass that one perfectly. `cancelled` means nothing went
+    // wrong and nothing needs saying; reporting it over a genuine breakage is
+    // the quiet failure — a locked account, a screen that reports the person's
+    // own choice back to them, and nothing anywhere naming what actually broke.
+    //
+    // A `TypeError` also holds the other half: it is *named* `"TypeError"`, so
+    // an implementation reading `.name` without asking `instanceof DOMException`
+    // first lands here by luck rather than by rule.
+    get.mockRejectedValue(new TypeError('something the browser did not name'));
+
+    // Act
+    const result = await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    expect(ceremonyFailure(result)).toBe('failed');
+  });
+
+  it('reports itself unavailable where the browser cannot run a ceremony', async () => {
+    // Arrange
+    // Without the check the failure is not even clean: `navigator.credentials`
+    // is present in an insecure context, so the call is made and rejects with
+    // something the catch above reports as `failed` — and the person is told
+    // their account could not be unlocked when what did not work is the address
+    // they loaded the page from.
+    vi.stubGlobal('isSecureContext', false);
+
+    // Act
+    const result = await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    expect(ceremonyFailure(result)).toBe('unsupported');
+    // And nothing was attempted, which is what makes this a refusal rather than
+    // a rescue after the fact.
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('clears the PRF output once the key is derived', async () => {
+    // Arrange
+    // The retained view is what makes this observable at all: `prfOutput` hands
+    // the ceremony the platform's own buffer and keeps a view over the same
+    // bytes, so the spec can look at what the browser produced after the
+    // derivation has had its way with it. A ceremony that copied the bytes
+    // before deriving would wipe its copy, report success, and leave this view
+    // holding the account's key-encryption material — which is the failure this
+    // fixture is shaped to catch rather than a detail of how it is written.
+    //
+    // The custody rule is `account-keys.ts`'s and is not re-argued here. What is
+    // this leg's own is that it is the third place the rule has to hold, and the
+    // one with no server round trip after it to make a leak conspicuous.
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    expect(toHex(assertionPrf.view)).toBe(
+      '00'.repeat(ASSERTION_PRF_BYTES.length),
+    );
+  });
+
+  it('hands back nothing the assertion produced', async () => {
+    // Arrange
+    // The assertion is signed over a challenge this client invented, which no
+    // server issued and none would accept. Returning any of it beside the key is
+    // what a reader will do the first time a caller wants "a bit more" — and
+    // what it produces is a forged sign-in in the hand of every caller of an
+    // unlock, in a shape that looks like an ordinary result object.
+    //
+    // The type is what should stop it: the return is
+    // `PasskeyCeremonyResult<CryptoKey>` over a bare key rather than a
+    // one-member object, so there is nowhere for a payload to land without
+    // somebody widening the signature on purpose. This test is what notices when
+    // they do.
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    const result = await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    // Walked rather than named member by member, because the hazard is a member
+    // nobody thought to look at. A `CryptoKey` contributes nothing to this text
+    // — its properties live on the prototype and its material lives nowhere
+    // JavaScript can read — which is exactly the property being relied on.
+    const surface = reachableText(result);
+    for (const bytes of [
+      LOCAL_CLIENT_DATA_BYTES,
+      LOCAL_AUTHENTICATOR_DATA_BYTES,
+      LOCAL_SIGNATURE_BYTES,
+    ]) {
+      expect(surface).not.toContain(encodeBase64Url(bytes));
+      expect(surface).not.toContain(toHex(bytes));
+    }
+  });
+
+  // **The three legs derive from the platform's own buffer, never from a copy of
+  // it**, and the three cases below are one rule about the class rather than
+  // three facts about three methods. They are together because the rule is, and
+  // apart from each other because a leg that stopped obeying it has to fail by
+  // name.
+  //
+  // The wipe tests cannot see this and are not weakened by saying so. Each of
+  // them asserts that the buffer the platform handed over ends up zeroed, and it
+  // does — under
+  //
+  //   const copy = prfOutput.slice();
+  //   …derive from copy…;
+  //   prfOutput.fill(0);
+  //
+  // as faithfully as under the real thing. Every wipe assertion stays green
+  // while a live copy of the account's key-encryption material sits on the heap
+  // for the life of the tab, reachable by anything that runs in the page. What
+  // tells the two apart is **identity**: a copy is a different buffer however
+  // equal its contents, so these compare by reference and never by value.
+  //
+  // **The bound, stated so this does not read as "no copy can exist".** What is
+  // checked is that the bytes reaching the HKDF import are the platform's own.
+  // A copy taken *beside* the derivation — stashed somewhere while the original
+  // still travels to `importKey` — is invisible here, and so is anything the
+  // page does with the buffer after this call. Those need the module-state scan
+  // this spec declines to make; see the header's note on `localStorage` and
+  // globals. This closes the copy that is *on the path*, which is the one a
+  // reader introduces while trying to be careful with a wipe.
+  //
+  // **Do not take the runner's advice here.** On a copy these fail with
+  // `Received: serializes to the same string` and the printed hint "If it should
+  // pass with deep equality, replace `toBe` with `toEqual`" — the runner reading
+  // a byte-for-byte match as an argument that the two values are
+  // interchangeable. That match *is* the defect. `toEqual` turns each of these
+  // into a check that the copy holds the right bytes, which a copy always does,
+  // and the whole set goes permanently green.
+
+  it('derives an unlock from the platform’s own buffer, never from a copy', async () => {
+    // Arrange
+    const derivations = watchDerivationInputs();
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    ceremonyValue(await service.deriveKeyFromLocalAssertion());
+
+    // Assert
+    // The instrument's own control, and it is not decoration: a filter that
+    // matched nothing would leave every identity check below comparing
+    // `undefined` against a buffer, which fails — but for the wrong reason and
+    // with a message naming nothing. One derivation, and exactly one.
+    expect(derivations()).toHaveLength(1);
+    expect(
+      derivations()[0],
+      'the unlock derived from a copy of the PRF output rather than from the ' +
+        'buffer the platform handed back, so a live copy of the account’s ' +
+        'key-encryption material outlives the wipe.',
+    ).toBe(assertionPrf.buffer);
+  });
+
+  it('derives a registration from the platform’s own buffer, never from a copy', async () => {
+    // Arrange
+    // Both of this leg's routes, because a copy can be introduced on either side
+    // of the `??` that chooses between them and neither side covers the other.
+    // The creation route first, then the local-assertion route — whose bytes are
+    // the ones a reader is likeliest to copy, since everything else that
+    // ceremony produced is thrown away a line later.
+    const derivations = watchDerivationInputs();
+    const creationPrf = prfOutput(CREATION_PRF_BYTES);
+    create.mockResolvedValue(
+      creationCredential({
+        prf: { enabled: true, results: { first: creationPrf.buffer } },
+      }),
+    );
+
+    // Act
+    ceremonyValue(await service.createPasskey(SERVER_CREATION_OPTIONS));
+
+    // Assert
+    expect(derivations()).toHaveLength(1);
+    expect(
+      derivations()[0],
+      'the creation route derived from a copy of the PRF output.',
+    ).toBe(creationPrf.buffer);
+
+    // Act
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    create.mockResolvedValue(creationCredential({ prf: { enabled: true } }));
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+    ceremonyValue(await service.createPasskey(SERVER_CREATION_OPTIONS));
+
+    // Assert
+    expect(derivations()).toHaveLength(2);
+    expect(
+      derivations()[1],
+      'the local-assertion route derived from a copy of the PRF output — the ' +
+        'route where a copy is likeliest, because everything else that ' +
+        'ceremony produced is discarded a line later.',
+    ).toBe(assertionPrf.buffer);
+  });
+
+  it('derives a sign-in from the platform’s own buffer, never from a copy', async () => {
+    // Arrange
+    const derivations = watchDerivationInputs();
+    const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
+    get.mockResolvedValue(
+      assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
+    );
+
+    // Act
+    ceremonyValue(await service.assertPasskey(SERVER_REQUEST_OPTIONS));
+
+    // Assert
+    expect(derivations()).toHaveLength(1);
+    expect(
+      derivations()[0],
+      'the sign-in derived from a copy of the PRF output.',
+    ).toBe(assertionPrf.buffer);
   });
 });

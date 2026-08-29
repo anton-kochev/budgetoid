@@ -76,10 +76,12 @@
 // **Every function here has a live caller, the unwrapping included.**
 // `register.service.ts` draws the account's keys and wraps them under a passkey
 // and under each of ten recovery codes; `webauthn-ceremony.service.ts` derives
-// the passkey branch's key-encryption key on both legs of a ceremony; and
-// `unwrapAccountKeys` is reached by `AccountKeyCustodyService` on every passkey
-// sign-in, over the entries `GET /api/me/account-keys` hands back. So "keep it,
-// something is waiting" is no longer the reason to keep any of it.
+// the passkey branch's key-encryption key on every leg it runs — the two
+// ceremonies that are sent, and the local one behind the settings screen's
+// Unlock, which is minted and discarded there; and `unwrapAccountKeys` is
+// reached by `AccountKeyCustodyService` whenever a factor is presented, over the
+// entries `GET /api/me/account-keys` hands back. So "keep it, something is
+// waiting" is no longer the reason to keep any of it.
 //
 // What is still uncalled is anything that *uses* an opened key — nothing seals a
 // field and nothing computes an index, because nothing in this product is

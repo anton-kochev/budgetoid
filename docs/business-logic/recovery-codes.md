@@ -897,10 +897,18 @@ ELSE                                                               ← first iss
     sixth member — ten whole submissions, each carrying its own wrapped copy of the account's
     content key and index key. Wrapping them needs them unwrapped, and while
     `GET /api/me/account-keys` now hands back every factor's envelopes and `AccountKeyCustodyService`
-    opens them on a passkey sign-in, nothing on this path reaches that custody: the block moved from
-    the server to the client rather than lifting. **That is a different block from the erasure control's**, and the
-    settings screen says so in different words: erasing waits on a confirmation flow this screen has
-    not been given, generating waits on the keys. `POST /api/recovery-codes/redemption` has no
+    opens them — on a passkey sign-in, and from the settings screen's own Unlock control — **what it
+    holds afterwards is two non-extractable key objects behind no accessor**, and a wrap takes
+    bytes. So the block moved from the server to the client and then narrowed again without
+    lifting: reaching bytes means unwrapping under a key-encryption key **held long enough to wrap
+    with**, which is exactly what the unlock path refuses to do. **The second half of the block is
+    this route's own gate**: a fresh assertion the *server* verifies, which an unlock's locally
+    minted and discarded assertion is not, so a person can unlock all afternoon without moving this
+    control. **Three different things hold the screen's inert controls off and it says all three in
+    different words** — the keys as bytes under registering a passkey, those bytes and a
+    server-checked assertion here, a server-checked assertion under revoking and erasing. Do not
+    paste one over another; the design book owns the wording, in
+    [components.md](../design/components.md). `POST /api/recovery-codes/redemption` has no
     client route at all: nothing anywhere canonicalises a typed code or presents a verifier. The
     count is the one thing the settings screen reads.
   - **The show-once screen has a flow now, and it still mints nothing.**

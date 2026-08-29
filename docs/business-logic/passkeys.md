@@ -15,7 +15,11 @@
 
 This area covers **the four WebAuthn ceremonies**: creating an account with the passkey that will
 reach it, registering a further passkey to an account that already exists, signing in with one, and
-re-proving possession of one before an action too destructive to take on a live session alone.
+re-proving possession of one before an action too destructive to take on a live session alone. Each
+has an endpoint, a challenge pool and rules on both sides of the wire. **A ceremony the browser
+runs entirely by itself has none of those** — the local assertion an unlock spends is named in the
+gotchas below so that "four" is not read as "every ceremony a person can be asked for", and it is
+argued in [account-keys.md](account-keys.md), which owns what it produces.
 
 Two of the four paths that open a session run a ceremony here — an assertion, and the account
 registration whose own rules live in [registration.md](registration.md); the other two are in
@@ -672,6 +676,19 @@ derived from the challenge it just spent — [registration.md](registration.md) 
   **revoke** a passkey, the revocation gated by a fresh re-authentication exactly as erasure is.
   Nothing **replaces** a passkey, and nothing removes or replaces the **federated** credential —
   that is the email change, and it is not built.
+  - **The browser runs one more ceremony than the server has pools for, and it spends none of
+    them.** `deriveKeyFromLocalAssertion` on the same service is what the Account keys section of
+    `/app/settings` runs to unlock an account: it mints its own 32-byte challenge, asserts, throws
+    the signed response away and returns only the key-encryption key it derived. **No route is
+    called and no challenge row is written.** Both candidate pools were rejected rather than chosen
+    between: `authentication` is minted anonymously and would put an anonymous route under a screen
+    deep inside the app, and `reauthentication` exists to authorize **erasing the account**, so
+    every press of Unlock would leave a live erasure-authorizing nonce behind on behalf of an act
+    that destroys nothing. What makes the local ceremony sound is that nothing is being authorized:
+    the account's wrapped envelopes are the proof, and a factor that is not this account's opens
+    none of them — see [account-keys.md](account-keys.md). The day a server has to check a factor
+    from that screen — replacing a set of recovery codes is the case — it is a **different**
+    ceremony over a server's challenge, and this one may not grow into it.
 - **The exempt table scopes nothing, so the application is the only thing scoping access to it.**
   The discovery lookup is the one query allowed to read `passkey_public_keys` without naming an
   owner. Every other read must carry its own `where user_id = …`. Two call sites carry that filter:

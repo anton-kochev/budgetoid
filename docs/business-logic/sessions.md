@@ -499,8 +499,12 @@ required members. A third writer is a decision rather than a refactor.
     `anonymous`" — locking on `unreachable` would destroy both keys over one blinked request and
     demand a full WebAuthn ceremony to get them back, which is the failure the fourth state exists
     to prevent, reappearing one layer down. The mirror is that a session *beginning* says nothing
-    about which factor opened it, so `established()` unlocks nothing and the two flows that do know
-    hand the keys over themselves. See [account-keys.md](account-keys.md).
+    about which factor opened it, so `established()` unlocks nothing and the two establishing flows
+    that do know hand the keys over themselves. **Those two are no longer the only handers**, which
+    is the sharper reason `established()` cannot own this: the settings screen's Unlock hands custody
+    a key on a session that opened hours ago, so unlocking and establishing are not even the same
+    kind of event — one of them is invisible to every rule in this file. See
+    [account-keys.md](account-keys.md).
   - **The order at the end of an establishing flow is the requirement, not the tidiness.** The
     session is published **before** the navigation to `/app`; published after, the guard judges that
     address against a stale `anonymous` and bounces the person straight out of the account they have
@@ -757,7 +761,13 @@ ELSE                                                    ← an unenumerated futu
     file means throughout: a row a federated credential opened, a fact about what the *server* will
     answer. A **locked account** is that file's word for a browser that does not hold the content
     key, which is the state every tab starts in and which a page reload returns to, on a session
-    that is perfectly live. What a *factor* can open is the account keys' subject; **the session's
+    that is perfectly live. **The two are left by different acts, and that is the sharpest way to
+    keep them apart.** Nothing in the product leaves a *locked session* — no route establishes one,
+    so the gate over them is unreachable from any live surface. A *locked account* is left on
+    `/app/settings`, by the Account keys section's **Unlock**: a passkey ceremony the browser mints
+    and discards, which calls no route, spends no challenge and changes no row in `sessions`. So an
+    unlock is invisible to everything this file describes, and a sign-in is not the only way to
+    reach an opened account. What a *factor* can open is the account keys' subject; **the session's
     own lifetime is not custody's** — the keys end at a sign-out, at a `401` and at a page load, and
     only the first two of those are anything this file records.
 - **`user_isolation`** — the same policy `users`, `budgets`, `passkey_signature_counters` and

@@ -378,14 +378,25 @@ Load-bearing rules, each explained there or in the linked decision:
 - **`/app/settings` is reached from the shell navigation**, `ShellComponent`, a layout on the `app`
   route — **which routes carry a bar is a fact about the route table**, so `/welcome` and `/register`
   cannot draw one however a session status reads. Working today: the email from `GET /api/me`, the
-  export, **Sign out**, the credential list from `GET /api/me/credentials` and the recovery-code
-  count. Present and **disabled**: erasure, passkey registration, code generation. Rules the chapters
-  argue and a reader will undo:
+  export, **Sign out**, the credential list from `GET /api/me/credentials`, the recovery-code
+  count, and the **Account keys** section, whose Outline **Unlock** is the one way out of a locked
+  account: it runs a passkey ceremony the browser mints and **discards**, calling no route and
+  spending no challenge, and hands what it derived to `AccountKeyCustodyService`.
+  `AccountUnlockService` is provided **on the component** and injects neither `SessionService` nor
+  `Router` — which is what makes "a refused unlock changes nothing about the session" structural
+  rather than remembered. **A refused unlock must leave custody exactly as it found it**: a
+  `custody.lock()` on that branch passed an entire spec, and it costs somebody whose account is
+  already open both keys when they cancel a prompt. Present and **disabled**: erasure, passkey
+  registration, code generation. Rules the chapters argue and a reader will undo:
   **Home and Add are specified and not built**; the export writes the response bytes **unread**
   (`responseType: 'blob'`); the credential list shows **type and day only**, never an id or provider
-  subject; **two different reasons hold the disabled controls off and the screen says both** — do not
+  subject; **three different reasons hold the disabled controls off across four sites and the screen
+  says all three** — the account's keys *as bytes* under Register a passkey, those bytes **and** a
+  server-checked assertion under Generate recovery codes, a server-checked assertion under Revoke and
+  Erase — so do not
   paste one sentence over all of them, and do not "correct" the erasure copy into saying the browser
-  is incapable; **Revoke renders only on a row something can revoke**, carried per kind in a map
+  is incapable or that this screen asks for no passkey, because it now asks for one that no server
+  checks; **Revoke renders only on a row something can revoke**, carried per kind in a map
   declared exhaustive over `CredentialKind`; the day is formatted by `credential-registration-date.ts`
   and pluralisation is three template branches, never `DatePipe` or `I18nPluralPipe`, because nothing
   provides `LOCALE_ID`; the count has **six states and `null` is never `0`**; and
@@ -399,10 +410,19 @@ Load-bearing rules, each explained there or in the linked decision:
   is pure translation between the API's base64url JSON and the browser's `BufferSource` shapes, over
   the **strict** decoder in `base64url.ts` — a second, lenient decoder must never appear beside it.
   `+core/security/webauthn-ceremony.service.ts` is the injectable seam, for the reason
-  `FileDownloadService` is one: the platform it calls does not exist under the test runner. Six rules
-  it carries, each silent when broken. **The PRF output never crosses the module boundary** — both
-  legs derive through `keyEncryptionKeyFromPasskey`, return a non-extractable `CryptoKey` and
-  zero-fill the bytes. **The registration payload projects** `getClientExtensionResults()` into a
+  `FileDownloadService` is one: the platform it calls does not exist under the test runner. It runs
+  **three** ceremonies and sends two of them: the third, `deriveKeyFromLocalAssertion`, mints its own
+  challenge, is verified by nobody and is discarded where it stands — the account's own envelopes are
+  what judge the factor, so it spends **neither** the anonymous sign-in nonce pool nor the
+  re-authentication pool, the latter existing to authorize **erasing the account**. It takes no
+  parameters and returns a bare `CryptoKey`, both so that no caller can thread a server nonce in or
+  find anywhere to put a payload. Rules it carries, each silent when broken.
+  **The PRF output never crosses the module boundary** — every
+  leg derives through `keyEncryptionKeyFromPasskey`, returns a non-extractable `CryptoKey` and
+  zero-fills the bytes, and the bytes reaching that derivation are the **platform's own buffer**
+  rather than a copy of it: an implementation that copies, derives from the copy and wipes the
+  original leaves the account's key material on the heap for the life of the tab with every wipe
+  test still green. **The registration payload projects** `getClientExtensionResults()` into a
   fresh `{prf:{enabled}}` — never forwards, filters or spreads it, because that object carries the PRF
   output itself. **The claim's *value* is what the client established, not what `create()` reported**;
   the server gates on that word, so reporting `create()`'s alone refuses every authenticator that

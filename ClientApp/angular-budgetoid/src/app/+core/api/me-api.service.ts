@@ -225,10 +225,22 @@ export class MeApiService extends BaseApiService {
   // blocked on what custody keeps — two non-extractable `CryptoKey` objects
   // behind no accessor — while a wrap takes bytes. Getting bytes means
   // unwrapping again under a key-encryption key derived from a factor somebody
-  // presents, which is the same ceremony the other five members want and which
-  // `/app/settings` does not run. A method for it would be API surface no test
-  // could execute — a signature that compiles, is called by nothing, and is
-  // wrong in a way nothing on the screen would show.
+  // presents there and then, which is a ceremony — but not the one this route
+  // wants.
+  //
+  // **That distinction is what is left, and it is narrower than "the settings
+  // screen runs no ceremony".** It runs one: the **Unlock** control asserts a
+  // passkey. That assertion is minted in the browser, over a challenge the
+  // browser chose, and is discarded unsent — nothing verifies it and nothing
+  // needs to, because the account's own envelopes are what judge the factor.
+  // The five assertion members here are the other kind: a challenge the
+  // *server* issued and a signature it checks. To the person holding the device
+  // the two are one system prompt, and what they authorize is not comparable —
+  // one opens envelopes this browser is already entitled to, the other replaces
+  // the account's whole recovery card. So the ceremony this route needs is
+  // still one nothing on that screen runs, and a method for it would be API
+  // surface no test could execute — a signature that compiles, is called by
+  // nothing, and is wrong in a way nothing on the screen would show.
   public getRecoveryCodes(): Observable<number> {
     return this.get<unknown>('api/me/recovery-codes').pipe(
       map((body) => {

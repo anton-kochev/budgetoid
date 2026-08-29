@@ -36,14 +36,16 @@ brings into existence, and files them in the same save as the credential.
 `GET /api/me/account-keys` hands a signed-in browser back the envelopes of **every factor the account
 holds** — see [The one route that hands them back](#the-one-route-that-hands-them-back).
 
-**The circle is closed on two paths, and each closes it differently.** `register.service.ts` obtains
-a PRF output from a real authenticator, draws the account's keys, mints the set, derives eleven
-key-encryption keys and posts eleven pairs of envelopes, so an account created there really does own
-a content key and an index key that no server has seen — and on the `201` it hands the pair it
-already holds straight to custody, with no round trip. `sign-in.service.ts` takes the other route:
-the assertion's PRF branch gives it a key-encryption key, it hands that to custody, and custody
-reads the envelopes back and opens them. The other two write paths are still reached only by the
-integration suite.
+**The circle is closed on three paths, and each closes it differently.** `register.service.ts`
+obtains a PRF output from a real authenticator, draws the account's keys, mints the set, derives
+eleven key-encryption keys and posts eleven pairs of envelopes, so an account created there really
+does own a content key and an index key that no server has seen — and on the `201` it hands the pair
+it already holds straight to custody, with no round trip. `sign-in.service.ts` takes the second
+route: the assertion's PRF branch gives it a key-encryption key, it hands that to custody, and
+custody reads the envelopes back and opens them. `AccountUnlockService`, on `/app/settings`, takes
+the third and is the only one reachable **inside** the app — see
+[The third way into custody](#the-third-way-into-custody). The other two write paths are still
+reached only by the integration suite.
 
 **What is *not* built is anything that uses the keys.** Nothing in this product is encrypted, so no
 screen decrypts, no blind index is computed and no field is sealed. What exists is the **custody** —
@@ -83,7 +85,12 @@ would put the value that unwraps the account's whole keyspace into a variable an
   the primary key records: `credential_id` is an ordinary column and repeats ten times for a set.
 - **Locked account** — not a stored thing at all: an account whose **browser** does not hold the
   content key. Every tab starts in it, because nothing about the keys survives a page load, and
-  presenting a factor is what leaves it. **It is not a locked session**, which is a different word
+  presenting a factor is what leaves it. **There is one surface that asks for that factor from
+  inside the app**: the Account keys section on `/app/settings`, whose Unlock control runs a passkey
+  ceremony and hands what it derives to custody — see
+  [The third way into custody](#the-third-way-into-custody). The other two producers of a
+  key-encryption key sit behind `guestGuard`, so before that section the only exit was to sign out
+  and sign in again. **It is not a locked session**, which is a different word
   for a different thing: a locked session is one a federated credential opened, a fact about a row in
   `sessions` and about what the *server* will answer — see [sessions.md](sessions.md). A person on a
   full session whose tab was reloaded is signed in and their account is locked, which is the ordinary
@@ -233,7 +240,9 @@ erDiagram
     while every check in the product still passes, because nothing about a stored key looks wrong.
     A `BroadcastChannel` hand-off is weaker and still wrong for the same reason one step down: it
     unlocks a tab in which nobody presented anything. What is left is the property the design rests
-    on — **a page reload locks the account, and getting back in costs a ceremony.**
+    on — **a page reload locks the account, and getting back in costs a ceremony.** The Settings
+    screen's Unlock is where that ceremony is paid for, which is what keeps the property from being
+    a dead end rather than what softens it.
   - **Enforced in**: the absence, and the absence is all there is. Nothing in the client writes a
     key anywhere, and no test can prove a `BroadcastChannel` will not be added tomorrow. What
     narrows it is that `AccountKeyCustodyService` holds both keys on ECMAScript `#` fields with no
@@ -739,8 +748,10 @@ both directions.
 `AccountKeyCustodyService` in `+core/security/` is where the account's two keys live once a factor
 has opened them, and the one place in this client that holds them past the ceremony that produced
 them. It reports two things and returns nothing else: a three-word `status` — `locked`, `unlocking`,
-`unlocked` — and, when an attempt ended without custody, an `unlockFailure`. Six decisions are worth
-the words, and every one of them is silent when reversed.
+`unlocked` — and, when an attempt ended without custody, an `unlockFailure`. Each decision below is
+worth the words, and every one of them is silent when reversed. They are listed rather than counted:
+a count would have to be corrected by whoever adds the next caller, and the one thing this class
+must not acquire is a rule nobody re-read.
 
 **It is root-provided, and that breaks the habit of the two services beside it deliberately.**
 `RegisterService` and `SignInService` are provided on their screens, and that is right for them: an
@@ -754,8 +765,13 @@ answer: the keys would belong to the part of the route table that renders budget
 be dropped on the way out of it. What it actually does is hand their lifetime to the router.
 `guestGuard` bounces an authenticated visitor off `/welcome`, and that bounce destroys and recreates
 the `app` injector — so a back button, a bookmark or a stray redirect discards both keys and locks
-the account with **no ceremony on screen to unlock it again**. Nothing goes red. The only visible
-symptom is an account that was readable a moment ago and is not now. The cost of root-providing is
+the account. Nothing goes red. The only visible symptom is an account that was readable a moment ago
+and is not now. **The loss is recoverable and the shape is still wrong**, and the narrower claim is
+the one to hold: the Settings screen's Unlock control is a way back, so this is no longer a state
+with no exit from it — what is left is a person being sent to find their authenticator because of a
+navigation that had nothing to do with keys, on a lifetime no surface in the product explains and
+no test would notice moving. A cost that can be paid is not an argument for arranging to pay it. The
+cost of root-providing is
 that ending custody has to be a method rather than a lifetime, because an injector nobody destroys
 cannot forget anything on its own.
 
@@ -769,7 +785,19 @@ and is wrong twice: it fires on construction, so whether it wipes a set already 
 by injection order, and the only honest predicate it could carry is "lock on `anonymous`" — locking
 on `unreachable` destroys both keys over one blinked request and demands a full WebAuthn ceremony to
 get them back. `established()` deliberately clears nothing: a session beginning says nothing about
-which factor opened it, and the two paths that know hand the keys over themselves.
+which factor opened it, and the paths that know hand the keys over themselves.
+
+**A refused unlock leaves custody exactly as it found it, and no failure branch may call `lock()`.**
+Custody drops both keys the instant `unlock` starts, so an attempt that reached it and failed has
+already left the account locked and there is nothing for a caller to tidy up; an attempt refused
+*before* it reached custody — a cancelled system sheet, a browser with no WebAuthn, a device that
+derived nothing — dropped nothing and must drop nothing. This is not a hazard invented to be
+guarded against: an implementation that locked on the refusal branch passed its whole suite, and
+what it costs in front of a person is an **open** account destroyed by a press they cancelled, with
+every pixel on the screen looking correct and nothing on the server seeing it. The screen-side half
+of the rule — not drawing the control at all once the keys are held — is
+[components.md](../design/components.md)'s, and neither half substitutes for the other: the flow is
+a class, so it outlives the one section that decides whether to offer a press.
 
 **A key that will not open is not an authentication failure, and custody never calls anything on
 `SessionService`.** The dependency runs one way — the session class reaches for custody, custody
@@ -804,10 +832,15 @@ away from being undone by somebody reusing what was already there. The words dif
 read* — which is what keeps the two copies from being folded together later.
 
 **`unlock` returns `void`, and that is enforcement rather than a signature that happens to be
-convenient.** A `Promise<void>` is awaitable, and its caller is a sign-in: somebody would await it,
-a round trip would land on the path between a verified assertion and the app, and one refactor later
-that `await` grows a `catch` — at which point a key that did not open has become an authentication
-that failed. Unreturned, the attempt is observable only through `status` and `unlockFailure`, which
+convenient.** A `Promise<void>` is awaitable, and **both** its callers would be hurt by one being
+available. On the sign-in, somebody would await it, a round trip would land on the path between a
+verified assertion and the app, and one refactor later that `await` grows a `catch` — at which point
+a key that did not open has become an authentication that failed. On the Settings unlock the
+awaited version is even more tempting, because that flow has a screen to report to and would want
+custody's answer to arrive as a rejection it can catch; what it would get is a second, competing
+account of the same attempt beside the one `status` and `unlockFailure` already give, and no rule
+about which of the two the section renders. Unreturned, the attempt is observable only through
+`status` and `unlockFailure`, which
 are exactly the two facts a caller is entitled to. The key-encryption key is a **parameter and never
 a field** for the neighbouring reason: retained, this class could re-unlock with no factor presented
 at all, which destroys the property the whole design rests on.
@@ -835,6 +868,54 @@ now that the read spans the account. It hands back all eleven pairs, but the bro
 and the ten code pairs go untouched, which is precisely where the mispairing hazard the registration
 loop is built around lives.
 
+### The third way into custody
+
+`AccountUnlockService` is the only producer of a key-encryption key that a signed-in person can
+reach, and it exists because the other two cannot be reached at all from inside the app: the
+assertion on `/welcome` and the registration flow both sit behind `guestGuard`. It is provided
+**on the Settings component**, which is the `RegisterService`/`SignInService` argument unchanged —
+it holds an *attempt*, and an attempt abandoned on a screen should die with the screen. What the
+attempt produces is not held there: it goes to custody, which is root-provided because the keys are
+state of the session rather than of the screen.
+
+**It injects the ceremony and custody and nothing else**, and the absence is the structural half of
+a rule stated in prose above. With no `SessionService` and no `Router` in reach, "a refused unlock
+never signs anybody out" is not something the flow is trusted to remember — it is something the
+flow cannot do. Its five refusals (`unsupported`, `cancelled`, `no-prf`, `ceremony-failed`,
+`unknown`) are facts about a **device** and are deliberately disjoint from custody's three, which
+are facts about a **read** and a **factor**; neither union is derived from the other, and neither
+carries a member the other's outcome could be filed under. The screen renders them, and
+[components.md](../design/components.md) owns which sentence each one gets.
+
+**`WebauthnCeremonyService.deriveKeyFromLocalAssertion()` is a third ceremony that talks to no
+server.** It takes no parameters, mints its own 32-byte challenge, runs the assertion, discards
+every byte of what the authenticator signed and hands back a bare non-extractable `CryptoKey`. Both
+halves of that signature are enforcement rather than convenience: with no options object there is
+no member through which a caller could thread a server's nonce, and with no wrapper type there is
+no result object one member away from growing a payload to post. **Nothing verifies the assertion
+and nothing needs to** — the wrapped envelopes are the proof. Associated data binds every envelope
+to its own factor identifier, so a factor that is not this account's opens none of them; the
+question a server would be asked is answered by the cryptography, on the device, and there is no
+authorisation decision here for a forged ceremony to win. What comes back goes to `custody.unlock`
+in **one statement**, never named on a field, a signal or a local — the rule `SignInService` keeps
+about the same value, and the reason a second screen holding a key-encryption key costs nothing new.
+
+**Two server nonce pools were rejected, and both look tidier than minting a challenge locally.**
+`authentication` is minted by the **anonymous** sign-in options leg, so spending it here would make
+an anonymous route load-bearing for a screen deep inside the authenticated app — and every press
+would leave a live challenge in the pool that no request ever redeems. `reauthentication` is worse
+for the opposite reason: that pool exists to authorize **erasing the account**, so every press of
+Unlock would leave behind a live nonce good for the one irreversible act in the product, on behalf
+of an act that destroys nothing. The whole value of a re-authentication nonce is the distance
+between what it was minted for and what it can be spent on. See
+[passkeys.md](passkeys.md), which owns the pools.
+
+**The day something on the server does have to check a factor from this screen, that is a different
+ceremony with a server's challenge behind it.** Replacing a set of recovery codes is the case, and
+this ceremony may not grow into it — an options leg threaded through `deriveKeyFromLocalAssertion`
+would be a locally-minted challenge and a server's challenge answered by one code path, with
+nothing distinguishing the assertion that is thrown away from the one that authorizes a write.
+
 ### What the database can and cannot hold to account
 
 `wrapped_account_keys` refuses an envelope that is not 61 bytes and one whose leading byte is not
@@ -846,7 +927,8 @@ lives in the associated data.
 ## Workflows & State Transitions
 
 Steps 1–4 are the client module and step 7 is the browser holding what came out of it. The
-registration flow reaches 1, 2, 3 and 7; a passkey sign-in reaches 2, 4 and 7. Steps 5 and 6 are the
+registration flow reaches 1, 2, 3 and 7; a passkey sign-in reaches 2, 4 and 7, and an unlock on
+`/app/settings` reaches the same three from a ceremony no server issued. Steps 5 and 6 are the
 server: the three write routes refuse a request without step 5, and step 6 is the only way anything
 gets back out.
 
@@ -884,10 +966,14 @@ gets back out.
    [The one route that hands them back](#the-one-route-that-hands-them-back).
 
 7. **Holding them.** Both keys are imported through their own door and kept as `CryptoKey` objects
-   for the life of the document, on `AccountKeyCustodyService`. A sign-in reaches this through step
-   4; registration reaches it directly, by handing over the pair it drew. It ends at a sign-out, at
-   a `401`, and at a page load — **nothing about it is written anywhere a reload survives**. See
-   [The one class that holds them](#the-one-class-that-holds-them).
+   for the life of the document, on `AccountKeyCustodyService`. **Three paths arrive here.** A
+   sign-in reaches it through step 4. Registration reaches it directly, by handing over the pair it
+   drew. And the Settings screen's Unlock reaches it through step 4 as well, from a passkey ceremony
+   the browser mints and discards — the only one of the three that runs on a session that already
+   exists, and therefore the only one that can be run twice. It ends at a sign-out, at a `401`, and
+   at a page load — **nothing about it is written anywhere a reload survives**. See
+   [The one class that holds them](#the-one-class-that-holds-them) and
+   [The third way into custody](#the-third-way-into-custody).
 
 **Both registering paths validate the wrapped keys after the `prf` gate, and the ordering is a
 rule.** A client that cannot do PRF cannot have produced a wrapped key either, so those members are
@@ -958,8 +1044,11 @@ about why.
   the server. The verifier branch and this one are separated only by HKDF's `info`.
 - **`registration.md`** — the **third** write path, and the only one that writes eleven rows in one
   save. It is also where the passkey factor's identifier is compared against the set's ten.
-- **`passkeys.md`** — the ceremony that supplies the PRF output, and the three members registration
-  carries. The registration path refuses an authenticator that reports no enabled `prf` result; that
+- **`passkeys.md`** — the ceremonies that supply the PRF output, and the three members registration
+  carries. It owns the four server-side ceremonies and their nonce pools; the unlock ceremony is a
+  fifth that spends none of them, which is why the two candidate pools were rejected rather than
+  chosen between. The registration path refuses an authenticator that reports no enabled `prf`
+  result; that
   check is a product gate on an unverifiable claim, and a wrapped key is **not** the evidence that
   replaces it — the server cannot tell a key-encryption key derived through PRF from one derived out
   of a constant. What the wrapped keys buy is narrower and real: a factor holding no share of the
@@ -972,9 +1061,11 @@ about why.
   isolation tests, which do not become redundant beside it — an endpoint answering correctly says
   nothing about what the policy refused.
 - **[sessions.md](sessions.md)** — where custody begins and ends. A session opening does **not**
-  unlock an account: the two paths that know which factor was presented hand the keys over
-  themselves, and `SessionService.established()` clears nothing. A session *ending* does lock one,
-  from `ended()` and from nowhere else. That file also owns the word **locked session**, which is a
+  unlock an account: the paths that know which factor was presented hand the keys over themselves,
+  and `SessionService.established()` clears nothing. The third of those paths is not a session event
+  at all — an unlock on `/app/settings` calls no route, spends no challenge and changes no row, so
+  nothing that file describes can observe one. A session *ending* does lock an account, from
+  `ended()` and from nowhere else. That file also owns the word **locked session**, which is a
   different thing from the locked account defined under [Key Entities](#key-entities).
 
 ## Edge Cases & Known Gotchas
@@ -982,8 +1073,11 @@ about why.
 - **Every function in the module has a live caller, so "keep it, something is waiting" is not the
   reason to keep any of it.** `/register` reaches `generateAccountKeys`, `wrapAccountKeys`,
   `keyEncryptionKeyFromRecoveryCode` and both doors; the ceremony reaches
-  `keyEncryptionKeyFromPasskey` on both of its legs; and `unwrapAccountKeys` is called by
-  `AccountKeyCustodyService` on every passkey sign-in. What is still uncalled is anything that
+  `keyEncryptionKeyFromPasskey` on **all three** of its legs — `createPasskey`, `assertPasskey` and
+  the local `deriveKeyFromLocalAssertion` an unlock runs, none of which lets the PRF output out of
+  the module; and `unwrapAccountKeys` is called by `AccountKeyCustodyService` on every passkey
+  sign-in and on every unlock, which is the same call from two screens and not two
+  implementations of it. What is still uncalled is anything that
   **uses** an opened key — nothing seals a field and nothing computes an index, because nothing in
   this product is encrypted — which is why the two keys sit on `#` fields that no member of this
   client reads. Do not answer that by adding an accessor, and do not relax the server's demand for

@@ -33,14 +33,20 @@
 // passes the fact because it is the only caller that knows which of the two
 // routes produced the output.
 //
-// **Both members are reached now.** `register.service.ts` runs the creation
-// ceremony on the passkey step of the registration flow, and `sign-in.service.ts`
-// runs the assertion from the welcome screen. What still has no caller is a
-// *fresh* assertion taken to authorise something else — generating a
-// recovery-code set behind one is a later story. The spec remains the only place
-// the custody rules above can be observed at all: a non-extractable key has no
-// other witness, and "the bytes were cleared" is a claim about a buffer nobody
-// else can hold.
+// **Three ceremonies, and two of the three are sent.** `register.service.ts`
+// runs the creation ceremony on the passkey step of the registration flow, and
+// `sign-in.service.ts` runs the assertion from the welcome screen. The third,
+// `deriveKeyFromLocalAssertion`, is sent nowhere at all: it exists to make an
+// authenticator derive, so somebody whose page reloaded can unlock the account
+// without signing in again, and the account's own envelopes are what judge the
+// factor. What still has no caller is a fresh assertion taken to authorise
+// something *to the server* — generating a recovery-code set behind one is a
+// later story, and it is a different ceremony because the server has to verify
+// that one.
+//
+// The spec remains the only place the custody rules above can be observed at
+// all: a non-extractable key has no other witness, and "the bytes were cleared"
+// is a claim about a buffer nobody else can hold.
 //
 // It takes no `HttpClient` and no other dependency. That is structural rather
 // than tidy: a ceremony holding no way to reach the network cannot post the
@@ -295,6 +301,121 @@ export class WebauthnCeremonyService {
           keyEncryptionKey: await keyEncryptionKeyFrom(prfOutput),
         },
       };
+    } catch (error: unknown) {
+      if (isDomException(error, 'NotAllowedError')) {
+        return { ok: false, failure: 'cancelled' };
+      }
+
+      return { ok: false, failure: 'failed' };
+    }
+  }
+
+  /**
+   * Derives the account's key-encryption key from a ceremony **this client
+   * mints, runs and throws away**.
+   *
+   * This is how somebody unlocks a locked account without signing in again — a
+   * page reloaded, so the keys died with the document, but the session cookie
+   * is intact and there is nothing to re-authenticate. The assertion is not the
+   * point of it; the PRF output is. What the ceremony produced beyond that is
+   * dropped where it stands.
+   *
+   * **Nothing on the server verifies this and nothing needs to.** A reader will
+   * read that as a hole and reach for a server nonce: the challenge is the
+   * client's own, so this proves nothing to anybody. It is not meant to. **The
+   * account's wrapped envelopes are the proof** — a factor that is not this
+   * account's derives a key-encryption key that opens none of them, and a
+   * person who presents the wrong authenticator gets a key and no plaintext.
+   * There is no authorisation decision here for a forged ceremony to win.
+   *
+   * **It takes no parameters, and that is the enforcement rather than the
+   * convenience.** With no options object there is no member for a caller to
+   * thread a server nonce, a relying-party id, an `allowCredentials` list or a
+   * timeout through — so the three decisions below cannot be moved out of this
+   * file by anybody who has not first widened the signature on purpose.
+   *
+   * **It returns a bare {@link CryptoKey} and not a one-member interface**, for
+   * the same reason. `{ keyEncryptionKey }` is one member away from growing a
+   * `payload`, and the whole argument above is that there is nowhere to put
+   * one. {@link PasskeyRegistrationCeremony} and
+   * {@link PasskeyAssertionCeremony} carry a payload because their ceremonies
+   * are sent; this one's is not, so the generic is instantiated over the key
+   * itself.
+   *
+   * Five outcomes and no sixth. `duplicate` is unreachable — it is an
+   * `excludeCredentials` refusal, and an assertion carries no exclusion list —
+   * so there is no branch for it here and adding one would describe a state
+   * this method cannot be in.
+   */
+  public async deriveKeyFromLocalAssertion(): Promise<
+    PasskeyCeremonyResult<CryptoKey>
+  > {
+    if (!this.available()) {
+      return { ok: false, failure: 'unsupported' };
+    }
+
+    try {
+      const asserted = await navigator.credentials.get({
+        publicKey: {
+          // Three members, and each of the three absences below is a decision.
+          //
+          // Fresh, and from the platform's generator. Nothing verifies this
+          // value, which is exactly why a constant would survive review: no
+          // ceremony would fail and nothing would notice, right up until
+          // somebody decides an unlock is worth sending somewhere.
+          challenge: freshChallenge(),
+          // A literal, because there are no server options here to read it off.
+          // Omitted, WebAuthn's default is `'preferred'` and every device that
+          // can skip the gesture does — silently handing back the account's
+          // content key for a ceremony that established nobody.
+          userVerification: 'required',
+          // `eval`, never `evalByCredential`: that map is keyed on a credential
+          // id, and this leg holds no credential. The authenticator is what
+          // chooses which passkey answers.
+          extensions: { prf: { eval: { first: prfEvalInput() } } },
+          //
+          // **No `rpId`.** There is no relying-party id on the client to pass —
+          // `passkey-relying-party-id` is the server's, frozen at
+          // `budgetoid.app` — and a value invented here would be a second copy
+          // of it, wrong on the day the first one is read from a different
+          // environment. Omitted, the browser answers for the page it is on,
+          // which is the one source that cannot disagree with itself.
+          //
+          // **No `allowCredentials`.** A discoverable assertion, as the sign-in
+          // leg's is. The registration leg's local assertion names one because
+          // it holds a credential it made a moment ago and `evalByCredential`
+          // is refused without a list; this leg holds none, and a list built
+          // from anything it could reach for would narrow the ceremony to one
+          // credential the authenticator may not be offering.
+          //
+          // **No `timeout`.** The server owns that number on the other two
+          // legs, and a literal here would be a third copy of it, drifting
+          // against the two that are sent.
+        },
+      });
+
+      if (!(asserted instanceof PublicKeyCredential)) {
+        return { ok: false, failure: 'failed' };
+      }
+
+      // **No second route, deliberately, and this is the one place that
+      // differs from {@link createPasskey}.** That leg has two because
+      // `create()` is not an assertion and many authenticators derive only on
+      // the first one. This leg *is* an assertion, so a second would be the
+      // same ceremony run twice: a second system prompt, a second gesture from
+      // the person, and the answer already in hand at the end of it.
+      const prfOutput = prfOutputOf(asserted.getClientExtensionResults());
+
+      if (prfOutput === null) {
+        return { ok: false, failure: 'no-prf' };
+      }
+
+      // {@link keyEncryptionKeyFrom} and never `keyEncryptionKeyFromPasskey`
+      // directly: that one line is the `finally` that zero-fills the PRF
+      // output, so every path through this leg is covered by construction
+      // rather than by a wipe written out again here and forgotten on the
+      // rejecting branch.
+      return { ok: true, value: await keyEncryptionKeyFrom(prfOutput) };
     } catch (error: unknown) {
       if (isDomException(error, 'NotAllowedError')) {
         return { ok: false, failure: 'cancelled' };

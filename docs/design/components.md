@@ -372,44 +372,65 @@ list semantics — without it nobody hears "list, 2 items".
 **What ships today.** The list renders every kind the union carries, the recovery-code set's row
 included, and renders one it does not as **Sign-in method**, captioned **Added** and carrying no
 action. **Register a passkey** (below the list) and **Revoke** (on the revocable rows, which is the
-passkeys) are both Outline and **disabled**, and the section carries two sentences and not one. The
-browser's ability to run a ceremony is not what either of them waits on: this client creates a
-passkey on `/register` and asserts one on `/welcome`.
+passkeys) are both Outline and **disabled**, and the section carries two sentences and not one —
+three stand across the screen's four inert controls, because the recovery-codes section below no
+longer shares this one's words. The browser's ability to run a ceremony is not what any of them
+waits on: this client creates a passkey on `/register` and asserts one on `/welcome`.
 
-- **Register a passkey** waits on the account's keys. A passkey is a *factor*, every factor stores
-  its own wrapped copy of the account's content key and index key, and wrapping them needs those
-  keys as **bytes**. Its sentence names no specific action, because the recovery codes section below
-  is blocked by the same thing and says the same words:
+**The three sentences and the Account keys section shipped together**, and that was a scheduling
+rule rather than a preference: two of them name unlocking, and a screen carrying this wording with
+no Unlock on it would be naming a capability the reader cannot find — the same defect as the wording
+it replaced, one step removed. The rule outlives the commit, because the next narrowing of any of
+the three will be earned by a capability in exactly the same way.
 
-  > This gives a new way to sign in its own copy of your account's keys, and making that copy takes
-  > a passkey this screen doesn't ask for yet. The button stays off until it does.
+- **Register a passkey** waits on the account's keys **as bytes**, and on nothing else. A passkey
+  is a *factor*, every factor stores its own wrapped copy of the account's content key and index
+  key, and wrapping them takes the keys themselves rather than the ability to use them:
 
-  **The second clause says what is actually missing, and it is narrower than what it replaced.**
-  The retired sentence — *"and Budgetoid can't unlock those keys in the browser yet"* — was true
-  only while no route handed the wrapped keys back. `GET /api/me/account-keys` does, and
-  `AccountKeyCustodyService` opens both envelopes on every passkey sign-in, so a person who read it
-  was being told their browser could not do what it had just done one screen earlier. What is left:
-  custody holds the opened keys as non-extractable key objects behind no accessor, so reaching bytes
-  means unwrapping again under a key-encryption key derived from a factor presented *here* — a
-  ceremony this screen does not ask for, on top of the `create()` the new passkey needs.
+  > A new passkey needs its own copy of your account's keys, and unlocking lets this browser use
+  > those keys without ever getting hold of them. The button stays off until that copy can be made.
 
-  **Two sentences, and the boundary between them moved rather than dissolved.** All four inert
-  controls now end at the same clause — this screen asks for no passkey — so the split is no
-  longer *browser* against *screen*. It is what the passkey is **for**: on Revoke and Erase it
-  authorizes an act that cannot be taken back, here it opens the keys the new factor has to be
-  given a copy of. That is a different fact rather than a rephrasing, and it is the one that
-  answers *why can't I just add another way in* — the thing that would open the keys is exactly
-  what somebody who has lost their only passkey no longer has. Collapsing the two would take that
-  answer off the screen, so it is specified as two. Both the quote above and
-  `ACCOUNT_KEYS_PHRASES` in `settings.component.spec.ts` move with the template, in one commit.
+  **The clause naming what is missing has been narrowed twice, each time by a capability that
+  landed.** It first said Budgetoid could not unlock the keys in the browser, which stopped being
+  true when `GET /api/me/account-keys` and `AccountKeyCustodyService` arrived — a person reading it
+  was being told their browser could not do what it had just done one screen earlier. It then said
+  the copy takes *a passkey this screen doesn't ask for*, and that stops being true the moment the
+  Account keys section puts an **Unlock** on this screen. Left standing, the same sentence would
+  have committed the same defect twice, against a control the reader had just used.
 
-- **Revoke** waits on this screen. `POST /api/me/credentials/{id}/revocation` is live and the fresh
-  assertion that authorizes it is a ceremony this client runs; nothing here asks for one. That is
-  the erasure section's position, so it is said in the erasure section's words, plural for the
-  per-row buttons:
+  **What is left is the part no ceremony on this screen closes.** `unlock` takes the
+  key-encryption key as an **argument** and hands it to custody, which keeps what it opened as two
+  non-extractable `CryptoKey` objects behind no accessor. There is no route from anything the tab
+  is holding back to bytes: bytes come only from unwrapping again under a key-encryption key
+  **held long enough to wrap with**, and holding one that long is precisely what the unlock path
+  refuses to do — the key travels as an argument through one statement and is never named on a
+  field. So the sentence stops claiming a ceremony is missing and says what the ceremony does not
+  give.
 
-  > Revoking has to be confirmed with a passkey, and this screen doesn't ask for one yet. Those
-  > buttons stay off until it does.
+  **The sentence is no longer shared with the recovery-codes section, and the split is the
+  specification.** The two were word for word while one fact held both controls off. It no longer
+  does: registering a passkey waits on the bytes alone, while generating a set waits on the bytes
+  **and** on a passkey assertion the *server* checks — which the unlock ceremony deliberately is
+  not, its assertion being minted locally and discarded. Three sentences, three different missing
+  pieces: the bytes here, the bytes and a checked assertion under Recovery codes, a checked
+  assertion under Revoke and Erase. Pasting any one over another puts a sentence on the screen that
+  is true of a different control. The quotes and their phrase constants in
+  `settings.component.spec.ts` move with the template in one commit, and there are now two
+  constants where one served both sites.
+
+- **Revoke** waits on an assertion the server checks. `POST /api/me/credentials/{id}/revocation` is
+  live and the fresh assertion that authorizes it is a ceremony this client runs; what this screen
+  runs is not it. That is the erasure section's position, so it is said in the erasure section's
+  words, plural for the per-row buttons:
+
+  > Revoking has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn't
+  > ask for one yet. Those buttons stay off until it does.
+
+  **The qualifier is new and it is not decoration.** Without it the sentence says this screen asks
+  for no passkey at all, which the Account keys section makes false — somebody who has just watched
+  their authenticator answer an **Unlock** would read, two sections down, that this screen cannot
+  ask for what it asked for a moment ago. The erasure section carries the same sentence and takes
+  the same qualifier in the same commit, or the two come apart.
 
 Both sentences sit **above** the list rather than beside each button: per row, a screen reader would
 read the same explanation once per entry. The account-keys one is also **above the list** and not
@@ -426,9 +447,9 @@ of `body` carrying the count, and one button. Not a card, not a list, not a mete
 one thing is a sentence, and every component that would wrap it exists to group things there is more
 than one of.
 
-It sits on `/app/settings` **between Ways to sign in and Export**. Export and Erase are a pair — the
-alternative offered beside the destructive act, per [patterns](patterns.md) — and nothing goes
-between them.
+It sits on `/app/settings` **between Ways to sign in and Account keys**. Everything that is neither
+Export nor Erase arrives above them both: those two are a pair — the alternative offered beside the
+destructive act, per [patterns](patterns.md) — and nothing goes between them.
 
 - **Anatomy.** A settings section per the spec above: `<section aria-labelledby>`, `eyebrow` heading
   **Recovery codes**, `--bud-space-4` between heading and content, `--bud-space-7` to the next
@@ -555,22 +576,29 @@ the credential registration and revocation controls already use on this screen.
   on the screen, so there is nothing to tell it apart from. No count in the label.
 - **The sentence sits above the button as visible prose** — never a `title`, a tooltip, or an
   `aria-describedby` on the disabled element, all of which are read to nobody once the control has
-  left the tab order. It is **word for word** the sentence above the credential list, and that is
-  the specification rather than an accident: generating a set is ten factors at once — each code
-  derives its own key-encryption key — so it waits on precisely what registering a passkey waits on,
-  the account's content key and index key as bytes on this device. The sentence names no specific
-  action so that it can be true in both places:
+  left the tab order. It is **this section's own**, and no longer the credential list's:
 
-  > This gives a new way to sign in its own copy of your account's keys, and making that copy takes
-  > a passkey this screen doesn't ask for yet. The button stays off until it does.
+  > Ten new codes each need their own copy of your account's keys, and replacing a set also has to
+  > be confirmed with a passkey Budgetoid checks itself — not the one unlocking asks for, which
+  > never leaves this device. The button stays off until this screen asks for both.
 
-  **What the second clause names is the missing ceremony, not a missing capability** — the argument
-  is made once under *Register a passkey* in the credential-list chapter above and is not repeated
-  here. What does not change is that the two sites keep one sentence between them and move together.
+  **Two facts hold this control off and only one of them holds its neighbour off, which is why the
+  shared sentence had to end.** The first is common ground and is argued once in the credential-list
+  chapter above rather than twice: generating a set is ten factors at once — each code derives its
+  own key-encryption key — so it waits on the account's content key and index key **as bytes**
+  exactly as registering a passkey does, and the Account keys section below does not supply them.
+  The second belongs to this route alone: it is gated on a fresh assertion the **server** verifies,
+  and the unlock ceremony's assertion is minted in the browser and discarded, so a person can run
+  Unlock all afternoon without moving this control one step. One sentence covering both sites would
+  have to drop that clause, and the reader would be told two controls wait on the same thing when
+  one waits on strictly more.
 
-  It does **not** say the browser cannot run a passkey check. It can: `/register` creates a
-  credential and `/welcome` asserts one, and the assertion this route also demands is the half the
-  client already produces.
+  **The clause naming the second fact is what keeps the sentence true in front of the reader.** It
+  does not say the browser cannot run a passkey check — `/register` creates a credential and
+  `/welcome` asserts one — and, with the Account keys section immediately below, it may no longer
+  say this screen asks for no passkey either. It asks for one, in plain sight, a few lines further
+  down the page. What it says instead is which *kind* is missing, which is a fact about the route
+  rather than about the device.
 
 **What replaces this when generation lands**, so that nobody "completes" the section early: the
 sentence above goes, the button becomes live, and two things arrive with it that are deliberately
@@ -603,23 +631,356 @@ state, not an unfinished one, and *What replaces this when generation lands* abo
 arrives with the button — nothing here asks for it to be made live on its own. The client holds the
 generator that mints a code and derives its verifier from that code's canonical form, and the
 registration flow is its one caller; nothing on **this** screen calls it, and the API service has no
-member that posts a set. **The reason is no longer the assertion, and it is no longer the route
-either.** That route takes six members — five of a fresh WebAuthn assertion, which this client can
-produce, and ten whole code submissions, each carrying its own wrapped copy of the account's two
-keys. `GET /api/me/account-keys` hands the wrapped keys back and the browser opens them on every
-passkey sign-in, so the sentence this section used to carry — nothing hands the keys back to unwrap
-— stopped being true and has been rewritten at both sites. What is left is narrower and is what the
-shipped copy now says: the opened keys are held as non-extractable key objects behind no accessor, a
-wrap takes bytes, and getting bytes means unwrapping again under a factor presented on **this**
-screen, which asks for no ceremony. So this section waits on the ceremony Erase waits on, and needs
-one thing more from it — the key-encryption key that ceremony derives. Redeeming a code has no
-surface in the app at all.
+member that posts a set. **The route is not the obstacle and neither is the client's ability to run
+a ceremony.** That route takes six members — five of a fresh WebAuthn assertion, which this client
+plainly produces, and ten whole code submissions, each carrying its own wrapped copy of the
+account's two keys.
+
+**What this section waits on is two things, and the Account keys section below closes neither.**
+The first is the account's keys **as bytes**: `GET /api/me/account-keys` hands the envelopes back
+and the browser opens them, but what comes out is held as non-extractable key objects behind no
+accessor, and a wrap takes bytes. Reaching them means unwrapping again under a key-encryption key
+**held long enough to wrap with**, which is exactly what the unlock path refuses to do — it takes
+the key as an argument, hands it to custody in one statement and keeps no name for it. The second
+is a passkey assertion the **server** verifies. Unlock's is minted locally and thrown away, so it
+is not that assertion and cannot become it; that is a different ceremony, with a server's challenge
+behind it, and this control waits on it exactly as Erase does. Redeeming a code has no surface in
+the app at all.
 
 **The show-once surface exists and this section is not where it lives.** It is the last step of the
 registration flow below, and that flow drives it: somebody creating an account is shown ten codes
 once, and posts the account from that step. Nothing above changes: this section still shows no code
 and no part of one, and *What replaces this when generation lands* still describes what arrives
 **here** when the Settings path opens.
+
+## Account keys section
+
+The way back into a locked account, and the one section on this screen that asks the person's own
+device for anything. M3 base: **none** — two lines of prose, one `role="status"` region and one
+button, for the reason the recovery-codes section beside it has none: one act about one thing is a
+sentence, and every component that would wrap it exists to group things there is more than one of.
+
+It sits on `/app/settings` **between Recovery codes and Export**, on the placement rule the
+recovery-codes chapter above already argues and which is not restated here: Export and Erase are a
+pair, so nothing goes between them and everything else arrives above them.
+
+**A locked account is a browser holding no content key, and every tab starts in one.** Nothing
+about the account's keys survives a page load — a decision
+[account-keys.md](../business-logic/account-keys.md) argues at length, not an omission. It is
+**not** a locked *session*, which is a different word for a different thing: somebody on a full
+session whose tab was reloaded is signed in and their account is locked, which is the ordinary case
+rather than a corner. Everybody who reads this section is signed in already. What they are missing
+is a key, not a session, and no sentence in it may suggest otherwise.
+
+**This chapter specifies the act and not the state.** What a locked account *looks* like — which
+screens may draw budget content before the keys are held, and what stands in its place — belongs to
+the surfaces that draw that content and is specified nowhere yet. This section is what those
+surfaces will point at.
+
+### Why it is a section, and not a route or a banner
+
+**`/app/unlock` was rejected because it is an address anybody can open.** A route is reachable from
+the URL bar on an account that is already unlocked, so the chapter specifying it would have to say
+what an unlock screen shows when there is nothing left to unlock — a second design, for a state
+nobody navigates to on purpose, ending in a screen about nothing. A section inside a screen has no
+such problem: it renders what is true where the person already is, and its control is simply not
+drawn when there is nothing for it to do.
+
+**A permanent shell banner was rejected for the opposite reason.** Nothing in this product is
+encrypted, so a banner announcing a locked account would appear on every cold load in the product,
+above every screen, for a condition with no consequence behind it. A standing warning nobody can
+act on and nobody needs to is how a reader is taught to stop reading them — and the day it means
+something, it is furniture.
+
+### Honesty about today
+
+Nothing a person records is encrypted, so unlocking changes nothing they can see. The section says
+so plainly, in the register the **What we can read** section already uses on this screen — as a
+fact about the system, with no apology around it:
+
+> Your passkey holds the keys your records will be encrypted with. Budgetoid never sees them, and
+> this browser forgets them every time the page reloads.
+>
+> Nothing you record is encrypted yet, so unlocking changes nothing you can see today.
+
+A section implying budget content is hidden until you unlock would be describing a product that
+does not exist, and the reader would go looking for whatever unlocking had revealed.
+
+### Anatomy
+
+- A settings section per the spec above: `<section aria-labelledby>`, `eyebrow` heading **Account
+  keys**, `--bud-space-4` between heading and content, `--bud-space-7` to the next section, prose
+  capped at 65ch. One grid column, `justify-items: start`, `--bud-space-4` gap at every width — the
+  recovery-codes section's argument for a single column applies unchanged: one control, no rows,
+  and nothing for a second column to carry.
+- **One `role="status"` region, in the DOM from first paint and empty at rest**, carrying every
+  line this section says: both waits, all eight refusals, and the line saying the keys are held.
+  Why a region has to exist before it has content is argued in *A value read from the network*
+  above and again in the recovery-codes chapter, and is not argued a third time here. `status` and
+  never `alert`: the person asked for this, and assertive is reserved for a failure to save
+  something they typed.
+- **The line saying the keys are held is the region's last child and reserves one line box**
+  (`min-height: 1lh`), so nothing below it moves when an answer arrives — the label/value rule
+  applied to a value whose label is the section heading.
+- **There is no line saying the account is locked.** The Unlock control being on the screen is that
+  statement, and a sentence beside it would say the same thing twice: once in prose a reader has to
+  parse, once in a control they can press.
+
+### The Unlock control
+
+- **Outline** (`mat-stroked-button`), 48px target, visible label **Unlock**. Not Primary, and the
+  near miss is worth stating because a reader will propose it: a Primary *while locked* reads as
+  the obvious move. It is refused twice over. Export is this screen's one main action, and a screen
+  with two is a screen with none; and to anybody not tracking lock state — which is everybody,
+  since nothing on the page changes when it flips — a Primary that comes and goes is just two
+  Primary buttons on one screen. Under both sits the honesty rule: nothing is encrypted, so a
+  Primary here promises a consequence that does not exist.
+- **Not Destructive.** Nothing is lost either way, and the Destructive fill is a promise that a
+  confirmation follows.
+- **No composed accessible name.** It is the only Unlock on the screen, so there is nothing to tell
+  it apart from — the credential list composes its Revoke names precisely because there is one per
+  row.
+- **No sentence beside it saying what it waits on**, because it waits on nothing. Every other
+  control in this half of the screen is off and explains itself; this one is live, and the "not
+  built yet" pattern is for a control that refuses a press.
+- **While either half is running it takes `disabledInteractive` and `aria-busy="true"`** — the
+  Export control's treatment and the Export control's reason: a button that goes truly `disabled`
+  under the finger drops focus to `<body>`, and somebody who pressed Unlock from the keyboard loses
+  their place in the document at the moment the outcome is announced. `aria-busy` resolves to
+  `null` at rest rather than to `'false'`, so the attribute is absent instead of asserting that no
+  work is happening.
+- **The gate is in the flow as well as in the attribute.** Material's click-halt is applied to
+  anchors only, so on a `<button>` the DOM `disabled` property stays `false` and a second press
+  arrives — which here would raise a second system sheet over the first.
+- **It is not rendered at all once the keys are held.** That is the next rule, not a tidy-up.
+
+### The control leaves when there is nothing to unlock
+
+**A press on an already-unlocked account can only make things worse, so it is never offered.**
+Custody drops both keys the instant `unlock` starts — its own invariant is that "status is not
+`unlocked`" implies "this instance holds no key" at every moment, which is what stops it reporting
+a failure while still holding what it failed to replace. The consequence here is blunt: a press
+made on an open account and then refused at any point after the key was handed over leaves the
+account **locked**, having gained nothing. A control whose best outcome is no change and whose
+ordinary failure is a loss is not a control.
+
+**The refusal path is held separately, and the two rules cover different halves.** Not drawing the
+control closes the door on this screen. What holds the flow is that **a refused unlock leaves
+custody exactly as it found it**: a ceremony that produced no key never calls `unlock`, so nothing
+was dropped, and no failure branch may call `lock()` to tidy up after itself. That is not a hazard
+invented in advance to be guarded against. The flow is a class rather than a template branch, so
+the moment it is reached from a surface that does offer the control beside an open account — or in
+any window where a render has not caught up with custody — a `lock()` in the cancellation branch
+discards both keys, silently, with every pixel on the screen looking correct.
+
+### The six blocks, and the eleven lines inside them
+
+**Which block renders is `custody.status()`'s answer and only its.** Three values, three blocks,
+and nothing else is consulted to choose between them:
+
+- `unlocked` → the line saying the keys are held, and **no control**.
+- `unlocking` → *Opening your account…*, and the control held busy.
+- `locked` → the control, and at most one sentence.
+
+**`unlocking` is checked before the flow's own busy flag, and the order is the rule.** The two
+overlap on purpose: the flow hands custody the key *before* it clears `busy`, so that no frame
+exists in which both in-flight states are false and the section flashes back to its resting state
+with a second press available. Something has to break that tie, and it is not arbitrary which way.
+Once the key has been handed over the ceremony is finished, so the truer sentence is about the read
+that is running now rather than about the device that has already answered. Read the other way
+round, somebody watching a network request is told their passkey is still being waited on.
+
+**Two in-flight sentences and not one flag**, because they are two different moments and a person
+can act on the difference. *Waiting for your passkey.* is the system sheet — the thing to do is
+touch a sensor or pick a key up off the desk. *Opening your account…* is a request — the thing to
+do is wait, and the thing that can go wrong is the network.
+
+| State | Copy | Where it renders |
+| --- | --- | --- |
+| Locked, at rest | *nothing* | The region carries no sentence; the Unlock control is what says the account is locked |
+| Waiting for the device | "Waiting for your passkey." | Inside the region, `body` `--bud-text` |
+| Opening | "Opening your account…" | Inside the region, `body` `--bud-text` |
+| Keys held | "Your account is unlocked in this tab." | Inside the region, as its last child; no control is drawn |
+| `unsupported` | "This browser can't check a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can." | Inside the region, `--bud-over` |
+| `cancelled` | "The passkey check was cancelled. Nothing has changed — try again whenever you're ready." | Inside the region, `--bud-over` |
+| `no-prf` | "This device can't open your account's keys. Try the device that holds the passkey you made this account with." | Inside the region, `--bud-over` |
+| `ceremony-failed` | "Your device didn't finish the passkey check. Nothing has changed." | Inside the region, `--bud-over` |
+| `unknown` | "Budgetoid couldn't finish unlocking. Nothing has changed — try again." | Inside the region, `--bud-over` |
+| `unopened` | "Budgetoid couldn't open your account's keys with that passkey. If this account has another passkey, try again and choose that one." | Inside the region, `--bud-over` |
+| `unreachable` | "Budgetoid couldn't reach the server. Try again in a minute." | Inside the region, `--bud-over` |
+| `unauthenticated` | "Budgetoid wouldn't hand your keys back to this browser. Sign out and sign in again." | Inside the region, `--bud-over` |
+
+The copy is the specification, not an example of it.
+
+**The eight refusals come from two sources, and neither union is derived from the other.** The
+first five are `AccountUnlockService`'s and are facts about a *device*; the last three are
+`AccountKeyCustodyService`'s and are facts about a *read* and a *factor*. The flow's union
+deliberately carries no member a key that opened nothing could be filed under — `unknown` is a
+rejection out of a method whose contract is to answer with a result, and nothing else — so the two
+cannot be quietly merged by a reader looking for somewhere to put an eighth word.
+
+**The flow's failure wins, and custody's renders only when the flow reports none.** Both are
+readable at once, and the state that produces it is ordinary rather than contrived: press one is
+answered `unopened` — the envelopes were read and none opened — then press two is cancelled at the
+system sheet, which never reaches custody, so custody's answer from the previous press is still
+standing. Rendered together, the section gives two answers to one question and marks neither as the
+older. The precedence is what makes "at most one sentence" true by structure rather than by
+whichever template branch happens to be written first.
+
+**`duplicate` gets no member**, exactly as `SignInService` argues for the same union one screen
+over: it is an authenticator declining a credential named in an exclusion list, and an assertion
+carries no exclusion list to decline against. A sentence about one would describe something that
+did not happen.
+
+**"Waiting for your passkey." is not the registration step's "Waiting for your device."**, and the
+difference is not decoration. There the device is about to *make* something and the person is
+waiting on a machine. Here they are being asked for an object they already own, often for a
+specific one, and the sentence names the thing to go and find.
+
+**The control never changes its name and never leaves on a refusal**, which is where this section
+departs from the registration step deliberately. That step renames its Primary to **Try again** or
+replaces it, because four of its nine refusals are dead ends with somewhere else to go. This
+section has nowhere else: its one control is the way out of the state the section exists for, so
+removing it would leave an account locked with nothing on screen to change that. A second press is
+also a genuinely different attempt on most of these, because the authenticator rather than the
+screen chooses which credential answers. The one real dead end is `unsupported`, and its sentence
+carries the way out — a different browser — rather than the control doing it: a section with no
+control at all is a worse answer than a control whose sentence says not to press it.
+
+**Colour is never the message** — every refusal above reads the same with `--bud-over` removed.
+
+### Three custody failures, three next steps
+
+**They are three because a person's next move is three different things**, and collapsing any two
+sends somebody down a road that cannot help them. The rule is
+[account-keys.md](../business-logic/account-keys.md)'s; this section renders it rather than
+re-arguing it.
+
+- `unopened` — the envelopes were read and none opened under the factor presented. The way forward
+  is another way in.
+- `unreachable` — no usable answer came back at all. The way forward is the same press in a minute.
+- `unauthenticated` — the server *answered*, and the answer was that this browser may not read
+  these envelopes: a `401`, or the `403` the CSRF control gives. The way forward is neither of the
+  other two, because retrying cannot change it and no other factor can either.
+
+**The screen says "sign in again" and does not sign anybody out.** `AccountUnlockService` injects
+the ceremony and custody and **nothing else** — no `SessionService`, no `Router` — so the sentence
+is the whole of what it *can* do, and a collaborator census pins that: a third dependency reddens.
+The absence is the structural half of a rule custody states in prose. A section that navigated to
+`/welcome` on `unauthenticated` would be doing from a template exactly what the class refuses to do
+from its code, and would be doing it to somebody whose session may be perfectly live — a `403` is
+what the CSRF control answers a browser whose session is intact. **Sign out** is on this screen,
+several sections up, under the label the sentence names.
+
+**`unopened`'s sentence names only doors that exist.** Redeeming a recovery code has no surface
+anywhere in the product, so "another way in" can offer another passkey and nothing else — the
+registration chapter's rule about a sentence naming a door the screen does not have. It gains its
+second clause the day redemption lands, and not before.
+
+### The ceremony carries its own challenge, and the assertion is discarded
+
+**Nothing on the server verifies an unlock, and nothing needs to.** The wrapped envelopes are the
+proof. Associated data binds every envelope to its own factor identifier, so a factor that is not
+this account's opens none of them and one that is opens exactly its own: the question a server
+would be asked — *is this device one of this account's factors?* — is answered by the cryptography,
+on the device, in the only terms that matter. The keys come out, or they do not. There is no
+authorisation decision here for a forged ceremony to win.
+
+So `WebauthnCeremonyService.deriveKeyFromLocalAssertion()` mints its own 32-byte challenge from
+`crypto.getRandomValues`, runs the assertion and throws it away: the client data, the authenticator
+data and the signature go nowhere. **No server nonce is spent by an unlock.** It takes no
+parameters and hands back a bare `CryptoKey`, both of which are enforcement rather than
+convenience — with no options object there is no member through which a caller could thread a
+server nonce, and with no wrapper interface there is no `{ keyEncryptionKey }` one member away from
+growing a `payload`. The flow passes what comes back straight to `custody.unlock` in one statement,
+the rule `SignInService` keeps about the same value: never named on a field, a signal or a local.
+
+**The precedent is in this client already and is not being invented here.** The same module runs a
+discarded local assertion during registration — the second route to a PRF output, when `create()`
+returns none — and argues in place why replaying a *server's* challenge is the shape this mistake
+takes: an assertion signed over a value the server has already consumed, which nothing notices
+until the day somebody decides to send it.
+
+**Three members go into the options, and the three that are absent are as specified as the three
+that are present.** The challenge is the first. `userVerification: 'required'` is the second and is
+a literal because there are no server options here to read it off: omitted, WebAuthn's default is
+`'preferred'` and every device that can skip the gesture does, handing back the account's content
+key for a ceremony that established nobody. The `prf` extension is the third, keyed on `eval` and
+never `evalByCredential` — that map is keyed on a credential id and this leg holds none.
+
+- **No `rpId`.** There is no relying-party id on the client to pass; it is the server's, frozen at
+  the production hostname, and a value invented here would be a second copy of it, wrong on the day
+  the first is read from a different environment. Omitted, the browser answers for the page it is
+  on, which is the one source that cannot disagree with itself.
+- **No `allowCredentials`.** A discoverable assertion, as the sign-in leg's is: the authenticator
+  chooses which of the account's credentials answers, which is why custody tries every entry in
+  turn. This screen holds no credential identifier to name in a list in any case — the credential
+  list shows none by design and `GET /api/me/account-keys` returns none — and a list built from
+  anything it could reach for would narrow the ceremony to a credential the authenticator may not
+  be offering.
+- **No `timeout`.** The server owns that number on the other two legs, and a literal here would be
+  a third copy of it, drifting against the two that are sent.
+
+Two server routes were rejected, and both look tidier than minting a challenge:
+
+- **`POST /api/passkeys/assertion/options`**, the anonymous sign-in leg. It would make an anonymous
+  route load-bearing for a screen deep inside the authenticated app, and it would mint a nonce that
+  is **never spent** — one live challenge per press, sitting in a pool where nothing distinguishes
+  it from the ones a real sign-in is about to redeem.
+- **`POST /api/passkeys/reauthentication/options`**, the authenticated leg. That pool exists to
+  authorize **erasing the account** — `BeginReauthenticationHandler` says so in as many words — so
+  every press of Unlock would leave behind a live nonce good for the one act in this product that
+  cannot be undone, on behalf of an act that destroys nothing. The whole value of a
+  re-authentication nonce is the distance between what it was minted for and what it can be spent
+  on, and this would spend that distance for a convenience.
+
+**The day something on the server does have to check a factor here, that is a different ceremony.**
+Replacing a set of recovery codes is the case, and it carries a server's challenge behind it. It
+does not inherit this one and this one may not grow into it — which is exactly what the
+recovery-codes section's own copy says to the reader, in the sentence holding its Generate control
+off.
+
+### Accessibility
+
+Heading level `h2` under the screen's one `h1`; no level skipped. One `role="status"` region,
+polite, in the DOM from first paint and empty at rest, never `assertive`. The Unlock control is a
+48px target, keeps its place in the tab order while busy (`disabledInteractive` with
+`aria-busy="true"`, the Buttons chapter's busy case), and its visible label is the whole of its
+accessible name. Nothing is communicated by colour alone — every refusal in the table reads the
+same with `--bud-over` removed. No line in this section is hung on the control by a `title`, a
+tooltip or an `aria-describedby`: the prose is prose, in reading order, above the control it
+belongs to.
+
+### What ships today
+
+**The section is on `/app/settings`, in its specified place between Recovery codes and Export, and
+everything above renders as written** — the three blocks, the eleven lines, the one `role="status"`
+region and the control that leaves when the keys are held. `AccountKeyCustodyService` holds the
+account's keys and publishes the three failure words;
+`WebauthnCeremonyService.deriveKeyFromLocalAssertion()` mints the challenge, runs the assertion and
+returns the key; `AccountUnlockService` joins the two, provided on the Settings component rather
+than at the root — it holds an *attempt*, and an attempt abandoned on a screen should die with the
+screen, which is `RegisterService`'s and `SignInService`'s argument unchanged. What the attempt
+produces is not held there at all: it goes to custody, which is root-provided because the keys are
+state of the session.
+
+**A reloaded tab is now recoverable from inside the account rather than by leaving it.** The two
+other producers of a key-encryption key — the assertion on `/welcome` and the registration flow —
+sit behind `guestGuard`, which turns an authenticated visitor away, so until this section existed
+somebody whose tab reloaded had to sign out and sign back in to get their own keys back. That exit
+is still on the screen and is no longer the only one.
+
+**The flow carries no `available()` check of its own, and the omission is deliberate**, so nobody
+adds one back for symmetry with `SignInService`. That check exists there because a challenge is a
+nonce the server persisted and a browser that was never going to finish must not spend one. This
+flow spends nothing — no options leg, no nonce, no round trip before the ceremony — so there is
+nothing an earlier check could save, and the ceremony already answers `unsupported` for itself.
+A copy would be a second enforcement with no observable difference, which
+[ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) refuses.
+
+**Nothing is encrypted, so being locked costs nothing anybody can see**, which is what makes this a
+section rather than a screen standing in front of the app — and what the copy above has to keep
+saying for exactly as long as it stays true.
 
 ## The welcome screen
 

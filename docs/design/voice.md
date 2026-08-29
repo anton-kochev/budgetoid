@@ -72,16 +72,23 @@ figures, not to copy that could just say the number).
 - **Errors**: what happened + what to do: "Couldn't save — you're offline. It will
   retry." Never blame the person; the subject of an error sentence is the system.
 - **Not built yet**: name the missing piece and what it waits on, in the same breath as
-  the control it disables: "Erasing has to be confirmed with a passkey, and this screen
-  doesn't ask for one yet. The button stays off until it does." A disabled control
+  the control it disables: "Erasing has to be confirmed with a passkey Budgetoid checks
+  itself, and this screen doesn't ask for one yet. The button stays off until it does."
+  A disabled control
   with no sentence beside it reads as a bug, and the person cannot tell a limitation from
   a failure.
-- **Name the piece that is actually missing.** The sentence above once said Budgetoid
-  couldn't register passkeys, and it went on saying it after the browser started
-  registering them — a screen telling a person it cannot do what it did on the way in.
-  Two controls blocked by two different things get two sentences: one sentence pasted
-  across a screen replaces an old falsehood with a new one, and reads as an apology
-  nobody wrote for this control.
+- **Name the piece that is actually missing, and re-check it every time a capability
+  lands.** The sentence above once said Budgetoid couldn't register passkeys, and it went
+  on saying it after the browser started registering them — a screen telling a person it
+  cannot do what it did on the way in. It then said this screen asks for no passkey, which
+  the Settings screen's own Unlock control made false in turn; the qualifier *Budgetoid
+  checks itself* is what survives, because the assertion an unlock runs is minted in the
+  browser and thrown away, and the one erasure waits on is verified by the server. Each
+  correction is narrower than the one before, which is the shape this rule produces when it
+  is applied rather than admired.
+- **Controls blocked by different things get different sentences** — three of them on that
+  screen today. One sentence pasted across several replaces an old falsehood with a new one,
+  and reads as an apology nobody wrote for this control.
 
 ## A secret shown once
 

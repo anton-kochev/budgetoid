@@ -25,9 +25,12 @@
 // bounces an authenticated visitor off `/welcome`, and that bounce destroys and
 // recreates the `app` injector — so a person who lands on `/welcome` by a back
 // button, a bookmark or a redirect loses both keys, silently, and the account
-// locks with no ceremony on screen to unlock it again. Nothing goes red. The
-// only visible symptom is an account that was readable a moment ago and is not
-// now.
+// locks. Nothing goes red. The visible symptom is an account that was readable
+// a moment ago and is not now, and the price of getting back in is a factor
+// presented all over again. The settings screen's **Unlock** is a way out of
+// that state and not a reason to tolerate it: it raises a system prompt in
+// front of somebody whose only act was to press Back, and the screen can give
+// no reason for asking, because nothing about the navigation was a refusal.
 //
 // **Ending custody is `lock()`, and it is a method rather than a lifetime**,
 // which is the trade root-providing makes: an injector nobody destroys cannot
@@ -165,14 +168,22 @@ export class AccountKeyCustodyService {
    * Reads this session's wrapped keys and opens them under `keyEncryptionKey`.
    *
    * **It returns `void`, and that is enforcement rather than a signature that
-   * happens to be convenient.** A `Promise<void>` is awaitable, and the caller
-   * this will have is a sign-in: somebody would await it, and a round trip would
-   * land on the path between a verified assertion and the app. One refactor
-   * later that `await` grows a `catch`, and a key that did not open becomes an
-   * authentication that failed — which must never happen, because only
-   * `anonymous` may bounce anybody out of an account. Unreturned, the attempt
-   * can only be observed through {@link status} and {@link unlockFailure}, which
-   * are exactly the two facts a caller is entitled to.
+   * happens to be convenient.** A `Promise<void>` is awaitable, and every caller
+   * has an obvious place to put the `await`: each of them arrives here straight
+   * out of a ceremony an authenticator has just agreed to, with a screen to move
+   * on to. So the round trip would land between a factor that worked and
+   * whatever follows it, and one refactor later that `await` grows a `catch` —
+   * at which point a key that did not open has become a ceremony that failed.
+   * On the way into the account that reads as an authentication failure, which
+   * must never happen, because only `anonymous` may bounce anybody out of an
+   * account. On a screen inside the account it reads as a device that did not
+   * work, and sends somebody off to retry an authenticator that was never the
+   * problem. A caller beyond the first strengthens that argument rather than
+   * weakening it: the rule has to hold at every call site, and the only way to
+   * hold it at all of them is to leave nothing there to await. Unreturned, the
+   * attempt can only be observed through {@link status} and
+   * {@link unlockFailure}, which are exactly the two facts a caller is entitled
+   * to.
    *
    * The key-encryption key is a **parameter and never a field**. Retained, this
    * service could re-unlock with no factor presented at all, which destroys the

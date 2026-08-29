@@ -117,40 +117,56 @@ The product publicly promises: the user only and always owns their data.
   smallest act that clears the block — remove the transactions holding the account, not
   everything the user owns: "This account has transactions. Delete them first."
 
-**Today's Settings screen** is `/app/settings`. It has no entry in the bottom bar or the
-rail and is reached by typing the URL — a later epic gives it one. It renders the account's
+**Today's Settings screen** is `/app/settings`, and it is a destination: the shell draws it in
+the bottom bar and the rail beside Transactions, Accounts and Categories, per
+[components](components.md). It renders the account's
 email address, a working Export that saves the server's response bytes unread, a working
 **Sign out**, and an Erase control that is present and **disabled** because *this screen* does
-not ask for the fresh passkey assertion erasure is confirmed with. The browser is not
-incapable of one — `/welcome` runs an assertion — and the copy must not say it is. It states
+not ask for the fresh passkey assertion erasure is confirmed with — the kind Budgetoid's own
+server checks, which is the clause the copy has to carry now that the screen asks for a
+passkey of another kind. The browser is not
+incapable of one — `/welcome` runs an assertion, and the Account keys section below asks for
+one on this very screen — and the copy must not say it is. It states
 in plain words what the operator can read, and that erased rows survive in point-in-time
 backups for up to seven days.
 
 It also lists **every way of signing in** — each entry its type in words and the day behind
 it, and nothing more. A recovery-code set is one of those entries, because redeeming a code
 opens a full session the way the other kinds do. Registering and revoking are present and
-**disabled**, and the section carries two sentences rather than one. Registering a passkey would
-give a new factor its own wrapped copy of the account's keys, and wrapping takes those keys as
-bytes; revoking waits on this screen asking for an assertion, exactly as erasure does. **Both
-sentences now end at the same clause and the split survives on a different distinction.**
-`GET /api/me/account-keys` hands the envelopes back and the browser opens them on every passkey
-sign-in, so the registration sentence no longer claims Budgetoid cannot unlock them — it says that
-making the new copy takes a passkey this screen does not ask for. The opened keys are held as
-non-extractable key objects behind no accessor, so reaching bytes means unwrapping again under a
-factor presented here. What keeps the two sentences apart is what the passkey is for: authorizing
-an act that cannot be undone, against opening the keys a new factor must be given a copy of — the
-fact that explains why an account whose only passkey is gone cannot add another. Each sentence sits
+**disabled**, and the section carries two sentences rather than one. **Three sentences now stand
+across the screen's four inert controls, and each names a different missing piece.** Registering a
+passkey waits on the account's keys **as bytes**: a new factor stores its own wrapped copy, and
+wrapping takes the keys themselves. Generating a set waits on those bytes **and** on an assertion
+Budgetoid's server checks. Revoking and erasing wait on that checked assertion alone. Pasting any
+one of the three over another puts a sentence on the screen that is true of a different control.
+
+**What no sentence may say any more is that this screen asks for no passkey.** The Account keys
+section asks for one, in plain sight, so the two that turn on an assertion say which *kind* is
+missing — one the server checks, rather than the locally minted and discarded ceremony an unlock
+runs. The registration sentence turns on nothing of the sort: `GET /api/me/account-keys` hands the
+envelopes back and the browser opens them, but what comes out is held as non-extractable key
+objects behind no accessor, and reaching bytes means unwrapping again under a key-encryption key
+held long enough to wrap with — which the unlock path deliberately never does. That is the fact
+explaining why an account whose only passkey is gone cannot add another. Each sentence sits
 above the list rather than beside each row, so a screen reader hears it once
 instead of once per entry. An entry nothing can ever revoke carries no button at all, not even
 a disabled one.
 
-Between that list and Export sits **Recovery codes**, which says how many are left and
+Below that list sits **Recovery codes**, which says how many are left and
 nothing more — no code, no part of one, no identifier, no date. It reads and never writes:
-its Generate control is present and **disabled** on the account-keys argument word for word,
-a set being ten factors that each wrap those keys — and it carries that argument's sentence with
-it, so the two sites are always rewritten together. Generating a set **from here** and redeeming
+its Generate control is present and **disabled**, and it now carries a sentence of its own rather
+than the credential list's, because two facts hold it off where one holds its neighbour off — a
+set being ten factors that each wrap those keys, on a route gated by an assertion the server
+verifies. Generating a set **from here** and redeeming
 one are unbuilt, as are key rotation, the email-change action and the erasure confirmation
 dialog. Showing a set once is built and lives elsewhere — the last
-step of registration, where the account's first set is issued. The section sits there and
-nowhere else because Export and Erase are a pair and nothing goes between them. The bullets
-above stay as written because they are the target, not a description of what shipped.
+step of registration, where the account's first set is issued.
+
+Below Recovery codes and above Export sits **Account keys**, which is specified in
+[components](components.md) and **not built**: one Outline **Unlock** running a passkey ceremony
+the browser mints and discards, so that a person whose tab reloaded gets their keys back without
+leaving the account. Until it lands, the only exit from a locked account is **Sign out** and
+signing in again, because both producers of a key-encryption key sit behind the guard that turns
+an authenticated visitor away. Nothing between the two is by accident:
+Export and Erase are a pair, so nothing goes between *them* and everything else arrives above. The
+bullets above stay as written because they are the target, not a description of what shipped.

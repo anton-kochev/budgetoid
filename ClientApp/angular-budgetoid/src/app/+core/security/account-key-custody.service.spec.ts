@@ -367,12 +367,14 @@ describe('AccountKeyCustodyService', () => {
 
     // Assert
     // **`void`, and it is enforcement rather than a signature that happens to be
-    // convenient.** A `Promise<void>` is awaitable, and the caller this will
-    // have is a sign-in: somebody would await it, and a round trip would land on
-    // the path between a verified assertion and the app. One refactor later that
-    // `await` grows a `catch`, and a key that did not open becomes an
-    // authentication that failed — which must never happen, because only
-    // `anonymous` may bounce anybody out of an account.
+    // convenient.** A `Promise<void>` is awaitable, and every caller has an
+    // obvious place to put the `await` — each arrives here straight out of a
+    // ceremony an authenticator has just agreed to, with a screen to move on to.
+    // One refactor later that `await` grows a `catch`, and a key that did not
+    // open becomes a ceremony that failed: on the way into the account an
+    // authentication failure, which must never happen because only `anonymous`
+    // may bounce anybody out of an account, and on a screen inside the account a
+    // device blamed for something it did not do.
     //
     // Both readings, because they fail on different widenings. `undefined` is
     // false for a `Promise`; the second is false for anything thenable at all,
@@ -655,9 +657,10 @@ describe('AccountKeyCustodyService', () => {
   // literally "whatever injector asks" — and what it does is give every lazily
   // loaded part of the route table its own custody. A person unlocks the
   // account on `/welcome`, walks into `/app`, and the screen there asks an
-  // instance that has never held a key. Nothing goes red; the only symptom is
-  // an account that was readable a moment ago and is not now, with no ceremony
-  // on screen to open it again.
+  // instance that has never held a key. Nothing goes red; the symptom is an
+  // account that was readable a moment ago and is not now, and a factor to
+  // present all over again to get it back — on a screen that can give no reason
+  // for asking.
   //
   // The same word is what makes route-providing on `app` wrong, which this
   // class's header argues at length. This is that argument made executable.

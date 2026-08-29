@@ -20,8 +20,9 @@
 // created, so a set can be issued only on the way in; the Generate control on
 // `/app/settings` is present and disabled. The reason is not that the browser
 // is incapable of the ceremony — it runs both halves through
-// `webauthn-ceremony.service.ts`, `create()` on `/register` and `get()` on
-// `/welcome`. Issuing a set is **ten new factors**, and each stores its own
+// `webauthn-ceremony.service.ts`: `create()` on `/register`, and `get()` on
+// `/welcome` and on the settings screen itself. Issuing a set is **ten new
+// factors**, and each stores its own
 // wrapped copy of the account's content key and index key, so issuing one means
 // wrapping those keys — which needs them as *bytes*.
 //
@@ -31,9 +32,13 @@
 // member returns one, and neither carries `wrapKey` among its usages — so the
 // bytes a wrap needs can only come from unwrapping again, under a
 // key-encryption key derived from a factor the person presents there and then.
-// That is a ceremony `/app/settings` does not run, which is also what leaves it
-// without the fresh assertion the route's other five members want. So the
-// blocker is that screen, not the server and not this module. What follows is
+// The screen does ask for a factor now — the **Unlock** control on the Account
+// keys section — and it is the wrong ceremony twice over: what it produces goes
+// to custody, which keeps `CryptoKey` objects and hands back no bytes, and the
+// assertion behind it is minted in the browser and discarded unsent, where the
+// route's other five members want one the server issued a challenge for and
+// checks the signature of. So the blocker is still that screen, not the server
+// and not this module. What follows is
 // unchanged: somebody who spends their card cannot yet mint another, which is
 // the cost `register.service.ts` weighs when it refuses to read a lost answer as
 // a refusal.

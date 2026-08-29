@@ -274,9 +274,10 @@ describe('SessionService', () => {
   // lands either immediately before that hand-over — bumping the generation, so
   // an unlock already in flight resolves into a world that has moved and drops
   // what it opened — or immediately after it, destroying the adopted pair
-  // outright. Both leave a signed-in person locked out of their own content
-  // with no ceremony on screen to open it again, and neither reddens anything
-  // that exists without this test.
+  // outright. Both leave a signed-in person locked out of their own content the
+  // instant they were let into it, with nothing on screen saying why and a
+  // factor to present all over again before anything is readable — and neither
+  // reddens anything that exists without this test.
   it('keeps the account keys when a session is established', async () => {
     // Arrange
     api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));

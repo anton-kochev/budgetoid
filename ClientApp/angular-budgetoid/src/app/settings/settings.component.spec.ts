@@ -12,6 +12,12 @@ import {
   type CredentialSummary,
   type MeDto,
 } from '@app-core/api/me-api.service';
+import {
+  AccountKeyCustodyService,
+  type AccountKeyStatus,
+  type UnlockFailure,
+} from '@app-core/security/account-key-custody.service';
+import { WebauthnCeremonyService } from '@app-core/security/webauthn-ceremony.service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import {
@@ -20,6 +26,10 @@ import {
 } from '@app-core/session/session.service';
 import { of, throwError, type Observable } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  AccountUnlockService,
+  type UnlockCeremonyFailure,
+} from './account-unlock.service';
 import { credentialRegistrationDate } from './credential-registration-date';
 import { SettingsComponent } from './settings.component';
 import { SettingsService, type ExportFailure } from './settings.service';
@@ -34,70 +44,90 @@ const ERASE_BUTTON = 'Erase everything';
 const EXPORT_BUTTON = 'Export';
 const BACKUP_WINDOW =
   'Erased data stays in point-in-time database backups for up to 7 days, and in no other place.';
-// The two sentences this screen uses to explain a control it cannot offer yet,
-// in the shape `voice.md`'s "not built yet" pattern sets: name the missing
-// piece and what it waits on, in the same breath as the control it disables.
-// Declared here so the component author has one place to copy from.
+// The sentences this screen uses to explain a control it cannot offer yet, in
+// the shape `voice.md`'s "not built yet" pattern sets: name the missing piece
+// and what it waits on, in the same breath as the control it disables. Declared
+// here so the component author has one place to copy from.
 //
-// **Two, not one, and the difference is the whole point.** Three controls on
-// this screen used to say the browser cannot run a passkey ceremony. It can:
-// `/register` creates one and `/welcome` asserts one, so every copy of that
-// sentence was telling a person their browser cannot do something it just did.
-// The four disabled controls are still not blocked by the same thing:
+// **Four sites, and no two of them wait on the same thing.** The screen's
+// disabled controls used to say the browser cannot run a passkey ceremony. It
+// can: `/register` creates one and `/welcome` asserts one. Then they said the
+// copy takes a passkey *this screen* does not ask for — and the Account keys
+// section puts an **Unlock** on this very screen, so that clause has become the
+// same defect one step removed, against a control the reader has just used.
+// What is left is three different missing pieces:
 //
-//   - **Register a passkey** and **Generate recovery codes** each have to hand
-//     a *new factor* its own wrapped copy of the account's content key and
-//     index key, and wrapping takes those keys as **bytes**. Unlocking them is
-//     no longer what is missing: `GET /api/me/account-keys` hands the envelopes
-//     back and `AccountKeyCustodyService` opens both on every passkey sign-in,
-//     one screen earlier. What custody holds afterwards is two non-extractable
-//     `CryptoKey` objects behind no accessor, so there is no route back to
-//     bytes from anything this tab is holding. Bytes come from unwrapping
-//     again, under a key-encryption key derived from a factor the person
-//     presents *here* — and this screen asks for no ceremony, so there is no
-//     such key.
-//   - **Erase everything** and the per-row **Revoke** wait on this screen too.
-//     `POST /api/me/erasure` and
-//     `POST /api/me/credentials/{id}/revocation` both exist, and the assertion
-//     that authorizes them is a ceremony this client runs. They are simply not
-//     wired here, and the destructive act still needs the confirmation flow
-//     `components.md` specifies.
+//   - **Register a passkey** waits on the account's keys **as bytes**, and on
+//     nothing else. A passkey is a factor, every factor stores its own wrapped
+//     copy of the content key and the index key, and wrapping takes the keys
+//     themselves rather than the ability to use them. Unlocking does not supply
+//     them: `unlock` takes the key-encryption key as an argument and hands it
+//     to custody in one statement, and custody keeps what it opened as two
+//     non-extractable `CryptoKey` objects behind no accessor. Bytes would mean
+//     unwrapping again under a key-encryption key *held long enough to wrap
+//     with*, which is exactly what the unlock path refuses to do.
+//   - **Generate recovery codes** waits on those bytes **and** on a passkey
+//     assertion the *server* checks. A set is ten factors at once, so the first
+//     half is common ground; the second belongs to that route alone, and the
+//     unlock ceremony's assertion is minted in the browser and discarded, so a
+//     person can press Unlock all afternoon without moving this control.
+//   - **Revoke** and **Erase everything** wait on that checked assertion alone.
+//     `POST /api/me/credentials/{id}/revocation` and `POST /api/me/erasure` are
+//     both live and nothing about deleting rows needs a key unwrapped.
 //
-// **Both pairs now end at the same place — a passkey this screen does not ask
-// for — and the two sentences still differ in what the passkey is *for*.** In
-// Revoke and Erase it authorizes an act that cannot be taken back; in Register
-// and Generate it opens the keys the new factor has to be given a copy of. That
-// is a different fact rather than a rephrasing, and it is the one that answers
-// "why can't I just add another way in": the thing that would open the keys is
-// the thing a person who has lost their only passkey no longer has. One
-// sentence pasted over all the sites would stop the screen saying it, which is
-// what the tests below are shaped to refuse.
-const ACCOUNT_KEYS_EXPLANATION =
-  'This gives a new way to sign in its own copy of your account’s keys, and making that copy takes a passkey this screen doesn’t ask for yet. The button stays off until it does.';
+// Pasting any one of these over another puts a sentence on the screen that is
+// true of a different control, and the tests below are shaped to refuse it.
+// Revoke's and Erase's differ only in number — there is one Erase and one
+// Revoke per row — and they are still two strings, which is why the census
+// below runs over four and not three.
+const REGISTRATION_EXPLANATION =
+  'A new passkey needs its own copy of your account’s keys, and unlocking lets this browser use those keys without ever getting hold of them. The button stays off until that copy can be made.';
+const GENERATION_EXPLANATION =
+  'Ten new codes each need their own copy of your account’s keys, and replacing a set also has to be confirmed with a passkey Budgetoid checks itself — not the one unlocking asks for, which never leaves this device. The button stays off until this screen asks for both.';
+const REVOCATION_EXPLANATION =
+  'Revoking has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn’t ask for one yet. Those buttons stay off until it does.';
 const ERASURE_EXPLANATION =
-  'Erasing has to be confirmed with a passkey, and this screen doesn’t ask for one yet. The button stays off until it does.';
+  'Erasing has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn’t ask for one yet. The button stays off until it does.';
 
 // The load-bearing halves of each, and not every word. The wording above is a
 // starting point somebody may improve; a version that drops any of these says
-// something else. Each is free of punctuation a template author would
-// reasonably write as an entity, so it is matched against what the browser
-// renders rather than against what the file happens to contain.
-const ACCOUNT_KEYS_PHRASES = [
+// something else. Matched against what the browser renders rather than against
+// what the file happens to contain, so a template writing `&rsquo;` for `’` is
+// the same string here.
+//
+// **Two lists where there was one**, because the two sites no longer share a
+// sentence: the second phrase in each is precisely the clause that tells them
+// apart, and a single list could only hold the half they still agree on.
+const REGISTRATION_PHRASES = [
   'its own copy of your account’s keys',
-  'making that copy takes a passkey this screen doesn’t ask for yet',
+  'unlocking lets this browser use those keys without ever getting hold of them',
+] as const;
+const GENERATION_PHRASES = [
+  'their own copy of your account’s keys',
+  'confirmed with a passkey Budgetoid checks itself',
 ] as const;
 const ERASURE_PHRASES = [
-  'has to be confirmed with a passkey',
+  // The qualifier is the new half and is not decoration. Without it the
+  // sentence says this screen asks for no passkey at all, which the Account
+  // keys section makes false a few lines down the page.
+  'has to be confirmed with a passkey Budgetoid checks itself',
   'this screen doesn’t ask for one yet',
 ] as const;
 
-// The two claims those sentences replace, kept as fragments on purpose — the
-// defect *is* the fragment, and a rewrite that keeps either clause inside a
+// The claims those sentences replace, kept as fragments on purpose — the defect
+// *is* the fragment, and a rewrite that keeps any of these clauses inside a
 // longer sentence is the same lie. Asserted absent rather than merely not
 // asserted present: a template that left the old paragraph standing beside the
 // new one satisfies every `toContain` in this file.
 const STALE_CEREMONY_CLAIM = 'can’t run a passkey check in the browser';
 const STALE_REGISTRATION_CLAIM = 'can’t register passkeys yet';
+// The third and newest of them, retired by the Account keys section rather than
+// by a route or a service: this screen asks for a passkey, in plain sight, so
+// no control on it may explain itself by saying that it does not. It survives
+// as a fragment because that is the shape it would come back in — the two
+// sentences that still end at *this screen doesn’t ask for one yet* are true
+// only because of the words in front of them.
+const STALE_UNASKED_PASSKEY_CLAIM = 'a passkey this screen doesn’t ask for';
 
 // The one control on this screen that works, and the route behind it. A verb in
 // sentence case, per `voice.md`.
@@ -173,6 +203,95 @@ const RECOVERY_MANY = 'You have 5 recovery codes left.';
 // this one comes back from a stubbed response through the real service, and a
 // shared constant would let a copy-paste between the two blocks pass unnoticed.
 const RECOVERY_TEN = 'You have 10 recovery codes left.';
+
+// The Account keys section. Every sentence below is `components.md`'s, taken
+// from the state table in its chapter word for word — the copy there is the
+// specification and not an example of it.
+const ACCOUNT_KEYS_HEADING = 'Account keys';
+// The heading id, which is the seam `sectionFor` reads and the one thing here
+// the book does not name. It follows the convention the four sections already
+// on this screen keep — the heading's words, hyphenated, plus `-heading` — and
+// is deliberately not `account-heading`, which the Account section at the top of
+// the page already answers to.
+const ACCOUNT_KEYS_HEADING_ID = 'account-keys-heading';
+const UNLOCK_BUTTON = 'Unlock';
+// The section's two in-flight lines. **Two and not one flag**, because they are
+// two different moments and a person can act on the difference: the first is the
+// system sheet, and the thing to do is touch a sensor or pick a key up off the
+// desk; the second is a request, and the thing to do is wait.
+//
+// The waiting line is deliberately **not** the registration step's *Waiting for
+// your device.* There the device is about to *make* something and the person is
+// waiting on a machine. Here they are being asked for an object they already
+// own, often for a specific one, and the sentence names the thing to go and
+// find.
+const UNLOCK_WAITING = 'Waiting for your passkey.';
+const UNLOCK_OPENING = 'Opening your account…';
+const UNLOCK_HELD = 'Your account is unlocked in this tab.';
+// The flow's five refusals — facts about a *device*, where custody's three are
+// facts about a *read* and a *factor*. Five because each names a different next
+// step: change browser, try again when ready, fetch the other device, retry the
+// ceremony, retry the whole thing. The two unions are never derived from each
+// other and the flow deliberately carries no member a key that opened nothing
+// could be filed under.
+const UNLOCK_UNSUPPORTED =
+  'This browser can’t check a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can.';
+const UNLOCK_CANCELLED =
+  'The passkey check was cancelled. Nothing has changed — try again whenever you’re ready.';
+const UNLOCK_NO_PRF =
+  'This device can’t open your account’s keys. Try the device that holds the passkey you made this account with.';
+const UNLOCK_CEREMONY_FAILED =
+  'Your device didn’t finish the passkey check. Nothing has changed.';
+const UNLOCK_UNKNOWN =
+  'Budgetoid couldn’t finish unlocking. Nothing has changed — try again.';
+// Custody's three — facts about a *read* and a *factor*, and three because a
+// person's next move is three different things: present another factor, press
+// again in a minute, sign in again. Collapsing any two sends somebody down a
+// road that cannot help them, which is why the test over these compares them
+// against each other before it looks at the screen.
+const CUSTODY_UNOPENED =
+  'Budgetoid couldn’t open your account’s keys with that passkey. If this account has another passkey, try again and choose that one.';
+const CUSTODY_UNREACHABLE =
+  'Budgetoid couldn’t reach the server. Try again in a minute.';
+const CUSTODY_UNAUTHENTICATED =
+  'Budgetoid wouldn’t hand your keys back to this browser. Sign out and sign in again.';
+// The section's two standing paragraphs, from the chapter's *Honesty about
+// today*. They are not decoration and they are not a preamble: nothing a person
+// records is encrypted, so unlocking changes nothing they can see, and a section
+// that stopped saying so would leave a reader who has just watched their
+// authenticator answer looking for whatever it revealed. The register is the
+// **What we can read** section's — a fact about the system, with no apology
+// around it — which is why the second sentence names the gap outright instead of
+// promising it will close.
+const HONESTY_KEYS_HELD =
+  'Your passkey holds the keys your records will be encrypted with. Budgetoid never sees them, and this browser forgets them every time the page reloads.';
+const HONESTY_NOTHING_ENCRYPTED =
+  'Nothing you record is encrypted yet, so unlocking changes nothing you can see today.';
+const ACCOUNT_KEYS_HONESTY = [
+  HONESTY_KEYS_HELD,
+  HONESTY_NOTHING_ENCRYPTED,
+] as const;
+// The class the screen's own stylesheet hangs `min-height: 1lh` on, so the
+// region's last line holds one line box open whether or not it has anything to
+// say. Pinned as a class for the reason `TOUCH_TARGET_CLASS` is: jsdom applies
+// no stylesheet, so a spec here cannot measure the reserved box, and the class is
+// the seam between the two halves — it is the half that goes missing.
+const HELD_LINE_CLASS = 's-held';
+// The two treatments the section's eleven lines are drawn in. `.s-error` is what
+// the screen's own stylesheet hangs `color: var(--bud-over)` on; `.s-prose`
+// carries no colour at all. The state table in the design chapter assigns one per
+// row — `--bud-over` for the eight refusals, `--bud-text` for the two in-flight
+// lines — and nothing in this file could tell them apart before.
+//
+// jsdom applies no stylesheet, so a spec here cannot read the rendered colour;
+// the class is the seam between the two halves and it is the half that goes
+// missing. **The worse direction is not the one a reader expects.** A refusal
+// that lost its colour still reads as a refusal — *colour is never the message*
+// is the rule, and every one of these sentences obeys it. A **wait** that gained
+// the failure colour is the defect: somebody watching a ceremony that is still
+// running reads red text and stops waiting.
+const FAILURE_CLASS = 's-error';
+const PROSE_CLASS = 's-prose';
 
 // Two entries far enough apart to be told apart on screen, which the section's
 // own rules make a requirement rather than a convenience: the row shows the
@@ -300,16 +419,62 @@ class SettingsServiceStub {
   public export = vi.fn();
 }
 
+// The account's keys, as the screen reads them. Real signals for the same reason
+// `SettingsServiceStub`'s are: every state below is driven by setting one.
+//
+// **Stubbed rather than left to the root, and that is not a preference.** The
+// real `AccountKeyCustodyService` is `providedIn: 'root'` and injects
+// `MeApiService`, which extends `BaseApiService`, which injects
+// `ConfigurationService` — and that one is a bare `@Injectable()` with no
+// `providedIn`. The moment the component injects custody, every test in this
+// block dies at construction with `NullInjectorError: No provider for
+// ConfigurationService`, before a single assertion is reached. `CONFIGURATION_STUB`
+// would close that too, but it would also put the real custody service on the
+// screen: `status()` would be permanently `'locked'` and nothing here could
+// drive the other two.
+class AccountKeyCustodyStub {
+  public readonly status = signal<AccountKeyStatus>('locked');
+  public readonly unlockFailure = signal<UnlockFailure | null>(null);
+  public unlock = vi.fn();
+  public adopt = vi.fn();
+  public lock = vi.fn();
+}
+
+// The ceremony half, which is a fact about a *device* where custody's is a fact
+// about a *read*. Both are stubbed and both are read by the section, because the
+// precedence between them is one of the things pinned below.
+class AccountUnlockStub {
+  public readonly busy = signal(false);
+  public readonly failure = signal<UnlockCeremonyFailure | null>(null);
+  public unlock = vi.fn();
+}
+
 describe('SettingsComponent', () => {
   let service: SettingsServiceStub;
+  let custody: AccountKeyCustodyStub;
+  let unlock: AccountUnlockStub;
   let fixture: ComponentFixture<SettingsComponent>;
   let host: HTMLElement;
 
   beforeEach(async () => {
     service = new SettingsServiceStub();
+    custody = new AccountKeyCustodyStub();
+    unlock = new AccountUnlockStub();
     TestBed.configureTestingModule({
       imports: [SettingsComponent],
-      providers: [provideNoopAnimations()],
+      providers: [
+        provideNoopAnimations(),
+        // Both at the module level, and `AccountUnlockService` deliberately so
+        // even though the component provides it. `overrideComponent(…, { set:
+        // { providers } })` below **replaces** the component's array rather
+        // than adding to it, so whatever the component declares is gone by the
+        // time anything is injected and the lookup walks up to here. A stub
+        // written into the `set` array instead would work today and stop
+        // working the day somebody moves the provider, which is the failure
+        // mode this arrangement has no version of.
+        { provide: AccountKeyCustodyService, useValue: custody },
+        { provide: AccountUnlockService, useValue: unlock },
+      ],
     });
     // The stub is installed on the component, not on the module. A module-level
     // provider is shadowed the moment the component declares one of its own —
@@ -485,33 +650,38 @@ describe('SettingsComponent', () => {
     expect(normalize(section)).not.toContain(STALE_REGISTRATION_CLAIM);
   });
 
-  it("says the two blocked controls wait on unlocking the account's keys", () => {
+  it("says the two key-wrapping controls wait on the account's keys as bytes", () => {
     // Act
     const credentials = normalize(sectionFor(host, 'credentials-heading'));
     const recovery = normalize(sectionFor(host, 'recovery-heading'));
 
     // Assert
-    // These two are the genuinely blocked pair, and they are blocked by the
-    // same missing thing: each creates a factor, every factor stores its own
-    // wrapped copy of the account's content key and index key, and wrapping
-    // needs those keys as bytes.
+    // These two both create a factor, every factor stores its own wrapped copy
+    // of the account's content key and index key, and wrapping takes those keys
+    // as **bytes**. That much is common ground and is why the pair is asserted
+    // in one test.
     //
-    // **What blocks them is narrower than "the browser cannot do it", and this
-    // pin is what keeps the sentence on the narrow reason.** The envelopes come
-    // back from `GET /api/me/account-keys` and `AccountKeyCustodyService` opens
-    // both on every passkey sign-in, so this browser demonstrably unlocks them
-    // one screen earlier. Custody then holds them as two non-extractable
-    // `CryptoKey` objects behind no accessor: there is no route back to bytes
-    // from anything this tab is holding, so the bytes a wrap takes can only come
-    // from unwrapping again, under a key-encryption key derived from a factor
-    // the person presents on this screen — and this screen asks for no ceremony.
-    // Changing the copy therefore moves `ACCOUNT_KEYS_PHRASES` and the template
-    // together, in one commit; changing either alone reddens this test.
-    for (const phrase of ACCOUNT_KEYS_PHRASES) {
+    // **What blocks them is narrower than "the browser cannot do it" and
+    // narrower than "this screen asks for no passkey", and these pins are what
+    // keep the sentences on the narrow reason.** The envelopes come back from
+    // `GET /api/me/account-keys` and `AccountKeyCustodyService` opens both on
+    // every passkey sign-in; the Account keys section runs a ceremony on this
+    // very screen. What neither supplies is bytes: `unlock` takes the
+    // key-encryption key as an argument and hands it on in one statement, and
+    // custody keeps what it opened as non-extractable `CryptoKey` objects behind
+    // no accessor. Changing the copy therefore moves these phrase lists and the
+    // template together, in one commit; changing either alone reddens this test.
+    //
+    // **Two lists, because the two sentences part company on the second
+    // clause.** Registering waits on the bytes alone; generating waits on the
+    // bytes *and* on an assertion the server checks, which is strictly more.
+    for (const phrase of REGISTRATION_PHRASES) {
       expect(
         credentials,
         `the credentials section does not say "${phrase}".`,
       ).toContain(phrase);
+    }
+    for (const phrase of GENERATION_PHRASES) {
       expect(
         recovery,
         `the recovery-codes section does not say "${phrase}".`,
@@ -528,28 +698,80 @@ describe('SettingsComponent', () => {
     expect(recovery).not.toContain(STALE_REGISTRATION_CLAIM);
   });
 
-  it('says erasing is not wired to this screen yet, not that the browser cannot do it', () => {
+  // The claim that outlived the two above it, and the one this screen's own
+  // Unlock control makes false. Its own test rather than a line appended to the
+  // one above, because it is a rule about **every** section: a sentence naming a
+  // capability the reader cannot find is the defect, and the defect does not
+  // care which control the sentence is under.
+  it('has no section claiming this screen asks for no passkey', () => {
+    // Act
+    const sections = [
+      ['ways to sign in', sectionFor(host, 'credentials-heading')],
+      ['recovery codes', sectionFor(host, 'recovery-heading')],
+      ['account keys', sectionFor(host, ACCOUNT_KEYS_HEADING_ID)],
+      ['erase everything', sectionFor(host, 'erase-heading')],
+    ] as const;
+
+    // Assert
+    // Absence, not the new wording's presence, and the difference is the whole
+    // test: a template that left the old paragraph standing beside a new one
+    // satisfies every `toContain` in this file. Each section is asserted present
+    // first, or the section that has not been written yet passes this vacuously
+    // — `normalize(null)` is the empty string, which contains nothing.
+    for (const [name, section] of sections) {
+      expect(
+        section,
+        `the settings screen carries no ${name} section.`,
+      ).not.toBeNull();
+      expect(
+        normalize(section),
+        `the ${name} section still says this screen asks for no passkey.`,
+      ).not.toContain(STALE_UNASKED_PASSKEY_CLAIM);
+    }
+  });
+
+  it('says erasing waits on a checked assertion, not that the browser cannot do it', () => {
     // Arrange
-    // The guard that makes the comparison below able to fail. The two sentences
-    // are different strings, so a screen carrying one of them in both places is
-    // a screen that fails one of the two assertions after it — and if a later
-    // edit collapsed the constants into one value, every such assertion would
-    // pass on a screen saying the same thing three times, which is the exact
-    // implementation this test exists to refuse.
-    expect(
-      ERASURE_EXPLANATION,
-      'the erasure sentence and the account-keys sentence are the same string.',
-    ).not.toBe(ACCOUNT_KEYS_EXPLANATION);
+    // The guards that make the comparisons below able to fail. **Every pair, not
+    // the one pair this used to check.** Four sites now carry four sentences,
+    // and if a later edit collapsed any two of the constants into one value the
+    // assertions after them would pass on a screen saying the same thing twice —
+    // which is the exact implementation this test exists to refuse. The
+    // sentences are compared as substrings in both directions rather than merely
+    // for inequality: one sentence that *contains* another is the same defect
+    // with two extra words on the end.
+    const sentences = [
+      ['registration', REGISTRATION_EXPLANATION],
+      ['generation', GENERATION_EXPLANATION],
+      ['revocation', REVOCATION_EXPLANATION],
+      ['erasure', ERASURE_EXPLANATION],
+    ] as const;
+
+    for (const [name, sentence] of sentences) {
+      for (const [otherName, other] of sentences) {
+        if (name === otherName) {
+          continue;
+        }
+
+        expect(
+          sentence,
+          `the ${name} sentence and the ${otherName} sentence are the same sentence.`,
+        ).not.toContain(other);
+      }
+    }
 
     // Act
     const erase = normalize(sectionFor(host, 'erase-heading'));
     const recovery = normalize(sectionFor(host, 'recovery-heading'));
 
     // Assert
-    // Erasure waits on this screen, not on the browser. `POST /api/me/erasure`
-    // exists and the assertion that authorizes it is a ceremony this client
-    // runs; what is missing is the confirmation flow `components.md` specifies
-    // and the wiring behind this button.
+    // Erasure waits on an assertion the **server** checks, not on the browser
+    // and no longer on "a passkey this screen doesn't ask for": this screen asks
+    // for one, in the Account keys section, and the qualifier is what keeps the
+    // sentence true in front of a reader who has just used it.
+    // `POST /api/me/erasure` exists and the ceremony that authorizes it is one
+    // this client can run; what is missing is the confirmation flow
+    // `components.md` specifies and the wiring behind this button.
     for (const phrase of ERASURE_PHRASES) {
       expect(erase, `the erasure section does not say "${phrase}".`).toContain(
         phrase,
@@ -558,25 +780,30 @@ describe('SettingsComponent', () => {
     expect(erase).not.toContain(STALE_REGISTRATION_CLAIM);
     expect(erase).not.toContain(STALE_CEREMONY_CLAIM);
 
-    // The comparison that is the test. The cheapest wrong implementation is one
-    // sentence pasted at all three sites, and it passes every `toContain` on
-    // this screen. The two sentences do end at the same place — each waits on a
-    // passkey this screen does not ask for — and they are still different facts,
-    // because the passkey plays a different part in each. Here it would
-    // authorize an act that cannot be taken back, and nothing about deleting
-    // rows needs a key unwrapped; there it would open the account's content key
-    // and index key, which custody holds as non-extractable `CryptoKey` objects
-    // and which the new factor has to be given a copy of as bytes. Collapsing
-    // the two erases the answer to "why can't I just add another way in", so the
-    // split is kept deliberately and this assertion is what keeps it.
+    // The comparisons that are the test. The cheapest wrong implementation is
+    // one sentence pasted at every site, and it passes every `toContain` on this
+    // screen. The four do not wait on the same thing: registering waits on the
+    // account's keys as bytes, generating on those bytes *and* on a checked
+    // assertion, revoking and erasing on the checked assertion alone. Collapsing
+    // any of them puts a sentence on the screen that is true of a different
+    // control — and collapsing the first two in particular erases the answer to
+    // "why can't I just add another way in".
     expect(
       erase,
-      'the erasure section explains itself with the account-keys sentence.',
-    ).not.toContain(ACCOUNT_KEYS_EXPLANATION);
+      'the erasure section explains itself with the registration sentence.',
+    ).not.toContain(REGISTRATION_EXPLANATION);
+    expect(
+      erase,
+      'the erasure section explains itself with the recovery-codes sentence.',
+    ).not.toContain(GENERATION_EXPLANATION);
     expect(
       recovery,
       'the recovery-codes section explains itself with the erasure sentence.',
     ).not.toContain(ERASURE_EXPLANATION);
+    expect(
+      recovery,
+      'the recovery-codes section explains itself with the registration sentence.',
+    ).not.toContain(REGISTRATION_EXPLANATION);
   });
 
   it('leaves the export control available before an export starts', () => {
@@ -596,7 +823,13 @@ describe('SettingsComponent', () => {
     // that is unavailable for the whole life of the screen.
     expect(exportButton?.disabled).toBe(false);
     expect(exportButton?.getAttribute('aria-disabled')).not.toBe('true');
-    expect(exportButton?.getAttribute('aria-busy')).not.toBe('true');
+    // **Absent, not `'false'`** — and this was `not.toBe('true')`, which is the
+    // same assertion with the defect let through. The binding resolves to `null`
+    // at rest deliberately, so the attribute is not there at all: `aria-busy`
+    // is a claim, and `'false'` asserts on every render that no work is
+    // happening on a control nobody has touched. The template says so in a
+    // comment on this very button, and nothing held it.
+    expect(exportButton?.getAttribute('aria-busy')).toBeNull();
   });
 
   // A second click during an export is already refused by the service, but the
@@ -1372,14 +1605,15 @@ describe('SettingsComponent', () => {
     expect(registerButton?.disabled).toBe(true);
     expect(
       normalize(section),
-      sentenceMismatch(normalize(section), ACCOUNT_KEYS_EXPLANATION),
-    ).toContain(ACCOUNT_KEYS_EXPLANATION);
+      sentenceMismatch(normalize(section), REGISTRATION_EXPLANATION),
+    ).toContain(REGISTRATION_EXPLANATION);
     // The ceremony is no longer the blocker and the sentence may not say it is.
-    // This client runs one on `/welcome` and another on `/register`.
+    // This client runs one on `/welcome`, another on `/register`, and a third in
+    // the Account keys section of this screen.
     expect(normalize(section)).not.toContain(STALE_CEREMONY_CLAIM);
   });
 
-  it('says the account-keys explanation once, not once per row', () => {
+  it('says the registration explanation once, not once per row', () => {
     // Arrange
     // Two rows, because the mutation this catches is the tempting one: moving
     // the sentence beside each control it explains. With the list empty there
@@ -1398,12 +1632,12 @@ describe('SettingsComponent', () => {
     // The count alone fails as `expected +0 to be 1`, which names neither the
     // sentence nor the screen. Zero and many are different defects and read
     // differently.
-    const said = occurrencesOf(section, ACCOUNT_KEYS_EXPLANATION);
+    const said = occurrencesOf(section, REGISTRATION_EXPLANATION);
     expect(
       said,
       said === 0
-        ? sentenceMismatch(section, ACCOUNT_KEYS_EXPLANATION)
-        : 'the account-keys sentence is repeated inside the credential list.',
+        ? sentenceMismatch(section, REGISTRATION_EXPLANATION)
+        : 'the registration sentence is repeated inside the credential list.',
     ).toBe(1);
   });
 
@@ -1414,7 +1648,7 @@ describe('SettingsComponent', () => {
     // Act
     fixture.detectChanges();
     const section = sectionFor(host, 'credentials-heading');
-    const explanation = elementSaying(section, ACCOUNT_KEYS_EXPLANATION);
+    const explanation = elementSaying(section, REGISTRATION_EXPLANATION);
     const firstInert = firstInertControl(section);
 
     // Assert
@@ -1430,8 +1664,8 @@ describe('SettingsComponent', () => {
     // across elements so no single one *is* it.
     expect(
       explanation,
-      sentenceMismatch(normalize(section), ACCOUNT_KEYS_EXPLANATION) ||
-        'no single element on this screen carries the account-keys sentence.',
+      sentenceMismatch(normalize(section), REGISTRATION_EXPLANATION) ||
+        'no single element on this screen carries the registration sentence.',
     ).not.toBeNull();
     expect(firstInert).not.toBeNull();
     expect(precedes(explanation, firstInert)).toBe(true);
@@ -1476,12 +1710,24 @@ describe('SettingsComponent', () => {
     // Act
     fixture.detectChanges();
     const buttons = revokeButtons();
+    const section = sectionFor(host, 'credentials-heading');
 
     // Assert
     expect(buttons.length).toBe(2);
     for (const button of buttons) {
       expect(button.disabled).toBe(true);
     }
+
+    // And the section says why, in the erasure section's words with the number
+    // changed, because there is one Revoke per row. **The qualifier is the
+    // load-bearing part**: without *Budgetoid checks itself* the sentence says
+    // this screen asks for no passkey at all, and somebody who has just watched
+    // their authenticator answer an Unlock two sections down would be reading
+    // that the screen cannot ask for what it asked for a moment ago.
+    expect(
+      normalize(section),
+      sentenceMismatch(normalize(section), REVOCATION_EXPLANATION),
+    ).toContain(REVOCATION_EXPLANATION);
   });
 
   it('holds every control on the screen to the touch target', () => {
@@ -1497,27 +1743,47 @@ describe('SettingsComponent', () => {
 
     // Act
     fixture.detectChanges();
+    // Named pairs rather than bare elements, so a control that is not on the
+    // screen fails as *which* control rather than as `expected undefined to be
+    // true`. `buttonNamed` answers `null` for a control the screen does not
+    // carry, and a `null` in this list still has a length — the count below
+    // therefore cannot catch a missing control, and the loop is what does.
     const controls = [
-      buttonNamed(host, REGISTER_BUTTON),
-      buttonNamed(host, GENERATE_BUTTON),
-      buttonNamed(host, EXPORT_BUTTON),
-      buttonNamed(host, ERASE_BUTTON),
-      ...revokeButtons(),
-    ];
+      [REGISTER_BUTTON, buttonNamed(host, REGISTER_BUTTON)],
+      [GENERATE_BUTTON, buttonNamed(host, GENERATE_BUTTON)],
+      // The Account keys control, drawn while the account is locked — which is
+      // the stub's resting state and every tab's. It is the one live control
+      // this census adds and the only one on the screen that is neither an
+      // export nor disabled, so a template that forgot the class on it looks
+      // right in every screenshot and is under 48px on every phone.
+      [UNLOCK_BUTTON, buttonNamed(host, UNLOCK_BUTTON)],
+      [EXPORT_BUTTON, buttonNamed(host, EXPORT_BUTTON)],
+      [ERASE_BUTTON, buttonNamed(host, ERASE_BUTTON)],
+      ...revokeButtons().map(
+        (button, index) => [`${REVOKE_BUTTON} ${index + 1}`, button] as const,
+      ),
+    ] as const;
 
     // Assert
     // Every control, not only the ones this section added: the minimum is a
-    // rule about controls, and a screen that holds five of six to it has a
+    // rule about controls, and a screen that holds six of seven to it has a
     // control someone misses on a phone. The list is built by name so a missing
     // control fails here rather than shrinking the loop to nothing — a census
-    // satisfied by "six controls appeared" is satisfied by any six.
-    expect(controls.length).toBe(6);
-    for (const control of controls) {
-      expect(control?.classList.contains(TOUCH_TARGET_CLASS)).toBe(true);
+    // satisfied by "seven controls appeared" is satisfied by any seven.
+    expect(controls.length).toBe(7);
+    for (const [name, control] of controls) {
+      expect(
+        control,
+        `the settings screen offers no control named "${name}".`,
+      ).not.toBeNull();
+      expect(
+        control?.classList.contains(TOUCH_TARGET_CLASS),
+        `the "${name}" control is not held to the touch target.`,
+      ).toBe(true);
     }
   });
 
-  it('gives the credential and recovery controls the outline treatment', () => {
+  it('gives the credential, recovery and unlock controls the outline treatment', () => {
     // Arrange
     // The same arrangement as the touch-target census, for the same two
     // reasons.
@@ -1526,14 +1792,25 @@ describe('SettingsComponent', () => {
     // Act
     fixture.detectChanges();
     const controls = [
-      buttonNamed(host, REGISTER_BUTTON),
+      [REGISTER_BUTTON, buttonNamed(host, REGISTER_BUTTON)],
       // Outline and specifically not filled, even though generating replaces an
       // existing set and invalidates every code printed from it: the
       // Destructive fill is a promise that a confirmation follows, and there is
       // no confirmation behind this control.
-      buttonNamed(host, GENERATE_BUTTON),
-      ...revokeButtons(),
-    ];
+      [GENERATE_BUTTON, buttonNamed(host, GENERATE_BUTTON)],
+      // **Outline, and the near miss is worth stating because a reader will
+      // propose it**: a Primary *while locked* reads as the obvious move. It is
+      // refused twice over. Export is this screen's one main action, and a
+      // screen with two is a screen with none; and to anybody not tracking lock
+      // state — which is everybody, since nothing on the page changes when it
+      // flips — a Primary that comes and goes is just two Primary buttons on one
+      // screen. Under both sits the honesty rule: nothing is encrypted, so a
+      // Primary here promises a consequence that does not exist.
+      [UNLOCK_BUTTON, buttonNamed(host, UNLOCK_BUTTON)],
+      ...revokeButtons().map(
+        (button, index) => [`${REVOKE_BUTTON} ${index + 1}`, button] as const,
+      ),
+    ] as const;
 
     // Assert
     // Outline, and specifically *not* filled. Revoking is destructive, but the
@@ -1543,11 +1820,22 @@ describe('SettingsComponent', () => {
     // never Destructive. The negative half is not redundant: a control can
     // carry both classes, and it is the filled treatment arriving that makes a
     // dead button read as the section's primary action. Export is deliberately
-    // filled and is deliberately not in this list.
-    expect(controls.length).toBe(4);
-    for (const control of controls) {
-      expect(control?.classList.contains(OUTLINE_CLASS)).toBe(true);
-      expect(control?.classList.contains(FILLED_CLASS)).toBe(false);
+    // filled and is deliberately not in this list — it keeps the screen's one
+    // Primary, which is the whole reason Unlock is in it.
+    expect(controls.length).toBe(5);
+    for (const [name, control] of controls) {
+      expect(
+        control,
+        `the settings screen offers no control named "${name}".`,
+      ).not.toBeNull();
+      expect(
+        control?.classList.contains(OUTLINE_CLASS),
+        `the "${name}" control does not carry the outline treatment.`,
+      ).toBe(true);
+      expect(
+        control?.classList.contains(FILLED_CLASS),
+        `the "${name}" control carries the filled treatment.`,
+      ).toBe(false);
     }
   });
 
@@ -2075,27 +2363,31 @@ describe('SettingsComponent', () => {
     expect(generate).not.toBeNull();
     expect(generate?.disabled).toBe(true);
     // Generating a set is ten factors at once — each code derives its own
-    // key-encryption key — so it waits on the same thing registering a passkey
-    // does, and on nothing else.
+    // key-encryption key — so it waits on the account's keys as bytes exactly as
+    // registering a passkey does. **And on one thing more**, which is why this
+    // section stopped sharing the credential list's sentence: the route is gated
+    // on an assertion the server verifies, and the unlock ceremony's is minted
+    // in this browser and thrown away. A reader told the two controls wait on
+    // the same thing is being told one waits on strictly more than it does.
     expect(
       normalize(section),
-      sentenceMismatch(normalize(section), ACCOUNT_KEYS_EXPLANATION),
-    ).toContain(ACCOUNT_KEYS_EXPLANATION);
+      sentenceMismatch(normalize(section), GENERATION_EXPLANATION),
+    ).toContain(GENERATION_EXPLANATION);
     expect(normalize(section)).not.toContain(STALE_CEREMONY_CLAIM);
   });
 
   it('says why the generate control is off before offering it', () => {
     // Act
     const section = sectionFor(host, 'recovery-heading');
-    const explanation = elementSaying(section, ACCOUNT_KEYS_EXPLANATION);
+    const explanation = elementSaying(section, GENERATION_EXPLANATION);
     const generate = buttonNamed(host, GENERATE_BUTTON);
 
     // Assert
     // Below the button the sentence is an apology; above it, an instruction.
     expect(
       explanation,
-      sentenceMismatch(normalize(section), ACCOUNT_KEYS_EXPLANATION) ||
-        'no single element on this screen carries the account-keys sentence.',
+      sentenceMismatch(normalize(section), GENERATION_EXPLANATION) ||
+        'no single element on this screen carries the recovery-codes sentence.',
     ).not.toBeNull();
     expect(precedes(explanation, generate)).toBe(true);
     // And as visible prose, never hung on the control: a disabled button is out
@@ -2118,6 +2410,785 @@ describe('SettingsComponent', () => {
     // the count is a second place the number has to stay right.
     expect(generate?.getAttribute('aria-label')).toBeNull();
     expect(normalize(generate)).toBe(GENERATE_BUTTON);
+  });
+
+  // The Account keys section: the one place on this screen that asks the
+  // person's own device for anything, and the only exit from a locked account
+  // that does not go through Sign out.
+  //
+  // **A locked account is a browser holding no content key, and every tab starts
+  // in one** — nothing about the keys survives a page load. It is not a locked
+  // *session*: everybody reading this section is signed in, and what they are
+  // missing is a key. No assertion below may be satisfied by a sentence saying
+  // otherwise.
+
+  it('puts the account keys between the recovery codes and the export', () => {
+    // Act
+    const recovery = sectionFor(host, 'recovery-heading');
+    const accountKeys = sectionFor(host, ACCOUNT_KEYS_HEADING_ID);
+    const exportSection = sectionFor(host, 'export-heading');
+
+    // Assert
+    // Present first, and identified by its heading rather than only by the id
+    // the ordering assertion reads: `precedes` answers `false` for a section
+    // that is not there, which would fail this test with `expected false to be
+    // true` and name neither the section nor the reason.
+    expect(
+      accountKeys,
+      'the settings screen carries no account keys section.',
+    ).not.toBeNull();
+    expect(
+      normalize(
+        accountKeys?.querySelector(`#${ACCOUNT_KEYS_HEADING_ID}`) ?? null,
+      ),
+    ).toBe(ACCOUNT_KEYS_HEADING);
+    // `h2` under the screen's one `h1`; no level skipped.
+    expect(
+      accountKeys?.querySelector(`#${ACCOUNT_KEYS_HEADING_ID}`)?.tagName,
+    ).toBe('H2');
+
+    // Export and Erase are a pair — the alternative offered beside the
+    // destructive act — and nothing goes between them, so everything that is
+    // neither arrives above them both. That is what makes this an ordering
+    // assertion rather than a preference.
+    expect(precedes(recovery, accountKeys)).toBe(true);
+    expect(precedes(accountKeys, exportSection)).toBe(true);
+  });
+
+  it('carries the account-keys outcome region before anything has happened', () => {
+    // Act
+    const region = accountKeysRegion();
+
+    // Assert
+    // Present and empty, both halves — the at-rest row of the book's table, and
+    // the same pairing the account, export and recovery regions make. A live
+    // region created at the moment it gains content is announced by nothing, and
+    // a region that always holds a line is a screen reporting an event to
+    // somebody who has not caused one. Every line this section says lands here:
+    // both waits, all eight refusals, and the line saying the keys are held.
+    expect(region).not.toBeNull();
+    expect(normalize(region)).toBe('');
+  });
+
+  it('offers the unlock control while the account is locked', () => {
+    // Act
+    // `locked` is the stub's resting state because it is every tab's.
+    const unlockButton = buttonNamed(host, UNLOCK_BUTTON);
+
+    // Assert
+    // Live, and both readings of it. Every other control in this half of the
+    // screen is off and explains itself; this one waits on nothing, so it
+    // carries no sentence beside it and must not be held inert by the pattern
+    // its neighbours use. The `aria-disabled` half is not redundant: a button
+    // held with `[disabled]` plus `[disabledInteractive]` — the Export control's
+    // own treatment — never sets the DOM `disabled` property at all, so
+    // `.disabled === false` is green on a control nothing can press.
+    expect(
+      unlockButton,
+      `the settings screen offers no control named "${UNLOCK_BUTTON}".`,
+    ).not.toBeNull();
+    expect(unlockButton?.disabled).toBe(false);
+    expect(unlockButton?.getAttribute('aria-disabled')).not.toBe('true');
+    // **Absent, not `'false'`.** The chapter states it for this control in as
+    // many words — `aria-busy` resolves to `null` at rest rather than to
+    // `'false'`, so the attribute is absent instead of asserting that no work is
+    // happening — and the three busy tests below are all satisfied by a binding
+    // that writes `'false'` here. `toBeNull` rather than `not.toBe('true')`,
+    // which is the assertion that let this through on the export control.
+    expect(unlockButton?.getAttribute('aria-busy')).toBeNull();
+    // No composed accessible name: it is the only Unlock on the screen, so
+    // there is nothing to tell it apart from. The credential list composes its
+    // Revoke names precisely because there is one per row.
+    expect(unlockButton?.getAttribute('aria-label')).toBeNull();
+    expect(normalize(unlockButton)).toBe(UNLOCK_BUTTON);
+  });
+
+  it('unlocks when the unlock control is activated', () => {
+    // Arrange
+    const unlockButton = buttonNamed(host, UNLOCK_BUTTON);
+    expect(
+      unlockButton,
+      `the settings screen offers no control named "${UNLOCK_BUTTON}".`,
+    ).not.toBeNull();
+
+    // Act
+    unlockButton?.click();
+
+    // Assert
+    // Without this the button is furniture: a control rendered with the right
+    // label, the right treatment and the right target, wired to nothing, passes
+    // every other assertion in this section.
+    expect(unlock.unlock).toHaveBeenCalledOnce();
+  });
+
+  it('does not unlock on render', () => {
+    // Assert
+    // Control for the test above, and the same shape as `does not export on
+    // render`. What it catches is worse here than an unwanted request: `unlock`
+    // reached from a `computed` or an `effect` raises the platform's own passkey
+    // sheet over the screen, so merely navigating to Settings would ask the
+    // person for their authenticator.
+    expect(unlock.unlock).not.toHaveBeenCalled();
+  });
+
+  it('says it is waiting for the passkey while the ceremony runs', () => {
+    // Arrange
+    // The flow is running and custody has been handed nothing yet, which is the
+    // whole of the first in-flight moment: the platform's own sheet is up and
+    // the person is being asked for an object.
+    unlock.busy.set(true);
+
+    // Act
+    fixture.detectChanges();
+    const said = normalize(accountKeysRegion());
+
+    // Assert
+    expect(
+      said,
+      sentenceMismatch(said, UNLOCK_WAITING) ||
+        'the account keys section says nothing while the ceremony runs.',
+    ).toContain(UNLOCK_WAITING);
+    // And not the other one. **Two sentences and not one flag**, because a
+    // person can act on the difference — here the thing to do is touch a sensor,
+    // there it is to wait — so a section that said the read was running would be
+    // telling somebody staring at a system sheet to do nothing about it.
+    expect(said).not.toContain(UNLOCK_OPENING);
+  });
+
+  it('says the account is being opened while the read runs', () => {
+    // Arrange
+    // Set **after** the first render, which `beforeEach` has already done. A
+    // template that read the status once — off a plain field, or off a signal
+    // dereferenced in the component's constructor — renders the resting state
+    // here and never comes back, and a stub seeded before the first
+    // `detectChanges` would hide exactly that.
+    custody.status.set('unlocking');
+
+    // Act
+    fixture.detectChanges();
+    const said = normalize(accountKeysRegion());
+
+    // Assert
+    // The second of the section's two in-flight lines. `unlocking` is checked
+    // before the flow's own busy flag and the order is the rule: the flow hands
+    // custody the key *before* it clears `busy`, so the two overlap on purpose,
+    // and once the key has been handed over the truer sentence is about the read
+    // that is running now rather than about the device that has already
+    // answered.
+    expect(said).toContain(UNLOCK_OPENING);
+    // And not the line for the state after this one, which would tell somebody
+    // watching a request that it had already finished.
+    expect(said).not.toContain(UNLOCK_HELD);
+  });
+
+  it('says the read is running, not that it still waits, once the key is handed over', () => {
+    // Arrange
+    // **Both in-flight states are true at once, and that is not a contrived
+    // combination — it is the ordinary one.** The flow hands custody the key
+    // *before* it clears `busy`, deliberately, so that no frame exists in which
+    // both are false and the section flashes back to its resting state with a
+    // second press available. The overlap is the price of that, and something
+    // has to break the tie.
+    unlock.busy.set(true);
+    custody.status.set('unlocking');
+
+    // Act
+    fixture.detectChanges();
+    const said = normalize(accountKeysRegion());
+
+    // Assert
+    // **`unlocking` is checked before the flow's own busy flag, and it is not
+    // arbitrary which way.** Once the key has been handed over the ceremony is
+    // finished, so the truer sentence is about the read that is running now
+    // rather than about the device that has already answered. Read the other way
+    // round, somebody watching a network request is told their passkey is still
+    // being waited on — and the thing that sentence tells them to do, touch a
+    // sensor, cannot help, because nothing is asking them for anything.
+    //
+    // A template that tests `busy` first passes every other assertion in this
+    // section: both sentences exist, both render on their own, and only this
+    // combination tells the two orders apart.
+    expect(
+      said,
+      'the account keys section reports the ceremony while the read is what is running.',
+    ).toContain(UNLOCK_OPENING);
+    expect(
+      said,
+      'the account keys section answers one moment with two sentences.',
+    ).not.toContain(UNLOCK_WAITING);
+  });
+
+  it('says the account is open, and offers nothing to press', () => {
+    // Arrange
+    custody.status.set('unlocked');
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(normalize(accountKeysRegion())).toContain(UNLOCK_HELD);
+    // **A press on an already-unlocked account can only make things worse, so
+    // it is never offered.** Custody drops both keys the instant `unlock`
+    // starts, so a press made on an open account and then refused at any point
+    // after the key was handed over leaves the account locked, having gained
+    // nothing. A control whose best outcome is no change and whose ordinary
+    // failure is a loss is not a control.
+    expect(
+      buttonNamed(host, UNLOCK_BUTTON),
+      'the settings screen offers an unlock control on an account that is already open.',
+    ).toBeNull();
+  });
+
+  it('says five different things for the five ways the device can fail', () => {
+    // Arrange
+    // A `Record` over the union rather than a list of pairs, so a sixth word
+    // added to `UnlockCeremonyFailure` fails to compile here instead of arriving
+    // on a screen with no sentence behind it.
+    const sentences: Record<UnlockCeremonyFailure, string> = {
+      unsupported: UNLOCK_UNSUPPORTED,
+      cancelled: UNLOCK_CANCELLED,
+      'no-prf': UNLOCK_NO_PRF,
+      'ceremony-failed': UNLOCK_CEREMONY_FAILED,
+      unknown: UNLOCK_UNKNOWN,
+    };
+    const failures = [
+      'unsupported',
+      'cancelled',
+      'no-prf',
+      'ceremony-failed',
+      'unknown',
+    ] as const satisfies readonly UnlockCeremonyFailure[];
+
+    // The guard that makes the render assertions able to fail, and it comes
+    // first. **These five exist because they are five different next steps for a
+    // person** — open a different browser, try again when ready, go and get the
+    // device that holds the passkey, run the ceremony again, run the whole thing
+    // again — and a spec that let two of them be the same string would have
+    // stopped holding the only rule they have. Compared as substrings in
+    // **both** directions rather than for inequality: a sentence that contains
+    // another is the same collapse with a few extra words on the end, and it
+    // would satisfy every `toContain` below.
+    //
+    // Three of them end in *Nothing has changed*, which is exactly why the
+    // comparison is over whole sentences and not over that clause.
+    for (const failure of failures) {
+      for (const other of failures) {
+        if (failure === other) {
+          continue;
+        }
+
+        expect(
+          sentences[failure],
+          `the ${failure} sentence and the ${other} sentence say the same thing.`,
+        ).not.toContain(sentences[other]);
+      }
+    }
+
+    // Act & Assert
+    for (const failure of failures) {
+      unlock.failure.set(failure);
+      fixture.detectChanges();
+
+      const said = normalize(accountKeysRegion());
+
+      expect(
+        said,
+        sentenceMismatch(said, sentences[failure]) ||
+          `the account keys section says nothing for a ${failure} ceremony.`,
+      ).toContain(sentences[failure]);
+
+      for (const other of failures) {
+        if (other === failure) {
+          continue;
+        }
+
+        expect(
+          said,
+          `a ${failure} ceremony makes the section say the ${other} sentence too.`,
+        ).not.toContain(sentences[other]);
+      }
+
+      // And the control never leaves and never changes its name, however the
+      // ceremony was refused. This section has nowhere else to send anybody: its
+      // one control is the way out of the state the section exists for, so
+      // removing it would leave an account locked with nothing on screen to
+      // change that. `unsupported` is the one real dead end and its *sentence*
+      // carries the way out — a different browser — rather than the control
+      // doing it.
+      expect(
+        buttonNamed(host, UNLOCK_BUTTON),
+        `the unlock control left the screen after a ${failure} ceremony.`,
+      ).not.toBeNull();
+    }
+  });
+
+  it('says three different things for the three ways a factor can fail to open', () => {
+    // Arrange
+    // A `Record` over the union rather than a list of pairs, so a fourth word
+    // added to `UnlockFailure` fails to compile here instead of arriving on a
+    // screen with no sentence behind it.
+    const sentences: Record<UnlockFailure, string> = {
+      unopened: CUSTODY_UNOPENED,
+      unreachable: CUSTODY_UNREACHABLE,
+      unauthenticated: CUSTODY_UNAUTHENTICATED,
+    };
+    const failures = [
+      'unopened',
+      'unreachable',
+      'unauthenticated',
+    ] as const satisfies readonly UnlockFailure[];
+
+    // The guard that makes the render assertions able to fail, and it comes
+    // first. **They are three because a person's next move is three different
+    // things** — present another factor, press again in a minute, sign in again
+    // — and collapsing any two sends somebody down a road that cannot help them.
+    // Compared as substrings in **both** directions rather than for inequality:
+    // one sentence that contains another is the same defect with two extra words
+    // on the end, and it would satisfy every `toContain` below.
+    for (const failure of failures) {
+      for (const other of failures) {
+        if (failure === other) {
+          continue;
+        }
+
+        expect(
+          sentences[failure],
+          `the ${failure} sentence and the ${other} sentence say the same thing.`,
+        ).not.toContain(sentences[other]);
+      }
+    }
+
+    // Act & Assert
+    for (const failure of failures) {
+      custody.unlockFailure.set(failure);
+      fixture.detectChanges();
+
+      const said = normalize(accountKeysRegion());
+
+      expect(
+        said,
+        sentenceMismatch(said, sentences[failure]) ||
+          `the account keys section says nothing for a ${failure} read.`,
+      ).toContain(sentences[failure]);
+
+      for (const other of failures) {
+        if (other === failure) {
+          continue;
+        }
+
+        expect(
+          said,
+          `a ${failure} read makes the section say the ${other} sentence too.`,
+        ).not.toContain(sentences[other]);
+      }
+    }
+  });
+
+  it('says one thing when a cancelled attempt follows one that opened nothing', () => {
+    // Arrange
+    // Both readings are live at once, and the state that produces it is ordinary
+    // rather than contrived: press one is answered `unopened` — the envelopes
+    // were read and none opened — then press two is cancelled at the system
+    // sheet, which never reaches custody, so custody's answer from the previous
+    // press is still standing.
+    custody.unlockFailure.set('unopened');
+    unlock.failure.set('cancelled');
+
+    // Act
+    fixture.detectChanges();
+    const said = normalize(accountKeysRegion());
+
+    // Assert
+    // **The flow's failure wins, and custody's renders only when the flow
+    // reports none.** Rendered together, the section gives two answers to one
+    // question and marks neither as the older — and the older one is about a
+    // press that has been superseded. This is the only witness of the
+    // precedence rule: every other state below reaches one sentence by having
+    // only one to choose from.
+    expect(said).toContain(UNLOCK_CANCELLED);
+    expect(
+      said,
+      'the account keys section answers one press with two sentences.',
+    ).not.toContain(CUSTODY_UNOPENED);
+  });
+
+  // **The tail of every successful press, and the most serious hole this section
+  // had.** The three tests below the first one hold the *treatment* of a busy
+  // control; this one holds *which states count as busy*, and the two are not the
+  // same rule.
+  //
+  // `AccountUnlockService.derive` hands custody the key and only then clears
+  // `busy`, so `busy` false beside `custody.status() === 'unlocking'` is the
+  // ordinary state of the second half of every press that worked. Gated on
+  // `unlocking.busy()` alone the control is live throughout it — and the flow's
+  // own guard inspects `busy` and nothing else, so the press is not stopped
+  // there either. It raises a second system sheet, and
+  // `AccountKeyCustodyService.unlock` drops both keys at the *start* of the
+  // second attempt: the first press was finishing the read that would have
+  // opened the account, and the second threw the result away. The book's rule is
+  // "while **either half** is running".
+  it('holds the unlock control once the key is handed over and the ceremony flag clears', () => {
+    // Arrange
+    // Set explicitly rather than left at the stub's default, because the state
+    // this test is about is a *pair*: the flag being false is half of it.
+    unlock.busy.set(false);
+    custody.status.set('unlocking');
+
+    // Act
+    fixture.detectChanges();
+    const unlockButton = buttonNamed(host, UNLOCK_BUTTON);
+
+    // Assert
+    expect(
+      unlockButton,
+      `the settings screen offers no control named "${UNLOCK_BUTTON}" while the read runs.`,
+    ).not.toBeNull();
+    expect(
+      unlockButton?.getAttribute('aria-disabled'),
+      'the unlock control is still pressable while custody is reading the envelopes, so a second press drops the keys the first one was opening.',
+    ).toBe('true');
+    expect(
+      unlockButton?.getAttribute('aria-busy'),
+      'the unlock control reports no work while custody is reading the envelopes.',
+    ).toBe('true');
+  });
+
+  // The inverse of the flash-back-to-rest the overlap exists to prevent. A
+  // control wrapped in `keys === 'locked'` leaves the document the instant
+  // custody publishes `unlocking` and comes back when the read ends — the
+  // section's one control blinking out from under the finger that pressed it, and
+  // taking the keyboard's place in the document with it. The book holds the
+  // control **busy** through `unlocking`; it removes it for exactly one state,
+  // and that state is `unlocked`.
+  it('keeps the same unlock control on screen while the read runs', () => {
+    // Arrange
+    // The node itself, not a matching name. A control removed and re-created
+    // renders identically and passes every presence assertion in this section.
+    const atRest = buttonNamed(host, UNLOCK_BUTTON);
+    expect(
+      atRest,
+      `the settings screen offers no control named "${UNLOCK_BUTTON}".`,
+    ).not.toBeNull();
+
+    // Act
+    custody.status.set('unlocking');
+    fixture.detectChanges();
+
+    // Assert
+    expect(
+      buttonNamed(host, UNLOCK_BUTTON),
+      'the unlock control leaves the screen while custody is reading the envelopes.',
+    ).toBe(atRest);
+  });
+
+  // The precedence rule, in flight. `says one thing when a cancelled attempt
+  // follows one that opened nothing` holds the at-rest pair and is satisfied by
+  // any structure that ranks the two failures against each other; it says
+  // nothing about a section that ranks them correctly and then renders custody's
+  // beside a *wait*.
+  //
+  // Only this half of the overlap is reachable: custody clears its own failure
+  // at the top of `unlock`, so `unlocking` never coexists with an
+  // `unlockFailure`. The flow clears its own on the same press, which is what
+  // leaves custody's — set by the press before — standing alone beside the line
+  // saying this one is still waiting.
+  it('answers a press that is still running with the wait alone', () => {
+    // Arrange
+    // Press one was answered `unopened`: the envelopes were read and none
+    // opened. Press two is at the system sheet, so it has reached the ceremony
+    // and not custody.
+    custody.unlockFailure.set('unopened');
+    unlock.busy.set(true);
+
+    // Act
+    fixture.detectChanges();
+    const said = normalize(accountKeysRegion());
+
+    // Assert
+    expect(
+      said,
+      sentenceMismatch(said, UNLOCK_WAITING) ||
+        'the account keys section says nothing while the ceremony runs.',
+    ).toContain(UNLOCK_WAITING);
+    // The half that fails when the custody block is lifted out of the chain and
+    // guarded on the flow's own failure alone. Rendered together, the section
+    // asks somebody to touch their sensor and tells them their last attempt
+    // opened nothing, in one breath, about two different presses.
+    expect(
+      said,
+      'the account keys section reports the previous press’s failure while the next one is still running.',
+    ).not.toContain(CUSTODY_UNOPENED);
+  });
+
+  // The Export control's three, for the Unlock control. Separate tests because
+  // they regress independently — a control can announce that it is busy while
+  // still accepting the press, and one marked unavailable can lose focus doing
+  // it — and because a single `disabled` binding satisfies exactly one of the
+  // three while breaking the other two.
+  it('marks the unlock control busy while the ceremony runs', () => {
+    // Arrange
+    unlock.busy.set(true);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(buttonNamed(host, UNLOCK_BUTTON)?.getAttribute('aria-busy')).toBe(
+      'true',
+    );
+  });
+
+  it('marks the unlock control unavailable while the ceremony runs', () => {
+    // Arrange
+    unlock.busy.set(true);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    // Busy alone says work is happening; it does not say the control will refuse
+    // a press. Without this a screen reader announces a button that reads as
+    // pressable while the platform's own sheet is already up over the page.
+    expect(
+      buttonNamed(host, UNLOCK_BUTTON)?.getAttribute('aria-disabled'),
+    ).toBe('true');
+  });
+
+  it('keeps the unlock control focusable while the ceremony runs', () => {
+    // Arrange
+    unlock.busy.set(true);
+
+    // Act
+    fixture.detectChanges();
+    const unlockButton = buttonNamed(host, UNLOCK_BUTTON);
+
+    // Assert
+    // A button that takes the DOM `disabled` property under the finger drops
+    // focus to <body>, so somebody who pressed Unlock from the keyboard loses
+    // their place in the document at the exact moment the outcome is announced —
+    // and the outcome is announced into a region they would then have to tab the
+    // page from the top to reach. The control stays in the tab order and refuses
+    // the press through `aria-disabled` instead, which is what
+    // `disabledInteractive` renders and what the two tests above would otherwise
+    // be satisfied by a plain `disabled` binding.
+    expect(unlockButton?.disabled).toBe(false);
+    expect(unlockButton?.getAttribute('tabindex')).not.toBe('-1');
+  });
+
+  it('says plainly that nothing is encrypted yet', () => {
+    // Act
+    const section = sectionFor(host, ACCOUNT_KEYS_HEADING_ID);
+    const said = normalize(section);
+
+    // Assert
+    // Both paragraphs, each as one element's own text. Without them the section
+    // stops saying that unlocking changes nothing anybody can see, and a reader
+    // who has just presented a passkey is left to work out what it did for them —
+    // which, on a product where nothing is encrypted, means going to look for a
+    // change that is not there. `elementSaying` is the half `toContain` cannot
+    // do: a sentence reassembled out of two paragraphs reads as two claims.
+    for (const sentence of ACCOUNT_KEYS_HONESTY) {
+      expect(said, sentenceMismatch(said, sentence)).toContain(sentence);
+      expect(
+        elementSaying(section, sentence),
+        `no single element in the account keys section carries "${sentence}".`,
+      ).not.toBeNull();
+    }
+  });
+
+  it('reads as the honesty, then the outcome, then the control', () => {
+    // Act
+    const section = sectionFor(host, ACCOUNT_KEYS_HEADING_ID);
+    const keysHeld = elementSaying(section, HONESTY_KEYS_HELD);
+    const nothingEncrypted = elementSaying(section, HONESTY_NOTHING_ENCRYPTED);
+    const region = accountKeysRegion();
+    const unlockButton = buttonNamed(host, UNLOCK_BUTTON);
+
+    // Assert
+    // Each element present first, because `precedes` answers `false` for one
+    // that is not there and would fail this as `expected false to be true`,
+    // naming neither the element nor the reason.
+    expect(keysHeld).not.toBeNull();
+    expect(nothingEncrypted).not.toBeNull();
+    expect(region).not.toBeNull();
+    expect(
+      unlockButton,
+      `the settings screen offers no control named "${UNLOCK_BUTTON}".`,
+    ).not.toBeNull();
+
+    // The order the chapter fixes, and it is held by nothing else: every
+    // `precedes` assertion on this screen is either between whole sections or
+    // between an explanation and the control it explains in another section.
+    //
+    // **The prose is above the control** because the chapter's accessibility
+    // rule says so outright — prose in reading order, above the control it
+    // belongs to, never hung on it — and because these two paragraphs are what
+    // tell a reader what pressing it will and will not do. **The region is above
+    // the control** because the chapter reserves the region's last line box "so
+    // nothing below it moves when an answer arrives", which names a fact only if
+    // something is below it. Read in any other order the section reports an
+    // outcome before the reader has met the act, or explains the act after they
+    // have already performed it.
+    expect(
+      precedes(keysHeld, nothingEncrypted),
+      'the account keys section states the gap before it states what the passkey holds.',
+    ).toBe(true);
+    expect(
+      precedes(nothingEncrypted, region),
+      'the account keys section puts its outcome region above the prose that explains the act.',
+    ).toBe(true);
+    expect(
+      precedes(region, unlockButton),
+      'the account keys section puts its control above the region that answers it.',
+    ).toBe(true);
+  });
+
+  it('holds the held-keys line open before the keys are held', () => {
+    // Arrange
+    // The at-rest half, asserted here because the Act below is what makes the
+    // *same node* claim mean anything. `announces the count in the region that
+    // said it was loading` is arranged the same way for the same reason.
+    //
+    // The limit, stated rather than glossed: jsdom applies no stylesheet, so this
+    // spec cannot measure `min-height: 1lh` and cannot prove the box is reserved.
+    // What it can prove is the half that goes missing — that the element exists
+    // at rest, is the region's last child, and is the very node the sentence
+    // later lands in rather than one created to carry it.
+    const region = accountKeysRegion();
+    const line = region?.querySelector(`.${HELD_LINE_CLASS}`) ?? null;
+    expect(
+      line,
+      'the account keys region reserves no line for the sentence saying the keys are held.',
+    ).not.toBeNull();
+    expect(
+      normalize(line),
+      'the account keys region says the keys are held before they are.',
+    ).toBe('');
+    expect(
+      region?.lastElementChild,
+      'the line reserving the region’s last box is not the region’s last child.',
+    ).toBe(line);
+
+    // Act
+    custody.status.set('unlocked');
+    fixture.detectChanges();
+
+    // Assert
+    // The same node, still last. A sentence rendered inside a branch of its own
+    // passes every copy assertion in this section and moves the page under the
+    // reader at the moment the answer lands — and a second element created to
+    // hold it is a line the assistive technology was not watching, which is the
+    // whole reason this region is in the DOM from first paint.
+    expect(
+      accountKeysRegion()?.lastElementChild,
+      'the sentence saying the keys are held arrived in a node that was not on the screen before it.',
+    ).toBe(line);
+    expect(normalize(line)).toBe(UNLOCK_HELD);
+  });
+
+  // The state table assigns a treatment per row and nothing in this file could
+  // read one. Both directions are pinned, and they are two tests because they
+  // fail for two different reasons — a refusal drawn as prose has lost a signal,
+  // a wait drawn as a failure has gained a false one.
+  it('draws all eight refusals in the failure treatment', () => {
+    // Arrange
+    // `Record`s over the two unions rather than lists of pairs, so a word added
+    // to either fails to compile here instead of arriving on the screen in
+    // whichever treatment the template happens to give it.
+    const ceremony: Record<UnlockCeremonyFailure, string> = {
+      unsupported: UNLOCK_UNSUPPORTED,
+      cancelled: UNLOCK_CANCELLED,
+      'no-prf': UNLOCK_NO_PRF,
+      'ceremony-failed': UNLOCK_CEREMONY_FAILED,
+      unknown: UNLOCK_UNKNOWN,
+    };
+    const read: Record<UnlockFailure, string> = {
+      unopened: CUSTODY_UNOPENED,
+      unreachable: CUSTODY_UNREACHABLE,
+      unauthenticated: CUSTODY_UNAUTHENTICATED,
+    };
+    const ceremonyFailures = [
+      'unsupported',
+      'cancelled',
+      'no-prf',
+      'ceremony-failed',
+      'unknown',
+    ] as const satisfies readonly UnlockCeremonyFailure[];
+    const readFailures = [
+      'unopened',
+      'unreachable',
+      'unauthenticated',
+    ] as const satisfies readonly UnlockFailure[];
+
+    // Act & Assert
+    for (const failure of ceremonyFailures) {
+      unlock.failure.set(failure);
+      fixture.detectChanges();
+      expectTreatment(ceremony[failure], FAILURE_CLASS, PROSE_CLASS);
+    }
+
+    // Custody's three render only once the flow reports none — the precedence
+    // rule — so the flow's failure is cleared before this half runs.
+    unlock.failure.set(null);
+
+    for (const failure of readFailures) {
+      custody.unlockFailure.set(failure);
+      fixture.detectChanges();
+      expectTreatment(read[failure], FAILURE_CLASS, PROSE_CLASS);
+    }
+  });
+
+  it('draws the two in-flight lines and the held line as prose, not as failures', () => {
+    // Arrange
+    // Each of the three is reached by the state that produces it, rather than by
+    // setting a flag the template does not read.
+    const states = [
+      [UNLOCK_WAITING, (): void => unlock.busy.set(true)],
+      [
+        UNLOCK_OPENING,
+        (): void => {
+          unlock.busy.set(false);
+          custody.status.set('unlocking');
+        },
+      ],
+      [UNLOCK_HELD, (): void => custody.status.set('unlocked')],
+    ] as const;
+
+    // Act & Assert
+    // The direction that matters. A refusal that lost `--bud-over` still reads
+    // as a refusal, because colour is never the message here; a **wait** that
+    // gained it tells somebody whose ceremony is still running, in red, that
+    // something went wrong — and the two in-flight lines are precisely the ones
+    // whose advice is *keep going*. The held line is in this list on the same
+    // argument: the sentence saying the account is open is the one line in the
+    // section that reports success.
+    for (const [sentence, reach] of states) {
+      reach();
+      fixture.detectChanges();
+      expectTreatment(sentence, PROSE_CLASS, FAILURE_CLASS);
+    }
+  });
+
+  it('announces the account keys politely and never assertively', () => {
+    // Act
+    const region = accountKeysRegion();
+    const live = region?.getAttribute('aria-live') ?? null;
+
+    // Assert
+    // `accountKeysRegion` already selects on `role="status"`, so a region that
+    // took `role="alert"` is caught by every assertion in this section going
+    // null. **An `aria-live` beside the role is caught by none of them**: the
+    // attribute wins over the role, so one word added here makes eleven
+    // sentences — five device refusals, three read refusals, two waits and the
+    // line saying the keys are held — interrupt whatever the reader is being
+    // read, on a section whose whole content is the result of something they
+    // asked for. `off` is refused for the opposite reason: it silences the
+    // region while leaving every structural assertion green.
+    expect(region).not.toBeNull();
+    expect(
+      live === null || live === 'polite',
+      `the account keys region carries aria-live="${live}", which overrides the politeness role="status" would give it.`,
+    ).toBe(true);
   });
 
   // Reads the rows the way the design chapter specifies them, so a list that
@@ -2159,6 +3230,49 @@ describe('SettingsComponent', () => {
       sectionFor(host, 'recovery-heading')?.querySelector('[role="status"]') ??
       null
     );
+  }
+
+  // The section's one region, which carries every line it says — both waits, all
+  // eight refusals and the line saying the keys are held. `status` and never
+  // `alert`: the person asked for this, and assertive is reserved for a failure
+  // to save something they typed.
+  function accountKeysRegion(): Element | null {
+    return (
+      sectionFor(host, ACCOUNT_KEYS_HEADING_ID)?.querySelector(
+        '[role="status"]',
+      ) ?? null
+    );
+  }
+
+  // The treatment one of the section's eleven lines is drawn in, asserted in
+  // both directions at once.
+  //
+  // The element is found by its own text being the sentence, so a line split
+  // across two elements — or one wrapped in a `<span>` carrying the class while
+  // the paragraph carries the other — is not found and fails here rather than
+  // passing on the wrapper's classes. The negative half is not redundant: an
+  // element can carry both classes, and it is the failure colour *arriving* that
+  // turns a wait into a refusal.
+  function expectTreatment(
+    sentence: string,
+    expected: string,
+    refused: string,
+  ): void {
+    const line = elementSaying(accountKeysRegion(), sentence);
+
+    expect(
+      line,
+      sentenceMismatch(normalize(accountKeysRegion()), sentence) ||
+        `no single element in the account keys region carries "${sentence}".`,
+    ).not.toBeNull();
+    expect(
+      line?.classList.contains(expected),
+      `"${sentence}" is not drawn in the ${expected} treatment.`,
+    ).toBe(true);
+    expect(
+      line?.classList.contains(refused),
+      `"${sentence}" is drawn in the ${refused} treatment.`,
+    ).toBe(false);
   }
 
   // The count line, read on its own rather than through the section's whole
@@ -2461,6 +3575,98 @@ describe('SettingsComponent on a second visit', () => {
 
     // Assert
     expect(exportSection(second)).not.toContain(EXPORT_BUILD_FAILURE);
+  });
+});
+
+// The same lifetime rule, against the other service this screen provides — and
+// the one place in this file that can see the component's `providers` array at
+// all. The block above it deliberately provides `AccountUnlockService` at the
+// module level, so every test there is answered by that provider whether or not
+// the component declares one; nothing there, and nothing in
+// `account-unlock.service.spec.ts`, can tell a component-provided flow from a
+// root-provided one.
+//
+// **The scope is the specification here, not one way of reaching an outcome.**
+// The flow holds an *attempt*, and an attempt abandoned on a screen should die
+// with the screen — which is why it sits on the component beside
+// `SettingsService` while `AccountKeyCustodyService`, which holds state of the
+// **session**, is root-provided and read from there. Move the flow to the root
+// and a refusal from a visit somebody walked away from is on the screen when
+// they come back: a sentence about a ceremony they did not run, in a section
+// whose only other content is a button.
+//
+// Written as what the second screen shows rather than as an instance
+// comparison, for the reason the export block gives: the assertion then holds
+// whether the fix scopes the service to the component or clears the failure when
+// the screen initializes.
+describe('SettingsComponent unlocking on a second visit', () => {
+  it('does not explain an unlock refusal the previous visit hit', async () => {
+    // Arrange
+    // The real `AccountUnlockService` with only the platform edge replaced —
+    // `WebauthnCeremonyService` calls `navigator.credentials`, which does not
+    // exist under the test runner. `cancelled` rather than the `unsupported`
+    // that a bare jsdom would produce on its own: refusing deliberately is what
+    // makes this a test of the flow's lifetime rather than of the runner's
+    // capabilities.
+    const ceremony: Pick<
+      WebauthnCeremonyService,
+      'deriveKeyFromLocalAssertion'
+    > = {
+      deriveKeyFromLocalAssertion: () =>
+        Promise.resolve({ failure: 'cancelled', ok: false }),
+    };
+    const api: MeApiEdges = {
+      getCredentials: () => of([PASSKEY]),
+      getExport: () => of(new Blob()),
+      getMe: () => of({ email: OWNER_EMAIL }),
+      getRecoveryCodes: () => of(3),
+    };
+    const downloads: Pick<FileDownloadService, 'save'> = { save: vi.fn() };
+
+    await TestBed.configureTestingModule({
+      imports: [SettingsComponent],
+      providers: [
+        provideNoopAnimations(),
+        { provide: MeApiService, useValue: api },
+        { provide: FileDownloadService, useValue: downloads },
+        { provide: WebauthnCeremonyService, useValue: ceremony },
+      ],
+    }).compileComponents();
+
+    const first = TestBed.createComponent(SettingsComponent);
+    first.detectChanges();
+    buttonNamed(first.nativeElement as HTMLElement, UNLOCK_BUTTON)?.click();
+    await first.whenStable();
+    first.detectChanges();
+
+    // The first visit really was refused. Without this the test is green on a
+    // screen that never renders a refusal at all, which is the shape every
+    // negative-only assertion in this file is written against.
+    expect(
+      normalize(
+        sectionFor(first.nativeElement as HTMLElement, ACCOUNT_KEYS_HEADING_ID),
+      ),
+      'the first visit was not refused, so the assertion below cannot fail.',
+    ).toContain(UNLOCK_CANCELLED);
+    first.destroy();
+
+    // Act
+    // The TestBed is not reset between these two, so anything the application
+    // keeps outside the component survives from one to the next — which is the
+    // whole point.
+    const second = TestBed.createComponent(SettingsComponent);
+    second.detectChanges();
+
+    // Assert
+    expect(
+      normalize(
+        sectionFor(
+          second.nativeElement as HTMLElement,
+          ACCOUNT_KEYS_HEADING_ID,
+        ),
+      ),
+      'the settings screen explains an unlock refusal from a visit the reader walked away from.',
+    ).not.toContain(UNLOCK_CANCELLED);
   });
 });
 

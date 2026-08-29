@@ -65,6 +65,10 @@ import {
   type MockInstance,
 } from 'vitest';
 import { SignInService } from './sign-in.service';
+// The module itself, so the retention walk can look at what it exports and at
+// the statics of what it exports. A field is not the only place a key can be
+// parked.
+import * as signInModule from './sign-in.service';
 
 const API_ORIGIN = 'https://api.test';
 const OPTIONS_URL = `${API_ORIGIN}/api/passkeys/assertion/options`;
@@ -285,6 +289,44 @@ function saying(needle: string): (candidate: unknown) => boolean {
 // here — which covers the way a retained value would actually be written.
 function stateOf(service: SignInService): Record<string, unknown> {
   return { ...service };
+}
+
+// **The closure half of the walk, and the reason the value walk alone is not
+// enough.**
+//
+// `findings` reaches `this.lastKey = key` and a signal holding one. It does not
+// reach `this.retry = () => this.custody.unlock(key)`, where the key is a
+// captured binding — and nothing in JavaScript can: no property walk reaches a
+// closure scope, `JSON.stringify` does not see it, and
+// `Function.prototype.toString` gives back source text rather than values. The
+// *container* is reachable though, and on this instance the only container is
+// an own function property. Signals are excluded because `signal()` and
+// `.asReadonly()` both return callables and `findings` already looks inside
+// those by calling them; class methods never reach here at all, because they
+// live on the prototype and this walks own properties only.
+function ownFunctionsOf(value: object): readonly string[] {
+  return Object.entries(value)
+    .filter(
+      ([, member]: [string, unknown]) =>
+        typeof member === 'function' && !isSignal(member),
+    )
+    .map(([name]) => name);
+}
+
+// What a module can hold, as a plain object the value walk can descend into:
+// every export, and — for every exported class or function — its own enumerable
+// properties, which is where a `static lastKey` would sit. Static *methods* are
+// non-enumerable and never appear; static *fields* are enumerable and do, which
+// is the shape the defect would take.
+function moduleSurface(namespace: object): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(namespace).map(([name, value]: [string, unknown]) => [
+      name,
+      typeof value === 'function' || typeof value === 'object'
+        ? { ...(value as object) }
+        : value,
+    ]),
+  );
 }
 
 describe('SignInService', () => {
@@ -546,6 +588,68 @@ describe('SignInService', () => {
     expect(
       findings({ held: signal(keyEncryptionKey) }, 'probe', isKeyLike),
     ).toEqual(['probe.held()']);
+  });
+
+  // The two shapes the test above cannot see, closed here rather than left as a
+  // gap the reader has to know about.
+  //
+  // **The residue, stated as a bound rather than as a reassurance.** Between
+  // this test and the one above, what is reached is: own fields, the current
+  // value of own signals, plain data nested in either, every export of this
+  // module, the enumerable statics on those exports, and the *container* an
+  // instance-held closure would need. What is **not** reached is: a value
+  // captured by a closure held somewhere other than this instance — a pending
+  // promise's frame, a timer the platform holds, a callback handed to a
+  // collaborator; a plain `const` local, which dies with the frame that
+  // declared it and is therefore not retention at all; a `#private` field,
+  // which is unreachable by the language; a module-level `let` that is **not
+  // exported**, because an ES module namespace object exposes exports only; and
+  // anything inside the collaborators, which the walk stops at deliberately. So
+  // the claim is "no retention through the shapes this service could be written
+  // to use", and it is **not** "no retention is possible".
+  it('parks the key in no closure and no module binding', async () => {
+    // Arrange
+    const assertion = await driveToAssertion();
+
+    // Act
+    assertion.flush(SESSION_BODY);
+
+    await eventually(
+      () => navigations[0] ?? null,
+      'the navigation into the app',
+    );
+
+    // Assert
+    expect(
+      ownFunctionsOf(service),
+      'the service holds a function that could have captured the key.',
+    ).toEqual([]);
+    expect(
+      findings(moduleSurface(signInModule), 'module', isKeyLike),
+      'the module is holding a key.',
+    ).toEqual([]);
+
+    // The controls, and they are why the two assertions above mean anything.
+    // Each plants the value exactly where its own defect would put it.
+    expect(ownFunctionsOf({ retry: () => keyEncryptionKey })).toEqual([
+      'retry',
+    ]);
+    // And the exclusion that keeps the closure check usable: a signal is a
+    // callable and is not the container this is looking for.
+    expect(ownFunctionsOf({ busy: signal(false) })).toEqual([]);
+    expect(
+      findings(
+        // A function value carrying an enumerable own property, which is what
+        // a class with a `static lastKey` is at runtime.
+        moduleSurface({
+          exportedClass: Object.assign(() => undefined, {
+            held: keyEncryptionKey,
+          }),
+        }),
+        'probe',
+        isKeyLike,
+      ),
+    ).toEqual(['probe.exportedClass.held']);
   });
 
   // The other end of the same sentence. The test above says this service keeps

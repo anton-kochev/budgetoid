@@ -569,10 +569,18 @@ ELSE
   already runs, creating a passkey on `/register` and asserting one on `/welcome`. What is missing
   is narrower and less flattering: the confirmation flow [components.md](../design/components.md)
   specifies, and the wiring between this button and that assertion. Do not write the copy as though
-  the browser were incapable — it is not. The screen says so in its own words — *"Erasing has to be
-  confirmed with a passkey, and this screen doesn't ask for one yet."* — and that copy is
-  deliberately **not** the sentence the credential and recovery-code sections use: those two wait on
-  unwrapping the account's keys, which erasing an account needs nothing of.
+  the browser were incapable — it is not. The screen says so in its own words, and the load-bearing
+  clause is the qualifier: what erasing waits on is a passkey **Budgetoid checks itself**. The
+  wording is the design book's — see the *Not built yet* pattern in
+  [voice.md](../design/voice.md) and the erasure and revocation sentences in
+  [components.md](../design/components.md) — and the qualifier is not decoration. The same screen
+  now carries an **Unlock** control that runs a passkey ceremony minted and discarded in the
+  browser, so a sentence saying this screen asks for no passkey would be false in front of somebody
+  who watched their authenticator answer one two sections up. What is missing is narrower: an
+  assertion a **server** verifies. That copy is deliberately **not** the sentence the credential
+  section uses, and only half of the recovery-code one: those wait on the account's keys **as
+  bytes** — which unlocking does not hand over, and which erasing an account needs nothing of — and
+  the recovery-code control waits on a server-checked assertion on top of that.
 - **A failed erasure still spends the assertion, and still advances the signature counter.** Both
   are the gate's writes, both committed before the transaction opened, and neither returns with the
   rollback — so the person has to run the ceremony again. Correct rather than a defect, and it must

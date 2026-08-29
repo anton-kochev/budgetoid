@@ -59,57 +59,61 @@
        not waiting on the same thing — but the line between them has moved, and
        where it moved to is worth writing down.
 
-       **Register a passkey** waits on the account's keys. A new passkey is a new
-       *factor*, and every factor stores its own wrapped copy of the account's
-       content key and index key — so registering one means wrapping those keys,
-       and `wrapAccountKeys` takes them as **bytes**.
+       **Register a passkey** waits on the account's keys **as bytes**, and on
+       nothing else. A new passkey is a new *factor*, every factor stores its own
+       wrapped copy of the account's content key and index key, and
+       `wrapAccountKeys` takes those keys themselves rather than the ability to
+       use them.
 
-       The sentence this replaces said Budgetoid could not unlock them in the
-       browser, which was true for exactly as long as no route handed the
-       envelopes back. The commits that landed `GET /api/me/account-keys` and
-       `AccountKeyCustodyService` ended that: this same browser opens both
-       envelopes on every passkey sign-in, one screen earlier. What is left is
-       narrower, and it is not nothing — custody holds what it opened as two
-       non-extractable `CryptoKey` objects behind no accessor, on purpose, so
-       there is no route back to bytes from anything this tab is holding. Bytes
-       come from unwrapping again, under a key-encryption key derived from a
-       factor the person presents *here*; this screen asks for no ceremony, so
-       there is no such key, and a `create()` on its own would mint a factor
-       with nothing to put in it.
+       **The clause naming what is missing has now been narrowed twice, each time
+       by a capability that landed.** It first said Budgetoid could not unlock
+       the keys in the browser, which stopped being true when
+       `GET /api/me/account-keys` and `AccountKeyCustodyService` arrived. It then
+       said the copy takes *a passkey this screen doesn't ask for* — and the
+       Account keys section below puts an **Unlock** on this very screen, so that
+       clause has become the same defect one step removed, against a control the
+       reader has just used.
 
-       It is emphatically **not** the browser: this client creates a passkey on
-       `/register` and asserts one on `/welcome`, so a sentence saying it cannot
-       would be telling a person their browser cannot do what it did on the way
-       in — which is what the old sentence had turned into.
+       What is left is the part no ceremony on this screen closes. `unlock` takes
+       the key-encryption key as an **argument** and hands it to custody in one
+       statement, and custody keeps what it opened as two non-extractable
+       `CryptoKey` objects behind no accessor. There is no route from anything
+       this tab is holding back to bytes: bytes come only from unwrapping again
+       under a key-encryption key *held long enough to wrap with*, and holding
+       one that long is exactly what the unlock path refuses to do.
 
-       **Revoke** waits on this screen too, and on nothing else.
-       `POST /api/me/credentials/{id}/revocation` exists, the assertion that
-       authorizes it is a ceremony this client runs, and nothing here asks for
-       one — the same shape the erasure section is in, which is why it is written
-       in the erasure section's words rather than in these.
+       **Revoke** waits on an assertion the *server* checks, and on nothing else.
+       `POST /api/me/credentials/{id}/revocation` is live and the fresh assertion
+       that authorizes it is a ceremony this client runs; what the Account keys
+       section runs is not it — that one is minted in the browser and discarded.
+       Same position as the erasure section, so it is said in the erasure
+       section's words, plural for the per-row buttons.
 
-       **Both sentences therefore end at the same place, and they still differ in
-       what the passkey is *for*.** There it authorizes an act that cannot be
-       taken back; here it opens the keys the new factor has to be given a copy
-       of. That is a different fact rather than a rephrasing, and it is the one
-       that answers "why can't I just add another way in": the thing that would
-       open the keys is the thing a person who has lost their only passkey no
-       longer has. One sentence pasted over both sites would stop the screen
-       saying it.
+       **The registration sentence is no longer shared with the recovery-codes
+       section, and the split is the specification**: registering waits on the
+       bytes alone, generating waits on the bytes *and* on a checked assertion,
+       which is strictly more. Pasting any one of the screen's four sentences
+       over another puts a sentence on the screen that is true of a different
+       control — and collapsing these two in particular erases the answer to
+       "why can't I just add another way in".
 
        Both above the list and both as visible prose rather than a title or an
        aria-describedby: the controls they explain are disabled, so they are out
        of the tab order and anything hung on them is read to nobody. Said per row
        instead, either sentence would be read once per entry — the same paragraph
-       three times on an account with three credentials. -->
+       three times on an account with three credentials. The account-keys one is
+       above the *list* and not merely above the Register control it explains,
+       because the first inert control a reader meets here is a row's Revoke:
+       below the rows the sentence is an apology, above them an instruction. -->
   <p class="s-prose">
-    This gives a new way to sign in its own copy of your account&rsquo;s keys,
-    and making that copy takes a passkey this screen doesn&rsquo;t ask for yet.
-    The button stays off until it does.
+    A new passkey needs its own copy of your account&rsquo;s keys, and unlocking
+    lets this browser use those keys without ever getting hold of them. The
+    button stays off until that copy can be made.
   </p>
   <p class="s-prose">
-    Revoking has to be confirmed with a passkey, and this screen doesn&rsquo;t
-    ask for one yet. Those buttons stay off until it does.
+    Revoking has to be confirmed with a passkey Budgetoid checks itself, and
+    this screen doesn&rsquo;t ask for one yet. Those buttons stay off until it
+    does.
   </p>
 
   <!-- Both lines arrive after the first paint, so they land inside a region
@@ -303,34 +307,39 @@
     </p>
   </div>
 
-  <!-- Word for word the sentence above the credential list, and that is the
-       point rather than a copy-paste: generating a set is *ten* factors at once
-       — each code derives its own key-encryption key — so it waits on exactly
-       what registering a passkey waits on, the account's content key and index
-       key as bytes on this device, and on nothing else. The sentence names no
-       specific action for the same reason it can be repeated here at all.
+  <!-- **This section's own sentence, and no longer the credential list's.** The
+       two were word for word while one fact held both controls off. It no longer
+       does, and the split is the specification.
 
-       Why that is still out of reach is argued in full beside the credential
-       list and deliberately not restated here. The short of it: the keys are
-       handed back by `GET /api/me/account-keys` and opened on every passkey
-       sign-in, so this browser plainly can unlock them — what it cannot do is
-       reach them as bytes from anything the tab is holding, because custody
-       keeps them as non-extractable `CryptoKey` objects behind no accessor.
-       Bytes take a factor presented on this screen, and this screen asks for
-       none.
+       The first fact is common ground and is argued once beside the credential
+       list rather than twice: generating a set is *ten* factors at once — each
+       code derives its own key-encryption key — so it waits on the account's
+       content key and index key **as bytes** exactly as registering a passkey
+       does, and the Account keys section below does not supply them.
 
-       It does not say the browser cannot run a passkey check, because it can:
-       `/register` creates a credential and `/welcome` asserts one. The
-       assertion this route also needs is the half this client can already
-       produce; what is missing is a screen that asks for it.
+       The second belongs to this route alone: it is gated on a fresh assertion
+       the **server** verifies, and the unlock ceremony's assertion is minted in
+       the browser and thrown away, so a person can press Unlock all afternoon
+       without moving this control one step. One sentence covering both sites
+       would have to drop that clause, and the reader would be told two controls
+       wait on the same thing when one waits on strictly more.
+
+       The clause naming that second fact is also what keeps the sentence true in
+       front of the reader. It does not say the browser cannot run a passkey
+       check — `/register` creates a credential and `/welcome` asserts one — and,
+       with the Account keys section immediately below, it may no longer say this
+       screen asks for no passkey either. It asks for one, in plain sight, a few
+       lines further down the page. What it says instead is which *kind* is
+       missing, which is a fact about the route rather than about the device.
 
        Visible prose above the control, never a title, a tooltip or an
        aria-describedby: the button is disabled, so it is out of the tab order
        and anything hung on it is read to nobody. -->
   <p class="s-prose">
-    This gives a new way to sign in its own copy of your account&rsquo;s keys,
-    and making that copy takes a passkey this screen doesn&rsquo;t ask for yet.
-    The button stays off until it does.
+    Ten new codes each need their own copy of your account&rsquo;s keys, and
+    replacing a set also has to be confirmed with a passkey Budgetoid checks
+    itself &mdash; not the one unlocking asks for, which never leaves this
+    device. The button stays off until this screen asks for both.
   </p>
 
   <!-- Outline rather than Destructive even though generating replaces an
@@ -344,6 +353,251 @@
   <button class="s-button" mat-stroked-button type="button" disabled>
     Generate recovery codes
   </button>
+</section>
+
+<!-- Between Recovery codes and Export, on the placement rule the recovery-codes
+     section above already states: Export and Erase are a pair, so nothing goes
+     between them and everything else arrives above them both.
+
+     **A locked account is a browser holding no content key, and every tab starts
+     in one** — nothing about the keys survives a page load. It is *not* a locked
+     session, which is a different word for a different thing: everybody reading
+     this section is signed in, and what they are missing is a key. No sentence
+     here may suggest otherwise. -->
+<section class="s-section" aria-labelledby="account-keys-heading">
+  <h2 class="s-eyebrow" id="account-keys-heading">Account keys</h2>
+
+  <!-- Honesty about today, in the register the "What we can read" section below
+       uses: a fact about the system, with no apology around it. A section
+       implying budget content is hidden until you unlock would be describing a
+       product that does not exist, and the reader would go looking for whatever
+       unlocking had revealed. -->
+  <p class="s-prose">
+    Your passkey holds the keys your records will be encrypted with. Budgetoid
+    never sees them, and this browser forgets them every time the page reloads.
+  </p>
+  <p class="s-prose">
+    Nothing you record is encrypted yet, so unlocking changes nothing you can
+    see today.
+  </p>
+
+  <!-- Read once into a local, for the reason the two lists above give: every
+       branch below has to be looking at the *same* answer, and the whole
+       composition rule is about which of two objects that answer comes from. -->
+  @let keys = custody.status();
+  @let ceremony = unlocking.failure();
+  @let read = custody.unlockFailure();
+  <!-- "Either half is running", which is the book's phrase for the busy
+       treatment. It is not a screen-state enum and must not become one: it
+       carries no reading of lockedness, only of motion, and the two states it
+       ors together are owned by two different objects that are both still read
+       by name below. -->
+  @let working = keys === 'unlocking' || unlocking.busy();
+
+  <!-- One region, in the DOM from first paint and empty at rest, carrying every
+       line this section says: both waits, all eight refusals, and the line
+       saying the keys are held. A live region inserted together with its text is
+       announced by nothing — argued at length in the account and recovery
+       sections above and not argued a third time here. `status` and never
+       `alert`: the person asked for this, and assertive is reserved for a
+       failure to save something they typed.
+
+       **RULE ONE — which block renders is `custody.status()`'s answer and only
+       its.** The chain below branches on `keys` at the top level; the flow's own
+       `busy` is consulted *inside* the `locked` arm and nowhere else. **The
+       order is the rule, not a style.** The two in-flight states overlap on
+       purpose: `AccountUnlockService` hands custody the key *before* it clears
+       `busy`, so that no frame exists in which both are false and the section
+       flashes back to its resting state with a second press available. Something
+       has to break that tie, and it is not arbitrary which way — once the key
+       has been handed over the ceremony is finished, so the truer sentence is
+       about the read that is running now rather than about the device that has
+       already answered. Test `busy` first and somebody watching a network
+       request is told their passkey is still being waited on, and the thing that
+       sentence tells them to do — touch a sensor — cannot help, because nothing
+       is asking them for anything.
+
+       A template that tests `busy` first passes almost every assertion in
+       `settings.component.spec.ts`: both sentences exist and both render on
+       their own. The one that catches it is "says the read is running, not that
+       it still waits, once the key is handed over", which sets both in-flight
+       states true at once — a real state, not a contrived one.
+
+       **Two in-flight sentences and not one flag**, because they are two
+       different moments and a person can act on the difference: *Waiting for
+       your passkey.* is the system sheet, and the thing to do is touch a sensor
+       or pick a key up off the desk; *Opening your account…* is a request, and
+       the thing to do is wait. -->
+  <div class="s-outcome" role="status">
+    @if (keys === 'unlocking') {
+      <p class="s-prose">Opening your account&hellip;</p>
+    } @else if (keys === 'locked') {
+      @if (working) {
+        <p class="s-prose">Waiting for your passkey.</p>
+      } @else if (ceremony !== null) {
+        <!-- **RULE TWO — the flow's failure wins, and custody's renders only
+             when the flow reports none.** Both are readable at once and the
+             state that produces it is ordinary rather than contrived: press one
+             is answered `unopened` — the envelopes were read and none opened —
+             then press two is cancelled at the system sheet, which never reaches
+             custody, so custody's answer from the previous press is still
+             standing. Rendered together the section gives two answers to one
+             question and marks neither as the older. This `@else if` is what
+             makes "at most one sentence" true by structure rather than by
+             whichever branch happens to be written first; drop it and "says one
+             thing when a cancelled attempt follows one that opened nothing"
+             reddens, and nothing else does.
+
+             Five sentences, because these are five different next steps: open a
+             different browser, try again when ready, go and get the device that
+             holds the passkey, run the ceremony again, run the whole thing
+             again. Colour is never the message — each reads the same with
+             `--bud-over` removed. -->
+        @switch (ceremony) {
+          @case ('unsupported') {
+            <p class="s-error">
+              This browser can&rsquo;t check a passkey. Open Budgetoid in a
+              different browser, or on a phone or laptop that can.
+            </p>
+          }
+          @case ('cancelled') {
+            <p class="s-error">
+              The passkey check was cancelled. Nothing has changed &mdash; try
+              again whenever you&rsquo;re ready.
+            </p>
+          }
+          @case ('no-prf') {
+            <p class="s-error">
+              This device can&rsquo;t open your account&rsquo;s keys. Try the
+              device that holds the passkey you made this account with.
+            </p>
+          }
+          @case ('ceremony-failed') {
+            <p class="s-error">
+              Your device didn&rsquo;t finish the passkey check. Nothing has
+              changed.
+            </p>
+          }
+          @case ('unknown') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t finish unlocking. Nothing has changed
+              &mdash; try again.
+            </p>
+          }
+        }
+      } @else if (read !== null) {
+        <!-- Custody's three, and they are three because a person's next move is
+             three different things: present another factor, press again in a
+             minute, sign in again. Collapsing any two sends somebody down a road
+             that cannot help them.
+
+             `unopened`'s sentence names only doors that exist — redeeming a
+             recovery code has no surface anywhere in the product, so "another
+             way in" can offer another passkey and nothing else. It gains its
+             second clause the day redemption lands, and not before.
+
+             **The screen says "sign in again" and does not sign anybody out.**
+             `AccountUnlockService` injects the ceremony and custody and nothing
+             else — no `SessionService`, no `Router` — so a template that
+             navigated to `/welcome` here would be doing from markup exactly what
+             the class refuses to do from its code, to somebody whose session may
+             be perfectly live: a `403` is what the CSRF control answers a browser
+             whose session is intact. **Sign out** is on this screen, several
+             sections up, under the label the sentence names. -->
+        @switch (read) {
+          @case ('unopened') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t open your account&rsquo;s keys with that
+              passkey. If this account has another passkey, try again and choose
+              that one.
+            </p>
+          }
+          @case ('unreachable') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t reach the server. Try again in a minute.
+            </p>
+          }
+          @case ('unauthenticated') {
+            <p class="s-error">
+              Budgetoid wouldn&rsquo;t hand your keys back to this browser. Sign
+              out and sign in again.
+            </p>
+          }
+        }
+      }
+      <!-- **There is no line saying the account is locked.** The Unlock control
+           being on the screen is that statement, and a sentence beside it would
+           say the same thing twice: once in prose a reader has to parse, once in
+           a control they can press. -->
+    }
+
+    <!-- The region's last child, and it holds one line box open whether or not
+         it has anything to say — the label/value rule applied to a value whose
+         label is the section heading, exactly as `.s-count` above applies it to
+         the recovery number. Blank is not a sentence: at rest this says nothing,
+         and the control below it is what says the account is locked. -->
+    <p class="s-prose s-held">
+      @if (keys === 'unlocked') {
+        Your account is unlocked in this tab.
+      }
+    </p>
+  </div>
+
+  <!-- **Not rendered at all once the keys are held**, and that is a rule rather
+       than a tidy-up. Custody drops both keys the instant `unlock` starts — its
+       invariant is that "status is not `unlocked`" implies "this instance holds
+       no key" at every moment — so a press made on an open account and then
+       refused at any point after the key was handed over leaves the account
+       locked, having gained nothing. A control whose best outcome is no change
+       and whose ordinary failure is a loss is not a control.
+
+       **It does not leave on a refusal, however the ceremony was refused.** This
+       section has nowhere else to send anybody: its one control is the way out of
+       the state the section exists for, so removing it would leave an account
+       locked with nothing on screen to change that. A second press is a
+       genuinely different attempt on most of these, because the *authenticator*
+       chooses which credential answers. `unsupported` is the one real dead end,
+       and its sentence carries the way out — a different browser — rather than
+       the control doing it.
+
+       Outline, and the near miss is worth stating because a reader will propose
+       it: a Primary *while locked* reads as the obvious move. Refused twice
+       over. Export is this screen's one main action, and a screen with two is a
+       screen with none; and to anybody not tracking lock state — which is
+       everybody, since nothing on the page changes when it flips — a Primary
+       that comes and goes is just two Primary buttons on one screen. Not
+       Destructive either: nothing is lost whichever way this goes.
+
+       No composed accessible name: it is the only Unlock on the screen, so there
+       is nothing to tell it apart from. No sentence beside it saying what it
+       waits on, because it waits on nothing — the "not built yet" pattern its
+       disabled neighbours use is for a control that refuses a press.
+
+       `disabledInteractive` rather than a plain `disabled`, for the Export
+       control's reason: a button that goes truly disabled under the finger drops
+       focus to <body>, and somebody who pressed Unlock from the keyboard loses
+       their place in the document at the moment the outcome is announced.
+       `aria-busy` resolves to null at rest so the attribute is absent instead of
+       asserting that no work is happening.
+
+       The guard is in `AccountUnlockService.unlock()` as well as in this
+       attribute, and that is not redundancy: Material's click-halt is applied to
+       anchors only, so on a `<button>` the DOM `disabled` property stays false
+       and a second press arrives — which here would raise a second system sheet
+       over the first. -->
+  @if (keys !== 'unlocked') {
+    <button
+      class="s-button"
+      mat-stroked-button
+      type="button"
+      [disabled]="working"
+      [disabledInteractive]="true"
+      [attr.aria-busy]="working ? 'true' : null"
+      (click)="unlocking.unlock()"
+    >
+      Unlock
+    </button>
+  }
 </section>
 
 <section class="s-section" aria-labelledby="export-heading">
@@ -427,17 +681,25 @@
        behind this button — which is a smaller and less flattering reason than
        the one this replaces, and the honest one.
 
-       Deliberately **not** the sentence the two sections above use. Erasing
-       waits on nothing about the account's keys — deleting rows needs no key
-       unwrapped — and pasting one sentence at all three sites would swap one
+       **The qualifier is not decoration.** Without *Budgetoid checks itself* the
+       sentence says this screen asks for no passkey at all, which the Account
+       keys section above makes false: somebody who has just watched their
+       authenticator answer an **Unlock** would read, one section down, that this
+       screen cannot ask for what it asked for a moment ago. The credential list
+       carries the same qualifier and takes it in the same commit, or the two
+       come apart.
+
+       Deliberately **not** the sentence the key-wrapping sections above use.
+       Erasing waits on nothing about the account's keys — deleting rows needs no
+       key unwrapped — and pasting one sentence at all four sites would swap one
        falsehood for another.
 
        Visible prose, immediately before the control, because the control is
        disabled: it is out of the tab order and skipped by screen readers, so a
        title or aria-describedby on it would be read to nobody. -->
   <p class="s-prose">
-    Erasing has to be confirmed with a passkey, and this screen doesn&rsquo;t
-    ask for one yet. The button stays off until it does.
+    Erasing has to be confirmed with a passkey Budgetoid checks itself, and this
+    screen doesn&rsquo;t ask for one yet. The button stays off until it does.
   </p>
 
   <button class="s-button" mat-stroked-button type="button" disabled>

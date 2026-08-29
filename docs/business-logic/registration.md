@@ -744,7 +744,9 @@ ELSE consume the nonce — from here every outcome has burnt it
   them in. A returning person signs in with that passkey from `/welcome`, and the provider is not
   contacted on that path at all. What is **not** built beside it is the rest of the client's passkey
   surface: nothing registers a second passkey, and nothing runs the fresh assertion the erasure,
-  revocation and recovery-code-generation gates need.
+  revocation and recovery-code-generation gates need. **The unlock ceremony on `/app/settings` is
+  not that assertion and cannot be mistaken for it**: it is minted in the browser, answered by no
+  route and thrown away, so it satisfies no gate — see [account-keys.md](account-keys.md).
 - **Somebody who already has an account is refused at the options leg, and the passkey sheet never
   opens.** The welcome screen offers two ways in and **Create account** is the Primary, so an
   existing account holder reaching for it rather than for **Sign in with a passkey** lands on
