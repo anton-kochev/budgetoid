@@ -64,6 +64,11 @@ import {
   type Mock,
   type MockInstance,
 } from 'vitest';
+// The two halves of the retention walk that cannot be written as a value walk.
+// Shared with `account-unlock.service.spec.ts`, which holds the same rule about
+// the other flow that touches a key-encryption key — see the module's own
+// header for why one copy and not two.
+import { moduleSurface, ownFunctionsOf } from '../../testing/retention-walk';
 import { SignInService } from './sign-in.service';
 // The module itself, so the retention walk can look at what it exports and at
 // the statics of what it exports. A field is not the only place a key can be
@@ -291,43 +296,19 @@ function stateOf(service: SignInService): Record<string, unknown> {
   return { ...service };
 }
 
-// **The closure half of the walk, and the reason the value walk alone is not
-// enough.**
+// **The closure half of the walk and the module half both live in
+// `src/testing/retention-walk.ts`**, imported at the top of this file rather
+// than written out here.
 //
-// `findings` reaches `this.lastKey = key` and a signal holding one. It does not
-// reach `this.retry = () => this.custody.unlock(key)`, where the key is a
-// captured binding — and nothing in JavaScript can: no property walk reaches a
-// closure scope, `JSON.stringify` does not see it, and
-// `Function.prototype.toString` gives back source text rather than values. The
-// *container* is reachable though, and on this instance the only container is
-// an own function property. Signals are excluded because `signal()` and
-// `.asReadonly()` both return callables and `findings` already looks inside
-// those by calling them; class methods never reach here at all, because they
-// live on the prototype and this walks own properties only.
-function ownFunctionsOf(value: object): readonly string[] {
-  return Object.entries(value)
-    .filter(
-      ([, member]: [string, unknown]) =>
-        typeof member === 'function' && !isSignal(member),
-    )
-    .map(([name]) => name);
-}
-
-// What a module can hold, as a plain object the value walk can descend into:
-// every export, and — for every exported class or function — its own enumerable
-// properties, which is where a `static lastKey` would sit. Static *methods* are
-// non-enumerable and never appear; static *fields* are enumerable and do, which
-// is the shape the defect would take.
-function moduleSurface(namespace: object): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(namespace).map(([name, value]: [string, unknown]) => [
-      name,
-      typeof value === 'function' || typeof value === 'object'
-        ? { ...(value as object) }
-        : value,
-    ]),
-  );
-}
+// They were written out here, byte for byte, and in
+// `account-unlock.service.spec.ts` as well — two copies of one walk, with two
+// different comments explaining them. The drift that costs something is not the
+// comments: it is a walk that stops reaching a shape in one file while its twin
+// still reaches it, in two suites that never meet and with nothing anywhere
+// going red. What stays here is this file's own **positive control**, in
+// `parks the key in no closure and no module binding` below, because a walk is
+// worth something only to a suite that has watched it find a planted value —
+// and that is a fact about a suite rather than about the function.
 
 describe('SignInService', () => {
   let http: HttpTestingController;

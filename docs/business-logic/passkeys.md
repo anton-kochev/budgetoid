@@ -682,9 +682,11 @@ derived from the challenge it just spent — [registration.md](registration.md) 
     the signed response away and returns only the key-encryption key it derived. **No route is
     called and no challenge row is written.** Both candidate pools were rejected rather than chosen
     between: `authentication` is minted anonymously and would put an anonymous route under a screen
-    deep inside the app, and `reauthentication` exists to authorize **erasing the account**, so
-    every press of Unlock would leave a live erasure-authorizing nonce behind on behalf of an act
-    that destroys nothing. What makes the local ceremony sound is that nothing is being authorized:
+    deep inside the app, and `reauthentication` is the pool **three** sensitive acts spend — the
+    gotcha below counts them — so every press of Unlock would leave behind a live nonce good for
+    any of the three, erasure included, on behalf of an act that destroys nothing. The breadth is
+    the argument: a nonce spendable three ways is a worse thing to mint for a convenience than one
+    spendable a single way. What makes the local ceremony sound is that nothing is being authorized:
     the account's wrapped envelopes are the proof, and a factor that is not this account's opens
     none of them — see [account-keys.md](account-keys.md). The day a server has to check a factor
     from that screen — replacing a set of recovery codes is the case — it is a **different**

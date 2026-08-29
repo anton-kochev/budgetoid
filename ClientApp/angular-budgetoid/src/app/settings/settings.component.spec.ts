@@ -277,6 +277,20 @@ const ACCOUNT_KEYS_HONESTY = [
 // no stylesheet, so a spec here cannot measure the reserved box, and the class is
 // the seam between the two halves — it is the half that goes missing.
 const HELD_LINE_CLASS = 's-held';
+// The class every outcome region on this screen carries, and the one thing
+// about the account-keys region that no assertion in this file could see.
+//
+// `accountKeysRegion` finds the region by `[role="status"]`, which is the
+// *semantic* half — announced, and announced politely. `.s-outcome` is the
+// other half: the screen's own stylesheet hangs the region's spacing and its
+// place in the section's grid on this class, so a region that lost it is still
+// found by every selector in this file, still announces all eleven of its
+// sentences, and lands in the wrong place on the page with the whole suite
+// green. It is pinned as a class for the reason `HELD_LINE_CLASS` and
+// `FAILURE_CLASS` are: jsdom applies no stylesheet, so the layout itself cannot
+// be measured here, and the class is the seam between the two halves — it is
+// the half that goes missing.
+const OUTCOME_REGION_CLASS = 's-outcome';
 // The two treatments the section's eleven lines are drawn in. `.s-error` is what
 // the screen's own stylesheet hangs `color: var(--bud-over)` on; `.s-prose`
 // carries no colour at all. The state table in the design chapter assigns one per
@@ -432,7 +446,22 @@ class SettingsServiceStub {
 // would close that too, but it would also put the real custody service on the
 // screen: `status()` would be permanently `'locked'` and nothing here could
 // drive the other two.
-class AccountKeyCustodyStub {
+//
+// **`implements` a surface derived from the real class, and that clause is not
+// decoration.** `keyof` over a class type yields its *public* members only —
+// `#api`, `#status` and the rest are not on it — so `Pick<S, keyof S>` is the
+// compiler's own census of what a template can reach. The alternative was
+// measured: the flow grew `working`, this file's stub did not, and the
+// template's call to it threw during change detection — 118 of the 127 tests
+// here died on one message, `ctx.unlocking.working is not a function`, naming
+// neither the stub nor the member nor the behaviour. With the clause the same
+// omission is a compile error naming the missing member, before anything runs.
+type AccountKeyCustodySurface = Pick<
+  AccountKeyCustodyService,
+  keyof AccountKeyCustodyService
+>;
+
+class AccountKeyCustodyStub implements AccountKeyCustodySurface {
   public readonly status = signal<AccountKeyStatus>('locked');
   public readonly unlockFailure = signal<UnlockFailure | null>(null);
   public unlock = vi.fn();
@@ -440,12 +469,43 @@ class AccountKeyCustodyStub {
   public lock = vi.fn();
 }
 
+type AccountUnlockSurface = Pick<
+  AccountUnlockService,
+  keyof AccountUnlockService
+>;
+
 // The ceremony half, which is a fact about a *device* where custody's is a fact
 // about a *read*. Both are stubbed and both are read by the section, because the
 // precedence between them is one of the things pinned below.
-class AccountUnlockStub {
+class AccountUnlockStub implements AccountUnlockSurface {
   public readonly busy = signal(false);
   public readonly failure = signal<UnlockCeremonyFailure | null>(null);
+  // **A signal of its own, deliberately not composed out of the two beside it,
+  // and that choice is the only thing in this file that can hold the rule the
+  // flow was changed to establish.**
+  //
+  // `working` is "either half is running", and the flow owns it: the handler
+  // guards on it and the template binds to it, so the attribute and the guard
+  // are the same width by construction. A template that went back to assembling
+  // `keys === 'unlocking' || unlocking.busy()` for itself would be the defect
+  // that fix removed — and it is **invisible to a value assertion**, because a
+  // correct `working` and a correct reassembly agree in every state the flow can
+  // actually be in. Measured: with that local restored to the template and the
+  // service still publishing a correct `working`, this file is 127/127 green.
+  //
+  // A stub composing `busy() || custody.status() === 'unlocking'` would be a
+  // third copy of the predicate and would agree with both, so it would pin
+  // nothing either. An independent signal can be put in a state the flow itself
+  // cannot reach — running while `busy` is false and custody reads `locked` —
+  // and there the two readings part company. `holds the unlock control on the
+  // reading the flow publishes, not on one it reassembles` below stands in
+  // exactly that state, and it is the only test here that does.
+  //
+  // The price is a discipline every other test in this file keeps: an
+  // arrangement that puts the screen in an in-flight state sets this to what the
+  // real flow would publish for it, or the fixture is telling the screen
+  // something no running product would.
+  public readonly working = signal(false);
   public unlock = vi.fn();
 }
 
@@ -2536,7 +2596,12 @@ describe('SettingsComponent', () => {
     // The flow is running and custody has been handed nothing yet, which is the
     // whole of the first in-flight moment: the platform's own sheet is up and
     // the person is being asked for an object.
+    //
+    // Both readings, because that is what the flow publishes here: `busy` is the
+    // ceremony's own half, and `working` is the coarser "either half is running"
+    // the screen draws its busy treatment from.
     unlock.busy.set(true);
+    unlock.working.set(true);
 
     // Act
     fixture.detectChanges();
@@ -2563,6 +2628,9 @@ describe('SettingsComponent', () => {
     // here and never comes back, and a stub seeded before the first
     // `detectChanges` would hide exactly that.
     custody.status.set('unlocking');
+    // What the flow publishes in this moment: the ceremony is over and the read
+    // custody started is the half still running.
+    unlock.working.set(true);
 
     // Act
     fixture.detectChanges();
@@ -2591,6 +2659,8 @@ describe('SettingsComponent', () => {
     // has to break the tie.
     unlock.busy.set(true);
     custody.status.set('unlocking');
+    // True across both halves, and here they are both true at once.
+    unlock.working.set(true);
 
     // Act
     fixture.detectChanges();
@@ -2833,6 +2903,12 @@ describe('SettingsComponent', () => {
     // this test is about is a *pair*: the flag being false is half of it.
     unlock.busy.set(false);
     custody.status.set('unlocking');
+    // And the third reading, which is the one the control is bound to. It is
+    // true here for the half that is running — the read — while `busy`, the
+    // ceremony's own half, has already fallen. That gap is the window this test
+    // is about, and the flow publishing one answer across both halves is what
+    // closes it.
+    unlock.working.set(true);
 
     // Act
     fixture.detectChanges();
@@ -2851,6 +2927,69 @@ describe('SettingsComponent', () => {
       unlockButton?.getAttribute('aria-busy'),
       'the unlock control reports no work while custody is reading the envelopes.',
     ).toBe('true');
+  });
+
+  // **"Is either half running" has one owner, and this is the only test in the
+  // suite that can tell a screen reading it from a screen recomputing it.**
+  //
+  // The test above stands in the state the defect was found in and is satisfied
+  // by *either* implementation: `custody.status() === 'unlocking'` is true
+  // there, so a template assembling the predicate for itself reaches the same
+  // answer the flow publishes. That is not a weakness in it — it is the point
+  // of the fix that the two agree in every state the flow can reach — and it is
+  // exactly why the rule needs a state the flow *cannot* reach to be visible at
+  // all. Measured: restore `@let working = keys === 'unlocking' ||
+  // unlocking.busy()` to the template while the service still publishes a
+  // correct `working`, and every other test in this file stays green.
+  //
+  // So the arrangement below is deliberately impossible: the flow reports that
+  // an attempt is running while its own ceremony flag is down and custody has
+  // never been handed anything. Nothing in production produces it, and nothing
+  // needs to — what is under test is not a state of the product but **which
+  // object the screen asks**. A template that asks reads `true` and holds the
+  // control; a template that answers for itself reads `false || false` and
+  // draws a live button over an attempt already running, which is the press
+  // that raises a second system sheet and throws away the read the first press
+  // was about to finish.
+  //
+  // Both readers of the signal are asserted, because the template has two and
+  // they can regress apart: the control's `disabled`/`aria-busy` bindings, and
+  // the region's choice of in-flight sentence.
+  it('holds the unlock control on the reading the flow publishes, not on one it reassembles', () => {
+    // Arrange
+    unlock.busy.set(false);
+    unlock.failure.set(null);
+    custody.status.set('locked');
+    custody.unlockFailure.set(null);
+    unlock.working.set(true);
+
+    // Act
+    fixture.detectChanges();
+    const unlockButton = buttonNamed(host, UNLOCK_BUTTON);
+    const said = normalize(accountKeysRegion());
+
+    // Assert
+    expect(
+      unlockButton,
+      `the settings screen offers no control named "${UNLOCK_BUTTON}".`,
+    ).not.toBeNull();
+    expect(
+      unlockButton?.getAttribute('aria-disabled'),
+      'the unlock control is pressable while the flow reports an attempt running, so the screen is deciding "either half is running" for itself instead of reading the one answer the flow publishes — the two definitions that drifted the first time.',
+    ).toBe('true');
+    expect(
+      unlockButton?.getAttribute('aria-busy'),
+      'the unlock control reports no work while the flow reports an attempt running.',
+    ).toBe('true');
+    // The region's half of the same reading. Inside the `locked` arm the only
+    // half `working` can be true of is the flow's own, which is why the wait is
+    // the sentence here — the template says so at the branch and the chapter
+    // says so in the state table.
+    expect(
+      said,
+      sentenceMismatch(said, UNLOCK_WAITING) ||
+        'the account keys region says nothing while the flow reports an attempt running, so it is assembling its own answer rather than reading the flow’s.',
+    ).toContain(UNLOCK_WAITING);
   });
 
   // The inverse of the flash-back-to-rest the overlap exists to prevent. A
@@ -2872,6 +3011,7 @@ describe('SettingsComponent', () => {
 
     // Act
     custody.status.set('unlocking');
+    unlock.working.set(true);
     fixture.detectChanges();
 
     // Assert
@@ -2899,6 +3039,7 @@ describe('SettingsComponent', () => {
     // and not custody.
     custody.unlockFailure.set('unopened');
     unlock.busy.set(true);
+    unlock.working.set(true);
 
     // Act
     fixture.detectChanges();
@@ -2928,6 +3069,7 @@ describe('SettingsComponent', () => {
   it('marks the unlock control busy while the ceremony runs', () => {
     // Arrange
     unlock.busy.set(true);
+    unlock.working.set(true);
 
     // Act
     fixture.detectChanges();
@@ -2941,6 +3083,7 @@ describe('SettingsComponent', () => {
   it('marks the unlock control unavailable while the ceremony runs', () => {
     // Arrange
     unlock.busy.set(true);
+    unlock.working.set(true);
 
     // Act
     fixture.detectChanges();
@@ -2957,6 +3100,7 @@ describe('SettingsComponent', () => {
   it('keeps the unlock control focusable while the ceremony runs', () => {
     // Arrange
     unlock.busy.set(true);
+    unlock.working.set(true);
 
     // Act
     fixture.detectChanges();
@@ -3142,16 +3286,32 @@ describe('SettingsComponent', () => {
     // Arrange
     // Each of the three is reached by the state that produces it, rather than by
     // setting a flag the template does not read.
+    //
+    // `working` moves with them, because it is what the flow publishes for each
+    // — true through both in-flight moments and false once the keys are held.
     const states = [
-      [UNLOCK_WAITING, (): void => unlock.busy.set(true)],
+      [
+        UNLOCK_WAITING,
+        (): void => {
+          unlock.busy.set(true);
+          unlock.working.set(true);
+        },
+      ],
       [
         UNLOCK_OPENING,
         (): void => {
           unlock.busy.set(false);
+          unlock.working.set(true);
           custody.status.set('unlocking');
         },
       ],
-      [UNLOCK_HELD, (): void => custody.status.set('unlocked')],
+      [
+        UNLOCK_HELD,
+        (): void => {
+          unlock.working.set(false);
+          custody.status.set('unlocked');
+        },
+      ],
     ] as const;
 
     // Act & Assert
@@ -3189,6 +3349,46 @@ describe('SettingsComponent', () => {
       live === null || live === 'polite',
       `the account keys region carries aria-live="${live}", which overrides the politeness role="status" would give it.`,
     ).toBe(true);
+  });
+
+  // **The layout half of the region, which every other assertion in this file
+  // is blind to.**
+  //
+  // `accountKeysRegion` selects on `[role="status"]`, so the whole section is
+  // held by its semantics: the region is found, its politeness is pinned, and
+  // all eleven of its sentences are read out of it. Nothing in any of that
+  // touches `.s-outcome`, which is what the screen's own stylesheet hangs the
+  // region's spacing and its place in the section's grid on. Drop the class and
+  // this file stays green from end to end while the section's outcome lands in
+  // the wrong place on the page.
+  //
+  // The limit, stated rather than glossed: jsdom applies no stylesheet, so this
+  // cannot measure a gap or a grid row and does not claim to. What it holds is
+  // the seam between the two halves — the class is the half that goes missing,
+  // and it is the half nothing else here would notice.
+  it('carries the account keys outcome in the screen’s outcome region', () => {
+    // Act
+    const region = accountKeysRegion();
+
+    // Assert
+    expect(region).not.toBeNull();
+    expect(
+      region?.classList.contains(OUTCOME_REGION_CLASS),
+      `the account keys region does not carry .${OUTCOME_REGION_CLASS}, so it is announced correctly and laid out as though it were ordinary prose.`,
+    ).toBe(true);
+
+    // **One region and no second, which is what stops the assertion above
+    // passing on a region that is not the one every other test in this section
+    // reads.** `accountKeysRegion` takes the first `[role="status"]` in the
+    // section, so a second region added beside it — a wrapper carrying the
+    // class, an outcome split in two — would be invisible to it and to every
+    // sentence assertion here alike.
+    expect(
+      sectionFor(host, ACCOUNT_KEYS_HEADING_ID)?.querySelectorAll(
+        '[role="status"]',
+      ).length,
+      'the account keys section carries more than one live region.',
+    ).toBe(1);
   });
 
   // Reads the rows the way the design chapter specifies them, so a list that

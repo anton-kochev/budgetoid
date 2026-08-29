@@ -904,11 +904,14 @@ about the same value, and the reason a second screen holding a key-encryption ke
 `authentication` is minted by the **anonymous** sign-in options leg, so spending it here would make
 an anonymous route load-bearing for a screen deep inside the authenticated app — and every press
 would leave a live challenge in the pool that no request ever redeems. `reauthentication` is worse
-for the opposite reason: that pool exists to authorize **erasing the account**, so every press of
-Unlock would leave behind a live nonce good for the one irreversible act in the product, on behalf
-of an act that destroys nothing. The whole value of a re-authentication nonce is the distance
-between what it was minted for and what it can be spent on. See
-[passkeys.md](passkeys.md), which owns the pools.
+for the opposite reason: **one pool authorizes three sensitive acts** — erasure, passkey revocation
+and replacing a set of recovery codes, one handler each — and nothing on a nonce records which of
+them it was asked for, so every press of Unlock would leave behind a live one spendable on any of
+the three, the irreversible act included, on behalf of an act that destroys nothing. **Three makes
+that worse than one would, not safer**: the whole value of a re-authentication nonce is the distance
+between what it was minted for and what it can be spent on, and reading the pool as erasure's alone
+is what makes borrowing it look harmless here. See
+[passkeys.md](passkeys.md), which owns the pools and counts what spends them.
 
 **The day something on the server does have to check a factor from this screen, that is a different
 ceremony with a server's challenge behind it.** Replacing a set of recovery codes is the case, and

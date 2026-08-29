@@ -28,7 +28,7 @@ import {
   provideHttpClientTesting,
   type TestRequest,
 } from '@angular/common/http/testing';
-import { isSignal, signal } from '@angular/core';
+import { isSignal, signal, type Signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
@@ -47,6 +47,11 @@ import {
   vi,
   type MockInstance,
 } from 'vitest';
+// The two halves of the retention walk that cannot be written as a value walk.
+// Shared with `sign-in.service.spec.ts`, which holds the same rule about the
+// other flow that touches a key-encryption key — see the module's own header
+// for why one copy and not two.
+import { moduleSurface, ownFunctionsOf } from '../../testing/retention-walk';
 import { AccountUnlockService } from './account-unlock.service';
 // The module itself, so the retention walk can look at what it exports and at
 // the statics of what it exports. A field is not the only place a key can be
@@ -62,6 +67,15 @@ const ACCOUNT_KEYS_URL = `${API_ORIGIN}/api/me/account-keys`;
 // Every own property the service carries, named once so the structural census
 // has something to be red against. Listed rather than derived: the point of a
 // pin is to be a list somebody has to extend deliberately.
+//
+// **`IN_FLIGHT_READING` is on this list because the reading it names now
+// exists**, and the entry was added by hand on the day it did — which is the
+// pin having done its job rather than a line of upkeep. The reading the service
+// owes its caller — see `publishes one reading of whether either half is
+// running` below — is a `computed`, so it arrives as a seventh own property and
+// reddened `injects exactly two collaborators` the moment it was written. An
+// eighth will do the same, and the answer is to think about it and then extend
+// the list, never to derive it.
 const OWN_PROPERTIES = [
   'busy',
   'busySignal',
@@ -69,7 +83,21 @@ const OWN_PROPERTIES = [
   'custody',
   'failure',
   'failureSignal',
+  'working',
 ];
+
+// What the service publishes for "either half is running" — the design book's
+// phrase for the busy treatment, and the name the screen's own template local
+// now takes its value from.
+//
+// **One name, in one place, because the defect was that there were two.** The
+// screen used to or custody's `unlocking` together with the flow's `busy` while
+// the handler guarded on `busy` alone. The two disagreed for the whole length
+// of the custody read, and the disagreement was a control that looked disabled
+// and was not. The template reads this signal now; that the template reads it
+// rather than reassembling it is held in `settings.component.spec.ts`, which is
+// the only file that can see a template.
+const IN_FLIGHT_READING = 'working';
 
 // The key the account's wrapped envelopes open under, imported rather than
 // derived because deriving one needs a PRF output and no authenticator exists
@@ -135,6 +163,32 @@ async function eventually<TValue>(
   }
 
   throw new Error(`Timed out waiting for ${what}.`);
+}
+
+// A member read off an instance **by name** rather than through its type.
+//
+// Written this way deliberately, and only for the one member this file expects
+// the service to grow. Naming an absent member in TypeScript does not fail a
+// test — it fails the *file*, taking every other case in it down with a
+// compiler error that says nothing about which behaviour is missing. Read
+// dynamically, the same case fails on an assertion that names the member, and
+// then goes on failing on the behaviour once the member exists.
+function memberNamed(instance: object, name: string): unknown {
+  return (instance as unknown as Record<string, unknown>)[name];
+}
+
+// Lets every microtask an attempt would need run, so that "refused the press"
+// is told apart from "has not got there yet".
+//
+// `eventually` is the wrong instrument for this and is not a substitute: it
+// waits for something to arrive, and what is being waited on here is something
+// that must never arrive. Twenty turns of the macrotask queue is far past the
+// two awaits a second attempt needs to reach the ceremony and custody —
+// measured against the failing case, which reaches the ceremony on the first.
+async function settled(): Promise<void> {
+  for (let turn = 0; turn < 20; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 // A plain object or an array, and nothing else. The walk below runs over a
@@ -206,45 +260,19 @@ function isKeyLike(value: unknown): boolean {
   );
 }
 
-// **The closure half of the walk, and the reason the value walk alone is not
-// enough.**
+// **The closure half of the walk and the module half both live in
+// `src/testing/retention-walk.ts`**, imported at the top of this file rather
+// than written out here.
 //
-// The retention this test exists for is not only `this.lastKey = key`. It is
-// `this.retry = () => this.custody.unlock(key)` — an arrow function stored on
-// the instance that *captures* the key in its scope. Nothing in JavaScript can
-// read a captured binding out of a closure: no own-property walk reaches it, no
-// `JSON.stringify` sees it, and `Function.prototype.toString` returns the
-// source text rather than the values. So the value is unreachable to a test —
-// and the container is not. This lists the own properties that could hold one.
-//
-// Signals are excluded because `signal()` and `.asReadonly()` both return
-// callables, and `findings` already looks *inside* those by calling them. Class
-// methods never reach here at all: they live on the prototype, and this walks
-// own properties only.
-function ownFunctionsOf(value: object): readonly string[] {
-  return Object.entries(value)
-    .filter(
-      ([, member]: [string, unknown]) =>
-        typeof member === 'function' && !isSignal(member),
-    )
-    .map(([name]) => name);
-}
-
-// What a module can hold, as a plain object the value walk can descend into:
-// every export, and — for every exported class or function — its own enumerable
-// properties, which is where a `static lastKey` would sit. Static *methods* are
-// non-enumerable and never appear; static *fields* are enumerable and do, which
-// is the shape the defect would take.
-function moduleSurface(namespace: object): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(namespace).map(([name, value]: [string, unknown]) => [
-      name,
-      typeof value === 'function' || typeof value === 'object'
-        ? { ...(value as object) }
-        : value,
-    ]),
-  );
-}
+// They were written out here, byte for byte, and in `sign-in.service.spec.ts`
+// as well — two copies of one walk, with two different comments explaining
+// them. The drift that costs something is not the comments: it is a walk that
+// stops reaching a shape in one file while its twin still reaches it, in two
+// suites that never meet and with nothing anywhere going red. What stays here
+// is this file's own **positive control**, in `keeps no key anywhere on itself`
+// below, because a walk is worth something only to a suite that has watched it
+// find a planted value — and that is a fact about a suite rather than about the
+// function.
 
 // Which of a spied service's members were reached, named rather than counted so
 // a failure says what the flow touched.
@@ -784,11 +812,23 @@ describe('AccountUnlockService', () => {
     );
   });
 
+  // **An attempt has two halves and the guard has to cover both, so it is two
+  // tests.**
+  //
   // The guard is in the handler as well as in the template attribute, and that
   // is not belt and braces: Material's click-halt applies to anchors only, so
   // on a `<button>` the DOM `disabled` property stays `false` and the second
-  // press arrives here. Without it, a second sheet is raised over the first.
-  it('ignores a second press while one attempt is running', async () => {
+  // press arrives here — measured on Angular Material 21.2.14, where
+  // `_getDisabledAttribute()` returns `null` whenever `disabledInteractive` is
+  // set and the only `preventDefault()` in the chunk runs for `tagName === 'A'`.
+  //
+  // What follows from that is the split below. The press travels through a
+  // ceremony this service runs and then through a read **custody** runs, and
+  // the two windows are refused by two different readings — so a test that
+  // covered one of them was named for both. This one is the first window and
+  // the sibling below is the second; neither speaks for the other, and the
+  // second is the one that is open today.
+  it('ignores a second press while the ceremony is still running', async () => {
     // Arrange
     ceremonyGate = gate();
 
@@ -815,6 +855,156 @@ describe('AccountUnlockService', () => {
 
     expect(ceremonies).toEqual(['deriveKeyFromLocalAssertion']);
     expect(unlock).toHaveBeenCalledTimes(1);
+  });
+
+  // **The second window, and the longer of the two.** The ceremony is over —
+  // the device answered, the key is in hand — and the account is not open yet,
+  // because custody is reading the wrapped envelopes the key has to open. The
+  // person is looking at *Opening your account…* and a control drawn disabled.
+  //
+  // Nothing about that window is contrived: the service hands custody the key
+  // **before** it clears `busy`, on purpose and with its own test, so `busy`
+  // has fallen and `custody.status()` reads `'unlocking'` for every millisecond
+  // of a network round trip. A guard that consults `busy` alone lets a press
+  // straight through it.
+  //
+  // What that press costs is two things and the second is the worse. A second
+  // system sheet is raised over an unlock the person has already completed —
+  // and `custody.unlock` runs `#forget` again, which drops both keys and
+  // republishes `'unlocking'`, discarding the read the first press was about to
+  // finish. The account they had just opened is shut, by a button that was
+  // drawn as though it could not be pressed.
+  it('ignores a second press while the account keys are being read', async () => {
+    // Arrange
+    // The gate is open, so one press runs all the way to the hand-over. The
+    // read custody starts is deliberately left unanswered: this window *is* the
+    // request being in flight.
+    await press();
+
+    // The window, established rather than assumed. Without these four lines a
+    // service that refused the press for the wrong reason — because it never
+    // got there, because custody was never handed anything — would pass the
+    // assertions below in silence.
+    expect(
+      service.busy(),
+      'the flow was still busy, so this test is not standing in the window it is about.',
+    ).toBe(false);
+    expect(
+      custody.status(),
+      'custody was not reading the account keys, so this test is not standing in the window it is about.',
+    ).toBe('unlocking');
+    expect(unlock).toHaveBeenCalledTimes(1);
+    expect(ceremonies).toEqual(['deriveKeyFromLocalAssertion']);
+
+    // Act
+    service.unlock();
+
+    // Judged after every microtask a second attempt would need, rather than on
+    // the next line: refusing a press and not having reached the ceremony yet
+    // look identical one statement later.
+    await settled();
+
+    // Assert
+    expect(
+      ceremonies,
+      'a second press raised a second system sheet while the first press’s read of the account keys was still in flight.',
+    ).toEqual(['deriveKeyFromLocalAssertion']);
+    expect(
+      unlock,
+      'custody was handed a second key while it was still opening the first — `#forget` drops both keys and republishes `unlocking`, so the read the first press was about to complete is discarded and the account closes.',
+    ).toHaveBeenCalledTimes(1);
+
+    // And one read, which is the same sentence said where it is visible from
+    // outside the service. `match` removes what it returns, so this is every
+    // account-key request the two presses produced between them.
+    expect(
+      http.match(ACCOUNT_KEYS_URL),
+      'the account keys were read more than once for one unlock.',
+    ).toHaveLength(1);
+  });
+
+  // **"Is either half running" has one owner, and the two readings of it that
+  // used to exist were the defect.**
+  //
+  // The screen ored `custody.status() === 'unlocking'` together with this
+  // service's `busy`; the handler guarded on `busy` alone. They agree
+  // everywhere except the window the test above stands in — which is the whole
+  // length of a network round trip — and there the screen drew a control as
+  // unpressable while the handler accepted the press. Neither spelling was
+  // wrong on its own terms; having two of them was, and the fix is one reading
+  // the template reads and the handler guards on.
+  //
+  // Asserted as a **reading a caller can take**, not as an implementation: what
+  // this case pins is that the answer is published, that it is a signal, and
+  // that it is true across both halves and false outside them. How it is
+  // composed is the service's business.
+  it('publishes one reading of whether either half is running', async () => {
+    // Arrange
+    ceremonyGate = gate();
+
+    const published = memberNamed(service, IN_FLIGHT_READING);
+
+    expect(
+      typeof published === 'function' && isSignal(published),
+      `AccountUnlockService publishes no "${IN_FLIGHT_READING}" signal, so every caller has to assemble "either half is running" out of two objects for itself — and the two places that do it today disagree for the length of the custody read.`,
+    ).toBe(true);
+
+    const running = published as Signal<boolean>;
+
+    // Assert
+    // At rest, before anything has been pressed.
+    expect(
+      running(),
+      'the service reports work in flight before anything was pressed.',
+    ).toBe(false);
+
+    // Act
+    // The first half: the system sheet is up and the device has not answered.
+    service.unlock();
+
+    // Assert
+    expect(
+      running(),
+      'the service reports nothing in flight while the ceremony is still running.',
+    ).toBe(true);
+
+    // Act
+    // The second half: the device answered, the key changed hands, and custody
+    // is reading the envelopes it has to open.
+    ceremonyGate.release();
+
+    await eventually(
+      () => (service.busy() ? null : true),
+      'the ceremony to finish',
+    );
+
+    // Assert
+    // The window, established rather than assumed — the same four lines the
+    // test above opens with, for the same reason.
+    expect(service.busy()).toBe(false);
+    expect(custody.status()).toBe('unlocking');
+    expect(
+      running(),
+      'the service reports nothing in flight while custody is reading the account keys — the window in which a second press reaches the handler.',
+    ).toBe(true);
+
+    // Act
+    // And the read comes back. `[]` is the ordinary "none of these envelopes
+    // opened" answer; what matters here is only that custody has finished, so
+    // neither half is running any more.
+    const read = await accountKeysRead();
+    read.flush([]);
+
+    await eventually(
+      () => custody.unlockFailure(),
+      'custody to finish the read',
+    );
+
+    // Assert
+    expect(
+      running(),
+      'the service still reports work in flight after both halves have finished, so the control never comes back.',
+    ).toBe(false);
   });
 
   // Cleared when the act *starts*, which is the rule every act in this client

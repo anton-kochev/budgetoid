@@ -414,7 +414,9 @@ Load-bearing rules, each explained there or in the linked decision:
   **three** ceremonies and sends two of them: the third, `deriveKeyFromLocalAssertion`, mints its own
   challenge, is verified by nobody and is discarded where it stands — the account's own envelopes are
   what judge the factor, so it spends **neither** the anonymous sign-in nonce pool nor the
-  re-authentication pool, the latter existing to authorize **erasing the account**. It takes no
+  re-authentication pool, the latter authorizing the **three** acts a live session alone is not
+  trusted with — erasing the account, revoking a credential and replacing a recovery-code set — so a
+  nonce spent there and discarded would be left good for any of them. It takes no
   parameters and returns a bare `CryptoKey`, both so that no caller can thread a server nonce in or
   find anywhere to put a payload. Rules it carries, each silent when broken.
   **The PRF output never crosses the module boundary** — every

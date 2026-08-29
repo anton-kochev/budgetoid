@@ -133,17 +133,20 @@ backups for up to seven days.
 It also lists **every way of signing in** — each entry its type in words and the day behind
 it, and nothing more. A recovery-code set is one of those entries, because redeeming a code
 opens a full session the way the other kinds do. Registering and revoking are present and
-**disabled**, and the section carries two sentences rather than one. **Three sentences now stand
-across the screen's four inert controls, and each names a different missing piece.** Registering a
+**disabled**, and the section carries two sentences rather than one. **Three missing pieces
+stand behind the screen's four inert controls, and four sentences name them** — the count of
+sentences is not the count of reasons, because Revoke and Erase share a reason and still word
+it differently, one naming a row's buttons and the other the screen's. Registering a
 passkey waits on the account's keys **as bytes**: a new factor stores its own wrapped copy, and
 wrapping takes the keys themselves. Generating a set waits on those bytes **and** on an assertion
 Budgetoid's server checks. Revoking and erasing wait on that checked assertion alone. Pasting any
-one of the three over another puts a sentence on the screen that is true of a different control.
+one of the four over another puts a sentence on the screen that is true of a different control.
 
 **What no sentence may say any more is that this screen asks for no passkey.** The Account keys
-section asks for one, in plain sight, so the two that turn on an assertion say which *kind* is
-missing — one the server checks, rather than the locally minted and discarded ceremony an unlock
-runs. The registration sentence turns on nothing of the sort: `GET /api/me/account-keys` hands the
+section asks for one, in plain sight, so the three sentences that turn on an assertion — Revoke,
+Generate and Erase — say which *kind* is missing: one the server checks, rather than the locally
+minted and discarded ceremony an unlock runs. The registration sentence, the fourth, turns on
+nothing of the sort: `GET /api/me/account-keys` hands the
 envelopes back and the browser opens them, but what comes out is held as non-extractable key
 objects behind no accessor, and reaching bytes means unwrapping again under a key-encryption key
 held long enough to wrap with — which the unlock path deliberately never does. That is the fact
@@ -162,11 +165,19 @@ one are unbuilt, as are key rotation, the email-change action and the erasure co
 dialog. Showing a set once is built and lives elsewhere — the last
 step of registration, where the account's first set is issued.
 
-Below Recovery codes and above Export sits **Account keys**, which is specified in
-[components](components.md) and **not built**: one Outline **Unlock** running a passkey ceremony
-the browser mints and discards, so that a person whose tab reloaded gets their keys back without
-leaving the account. Until it lands, the only exit from a locked account is **Sign out** and
-signing in again, because both producers of a key-encryption key sit behind the guard that turns
-an authenticated visitor away. Nothing between the two is by accident:
-Export and Erase are a pair, so nothing goes between *them* and everything else arrives above. The
-bullets above stay as written because they are the target, not a description of what shipped.
+Below Recovery codes and above Export sits **Account keys**, and it is **built**: one Outline
+**Unlock** running a passkey ceremony the browser mints and throws away, so that a person whose tab
+reloaded gets their keys back without leaving the account. It is drawn only while there is
+something to unlock, it carries no sentence saying what it waits on because it waits on nothing,
+and [components](components.md) owns the rest of its specification.
+
+**Sign out is no longer the only exit from a locked account.** Count the producers of a
+key-encryption key in this client and there are **three** — the assertion on `/welcome`, the
+registration flow, and this Unlock. The first two sit behind the guard that turns an authenticated
+visitor away, so before this section shipped the only route back to your own keys was to leave the
+account and come back in through one of them. That exit is still on the screen, several sections
+up, and it is now one of two.
+
+Nothing between the two is by accident: Export and Erase are a pair, so nothing goes between *them*
+and everything else arrives above. The bullets above stay as written because they are the target,
+not a description of what shipped.

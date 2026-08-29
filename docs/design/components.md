@@ -372,16 +372,19 @@ list semantics — without it nobody hears "list, 2 items".
 **What ships today.** The list renders every kind the union carries, the recovery-code set's row
 included, and renders one it does not as **Sign-in method**, captioned **Added** and carrying no
 action. **Register a passkey** (below the list) and **Revoke** (on the revocable rows, which is the
-passkeys) are both Outline and **disabled**, and the section carries two sentences and not one —
-three stand across the screen's four inert controls, because the recovery-codes section below no
-longer shares this one's words. The browser's ability to run a ceremony is not what any of them
-waits on: this client creates a passkey on `/register` and asserts one on `/welcome`.
+passkeys) are both Outline and **disabled**, and the section carries two sentences and not one,
+because the recovery-codes section below no longer shares this one's words. Across the screen's
+four inert controls there are **three reasons said in four sentences** — Revoke and Erase share a
+reason and word it differently, one naming a row's buttons and the other the screen's — so the
+count of sentences is never the count of reasons here. The browser's ability to run a ceremony is
+not what any of them waits on: this client creates a passkey on `/register` and asserts one on
+`/welcome`.
 
-**The three sentences and the Account keys section shipped together**, and that was a scheduling
+**The four sentences and the Account keys section shipped together**, and that was a scheduling
 rule rather than a preference: two of them name unlocking, and a screen carrying this wording with
 no Unlock on it would be naming a capability the reader cannot find — the same defect as the wording
 it replaced, one step removed. The rule outlives the commit, because the next narrowing of any of
-the three will be earned by a capability in exactly the same way.
+the four will be earned by a capability in exactly the same way.
 
 - **Register a passkey** waits on the account's keys **as bytes**, and on nothing else. A passkey
   is a *factor*, every factor stores its own wrapped copy of the account's content key and index
@@ -411,17 +414,20 @@ the three will be earned by a capability in exactly the same way.
   specification.** The two were word for word while one fact held both controls off. It no longer
   does: registering a passkey waits on the bytes alone, while generating a set waits on the bytes
   **and** on a passkey assertion the *server* checks — which the unlock ceremony deliberately is
-  not, its assertion being minted locally and discarded. Three sentences, three different missing
-  pieces: the bytes here, the bytes and a checked assertion under Recovery codes, a checked
-  assertion under Revoke and Erase. Pasting any one over another puts a sentence on the screen that
+  not, its assertion being minted locally and discarded. Three missing pieces across four
+  sentences: the bytes here, the bytes and a checked assertion under Recovery codes, a checked
+  assertion under Revoke and again under Erase — those last two sharing the piece and not the
+  wording. Pasting any one over another puts a sentence on the screen that
   is true of a different control. The quotes and their phrase constants in
   `settings.component.spec.ts` move with the template in one commit, and there are now two
   constants where one served both sites.
 
 - **Revoke** waits on an assertion the server checks. `POST /api/me/credentials/{id}/revocation` is
   live and the fresh assertion that authorizes it is a ceremony this client runs; what this screen
-  runs is not it. That is the erasure section's position, so it is said in the erasure section's
-  words, plural for the per-row buttons:
+  runs is not it. **That is the erasure section's position, and the two share the reason without
+  sharing the wording** — this one names revoking and speaks of the rows' buttons in the plural,
+  the erasure one names erasing and speaks of a single button. Two strings for one reason, which is
+  how three reasons come to be said in four sentences:
 
   > Revoking has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn't
   > ask for one yet. Those buttons stay off until it does.
@@ -429,8 +435,8 @@ the three will be earned by a capability in exactly the same way.
   **The qualifier is new and it is not decoration.** Without it the sentence says this screen asks
   for no passkey at all, which the Account keys section makes false — somebody who has just watched
   their authenticator answer an **Unlock** would read, two sections down, that this screen cannot
-  ask for what it asked for a moment ago. The erasure section carries the same sentence and takes
-  the same qualifier in the same commit, or the two come apart.
+  ask for what it asked for a moment ago. The erasure section makes the same claim in its own words
+  and takes the same qualifier in the same commit, or the two come apart.
 
 Both sentences sit **above** the list rather than beside each button: per row, a screen reader would
 read the same explanation once per entry. The account-keys one is also **above the list** and not
@@ -749,9 +755,23 @@ does not exist, and the reader would go looking for whatever unlocking had revea
   their place in the document at the moment the outcome is announced. `aria-busy` resolves to
   `null` at rest rather than to `'false'`, so the attribute is absent instead of asserting that no
   work is happening.
-- **The gate is in the flow as well as in the attribute.** Material's click-halt is applied to
-  anchors only, so on a `<button>` the DOM `disabled` property stays `false` and a second press
-  arrives — which here would raise a second system sheet over the first.
+- **The gate is in the flow as well as in the attribute, and the flow's has to be at least as wide
+  as the attribute it backstops.** Material's click-halt is applied to anchors only, so on a
+  `<button>` the DOM `disabled` property stays `false` and a second press arrives whatever the
+  attribute says; the handler is the only thing that can refuse it. It was once the narrower of the
+  two, and the gap was a defect rather than a theoretical one: the attribute was bound to a reading
+  the template assembled for itself out of both in-flight states, while the handler guarded on the
+  ceremony's flag alone, so every press made during the account-key read was a press the screen had
+  drawn as impossible. It raised a second system sheet over an unlock already finished and made
+  custody discard the read the first press was about to complete — the account closing by a button
+  that looked disabled.
+- **So the attribute and the guard read one predicate with one owner.** `AccountUnlockService`
+  publishes "either half of an attempt is running" as a computed; the control's `disabled` and
+  `aria-busy` bind it and the handler guards on it. Two spellings of one fact drift, and the drift
+  is silent in both directions — a template that narrows draws a live control over an attempt
+  already running, and a handler that narrows accepts the press behind it. It is the rule
+  `apiCredentialsInterceptor` keeps about "is this our API?": one definition, and the second reader
+  imports it rather than restating it.
 - **It is not rendered at all once the keys are held.** That is the next rule, not a tidy-up.
 
 ### The control leaves when there is nothing to unlock
@@ -773,7 +793,7 @@ the moment it is reached from a surface that does offer the control beside an op
 any window where a render has not caught up with custody — a `lock()` in the cancellation branch
 discards both keys, silently, with every pixel on the screen looking correct.
 
-### The six blocks, and the eleven lines inside them
+### The three blocks, and the eleven lines inside them
 
 **Which block renders is `custody.status()`'s answer and only its.** Three values, three blocks,
 and nothing else is consulted to choose between them:
@@ -782,18 +802,38 @@ and nothing else is consulted to choose between them:
 - `unlocking` → *Opening your account…*, and the control held busy.
 - `locked` → the control, and at most one sentence.
 
-**`unlocking` is checked before the flow's own busy flag, and the order is the rule.** The two
-overlap on purpose: the flow hands custody the key *before* it clears `busy`, so that no frame
-exists in which both in-flight states are false and the section flashes back to its resting state
-with a second press available. Something has to break that tie, and it is not arbitrary which way.
-Once the key has been handed over the ceremony is finished, so the truer sentence is about the read
-that is running now rather than about the device that has already answered. Read the other way
-round, somebody watching a network request is told their passkey is still being waited on.
+**The custody branch is the outer one and the flow's in-flight reading is nested inside it, and
+that shape is the rule rather than a style.** The two in-flight states overlap on purpose: the flow
+hands custody the key *before* it clears its own busy flag, so that no frame exists in which both
+are false and the section flashes back to its resting state with a second press available.
+Something has to break that tie. The nesting breaks it in the one direction that reads true —
+`unlocking` is answered at the top level, and motion is consulted only after custody has said
+`locked`, where it can mean the ceremony and nothing else because custody is not reading there by
+construction. Once the key has been handed over the ceremony is finished, so the truer sentence is
+about the read that is running now rather than about the device that has already answered.
+
+**Flattening the nesting into two sibling tests is the mistake worth naming, because it looks like
+a simplification.** Side by side, the two in-flight readings have to be ordered by hand, and the
+order a reader reaches for first — motion, then custody — tells somebody watching a network request
+that their passkey is still being waited on. The thing that sentence asks them to do is touch a
+sensor, and it cannot help: nothing is asking them for anything. Nested, that ordering is not a
+thing anyone has to remember.
 
 **Two in-flight sentences and not one flag**, because they are two different moments and a person
 can act on the difference. *Waiting for your passkey.* is the system sheet — the thing to do is
 touch a sensor or pick a key up off the desk. *Opening your account…* is a request — the thing to
 do is wait, and the thing that can go wrong is the network.
+
+**One signal drives the busy *treatment*, and it says less than either sentence does.** That
+signal is `AccountUnlockService`'s `working` — true while the ceremony is up and true while custody
+is reading — and the control's `disabled`, its `aria-busy` and the handler's guard are the three
+things bound to it, per the gate rule above. It is a coarser reading laid over the two moments and
+never a merge of them, and the nesting is what keeps it from becoming one: which *block* renders is
+decided there, and inside the `locked` block this same signal is what chooses the waiting sentence
+— where it can only mean the ceremony's half, because custody is not reading. So one predicate
+decides whether the control is pressable everywhere, and names a moment only in the one place there
+is a single moment it could name. A screen that assembles that predicate for itself instead of
+reading it is the drift the gate rule names.
 
 | State | Copy | Where it renders |
 | --- | --- | --- |
@@ -810,7 +850,9 @@ do is wait, and the thing that can go wrong is the network.
 | `unreachable` | "Budgetoid couldn't reach the server. Try again in a minute." | Inside the region, `--bud-over` |
 | `unauthenticated` | "Budgetoid wouldn't hand your keys back to this browser. Sign out and sign in again." | Inside the region, `--bud-over` |
 
-The copy is the specification, not an example of it.
+The copy is the specification, not an example of it. **Eleven lines in twelve states**: the table's
+first row is the resting one and says nothing, because the control standing there is what says the
+account is locked.
 
 **The eight refusals come from two sources, and neither union is derived from the other.** The
 first five are `AccountUnlockService`'s and are facts about a *device*; the last three are
@@ -914,10 +956,16 @@ never `evalByCredential` — that map is keyed on a credential id and this leg h
   on, which is the one source that cannot disagree with itself.
 - **No `allowCredentials`.** A discoverable assertion, as the sign-in leg's is: the authenticator
   chooses which of the account's credentials answers, which is why custody tries every entry in
-  turn. This screen holds no credential identifier to name in a list in any case — the credential
-  list shows none by design and `GET /api/me/account-keys` returns none — and a list built from
-  anything it could reach for would narrow the ceremony to a credential the authenticator may not
-  be offering.
+  turn. **The screen does hold an identifier per credential row, and it is the wrong kind** — which
+  is a stronger argument than an absence, because the absence is refutable by one glance at the row
+  model. Every row carries the id `POST /api/me/credentials/{id}/revocation` is addressed by. It is
+  never rendered, and it is the credential *row's* identifier: `allowCredentials` takes the
+  identifier the **authenticator** minted, which lives on the passkey's public-key material, is
+  returned by nothing this screen reads, and is not what a revocation route names. So a list built
+  from what is reachable here would not name a credential at all, and one built from what could
+  would narrow the ceremony to a credential the authenticator may not be offering.
+  `GET /api/me/account-keys` returns no identifier of either kind — a factor identifier is not a
+  credential id.
 - **No `timeout`.** The server owns that number on the other two legs, and a literal here would be
   a third copy of it, drifting against the two that are sent.
 
@@ -927,12 +975,16 @@ Two server routes were rejected, and both look tidier than minting a challenge:
   route load-bearing for a screen deep inside the authenticated app, and it would mint a nonce that
   is **never spent** — one live challenge per press, sitting in a pool where nothing distinguishes
   it from the ones a real sign-in is about to redeem.
-- **`POST /api/passkeys/reauthentication/options`**, the authenticated leg. That pool exists to
-  authorize **erasing the account** — `BeginReauthenticationHandler` says so in as many words — so
-  every press of Unlock would leave behind a live nonce good for the one act in this product that
-  cannot be undone, on behalf of an act that destroys nothing. The whole value of a
-  re-authentication nonce is the distance between what it was minted for and what it can be spent
-  on, and this would spend that distance for a convenience.
+- **`POST /api/passkeys/reauthentication/options`**, the authenticated leg. **That pool authorizes
+  three sensitive acts and not one** — erasing the account, revoking a passkey, and replacing the
+  set of recovery codes, one handler each — and nothing on a nonce records which of them it was
+  asked for, so every press of Unlock would leave behind a live one spendable on any of the three,
+  the act that cannot be undone included, on behalf of an act that destroys nothing. **The breadth
+  strengthens the refusal rather than weakening it**, and reading the pool as erasure's alone is
+  what invites the opposite thought: an unlock is not an erasure, so borrowing the pool looks
+  harmless. The whole value of a re-authentication nonce is the distance between what it was minted
+  for and what it can be spent on, and this would spend that distance for a convenience, three ways
+  at once.
 
 **The day something on the server does have to check a factor here, that is a different ceremony.**
 Replacing a set of recovery codes is the case, and it carries a server's challenge behind it. It

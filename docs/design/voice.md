@@ -86,9 +86,14 @@ figures, not to copy that could just say the number).
   browser and thrown away, and the one erasure waits on is verified by the server. Each
   correction is narrower than the one before, which is the shape this rule produces when it
   is applied rather than admired.
-- **Controls blocked by different things get different sentences** — three of them on that
-  screen today. One sentence pasted across several replaces an old falsehood with a new one,
-  and reads as an apology nobody wrote for this control.
+- **Controls blocked by different things get different sentences** — on that screen today,
+  **three reasons behind four inert controls, said in four sentences**: registering a passkey
+  waits on one thing, generating a set of codes on that thing and a second, revoking and
+  erasing on the second alone. The two sharing a reason still differ in wording, one naming a
+  row's buttons and the other the screen's, so **the count of sentences is never the count of
+  reasons** — say which of the two a number is counting, or the next reader checks it against
+  the other one and finds it false. One sentence pasted across several replaces an old
+  falsehood with a new one, and reads as an apology nobody wrote for this control.
 
 ## A secret shown once
 

@@ -390,9 +390,20 @@
   <!-- "Either half is running", which is the book's phrase for the busy
        treatment. It is not a screen-state enum and must not become one: it
        carries no reading of lockedness, only of motion, and the two states it
-       ors together are owned by two different objects that are both still read
-       by name below. -->
-  @let working = keys === 'unlocking' || unlocking.busy();
+       is composed of are owned by two different objects that are both still
+       read by name below.
+
+       **Read from the service, never assembled here, and that is the fix for a
+       defect rather than a tidy-up.** This local used to compute
+       `keys === 'unlocking' || unlocking.busy()` while
+       `AccountUnlockService.unlock()` guarded on `busy` alone — two definitions
+       of one fact, in two files, disagreeing for the whole length of the
+       account-key read. The control was drawn disabled and the handler took the
+       press anyway, because `disabledInteractive` leaves the DOM `disabled`
+       property false on a `<button>`. One owner is what keeps the attribute and
+       the guard the same width: whichever way the reading moves, both sides
+       move with it. -->
+  @let working = unlocking.working();
 
   <!-- One region, in the DOM from first paint and empty at rest, carrying every
        line this section says: both waits, all eight refusals, and the line
@@ -403,8 +414,10 @@
        failure to save something they typed.
 
        **RULE ONE — which block renders is `custody.status()`'s answer and only
-       its.** The chain below branches on `keys` at the top level; the flow's own
-       `busy` is consulted *inside* the `locked` arm and nowhere else. **The
+       its.** The chain below branches on `keys` at the top level; motion is
+       consulted *inside* the `locked` arm and nowhere else, where `working` can
+       only be true of the flow's own half — custody reads `locked` there by
+       construction. **The
        order is the rule, not a style.** The two in-flight states overlap on
        purpose: `AccountUnlockService` hands custody the key *before* it clears
        `busy`, so that no frame exists in which both are false and the section
@@ -583,8 +596,9 @@
        The guard is in `AccountUnlockService.unlock()` as well as in this
        attribute, and that is not redundancy: Material's click-halt is applied to
        anchors only, so on a `<button>` the DOM `disabled` property stays false
-       and a second press arrives — which here would raise a second system sheet
-       over the first. -->
+       and the press arrives whatever this attribute says. The handler is what
+       refuses it, and it refuses it by reading the same `working` bound here —
+       so the two can never cover different halves of an attempt again. -->
   @if (keys !== 'unlocked') {
     <button
       class="s-button"

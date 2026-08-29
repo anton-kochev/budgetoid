@@ -1548,6 +1548,61 @@ describe('WebauthnCeremonyService', () => {
     expect(get).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a resolved unlock credential that is not a PublicKeyCredential', async () => {
+    // Arrange
+    // **The third copy of the same narrowing, and it is written out here for
+    // the reason the other two are written out for each other: a branch added
+    // to one leg is not a branch added to another.** This method has its own
+    // `navigator.credentials.get()`, its own check and its own catch, and no
+    // test of `createPasskey` or `assertPasskey` speaks for any of them. Its
+    // doc says "five outcomes and no sixth", and until this case existed the
+    // sixth — a resolved value that is not a credential — left by a route
+    // nothing had ever executed.
+    //
+    // The object below is the discriminating one, mirroring the sign-in leg's:
+    // `get()` is typed as resolving `Credential`, of which `PublicKeyCredential`
+    // is one kind, and this answers every member the happy path reads,
+    // extension results carrying a PRF output included. Under `instanceof` it
+    // is refused. Under a truthiness check, or under no check at all, **the
+    // unlock succeeds** — the account's key-encryption key is derived from
+    // bytes that arrived with whatever resolved, handed to custody, and used to
+    // try the account's envelopes. Nothing crashes. What a person sees is a
+    // ceremony that worked and an account that will not open, which this leg
+    // reports as `unopened`: a fact about their authenticator that is not true
+    // of it.
+    get.mockResolvedValue({
+      id: RENDERED_CREDENTIAL_ID,
+      rawId: toArrayBuffer(NEW_CREDENTIAL_ID_BYTES),
+      type: 'public-key',
+      response: {
+        clientDataJSON: toArrayBuffer(LOCAL_CLIENT_DATA_BYTES),
+        authenticatorData: toArrayBuffer(LOCAL_AUTHENTICATOR_DATA_BYTES),
+        signature: toArrayBuffer(LOCAL_SIGNATURE_BYTES),
+        userHandle: toArrayBuffer(USER_HANDLE_BYTES),
+      },
+      getClientExtensionResults: () => ({
+        prf: { results: { first: prfOutput(ASSERTION_PRF_BYTES).buffer } },
+      }),
+    } as unknown as Credential);
+
+    // Act
+    const result = await service.deriveKeyFromLocalAssertion();
+
+    // Assert
+    expect(ceremonyFailure(result)).toBe('failed');
+
+    // And `no-prf` in particular is the wrong answer here, which is what makes
+    // this a check on the narrowing rather than on the extension results: the
+    // object carries a PRF output, so a leg that got as far as reading one
+    // would either succeed or refuse for a reason that is not true of it.
+    expect(ceremonyFailure(result)).not.toBe('no-prf');
+
+    // One `get()`, and it is not decoration on this leg: the refusal must be
+    // immediate. A leg that answered a non-credential by running the ceremony
+    // again would raise a second system prompt on the way to the same word.
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
   it('reports a dismissed prompt as cancelled', async () => {
     // Arrange
     // `NotAllowedError` is what a browser raises when the person closes the

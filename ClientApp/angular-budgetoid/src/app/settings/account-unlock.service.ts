@@ -27,9 +27,10 @@
 //
 // **Nothing secret lives on this instance.** The key is read and handed on in
 // the statement it is read in, never given a name this class could assign from,
-// and the two signals below hold a boolean and one of five words. That is what
-// makes the state of this service safe to render.
-import { Injectable, Signal, inject, signal } from '@angular/core';
+// and the state below is a boolean, one of five words, and a boolean derived
+// from the first and custody's status. That is what makes the state of this
+// service safe to render.
+import { Injectable, Signal, computed, inject, signal } from '@angular/core';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import {
   WebauthnCeremonyService,
@@ -78,13 +79,57 @@ export class AccountUnlockService {
     this.failureSignal.asReadonly();
 
   /**
+   * Whether either half of an attempt is running — the ceremony this service
+   * runs, or the read custody runs with what the ceremony produced.
+   *
+   * **One owner, because the two spellings that existed were the defect.** The
+   * screen assembled `custody.status() === 'unlocking' || unlocking.busy()`
+   * into a template local while {@link unlock} guarded on `busy` alone, and the
+   * two disagreed for the whole length of a network round trip: {@link derive}
+   * hands custody the key *before* it clears `busy`, so for every millisecond
+   * of the account-key read the flow reads idle and custody reads `unlocking`.
+   * There the control was drawn unpressable and the handler took the press
+   * anyway. Neither spelling was wrong on its own terms; having two was, and
+   * the rejected alternative is the obvious one — widen the guard in the
+   * handler and leave the template computing its own answer. That leaves two
+   * definitions of one fact in two files, which is what drifted the first time,
+   * and the drift is silent in both directions: a template that narrows draws a
+   * live control over an attempt already running, and a handler that narrows
+   * accepts the press behind it. It is the rule `apiCredentialsInterceptor`
+   * keeps about "is this our API?" — one definition, exported, with the second
+   * reader importing it rather than restating it.
+   *
+   * **It does not replace {@link busy}.** The screen says two different
+   * in-flight sentences off the two halves separately — *Waiting for your
+   * passkey.* while the system sheet is up, *Opening your account…* once the
+   * read is running — and a person can act on the difference: touch a sensor,
+   * or wait. This is the coarser reading laid over them, not a merge of them.
+   */
+  public readonly working: Signal<boolean> = computed(
+    () => this.busySignal() || this.custody.status() === 'unlocking',
+  );
+
+  /**
    * Runs the ceremony and hands what it derived to custody.
    *
    * The guard is in this method as well as in the screen's
    * `disabledInteractive` attribute, and that is not belt and braces:
    * Material's click-halt applies to anchors only, so on a `<button>` the DOM
-   * `disabled` property stays `false` and the second press arrives here.
-   * Without this line it would raise a second system sheet over the first.
+   * `disabled` property stays `false` and the press arrives here whatever the
+   * attribute says. This line is therefore the only thing that refuses it.
+   *
+   * **So it guards on {@link working}, which is what the attribute is bound to,
+   * and the widths have to match.** An attempt has two halves — the ceremony,
+   * then custody's read of the account keys — and a guard on `busy` alone
+   * covered the first only. That is narrower than the attribute, and every
+   * press landing in the gap is one the screen said could not be made: it
+   * raises a second system sheet over an unlock the person has already
+   * finished, and `AccountKeyCustodyService.unlock` runs `#forget` again, which
+   * drops both keys and republishes `'unlocking'` — discarding the read the
+   * first press was about to complete. The account they had just opened closes,
+   * by a button drawn as though it were disabled. A guard backstopping an
+   * attribute has to be at least as wide as that attribute; reading the same
+   * signal is how it stays that way when either side moves.
    *
    * **There is no `available()` check here, and the omission is the rule.**
    * `SignInService` has one and its own comment says why — a challenge is a
@@ -101,7 +146,7 @@ export class AccountUnlockService {
    * refuses.
    */
   public unlock(): void {
-    if (this.busySignal()) {
+    if (this.working()) {
       return;
     }
 
