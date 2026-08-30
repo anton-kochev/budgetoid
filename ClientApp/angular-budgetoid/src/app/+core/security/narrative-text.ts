@@ -34,8 +34,10 @@
 // against it renders "we could not read this" over a field that was simply never
 // filled in. The two facts are also known at different moments: whether a column
 // is null is known before any key is involved, and whether it opens is known only
-// after one is. `null` on the outside keeps them apart, and the mapper that
-// produces it answers the row's question before it asks this one.
+// after one is. `null` on the outside keeps them apart, and a mapper written
+// against it answers the row's question before it asks this one — no such mapper
+// exists yet, so that ordering is a rule for the one that arrives rather than a
+// description of anything running.
 //
 // **Which is the same reason the union itself is not `null`.** Collapsed to
 // `string | null`, `locked` and `unreadable` become one word — and they are two
@@ -49,13 +51,18 @@
 // across `unopened`, `unreachable` and `unauthenticated` — the same rule a fourth
 // time, because the mistake is available at every one of them.
 //
-// **{@link NarrativeOpener} is what keeps a view-model mapper a plain module.** A
-// mapper handed the service would need a `TestBed` to be exercised at all, could
-// reach `unlock`, `lock` and `adopt` on the way past, and would tie a row-shaped
-// transform to Angular's injector for the sake of one capability. A mapper handed
-// this function takes exactly that one — open this wire value under this binding
-// — and a spec stands it up in two lines. The narrow type is the enforcement:
-// there is nothing else on it to call.
+// **{@link NarrativeOpener} is the shape a view-model mapper should be handed,
+// written down one commit ahead of the mapper.** A mapper handed the service
+// would need a `TestBed` to be exercised at all, could reach `unlock`, `lock`
+// and `adopt` on the way past, and would tie a row-shaped transform to Angular's
+// injector for the sake of one capability. A mapper handed this function takes
+// exactly that one — open this wire value under this binding — and a spec stands
+// it up in two lines. **What the narrowness does not do is enforce any of it.**
+// No mapper exists, this type is named nowhere outside its own declaration, and
+// nothing pins that `AccountKeyCustodyService.openField` is even assignable to
+// it — so the first mapper written can still be handed the whole service with
+// nothing going red. It is an argument for what to write the day that caller
+// arrives, and the assignment is written down on that day.
 import type { NarrativeFieldBinding } from './narrative-cipher';
 
 /**
@@ -91,14 +98,26 @@ export type SealedField =
   | { readonly state: 'locked' };
 
 /**
- * The one capability a view-model mapper is given: open this wire value under
- * this binding.
+ * The one capability a view-model mapper needs: open this wire value under this
+ * binding. Nothing is typed as this today; the head of the file says what that
+ * costs.
  *
- * Rejects on a binding the codec refuses — a row id in any spelling but the
- * canonical one. That is a caller's mistake about a value it read off a row and
- * not a state a person can be told about, so it stays a rejection rather than
- * becoming a fourth {@link NarrativeText} member: caught and rendered, it would
- * be a bug wearing a sentence.
+ * Rejects on a binding the codec refuses: a table and column that are not one
+ * of the pairs it publishes — asked as a pair, so a real table beside a column
+ * belonging to another one is refused as well, where two membership tests would
+ * wave it through — or a row id in any spelling but the canonical one. Every
+ * one of those rejections carries `NarrativeFieldMisuseError`, and that type is
+ * the whole of what lets a caller tell *you asked for something impossible*
+ * from *this stored value did not open*: the second is a fact about a column,
+ * the first a fact about the call, saying nothing whatever about what is
+ * stored.
+ *
+ * **That it stays a rejection is the load-bearing half.** As a fourth
+ * {@link NarrativeText} member it would reach a template, and a caller's defect
+ * rendered as a sentence about damaged text is a bug wearing a UI — put in
+ * front of somebody who can do nothing whatever about it, over a row that is
+ * perfectly fine. Only the refusals a person can act on become a word this type
+ * hands to a screen.
  */
 export type NarrativeOpener = (
   binding: NarrativeFieldBinding,

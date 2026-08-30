@@ -42,8 +42,10 @@ import {
 import {
   NARRATIVE_FIELDS,
   NARRATIVE_FIELD_AAD_PREFIX,
+  NarrativeFieldMisuseError,
   narrativeFieldAssociatedData,
   openNarrativeField,
+  refuseInvalidBinding,
   sealNarrativeField,
 } from './narrative-cipher';
 import * as narrativeCipherModule from './narrative-cipher';
@@ -316,6 +318,25 @@ function importNonExtractableContentKey(): Promise<CryptoKey> {
   return importContentKey(false);
 }
 
+// A second content key, and it is **not** the second key the note above
+// refuses. That note is about a second *frozen* key — a fixed value of this
+// file's own that neither the vectors nor any other implementation agrees with,
+// which would let the ordinary cases stay green over a vector file that failed
+// to load. This one is drawn fresh on every call and nothing is ever sealed
+// under it: its entire job is to be the wrong key, so there is nothing for
+// anybody to agree with and nothing that can drift.
+//
+// Non-extractable for the same reason production's is. An extractable key would
+// be refused before the cipher — which is the *other* half of this file's
+// claims, and would make a case about a ciphertext that will not open pass for
+// the opposite reason.
+function importOtherContentKey(): Promise<CryptoKey> {
+  return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+    'encrypt',
+    'decrypt',
+  ]);
+}
+
 // **The list of legal pairs lives in the module, not here.** `NarrativeField` is
 // derived from `NARRATIVE_FIELDS` rather than declared beside it, which is what
 // makes the type impossible to widen without widening a value — and a value is
@@ -430,6 +451,101 @@ function nonceRegion(envelope: Uint8Array): Uint8Array {
 function ciphertextRegion(envelope: Uint8Array): Uint8Array {
   return envelope.subarray(SEALED_OFFSET, envelope.length - ENVELOPE_TAG_BYTES);
 }
+
+// One byte of the ciphertext flipped, and the wire re-rendered around it.
+//
+// Inside the region GCM authenticates, deliberately, and not in the version
+// byte: a reader is entitled to refuse a version it does not know on shape
+// alone, before the tag is ever checked, so damage there would be a different
+// failure wearing the same face.
+function withAlteredCiphertext(wire: string): string {
+  const envelope = Uint8Array.from(envelopeOf(wire));
+
+  envelope[SEALED_OFFSET] ^= 0xff;
+
+  return encodeBase64Url(envelope);
+}
+
+// ---------------------------------------------------------------------------
+// Reading the failure itself rather than only its presence.
+
+// Hands back whatever a call threw or rejected with — synchronous throws and
+// rejected promises alike — and fails loudly if it did neither.
+//
+// `rejects.toThrow(SomeType)` covers half of what the cases below need. The
+// other half is the **absence** of a type on a ciphertext that did not open, and
+// a negated matcher chain there reads as a double negative nobody can check, and
+// says nothing about the `name` fallback. Holding the thrown value makes both
+// halves one shape and lets every assertion be a positive statement about an
+// object this file has in its hand.
+//
+// The `throw` on the no-throw path is what stops the whole family from passing
+// vacuously: an `expect` on a value that was never produced is the one way these
+// cases could be green while asserting nothing.
+async function thrownBy(call: () => unknown): Promise<unknown> {
+  try {
+    await Promise.resolve(call());
+  } catch (error: unknown) {
+    return error;
+  }
+
+  throw new Error('The call was expected to refuse and returned instead.');
+}
+
+// **The cast is the hazard being tested, not a convenience for writing the
+// test.** A binding assembled by the compiler cannot carry a table outside
+// `NARRATIVE_FIELDS`, which is exactly why the module leaves the table and the
+// column to the type system today and checks only the row id at runtime.
+//
+// That holds while a binding is assembled by the compiler and stops holding the
+// moment a table name travels as **data** — out of a configuration, off a
+// response, through a view-model mapper the next slice adds — and the one line
+// that gets such a value into a binding is this assertion. So these cases build
+// the value the way the defect will build it, and ask the module what it does
+// with it.
+//
+// What it costs when nothing refuses is the damage the row id is already checked
+// to prevent: a field sealed under associated data no other client will ever
+// reproduce, permanently, with no error naming the cause.
+function anIllegalBinding(
+  table: string,
+  column: string,
+  rowId: string,
+): NarrativeFieldBinding {
+  return { table, column, rowId } as unknown as NarrativeFieldBinding;
+}
+
+// Every door a binding can arrive at, so a rule held on one of them and not the
+// others is visible as a row rather than as an absence.
+//
+// The two builders take no key and the two operations do; the shape is the wider
+// one and the builders ignore what they are handed. `openNarrativeField` is
+// given a wire that is never read, because every refusal these cases are about
+// sits above the decoder — if one of them ever stops doing so, this argument
+// fails as a decoder error rather than passing quietly.
+interface BindingEntryPoint {
+  readonly where: string;
+  readonly call: (key: CryptoKey, binding: NarrativeFieldBinding) => unknown;
+}
+
+const BINDING_ENTRY_POINTS: readonly BindingEntryPoint[] = [
+  {
+    where: 'refuseInvalidBinding',
+    call: (key, binding) => refuseInvalidBinding(binding),
+  },
+  {
+    where: 'narrativeFieldAssociatedData',
+    call: (key, binding) => narrativeFieldAssociatedData(binding),
+  },
+  {
+    where: 'sealNarrativeField',
+    call: (key, binding) => sealNarrativeField(key, 'Coffee', binding),
+  },
+  {
+    where: 'openNarrativeField',
+    call: (key, binding) => openNarrativeField(key, 'AQID', binding),
+  },
+];
 
 describe('the associated data of a narrative field', () => {
   it('is the frozen bytes for a known binding', async () => {
@@ -1200,6 +1316,575 @@ describe('opening a narrative field', () => {
   });
 });
 
+// The type, not merely the throw.
+//
+// Every case above this point asserts that something rejected and nothing
+// asserts *what*. That gap was measured rather than suspected: replacing
+// `new NarrativeFieldMisuseError(` with `new Error(` in both of the module's
+// refusals leaves the whole suite green, so today the class could fail to extend
+// `Error`, could carry the wrong `name`, or could not exist at all.
+//
+// **The distinction it carries is the only one a caller is entitled to.** A
+// rejection out of `openNarrativeField` means either *you asked for something
+// impossible* or *this stored value did not open*, and only the second is a
+// state a person can be shown. Rendered as damaged text, the first is a bug
+// wearing a UI, put in front of somebody over a row that is perfectly fine.
+//
+// So the cases come in two halves and the second is the load-bearing one. The
+// positive half says the two pre-cipher refusals carry the type. The negative
+// half says a ciphertext that did not authenticate does **not** — without which
+// an implementation that threw the misuse type for everything passes every
+// positive case there is, and the distinction the type exists to make is gone
+// while all of it stays green.
+describe('the type a narrative field refuses its caller with', () => {
+  const BINDING: NarrativeFieldBinding = {
+    table: 'transactions',
+    column: 'description',
+    rowId: ROW_A,
+  };
+
+  it.each(BINDING_ENTRY_POINTS)(
+    'refuses a non-canonical row id out of $where with the misuse type',
+    async ({ call }) => {
+      // Arrange
+      // Every door, because the rule is the module's and not one function's. A
+      // refusal that carried the type on the builder and a bare `Error` on the
+      // operation would be exactly as useless to a caller as no type at all —
+      // the operations are what a caller wraps in a `catch`.
+      const key = await importNonExtractableContentKey();
+      const shouted: NarrativeFieldBinding = {
+        ...BINDING,
+        rowId: ROW_A.toUpperCase(),
+      };
+
+      // Act
+      const error = await thrownBy(() => call(key, shouted));
+
+      // Assert
+      expect(error).toBeInstanceOf(NarrativeFieldMisuseError);
+
+      // And it is an `Error`, which `toBeInstanceOf` above does not imply: a
+      // class extending nothing satisfies the first assertion perfectly and
+      // arrives at a caller with no stack, no `message` and nothing a logger
+      // renders.
+      expect(error).toBeInstanceOf(Error);
+    },
+  );
+
+  // The key doors are the two operations and only those: neither builder is
+  // handed a key, so an extractable one has nowhere to arrive.
+  interface KeyEntryPoint {
+    readonly where: string;
+    readonly call: (key: CryptoKey, wire: string) => Promise<unknown>;
+  }
+
+  const KEY_ENTRY_POINTS: readonly KeyEntryPoint[] = [
+    {
+      where: 'sealNarrativeField',
+      call: (key, wire) => sealNarrativeField(key, 'Coffee', BINDING),
+    },
+    {
+      where: 'openNarrativeField',
+      call: (key, wire) => openNarrativeField(key, wire, BINDING),
+    },
+  ];
+
+  it.each(KEY_ENTRY_POINTS)(
+    'refuses an extractable content key out of $where with the misuse type',
+    async ({ call }) => {
+      // Arrange
+      // The same bytes imported the one way production never does. The cases
+      // further up already say the cipher never runs; this one says what the
+      // caller is handed when it does not, which is the half that decides
+      // whether a screen reads its own defect as a damaged ledger.
+      const sealing = await importNonExtractableContentKey();
+      const wire = await sealNarrativeField(sealing, 'Coffee', BINDING);
+      const extractable = await importContentKey(true);
+
+      // Act
+      const error = await thrownBy(() => call(extractable, wire));
+
+      // Assert
+      expect(error).toBeInstanceOf(NarrativeFieldMisuseError);
+      expect(error).toBeInstanceOf(Error);
+
+      // The control: the identical call under the same bytes imported properly
+      // answers. Without it the refusal could be about the wire, the binding or
+      // the plaintext, and this case would read as a pass either way.
+      await expect(call(sealing, wire)).resolves.toBeTypeOf('string');
+    },
+  );
+
+  it('carries a name a caller can read without instanceof', async () => {
+    // Arrange
+    // **`instanceof` is the check to reach for and it is not always available.**
+    // Two copies of this module loaded into one page are two different class
+    // objects, so an error thrown by the far one is `instanceof` nothing a
+    // caller holds — while still reading `'NarrativeFieldMisuseError'`. The name
+    // is the fallback, which makes it part of the contract rather than a
+    // decoration, and a `name` that fell back to `'Error'` would leave the far
+    // copy indistinguishable from a ciphertext that did not open.
+    //
+    // Both refusals, because they are two `throw` statements and a rename
+    // reaches one of them at a time.
+    const extractable = await importContentKey(true);
+
+    // Act
+    const fromBinding = await thrownBy(() =>
+      refuseInvalidBinding({ ...BINDING, rowId: ROW_A.toUpperCase() }),
+    );
+    const fromKey = await thrownBy(() =>
+      sealNarrativeField(extractable, 'Coffee', BINDING),
+    );
+
+    // Assert
+    for (const error of [fromBinding, fromKey]) {
+      expect(error).toBeInstanceOf(NarrativeFieldMisuseError);
+      expect((error as Error).name).toBe('NarrativeFieldMisuseError');
+
+      // An **own** property, which is the module's stated reason for writing it
+      // as a class field rather than leaving it on the prototype: a prototype
+      // `name` is in neither `Object.keys` nor `JSON.stringify`, so an error
+      // that reached a log or a structured report would arrive carrying nothing
+      // that says what it was.
+      expect(Object.hasOwn(error as object, 'name')).toBe(true);
+      expect(Object.keys(error as object)).toContain('name');
+    }
+  });
+
+  // The negative half. Each row damages one thing about a genuine, opening
+  // fixture and nothing else, so what the assertion is about is the damage.
+  interface OpenFixture {
+    readonly key: CryptoKey;
+    readonly wire: string;
+    readonly binding: NarrativeFieldBinding;
+  }
+
+  interface UnopenableCase {
+    readonly what: string;
+    readonly damage: (good: OpenFixture) => Promise<OpenFixture> | OpenFixture;
+  }
+
+  const UNOPENABLE_CASES: readonly UnopenableCase[] = [
+    {
+      what: 'a key that did not seal it',
+      damage: async (good) => ({ ...good, key: await importOtherContentKey() }),
+    },
+    {
+      what: 'a row that did not hold it',
+      damage: (good) => ({
+        ...good,
+        binding: { ...good.binding, rowId: ROW_B },
+      }),
+    },
+    {
+      what: 'a table and column that did not hold it',
+      damage: (good) => ({
+        ...good,
+        binding: bindingFor('payees', 'name', ROW_A),
+      }),
+    },
+    {
+      what: 'altered ciphertext bytes',
+      damage: (good) => ({ ...good, wire: withAlteredCiphertext(good.wire) }),
+    },
+    // The decoder's own refusal, which happens before the cipher and is
+    // therefore the row a reader is most likely to expect the misuse type on.
+    // It is not one: a wire value is what was *stored*, not what the caller
+    // asked for, so a caller that read it as its own defect would tell somebody
+    // their ledger is fine when the column holds nonsense.
+    {
+      what: 'a wire the strict decoder refuses',
+      damage: (good) => ({ ...good, wire: 'not-base64url!' }),
+    },
+    {
+      what: 'bytes that authenticate but are not UTF-8',
+      damage: async (good) => ({
+        ...good,
+        wire: encodeBase64Url(
+          await sealEnvelope(
+            good.key,
+            Uint8Array.of(0xff, 0xfe, 0xfd),
+            narrativeFieldAssociatedData(good.binding),
+          ),
+        ),
+      }),
+    },
+  ];
+
+  it.each(UNOPENABLE_CASES)(
+    'does not reach for the misuse type over $what',
+    async ({ damage }) => {
+      // Arrange
+      const key = await importNonExtractableContentKey();
+      const good: OpenFixture = {
+        key,
+        wire: await sealNarrativeField(key, 'Coffee', BINDING),
+        binding: BINDING,
+      };
+      const damaged = await damage(good);
+
+      // Act
+      const error = await thrownBy(() =>
+        openNarrativeField(damaged.key, damaged.wire, damaged.binding),
+      );
+
+      // Assert
+      // Nothing here inspects *which* failure it is, for the reason the head of
+      // this file gives: wrong key, wrong binding and altered bytes are one
+      // indistinguishable error on purpose, and a case that told them apart
+      // would be pinning the oracle the format exists to deny. The single claim
+      // is that none of them is a statement about the call.
+      expect(error).not.toBeInstanceOf(NarrativeFieldMisuseError);
+
+      // The name half of the same claim, and not a restatement: two copies of
+      // this module in one page make the assertion above pass for an error that
+      // *is* the misuse type, thrown by the far copy.
+      expect((error as { readonly name?: unknown }).name).not.toBe(
+        'NarrativeFieldMisuseError',
+      );
+
+      // The control every row needs: the undamaged fixture opens, so the
+      // rejection above is the damage and not the way this case was assembled.
+      await expect(
+        openNarrativeField(good.key, good.wire, good.binding),
+      ).resolves.toBe('Coffee');
+    },
+  );
+});
+
+// The other two thirds of the binding.
+//
+// `refuseInvalidBinding` checks the row id and nothing else. The table and the
+// column are closed unions the module declares, so today they are held by the
+// compiler alone — and that holds exactly as long as a binding is assembled by
+// the compiler.
+//
+// The next slice builds view-model mappers, which is where a table name starts
+// travelling as **data**: out of a configuration, off a response, through an
+// `as`. One `as NarrativeFieldBinding` and a field is sealed under associated
+// data no other client will ever reproduce — permanent, silent, with no error
+// naming the cause. That is the same damage the row id is checked at runtime to
+// prevent, over two thirds of the binding that has no such check.
+//
+// **The third row says what the check has to be.** `transactions` is a real
+// table and `name` is a real column, and the pair is not one of the eight: the
+// eight are pairs, not a cross product. So a fix written as two membership tests
+// — is the table known, is the column known — waves it through, and a mapper
+// that reads a table from one place and a column from another produces exactly
+// that value. The check has to be a lookup of the **pair** in
+// `NARRATIVE_FIELDS`.
+//
+// Whether the pair *should* be refused is a fair question, and the answer is
+// yes for the reason the other two rows are refused: nothing can ever be found
+// in a column that does not exist, so a field sealed under that binding is
+// sealed under a grammar no read of that row will rebuild. It is not a narrower
+// binding — it is a binding pointing at nothing.
+describe('the table and column a narrative field is bound to', () => {
+  const LEGAL = NARRATIVE_FIELDS[0];
+
+  // Derived from a real entry by changing one field, so neither value can drift
+  // into the list by somebody adding a narrative field: a suffix on a name that
+  // is already taken is a name the list does not hold, and the derivation is
+  // checked below rather than trusted by eye.
+  const ABSENT_TABLE = `${LEGAL.table}_v2`;
+  const ABSENT_COLUMN = `${LEGAL.column}_v2`;
+
+  const REFUSABLE = [
+    {
+      what: 'a table the module does not list',
+      binding: anIllegalBinding(ABSENT_TABLE, LEGAL.column, ROW_A),
+    },
+    {
+      what: 'a column the module does not list',
+      binding: anIllegalBinding(LEGAL.table, ABSENT_COLUMN, ROW_A),
+    },
+    {
+      what: 'a real table paired with a real column of another table',
+      binding: anIllegalBinding('transactions', 'name', ROW_A),
+    },
+  ];
+
+  it('builds its illegal bindings out of the module own list', () => {
+    // Arrange
+    // The guard on the three rows above: an "invalid" value that quietly became
+    // valid would leave twelve cases asserting a refusal of something legal,
+    // and the first thing anybody would do about that is delete the check.
+    //
+    // `Set<string>` and not the inferred `Set<'transactions' | …>`, which is
+    // itself a small demonstration of the gap these cases are about: the union
+    // is narrow enough that the compiler refuses to let a value outside it even
+    // be *asked about*. It is refusing the question here and refusing nothing at
+    // all wherever a table name arrives through a cast.
+    const tables = new Set<string>(
+      NARRATIVE_FIELDS.map((field) => field.table),
+    );
+    const columns = new Set<string>(
+      NARRATIVE_FIELDS.map((field) => field.column),
+    );
+    const pairs = new Set<string>(NARRATIVE_FIELDS.map(fieldKey));
+
+    // Act, Assert
+    expect(tables.has(ABSENT_TABLE)).toBe(false);
+    expect(columns.has(ABSENT_COLUMN)).toBe(false);
+
+    // The mismatched row is the one whose halves are both real, which is the
+    // whole of its argument: two independent membership tests accept it.
+    expect(tables.has('transactions')).toBe(true);
+    expect(columns.has('name')).toBe(true);
+    expect(pairs.has('transactions|name')).toBe(false);
+
+    // And the control the twelve cases need: the legal pair the two absent
+    // values were derived from is accepted, so a refusal below is about the one
+    // field that was changed.
+    expect(() =>
+      refuseInvalidBinding(bindingFor(LEGAL.table, LEGAL.column, ROW_A)),
+    ).not.toThrow();
+  });
+
+  it.each(
+    REFUSABLE.flatMap((subject) =>
+      BINDING_ENTRY_POINTS.map((entry) => ({ ...subject, ...entry })),
+    ),
+  )('refuses $what out of $where', async ({ binding, call }) => {
+    // Arrange
+    const key = await importNonExtractableContentKey();
+
+    // Act
+    const error = await thrownBy(() => call(key, binding));
+
+    // Assert
+    // The type and not merely a throw, for the reason the describe above gives:
+    // an illegal binding is a fact about the call, and a caller has to be able
+    // to tell it from a column whose contents did not open.
+    expect(error).toBeInstanceOf(NarrativeFieldMisuseError);
+  });
+
+  // **The positive half, and its absence is the largest hole in this describe.**
+  //
+  // Every refusable row above is built from `NARRATIVE_FIELDS[0]` or from the
+  // hard-coded `transactions|name`, so nothing here asks whether the other seven
+  // pairs are *accepted*. A lookup written against entry zero alone —
+  // `field.table === NARRATIVE_FIELDS[0].table && field.column === …` — passes
+  // all twelve refusals and the one control above it, and **silently refuses
+  // `budgets.name` and six others**: an account name, every payee, every
+  // category label and every group note stop being sealable at all, reported to
+  // the caller as its own defect over a pair this module publishes.
+  //
+  // Driven off `NARRATIVE_FIELDS` and never typed out, for the reason the reason
+  // map at the head of this file gives: a ninth pair is covered the day it is
+  // added, and a hand-written list here would be a second copy of the field list
+  // living in the file that exists to refuse copies of it.
+  //
+  // **A full round trip per pair rather than a bare "did not throw", and the
+  // choice is affordable rather than thorough for its own sake**: eight seals
+  // and eight opens is sixteen AES-GCM calls over a five-letter string, which
+  // does not move this file's runtime. What it buys over the cheaper version is
+  // the pair that is accepted on the way in and spelled differently on the way
+  // out — an implementation that normalised the table only inside
+  // `sealNarrativeField` refuses nothing and opens nothing it wrote, and a
+  // refusal-only sweep is green over it.
+  it('drives a case for every pair the module publishes', () => {
+    // Arrange, Act, Assert
+    // The control on the sweep below, and it is the whole reason the sweep is
+    // worth anything: `it.each` over an empty list reports a clean run having
+    // executed nothing, and this is the only positive statement in the describe.
+    //
+    // The *count* is pinned elsewhere — `builds a distinct binding for each of
+    // the eight narrative fields` asserts eight — so what is left here is that
+    // the list is non-empty and that no pair is written twice, which would make
+    // the sweep cover fewer pairs than it appears to.
+    expect(NARRATIVE_FIELDS.length).toBeGreaterThan(0);
+    expect(new Set(NARRATIVE_FIELDS.map(fieldKey)).size).toBe(
+      NARRATIVE_FIELDS.length,
+    );
+  });
+
+  it.each([...NARRATIVE_FIELDS])(
+    'accepts $table with $column and round-trips text bound to it',
+    async ({ table, column }) => {
+      // Arrange
+      const key = await importNonExtractableContentKey();
+      const binding = bindingFor(table, column, ROW_A);
+
+      // Act, Assert
+      // The named refusal first, because it is the door the other three entry
+      // points go through and the one a narrowed lookup closes.
+      expect(() => refuseInvalidBinding(binding)).not.toThrow();
+
+      // Then the round trip, which is a second and stronger statement: the pair
+      // is not merely admitted, it builds associated data this same module
+      // rebuilds byte for byte on the way back out.
+      const wire = await sealNarrativeField(key, 'Coffee', binding);
+
+      await expect(openNarrativeField(key, wire, binding)).resolves.toBe(
+        'Coffee',
+      );
+    },
+  );
+
+  // **The case of a legal pair, which nothing above tries.**
+  //
+  // The twelve refusals all differ from a legal pair in their *letters* — a
+  // suffix, or a real column belonging to another table — so an implementation
+  // that lower-cased both fields before the lookup is green through every one of
+  // them and through the eight accepted above. What it then does is seal
+  // `Transactions.description` under associated data built from the folded
+  // words, which no other client reproduces: the same permanent, silent damage
+  // the row id is refused for, over the other two thirds of the binding.
+  //
+  // **Why folding is wrong here even though `wrappedKeyAssociatedData` folds a
+  // uuid next door, and the two are not inconsistent.** A fold is a defence
+  // against a value arriving from *elsewhere* — the factor id there is minted by
+  // this client and nothing upstream hands that grammar a canonical spelling, so
+  // the fold is where one gets made. These two fields arrive from nowhere at
+  // all: they are chosen from a list **this module publishes**, in the spelling
+  // this module publishes them in. There is no second spelling in existence to
+  // be tolerant of, so a fold could only *invent* one — and it would invent it
+  // at the sealing end, which is exactly where the damage cannot be undone.
+  const MISCASED = [
+    {
+      what: 'a legal table with one capital letter',
+      table: `${LEGAL.table[0].toUpperCase()}${LEGAL.table.slice(1)}`,
+      column: LEGAL.column,
+    },
+    {
+      what: 'a legal table shouted',
+      table: LEGAL.table.toUpperCase(),
+      column: LEGAL.column,
+    },
+    {
+      what: 'a legal column shouted',
+      table: LEGAL.table,
+      column: LEGAL.column.toUpperCase(),
+    },
+  ];
+
+  it('miscases exactly one field and lands outside the list either way', () => {
+    // Arrange
+    // The guard on the three rows above, and it has two halves that catch
+    // different mistakes. A row whose value happened to equal the legal one
+    // would assert a refusal of something legal — which is how a reader ends up
+    // deleting the check. And a row that reached the list some other way would
+    // pass for a reason that has nothing to do with case.
+    const pairs = new Set<string>(NARRATIVE_FIELDS.map(fieldKey));
+
+    // Act, Assert
+    for (const { table, column } of MISCASED) {
+      expect(`${table}|${column}`).not.toBe(fieldKey(LEGAL));
+      expect(pairs.has(`${table}|${column}`)).toBe(false);
+
+      // **And each one folds back onto a legal pair**, which is the hazard
+      // stated as an assertion rather than as prose: these are precisely the
+      // values a case-blind lookup would accept, so a fold added later cannot
+      // make this describe green while these rows still refuse.
+      expect(pairs.has(`${table.toLowerCase()}|${column.toLowerCase()}`)).toBe(
+        true,
+      );
+    }
+  });
+
+  it.each(
+    MISCASED.flatMap((subject) =>
+      BINDING_ENTRY_POINTS.map((entry) => ({ ...subject, ...entry })),
+    ),
+  )('refuses $what out of $where', async ({ table, column, call }) => {
+    // Arrange
+    const key = await importNonExtractableContentKey();
+
+    // Act
+    const error = await thrownBy(() =>
+      call(key, anIllegalBinding(table, column, ROW_A)),
+    );
+
+    // Assert
+    expect(error).toBeInstanceOf(NarrativeFieldMisuseError);
+  });
+
+  // **The ordering, which none of the cases above can see.**
+  //
+  // They ask which *type* was thrown and never *when*. A `refuseInvalidBinding`
+  // moved below the cipher — or a `sealNarrativeField` that sealed first and
+  // threw on the way out — rejects with the byte-identical object, and every
+  // binding case in this file stays green. The module says as much at the check
+  // itself: the ordering is held by construction and by nothing executable, and
+  // a reader who assumed otherwise would move one of these checks under the
+  // cipher with a clean run behind them.
+  //
+  // It is not a stylistic difference on the reading side. A module that called
+  // `decrypt` and refused afterwards has already put the account's narrative
+  // text in memory under a binding it had already decided was illegal, and then
+  // reported a failure — the thing the refusal exists to prevent, done, and then
+  // apologised for.
+  //
+  // The seam is the one `refuseExtractableKey`'s two cases already use: spies on
+  // `crypto.subtle.encrypt` and `crypto.subtle.decrypt`, calling through,
+  // because a substituted cipher would make the controls below statements about
+  // the substitute. Both refusals and both operations, because that is four
+  // orderings and each is one edit away from the other three.
+  const PRE_CIPHER_SUBJECTS = [
+    {
+      what: 'a pair the module does not list',
+      binding: anIllegalBinding('transactions', 'name', ROW_A),
+    },
+    {
+      what: 'a row id in a spelling the module refuses',
+      binding: anIllegalBinding(LEGAL.table, LEGAL.column, ROW_A.toUpperCase()),
+    },
+  ];
+
+  it.each(PRE_CIPHER_SUBJECTS)(
+    'reaches neither cipher over $what',
+    async ({ binding }) => {
+      // Arrange
+      // The arranging seal happens *before* the spies are installed, so nothing
+      // but the two calls under test can reach them.
+      const key = await importNonExtractableContentKey();
+      const legal = bindingFor(LEGAL.table, LEGAL.column, ROW_A);
+      const wire = await sealNarrativeField(key, 'Coffee', legal);
+      const encrypt = vi.spyOn(crypto.subtle, 'encrypt');
+      const decrypt = vi.spyOn(crypto.subtle, 'decrypt');
+
+      // Act
+      const fromSeal = await thrownBy(() =>
+        sealNarrativeField(key, 'Coffee', binding),
+      );
+      const fromOpen = await thrownBy(() =>
+        openNarrativeField(key, wire, binding),
+      );
+
+      // Assert
+      // The type, so a rejection that came out of the cipher for some other
+      // reason could not be read as the refusal this case is about.
+      expect(fromSeal).toBeInstanceOf(NarrativeFieldMisuseError);
+      expect(fromOpen).toBeInstanceOf(NarrativeFieldMisuseError);
+
+      // Both ciphers, on both calls. A seal that ran `encrypt` is the writing
+      // half; an open that ran `decrypt` is the reading half; and each spy also
+      // covers the other operation reaching for the wrong primitive.
+      expect(encrypt).not.toHaveBeenCalled();
+      expect(decrypt).not.toHaveBeenCalled();
+
+      // The controls, and the spies need them twice over: they say the refusals
+      // are about the binding rather than about the way this case was assembled,
+      // and they say the spies are watching the calls this module really makes.
+      // Without them, a spy on a method nothing reaches reports "never called"
+      // perfectly.
+      await expect(
+        sealNarrativeField(key, 'Coffee', legal),
+      ).resolves.toBeTypeOf('string');
+      await expect(openNarrativeField(key, wire, legal)).resolves.toBe(
+        'Coffee',
+      );
+      expect(encrypt).toHaveBeenCalledTimes(1);
+      expect(decrypt).toHaveBeenCalledTimes(1);
+
+      encrypt.mockRestore();
+      decrypt.mockRestore();
+    },
+  );
+});
+
 // The frozen vectors. Fixed key, fixed nonce, fixed binding, fixed plaintext —
 // one exact envelope each, computed outside this codebase.
 //
@@ -1343,6 +2028,49 @@ describe('the frozen narrative-field vectors', () => {
   );
 });
 
+// **The census is split by kind, and the split is the point rather than
+// tidiness.** It used to be one list of names filtered on
+// `typeof value === 'function'`, and a `class` is one of those at runtime — so
+// `NarrativeFieldMisuseError` landed in a list called "functions" the day it was
+// exported. Left there, an error type is forever counted as a function, and the
+// next reader adding a second one has nothing that tells the two kinds apart:
+// the module's *operations* and the *vocabulary a caller `catch`es on* would be
+// one set, and a function turned into a class, or a class turned into a factory,
+// would move nothing.
+//
+// A class is told from a function by its prototype chain and not by its name or
+// its source text: `Type.prototype instanceof Error` is true for a subclass of
+// `Error` under any downlevelling and false for every ordinary function this
+// module declares. `kindOf` is the single place that judgement is made, so there
+// is one definition of "error class" here rather than one per assertion.
+//
+// Each half is a **set compared to a set**, so reordering the exports or the
+// expectations reddens nothing and only a widening does.
+type ExportKind = 'error class' | 'function' | 'value';
+
+function kindOf(value: unknown): ExportKind {
+  if (typeof value !== 'function') {
+    return 'value';
+  }
+
+  const prototype: unknown = (value as { readonly prototype?: unknown })
+    .prototype;
+
+  return typeof prototype === 'object' &&
+    prototype !== null &&
+    prototype instanceof Error
+    ? 'error class'
+    : 'function';
+}
+
+function exportedNamesOfKind(kind: ExportKind): ReadonlySet<string> {
+  return new Set(
+    Object.entries(narrativeCipherModule)
+      .filter(([, value]) => kindOf(value) === kind)
+      .map(([name]) => name),
+  );
+}
+
 describe('the module surface', () => {
   it('exports these functions and no others', () => {
     // Arrange
@@ -1351,41 +2079,94 @@ describe('the module surface', () => {
     // the associated data, a lenient decoder added beside the strict one, an
     // exported helper that hands back the plaintext bytes rather than the
     // string.
-    const expected = [
+    //
+    // `refuseInvalidBinding` is on the list for the argument the module makes at
+    // it: a caller that has to know whether a binding is usable — before a
+    // `catch` that would otherwise read its own defect as a damaged stored value
+    // — wants the refusal by name, and building associated data in order to
+    // throw it away is the shape a reader deletes.
+    const expected = new Set([
       'narrativeFieldAssociatedData',
       'openNarrativeField',
+      'refuseInvalidBinding',
       'sealNarrativeField',
-    ].sort();
+    ]);
 
     // Act
-    const exported = Object.entries(narrativeCipherModule)
-      .filter(([, value]) => typeof value === 'function')
-      .map(([name]) => name)
-      .sort();
+    const exported = exportedNamesOfKind('function');
 
     // Assert
     expect(exported).toEqual(expected);
+  });
 
-    // The two non-function exports, pinned by name and not by value. Both values
-    // are pinned elsewhere and by something stronger: the prefix by the frozen
+  it('exports these error types and no others', () => {
+    // Arrange
+    // **One type, and the count is the claim.** The module's whole distinction
+    // is that everything it refuses about the *call* arrives as one type and
+    // everything about a ciphertext arrives as none of it. A second error type
+    // here splits that vocabulary in two, and every caller's `catch` has to
+    // learn the new one or start reading a refusal it does not recognise as a
+    // damaged ledger.
+    const expected = new Set(['NarrativeFieldMisuseError']);
+
+    // Act
+    const exported = exportedNamesOfKind('error class');
+
+    // Assert
+    expect(exported).toEqual(expected);
+  });
+
+  it('exports these values and no others', () => {
+    // Arrange
+    // The non-function exports, pinned by name and not by value. Both values are
+    // pinned elsewhere and by something stronger: the prefix by the frozen
     // associated data, which would catch a change to it, and the field list by
     // the length and the coverage above. Typing the prefix out here would be a
     // second copy of a string that is part of the definition of every field
     // already written.
-    //
+    const expected = new Set([
+      'NARRATIVE_FIELDS',
+      'NARRATIVE_FIELD_AAD_PREFIX',
+    ]);
+
+    // Act
+    const exported = exportedNamesOfKind('value');
+
+    // Assert
+    expect(exported).toEqual(expected);
+
     // `NARRATIVE_FIELDS` has to be a runtime value and not a type, or the type
     // derived from it goes back to being a hand-written union that can be
-    // widened without any value moving. This assertion is what says it is still
-    // a value.
-    const values = Object.entries(narrativeCipherModule)
-      .filter(([, value]) => typeof value !== 'function')
-      .map(([name]) => name)
-      .sort();
-
-    expect(values).toEqual(
-      ['NARRATIVE_FIELDS', 'NARRATIVE_FIELD_AAD_PREFIX'].sort(),
-    );
+    // widened without any value moving. These two assertions are what say it is
+    // still a value.
     expect(NARRATIVE_FIELD_AAD_PREFIX).toBeTypeOf('string');
     expect(Array.isArray(NARRATIVE_FIELDS)).toBe(true);
+  });
+
+  it('sorts every export into one of the three kinds', () => {
+    // Arrange
+    // **Trivially true today, and it is the line that stops being trivial the
+    // moment `kindOf` grows a fourth answer.** Three exact sets are not a census
+    // on their own: a kind nobody wrote an `it` for would leave every one of them
+    // exact and the export itself invisible. This is what makes the three add up
+    // to the module.
+    const everyName = new Set(Object.keys(narrativeCipherModule));
+
+    // Act
+    const sorted = new Set([
+      ...exportedNamesOfKind('function'),
+      ...exportedNamesOfKind('error class'),
+      ...exportedNamesOfKind('value'),
+    ]);
+
+    // Assert
+    expect(sorted).toEqual(everyName);
+
+    // And the classifier answers three different things about three known
+    // exports, so a `kindOf` that had collapsed two kinds is named here rather
+    // than inferred from whichever set went red.
+    expect(kindOf(NarrativeFieldMisuseError)).toBe('error class');
+    expect(kindOf(sealNarrativeField)).toBe('function');
+    expect(kindOf(NARRATIVE_FIELD_AAD_PREFIX)).toBe('value');
   });
 });

@@ -53,17 +53,26 @@ import {
   importHmacSha256Key,
   unwrapAccountKeys,
 } from './account-keys';
-// The two operations and the binding they take, and deliberately not
-// `NARRATIVE_FIELDS`. Which table and which column a value belongs to is the
-// caller's fact; this class is handed one already assembled and has no business
-// enumerating them — importing the list would put the eight pairs inside the one
-// file that must be able to say it names none of them.
+// The two operations, the binding they take, and the two members that let this
+// class judge a caller — and deliberately not `NARRATIVE_FIELDS`. Which table
+// and which column a value belongs to is the caller's fact; this class is
+// handed one already assembled and has no business enumerating them — importing
+// the list would put the eight pairs inside the one file that must be able to
+// say it names none of them.
 //
-// `narrativeFieldAssociatedData` is imported for its refusal and not for its
-// answer; both call sites below say why.
+// `refuseInvalidBinding` is called for itself, and it replaced a discarded call
+// to `narrativeFieldAssociatedData`: a builder called for a throw is a statement
+// whose only visible effect is a throw, which is the shape a reader deletes on
+// the next tidy-up with every round trip in the suite still green. It also
+// covers the whole binding rather than the row id alone, and it stops this file
+// building associated data the codec then builds again.
+//
+// `NarrativeFieldMisuseError` is the type `openField`'s `catch` re-throws on,
+// which is the only thing that keeps a caller's own defect out of `unreadable`.
 import {
-  narrativeFieldAssociatedData,
+  NarrativeFieldMisuseError,
   openNarrativeField,
+  refuseInvalidBinding,
   sealNarrativeField,
   type NarrativeFieldBinding,
 } from './narrative-cipher';
@@ -262,12 +271,16 @@ export class AccountKeyCustodyService {
    * Seals `plaintext` under the account's content key, bound to `binding`, and
    * hands back the wire value the column stores.
    *
-   * Answers `locked` when this browser is holding no content key. Rejects on a
-   * binding the codec refuses — a row id in any spelling but the canonical one —
-   * because that is a caller's mistake about a value it read off a row and not a
-   * state anybody can be told about. **Only the refusals a person can act on
-   * become a result**; a caught throw rendered as a sentence is a bug wearing a
-   * UI, shown to somebody who can do nothing whatever with it.
+   * Answers `locked` when this browser is holding no content key, and when the
+   * account's content key was **replaced** while the cipher ran — but not when
+   * custody merely ended, where the wire is kept; the guard below says why.
+   *
+   * Rejects on a binding the codec refuses — a table and column that are not one
+   * of its pairs, a row id in any spelling but the canonical one — because that
+   * is a caller's mistake about a value it read off a row and not a state
+   * anybody can be told about. **Only the refusals a person can act on become a
+   * result**; a caught throw rendered as a sentence is a bug wearing a UI, shown
+   * to somebody who can do nothing whatever with it.
    */
   public async sealField(
     binding: NarrativeFieldBinding,
@@ -281,13 +294,13 @@ export class AccountKeyCustodyService {
     // it. Whether a factor has been presented is not a fact about whether the
     // caller assembled its binding correctly.
     //
-    // Called for its refusal and not for its answer: the bytes it builds are
-    // dropped where they stand, and the codec builds them again inside the seal.
-    // That is a few string joins, and what it buys is that this file holds no
-    // second definition of the canonical spelling. A copy here would pass every
-    // case a round trip can see, because the half that drifted would still seal
-    // and still open everything it had written itself.
-    narrativeFieldAssociatedData(binding);
+    // Called for itself, so what is wanted is the refusal and not a value
+    // nobody used. It judges all three fields of the binding — the pair, and the
+    // row id's spelling — and this file holds no second definition of any of
+    // them: a copy here would pass every case a round trip can see, because the
+    // half that drifted would still seal and still open everything it had
+    // written itself.
+    refuseInvalidBinding(binding);
 
     const contentKey = this.#contentKey;
 
@@ -299,17 +312,44 @@ export class AccountKeyCustodyService {
       return { state: 'locked' };
     }
 
-    // **Nothing checks the generation on the way out of a seal, and that
-    // difference from the read below is the argument rather than a check
-    // forgotten on one side.** What an open publishes into a tab whose keys were
-    // dropped mid-cipher is plaintext, which is why the read drops it. What a
-    // seal publishes is a ciphertext: it is bound to the account's key whatever
-    // this tab does next, so answering `locked` over it would discard work in
-    // exchange for nothing at all.
-    return {
-      state: 'sealed',
-      wire: await sealNarrativeField(contentKey, plaintext, binding),
-    };
+    const wire = await sealNarrativeField(contentKey, plaintext, binding);
+
+    // **What is compared on the way out of a seal is the key, and never the
+    // generation — the counter is the wrong instrument here, and that is the
+    // argument rather than a check written differently on one side.**
+    //
+    // A ciphertext is not plaintext. What an open publishes into a tab whose
+    // keys were dropped mid-cipher is narrative content the tab is no longer
+    // entitled to, which is why the read below compares the counter and drops
+    // both of its answers. A wire value is entitled to nobody: it is readable
+    // only under the key it was sealed under, and the question this frame has to
+    // answer is the narrower one of *whose* key that now is.
+    //
+    // Two interruptions, and they must not answer alike. A `lock()` mid-seal
+    // drops the account's keys and puts nothing in their place — the wire is
+    // still that account's, so handing it back discards no work and misleads
+    // nobody, and answering `locked` over it would silently throw away text
+    // somebody had just typed while signing out. An `adopt()` mid-seal publishes
+    // **another account's** keys, and the wire in flight was sealed under keys
+    // this tab no longer holds: returned, it invites the caller to write one
+    // account's ciphertext into a row belonging to the next, where nothing in
+    // the product will ever open it and nothing on the server can see that it
+    // happened.
+    //
+    // The generation counter cannot tell those apart — it is bumped by both, by
+    // design, because everything that changes custody bumps it. So the
+    // comparison is about **key identity**: keep the answer while the account
+    // holds the very key object this seal ran under, or holds none at all; drop
+    // it only when the key was replaced. Object identity is the right test and
+    // not an approximation of one — `#hold` is the only writer, `CryptoKey` is
+    // opaque, and re-adopting the same object is the same account.
+    const held = this.#contentKey;
+
+    if (held !== null && held !== contentKey) {
+      return { state: 'locked' };
+    }
+
+    return { state: 'sealed', wire };
   }
 
   /**
@@ -332,7 +372,7 @@ export class AccountKeyCustodyService {
     // it puts a sentence about damaged text in front of somebody who can do
     // nothing about it, over a row that is perfectly fine. Only a ciphertext
     // that really did not open may become a word this class hands to a screen.
-    narrativeFieldAssociatedData(binding);
+    refuseInvalidBinding(binding);
 
     const contentKey = this.#contentKey;
 
@@ -343,26 +383,18 @@ export class AccountKeyCustodyService {
       return { state: 'locked' };
     }
 
-    // The codec's other pre-cipher refusal, asked again here and deliberately
-    // so. A key whose bytes can be read back out is one that can already be
-    // logged or posted to a crash reporter, and no API undoes an extractable
-    // import — but the codec's own refusal would arrive from inside the `try`
-    // and land as `unreadable`, which is the reading this method must never
-    // give a caller's mistake. Two copies of a boolean the platform owns cannot
-    // drift into two different grammars, which is exactly what makes this unlike
-    // a second copy of the spelling rule above; and of the two, this is the
-    // outer, so a drift shows up as a refusal that is too loud rather than as
-    // one that is silent.
+    // **Where the two pre-cipher refusals now sit, and what holds each there.**
+    // The binding refusal is above, over the held-key check, and its ordering is
+    // held **by construction**: it is a statement in this body, so there is no
+    // arrangement of these lines in which a locked tab reaches the cipher
+    // without passing it — and it is pinned besides, by the case that feeds a
+    // refused spelling to an account holding nothing. The extractable-key
+    // refusal cannot sit here at all, and that is not an omission: when no key
+    // is held this frame has already returned, so there is no key to judge. It
+    // necessarily arrives from **inside** the codec, which is where the one
+    // definition of it lives, and the `catch` below is what stops it landing as
+    // a sentence about damaged text.
     //
-    // Not repeated on the seal side, and that asymmetry is the argument too:
-    // nothing there catches anything, so the codec's refusal already reaches the
-    // caller as the rejection it is.
-    if (contentKey.extractable) {
-      throw new Error(
-        'A narrative field can only be opened under a non-extractable content key.',
-      );
-    }
-
     // Read before the cipher, so that what is compared afterwards is the world
     // this answer was computed in.
     const generation = this.#generation;
@@ -373,7 +405,25 @@ export class AccountKeyCustodyService {
         state: 'text',
         value: await openNarrativeField(contentKey, wire, binding),
       };
-    } catch {
+    } catch (error: unknown) {
+      // **A caller's defect keeps throwing, and everything else is one silent
+      // symptom.** `NarrativeFieldMisuseError` is the codec's word for a refusal
+      // it made *about the call* before any cipher ran — a binding this grammar
+      // cannot be built over, a content key whose bytes can be read back out —
+      // and none of it is a claim about the value stored in that column.
+      // Swallowed into `unreadable`, such a defect arrives on screen as a
+      // sentence about damaged text: a bug wearing a UI, in front of somebody
+      // who can do nothing whatever about it, over a row that is perfectly fine.
+      //
+      // **Re-thrown on the type rather than re-checked above the `try`.** A copy
+      // of a refusal here covers the one case somebody thought of and no other;
+      // the type covers the class, including the refusals this codec grows next,
+      // and it cannot drift from what the codec actually refuses because it *is*
+      // what the codec refused.
+      if (error instanceof NarrativeFieldMisuseError) {
+        throw error;
+      }
+
       // Total and silent, for the reason `#open`'s catch is: a wrong key, a
       // ciphertext bound to another row, altered bytes, a wire value the strict
       // decoder refuses and bytes that authenticated but are not UTF-8 are one

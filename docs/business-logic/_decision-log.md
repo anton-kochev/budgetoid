@@ -8,6 +8,55 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-30 — A seal interrupted mid-cipher is judged by key identity, not by the generation counter
+
+**Context:** `AccountKeyCustodyService` keeps a generation counter, bumped by everything that
+changes custody, and `openField` compares it after the cipher — a read that resolves into a tab
+whose keys were dropped is holding narrative plaintext the tab is no longer entitled to, so it
+answers `locked` instead. `sealField` sits in the mirror position and hands back a ciphertext,
+which raises the question of whether the same check belongs there. Two different events can land
+inside that window: a `lock()`, which is a sign-out while a save is in flight, and an `adopt()`,
+which publishes **another account's** keys over the ones the seal is running under.
+
+**Decision:** **a seal compares key identity and never the counter.** Keep the wire while the
+account holds the very key object this seal ran under, or holds none at all; answer `locked` only
+when the content key was **replaced**. Object identity is the test rather than a stand-in for one:
+one private method is the only writer of that field, a `CryptoKey` is opaque, and re-adopting the
+same object is the same account.
+
+**Why the counter is the wrong instrument.** It moves for both events, by design, so it cannot tell
+them apart — and one answer for both is wrong in whichever direction it is given. Keeping the wire
+after a replacement invites the caller to write one account's ciphertext into a row belonging to
+the next, where nothing in the product will ever open it and nothing on the server can see that it
+happened. Dropping it after a plain `lock()` discards text somebody has just typed, in exchange for
+nothing at all: the wire is still that account's, readable only under the key it was sealed under,
+and there is nobody it could be wrong for. This was settled by mutation rather than by argument —
+the counter copied onto the seal greens the replacement case and reddens its neighbour, one for
+one.
+
+**Alternatives rejected.** **A second counter bumped only by `adopt`** is the identity test with a
+level of indirection in front of it, and it goes silently wrong the first time a path that
+publishes keys forgets to bump it. **Reading `status()` after the cipher** separates nothing: an
+account whose keys were replaced reports `unlocked`, and so does one that was never touched.
+**Answering `locked` for every interruption** is the tidy symmetry with the read and costs somebody
+their work. **Answering `sealed` for every interruption** — what an unguarded `return` gives — is
+the cross-account write.
+
+**Consequences.** The two frames now carry two instruments, and that has to be written down or the
+next reader "fixes" the asymmetry: the read compares the counter, because plaintext is entitled to
+nobody once the keys are gone, and the seal compares the key, because a ciphertext is entitled only
+to whoever holds the key it was sealed under. The accepted cost is the bound of identity itself —
+the same bytes re-imported are a different object and would be read as a replacement, discarding a
+wire that would in fact have opened. Nothing in the platform can compare the material behind two
+non-extractable keys, so identity is the only test available, and of the two ways it can be wrong
+it chooses the one that loses a save over the one that writes a ciphertext nobody can ever open.
+Both events are pinned by cases arranged identically at the two platform boundaries, so they read
+as one decision made twice rather than as two checks that happen to differ.
+
+**Affected areas:** [account-keys.md](account-keys.md).
+
+---
+
 ## 2026-08-30 — Sealing and opening a narrative field are operations on custody, not a key anybody borrows
 
 **Context:** the codec that seals a narrative field takes the account's content key as its **first

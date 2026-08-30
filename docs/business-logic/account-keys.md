@@ -909,7 +909,7 @@ firing and the directive went with the reason for it. `#indexKey` keeps its supp
 last paragraph here says why.
 
 **The other rejected shape moves the seals themselves onto custody, and brings the eight
-`table × column` pairs with them** — either eight methods, or one method branching on
+table-and-column pairs with them** — either eight methods, or one method branching on
 `binding.table`. Custody would then know which table and which column every narrative value belongs
 to, and a ninth pair would become two edits in two files with nothing forcing the second. That is
 strictly worse than the hazard `NARRATIVE_FIELDS` already documents about its own derived type:
@@ -925,12 +925,14 @@ one, and the member that does is the accessor under a service name. It collapses
 rejected shape with an injector in front of it, and showing the collapse is what stops it coming
 back, because proposing it again costs nothing.
 
-**What holds "custody does not learn the eight pairs" is one import and two source-text rules, and
-the import is the strongest of the three.** The class imports the **type** `NarrativeFieldBinding`
-and never `NARRATIVE_FIELDS`. At runtime the type is erased, so no list is in the file. At compile
-time the type is *derived from* that list, which is the part worth stating: custody follows the
-codec and can never lead it — a pair the codec does not carry is not a binding custody will accept.
-The rest is read off the source text by two rules in the class's spec:
+**What holds "custody does not learn the eight pairs" is one import and three source-text rules,
+and the third of them is what watches the import.** The class imports the codec's *operations* —
+`sealNarrativeField`, `openNarrativeField`, `refuseInvalidBinding` and `NarrativeFieldMisuseError`
+— together with the **type** `NarrativeFieldBinding`, and never `NARRATIVE_FIELDS`. At runtime the
+type is erased, and so is the `type` specifier carrying it inside that mixed clause, so no list is
+in the file. At compile time the type is *derived from* that list, which is the part worth stating:
+custody follows the codec and can never lead it — a pair the codec does not carry is not a binding
+custody will accept. The rest is read off the source text by three rules in the class's spec:
 
 - **No public member returns a `CryptoKey`.** One scanner censuses every `public` declaration
   against the set the class is meant to declare; a second looks for `CryptoKey` in a **return
@@ -940,47 +942,73 @@ The rest is read off the source text by two rules in the class's spec:
   word list derived from `NARRATIVE_FIELDS` rather than typed out, so a ninth pair is covered the
   day it is added. Comments are in scope on purpose: prose is where a second copy of the field list
   starts.
+- **Nothing the codec exports as *data* is imported as a value.** The word rule has a hole exactly
+  this shape, and it is the shape a reader would actually take: adding
+  `import { NARRATIVE_FIELDS }` and branching on `NARRATIVE_FIELDS[0].table` puts the eight pairs
+  inside the class with **no forbidden word anywhere in the file**, because the words live in the
+  codec and the class only ever writes the identifier. So the rule is about the **edge** rather
+  than the vocabulary: operations may cross, types may cross — they cross nothing into the bundle
+  — and data may not. Which exports count as data is asked of the module rather than typed out, by
+  `typeof` over its own exports; a class sorts as `'function'`, which is the right answer, so
+  `NarrativeFieldMisuseError` is importable and the field list and the grammar prefix are not. A
+  namespace import is a finding whatever it is called, because it puts every export one property
+  access away.
 
-Both compare **sets**, and that is deliberate on both. A member moved up the file, or a pair
-reordered, never reddens; only a widening does. A red bar over a reordering is a red bar a reader
-learns to answer by editing the expectation, at which point a census has stopped meaning anything.
-Their limits are worth stating rather than papering over. The word rule matches whole words and is
-case-blind, so a word **assembled at runtime** passes, and so does the singular — `payee`, `budget`
-and `transaction` are not the plurals the column list uses. The key rule reads *declarations* and
-not what a body does, so it does not see a key handed back inside an object literal, through a
-callback parameter, or from a member annotated `unknown`; the census catches that last one from the
-other side, by reddening on the new member whatever it returns. Each rule ships a negative control
-that plants the exact edit it exists to catch, so neither can pass by having nothing to find.
+The first two compare **sets**, and that is deliberate on both. A member moved up the file, or a
+pair reordered, never reddens; only a widening does. A red bar over a reordering is a red bar a
+reader learns to answer by editing the expectation, at which point a census has stopped meaning
+anything. Their limits are worth stating rather than papering over. The word rule matches whole
+words and is case-blind, so a word **assembled at runtime** passes, and so does the singular —
+`payee`, `budget` and `transaction` are not the plurals the column list uses. The key rule reads
+*declarations* and not what a body does, so it does not see a key handed back inside an object
+literal, through a callback parameter, or from a member annotated `unknown`; the census catches
+that last one from the other side, by reddening on the new member whatever it returns. The import
+rule reads text and not the module graph, so it says nothing about a dynamic `import()` or about
+the list arriving through a third module that re-exported it, and nothing about the eight pairs
+written out here as literals — that is the word rule's half, and neither half sees the other's.
+Each rule ships a negative control that plants the exact edit it exists to catch, so none of them
+can pass by having nothing to find.
 
-**A limit of that technique is worth writing down, because the red bar that cannot exist is not a
-hole.** The census over the public surface **cannot be shown to redden on disk**.
-`settings.component.spec.ts` declares its custody surface as a `Pick` over the service's own
-`keyof` and stubs the class with one that `implements` it, so *any* new public member is a compile
-error in that file before a single test runs. Two guards, and the outer one always fires first:
-these two operations arrived there as a compile error naming both members, not as a red assertion.
-That is a good order rather than a defect. What it means is that the source-text census can only be
-demonstrated against a mutated string its own control hands it, never against the file — so the
-next reader should not go hunting for a red bar there is no way to produce.
+**Two bars stand in front of a new public member, and knowing which fires first saves the next
+reader an argument.** `settings.component.spec.ts` declares its custody surface as a `Pick` over the
+service's own `keyof` and stubs the class with one that `implements` it, so *any* new public member
+is a compile error in that file before a single test runs. That is the outer bar and it always
+fires first: these two operations arrived there as a compile error naming both members, and the
+stub carries `sealField` and `openField` today because answering it is what this work had to do.
+The census is the **second** bar, not an impossible one — with the stub satisfied, the source-text
+rule reddens against the file itself, because the expected surface is a set written out in the
+class's own spec and a member absent from it is a finding by name. Both have to be answered, and
+the order is a good one rather than a defect: the compiler says *the stub is out of date*, the
+census says *somebody widened the surface a key could leave through*.
 
-**Two rules looked held and were not, and both were established by mutation.** Each is worth
-recording because each was invisible:
+**Three rules looked held and were not, and every one of them was established by mutation.** Each
+is worth recording because each was invisible:
 
-- **The refusal on an extractable content key was deletable.** `openField` carries its own copy of
-  the check, and replacing the condition with a constant `false` left every case in the file
-  passing. What it costs is not a missing error but a wrong word: without it an extractable key
-  reaches the cipher, fails there, and is reported as `unreadable` — a defect dressed as a sentence
-  about damaged text, shown to somebody who can do nothing with it, over a row that is fine.
-- **The order of the two gates was unpinned.** Both operations judge the binding **before** they
-  read the key field, and reversing that also left every case passing, because every other case
-  that feeds a refused spelling in has adopted a key first. Reversed, the one caller defect that is
-  unrecoverable — a row id in a spelling no later read of that row reproduces — is *reported* to an
-  unlocked tab and *swallowed* by a locked one: found on the machines that happened to be open,
-  silent on every reloaded one, which is to say surfacing exactly where nobody looks for it.
-  Whether a factor has been presented is not a fact about whether the caller assembled its binding
-  correctly.
+- **A caller's own mistake could arrive dressed as damaged text.** The refusal on an extractable
+  content key belongs to the codec and reaches `openField` from *inside* its `try`, where every
+  other throw becomes `unreadable` — a defect wearing a sentence about damaged text, shown to
+  somebody who can do nothing whatever with it, over a row that is perfectly fine. What keeps it
+  out is the first line of that `catch`, which re-throws `NarrativeFieldMisuseError` and maps only
+  the rest. Only a **rejection** pins that line: with it removed, every other case in the file
+  stays green.
+- **The order of the two gates was unpinned.** Both operations judge the binding — the pair, and
+  the row id's spelling — **before** they read the key field, and reversing that also left every
+  case passing, because every other case that feeds a refused spelling in has adopted a key first.
+  Reversed, the one caller defect that is unrecoverable — a row id in a spelling no later read of
+  that row reproduces — is *reported* to an unlocked tab and *swallowed* by a locked one: found on
+  the machines that happened to be open, silent on every reloaded one, which is to say surfacing
+  exactly where nobody looks for it. Whether a factor has been presented is not a fact about
+  whether the caller assembled its binding correctly.
+- **A seal interrupted mid-cipher had one answer where it needs two**, and the counter that looks
+  like the instrument cannot tell the two interruptions apart. The argument is below, under the
+  two instruments; what belongs here is how it was settled — by copying the read's check onto the
+  seal and watching one case green while its neighbour reddened, which is the shape of every entry
+  on this list.
 
-Both are pinned now, and the second needed an arrangement rather than an assertion: the case that
-holds it adopts nothing at all, which is the only state in which a reversed order is visible.
+All three are pinned now, and two of them needed an arrangement rather than an assertion: the case
+that holds the gate order adopts nothing at all, which is the only state in which a reversed order
+is visible, and the two interruption cases have to land *inside* the cipher call, forced at the
+platform boundary rather than by a timer.
 
 **Reading a field has three answers and writing one has two, and the asymmetry is a decision.** A
 read can fail against a ciphertext — the wrong key, the wrong binding, altered bytes, a wire value
@@ -1008,39 +1036,77 @@ Four more decisions in and around those unions, each of which a reader will coll
   whole screen comes back, against this one value is damaged and no ceremony anybody runs will
   change it. It is the split `SessionService` keeps between `anonymous` and `unreachable`, and
   custody's own three failure words one layer up.
-- **A view-model mapper is handed `NarrativeOpener` and never this class.** The narrow function type
-  is the enforcement: a mapper given the service could reach `unlock`, `lock` and `adopt` on the way
-  past and would need a `TestBed` to be exercised at all, while a mapper given one function takes
-  exactly the one capability it needs and a spec stands it up in two lines.
+- **`NarrativeOpener` is declared ahead of the mapper it is for, and nothing yet holds the two
+  together.** The type is one function — open this wire value under this binding — and the argument
+  behind it is real: a mapper handed the whole service could reach `unlock`, `lock` and `adopt` on
+  the way past and would need a `TestBed` to be exercised at all, while a mapper handed one
+  function takes exactly the capability it needs and a spec stands it up in two lines. What is
+  **not** true is the enforcement. No mapper exists, the type is named nowhere outside its own
+  declaration in `narrative-text.ts`, and nothing pins that `openField` is even assignable to it —
+  so the first mapper written can be handed the service instead, with nothing going red. It is a
+  decision recorded one commit ahead of its caller, like several others in this chapter, and the
+  assignment is written down the day the caller arrives.
 
 **What stays a rejection is as much of the rule as what becomes a result.** Two refusals keep
-throwing: a row id in any spelling but the canonical one, and an extractable content key. The rule
-behind both is that custody turns into a result only the refusals **a person can act on**, and
-everything else keeps throwing — because a caught throw rendered as a sentence is a bug wearing a
-UI, shown to somebody who can do nothing whatever with it.
+throwing: a binding this grammar cannot be built over — a table and column that are not one of the
+codec's pairs, or a row id in any spelling but the canonical one — and an extractable content key.
+The rule behind both is that custody turns into a result only the refusals **a person can act on**,
+and everything else keeps throwing, because a caught throw rendered as a sentence is a bug wearing
+a UI, shown to somebody who can do nothing whatever with it.
 
-**The row id is judged by the codec and never by this class.** Both operations call
-`narrativeFieldAssociatedData` **for its refusal and not for its answer**, dropping the bytes where
-they stand and letting the codec build them again inside the cipher. That is a few string joins,
-and what it buys is that this file holds no second definition of the canonical spelling — a copy
-here would pass every case a round trip can see, because the half that drifted would still seal and
-still open everything it had written itself.
+**The binding is judged by the codec and never by this class**, through `refuseInvalidBinding`
+called **by name and for itself** at the top of both operations. That is the whole of what crosses:
+the function returns `void`, so nothing here builds associated data the codec then builds again,
+and this file holds no second definition of any of the three fields — a copy would pass every case
+a round trip can see, because the half that drifted would still seal and still open everything it
+had written itself. Asking for the refusal by name is also what keeps it from being deleted as
+litter: a builder called in order to throw its answer away is a statement whose only visible effect
+is a throw, which survives no tidy-up of the lines around it, and the day it goes the check goes
+with it in silence.
 
-**The extractable refusal is written out locally, and that is not the same mistake.** The codec
-refuses an extractable key too, but its refusal arrives from **inside** `openField`'s `try` and
-would land as `unreadable`, which is precisely the reading this method must never give a caller's
-mistake. The difference from the row id is that two copies of a boolean the platform owns cannot
-drift into two different **grammars**, and of the two copies this one is the outer, so a drift
-would show up as a refusal that is too loud rather than as one that is silent. `sealField` carries
-no copy, and that asymmetry is the argument again from the other end: nothing there catches
-anything, so the codec's own refusal already reaches the caller as the rejection it is.
+**The extractable refusal is the codec's too, and custody keeps no copy of it.** It arrives from
+**inside** `openField`'s `try`, where it would land as `unreadable` — precisely the reading this
+method must never give a caller's mistake — and what stops that is the `catch` re-throwing on
+`NarrativeFieldMisuseError` before it maps anything. The alternative is a local copy of the check
+written above the `try`, and it is the weaker of the two: a copy covers the one refusal somebody
+thought of, while the type covers the class — including the refusals the codec grows next — and it
+cannot drift from what the codec really refuses, because it *is* what the codec refused.
+`sealField` needs neither, having no `catch` for anything to be swallowed by.
 
-**The generation counter is checked on the way out of a read and not on the way out of a seal.**
-What an open would publish into a tab whose keys were dropped mid-cipher is plaintext, which is why
-the read drops it — and drops `unreadable` with it, because a word claiming the rest of the row is
-fine is a claim about a state that frame has left. What a seal publishes is a ciphertext, bound to
-the account's key whatever the tab does next, so answering `locked` over it would discard
-somebody's work in exchange for nothing at all.
+**One of those two orderings is held and the other cannot be, and the difference is worth stating
+so nobody goes looking for the missing half.** The binding refusal sits **above** the read of the
+key field, and that ordering is held twice: by construction, because it is a statement in the body
+with nothing between it and the entry to the method, and by the one case that adopts nothing at
+all, which is the only state in which a reversed order is visible. The key refusal has no such
+position available. When no key is held the frame has already returned `locked`, so there is
+nothing to judge and no place above the held-key check for a judgement to sit; it necessarily
+arrives from the codec, and the `catch` is what governs it. An ordering nobody can pin is not the
+same as one nobody pinned.
+
+**What is compared on the way out of a read is the generation counter, and on the way out of a seal
+it is key identity — two instruments, because the two frames are answering different questions.** A
+read holds plaintext. Published into a tab whose keys were dropped mid-cipher it hands narrative
+content to a browser no longer entitled to it, so the read drops its answer whenever the world
+moved at all — and drops `unreadable` with it, because a word claiming the rest of the row is fine
+is a claim about a state that frame has left. A seal holds a ciphertext, which is entitled to
+nobody: it is readable only under the key it was sealed under, and the only question left is
+*whose* key that now is. So the two interruptions must not answer alike. A `lock()` mid-seal drops
+the account's keys and puts nothing in their place, and the wire is still that account's — handing
+it back misleads nobody, while answering `locked` would silently discard text somebody had just
+typed on their way out. An `adopt()` mid-seal publishes **another account's** keys, and returning
+the wire invites the caller to write one account's ciphertext into a row belonging to the next,
+where nothing in the product will ever open it and nothing on the server can see that it happened.
+
+**The counter cannot tell those two apart, which is the whole reason it is the wrong instrument
+here.** Everything that changes custody bumps it, by design, so `lock()` and `adopt()` move it
+alike. The comparison is therefore against the key object the seal actually ran under: keep the
+answer while the account holds that very object or holds none at all, drop it only when the key was
+replaced. Object identity is the right test rather than an approximation of one — one private
+method is the only writer, a `CryptoKey` is opaque, and re-adopting the same object is the same
+account. A mutation proved the counter wrong before the identity check existed: copied onto the
+seal, it greens the replacement case and reddens its neighbour, at which point signing out while a
+save is in flight silently discards work. Both cases stand in the spec now, arranged identically at
+the two platform boundaries so they read as one decision made twice.
 
 **The blind index is deliberately absent, and an absent operation reads as an oversight unless
 somebody says so.** The third operation is not here. The grammar its values are computed over waits

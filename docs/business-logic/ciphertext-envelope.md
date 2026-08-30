@@ -179,6 +179,29 @@ erDiagram
     never called — **calling through** rather than substituting, because a spy on a
     substituted cipher would be a statement about the substitute.
 
+- **A refusal the codec makes about its *caller* MUST be distinguishable from a ciphertext
+  that did not open.**
+  - **Why**: a rejection out of `openNarrativeField` means one of two entirely different
+    things — *you asked for something impossible*, or *this stored value did not open* — and
+    only the second is a state a person can be shown and can act on. The first is a defect in
+    the call that no ceremony, no retry and no recovery factor fixes; rendered as damaged
+    text it is a bug wearing a UI, put in front of somebody over a row that is perfectly
+    fine. Without a type the only way a caller can keep the two apart is to re-apply this
+    module's own pre-cipher checks above its own `catch` — a second copy of every rule here,
+    in every caller, drifting quietly from the copy the cipher path runs.
+  - **Enforced in**: `NarrativeFieldMisuseError`, exported from `narrative-cipher.ts` and
+    thrown by that module's two pre-cipher refusals — `refuseInvalidBinding` and
+    `refuseExtractableKey` — and by nothing else. It is **never** thrown for a value that
+    failed to authenticate: a wrong key, a ciphertext presented under another row, column or
+    table, altered bytes, a wire value the strict decoder refuses and bytes that authenticate
+    but are not UTF-8 all keep arriving as whatever the platform or the decoder threw, and
+    stay the one indistinguishable failure the entry below argues for. It is a class
+    extending `Error` whose `name` is written as a class **field** rather than left on the
+    prototype, so it is an own enumerable property — the second answer for the case
+    `instanceof` cannot see, two copies of the module loaded into one page. The declaration
+    states the limit of that, measured on Node 22: `structuredClone` does not carry the name,
+    and nothing in this client crosses a worker or a message port today.
+
 - **Every client MUST implement the identical format.** A field sealed by one client opens in
   another. Divergence is a defect in whichever client departs from it, not a negotiation.
   - **Enforced in**: the frozen vectors, and by nothing below the browser. The server holds no
@@ -270,7 +293,8 @@ interchangeable with every other.
 are needed" a fact rather than a hope — and that claim belongs to each **grammar** rather than
 to the shared join, because only a grammar knows what its fields are: the wrapped-key one
 because its fields are a literal, a canonical UUID and one of two words; the narrative one
-because its fields are a literal, two closed unions and a UUID. `buildAssociatedData` checks
+because its fields are a literal, a table and a column looked up as a pair in a list this
+client owns, and a UUID. `buildAssociatedData` checks
 nothing about a field's contents, deliberately: it could only refuse a value it cannot
 describe, or repair one — and the repair is worse, since it would silently change bytes a
 caller believed it had chosen.
@@ -330,6 +354,32 @@ reddens no build. It is left that way on purpose. The guard available for it wou
 module's own source as *text* and demand the exact declaration, which catches one spelling and
 no other way of assembling the same type — a partial guard wearing the face of a total one.
 Better a named gap than a check that looks like it closed one.
+
+**They are pairs, and not a cross product.** `transactions` is a real table, `name` is a real
+column, and `transactions.name` does not exist. So a binding is looked up as a **pair** — one
+scan for an entry whose table *and* column both match — and never as two independent
+membership tests. "Is the table one of the eight tables" and "is the column one of the eight
+columns" both answer yes for `transactions.name`, so a check written that way waves through a
+binding that points at nothing, and text sealed under it is sealed under a grammar no read of
+any row will ever rebuild, because there is no column to read it back out of. Both fields have
+to come off the **same** entry, which is what the single predicate in `refuseInvalidBinding`
+does; splitting it into two `some` calls is the same mistake wearing a different shape.
+
+**The caller that produces such a binding is a mapper, which is the next slice's work.**
+Nothing assembles one today: the table and the column are closed unions derived from
+`NARRATIVE_FIELDS`, so a binding the compiler built has already been through them. The runtime
+lookup is for the binding the compiler never saw — a table name arriving as data, out of a
+configuration, off a response, through one `as NarrativeFieldBinding` in a view-model mapper
+that took its table from one place and its column from another. That shape is also what the
+lookup buys the join: with it in place, "no field of this grammar can contain the separator" is
+a runtime fact for two of the three fields rather than a property of the type alone, and the
+third cannot hold a `0x1F` and still be a canonical UUID.
+
+**A scan of eight entries, and not a prebuilt `Set` of joined keys.** A set needs a separator
+to join a table to a column with, and a separator here is a second grammar over the same two
+fields sitting next to the one that reaches envelopes — one that would then have to be argued
+not to collide with it. Eight comparisons of two short strings is not a cost anybody can
+measure against a `subtle.encrypt`.
 
 ### Nothing normalises, and the normalisation this product will need is a different transform
 
@@ -460,17 +510,35 @@ simply gone.
 **Sealing a narrative field** — every step is the client's, and no step exists on the server.
 
 1. **Refuse an extractable key.** Before anything else, and before the cipher in particular.
-2. **Build the associated data** through `narrativeFieldAssociatedData`, never inline. The four
-   fields joined by hand would produce byte-identical bytes and skip the row-id refusal, which
-   passes every case a round trip can see and seals under a spelling no later read of that row
-   can reproduce.
-3. **Refuse a non-canonical row id**, inside step 2, before the cipher is reached.
+2. **Refuse a binding this grammar cannot be built over**, at the door of the operation and by
+   name, through `refuseInvalidBinding`: the table and the column looked up as a **pair**, and
+   the row id required in the canonical spelling. Both throw `NarrativeFieldMisuseError`, and
+   nothing has been built at this point — the function returns `void`, so what a caller asks
+   for is the refusal rather than bytes it then drops.
+3. **Build the associated data** through `narrativeFieldAssociatedData`, never inline — which
+   calls that same refusal again on its own account, because it owes it to its own callers.
+   The four fields joined by hand would produce byte-identical bytes and skip the refusal,
+   which passes every case a round trip can see and seals under a binding no later read of
+   that row can reproduce. The two calls are not redundancy and they are not a red bar either:
+   deleting the one at the door reddens nothing, which
+   [Edge Cases](#edge-cases--known-gotchas) states in full.
 4. **Encode the text as UTF-8.** Nothing else: no normalisation, no trim, no cap.
 5. **Draw a fresh nonce, seal, and assemble** `version || nonce || ciphertext || tag`.
    WebCrypto returns the tag appended to the ciphertext — the same order this layout specifies
    — so there is no split to make, and appending the tag a second time is the shape that
    mistake takes.
 6. **Render as unpadded base64url.**
+
+**Which of those orderings is watched, and which is only true.** Step 1's position before the
+cipher is pinned by the spies on `crypto.subtle.encrypt` and `crypto.subtle.decrypt`, because
+a function that sealed first and threw on the way out rejects identically. Step 2's is held
+**by construction** and by nothing running: the pair lookup sits inside the same function as
+the row-id check, reached from the same two call sites above the same `sealEnvelope` and
+`openEnvelope`, so there is no arrangement of those lines in which one binding refusal is
+pre-cipher and the other is not. No spy watches either of them, and the cases over them ask
+only which *type* was thrown — which is said out loud at the check itself, because a reader
+who assumed the ordering was pinned could move it under the cipher with everything still
+green.
 
 **Opening one** runs the same steps in reverse and rejects — never returns a partial reading —
 on a wire value the strict decoder refuses, an input too short to be an envelope, a version
@@ -509,6 +577,13 @@ that side opens anything.
 All three are **one indistinguishable failure by design**: a caller learns the value is
 unusable and learns nothing about why, because anything finer is an oracle over data the
 caller was not given.
+
+A fourth answer is not on that list and is the reason the list can stay silent: **the call was
+one this codec could not make** — a table and column that are not one of its pairs, a row id in
+another spelling, a key whose bytes can be read back out. That is `NarrativeFieldMisuseError`,
+it is thrown before any cipher runs, and it says nothing whatever about the stored value. A
+caller wrapping an open in a `catch` has to answer "is this column damaged?", and the answer is
+*no* whenever the throw was of that type.
 
 **Where does a new length rule belong?**
 
@@ -594,3 +669,14 @@ caller was not given.
 - **A ninth narrative field added to the *type* rather than to the *list* reddens nothing.**
   Held by review. Add the pair to `NARRATIVE_FIELDS`, and add its reason to the spec's map, or
   two cases go red — which is the intended cost.
+- **The binding refusal at the door of each operation can be deleted with nothing going red,
+  and it is kept anyway.** Measured: removing the `refuseInvalidBinding` call from
+  `sealNarrativeField` reddens no case in the suite, because the builder a few statements on
+  refuses the same binding and every case that can see a refusal sees that one. What the door
+  buys is that the claim — everything refused about the *call* is refused before a cipher runs
+  — is readable in one place on each operation instead of resting on what a builder further
+  down happens to do on the way past. So it is held by review, and the argument is written out
+  at the call rather than left as a shape somebody is expected to recognise.
+- **A binding whose table and column are each real but which name nothing together is the
+  refusal a reader is most likely to weaken.** `transactions.name` passes two membership
+  tests and fails the pair lookup; see [the eight narrative fields](#the-eight-narrative-fields).
