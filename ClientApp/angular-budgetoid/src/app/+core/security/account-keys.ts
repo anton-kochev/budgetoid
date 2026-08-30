@@ -83,11 +83,18 @@
 // entries `GET /api/me/account-keys` hands back. So "keep it, something is
 // waiting" is no longer the reason to keep any of it.
 //
-// What is still uncalled is anything that *uses* an opened key — nothing seals a
-// field and nothing computes an index, because nothing in this product is
-// encrypted. The spec remains the only place several of these rules can be
-// checked at all: the frozen vectors are what a second implementation has to
-// reproduce, and a non-extractable key has no other witness.
+// **Nothing in this product is encrypted, and what that leaves uncalled is
+// narrower than "anything that *uses* an opened key".** `sealField` and
+// `openField` on `AccountKeyCustodyService` use the content key and reach the
+// codec one file over, so a field can be sealed and opened today; what those two
+// lack is a caller of their own, because no column holds an envelope for a
+// screen to seal or open — their only caller is their spec. The index half is
+// the one that is genuinely absent: the blind index is written nowhere, since
+// the grammar its values are computed over waits on a revision of the
+// specification, so the index key custody holds is read by nothing at all. The
+// spec remains the only place several of these rules can be checked: the frozen
+// vectors are what a second implementation has to reproduce, and a
+// non-extractable key has no other witness.
 //
 // Nothing here is a service and nothing here is injected. There is no state, no
 // configuration and no dependency, so a function is the whole of it; a class would
@@ -127,8 +134,9 @@ export const ACCOUNT_KEY_BYTES = 32;
  * The value a passkey's `prf` extension is evaluated against.
  *
  * `webauthn-encoding.ts` writes it into the `prf` extension's `eval.first` of a
- * registration's creation options, and `webauthn-ceremony.service.ts` sends the
- * same bytes on the assertion leg and feeds what comes back to
+ * registration's creation options, and `webauthn-ceremony.service.ts` evaluates
+ * the same bytes on every ceremony it runs — the ones that are sent and the
+ * local ones that are not — feeding what comes back to
  * {@link keyEncryptionKeyFromPasskey}. It lives here rather than beside either of
  * them because it is one half of a derivation the other half of which is in this
  * file, and because that puts it under the spec's pin — the only thing in the
@@ -297,8 +305,11 @@ export async function keyEncryptionKeyFromPasskey(
  * key.
  *
  * Takes a plain `string` rather than a `RecoveryCode` for the same reason
- * `recoveryCodeVerifier` does: the caller this will have is a redemption screen,
- * where the code is whatever a person typed.
+ * `recoveryCodeVerifier` does: the *other* caller this will have is a redemption
+ * screen, where the code is whatever a person typed. Registration already calls
+ * it, once per code, with a minted `RecoveryCode` — which a `string` parameter
+ * takes without a widening anywhere — so the signature is decided by the caller
+ * that does not exist yet rather than by the one that does.
  */
 export async function keyEncryptionKeyFromRecoveryCode(
   code: string,

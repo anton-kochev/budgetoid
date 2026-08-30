@@ -6,22 +6,34 @@
 // **binding** — which table, which column, which row a ciphertext belongs to —
 // and the wire form the column stores, unpadded base64url.
 //
-// **Nothing calls these functions yet.** The story that encrypts the eight
-// columns is the next one; today the only caller is the spec. That is a
-// deliberate order rather than a module left behind: the format is a
-// cross-client contract, so it can be pinned against an answer computed outside
-// this codebase — `docs/business-logic/vectors/narrative-field-v1.json` — before
-// a single column holds an envelope, and a format is far cheaper to agree on
-// before it has data written under it than after.
+// **One caller, and no screen behind it.** `AccountKeyCustodyService` holds the
+// account's content key, and the two operations that delegate to it —
+// `sealField` and `openField` — are what call `sealNarrativeField` and
+// `openNarrativeField`. Nothing calls *those*: no column in this product holds
+// an envelope, so the only thing reaching custody's pair today is its spec. The
+// claim this module makes about its own standing is therefore a smaller one
+// than it used to be — called, but not yet from anywhere a person can walk to —
+// and the order is still deliberate rather than a module left behind: the
+// format is a cross-client contract, so it can be pinned against an answer
+// computed outside this codebase —
+// `docs/business-logic/vectors/narrative-field-v1.json` — before a single
+// column holds an envelope, and a format is far cheaper to agree on before it
+// has data written under it than after.
 //
-// **`unwrapAccountKeys` used to ship on the same terms and no longer does**:
-// `AccountKeyCustodyService` calls it on every passkey sign-in, over what
-// `GET /api/me/account-keys` hands back. These two functions are therefore the
-// last of the security modules with no caller but a spec, and the argument
-// above has to stand on its own rather than on a neighbour keeping it company.
-// `account-keys.md` states the boundary that survived: what remains uncalled is
-// anything that *uses* an opened key — nothing seals a field and nothing
-// computes an index — which is this module and the blind index, in that order.
+// **The key crosses as a parameter, and never the other way round.** Custody
+// owns the content key and its lifetime; this module owns the binding and the
+// wire form and owns no key at all. Every function here is handed the key for
+// the length of one call and keeps it on no field, in no module-level value and
+// in no cache, which is part of what lets custody promise that a page reload
+// locks the account: there is no second place a key could still be sitting. The
+// edge runs one way for the same reason — custody imports these functions, and
+// nothing here imports custody.
+//
+// **What remains genuinely uncalled is the blind index**, and an absent
+// operation reads as an oversight unless somebody says so. It is the third
+// operation custody will grow and it is not written anywhere yet: the grammar
+// its values are computed over waits on a revision of the specification, so the
+// index key custody holds is still read by nothing.
 //
 // **Associated data is not carried inside the envelope.** It is rebuilt from
 // wherever the ciphertext was found — this table, this column, this row — which
@@ -166,11 +178,12 @@ export function narrativeFieldAssociatedData(
   // are not inconsistent, and making them consistent would break one of them.
   //
   // There, the factor id is *minted by this client* before any server has seen
-  // it (`account-keys.ts:130-154`), so nothing upstream hands that module a
-  // canonical value and its fold is the only place one is made: folding is a
-  // defence against a value arriving from elsewhere, and emitting one spelling
-  // is a property of what a client creates — the argument `factor-id.ts` states
-  // at its own mint.
+  // it — `factor-id.ts`'s `mintFactorId`, over `crypto.randomUUID`. Nothing
+  // upstream hands `wrappedKeyAssociatedData` a canonical value, so the fold it
+  // makes through `canonicalFactorId` is the only place one is made: folding is
+  // a defence against a value arriving from elsewhere, and emitting one
+  // spelling is a property of what a client creates — the argument stated at
+  // that mint.
   //
   // Here nothing is chosen. The row id is whatever the row the client just read
   // handed back, in the one spelling the server renders a uuid as. There is

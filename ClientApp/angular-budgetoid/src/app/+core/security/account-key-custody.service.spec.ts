@@ -9,13 +9,21 @@
 // a comment goes stale the first time the module is refactored and nothing goes
 // red about it.
 //
-// **What can be observed at all is `status` and `unlockFailure`, and that is the
-// design rather than a limitation of the test.** No public member returns a key
-// and none ever will: non-extractability stops the *bytes* leaving and does
-// nothing about a caller holding the key object and decrypting a whole budget
-// into a log line. So "the right entry opened" is read here as "the service
-// reports `unlocked`", and the arrangements are built so that a wrong
-// implementation cannot reach that word.
+// **No key can be observed, and that is the design rather than a limitation of
+// the test.** No public member returns a key and none ever will:
+// non-extractability stops the *bytes* leaving and does nothing about a caller
+// holding the key object and decrypting a whole budget into a log line.
+//
+// **What a caller may see divides by kind and not by count**, which is what
+// keeps this paragraph from going stale as the class grows. About custody's
+// *state* it is entitled to `status` and `unlockFailure`, and to nothing else —
+// anything further there is the accessor this file exists to refuse. About an
+// operation it asked for it is entitled to that operation's own result, which
+// says what became of the value it handed in and carries no key either; the
+// operations are the reason no caller has occasion to ask for a key at all, and
+// the class is expected to grow more of them. So "the right entry opened" is
+// read here as "the service reports `unlocked`", and the arrangements are built
+// so that a wrong implementation cannot reach that word.
 import { HttpErrorResponse } from '@angular/common/http';
 import { EnvironmentInjector, createEnvironmentInjector } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -27,7 +35,7 @@ import { SessionService } from '@app-core/session/session.service';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Observable, Subject, of, throwError } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ACCOUNT_KEY_BYTES,
@@ -37,6 +45,19 @@ import {
   type AccountKeys,
 } from './account-keys';
 import { AccountKeyCustodyService } from './account-key-custody.service';
+// The codec's own predicate, under the alias `narrative-cipher.ts` gives it.
+// Imported rather than restated, for the reason that module states at its own
+// refusal: a second regular expression here would be a second definition of one
+// spelling, and this file would be carrying the very copy the case below exists
+// to hunt for in the service.
+import { isCanonicalFactorId as isCanonicalRowId } from './factor-id';
+import {
+  NARRATIVE_FIELDS,
+  openNarrativeField,
+  sealNarrativeField,
+  type NarrativeFieldBinding,
+} from './narrative-cipher';
+import type { SealedField } from './narrative-text';
 
 // Three canonical factor ids, distinct and in the spelling the server renders.
 // The identifier a row carries **is** the associated data its two envelopes were
@@ -88,12 +109,12 @@ async function settled(custody: AccountKeyCustodyService): Promise<void> {
   });
 }
 
-// The service's own source, for the two rules below that nothing running can
-// observe. `process.cwd()` is the project root under this runner, the same
-// anchor `key-import-single-source.spec.ts` uses, and `src/` is read rather
-// than the emitted bundle: the claim is about what a reviewer reads, and a
-// minifier that renamed a `#` field would answer the question wrongly whichever
-// way it answered it.
+// The service's own source, for the rules below that read what was written
+// rather than what runs. `process.cwd()` is the project root under this
+// runner, the same anchor `key-import-single-source.spec.ts` uses, and `src/`
+// is read rather than the emitted bundle: the claim is about what a reviewer
+// reads, and a minifier that renamed a `#` field would answer the question
+// wrongly whichever way it answered it.
 const CUSTODY_SOURCE = join(
   process.cwd(),
   'src',
@@ -156,6 +177,182 @@ async function entryFor(
   keys: AccountKeys,
 ): Promise<AccountKeyEntry> {
   return { factorId, ...(await wrapAccountKeys(kek, keys, factorId)) };
+}
+
+// A canonical row id, in the one spelling a uuid column hands back. Not a
+// factor id, and deliberately not one of the three above: a binding names a row
+// of a ledger table, and reusing a factor id here would read as though the two
+// identifiers were interchangeable in some case.
+const ROW_ID = '0192f8a1-7c3d-7e00-8b2a-3f4d5e6a7b8c';
+
+// A second row of the same table and the same column, equally canonical. What
+// it is for is the case a foreign wire cannot reach: a value this service
+// really sealed, read back under a binding that differs in the row alone.
+const OTHER_ROW_ID = '0192f8a1-7c3d-7e00-8b2a-3f4d5e6a7b8d';
+
+// One legal binding, taken off the codec's own list rather than typed out. The
+// pair that opens `NARRATIVE_FIELDS` is as good as any other — what matters is
+// that this file does not become a second place where a table and a column are
+// spelled, which is exactly the rule the last describe in this file pins on the
+// service.
+const BINDING: NarrativeFieldBinding = {
+  ...NARRATIVE_FIELDS[0],
+  rowId: ROW_ID,
+};
+
+// The same table and the same column, a different row.
+const OTHER_ROW_BINDING: NarrativeFieldBinding = {
+  ...NARRATIVE_FIELDS[0],
+  rowId: OTHER_ROW_ID,
+};
+
+// Row-id spellings that all name the same value and that a caller could
+// plausibly arrive with — the four the codec's predicate documents as refused,
+// plus the all-zero uuid, which it documents as *not* its business.
+//
+// Written as candidates and filtered below rather than asserted about
+// directly, because which of them are refused is `isCanonicalRowId`'s answer
+// and not this file's opinion.
+const ROW_ID_SPELLINGS = [
+  { how: 'upper-case hex', rowId: ROW_ID.toUpperCase() },
+  { how: 'the braced form', rowId: `{${ROW_ID}}` },
+  { how: 'a leading space', rowId: ` ${ROW_ID}` },
+  { how: 'a trailing space', rowId: `${ROW_ID} ` },
+  { how: 'the unhyphenated 32-digit form', rowId: ROW_ID.replaceAll('-', '') },
+  { how: 'the all-zero uuid', rowId: '00000000-0000-0000-0000-000000000000' },
+] as const;
+
+// The subset the codec really refuses, derived by asking it.
+//
+// Derived and not typed out, which is the whole point of the case it drives:
+// the rule under test is that the service lets the codec judge a row id instead
+// of judging one itself, and a hand-written list here would be this file making
+// the same mistake it is refusing.
+const REFUSED_ROW_IDS = ROW_ID_SPELLINGS.filter(
+  ({ rowId }) => !isCanonicalRowId(rowId),
+);
+
+// The whole public surface of the class, as a set.
+//
+// **A set compared to a set, so that moving a member up the file never reddens
+// and only a new one does.** An array would pin the declaration order too, and
+// a red bar over a reordering is a red bar a reader learns to answer by editing
+// the expectation — at which point the census has stopped meaning anything.
+const PUBLIC_SURFACE = new Set([
+  'status',
+  'unlockFailure',
+  'unlock',
+  'adopt',
+  'lock',
+  'sealField',
+  'openField',
+]);
+
+// The eight pairs' words — six tables and two columns, deduplicated by the
+// `Set` — derived from the codec and never restated.
+//
+// Derived, because a hand-written copy here is a second declaration of which
+// fields are encrypted: a ninth pair added to `NARRATIVE_FIELDS` would arrive
+// with this rule silently not covering it, and the failure that follows is a
+// table name leaking into custody with nothing going red.
+const FORBIDDEN_WORDS = new Set(
+  NARRATIVE_FIELDS.flatMap(({ table, column }) => [table, column]),
+);
+
+// Every `public` member the class declares, by name.
+//
+// It reads declarations and not behaviour, which is the whole technique: a
+// getter over a key field is a *declaration*, and the four lines that add one
+// are the edit this rule exists to catch.
+function publicMembers(source: string): Set<string> {
+  return new Set(
+    [
+      ...source.matchAll(
+        /^ {2}public (?:(?:static|readonly|async|get|set) )*([A-Za-z][A-Za-z0-9]*)/gm,
+      ),
+    ].map(([, name]) => name),
+  );
+}
+
+// The declaration text of one member: everything from `public` to whichever of
+// `{`, `=` or `;` comes first, which is the body opener, the initialiser or the
+// end of a bare field declaration respectively.
+//
+// It is bounded forwards rather than by the next member, so a private method
+// sitting between two public ones can never be read as part of either.
+function signatureAt(source: string, index: number): string {
+  const rest = source.slice(index);
+  const ends = ['{', '=', ';']
+    .map((token) => rest.indexOf(token))
+    .filter((at) => at !== -1);
+
+  return rest.slice(0, ends.length === 0 ? rest.length : Math.min(...ends));
+}
+
+// Everything in the class that hands a key object back, as a set of findings.
+//
+// Two needles, because the mistake has two shapes and neither sees the other:
+//
+//   * a declaration whose **return position** names `CryptoKey` — the annotated
+//     accessor, `public keyFor(id: string): CryptoKey`. Read after the last
+//     `)`, so the two members that legitimately *take* a `CryptoKey` —
+//     `unlock` and `adopt` — are not findings.
+//   * a `return` of one of the two key fields, anywhere in the file and at any
+//     accessibility, which is what an unannotated `public get contentKey() {
+//     return this.#contentKey; }` looks like. A private helper that returned
+//     one would be a finding too, and should be: it is one `public` away from
+//     the thing being refused.
+//
+// Limits, stated rather than papered over. It cannot see a key handed back
+// inside an object literal, through a callback parameter, or from a member
+// annotated `unknown` — the census above catches all three from the other side,
+// by reddening on the new member itself whatever it returns. And it says
+// nothing about a key that leaves through a member that already exists, which
+// no source scan could.
+function keysHandedBack(source: string): Set<string> {
+  const found = new Set<string>();
+
+  for (const field of ['#contentKey', '#indexKey']) {
+    if (new RegExp(`return this\\.${field}\\b`).test(source)) {
+      found.add(field);
+    }
+  }
+
+  for (const match of source.matchAll(
+    /^ {2}public (?:(?:static|readonly|async|get|set) )*([A-Za-z][A-Za-z0-9]*)/gm,
+  )) {
+    const [, name] = match;
+    const signature = signatureAt(source, match.index);
+    const closed = signature.lastIndexOf(')');
+    const returned = closed === -1 ? signature : signature.slice(closed);
+
+    if (returned.includes('CryptoKey')) {
+      found.add(name);
+    }
+  }
+
+  return found;
+}
+
+// Which of the eight pairs' words `source` names, whole-word and case-blind.
+//
+// Whole words, or the rule is red on arrival for the wrong reason: `naming`,
+// `named` and `names` all carry `name`, and the service's prose is full of
+// them. `\b` refuses each of those and accepts `name`, `Name` and `'name'`.
+//
+// Limits. `payee`, `budget` and `transaction` in the singular pass, as does a
+// word assembled at runtime; nothing short of a parser would catch either, and
+// neither is the shape this leak takes — a caller pasting a pair in is pasting
+// the plural the column list uses. Case-blindness means prose naming a ledger
+// table reddens too, which is deliberate: an argument about which columns are
+// encrypted belongs in `narrative-cipher.ts`, and a copy of it here is the
+// first half of the same drift a copied literal would cause.
+function narrativeWordsIn(source: string): Set<string> {
+  return new Set(
+    [...FORBIDDEN_WORDS].filter((word) =>
+      new RegExp(`\\b${word}\\b`, 'i').test(source),
+    ),
+  );
 }
 
 describe('AccountKeyCustodyService', () => {
@@ -811,12 +1008,21 @@ describe('AccountKeyCustodyService', () => {
   //
   // `#forget` dropping its two `= null` assignments is the central promise of
   // this class broken — `lock()` is documented to *drop* the keys, not merely
-  // to stop admitting to them — and there is no way to observe it from outside.
-  // That is by design and is the property the class is built on: no public
-  // member returns a key, `#` fields are unreachable from outside the class
-  // body by the language, and the header argues at length that an accessor
-  // added to make this checkable would be the very defect it is checking for.
-  // So the only witness is the shape of what was written.
+  // to stop admitting to them — and no case here that runs the service sees it.
+  // The keys stay unreadable whatever happens in that method, which is the
+  // property the class is built on: no public member returns one, `#` fields
+  // are unreachable from outside the class body by the language, and the header
+  // argues at length that an accessor added to make this checkable would be the
+  // very defect it is checking for.
+  //
+  // **What the operations expose is narrower than it looks.** They read the
+  // content field to decide whether they are locked, so a case that adopted,
+  // locked and then sealed would catch that field's assignment going missing —
+  // measured on this runner, with both assignments removed a seal after `lock()`
+  // answers `sealed`. Nothing at all catches the index field's, which no
+  // operation reads. A witness over one field is not a witness over the promise,
+  // so the shape of what was written is what is read here, and it is read for
+  // both.
   //
   // What this cannot catch, stated rather than papered over:
   //
@@ -827,7 +1033,7 @@ describe('AccountKeyCustodyService', () => {
   //   * the assignments moved into a helper `#forget` calls, which is a correct
   //     refactor this case would call a failure. That is the cost of the
   //     technique and it is accepted: a red bar that a reader has to think
-  //     about is the right price for a rule with no other witness.
+  //     about is the right price for the only witness that covers both fields.
   describe('the keys are dropped, not merely disowned', () => {
     it('nulls both key fields inside #forget', () => {
       // Arrange, Act
@@ -893,6 +1099,597 @@ describe('AccountKeyCustodyService', () => {
       expect(() => bodyOf('class Empty {}', '#forget(')).toThrow(
         /no longer declares/,
       );
+    });
+  });
+
+  // **Two operations, and the fact that they are operations is the design.**
+  // The account's content key never leaves this class, so a screen that needs a
+  // description sealed asks for the description to be sealed rather than for
+  // the key to seal it with — the rule `#forget`'s comment states and the
+  // second describe below reads off the source text.
+  //
+  // The cases are arranged so that the class's own answer can be checked
+  // against the codec directly: `adopt` is the one door into custody that takes
+  // key objects, so this file can hold the very key the service is holding and
+  // open, by itself, what the service sealed. Without that, every round trip
+  // here would be an implementation agreeing with itself.
+  describe('sealing and opening a narrative field', () => {
+    // Restored after every case rather than in a `finally` around each act.
+    // The acts below reject while the operations are stubs, and a `finally`
+    // that has to capture a return value cannot bracket a call that throws —
+    // so the restore is moved to where it runs either way, and no case can
+    // leave `crypto.subtle` spied for the ones after it.
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    // An unlocked account, and the content key it was unlocked with.
+    //
+    // Through `keyEncryptionKey` — a key-encryption key and a content key are
+    // the same shape and the same door, 32 bytes through `importAesGcmKey`, so
+    // the fixture is reused rather than copied. What makes it a content key is
+    // only what it is handed to.
+    async function adoptedContentKey(): Promise<CryptoKey> {
+      const contentKey = await keyEncryptionKey(0x90);
+      const indexKey = await keyEncryptionKey(0x91);
+
+      custody.adopt(contentKey, indexKey);
+
+      return contentKey;
+    }
+
+    // The wire value, or a failure naming the word that came back instead.
+    //
+    // A bare `expect(sealed.state).toBe('sealed')` asserts and narrows nothing,
+    // so every assertion after it would need a non-null assertion over a
+    // discriminated union — the reading this file refuses everywhere else.
+    function wireOf(sealed: SealedField): string {
+      if (sealed.state !== 'sealed') {
+        throw new Error(
+          `sealField answered '${sealed.state}' where a wire value was expected.`,
+        );
+      }
+
+      return sealed.wire;
+    }
+
+    it('seals under the content key the account is holding', async () => {
+      // Arrange
+      const contentKey = await adoptedContentKey();
+
+      // Act
+      const sealed = await custody.sealField(BINDING, 'Lunch with Ana');
+
+      // Assert
+      expect(sealed.state).toBe('sealed');
+
+      // **Opened by this file rather than by the service**, which is what makes
+      // this a statement about the ciphertext instead of about a round trip
+      // agreeing with itself. A `sealField` that base64url'd its own plaintext,
+      // or that sealed under a key it minted, passes a seal-then-open pair
+      // perfectly and fails here.
+      expect(
+        await openNarrativeField(contentKey, wireOf(sealed), BINDING),
+      ).toBe('Lunch with Ana');
+    });
+
+    it('opens what it sealed, under the same binding', async () => {
+      // Arrange
+      await adoptedContentKey();
+
+      // Act
+      const sealed = await custody.sealField(BINDING, 'Dentist, second visit');
+      const opened = await custody.openField(BINDING, wireOf(sealed));
+
+      // Assert
+      // The whole result and not just the text, so a `state` that came back
+      // wrong beside a right `value` is a finding rather than a pass.
+      expect(opened).toEqual({
+        state: 'text',
+        value: 'Dentist, second visit',
+      });
+    });
+
+    it('answers locked to a seal on an account holding no key, and runs no cipher', async () => {
+      // Arrange
+      // Nothing adopted and nothing unlocked — the state every reloaded tab is
+      // in until a factor is presented.
+      //
+      // `vi.spyOn` with no implementation calls through, which is what the two
+      // import cases in this file rely on and the right default here too: a
+      // substituted cipher would make the assertion below a statement about the
+      // substitute.
+      const cipher = vi.spyOn(crypto.subtle, 'encrypt');
+
+      // Act
+      const sealed = await custody.sealField(BINDING, 'Never written down');
+
+      // Assert
+      // **The discriminant itself, not merely "it did not seal".** A member
+      // added later, or an `unreadable` copied across from the reading side,
+      // passes every absence check in this case and is refused by this line.
+      expect(sealed).toEqual({ state: 'locked' });
+
+      // Nothing was sealed. Without this, an implementation that sealed under a
+      // key it derived on the spot and *then* answered `locked` reads as
+      // correct, while having put narrative text through a cipher key nobody
+      // authorised.
+      expect(cipher).not.toHaveBeenCalled();
+
+      // And it asked nobody anything. A `sealField` that read
+      // `GET /api/me/account-keys` to find out whether it could seal would work
+      // perfectly, and would put a round trip and a possible 401 behind every
+      // save in the product.
+      expect(api.getAccountKeys).not.toHaveBeenCalled();
+    });
+
+    it('answers locked to a read on an account holding no key, never unreadable', async () => {
+      // Arrange
+      // A genuine envelope, sealed by this file under a key custody has never
+      // been given. The value is perfectly good; the only thing missing is the
+      // key — which is exactly the state a reloaded tab is in.
+      const elsewhere = await keyEncryptionKey(0x92);
+      const wire = await sealNarrativeField(elsewhere, 'Rent, March', BINDING);
+
+      // Act
+      const opened = await custody.openField(BINDING, wire);
+
+      // Assert
+      // **`locked`, and this case and the next one pin the split together.**
+      // Either one alone is passed by an implementation that answers a single
+      // word to every failure — and the two words are two different next steps:
+      // present a factor, against nothing you can do about this value.
+      expect(opened).toEqual({ state: 'locked' });
+    });
+
+    it('answers unreadable to a value that does not open under the key it has', async () => {
+      // Arrange
+      await adoptedContentKey();
+
+      const elsewhere = await keyEncryptionKey(0x93);
+      const wire = await sealNarrativeField(
+        elsewhere,
+        'Another account',
+        BINDING,
+      );
+
+      // The guard that keeps the arrangement honest: the value really is a
+      // well-formed envelope, so what fails below is the authentication and not
+      // the decoder. Without it, a wire value this file mangled would produce
+      // the same word for the wrong reason.
+      expect(await openNarrativeField(elsewhere, wire, BINDING)).toBe(
+        'Another account',
+      );
+
+      // Act
+      const opened = await custody.openField(BINDING, wire);
+
+      // Assert
+      // **`unreadable`, and never `locked`.** The account is open; this one
+      // column is not. Told `locked`, a person presents a factor they already
+      // presented and watches nothing change.
+      expect(opened).toEqual({ state: 'unreadable' });
+    });
+
+    // **The case a foreign wire cannot reach, and the only one that refuses a
+    // memoising `openField`.**
+    //
+    // An implementation in which `sealField` remembers `wire → plaintext` and
+    // `openField` answers `text` on a cache hit without running a cipher at all
+    // passes every other case in this describe. The `unreadable` case above
+    // cannot see it: the value it feeds in was sealed by this file, so it misses
+    // the cache and falls through to a real decrypt that really fails. What
+    // reaches it is a wire this service itself produced — a guaranteed hit —
+    // read back under a binding the ciphertext was never sealed against.
+    //
+    // Same table, same column, one row along. That is the swap the associated
+    // data exists to catch, and it is the realistic one: two descriptions in the
+    // same column, and a mapper that carried the wrong row id in from a list.
+    // The cache is keyed on the wire, so it answers `text` and hands one row's
+    // narrative text back as another's.
+    it('will not open a value it sealed under a binding naming another row', async () => {
+      // Arrange
+      await adoptedContentKey();
+
+      const sealed = await custody.sealField(BINDING, 'Lunch with Ana');
+
+      // The guard that keeps the arrangement honest: the two bindings differ in
+      // the row and in nothing else, and both row ids are spellings the codec
+      // accepts — so what fails below is the authentication, and not the
+      // refusal the case after this one is about.
+      expect(OTHER_ROW_BINDING.rowId).not.toBe(BINDING.rowId);
+      expect(OTHER_ROW_BINDING.table).toBe(BINDING.table);
+      expect(OTHER_ROW_BINDING.column).toBe(BINDING.column);
+      expect(isCanonicalRowId(OTHER_ROW_BINDING.rowId)).toBe(true);
+
+      // Act
+      const opened = await custody.openField(OTHER_ROW_BINDING, wireOf(sealed));
+
+      // Assert
+      expect(opened).toEqual({ state: 'unreadable' });
+    });
+
+    // **The refusal `openField` keeps in its own body, which nothing else in
+    // this file reaches.**
+    //
+    // A key whose bytes can be read back out is one that can already be logged,
+    // posted to a crash reporter or written to `localStorage`, and no API undoes
+    // an extractable import. The codec refuses one too — but its refusal arrives
+    // from inside this method's `try` and lands as `unreadable`: a defect
+    // dressed as a sentence about damaged text, shown to somebody who can do
+    // nothing whatever about it, over a row that is perfectly fine. So the outer
+    // copy is what has to be pinned, and only a **rejection** pins it: without
+    // this case the guard can be deleted and every other case stays green.
+    //
+    // **The fixture is minted with a bare `crypto.subtle.importKey`, which
+    // production may not do and a spec may.** `key-import-single-source.spec.ts`
+    // exempts specs from the two-doors rule, and the exemption is exactly what
+    // this case needs: both doors in `account-keys.ts` hard-code
+    // `extractable: false`, so an extractable content key is unreachable from
+    // every real path into this class. The refusal is pinned anyway, against the
+    // day a third door appears — the state being unreachable is the reason the
+    // guard looks like decoration, and the reason a reader would remove it.
+    //
+    // **What this case does not cover: `sealField` carries no copy of the
+    // refusal**, and the asymmetry is argued at the guard itself — nothing on
+    // the sealing side catches anything, so the codec's own refusal already
+    // reaches that caller as the rejection it is.
+    it('rejects a read under an extractable content key, never unreadable', async () => {
+      // Arrange
+      // Two key objects over the same 32 bytes. The non-extractable twin seals
+      // a genuine wire value — the codec refuses to seal under the other one at
+      // all — and the extractable one is what custody is handed.
+      const sealing = await keyEncryptionKey(0x94);
+      const extractable = await crypto.subtle.importKey(
+        'raw',
+        new Uint8Array(ACCOUNT_KEY_BYTES).fill(0x94),
+        'AES-GCM',
+        true,
+        ['encrypt', 'decrypt'],
+      );
+      const wire = await sealNarrativeField(sealing, 'Bus fare', BINDING);
+
+      custody.adopt(extractable, await keyEncryptionKey(0x95));
+
+      // The guard that keeps the arrangement honest: what is under test is the
+      // extractability of the key custody holds, and not a fixture that quietly
+      // came back non-extractable and would have been refused for the ordinary
+      // reason.
+      expect(extractable.extractable).toBe(true);
+
+      // Act, Assert
+      await expect(custody.openField(BINDING, wire)).rejects.toThrow(
+        /non-extractable/,
+      );
+
+      // The control the refusal needs: the same wire, the same binding and the
+      // same bytes, imported through the door production uses, open. Without
+      // it, an `openField` that rejected every read passes the assertion above.
+      custody.adopt(await keyEncryptionKey(0x94), await keyEncryptionKey(0x95));
+
+      await expect(custody.openField(BINDING, wire)).resolves.toEqual({
+        state: 'text',
+        value: 'Bus fare',
+      });
+    });
+
+    it('rejects a row id in any spelling but the canonical one', async () => {
+      // Arrange
+      const contentKey = await adoptedContentKey();
+      const wire = await sealNarrativeField(contentKey, 'Groceries', BINDING);
+      const shouted: NarrativeFieldBinding = {
+        ...BINDING,
+        rowId: ROW_ID.toUpperCase(),
+      };
+
+      // Act, Assert
+      // **A rejection, and it must not be caught into a result.** The codec
+      // refuses a non-canonical row id because associated data is rebuilt from
+      // where a ciphertext was found, so a value sealed under a spelling no
+      // later read reproduces stops opening in both directions, permanently.
+      // Swallowed into `unreadable`, that defect arrives on screen as a
+      // sentence about damaged text — a bug wearing a UI, in front of somebody
+      // who cannot act on it, while the row it names is fine.
+      await expect(custody.openField(shouted, wire)).rejects.toThrow(
+        /canonical/,
+      );
+
+      // The control the refusal needs: the same call under the spelling the row
+      // really carries opens. Without it, an `openField` that rejected on every
+      // binding passes the assertion above and seals nothing ever again.
+      await expect(custody.openField(BINDING, wire)).resolves.toEqual({
+        state: 'text',
+        value: 'Groceries',
+      });
+    });
+
+    // **The derivation's own control**, and it is here because one of the five
+    // spellings a reader would list is not refused.
+    //
+    // `isCanonicalRowId` documents that it says nothing about the all-zero
+    // uuid: that value *is* canonically spelled, and the server refuses it for a
+    // reason that is not about spelling at all. So a case asserting the codec
+    // rejects it would pin a rule that does not exist and would stay red
+    // through the green pass. Filtering the candidates through the predicate
+    // drops it automatically — and this case is what keeps that drop visible
+    // instead of silent.
+    it('derives the refused spellings from the codec, all-zero uuid excluded', () => {
+      // Arrange, Act, Assert
+      // Non-empty, or the `it.each` below drives no cases at all and reports a
+      // clean run over nothing.
+      expect(REFUSED_ROW_IDS.length).toBeGreaterThan(0);
+
+      expect(REFUSED_ROW_IDS.map(({ how }) => how)).not.toContain(
+        'the all-zero uuid',
+      );
+      expect(isCanonicalRowId('00000000-0000-0000-0000-000000000000')).toBe(
+        true,
+      );
+    });
+
+    // **Both operations, over every spelling the codec refuses**, and the
+    // target is an implementation that judges the row id with a regular
+    // expression of its own instead of letting the codec judge it.
+    //
+    // That implementation passes every other case in this file, including the
+    // single-spelling rejection above: it refuses upper-case hex too. This
+    // narrows the hole rather than closing it — a hand-rolled check that
+    // happens to refuse all of these is still a second definition of one
+    // spelling, and the half that drifts still seals and still opens everything
+    // it wrote. Only review catches that, and this case is the reason review is
+    // looking.
+    //
+    // Both directions, because they are two separate call sites and a check
+    // written on one of them is the shape the drift actually takes: a seal that
+    // refuses a spelling the read admits binds text to associated data no later
+    // read reproduces.
+    it.each(REFUSED_ROW_IDS)(
+      'refuses $how in a row id, sealing and opening alike',
+      async ({ rowId }) => {
+        // Arrange
+        const contentKey = await adoptedContentKey();
+        const wire = await sealNarrativeField(contentKey, 'Groceries', BINDING);
+        const binding: NarrativeFieldBinding = { ...BINDING, rowId };
+
+        // Act, Assert
+        await expect(custody.sealField(binding, 'Groceries')).rejects.toThrow(
+          /canonical/,
+        );
+        await expect(custody.openField(binding, wire)).rejects.toThrow(
+          /canonical/,
+        );
+      },
+    );
+
+    // **The order of the two gates, which no case above this one can see.**
+    //
+    // Both operations judge the binding *before* they read the key field, and
+    // the order is the property rather than the pair of checks. Reversed, the
+    // one caller defect that is unrecoverable — a row id in a spelling no later
+    // read of that row reproduces — is reported to an unlocked tab and
+    // **swallowed** by a locked one: found on the machines that happened to be
+    // open, silent on every reloaded one, which is to say surfacing exactly
+    // where nobody is looking for it. Whether a factor has been presented is not
+    // a fact about whether the caller assembled its binding correctly.
+    //
+    // Every other case that feeds a refused spelling in has adopted a key
+    // first, so all of them pass with the gates the other way round. This one
+    // adopts nothing, which is the whole arrangement.
+    //
+    // The spelling comes from `REFUSED_ROW_IDS`, so this file still holds no
+    // opinion about which spellings are refused — the sweep over all of them is
+    // the `it.each` above, and this case is about the order alone.
+    it('judges the row id before custody, on an account holding no key', async () => {
+      // Arrange
+      // Nothing adopted and nothing unlocked — the state every reloaded tab is
+      // in until a factor is presented, and the state in which a reversed order
+      // is invisible.
+      const [{ rowId }] = REFUSED_ROW_IDS;
+      const binding: NarrativeFieldBinding = { ...BINDING, rowId };
+
+      // A genuine envelope, sealed by this file under a key custody has never
+      // been given, so nothing below rests on a wire value that was malformed
+      // to begin with.
+      const elsewhere = await keyEncryptionKey(0x96);
+      const wire = await sealNarrativeField(elsewhere, 'Rent, April', BINDING);
+
+      // The guard that keeps the arrangement honest: the account really is
+      // holding nothing, so `locked` is what a reversed order would answer.
+      expect(custody.status()).toBe('locked');
+
+      // Act, Assert
+      await expect(custody.sealField(binding, 'Rent, April')).rejects.toThrow(
+        /canonical/,
+      );
+      await expect(custody.openField(binding, wire)).rejects.toThrow(
+        /canonical/,
+      );
+
+      // The control both halves need: under the spelling the row really
+      // carries, this same locked account answers `locked` rather than
+      // rejecting. Without it, a service that rejected everything while holding
+      // no key passes the two assertions above.
+      await expect(custody.sealField(BINDING, 'Rent, April')).resolves.toEqual({
+        state: 'locked',
+      });
+      await expect(custody.openField(BINDING, wire)).resolves.toEqual({
+        state: 'locked',
+      });
+    });
+
+    it('answers locked when custody ends while the cipher is running', async () => {
+      // Arrange
+      const contentKey = await adoptedContentKey();
+      const wire = await sealNarrativeField(
+        contentKey,
+        'Still in flight',
+        BINDING,
+      );
+
+      // **The world moves between the read of the key and the answer**, which
+      // is the one window this operation has: it reads the field, hands the key
+      // to the platform, and comes back several turns later. The interleaving is
+      // forced at the platform boundary rather than by a timer, so it lands in
+      // that window on every run rather than usually — the same technique the
+      // two import cases above use on `crypto.subtle.importKey`, and the
+      // counterpart of the `Subject` the unlock cases use to hold a read open.
+      //
+      // It calls through, so the open genuinely succeeds. That is the point: an
+      // implementation that published what it had just recovered would be
+      // handing narrative text to a tab whose keys were dropped before the
+      // answer arrived, and a failing decrypt could never show it.
+      const realDecrypt = crypto.subtle.decrypt;
+
+      vi.spyOn(crypto.subtle, 'decrypt').mockImplementation(
+        (algorithm, key, data) => {
+          custody.lock();
+
+          return realDecrypt.call(crypto.subtle, algorithm, key, data);
+        },
+      );
+
+      // Act
+      const opened = await custody.openField(BINDING, wire);
+
+      // Assert
+      // `toEqual` is exact, so a `value` riding along beside the word would be
+      // a failure here rather than an extra property nobody looked at.
+      expect(opened).toEqual({ state: 'locked' });
+      expect(custody.status()).toBe('locked');
+    });
+  });
+
+  // **No public member hands a key back, and this reads source text because
+  // nothing running can see it.**
+  //
+  // Non-extractability stops the *bytes* leaving and does nothing at all about
+  // a caller that holds the key object and decrypts a whole budget into a log
+  // line. The rule is therefore about the shape of what was written, and the
+  // two operations above are what makes it affordable: a screen that needs a
+  // field sealed no longer has any reason to ask for the key.
+  //
+  // What this cannot catch is stated at each scanner. The short version: it
+  // reads declarations, not what a body does, so a member that hands a key back
+  // as `unknown` is caught by the census reddening on the member and by nothing
+  // else.
+  describe('the public surface hands back no key', () => {
+    it('declares exactly the members it is meant to declare', () => {
+      // Arrange, Act
+      const declared = publicMembers(readFileSync(CUSTODY_SOURCE, 'utf8'));
+
+      // Assert
+      // Set against set. A member renamed or removed reddens too, and that is
+      // wanted: both are changes to the surface this rule is about, and both
+      // should be read by somebody rather than absorbed.
+      expect(
+        declared,
+        'the public surface of AccountKeyCustodyService has moved — every member here is a way for a key to leave',
+      ).toEqual(PUBLIC_SURFACE);
+    });
+
+    it('returns a key from nothing it declares', () => {
+      // Arrange, Act
+      const findings = keysHandedBack(readFileSync(CUSTODY_SOURCE, 'utf8'));
+
+      // Assert
+      // Named, not counted: this is a rule about *which* member, and the name
+      // is the whole of the finding.
+      expect(
+        findings,
+        `a key object is handed back from: ${[...findings].join(', ')}`,
+      ).toEqual(new Set());
+    });
+
+    it('would report an accessor added over a key field', () => {
+      // Arrange
+      // The negative control, and the case that makes the two above worth
+      // anything: both are green over a `publicMembers` that matched nothing
+      // and a `keysHandedBack` that never looked. So this plants the exact edit
+      // the rule exists to catch — the one an ESLint `no-unused-private-class-
+      // members` result invites, and the one this class's header argues against
+      // at length — written on a single line, which is the form no brace-walking
+      // extractor would find.
+      const mutated = [
+        'class AccountKeyCustodyService {',
+        '  #contentKey: CryptoKey | null = null;',
+        '',
+        '  public lock(): void {}',
+        '',
+        '  public get contentKey() { return this.#contentKey; }',
+        '}',
+      ].join('\n');
+
+      // Act
+      const declared = publicMembers(mutated);
+      const findings = keysHandedBack(mutated);
+
+      // Assert
+      // The census sees the member, and the second scanner says what it does.
+      // Both halves, because each is the one that survives an edit the other
+      // misses: an accessor named something innocent is caught by the census
+      // only, and an annotated method added to a surface somebody also updated
+      // is caught by the second scanner only.
+      expect(declared).toEqual(new Set(['lock', 'contentKey']));
+      expect(findings).toEqual(new Set(['#contentKey']));
+    });
+  });
+
+  // **This class names no table and no column of the eight pairs**, and the
+  // rule follows the codec rather than restating it: the words are derived from
+  // `NARRATIVE_FIELDS`, so a ninth pair is covered the day it is added.
+  //
+  // The argument is that custody holds keys and knows nothing about the ledger.
+  // A table name appearing here — in a branch, in a default, in a comment
+  // explaining which column a caller probably meant — is the first line of a
+  // second copy of the field list, and the copy that drifts still seals and
+  // still opens everything it wrote. It is also how a special case gets in:
+  // once the class can name a column, it can treat one differently, and the
+  // codec's binding stops being the only thing that decides what a ciphertext
+  // is bound to.
+  //
+  // Comments are included on purpose. Prose here is where the copy starts.
+  describe('the eight narrative pairs are named nowhere in this class', () => {
+    it('names no table and no column of them', () => {
+      // Arrange
+      // The control on the derivation, before any claim about what it found. An
+      // empty `FORBIDDEN_WORDS` — an import that resolved to nothing, a list
+      // that moved — reports the assertion below perfectly clean forever.
+      expect(FORBIDDEN_WORDS.size).toBeGreaterThan(0);
+
+      // Act
+      const named = narrativeWordsIn(readFileSync(CUSTODY_SOURCE, 'utf8'));
+
+      // Assert
+      expect(
+        named,
+        `account-key-custody.service.ts names: ${[...named].join(', ')}`,
+      ).toEqual(new Set());
+    });
+
+    it('would report one of them written into a comment', () => {
+      // Arrange
+      // The negative control. The case above is green over a scanner that
+      // matched nothing at all, so this hands the same scanner a source that
+      // carries exactly one of the derived words — in a comment, which is the
+      // form a leak really takes and the one an implementation-only scan would
+      // miss.
+      //
+      // The word is taken off the derived set rather than typed, or this file
+      // would be carrying the copy it is hunting.
+      const [word] = [...FORBIDDEN_WORDS];
+      const mutated = [
+        '// A note somebody left behind about which rows this is really for:',
+        `// the ${word} a caller is most likely holding.`,
+        'export class AccountKeyCustodyService {}',
+      ].join('\n');
+
+      // Act
+      const named = narrativeWordsIn(mutated);
+
+      // Assert
+      // Exactly that word and no other, which is the half that says the scanner
+      // is reading rather than reporting its whole input.
+      expect(named).toEqual(new Set([word]));
     });
   });
 });

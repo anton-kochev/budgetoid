@@ -47,10 +47,13 @@ the third and is the only one reachable **inside** the app — see
 [The third way into custody](#the-third-way-into-custody). The other two write paths are still
 reached only by the integration suite.
 
-**What is *not* built is anything that uses the keys.** Nothing in this product is encrypted, so no
-screen decrypts, no blind index is computed and no field is sealed. What exists is the **custody** —
-[The one class that holds them](#the-one-class-that-holds-them) — and the operations that will
-delegate to it arrive with the epic that needs them.
+**What is *not* built is anywhere for a sealed value to go.** No column in this product holds an
+envelope, no screen seals or opens a field, and no blind index is computed. What exists is the
+**custody** — [The one class that holds them](#the-one-class-that-holds-them) — and the two
+operations that delegate to what it holds, `sealField` and `openField`, whose only caller today is
+their spec. The third operation, the blind index, is not written at all, and
+[The two operations](#the-two-operations-that-delegate-and-the-shape-that-was-forced) argues why an
+absence is the right answer there and a placeholder is not.
 
 **The PRF output never leaves the ceremony module.** `createPasskey` and `assertPasskey` each derive
 through `keyEncryptionKeyFromPasskey` themselves and hand back a **non-extractable `CryptoKey`**,
@@ -747,11 +750,13 @@ both directions.
 
 `AccountKeyCustodyService` in `+core/security/` is where the account's two keys live once a factor
 has opened them, and the one place in this client that holds them past the ceremony that produced
-them. It reports two things and returns nothing else: a three-word `status` — `locked`, `unlocking`,
-`unlocked` — and, when an attempt ended without custody, an `unlockFailure`. Each decision below is
-worth the words, and every one of them is silent when reversed. They are listed rather than counted:
-a count would have to be corrected by whoever adds the next caller, and the one thing this class
-must not acquire is a rule nobody re-read.
+them. It reports two things about itself and answers two operations, and **no member of any of
+them is a key**: a three-word `status` — `locked`, `unlocking`, `unlocked` — an `unlockFailure`
+when an attempt ended without custody, and the results of `sealField` and `openField`, which
+[the section below](#the-two-operations-that-delegate-and-the-shape-that-was-forced) is about.
+Each decision below is worth the words, and every one of them is silent when reversed. They are
+listed rather than counted: a count would have to be corrected by whoever adds the next caller, and
+the one thing this class must not acquire is a rule nobody re-read.
 
 **It is root-provided, and that breaks the habit of the two services beside it deliberately.**
 `RegisterService` and `SignInService` are provided on their screens, and that is right for them: an
@@ -867,6 +872,183 @@ now that the read spans the account. It hands back all eleven pairs, but the bro
 **passkey's** key-encryption key and nothing else, so only the passkey factor's pair is ever opened
 and the ten code pairs go untouched, which is precisely where the mispairing hazard the registration
 loop is built around lives.
+
+### The two operations that delegate, and the shape that was forced
+
+**The shape was forced rather than preferred, and that has to come first** — read as taste, it is
+the next thing somebody simplifies. `sealNarrativeField` and `openNarrativeField` take the account's
+content key as their **first parameter**, and no public member of this class may return one. Put
+those two facts together and there is nowhere else the operations could have gone: a module other
+than custody that wanted to seal a description would have to be *handed* the key, which is the
+member [The one class that holds them](#the-one-class-that-holds-them) exists to refuse. The
+location was decided by the codec's signature. What was left to decide is narrower — which types
+cross the boundary, and what a refusal looks like — and everything below is about that.
+
+**Nothing in the product calls either one.** No column holds a narrative envelope, so `sealField`
+and `openField` have no caller but their spec, on the same terms
+[ciphertext-envelope.md](ciphertext-envelope.md) sets for the codec beneath them: a cross-client
+format and the custody that will use it are cheaper to agree on before data exists under them
+than after.
+
+**The rejected shape is an accessor, and it wears three costumes.** A `get contentKey()`, a
+`Signal<CryptoKey | null>`, and a scoped
+`withContentKey<T>(use: (key: CryptoKey) => Promise<T>): Promise<T>`.
+All three hand a caller the object, and the callback is the **worst** of them rather
+than the compromise it looks like: it *appears* scoped, which is exactly what invites the widening
+— the key survives in a closure the moment somebody stores the callback, or awaits something else
+inside it, and both edits read as ordinary asynchronous code. Non-extractability is no answer to
+any of the three. It stops the **bytes** leaving and does nothing whatever about a caller that
+holds the key object and decrypts a whole budget into a log line.
+
+**The pressure toward that edit is live, and it comes from a linter.** Two
+`eslint-disable no-unused-private-class-members` directives stood on this class, because the other
+reading of "this private field is never read" is "add a getter" — the smallest edit that satisfies
+the rule on its own terms, and the one this class must never take. What retired one of them was
+giving `#contentKey` genuine readers, which is the right way and the only way: the rule stopped
+firing and the directive went with the reason for it. `#indexKey` keeps its suppression, and the
+last paragraph here says why.
+
+**The other rejected shape moves the seals themselves onto custody, and brings the eight
+`table × column` pairs with them** — either eight methods, or one method branching on
+`binding.table`. Custody would then know which table and which column every narrative value belongs
+to, and a ninth pair would become two edits in two files with nothing forcing the second. That is
+strictly worse than the hazard `NARRATIVE_FIELDS` already documents about its own derived type:
+there, a member bolted onto the type past the array reddens nothing and is held by review; here, a
+`switch` missing its ninth case falls through to `undefined` at **runtime**, on a value whose
+associated data is then built out of it. Custody holds keys and knows nothing about a ledger, and
+that sentence is only true while it names none of them.
+
+**A `NarrativeCryptoService` that injects custody is the shape a reader proposes fresh, and it is
+not a third one.** It reads as the tidy separation — a module for the ciphers, a module for the
+keys — and it cannot work: to seal anything it needs the content key, so custody has to hand it
+one, and the member that does is the accessor under a service name. It collapses into the first
+rejected shape with an injector in front of it, and showing the collapse is what stops it coming
+back, because proposing it again costs nothing.
+
+**What holds "custody does not learn the eight pairs" is one import and two source-text rules, and
+the import is the strongest of the three.** The class imports the **type** `NarrativeFieldBinding`
+and never `NARRATIVE_FIELDS`. At runtime the type is erased, so no list is in the file. At compile
+time the type is *derived from* that list, which is the part worth stating: custody follows the
+codec and can never lead it — a pair the codec does not carry is not a binding custody will accept.
+The rest is read off the source text by two rules in the class's spec:
+
+- **No public member returns a `CryptoKey`.** One scanner censuses every `public` declaration
+  against the set the class is meant to declare; a second looks for `CryptoKey` in a **return
+  position** — read after the last `)`, so `unlock` and `adopt`, which legitimately *take* one, are
+  not findings — and for a `return` of either key field at any accessibility.
+- **None of the eight tables' or columns' words appears in the file**, comments included, with the
+  word list derived from `NARRATIVE_FIELDS` rather than typed out, so a ninth pair is covered the
+  day it is added. Comments are in scope on purpose: prose is where a second copy of the field list
+  starts.
+
+Both compare **sets**, and that is deliberate on both. A member moved up the file, or a pair
+reordered, never reddens; only a widening does. A red bar over a reordering is a red bar a reader
+learns to answer by editing the expectation, at which point a census has stopped meaning anything.
+Their limits are worth stating rather than papering over. The word rule matches whole words and is
+case-blind, so a word **assembled at runtime** passes, and so does the singular — `payee`, `budget`
+and `transaction` are not the plurals the column list uses. The key rule reads *declarations* and
+not what a body does, so it does not see a key handed back inside an object literal, through a
+callback parameter, or from a member annotated `unknown`; the census catches that last one from the
+other side, by reddening on the new member whatever it returns. Each rule ships a negative control
+that plants the exact edit it exists to catch, so neither can pass by having nothing to find.
+
+**A limit of that technique is worth writing down, because the red bar that cannot exist is not a
+hole.** The census over the public surface **cannot be shown to redden on disk**.
+`settings.component.spec.ts` declares its custody surface as a `Pick` over the service's own
+`keyof` and stubs the class with one that `implements` it, so *any* new public member is a compile
+error in that file before a single test runs. Two guards, and the outer one always fires first:
+these two operations arrived there as a compile error naming both members, not as a red assertion.
+That is a good order rather than a defect. What it means is that the source-text census can only be
+demonstrated against a mutated string its own control hands it, never against the file — so the
+next reader should not go hunting for a red bar there is no way to produce.
+
+**Two rules looked held and were not, and both were established by mutation.** Each is worth
+recording because each was invisible:
+
+- **The refusal on an extractable content key was deletable.** `openField` carries its own copy of
+  the check, and replacing the condition with a constant `false` left every case in the file
+  passing. What it costs is not a missing error but a wrong word: without it an extractable key
+  reaches the cipher, fails there, and is reported as `unreadable` — a defect dressed as a sentence
+  about damaged text, shown to somebody who can do nothing with it, over a row that is fine.
+- **The order of the two gates was unpinned.** Both operations judge the binding **before** they
+  read the key field, and reversing that also left every case passing, because every other case
+  that feeds a refused spelling in has adopted a key first. Reversed, the one caller defect that is
+  unrecoverable — a row id in a spelling no later read of that row reproduces — is *reported* to an
+  unlocked tab and *swallowed* by a locked one: found on the machines that happened to be open,
+  silent on every reloaded one, which is to say surfacing exactly where nobody looks for it.
+  Whether a factor has been presented is not a fact about whether the caller assembled its binding
+  correctly.
+
+Both are pinned now, and the second needed an arrangement rather than an assertion: the case that
+holds it adopts nothing at all, which is the only state in which a reversed order is visible.
+
+**Reading a field has three answers and writing one has two, and the asymmetry is a decision.** A
+read can fail against a ciphertext — the wrong key, the wrong binding, altered bytes, a wire value
+the strict decoder refuses — one indistinguishable symptom by design, and that symptom is
+`unreadable`. A write has no ciphertext to fail against: sealing under a key this client is already
+holding cannot produce a damaged value. An `unreadable` member on the sealed side would be a state
+no branch could reach while every exhaustive switch over the union still had to carry a case for
+it, and a case nothing can produce is not caution — it is a branch somebody eventually fills in
+with a guess.
+
+Four more decisions in and around those unions, each of which a reader will collapse or undo:
+
+- **`unlocking` is not a fourth word**, and a caller that asks mid-unlock is told `locked`. What a
+  screen can render is identical in both — no text, and the way forward is a factor. The difference
+  is real, which is why `status` publishes it, to the one screen whose job is to say so; repeating
+  it in a field's own answer would state one fact in two vocabularies and invite a template to draw
+  a spinner over a description while the account's keys open.
+- **A column holding no value is `NarrativeText | null`**, never a fourth member. An `absent` member
+  would file a fact about the **row** inside a union about the **key**, and the first template
+  written against it renders "we could not read this" over a field nobody ever filled in. The two
+  facts are known at different moments as well: whether a column is null is known before any key is
+  involved, and whether it opens only after one is.
+- **And the union is not `null` either.** Collapsed to `string | null`, `locked` and `unreadable`
+  become one word, and they are two different next steps for a person: present a factor and the
+  whole screen comes back, against this one value is damaged and no ceremony anybody runs will
+  change it. It is the split `SessionService` keeps between `anonymous` and `unreachable`, and
+  custody's own three failure words one layer up.
+- **A view-model mapper is handed `NarrativeOpener` and never this class.** The narrow function type
+  is the enforcement: a mapper given the service could reach `unlock`, `lock` and `adopt` on the way
+  past and would need a `TestBed` to be exercised at all, while a mapper given one function takes
+  exactly the one capability it needs and a spec stands it up in two lines.
+
+**What stays a rejection is as much of the rule as what becomes a result.** Two refusals keep
+throwing: a row id in any spelling but the canonical one, and an extractable content key. The rule
+behind both is that custody turns into a result only the refusals **a person can act on**, and
+everything else keeps throwing — because a caught throw rendered as a sentence is a bug wearing a
+UI, shown to somebody who can do nothing whatever with it.
+
+**The row id is judged by the codec and never by this class.** Both operations call
+`narrativeFieldAssociatedData` **for its refusal and not for its answer**, dropping the bytes where
+they stand and letting the codec build them again inside the cipher. That is a few string joins,
+and what it buys is that this file holds no second definition of the canonical spelling — a copy
+here would pass every case a round trip can see, because the half that drifted would still seal and
+still open everything it had written itself.
+
+**The extractable refusal is written out locally, and that is not the same mistake.** The codec
+refuses an extractable key too, but its refusal arrives from **inside** `openField`'s `try` and
+would land as `unreadable`, which is precisely the reading this method must never give a caller's
+mistake. The difference from the row id is that two copies of a boolean the platform owns cannot
+drift into two different **grammars**, and of the two copies this one is the outer, so a drift
+would show up as a refusal that is too loud rather than as one that is silent. `sealField` carries
+no copy, and that asymmetry is the argument again from the other end: nothing there catches
+anything, so the codec's own refusal already reaches the caller as the rejection it is.
+
+**The generation counter is checked on the way out of a read and not on the way out of a seal.**
+What an open would publish into a tab whose keys were dropped mid-cipher is plaintext, which is why
+the read drops it — and drops `unreadable` with it, because a word claiming the rest of the row is
+fine is a claim about a state that frame has left. What a seal publishes is a ciphertext, bound to
+the account's key whatever the tab does next, so answering `locked` over it would discard
+somebody's work in exchange for nothing at all.
+
+**The blind index is deliberately absent, and an absent operation reads as an oversight unless
+somebody says so.** The third operation is not here. The grammar its values are computed over waits
+on a revision of the specification, so `#indexKey` is still written and read by nothing and keeps
+the one suppression left on this class. There is no placeholder, and that is the decision rather
+than the omission: a method answering something plausible would produce an index nothing could tell
+apart from a real one, and every value it keyed would have to be rewritten the day the grammar
+landed.
 
 ### The third way into custody
 
@@ -1080,11 +1262,15 @@ about why.
   the local `deriveKeyFromLocalAssertion` an unlock runs, none of which lets the PRF output out of
   the module; and `unwrapAccountKeys` is called by `AccountKeyCustodyService` on every passkey
   sign-in and on every unlock, which is the same call from two screens and not two
-  implementations of it. What is still uncalled is anything that
-  **uses** an opened key — nothing seals a field and nothing computes an index, because nothing in
-  this product is encrypted — which is why the two keys sit on `#` fields that no member of this
-  client reads. Do not answer that by adding an accessor, and do not relax the server's demand for
-  the envelopes to make a later screen easier to write.
+  implementations of it. What is uncalled is not "anything that uses an opened key": `sealField`
+  and `openField` use the content key and reach the codec one file over, and what they lack is a
+  caller of their own — no column holds an envelope for a screen to seal or open, so their only
+  caller is their spec. The blind index is not written at all. So `#contentKey` has readers and
+  `#indexKey` still has none, which is why one
+  `no-unused-private-class-members` suppression is left where there were two — see
+  [The two operations](#the-two-operations-that-delegate-and-the-shape-that-was-forced). Do not
+  answer the remaining one by adding an accessor, and do not relax the server's demand for the
+  envelopes to make a later screen easier to write.
 - **Two clearing lines in the registration flow cannot be shown to fail, and they stay.** `restart()`
   and the failed-POST branch each drop the account keys beside the assembled body. Neither can be
   driven into producing a stale pair, because the minting writes the keys **before** the payload
@@ -1093,11 +1279,17 @@ about why.
   over a hazard the ordering already closes — written down here so the next reader deletes them as a
   decision rather than as dead weight, and so that whoever reorders the minting knows what those two
   lines start protecting.
-- **Nothing outside custody can see which door either key came through.** No public member returns a
-  key, so a spec can observe `status` and `unlockFailure` and nothing else — which means an
-  implementation that sent the index key through the AES door would report `unlocked` exactly as the
-  right one does, and go on doing so until something tried to compute an index. The registration
-  side is different only because `adopt` is a seam: a spec can stand in for custody and read the two
+- **Nothing outside custody can see which door the *index* key came through.** No public member
+  returns a key, so what a spec observes is `status`, `unlockFailure` and what the two operations
+  answer — and nothing reads the index key, so an implementation that sent it through the AES door
+  would report `unlocked` exactly as the right one does, and go on doing so until something tried
+  to compute an index. **The content key's door is the different case, and the difference is
+  narrower than it looks**: `sealField` delegates to that key, and a key imported as HMAC cannot
+  encrypt at all, so a wrong door there is in principle visible from outside. Nothing takes that
+  observation, because every sealing case reaches custody through `adopt`, which takes key objects
+  and passes no door. What watches both doors is the spy at `crypto.subtle.importKey`, censusing
+  the algorithms an unlock imports under. The registration side is different only because `adopt`
+  is a seam: a spec can stand in for custody and read the two
   objects it is handed. That asymmetry is the cost of the rule under
   [The one class that holds them](#the-one-class-that-holds-them) — an accessor would close it and
   would hand any caller the key that decrypts the account.

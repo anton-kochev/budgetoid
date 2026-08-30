@@ -8,6 +8,55 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-30 — Sealing and opening a narrative field are operations on custody, not a key anybody borrows
+
+**Context:** the codec that seals a narrative field takes the account's content key as its **first
+parameter**, and the class that holds that key may return one to nobody. Those two facts together
+leave the operations nowhere else to go: a module other than `AccountKeyCustodyService` that wanted
+to seal a description would have to be *handed* the key, which is the member that class exists to
+refuse. The question this entry settles is therefore not *where* — that was forced — but which
+types cross the boundary and what a refusal looks like.
+
+**Decision:** **`sealField` and `openField` are methods on `AccountKeyCustodyService`.** Each takes
+a `NarrativeFieldBinding` — the caller's fact about which table, which column and which row — and
+answers a small union: `SealedField` is `sealed` or `locked`, `NarrativeText` is `text`, `locked`
+or `unreadable`. Nothing in the product calls either one, because no column holds an envelope.
+
+**Alternatives rejected.** **An accessor**, in any of its three costumes: a getter, a
+`Signal<CryptoKey | null>`, or `withContentKey(use)`. The callback is the worst rather than the
+compromise — it *looks* scoped, which is what invites the widening, and the key survives in a
+closure the moment somebody stores the callback or awaits inside it. Non-extractability answers
+none of the three: it stops the bytes leaving and does nothing about a caller decrypting a whole
+budget into a log line. The pressure toward this is live and comes from a linter — two
+`eslint-disable no-unused-private-class-members` directives stood on the class, and the other
+reading of "unused private field" is "add a getter"; this change retired one of them by giving
+`#contentKey` real readers. **Moving the eight `table × column` pairs onto custody too**, as eight
+methods or one `switch` on `binding.table`: custody would then know the pairs, a ninth would become
+two edits with nothing forcing the second, and a missing case falls through to `undefined` at
+runtime rather than failing to compile. **A `NarrativeCryptoService` injecting custody** is not a
+third option — to seal it needs the key, so custody has to hand it one, and it collapses into the
+accessor with an injector in front.
+
+**Consequences.** Custody imports the *type* `NarrativeFieldBinding` and never `NARRATIVE_FIELDS`:
+erased at runtime, and derived from that list at compile time, so custody follows the codec and
+cannot lead it. Two source-text rules carry the rest — no public member returns a `CryptoKey`, and
+none of the eight tables' or columns' words appears in the file — both comparing **sets**, so
+reordering never reddens and only a widening does. The census over the public surface cannot be
+shown to redden on disk: the settings spec's `Pick`-over-`keyof` stub makes any new public member a
+compile error first, which is a good order and not a proof. Two rules that looked held were
+established by mutation and are pinned now: the refusal on an **extractable** content key was
+deletable, and the **order of the two gates** — binding judged before custody — was unpinned, with
+a reversal reporting an unrecoverable caller defect to an unlocked tab and swallowing it in a locked
+one. Only refusals a person can act on become results; a non-canonical row id and an extractable key
+keep throwing. The blind index is **not** part of this: its message grammar waits on a
+specification revision, so `#indexKey` keeps the one remaining suppression and no placeholder was
+written.
+
+**Affected areas:** [account-keys.md](account-keys.md),
+[ciphertext-envelope.md](ciphertext-envelope.md).
+
+---
+
 ## 2026-08-28 — The account-keys read is keyed on the account, reversing the credential narrowing
 
 **Context:** reverses the decision of 2026-08-27 below, "The wrapped account keys get a reader,

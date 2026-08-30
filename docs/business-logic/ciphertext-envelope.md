@@ -43,12 +43,16 @@ width or the associated-data binding to drift apart, and every symptom of drift 
 silent: bytes of exactly the right shape that decrypt to nothing on a device that did not
 seal them.
 
-**Nothing is encrypted today, and nothing outside a spec calls the narrative functions.** No
-column holds a narrative envelope, and `sealNarrativeField` and `openNarrativeField` have no
-caller but `narrative-cipher.spec.ts`. That is a deliberate order rather than a module left
-behind: the format is a cross-client contract, so it can be pinned against an answer computed
-outside this codebase before a single column holds an envelope, and a format is far cheaper to
-agree on before it has data written under it than after. The same is said again under
+**Nothing is encrypted today, and no screen seals or opens a field.** No column holds a narrative
+envelope. The two functions do have a production caller — `AccountKeyCustodyService.sealField` and
+`openField` delegate to them, because the account's content key never leaves that class — and
+nothing but a spec calls *that*. See
+[account-keys.md](account-keys.md#the-two-operations-that-delegate-and-the-shape-that-was-forced),
+which argues why the operations sit there and not beside the codec. That is a deliberate order
+rather than a module left behind: the format is a cross-client contract, so it can be pinned
+against an answer computed outside this codebase before a single column holds an envelope, and a
+format is far cheaper to agree on before it has data written under it than after. The same is said
+again under
 [Edge Cases](#edge-cases--known-gotchas), because whoever lands in one place and not the other
 reads the module as dead code and deletes it.
 
@@ -539,13 +543,15 @@ caller was not given.
 
 ## Edge Cases & Known Gotchas
 
-- **Nothing is encrypted today and nothing calls the narrative functions.** `sealNarrativeField`
-  and `openNarrativeField` have no caller but their spec. **The wrapped-key side is the
-  counter-example rather than a companion, and citing the two together is the mistake to avoid**:
-  `unwrapAccountKeys` is called on every passkey sign-in, because what it needed was a route to hand
-  it an envelope and a class to hold what came out, and it has both. The narrative pair waits on
-  something else entirely — a ciphertext existing anywhere in the product.
-  **Do not delete these two because nothing calls them, and do not relax anything here to make a
+- **Nothing is encrypted today, and the narrative functions are reached by one caller that nothing
+  calls.** `sealNarrativeField` and `openNarrativeField` are reached through
+  `AccountKeyCustodyService.sealField` and `openField`, which hold the content key they need; no
+  screen calls those, because no column holds an envelope for one to seal or open. **The
+  wrapped-key side is the counter-example rather than a companion, and citing the two together is
+  the mistake to avoid**: `unwrapAccountKeys` is called on every passkey sign-in, because what it
+  needed was a route to hand it an envelope and a class to hold what came out, and it has both. The
+  narrative path has the class and waits on the other half — a ciphertext existing anywhere in the
+  product. **Do not delete any of it for want of a caller, and do not relax anything here to make a
   later screen easier to write.** The format is a contract with every client that will ever seal an
   envelope; it is being agreed while agreement is still cheap.
 - **An empty plaintext is legal and seals to exactly 29 bytes.** A reader tempted to treat

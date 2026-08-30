@@ -5,9 +5,11 @@
 // stores its own wrapped copy of both. A browser that has just proved a factor
 // holds a key-encryption key and nothing else, so this service does the only
 // thing left: it reads that credential's envelopes, tries each in turn, and keeps
-// what came out as two `CryptoKey` objects. Nothing here encrypts anything —
-// nothing in this product is encrypted yet. What is built is the custody, and the
-// operations that will delegate to it arrive with the epic that needs them.
+// what came out as two `CryptoKey` objects. Two operations delegate to what it
+// holds — seal this field, open that one — and they are the whole reason no
+// caller has any occasion to ask for a key. No column in this product holds an
+// envelope yet, so nothing calls them but their spec; the blind index, the third
+// operation, is not here at all.
 //
 // **`providedIn: 'root'`, and that breaks the habit of the two services beside it
 // deliberately.** `RegisterService` and `SignInService` are provided on their
@@ -51,6 +53,21 @@ import {
   importHmacSha256Key,
   unwrapAccountKeys,
 } from './account-keys';
+// The two operations and the binding they take, and deliberately not
+// `NARRATIVE_FIELDS`. Which table and which column a value belongs to is the
+// caller's fact; this class is handed one already assembled and has no business
+// enumerating them — importing the list would put the eight pairs inside the one
+// file that must be able to say it names none of them.
+//
+// `narrativeFieldAssociatedData` is imported for its refusal and not for its
+// answer; both call sites below say why.
+import {
+  narrativeFieldAssociatedData,
+  openNarrativeField,
+  sealNarrativeField,
+  type NarrativeFieldBinding,
+} from './narrative-cipher';
+import type { NarrativeText, SealedField } from './narrative-text';
 
 /**
  * Whether the account's keys are held, and whether an attempt to hold them is in
@@ -124,20 +141,26 @@ export class AccountKeyCustodyService {
   // object every injector in the app can reach — and it would work perfectly,
   // which is why nothing would ever notice.
   //
-  // **Nothing reads them yet, and the two suppressions below are the price of
-  // the rule three paragraphs down.** Both are written and neither is read,
-  // because the operations that will read them — seal this field, compute this
-  // index — arrive with the encryption epic, and nothing in this product is
-  // encrypted today. The one edit that would satisfy the linter on its own terms
-  // is an accessor, which is precisely the member `#forget` argues must never
-  // exist: a getter turns a key nobody can serialise into a key anybody can
-  // decrypt a whole budget with. So the rule is suppressed here rather than
-  // obeyed, in the two places it applies, with the reason beside it — the same
-  // shape as every other capability this client has landed one commit ahead of
-  // its caller.
-  // eslint-disable-next-line no-unused-private-class-members -- read by the operations the encryption epic brings; an accessor is the forbidden alternative
+  // **One of the two is read now, and the one suppression left is the price of
+  // the rule three paragraphs down.** `#contentKey` has readers — `sealField`
+  // and `openField` are the operations that delegate to it — so the rule it was
+  // suppressed for no longer fires on it, and the directive went with the
+  // reason for it. `#indexKey` is still written and read by nothing: the one
+  // operation that will read it is the blind index, deferred to a later commit
+  // because the grammar its values are computed over is blocked on a revision of
+  // the specification. There is deliberately no placeholder for it here — a
+  // method that answered something plausible would be an index nothing could
+  // tell apart from a real one, and every value it keyed would have to be
+  // rewritten once the grammar landed.
+  //
+  // The one edit that would satisfy the linter on its own terms is an accessor,
+  // which is precisely the member `#forget` argues must never exist: a getter
+  // turns a key nobody can serialise into a key anybody can decrypt a whole
+  // ledger with. So the rule is suppressed here rather than obeyed, with the
+  // reason beside it — the same shape as every other capability this client has
+  // landed one commit ahead of its caller.
   #contentKey: CryptoKey | null = null;
-  // eslint-disable-next-line no-unused-private-class-members -- read by the operations the encryption epic brings; an accessor is the forbidden alternative
+  // eslint-disable-next-line no-unused-private-class-members -- read by the blind index, which waits on a grammar; an accessor is the forbidden alternative
   #indexKey: CryptoKey | null = null;
 
   // **No signal holds a key, and the shape of this class is that sentence.**
@@ -233,6 +256,143 @@ export class AccountKeyCustodyService {
    */
   public lock(): void {
     this.#forget('locked');
+  }
+
+  /**
+   * Seals `plaintext` under the account's content key, bound to `binding`, and
+   * hands back the wire value the column stores.
+   *
+   * Answers `locked` when this browser is holding no content key. Rejects on a
+   * binding the codec refuses — a row id in any spelling but the canonical one —
+   * because that is a caller's mistake about a value it read off a row and not a
+   * state anybody can be told about. **Only the refusals a person can act on
+   * become a result**; a caught throw rendered as a sentence is a bug wearing a
+   * UI, shown to somebody who can do nothing whatever with it.
+   */
+  public async sealField(
+    binding: NarrativeFieldBinding,
+    plaintext: string,
+  ): Promise<SealedField> {
+    // **The binding is judged before custody is, on both operations, and the
+    // judgement is the codec's.** Ordered the other way, the one caller defect
+    // that is unrecoverable — a row id in a spelling no later read of that row
+    // reproduces — would be reported to an unlocked tab and swallowed by a
+    // locked one, which is to say reported exactly where nobody is looking for
+    // it. Whether a factor has been presented is not a fact about whether the
+    // caller assembled its binding correctly.
+    //
+    // Called for its refusal and not for its answer: the bytes it builds are
+    // dropped where they stand, and the codec builds them again inside the seal.
+    // That is a few string joins, and what it buys is that this file holds no
+    // second definition of the canonical spelling. A copy here would pass every
+    // case a round trip can see, because the half that drifted would still seal
+    // and still open everything it had written itself.
+    narrativeFieldAssociatedData(binding);
+
+    const contentKey = this.#contentKey;
+
+    if (contentKey === null) {
+      // No cipher is reached and nothing is asked of the API. A `sealField`
+      // that read the route to find out whether it could seal would work
+      // perfectly and would put a round trip, and a 401, behind every save in
+      // the product.
+      return { state: 'locked' };
+    }
+
+    // **Nothing checks the generation on the way out of a seal, and that
+    // difference from the read below is the argument rather than a check
+    // forgotten on one side.** What an open publishes into a tab whose keys were
+    // dropped mid-cipher is plaintext, which is why the read drops it. What a
+    // seal publishes is a ciphertext: it is bound to the account's key whatever
+    // this tab does next, so answering `locked` over it would discard work in
+    // exchange for nothing at all.
+    return {
+      state: 'sealed',
+      wire: await sealNarrativeField(contentKey, plaintext, binding),
+    };
+  }
+
+  /**
+   * Opens `wire` under the account's content key and `binding`.
+   *
+   * Answers `locked` when this browser is holding no content key — including
+   * when custody ended while the cipher was running — and `unreadable` when a
+   * key was there and this value did not open under it. Rejects on a binding the
+   * codec refuses and on an extractable content key, for the reason
+   * {@link sealField} gives: this class turns into a result only the refusals a
+   * person can act on, and everything else keeps throwing.
+   */
+  public async openField(
+    binding: NarrativeFieldBinding,
+    wire: string,
+  ): Promise<NarrativeText> {
+    // The same gate `sealField` opens with, and here it is also *outside* the
+    // `try` below. Everything the codec refuses before it reaches a cipher is a
+    // caller's defect, and a defect caught and rendered is a bug wearing a UI:
+    // it puts a sentence about damaged text in front of somebody who can do
+    // nothing about it, over a row that is perfectly fine. Only a ciphertext
+    // that really did not open may become a word this class hands to a screen.
+    narrativeFieldAssociatedData(binding);
+
+    const contentKey = this.#contentKey;
+
+    if (contentKey === null) {
+      // **`locked`, never `unreadable`.** Nothing was judged, so nothing may be
+      // blamed: the value is very probably fine and the only thing missing is a
+      // factor, which brings every other field on the screen back with it.
+      return { state: 'locked' };
+    }
+
+    // The codec's other pre-cipher refusal, asked again here and deliberately
+    // so. A key whose bytes can be read back out is one that can already be
+    // logged or posted to a crash reporter, and no API undoes an extractable
+    // import — but the codec's own refusal would arrive from inside the `try`
+    // and land as `unreadable`, which is the reading this method must never
+    // give a caller's mistake. Two copies of a boolean the platform owns cannot
+    // drift into two different grammars, which is exactly what makes this unlike
+    // a second copy of the spelling rule above; and of the two, this is the
+    // outer, so a drift shows up as a refusal that is too loud rather than as
+    // one that is silent.
+    //
+    // Not repeated on the seal side, and that asymmetry is the argument too:
+    // nothing there catches anything, so the codec's refusal already reaches the
+    // caller as the rejection it is.
+    if (contentKey.extractable) {
+      throw new Error(
+        'A narrative field can only be opened under a non-extractable content key.',
+      );
+    }
+
+    // Read before the cipher, so that what is compared afterwards is the world
+    // this answer was computed in.
+    const generation = this.#generation;
+    let opened: NarrativeText;
+
+    try {
+      opened = {
+        state: 'text',
+        value: await openNarrativeField(contentKey, wire, binding),
+      };
+    } catch {
+      // Total and silent, for the reason `#open`'s catch is: a wrong key, a
+      // ciphertext bound to another row, altered bytes, a wire value the strict
+      // decoder refuses and bytes that authenticated but are not UTF-8 are one
+      // symptom by design. The caller learns the value is unusable and learns
+      // nothing else, because anything finer is an oracle over data it was never
+      // given — and there is no branch here that could act on the difference
+      // even if the platform offered one.
+      opened = { state: 'unreadable' };
+    }
+
+    // **Checked after the cipher and before either answer is published**, the
+    // way `#attempt` checks it before publishing a pair of keys, and against the
+    // same counter rather than a second mechanism. A `lock()` that lands while
+    // the platform is working leaves this frame holding text a tab is no longer
+    // entitled to, and returning it would hand narrative content to a browser
+    // whose keys were dropped before the answer arrived. `unreadable` is dropped
+    // by the same line: the account is not open, so a word that claims the rest
+    // of the row is fine would be a claim about a state this frame has left.
+    return generation === this.#generation ? opened : { state: 'locked' };
   }
 
   // The read and the trial, off the main path because `unlock` returns nothing.
@@ -355,11 +515,12 @@ export class AccountKeyCustodyService {
   //
   // **No public member returns a key, and none ever will.** Non-extractability
   // stops the *bytes* leaving; it does nothing about a caller that holds the key
-  // object and decrypts a whole budget into a log line. When encryption lands,
-  // this class grows *operations* that delegate — seal this field, compute this
-  // index — and never an accessor. That is why the two fields below are read by
-  // nothing outside this file today: there is no getter to read them with, and
-  // adding one is the change this paragraph exists to argue against.
+  // object and decrypts a whole ledger into a log line. What this class grows
+  // instead is *operations* that delegate — `sealField` and `openField` are the
+  // first two, the blind index is the third — and never an accessor. That is why
+  // the two fields below are read by nothing outside this file: there is no
+  // getter to read them with, and adding one is the change this paragraph exists
+  // to argue against.
   #forget(status: AccountKeyStatus): number {
     this.#contentKey = null;
     this.#indexKey = null;

@@ -467,6 +467,12 @@ class AccountKeyCustodyStub implements AccountKeyCustodySurface {
   public unlock = vi.fn();
   public adopt = vi.fn();
   public lock = vi.fn();
+  // The two narrative operations, here because the `Pick` census above did
+  // exactly the job its own comment describes: the service's public surface
+  // grew, and this stub was a compile error naming both members before anything
+  // ran. Nothing on this screen calls either one.
+  public sealField = vi.fn();
+  public openField = vi.fn();
 }
 
 type AccountUnlockSurface = Pick<

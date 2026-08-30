@@ -257,8 +257,10 @@ Load-bearing rules, each explained there or in the linked decision:
   correct into the other. The eight narrative `table × column` pairs are a **runtime list with the
   type derived from it**, so a ninth entry reddens two cases — a member unioned onto the derived
   type reddens nothing and is held by review, as is the row id being version 7. **Nothing is
-  encrypted today and nothing calls the narrative codec**; do not delete it for want of a caller,
-  and do not relax it to make a later screen easier. See
+  encrypted today** — no column holds an envelope and no screen seals or opens one — but the codec is
+  no longer callerless: `AccountKeyCustodyService` reaches both halves of it, which is the only way
+  the content key can be applied without leaving the class that holds it. Do not relax any of it to
+  make a later screen easier. See
   [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md) and
   [ADR 0022](docs/decisions/0022-mint-narrative-row-identifiers-on-the-client.md).
 - **The schema carries no remnant of an erasure and the route table offers no way back** — no
@@ -442,8 +444,16 @@ Load-bearing rules, each explained there or in the linked decision:
   under its own `factorId` (an account holding one passkey gets one entry, an ordinary account eleven
   — `entries[0]` works forever on the first kind and tells the second that their valid factor opened
   nothing), and
-  keeps what opened as two `CryptoKey`s on `#` fields with **no accessor**, read by nothing today
-  because nothing is encrypted. `providedIn: 'root'` **breaks the component-provided habit
+  keeps what opened as two `CryptoKey`s on `#` fields with **no accessor, and there never may be
+  one** — which is what forced `sealField` and `openField` onto this class rather than into a module
+  beside it: the narrative codec takes the content key as its first argument, so any other holder
+  would have to be handed one. They take a `NarrativeFieldBinding` and custody never imports
+  `NARRATIVE_FIELDS`, so the eight pairs stay the codec's; two source-text pins hold both halves. Only
+  the refusals a person can act on become results — a non-canonical row id and an extractable key keep
+  **throwing**, because a caught throw rendered as a sentence is a bug wearing a UI — and the row id
+  is judged **before** custody is, or an unrecoverable caller defect is swallowed by a locked tab.
+  `#indexKey` still has no reader: the blind index is deferred until its message grammar is settled.
+  `providedIn: 'root'` **breaks the component-provided habit
   deliberately**: `RegisterService` and `SignInService` hold an *attempt*, which should die with its
   screen, while these are state of the **session**, which outlives every screen. Route-providing on
   `app` is the near miss and must not be taken — `guestGuard` bouncing an authenticated visitor off

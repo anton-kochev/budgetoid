@@ -69,10 +69,10 @@ const CANONICAL_FACTOR_ID =
  * will ever run in. A guarantee made by somebody else is worth exactly as much
  * as the cost of not relying on it.
  *
- * `toLowerCase`, never `toLocaleLowerCase`, for the reason stated at
- * `account-keys.ts:389-392`: the locale-aware form maps `I` to `ı` under a
- * Turkish locale, which would fold one factor id to two different bindings on
- * two phones.
+ * `toLowerCase`, never `toLocaleLowerCase`, for the reason `canonicalFactorId`
+ * states in `account-keys.ts` at its own fold: the locale-aware form maps `I` to
+ * `ı` under a Turkish locale, which would fold one factor id to two different
+ * bindings on two phones.
  */
 export function mintFactorId(): string {
   return crypto.randomUUID().toLowerCase();
@@ -95,6 +95,14 @@ export function mintFactorId(): string {
  * canonically spelled and refused by the server for a reason that is not about
  * spelling at all — nothing this module mints can produce it, and a caller
  * validating a value from elsewhere gets that refusal from the write path.
+ *
+ * **More than the factor-id grammar asks it, so what it admits reaches past this
+ * file's subject.** `narrative-cipher.ts` imports it under a row-id name to
+ * refuse the row a narrative field is bound to — a value a server rendered
+ * rather than one this module minted — and states there why that is one
+ * predicate and not two. Relaxing this by a character therefore widens a second
+ * grammar that has no say here, and whose envelopes stop opening in both
+ * directions when a spelling slips.
  */
 export function isCanonicalFactorId(id: string): boolean {
   return CANONICAL_FACTOR_ID.test(id);
