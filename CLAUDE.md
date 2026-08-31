@@ -256,7 +256,11 @@ Load-bearing rules, each explained there or in the linked decision:
   emitting one spelling is a property of values this client mints, and neither is a mistake to
   correct into the other. The eight narrative table-and-column pairs are a **runtime list with the
   type derived from it**, so a ninth entry reddens two cases — a member unioned onto the derived
-  type reddens nothing and is held by review, as is the row id being version 7. **They are pairs,
+  type reddens nothing and is held by review. **The row id being version 7 is now two claims, not
+  one**: what `mintNarrativeRowId` emits is pinned by its spec — the version nibble, the big-endian
+  millisecond rendering under stubbed clocks, and `crypto.randomUUID` refused by name — while
+  *which* minter a write path calls is still held by review, which is the half ADR 0022 meant.
+  **They are pairs,
   not a cross product**: `transactions` is a table and `name` is a column and `transactions.name` is
   neither, so `refuseInvalidBinding` looks a binding up **as a pair** and never as two membership
   tests — a mapper taking its table from one place and its column from another is where such a
@@ -264,9 +268,21 @@ Load-bearing rules, each explained there or in the linked decision:
   `NarrativeFieldMisuseError`**, thrown before any cipher; a ciphertext that failed to authenticate
   never is, and `openField`'s `catch` re-throwing on that type is the only thing keeping a caller's
   defect out of `unreadable`. **Nothing is
-  encrypted today** — no column holds an envelope and no screen seals or opens one — but the codec is
-  no longer callerless: `AccountKeyCustodyService` reaches both halves of it, which is the only way
-  the content key can be applied without leaving the class that holds it. Do not relax any of it to
+  encrypted today** — no column holds an envelope or a blind index, and no screen seals, opens or
+  indexes anything — but neither codec is callerless: `AccountKeyCustodyService` reaches both halves
+  of the narrative one and the whole of the blind index, which is the only way either key can be
+  applied without leaving the class that holds it. **The blind index is built**, over its own
+  grammar: `budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ normalized name`, looked up **as a pair**
+  like its neighbour, and deliberately carrying **no row id** — an index must be equal for equal
+  names across rows, which is the exact inverse of what the narrative binding requires, and why the
+  two are separate modules rather than one with a parameter. Normalization is trim → NFKC → **full
+  case fold** → UTF-8, and the fold is a **table this repository ships** at Unicode 17.0, statuses C
+  and F: `toLowerCase` is not a fold and differs on 239 code points, and the platform this builds on
+  reports Unicode 16.0 and leaves 52 of the table's code points unfolded, so two clients calling
+  their platform would key one name to two values. The step **order** is the contract, not a
+  preference — 50 code points where trim-then-NFKC and NFKC-then-trim disagree — and `İstanbul` is
+  **not** `istanbul`, which is what a conforming fold does and must not be "fixed" into disagreeing
+  with the database's unique index. Do not relax any of it to
   make a later screen easier. See
   [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md) and
   [ADR 0022](docs/decisions/0022-mint-narrative-row-identifiers-on-the-client.md).
@@ -452,19 +468,22 @@ Load-bearing rules, each explained there or in the linked decision:
   — `entries[0]` works forever on the first kind and tells the second that their valid factor opened
   nothing), and
   keeps what opened as two `CryptoKey`s on `#` fields with **no accessor, and there never may be
-  one** — which is what forced `sealField` and `openField` onto this class rather than into a module
-  beside it: the narrative codec takes the content key as its first argument, so any other holder
-  would have to be handed one. They take a `NarrativeFieldBinding` and custody never imports
-  `NARRATIVE_FIELDS`, so the eight pairs stay the codec's; two source-text pins hold both halves. Only
-  the refusals a person can act on become results — a binding the codec refuses and an extractable
-  key keep **throwing**, because a caught throw rendered as a sentence is a bug wearing a UI — and the
-  binding is judged **before** custody is, or an unrecoverable caller defect is swallowed by a locked
-  tab. **A seal interrupted mid-cipher is judged by key identity, never by the generation counter**:
-  the counter moves for `lock()` and `adopt()` alike, so it cannot tell a tab that dropped its keys
-  (keep the wire, it is still that account's) from one handed another account's (drop it, or one
-  account's ciphertext lands in the next one's row). The read compares the counter; the seal compares
-  the key.
-  `#indexKey` still has no reader: the blind index is deferred until its message grammar is settled.
+  one** — which is what forced `sealField`, `openField` and `blindIndex` onto this class rather than
+  into a module beside it: each codec takes the key as its first argument, so any other holder would
+  have to be handed one. **Both fields now have readers and no lint suppression is left on either.**
+  The two narrative operations take a `NarrativeFieldBinding` and custody never imports
+  `NARRATIVE_FIELDS`, so the eight pairs stay the codec's; two source-text pins hold both halves. All
+  three judge their argument **before** custody, through a named refusal the owning codec exports —
+  never by building a value in order to throw it away — or an unrecoverable caller defect is
+  swallowed by a locked tab. Only the refusals a person can act on become results; a refused
+  argument and an extractable key keep **throwing**, because a caught throw rendered as a sentence is
+  a bug wearing a UI. **The three do not behave alike when custody moves mid-cipher, and a reader
+  will try to make them**: a seal compares **key identity** — a plain `lock()` keeps its answer,
+  because the ciphertext is still that account's and dropping it discards typed text — while a read
+  and an index compare the **generation counter** and drop in both cases, because an index computed
+  under a key the account no longer holds matches no row and its lookup comes back *empty rather
+  than failing*. Copy the seal's guard onto the index and one case greens while its neighbour
+  reddens; that is the check, not a memory.
   `providedIn: 'root'` **breaks the component-provided habit
   deliberately**: `RegisterService` and `SignInService` hold an *attempt*, which should die with its
   screen, while these are state of the **session**, which outlives every screen. Route-providing on

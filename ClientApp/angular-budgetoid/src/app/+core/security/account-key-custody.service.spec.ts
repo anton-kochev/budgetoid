@@ -41,10 +41,17 @@ import {
   ACCOUNT_KEY_BYTES,
   generateAccountKeys,
   importAesGcmKey,
+  importHmacSha256Key,
   wrapAccountKeys,
   type AccountKeys,
 } from './account-keys';
 import { AccountKeyCustodyService } from './account-key-custody.service';
+// The four indexed pairs as a **value**, which the service may not hold and this
+// file must. Every blind-index case below is driven from this array rather than
+// from a pair typed out here: a suite built from entry zero is passed by an
+// implementation that only ever indexes `payees.name`, and the other three are
+// refused with nothing going red.
+import { BLIND_INDEXED_FIELDS, type BlindIndexedField } from './blind-index';
 // The codec's own predicate, under the alias `narrative-cipher.ts` gives it.
 // Imported rather than restated, for the reason that module states at its own
 // refusal: a second regular expression here would be a second definition of one
@@ -62,7 +69,7 @@ import {
 // codec, and answering it by hand here would put the very list this file
 // forbids custody from holding into the file that forbids it.
 import * as narrativeCipherModule from './narrative-cipher';
-import type { SealedField } from './narrative-text';
+import type { BlindIndexValue, SealedField } from './narrative-text';
 
 // Three canonical factor ids, distinct and in the spelling the server renders.
 // The identifier a row carries **is** the associated data its two envelopes were
@@ -243,6 +250,194 @@ const REFUSED_ROW_IDS = ROW_ID_SPELLINGS.filter(
   ({ rowId }) => !isCanonicalRowId(rowId),
 );
 
+// The frozen blind-index vectors, computed outside this codebase.
+//
+// **Read here as well as in `blind-index.spec.ts`, and the duplication is the
+// point rather than an oversight.** That file pins the *codec* against the
+// contract; this one pins that custody **reaches** the codec, and the only
+// evidence that separates "it delegated" from "it reimplemented the grammar
+// inline and got it right for the case I happened to write" is the frozen
+// answer. A `blindIndex` that hashed the name under the index key and forgot the
+// prefix, the table or the fold computes stable, unique, 43-character values
+// forever and matches no second client and no row already written.
+//
+// The parser is small and throwing rather than shared: neither file exports one,
+// and a fixture loader that returned `undefined` on a malformed file would drive
+// a clean run over nothing.
+const BLIND_INDEX_VECTOR_FILE = join(
+  process.cwd(),
+  '..',
+  '..',
+  'docs',
+  'business-logic',
+  'vectors',
+  'blind-index-v1.json',
+);
+
+interface FrozenBlindIndexVector {
+  readonly why: string;
+  readonly table: string;
+  readonly column: string;
+  readonly inputs: readonly string[];
+  readonly blindIndex: string;
+}
+
+interface FrozenBlindIndexFile {
+  readonly indexKeyHex: string;
+  readonly vectors: readonly FrozenBlindIndexVector[];
+}
+
+function requireVectorString(
+  source: Record<string, unknown>,
+  key: string,
+  what: string,
+): string {
+  const value = source[key];
+
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${what} carries no ${key}.`);
+  }
+
+  return value;
+}
+
+function parseBlindIndexVectors(text: string): FrozenBlindIndexFile {
+  const parsed: unknown = JSON.parse(text);
+
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error('The blind-index vector file is not an object.');
+  }
+
+  const file = parsed as Record<string, unknown>;
+  const vectors = file['vectors'];
+
+  if (!Array.isArray(vectors) || vectors.length === 0) {
+    throw new Error('The blind-index vector file lists no vectors.');
+  }
+
+  return {
+    indexKeyHex: requireVectorString(
+      file,
+      'indexKeyHex',
+      'The blind-index vector file',
+    ),
+    vectors: vectors.map((entry: unknown) => {
+      if (typeof entry !== 'object' || entry === null) {
+        throw new Error('A blind-index vector is not an object.');
+      }
+
+      const vector = entry as Record<string, unknown>;
+      const why = requireVectorString(vector, 'why', 'A blind-index vector');
+      const inputs = vector['inputs'];
+
+      if (!Array.isArray(inputs) || inputs.length === 0) {
+        throw new Error(`${why} lists no inputs.`);
+      }
+
+      return {
+        why,
+        table: requireVectorString(vector, 'table', why),
+        column: requireVectorString(vector, 'column', why),
+        inputs: inputs.map((input: unknown, at: number) => {
+          if (typeof input !== 'string') {
+            throw new Error(`${why} carries a non-string input at ${at}.`);
+          }
+
+          return input;
+        }),
+        blindIndex: requireVectorString(vector, 'blindIndex', why),
+      };
+    }),
+  };
+}
+
+const BLIND_INDEX_VECTORS = parseBlindIndexVectors(
+  readFileSync(BLIND_INDEX_VECTOR_FILE, 'utf8'),
+);
+
+// Every `(vector, spelling)` pair flattened, so each frozen spelling is a case
+// of its own rather than one case that stops at the first disagreement.
+const FROZEN_BLIND_INDEX_CASES = BLIND_INDEX_VECTORS.vectors.flatMap((vector) =>
+  vector.inputs.map((input) => ({
+    why: vector.why,
+    table: vector.table,
+    column: vector.column,
+    input,
+    blindIndex: vector.blindIndex,
+  })),
+);
+
+// The buffer type is spelled out because `BufferSource` excludes a view over a
+// `SharedArrayBuffer`, and a bare `Uint8Array` is a view over either.
+function fromHex(text: string): Uint8Array<ArrayBuffer> {
+  return Uint8Array.from(text.match(/../g) ?? [], (pair) => parseInt(pair, 16));
+}
+
+// The index key the frozen answers were computed under, rebuilt from hex at
+// every call. `importHmacSha256Key` zero-fills the material it is handed, so a
+// single shared array would be all zeroes from the second import onwards — and
+// an HMAC key of 32 zero bytes signs perfectly and matches no vector.
+function frozenIndexKey(): Promise<CryptoKey> {
+  return importHmacSha256Key(fromHex(BLIND_INDEX_VECTORS.indexKeyHex));
+}
+
+// The pair a frozen vector names, resolved to the value the closed union holds.
+// Resolving rather than casting is what makes a vector naming a table this
+// product does not index an error here, instead of a value that types as a legal
+// pair and is not one.
+function indexedFieldFor(table: string, column: string): BlindIndexedField {
+  const found = BLIND_INDEXED_FIELDS.find(
+    (candidate) => candidate.table === table && candidate.column === column,
+  );
+
+  if (found === undefined) {
+    throw new Error(`${table}.${column} is not a blind-indexed field.`);
+  }
+
+  return found;
+}
+
+// A real table beside a real column of it that is **not** its indexed pair —
+// `categories.description` today, and derived rather than typed so that it is
+// still the right shape after the two lists move.
+//
+// It is taken from `NARRATIVE_FIELDS` rather than invented, so it is a pair some
+// caller could genuinely arrive holding: `categories` is one of the four indexed
+// tables and `description` is a real, encrypted column of it. What must not be
+// indexed is the *combination*, and a caller assembling a field from a row it
+// read is exactly how the wrong combination arrives.
+//
+// **What this pair cannot separate, stated rather than assumed.** It does not
+// tell a lookup of the pair from two independent membership tests, and no pair
+// can today: all four of `BLIND_INDEXED_FIELDS` carry the value in `name`, so
+// "the column is indexed" and "this table's column is indexed" are the same
+// question, and a check written either way refuses `categories.description`
+// alike. That distinction becomes reachable the day a second indexed column
+// lands on one of the four tables — the migration `blind-index.ts` says the
+// column field is in the message for — and a case for it belongs there and not
+// before.
+const UNINDEXED_PAIR = ((): {
+  readonly table: string;
+  readonly column: string;
+} => {
+  const found = NARRATIVE_FIELDS.find(
+    (field) =>
+      BLIND_INDEXED_FIELDS.some((indexed) => indexed.table === field.table) &&
+      !BLIND_INDEXED_FIELDS.some(
+        (indexed) =>
+          indexed.table === field.table && indexed.column === field.column,
+      ),
+  );
+
+  if (found === undefined) {
+    throw new Error(
+      'No narrative pair sits on an indexed table without being indexed itself, so the illegal-field cases are driven by nothing.',
+    );
+  }
+
+  return found;
+})();
+
 // The whole public surface of the class, as a set.
 //
 // **A set compared to a set, so that moving a member up the file never reddens
@@ -257,6 +452,7 @@ const PUBLIC_SURFACE = new Set([
   'lock',
   'sealField',
   'openField',
+  'blindIndex',
 ]);
 
 // The eight pairs' words — six tables and two columns, deduplicated by the
@@ -1107,28 +1303,45 @@ describe('AccountKeyCustodyService', () => {
   // language, and the header argues at length that an accessor added to make
   // this checkable would be the very defect it is checking for.
   //
-  // **What the operations expose is narrower than it looks, and one of the two
-  // fields now has a running witness.** They read the content field to decide
-  // whether they are locked, so `answers locked to a seal after adopt and then
-  // lock` and `answers locked to a read after adopt and then lock` do catch
-  // that field's assignment going missing — measured on this runner and
-  // recorded at those cases, with both assignments removed a seal after
-  // `lock()` answers `sealed` and a read answers `text`. Nothing running
-  // catches the index field's, which no operation reads, and nothing can while
-  // no member returns a key. A witness over one field is not a witness over the
-  // promise, so the shape of what was written is what is read here, and it is
-  // read for both.
+  // **Each key field is watched by a running case, and each one is watched
+  // through the operation that reads it.** `sealField` and `openField` read the
+  // content field to decide whether they are locked, so `answers locked to a
+  // seal after adopt and then lock` and `answers locked to a read after adopt
+  // and then lock` catch that field's assignment going missing. `blindIndex`
+  // reads the index field, so `answers locked to an index after adopt and then
+  // lock` — over in the indexing describe, for the fixture reason stated there
+  // — catches the other. The three are one rule about `lock()` over two fields,
+  // named here because they do not sit together.
+  //
+  // Measured on this runner, each assignment removed on its own and nothing
+  // else touched: dropping the content key's reddens this rule and its two
+  // cases, a seal after `lock()` answering `sealed` and a read answering
+  // `text`; dropping the index key's reddens this rule and its one, an index
+  // after `lock()` answering `computed` with the MAC having run.
+  //
+  // **All three are green over a `#forget` that drops nothing, and that is why
+  // this rule stays.** A behavioural case cannot see the field — it sees an
+  // *operation's answer*, and an operation can reach `locked` by more than one
+  // road. Give the three of them a `status()` check above the key read, which
+  // is the tidier-looking guard and the one a reader reaches for, and every one
+  // of them passes while both keys sit on the instance for the life of the tab:
+  // measured, that edit reddens this rule **alone**. The text is the only
+  // reading aimed at the method the promise is about rather than at what the
+  // class admits to afterwards.
   //
   // What this cannot catch, stated rather than papered over:
   //
   //   * a `#forget` that nulls the fields and then puts the keys back — the
   //     text is a presence check, not a reading of what the method does;
   //   * a third key field added later and not nulled, because the two names are
-  //     written here rather than derived from the class;
+  //     written here rather than derived from the class. It would also arrive
+  //     read by nothing, so no behavioural case would cover it either until an
+  //     operation grew for it;
   //   * the assignments moved into a helper `#forget` calls, which is a correct
   //     refactor this case would call a failure. That is the cost of the
   //     technique and it is accepted: a red bar that a reader has to think
-  //     about is the right price for the only witness that covers both fields.
+  //     about is the right price for the one reading that does not go through
+  //     an operation.
   describe('the keys are dropped, not merely disowned', () => {
     it('nulls both key fields inside #forget', () => {
       // Arrange, Act
@@ -1766,16 +1979,26 @@ describe('AccountKeyCustodyService', () => {
       ).toBe('Typed, then signed out');
     });
 
-    // **`adopt` and then `lock`, which appears nowhere else in this file**, and
-    // the two halves below are what the source-text pin on `#forget` cannot
-    // reach — that pin reads what was written, and its own comment lists the
-    // correct refactors it would call a failure.
+    // **`adopt` and then `lock` as a plain sequence — custody handed keys, then
+    // told to drop them, with no cipher in flight and nothing racing.** Every
+    // other `lock()` in this file is an *interruption*: it lands inside a spy on
+    // the platform, or while an unlock is still in the air, and there a
+    // generation guard answers and the key field is never read a second time.
+    // The kind is what distinguishes these and not the number of them — a count
+    // written here goes stale the moment a third is written, and one has been,
+    // `answers locked to an index after adopt and then lock` doing this to the
+    // **index** field from the indexing describe.
     //
-    // Measured on this runner, in a scratch copy with `#forget`'s two `= null`
-    // assignments removed: a seal after `lock()` answers `sealed`, and an open
+    // The two below are what the source-text pin on `#forget` cannot reach —
+    // that pin reads what was written, and its own comment lists the correct
+    // refactors it would call a failure, and the guard that would leave all
+    // three of these green.
+    //
+    // Measured on this runner, in a scratch copy with `#forget`'s content-key
+    // `= null` removed: a seal after `lock()` answers `sealed`, and an open
     // answers **`text`** — narrative plaintext handed to a tab whose `status()`
     // reads `locked`. That is the promise of the class broken in the one way a
-    // person could see it, and until now nothing running caught it.
+    // person could see it.
     it('answers locked to a seal after adopt and then lock', async () => {
       // Arrange
       await adoptedContentKey();
@@ -1894,14 +2117,488 @@ describe('AccountKeyCustodyService', () => {
     });
   });
 
+  // **Indexing a name so a lookup can key on it**, which reads the account's
+  // *index* key where the two operations above read its content key.
+  //
+  // The defining property is the exact inverse of theirs. A narrative field is
+  // bound to its row precisely so that two rows can never share a value; an
+  // index must be **equal across rows** for equal names, or a uniqueness
+  // constraint and a lookup over a column the operator cannot read both stop
+  // meaning anything. Every case below is written against that inversion, and
+  // `equal names across rows give one value` is the one that states it outright.
+  //
+  // **Every failure here is silent in production.** A blind index that is
+  // stable, unique and 43 characters wide looks exactly like a working one from
+  // every side: nothing on the server can see that it was computed under a
+  // grammar no second client shares, and nothing on the client can see it
+  // either. That is why the frozen vectors are read again in this file — see
+  // the loader's own comment for what the duplication buys.
+  describe('indexing a name for a lookup', () => {
+    // Restored after every case rather than in a `finally` around each act, for
+    // the reason the describe above gives: the acts below reject while the
+    // operation is a stub, and a `finally` that has to capture a return value
+    // cannot bracket a call that throws.
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    // An HMAC key of a stated seed, through the module's own door — the second
+    // of the two, because the platform refuses an AES key in this role and an
+    // HMAC key in the other. `key-import-single-source.spec.ts` exempts specs
+    // from the two-doors rule and this file has no reason to take the
+    // exemption.
+    function indexKeyOf(seed: number): Promise<CryptoKey> {
+      return importHmacSha256Key(new Uint8Array(ACCOUNT_KEY_BYTES).fill(seed));
+    }
+
+    // An unlocked account, and the index key it was unlocked with.
+    //
+    // The pair is taken in one `adopt`, so the content key is a fixture with no
+    // part in anything below — which is itself the class's rule: a screen that
+    // can seal can always index, and there is no state in which it does one and
+    // not the other.
+    async function adoptedIndexKey(seed = 0xa1): Promise<CryptoKey> {
+      const contentKey = await keyEncryptionKey(0xa0);
+      const indexKey = await indexKeyOf(seed);
+
+      custody.adopt(contentKey, indexKey);
+
+      return indexKey;
+    }
+
+    // The index value, or a failure naming the word that came back instead.
+    //
+    // A bare `expect(computed.state).toBe('computed')` asserts and narrows
+    // nothing, so every assertion after it would need a non-null assertion over
+    // a discriminated union — the reading this file refuses everywhere else.
+    function indexValueOf(computed: BlindIndexValue): string {
+      if (computed.state !== 'computed') {
+        throw new Error(
+          `blindIndex answered '${computed.state}' where an index value was expected.`,
+        );
+      }
+
+      return computed.value;
+    }
+
+    // **The cast is the hazard, not a convenience.** `BlindIndexedField` is a
+    // closed union the compiler assembled out of callers it could see; a table
+    // and a column arriving as data — off a response, out of a configuration,
+    // through one `as` in a mapper — has been through that check not at all.
+    // This line *is* that mapper, written on purpose, and the two cases it
+    // drives are what say the refusal happens at run time rather than only in
+    // the type.
+    const UNINDEXED_FIELD = UNINDEXED_PAIR as BlindIndexedField;
+
+    // **Every frozen answer, and this is the only case that can tell delegation
+    // from a reimplementation that happens to agree with itself.** Custody could
+    // hash the name under the index key and reach `computed` for every other
+    // case in this describe — equal names would still agree, different fields
+    // would still differ, and every value written would key perfectly and match
+    // no second client and no row already in the database.
+    //
+    // The list is non-empty by construction: the loader throws on a file with no
+    // vectors and on a vector with no inputs, so there is no arrangement in
+    // which this reports a clean run over nothing.
+    it.each(FROZEN_BLIND_INDEX_CASES)(
+      'computes the frozen answer for $why, spelled $input',
+      async ({ table, column, input, blindIndex }) => {
+        // Arrange
+        // The pair is resolved through the codec's own list rather than cast, so
+        // a vector naming a table this product does not index fails here loudly
+        // instead of typing as a legal pair it is not.
+        const field = indexedFieldFor(table, column);
+
+        custody.adopt(await keyEncryptionKey(0xa2), await frozenIndexKey());
+
+        // The guard that keeps the arrangement honest: the account really is
+        // open, so a `locked` below is the operation and not the fixture.
+        expect(custody.status()).toBe('unlocked');
+
+        // Act
+        const computed = await custody.blindIndex(field, input);
+
+        // Assert
+        // The whole result and not just the value, so a `state` that came back
+        // wrong beside a right value is a finding rather than a pass.
+        expect(computed).toEqual({ state: 'computed', value: blindIndex });
+      },
+    );
+
+    // **The property the operation exists for, and the deliberate inverse of
+    // what `openField` requires.** There the row is carried into the associated
+    // data precisely so that two rows can never share a value; here two rows
+    // holding the same name *must* land on the same 43 characters, or the
+    // uniqueness constraint and the lookup this value is computed for both stop
+    // meaning anything. An implementation that mixed a row, a nonce or a clock
+    // into the message would still be stable, still be the right width, and
+    // would answer no query anybody ever writes.
+    it('gives equal names across rows one value, under one field', async () => {
+      // Arrange
+      const field = BLIND_INDEXED_FIELDS[0];
+
+      await adoptedIndexKey();
+
+      // Act
+      // Two calls with nothing between them but the call itself — which is the
+      // whole arrangement, because there is no row to vary: the signature takes
+      // none, so "across rows" is exactly "twice".
+      const first = await custody.blindIndex(field, "Trader Joe's");
+      const second = await custody.blindIndex(field, "Trader Joe's");
+
+      // Assert
+      expect(indexValueOf(first)).toBe(indexValueOf(second));
+
+      // The control equality needs: a different name under the same field is a
+      // different value. Without it, a `blindIndex` that answered one constant
+      // to everything passes the assertion above and indexes the whole account
+      // onto a single row.
+      const other = await custody.blindIndex(field, 'Somewhere else entirely');
+
+      expect(indexValueOf(other)).not.toBe(indexValueOf(first));
+    });
+
+    // **Every entry of the list, and never entry zero alone.** A `blindIndex`
+    // that only ever indexes the first pair — because it hard-codes the table,
+    // or because it drops the field from the message altogether — passes a suite
+    // built from `BLIND_INDEXED_FIELDS[0]` and silently refuses, or silently
+    // collides, on the other three. That hole was measured on the codec's own
+    // spec, which is why this one sweeps rather than samples.
+    //
+    // What it buys is the separation the grammar is for: one name under
+    // `payees`, `accounts`, `categories` and `category_groups` is four unrelated
+    // values, so nothing an operator learns about the payee list transfers to
+    // the account list.
+    it('gives one name a different value under every indexed field', async () => {
+      // Arrange
+      await adoptedIndexKey();
+
+      // The guard that keeps the arrangement honest: there is more than one
+      // pair to tell apart, so the distinctness assertion below is not
+      // vacuously true of a one-entry list.
+      expect(BLIND_INDEXED_FIELDS.length).toBeGreaterThan(1);
+
+      // Act
+      const computed = await Promise.all(
+        BLIND_INDEXED_FIELDS.map((field) =>
+          custody.blindIndex(field, "Trader Joe's"),
+        ),
+      );
+
+      // Assert
+      // A set against a count, so *any* two colliding is a failure rather than
+      // only an adjacent pair.
+      expect(new Set(computed.map(indexValueOf)).size).toBe(
+        BLIND_INDEXED_FIELDS.length,
+      );
+    });
+
+    it('answers locked on an account holding no key, and reaches no cipher', async () => {
+      // Arrange
+      // Nothing adopted and nothing unlocked — the state every reloaded tab is
+      // in until a factor is presented.
+      //
+      // `vi.spyOn` with no implementation calls through, which is the right
+      // default here for the reason the sealing case gives: a substituted MAC
+      // would make the assertion below a statement about the substitute.
+      const mac = vi.spyOn(crypto.subtle, 'sign');
+
+      // Act
+      const computed = await custody.blindIndex(
+        BLIND_INDEXED_FIELDS[0],
+        'Never indexed',
+      );
+
+      // Assert
+      // **The discriminant itself, not merely "it did not compute".** A member
+      // added later, or an `unreadable` copied across from the reading side,
+      // passes every absence check in this case and is refused by this line.
+      expect(computed).toEqual({ state: 'locked' });
+
+      // Nothing was signed. Without this, an implementation that indexed under a
+      // key it derived on the spot and *then* answered `locked` reads as
+      // correct, while having put a name through a MAC key nobody authorised —
+      // and a keyed fingerprint of a name is the one thing this whole design
+      // exists to keep away from a key the account did not choose.
+      expect(mac).not.toHaveBeenCalled();
+
+      // And it asked nobody anything, for the reason `sealField` may not: a
+      // round trip and a possible 401 behind every lookup in the product.
+      expect(api.getAccountKeys).not.toHaveBeenCalled();
+    });
+
+    // **The third half of the `adopt` then `lock` rule, and the only running
+    // case that reaches the *index* field.** Its two siblings —
+    // `answers locked to a seal after adopt and then lock` and `answers locked
+    // to a read after adopt and then lock` — read the **content** field, so
+    // both of them are green over a `#forget` that has stopped dropping this
+    // one. The three are one rule about `lock()` over two fields, and they are
+    // joined by naming each other rather than by sitting together, which is how
+    // this file has always joined cases that are not neighbours.
+    //
+    // **It is written here and not beside them, and the fixture is the
+    // reason.** `adoptedIndexKey` is what hands custody a real HMAC key;
+    // `adoptedContentKey` next door puts an **AES** key in the index slot,
+    // which is harmless while nothing signs under it and becomes a fixture that
+    // lies the moment a guard moves and the MAC really runs — the case would
+    // then fail with `InvalidAccessError` instead of with its own assertion,
+    // which is a red bar that names the wrong thing.
+    //
+    // Measured on this runner, in a scratch copy with `#forget`'s
+    // `this.#indexKey = null;` removed and nothing else touched: this case goes
+    // red **beside** `nulls both key fields inside #forget` rather than instead
+    // of it — the index answers `computed` after a `lock()`, and the MAC ran.
+    // Before it was written, that mutation reddened the text scan alone.
+    it('answers locked to an index after adopt and then lock', async () => {
+      // Arrange
+      await adoptedIndexKey();
+
+      // The guard that keeps the arrangement honest: this same call computes
+      // while custody is holding the keys, so what changes below is the
+      // `lock()` and not the field, the name or the fixture.
+      const before = await custody.blindIndex(
+        BLIND_INDEXED_FIELDS[0],
+        'Before the sign-out',
+      );
+
+      expect(before.state).toBe('computed');
+
+      // Installed after that call, so the census below is about the second
+      // index and not about the fixture that proved the first one works.
+      const mac = vi.spyOn(crypto.subtle, 'sign');
+
+      custody.lock();
+
+      // Act
+      const computed = await custody.blindIndex(
+        BLIND_INDEXED_FIELDS[0],
+        'After the sign-out',
+      );
+
+      // Assert
+      // `toEqual` is exact, so a value computed under a key this account no
+      // longer holds cannot ride along beside the word.
+      expect(computed).toEqual({ state: 'locked' });
+
+      // And no MAC ran, which is the half that separates "the key was dropped"
+      // from "the answer was overwritten on the way out". A service still
+      // holding the index key could sign and then report `locked`, and every
+      // assertion above would be green — which is exactly the state a `#forget`
+      // that stopped nulling this field leaves it in.
+      expect(mac).not.toHaveBeenCalled();
+    });
+
+    // **`locked`, never a computed value, when custody ends mid-cipher** —
+    // mirroring the read's interleaving case at the other platform boundary, and
+    // deliberately *not* the seal's, which keeps its answer.
+    //
+    // The seal is kept because a ciphertext is entitled to nobody: it is
+    // readable only under the key it was sealed under, so handing it back after
+    // a `lock()` discards work and misleads no one. An index is the opposite —
+    // it is a value the caller puts straight into a query or a column, and a tab
+    // that has just dropped its keys is a tab that may no longer name the
+    // account's rows. Publishing one is the same mistake as publishing narrative
+    // text after a lock, one indirection along.
+    it('answers locked, never a value, when custody ends mid-cipher', async () => {
+      // Arrange
+      await adoptedIndexKey();
+
+      // **The world moves between the read of the key and the answer**, which is
+      // the one window this operation has. The interleaving is forced at the
+      // platform boundary rather than by a timer, so it lands in that window on
+      // every run rather than usually.
+      //
+      // It calls through, so the MAC genuinely succeeds. That is the point: an
+      // implementation that published what it had just computed would be handing
+      // an account's index value to a tab whose keys were dropped before the
+      // answer arrived, and a failing sign could never show it.
+      const realSign = crypto.subtle.sign;
+
+      vi.spyOn(crypto.subtle, 'sign').mockImplementation(
+        (algorithm, key, data) => {
+          custody.lock();
+
+          return realSign.call(crypto.subtle, algorithm, key, data);
+        },
+      );
+
+      // Act
+      const computed = await custody.blindIndex(
+        BLIND_INDEXED_FIELDS[0],
+        'Indexed, then signed out',
+      );
+
+      // Assert
+      // The account really did lock while the MAC ran, which is what stops this
+      // passing over an implementation whose interruption never landed.
+      expect(custody.status()).toBe('locked');
+
+      // `toEqual` is exact, so a `value` riding along beside the word would be a
+      // failure here rather than an extra property nobody looked at.
+      expect(computed).toEqual({ state: 'locked' });
+    });
+
+    // **An index whose key was *replaced* mid-cipher — and the pair this makes
+    // with the case above says something the sealing pair next door does not.**
+    // A reader who assumes the three operations behave alike will get it
+    // backwards, so it is written out rather than left to be inferred.
+    //
+    // `sealField` **keeps** its answer when custody merely dropped its keys, and
+    // drops it only when they were **replaced**. That is why it compares key
+    // *identity* and why the generation counter is unusable there: the counter
+    // is bumped by `lock()` and `adopt()` alike, by design, so it cannot tell
+    // the two apart. A ciphertext stays bound to the account's key whatever the
+    // tab does next — returned after a `lock()` it discards no work and
+    // misleads nobody, while one sealed under the *previous* account's key
+    // invites the caller to write it into the next account's row.
+    //
+    // `blindIndex` **drops its answer in both cases**, so the generation counter
+    // is exactly the right instrument here where it was exactly the wrong one
+    // there. An index computed under a key the account no longer holds keys
+    // nothing: it matches no row, and the lookup it is handed to comes back
+    // **empty rather than failing** — a silence, over data that is all still
+    // sitting there. Two neighbouring operations, two different instruments, and
+    // what decides which is **what the value is for** rather than how it was
+    // made.
+    //
+    // **The check a reader can run to see that, and it is the reason these two
+    // cases are one statement in two halves.** Copy `sealField`'s key-identity
+    // guard onto this operation — keep the answer while the account holds the
+    // very key this MAC ran under, or holds none at all — and it passes *this*
+    // case and reddens the one above: a `lock()` leaves the index key `null`, so
+    // that guard keeps the value the rule says must be dropped. An
+    // unconditional return passes neither. Only a comparison that treats both
+    // interruptions alike passes the two together, and both assert the answer
+    // rather than the mechanism, so a later instrument that also does is free to
+    // replace it.
+    it('answers locked to an index whose key was replaced mid-cipher', async () => {
+      // Arrange
+      // Both replacement keys are drawn before the spy is installed, because the
+      // interruption has to be synchronous inside the MAC call.
+      await adoptedIndexKey();
+
+      const nextContentKey = await keyEncryptionKey(0xa3);
+      const nextIndexKey = await indexKeyOf(0xa4);
+      const realSign = crypto.subtle.sign;
+
+      vi.spyOn(crypto.subtle, 'sign').mockImplementation(
+        (algorithm, key, data) => {
+          custody.adopt(nextContentKey, nextIndexKey);
+
+          return realSign.call(crypto.subtle, algorithm, key, data);
+        },
+      );
+
+      // Act
+      const computed = await custody.blindIndex(
+        BLIND_INDEXED_FIELDS[0],
+        'Indexed for whom?',
+      );
+
+      // Assert
+      // The account is open — under other keys. This is what separates the case
+      // from the `lock()` one above, and it is why an implementation cannot
+      // satisfy both by reading `status()`.
+      expect(custody.status()).toBe('unlocked');
+
+      // `toEqual` is exact, so the value computed under the previous account's
+      // key cannot ride along beside the word.
+      expect(computed).toEqual({ state: 'locked' });
+    });
+
+    // **A pair that is not one of the four rejects, and is not caught into a
+    // result** — the same terms as a refused binding next door, and for the same
+    // reason. It is a caller's mistake about a value it read off a row, not a
+    // state anybody can be told about, and a defect rendered as a word on a
+    // screen is a bug wearing a UI in front of somebody who can do nothing
+    // whatever about it.
+    //
+    // The pair is derived rather than typed — see `UNINDEXED_PAIR` for what it
+    // is, and `UNINDEXED_FIELD` for why the cast that feeds it in is the hazard
+    // being tested rather than a convenience.
+    it('rejects a pair that is not one of the four, never answering a word', async () => {
+      // Arrange
+      await adoptedIndexKey();
+
+      // The guards that keep the arrangement honest: the table really is one the
+      // product indexes and the combination really is not, so what is refused
+      // below is a legal table carrying an illegal column rather than a name
+      // this product has never heard of. `UNINDEXED_PAIR` states what that does
+      // and does not separate.
+      expect(
+        BLIND_INDEXED_FIELDS.some(
+          ({ table }) => table === UNINDEXED_PAIR.table,
+        ),
+      ).toBe(true);
+      expect(
+        BLIND_INDEXED_FIELDS.some(
+          ({ table, column }) =>
+            table === UNINDEXED_PAIR.table && column === UNINDEXED_PAIR.column,
+        ),
+      ).toBe(false);
+
+      // Act, Assert
+      await expect(
+        custody.blindIndex(UNINDEXED_FIELD, "Trader Joe's"),
+      ).rejects.toThrow(/pair/);
+
+      // The control the refusal needs: the same call over a pair the codec lists
+      // computes. Without it, a `blindIndex` that rejected every field passes the
+      // assertion above and indexes nothing ever again.
+      const legal = await custody.blindIndex(
+        BLIND_INDEXED_FIELDS[0],
+        "Trader Joe's",
+      );
+
+      expect(legal.state).toBe('computed');
+    });
+
+    // **The order of the two gates, which no case above this one can see** — the
+    // rule both siblings pin, and nothing would hold it on this operation
+    // otherwise.
+    //
+    // Reversed, a caller's defect is reported to an unlocked tab and
+    // **swallowed** by a locked one: found on the machines that happened to be
+    // open, silent on every reloaded one, which is to say surfacing exactly
+    // where nobody is looking for it. Whether a factor has been presented is not
+    // a fact about whether the caller assembled its field correctly.
+    //
+    // The case above adopts a key first, so it passes with the gates the other
+    // way round. This one adopts nothing, which is the whole arrangement.
+    it('judges the field before custody, on an account holding no key', async () => {
+      // Arrange
+      // Nothing adopted and nothing unlocked — the state in which a reversed
+      // order is invisible.
+      //
+      // The guard that keeps the arrangement honest: the account really is
+      // holding nothing, so `locked` is what a reversed order would answer.
+      expect(custody.status()).toBe('locked');
+
+      // Act, Assert
+      await expect(
+        custody.blindIndex(UNINDEXED_FIELD, 'Rent, June'),
+      ).rejects.toThrow(/pair/);
+
+      // The control the refusal needs: under a pair the codec lists, this same
+      // locked account answers `locked` rather than rejecting. Without it, a
+      // service that rejected everything while holding no key passes the
+      // assertion above.
+      await expect(
+        custody.blindIndex(BLIND_INDEXED_FIELDS[0], 'Rent, June'),
+      ).resolves.toEqual({ state: 'locked' });
+    });
+  });
+
   // **No public member hands a key back, and this reads source text because
   // nothing running can see it.**
   //
   // Non-extractability stops the *bytes* leaving and does nothing at all about
   // a caller that holds the key object and decrypts a whole budget into a log
   // line. The rule is therefore about the shape of what was written, and the
-  // two operations above are what makes it affordable: a screen that needs a
-  // field sealed no longer has any reason to ask for the key.
+  // operations above are what makes it affordable: a screen asks for the thing
+  // it wants done to a value, and has no reason left to ask for the key that
+  // would do it. Not counted, for the reason this file's header gives — the
+  // class is expected to grow more of them.
   //
   // What this cannot catch is stated at each scanner. The short version: it
   // reads declarations, not what a body does, so a member that hands a key back
@@ -1944,6 +2641,12 @@ describe('AccountKeyCustodyService', () => {
       // members` result invites, and the one this class's header argues against
       // at length — written on a single line, which is the form no brace-walking
       // extractor would find.
+      //
+      // That lint result is not live over either key field: an operation reads
+      // each of them now, and the directive that once stood over the index key
+      // went out with the throw it stood over. It is the pressure the next field
+      // this class grows will arrive under, which is why the accessor is still
+      // the edit worth planting.
       const mutated = [
         'class AccountKeyCustodyService {',
         '  #contentKey: CryptoKey | null = null;',

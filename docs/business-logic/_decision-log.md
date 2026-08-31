@@ -8,6 +8,63 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-31 — The case fold is a table this product ships, at a Unicode version this product picks
+
+**Context:** a blind index is a MAC over a *normalized* name, and the third step of that
+normalization is a full case fold. Two clients that fold one name differently key it to two values,
+which is a duplicate that never merges on a column whose entire purpose is that equal names collide
+— and it cannot be repaired afterwards, because a blind index cannot be recomputed without the
+plaintext it was taken over and that plaintext is encrypted. So the fold had to come from somewhere
+whose behaviour this product controls. The obvious somewhere is the platform, and the question is
+whether the platform can stand there.
+
+**Decision:** **ship the fold as data.** `case-fold-table.ts` is `CaseFolding.txt` at **Unicode
+17.0**, statuses **C and F** only, frozen into two base-36 strings that `case-fold.ts` decodes and
+nothing else reads. The Unicode version is a value this product names and exports, and it rides in
+`vectors/blind-index-v1.json` beside a digest of the table and the frozen answers, so the constant,
+the data and what they produce are held against one another.
+
+**The measurement that settled it, and both halves were run rather than reasoned.**
+`String.prototype.toLowerCase` is not a fold at all — it is a lowercase *mapping*, a different
+transform that agrees on ASCII and diverges wherever the difference decides a match: it gives a
+different answer for **239** of the table's entries and leaves 211 untouched, keeps `ß` as `ß` where
+the fold gives `ss`, keeps the `ﬁ` ligature, and cannot follow Cherokee, which folds *upward*. It is
+contextual besides, where the fold is not. And every platform API that genuinely *is* a fold reads
+the host's Unicode data: the runtime this repository builds on reports Unicode **16.0**, and **52**
+code points fold in the shipped table that it does not fold at all. Two clients each calling their
+own platform would therefore key one name to two values, which is what CON-009 forbids.
+
+**Alternatives rejected.** **`toLowerCase`** — not the transform, per the measurement above.
+**`toLocaleLowerCase`** — the same transform plus a locale, and a Turkish host maps `i` to `İ`,
+making the key depend on where the browser thinks it is. **`Intl.Collator` at a case-insensitive
+sensitivity** — it answers an *ordering*, and a blind index needs bytes to take a MAC over.
+**Status S, the simple fold** — nearly the same name and nearly the same output, which is what makes
+it dangerous: it agrees on almost every name a person types and disagrees on the handful where the
+difference decides a match. **Status T, the Turkic conditional pair** — it is the only part of
+`CaseFolding.txt` that would make the transform locale-dependent, which is the property the table
+exists to remove. **A runs-only table** — it would fold almost every name correctly and miss all 104
+multi-output entries, `ß` among them, which is the single most common case the table exists for.
+
+**Consequences.** The cost is a generated file nobody may hand-edit — a value corrected by eye there
+is a name that stops matching itself the day a second client folds it correctly — and a fold that is
+*ahead* of the host, so a whole-space cross-check against the engine's own Unicode data can only
+find under-coverage and can never confirm agreement with 17.0. Raising the version is a **format
+change and not a dependency bump**: every index already written was computed under the fold the
+version names, so a name that folds differently becomes a row that no longer answers its own search,
+silently and forever. What it buys is that the fold is a property of the product rather than of
+whatever browser or runtime a client happens to be, which is the only shape in which "every client
+keys one name to one value" is a claim anybody can make. **One consequence must be written down
+before somebody fixes it**: `İstanbul` and `istanbul` are two different names under this contract —
+U+0130 folds to `i` plus a combining dot under statuses C and F — and a client that made them agree
+would disagree with the database's unique index and with every other implementation, silently in
+both directions. The frozen vectors carry both spellings with their two distinct answers so the
+contract is what a reader meets.
+
+**Affected areas:** [account-keys.md](account-keys.md),
+[ciphertext-envelope.md](ciphertext-envelope.md), [_overview.md](_overview.md).
+
+---
+
 ## 2026-08-30 — A seal interrupted mid-cipher is judged by key identity, not by the generation counter
 
 **Context:** `AccountKeyCustodyService` keeps a generation counter, bumped by everything that

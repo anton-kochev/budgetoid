@@ -1,12 +1,13 @@
-// The two answers a screen is entitled to about one narrative field: what came
-// back when it was read, and what to store when it is written.
+// The answers a screen is entitled to about one narrative field: what came back
+// when it was read, what to store when it is written, and what to key on when a
+// name is looked up.
 //
-// Types and nothing else, and the emptiness is the point. Sealing and opening
-// live on `AccountKeyCustodyService`, because the account's content key never
-// leaves it — a module with a function body here would need that key in its
-// hands, and there is exactly one place in this client allowed to hold one. What
-// lives in this file is the vocabulary the two sides agree on, importing no key,
-// no service and no framework.
+// Types and nothing else, and the emptiness is the point. Sealing, opening and
+// the blind index all live on `AccountKeyCustodyService`, because the account's
+// keys never leave it — a module with a function body here would need one of
+// them in its hands, and there is exactly one place in this client allowed to
+// hold one. What lives in this file is the vocabulary those sides agree on,
+// importing no key, no service and no framework.
 //
 // **Read has three words and write has two, and the asymmetry is a decision.** A
 // read can fail against a ciphertext: the wrong key, the wrong binding, altered
@@ -18,15 +19,23 @@
 // carry a case for it — and a case nothing can produce is not caution, it is a
 // branch somebody eventually fills in with a guess.
 //
-// **`unlocking` is not a fourth word, and a caller that asks mid-unlock is told
-// `locked`.** What a screen can render is identical in both: no text, and the way
-// forward is a factor. The difference is real and worth showing, which is why
+// **{@link BlindIndexValue} joins the write side of that asymmetry rather than
+// restating it.** Computing an index has no ciphertext to fail against either:
+// the input is a name the caller already holds and the output is a MAC over it,
+// so nothing was opened and there is no `unreadable` to have. Two words there for
+// the reason there are two here, and the word is `computed` rather than `sealed`
+// because a keyed digest is not an envelope — its own declaration says why.
+//
+// **`unlocking` is a word in none of these unions, and a caller that asks
+// mid-unlock is told `locked` by every one of them.** What a screen can do is
+// identical in both: no text and no index to key on, and the way forward is a
+// factor. The difference is real and worth showing, which is why
 // `AccountKeyCustodyService.status` publishes it — to the one screen whose job is
 // to say so. Repeating it here would state one fact in two vocabularies and
 // invite a template to draw a spinner over a description while the account's keys
 // open. It is `AccountKeyStatus`'s own "three words and no fourth" one layer
-// down: a failed unlock is `locked` again there, and a field read during one is
-// `locked` here.
+// down: a failed unlock is `locked` again there, and a field read during one —
+// or a name indexed during one — is `locked` here.
 //
 // **A column holding no value is `NarrativeText | null`, never a fourth member.**
 // An `absent` member would file a fact about the *row* — nobody typed a
@@ -39,17 +48,18 @@
 // exists yet, so that ordering is a rule for the one that arrives rather than a
 // description of anything running.
 //
-// **Which is the same reason the union itself is not `null`.** Collapsed to
-// `string | null`, `locked` and `unreadable` become one word — and they are two
-// different next steps for a person. `locked` says present a factor and the whole
-// screen comes back. `unreadable` says this one value is damaged and the rest of
-// the row is fine, and no ceremony anybody runs will change it. Sent down the
-// wrong one, somebody re-presents a factor over a single corrupted column, or
-// waits for a screen to recover that never can. It is the split `SessionService`
-// keeps between `anonymous` and `unreachable`, the one `SignInService` keeps
-// between `refused` and `unknown`, and the one `AccountKeyCustodyService` keeps
-// across `unopened`, `unreachable` and `unauthenticated` — the same rule a fourth
-// time, because the mistake is available at every one of them.
+// **Which is the same reason {@link NarrativeText} itself is not `null`.**
+// Collapsed to `string | null`, `locked` and `unreadable` become one word — and
+// they are two different next steps for a person. `locked` says present a factor
+// and the whole screen comes back. `unreadable` says this one value is damaged
+// and the rest of the row is fine, and no ceremony anybody runs will change it.
+// Sent down the wrong one, somebody re-presents a factor over a single corrupted
+// column, or waits for a screen to recover that never can. It is the split
+// `SessionService` keeps between `anonymous` and `unreachable`, the one
+// `SignInService` keeps between `refused` and `unknown`, and the one
+// `AccountKeyCustodyService` keeps across `unopened`, `unreachable` and
+// `unauthenticated` — the same rule a fourth time, because the mistake is
+// available at every one of them.
 //
 // **{@link NarrativeOpener} is the shape a view-model mapper should be handed,
 // written down one commit ahead of the mapper.** A mapper handed the service
@@ -95,6 +105,36 @@ export type NarrativeText =
  */
 export type SealedField =
   | { readonly state: 'sealed'; readonly wire: string }
+  | { readonly state: 'locked' };
+
+/**
+ * One name on its way to a lookup or a column: the blind index to key on, or the
+ * reason there is none.
+ *
+ * Two words, like {@link SealedField} and for that same reason — the head of this
+ * file argues it once and this union joins it. Computing an index has no
+ * ciphertext to fail against: the input is a name the caller already holds and
+ * the output is a MAC over it, so there is no `unreadable` member here because
+ * nothing was opened.
+ *
+ * **`computed`, not `sealed`, because the thing is different and not just the
+ * word.** A blind index is a keyed digest, not an envelope: no version byte, no
+ * nonce, no tag, and nothing about it can ever be opened again. A shared word
+ * would invite a reader to look for the other half of a round trip that does not
+ * exist.
+ *
+ * `locked` means what it means everywhere else in this file: this browser is
+ * holding no key, and the way forward is a factor. The key is the account's
+ * *index* key here rather than its content key, and that distinction is invisible
+ * to a caller by design — the two are held and dropped together, so a screen that
+ * could seal can always index.
+ *
+ * `value` is the unpadded base64url `computeBlindIndex` renders — 43 characters,
+ * always — and it goes into the column, or the query that looks a name up,
+ * unchanged.
+ */
+export type BlindIndexValue =
+  | { readonly state: 'computed'; readonly value: string }
   | { readonly state: 'locked' };
 
 /**

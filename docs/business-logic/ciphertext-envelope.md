@@ -47,7 +47,7 @@ seal them.
 envelope. The two functions do have a production caller — `AccountKeyCustodyService.sealField` and
 `openField` delegate to them, because the account's content key never leaves that class — and
 nothing but a spec calls *that*. See
-[account-keys.md](account-keys.md#the-two-operations-that-delegate-and-the-shape-that-was-forced),
+[account-keys.md](account-keys.md#the-operations-that-delegate-and-the-shape-that-was-forced),
 which argues why the operations sit there and not beside the codec. That is a deliberate order
 rather than a module left behind: the format is a cross-client contract, so it can be pinned
 against an answer computed outside this codebase before a single column holds an envelope, and a
@@ -312,6 +312,16 @@ nothing to be tolerant of, so a fold could only invent a **second** spelling of 
 has one — and it would invent it at the **sealing** end, which is precisely where the damage is
 unrecoverable. A refusal costs a caller one bug report; a fold costs a person their ledger.
 
+**A third message shares the join and is not a third grammar.** The blind index is built through
+the same `buildAssociatedData` and the same `0x1F`, deliberately, so that "the fields are joined
+by the unit separator in UTF-8" has one definition and not a second one that drifts. It is still
+not associated data: it authenticates nothing and seals nothing, and its defining rule is the
+**opposite** of the narrative grammar's — it carries no row id, because it has to be *equal*
+across rows where the narrative binding exists to make two rows differ. Its own leading literal
+is what keeps the two apart at the first field, so an index can never collide with a value some
+envelope was bound to. See
+[account-keys.md](account-keys.md#the-blind-index-and-what-it-refuses-to-be).
+
 The two ends meet at one predicate: `narrative-cipher.ts` imports `isCanonicalFactorId` from
 `factor-id.ts` under the alias `isCanonicalRowId` rather than writing a second regular
 expression. A row id is not a factor id; the **shape** they have to be is the same, and two
@@ -381,7 +391,7 @@ fields sitting next to the one that reaches envelopes — one that would then ha
 not to collide with it. Eight comparisons of two short strings is not a cost anybody can
 measure against a `subtle.encrypt`.
 
-### Nothing normalises, and the normalisation this product will need is a different transform
+### Nothing normalises here, and the blind index's normalisation is a different transform
 
 The client seals exactly what was typed, NFD included, and hands back the same code points
 rather than the ones they render as — **for every well-formed string, which is the one
@@ -391,11 +401,22 @@ the `mixed-width` vector's plaintext —
 `Café €250` with two emoji — that is **20 UTF-8 bytes in NFC and 21 in NFD**, because `U+00E9`
 is the one code point in it with a canonical decomposition.
 
-The normalisation this product does need belongs to the **blind index**, which is later work.
-Its transform is a different one — a trim, a compatibility form, and full case folding — and
-it is applied where the comparison happens rather than where the text is stored. Folding the
-two together here would buy the index nothing and would silently rewrite what a person
-entered.
+The normalisation this product does have belongs to the **blind index**, and it is built:
+`name-normalization.ts` on the client, four steps in order — trim, NFKC, full case folding,
+UTF-8. It is applied where the comparison happens and never where the text is stored, and no
+caller here may reach for it. Folding the two together would buy the index nothing and would
+silently rewrite what a person entered, storing `Straße` as `strasse` with no way back.
+
+**Full case folding, and not the simple fold.** Those are two transforms with nearly the same
+name and nearly the same output: the simple one leaves `ß` where it stands and the full one
+takes it to `ss`, so a client that picked the wrong one agrees with a client that picked the
+right one on almost every name a person types and disagrees on the handful where the
+difference decides a match. The exact transform, the Unicode version it is read at and the
+frozen answers are in [`vectors/blind-index-v1.json`](vectors/blind-index-v1.json) rather than
+here, because nothing in that file is an envelope and the envelope is what this chapter owns;
+what the transform *means*, and why its order and its Unicode version are contract rather than
+preference, is
+[account-keys.md](account-keys.md#the-normalization-a-name-is-indexed-through).
 
 ### What the server checks, and what it cannot
 
@@ -485,25 +506,67 @@ What the server asserts over the format is exactly what it **enforces** at the e
 base64url alphabet, the minimum length, the version byte, and the wrapped path's exact width —
 and nothing more. A check the server does not enforce is a check nothing keeps honest.
 
-### The vector index, which is kept in two places
+### The vector index, which is kept in three places
 
 Narrative-field vectors live in [`vectors/narrative-field-v1.json`](vectors/narrative-field-v1.json):
-one binding-only vector, one ASCII vector and the mixed-width vector. **That file is not the
-complete registry.** The generic envelope vector, the two key-encryption-key vectors (the
-passkey branch and the recovery-code branch), the wrapped-key associated-data vector and the
-recovery-code verifier are still under
+one binding-only vector, one ASCII vector and the mixed-width vector.
+
+Blind-index vectors live beside them in
+[`vectors/blind-index-v1.json`](vectors/blind-index-v1.json): nine frozen answers over four
+tables, with the message grammar, the normalisation and the index key they were computed under.
+**Nothing in that file is an envelope.** A blind index is a keyed digest over a normalised name
+— no version byte, no nonce, no tag, nothing to open — so none of this chapter's framing
+reaches it, and `budgetoid/blind-index/v1` is not a third associated-data grammar. The
+[decision tree](#decision-trees) that says there is no third one is asking which grammar
+*seals* a value, and this seals nothing. The file is indexed here because the registry is one
+registry, not because the format is shared.
+
+**The client computes a blind index today and nothing stores one**, which is the order that
+argument asked for and got: the answers were frozen before the code, and every spec that pins
+them **reads this file** rather than a transcribed copy — the fold, the normalisation, the index
+itself, and the custody operation that delegates to it, which reads the same answers precisely to
+tell "it delegated" from "it reimplemented the grammar inline and got my one case right". The
+reason is a sharper version of what
+[Purpose](#purpose) says about this format: **a blind index value cannot be migrated.** The
+client holds the only key that can recompute one, so a grammar or a normalisation settled after
+a column holds values orphans every row in it, and there is no way back that does not run
+through every account's own recovery factors. Agreement is free until the first value is
+written and unbuyable afterwards, and no column holds one yet.
+
+**The table is in the message for a disclosure, not for tidiness.** Without it, one name
+produces one value wherever it lives — so a payee and a category called the same thing collide,
+and an operator reading the database learns that the two match. Uniqueness is enforced per
+table and never across tables, so that disclosure buys nothing in exchange for what it gives
+away.
+
+**The column separates nothing today and is in the message anyway.** All four indexed tables
+carry the value in `name`, so the field is constant in every vector in the file. It is there so
+that a second indexed column on one of those tables cannot later collide with the first, and so
+that this grammar reads like the narrative one above it. The file says as much in its own
+words; a reader who trims the field as dead weight is choosing the migration that cannot be
+done.
+
+**Neither file is the complete registry.** The generic envelope vector, the two
+key-encryption-key vectors (the passkey branch and the recovery-code branch), the wrapped-key
+associated-data vector and the recovery-code verifier are still under
 [Frozen known-answer vectors](account-keys.md#frozen-known-answer-vectors) in
 `account-keys.md`, because the specs that read them were outside the change that produced the
-JSON file. A second implementation needs both.
+JSON files. A second implementation needs all three.
 
-Two rules the JSON file states about itself and this chapter restates, because they are
-contract rather than commentary. **`plaintextUtf8Hex` is normative and `plaintextForHumans` is
-a caption on it** — a JSON string cannot distinguish NFC from NFD and an editor may silently
+Two rules the narrative JSON file states about itself and this chapter restates, because they
+are contract rather than commentary. **`plaintextUtf8Hex` is normative and `plaintextForHumans`
+is a caption on it** — a JSON string cannot distinguish NFC from NFD and an editor may silently
 re-normalise it on save, and since nothing normalises narrative text before sealing, the byte
 sequence is the contract. And **no separator anywhere is written as a character**: a raw
 `U+001F` does not survive ordinary tooling, and while those vectors were produced it was
 silently swallowed twice, each time leaving a plausible-looking string with the separator
 simply gone.
+
+**The second of those reaches both files and the first does not**, which is the difference
+between them. The blind-index inputs are deliberately written as characters, because the
+spellings *are* the vector and there is nothing a caption could add to them; what they are
+checked against is the `normalizedUtf8Hex` beside them, the byte sequence every spelling in
+that group has to reach.
 
 ## Workflows & State Transitions
 

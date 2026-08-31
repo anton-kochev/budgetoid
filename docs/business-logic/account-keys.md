@@ -16,8 +16,9 @@
 ## Purpose
 
 An account owns **one content key** and **one index key**. The content key is what the narrative
-will be encrypted under; the index key is what a blind index over a name will be computed under.
-Neither is derived from a credential. Every **recovery factor** — a registered passkey, or one
+will be encrypted under; the index key is what a blind index over a name **is** computed under — the
+browser computes one today, and no column stores one yet. Neither is derived from a credential.
+Every **recovery factor** — a registered passkey, or one
 recovery code — derives its own **key-encryption key** and stores its own **wrapped copy of both**.
 
 That shape is the whole point, and reversing it fails in two different ways. Deriving the content
@@ -47,13 +48,16 @@ the third and is the only one reachable **inside** the app — see
 [The third way into custody](#the-third-way-into-custody). The other two write paths are still
 reached only by the integration suite.
 
-**What is *not* built is anywhere for a sealed value to go.** No column in this product holds an
-envelope, no screen seals or opens a field, and no blind index is computed. What exists is the
-**custody** — [The one class that holds them](#the-one-class-that-holds-them) — and the two
-operations that delegate to what it holds, `sealField` and `openField`, whose only caller today is
-their spec. The third operation, the blind index, is not written at all, and
-[The two operations](#the-two-operations-that-delegate-and-the-shape-that-was-forced) argues why an
-absence is the right answer there and a placeholder is not.
+**What is *not* built is anywhere for a sealed value or an index to go.** No column in this product
+holds an envelope or a blind index, and no screen seals a field, opens one, or looks a name up. What
+exists is the **custody** — [The one class that holds them](#the-one-class-that-holds-them) — and
+the operations that delegate to what it holds: `sealField`, `openField` and `blindIndex`, whose only
+caller today is their spec. The index arrived last and closed the one gap left in this class:
+`#indexKey` has a reader, so the `no-unused-private-class-members` suppression that stood over it is
+gone — the field's own declaration says so, and `reportUnusedDisableDirectives` is what makes a
+directive kept past its reason an error in its own right. See
+[The operations that delegate](#the-operations-that-delegate-and-the-shape-that-was-forced) and
+[The blind index](#the-blind-index-and-what-it-refuses-to-be).
 
 **The PRF output never leaves the ceremony module.** `createPasskey` and `assertPasskey` each derive
 through `keyEncryptionKeyFromPasskey` themselves and hand back a **non-extractable `CryptoKey`**,
@@ -64,7 +68,18 @@ would put the value that unwraps the account's whole keyspace into a variable an
 
 - **Content key** — 32 random bytes, generated in the browser. Never transmitted.
 - **Index key** — 32 random bytes, generated in the browser, drawn independently of the content key.
-  Never transmitted.
+  Never transmitted. Imported through the **HMAC** door, because what it is used for is a MAC.
+- **Blind index** — `HMAC-SHA-256` under the index key over a message naming the grammar's version,
+  the table, the column and the **normalized** name, rendered as unpadded base64url: **43
+  characters, always**, since the tag is 32 bytes. It is a keyed digest and not an envelope —
+  nothing about it can be opened again — so none of the ciphertext framing reaches it. The exact
+  message grammar, the normalization and the frozen answers are in
+  [`vectors/blind-index-v1.json`](vectors/blind-index-v1.json); it is not restated here, because a
+  second copy of a byte-level contract is the copy that drifts. See
+  [The blind index](#the-blind-index-and-what-it-refuses-to-be).
+- **Normalized name** — the bytes a blind index is taken over, and a different transform from
+  anything the narrative side does: trim, NFKC, full case fold, UTF-8, in that order. See
+  [The normalization](#the-normalization-a-name-is-indexed-through).
 - **Key-encryption key** — 32 bytes derived from a recovery factor by HKDF-SHA-256, imported as a
   **non-extractable** `AES-GCM` `CryptoKey` through `importAesGcmKey`. **Any other width is
   refused rather than trusted**: that function throws on material that is not exactly 32 bytes, so
@@ -181,6 +196,18 @@ erDiagram
     single index key exists to prevent.
   - **Enforced in**: the client, through the associated data below. Nothing beneath the browser can
     check it; the database cannot tell one 61-byte envelope from another.
+
+- **A name MUST be normalised by trim, NFKC, full case fold and UTF-8, in that order, and the fold
+  MUST be read from the version of Unicode this product names rather than from the host's.**
+  - **Why**: two clients that normalise one name differently key it to two values, and the symptom
+    is a duplicate that never merges on a column whose whole purpose is that equal names collide.
+    Neither half of the order is arbitrary — measured, 50 code points disagree between
+    trim-then-NFKC and NFKC-then-trim — and every platform API that is a fold reads whatever Unicode
+    data the host shipped with, which is a property of the browser and not of this product.
+  - **Enforced in**: `name-normalization.ts` and the table in `case-fold-table.ts`, both pinned
+    against `vectors/blind-index-v1.json`. Nothing below the browser can check any of it: the server
+    sees the MAC and never a name. See
+    [The normalization](#the-normalization-a-name-is-indexed-through).
 
 - **Every client MUST implement the identical contract below.** A field wrapped by one client is
   readable by another. Divergence is a defect in whichever client departs from it, not a
@@ -350,6 +377,12 @@ write rather than discovering months later that its envelopes do not open.
 ### Frozen known-answer vectors
 
 A red result names which input changed. It never means updating the constant.
+
+The **blind index** and its normalization are not in this section: their frozen answers live in
+[`vectors/blind-index-v1.json`](vectors/blind-index-v1.json), together with the index key they were
+computed under, the Unicode version the fold was read at and a digest of the shipped table. Four
+specs read that one artifact rather than transcribing it, which is what stops a second copy of a
+byte-level contract existing to drift from.
 
 **Key-encryption key from a passkey factor**, observed through a seal because the key itself is
 non-extractable:
@@ -750,13 +783,15 @@ both directions.
 
 `AccountKeyCustodyService` in `+core/security/` is where the account's two keys live once a factor
 has opened them, and the one place in this client that holds them past the ceremony that produced
-them. It reports two things about itself and answers two operations, and **no member of any of
-them is a key**: a three-word `status` — `locked`, `unlocking`, `unlocked` — an `unlockFailure`
-when an attempt ended without custody, and the results of `sealField` and `openField`, which
-[the section below](#the-two-operations-that-delegate-and-the-shape-that-was-forced) is about.
+them. It reports two things about itself and answers a set of operations that is expected to grow,
+and **no member of any of them is a key**: a three-word `status` — `locked`, `unlocking`,
+`unlocked` — an `unlockFailure` when an attempt ended without custody, and the results of
+`sealField`, `openField` and `blindIndex`, which
+[the section below](#the-operations-that-delegate-and-the-shape-that-was-forced) is about.
 Each decision below is worth the words, and every one of them is silent when reversed. They are
 listed rather than counted: a count would have to be corrected by whoever adds the next caller, and
-the one thing this class must not acquire is a rule nobody re-read.
+the one thing this class must not acquire is a rule nobody re-read. That has already happened once
+here — the operations were "two" in this document until the third landed.
 
 **It is root-provided, and that breaks the habit of the two services beside it deliberately.**
 `RegisterService` and `SignInService` are provided on their screens, and that is right for them: an
@@ -873,22 +908,27 @@ now that the read spans the account. It hands back all eleven pairs, but the bro
 and the ten code pairs go untouched, which is precisely where the mispairing hazard the registration
 loop is built around lives.
 
-### The two operations that delegate, and the shape that was forced
+### The operations that delegate, and the shape that was forced
 
 **The shape was forced rather than preferred, and that has to come first** — read as taste, it is
-the next thing somebody simplifies. `sealNarrativeField` and `openNarrativeField` take the account's
-content key as their **first parameter**, and no public member of this class may return one. Put
-those two facts together and there is nowhere else the operations could have gone: a module other
-than custody that wanted to seal a description would have to be *handed* the key, which is the
+the next thing somebody simplifies. `sealNarrativeField`, `openNarrativeField` and
+`computeBlindIndex` each take one of the account's keys as their **first parameter**, and no public
+member of this class may return one. Put those two facts together and there is nowhere else the
+operations could have gone: a module other than custody that wanted to seal a description, or key a
+payee lookup, would have to be *handed* the key, which is the
 member [The one class that holds them](#the-one-class-that-holds-them) exists to refuse. The
-location was decided by the codec's signature. What was left to decide is narrower — which types
+location was decided by the codecs' signatures. What was left to decide is narrower — which types
 cross the boundary, and what a refusal looks like — and everything below is about that.
 
-**Nothing in the product calls either one.** No column holds a narrative envelope, so `sealField`
-and `openField` have no caller but their spec, on the same terms
-[ciphertext-envelope.md](ciphertext-envelope.md) sets for the codec beneath them: a cross-client
-format and the custody that will use it are cheaper to agree on before data exists under them
-than after.
+**Nothing in the product calls any of them.** No column holds a narrative envelope and none holds a
+blind index, so `sealField`, `openField` and `blindIndex` have no caller but their spec, on the same
+terms [ciphertext-envelope.md](ciphertext-envelope.md) sets for the codecs beneath them: a
+cross-client format and the custody that will use it are cheaper to agree on before data exists
+under them than after. That argument is **sharper** for the index than for the envelope, and the
+difference is worth carrying: a grammar or a normalisation settled after a column holds index values
+orphans every row in it, and nothing on this side of the wire can repair them. The plaintext is
+encrypted and the only key that could recompute a value lives in a browser, so the migration runs
+through every account's own recovery factors or it does not run at all.
 
 **The rejected shape is an accessor, and it wears three costumes.** A `get contentKey()`, a
 `Signal<CryptoKey | null>`, and a scoped
@@ -900,13 +940,20 @@ inside it, and both edits read as ordinary asynchronous code. Non-extractability
 any of the three. It stops the **bytes** leaving and does nothing whatever about a caller that
 holds the key object and decrypts a whole budget into a log line.
 
-**The pressure toward that edit is live, and it comes from a linter.** Two
+**The pressure toward that edit came from a linter, and both suppressions are now gone.** Two
 `eslint-disable no-unused-private-class-members` directives stood on this class, because the other
 reading of "this private field is never read" is "add a getter" — the smallest edit that satisfies
-the rule on its own terms, and the one this class must never take. What retired one of them was
-giving `#contentKey` genuine readers, which is the right way and the only way: the rule stopped
-firing and the directive went with the reason for it. `#indexKey` keeps its suppression, and the
-last paragraph here says why.
+the rule on its own terms, and the one this class must never take. Each was retired the only way
+available: by giving the field a genuine reader. `sealField` and `openField` did it for
+`#contentKey`, and `blindIndex` did it for `#indexKey` — the directive went out with the throw it
+stood over. Neither was tidied away; the rule stopped firing, and
+`reportUnusedDisableDirectives` then makes a directive kept past its reason an error of its own,
+which is what gives a suppression here an expiry rather than a habit.
+
+**The pressure returns with the next field, so the answer is recorded rather than assumed.** A key
+field arrives read by nothing — every capability in this client has landed one commit ahead of its
+caller — and the linter will ask the same question about it. The answer is a suppression carrying
+its reason until an *operation* reads the field, and never an accessor.
 
 **The other rejected shape moves the seals themselves onto custody, and brings the eight
 table-and-column pairs with them** — either eight methods, or one method branching on
@@ -932,7 +979,25 @@ and the third of them is what watches the import.** The class imports the codec'
 type is erased, and so is the `type` specifier carrying it inside that mixed clause, so no list is
 in the file. At compile time the type is *derived from* that list, which is the part worth stating:
 custody follows the codec and can never lead it — a pair the codec does not carry is not a binding
-custody will accept. The rest is read off the source text by three rules in the class's spec:
+custody will accept.
+
+**The index codec is imported the same way, and the four pairs are covered without widening
+anything.** Custody takes `computeBlindIndex`, `refuseUnindexedField` and the **type**
+`BlindIndexedField` from it, and never `BLIND_INDEXED_FIELDS` — the same distinction, made again
+for the same reason: which pair a value belongs to is the caller's fact, and a class handed one
+already assembled has no business enumerating them. The word rule below reaches those four for
+free, because their vocabulary is a **subset** of the eight narrative pairs' — four of the six
+tables, and the one column `name`. That is not a coincidence to rely on blindly: it holds because a
+pair can only be indexed if it is encrypted, which the index codec states to the compiler.
+
+**The third rule does not stretch that far as declared, and the gap is named rather than assumed.**
+It derives the forbidden names by asking a module which of *its* exports are data, and the module
+it asks is the narrative codec — so `BLIND_INDEXED_FIELDS` is not one of the names it forbids, and
+an `import` of it would put four pairs inside custody with no forbidden **word** anywhere in the
+file, which is precisely the hole that rule exists to close on the other list. Widening the question
+to the index codec is the obvious follow-up, and until it is made that one edge is held by review.
+
+The rest is read off the source text by three rules in the class's spec:
 
 - **No public member returns a `CryptoKey`.** One scanner censuses every `public` declaration
   against the set the class is meant to declare; a second looks for `CryptoKey` in a **return
@@ -973,8 +1038,8 @@ can pass by having nothing to find.
 reader an argument.** `settings.component.spec.ts` declares its custody surface as a `Pick` over the
 service's own `keyof` and stubs the class with one that `implements` it, so *any* new public member
 is a compile error in that file before a single test runs. That is the outer bar and it always
-fires first: these two operations arrived there as a compile error naming both members, and the
-stub carries `sealField` and `openField` today because answering it is what this work had to do.
+fires first: every operation this class has grown arrived there as a compile error naming it, and
+the stub carries them because answering that error is what each of those changes had to do.
 The census is the **second** bar, not an impossible one — with the stub satisfied, the source-text
 rule reddens against the file itself, because the expected surface is a set written out in the
 class's own spec and a member absent from it is a finding by name. Both have to be answered, and
@@ -991,8 +1056,9 @@ is worth recording because each was invisible:
   out is the first line of that `catch`, which re-throws `NarrativeFieldMisuseError` and maps only
   the rest. Only a **rejection** pins that line: with it removed, every other case in the file
   stays green.
-- **The order of the two gates was unpinned.** Both operations judge the binding — the pair, and
-  the row id's spelling — **before** they read the key field, and reversing that also left every
+- **The order of the two gates was unpinned.** The narrative operations judge the binding — the
+  pair, and the row id's spelling — **before** they read the key field, as the index judges its own
+  field before reading the index key, and reversing that also left every
   case passing, because every other case that feeds a refused spelling in has adopted a key first.
   Reversed, the one caller defect that is unrecoverable — a row id in a spelling no later read of
   that row reproduces — is *reported* to an unlocked tab and *swallowed* by a locked one: found on
@@ -1017,7 +1083,11 @@ the strict decoder refuses — one indistinguishable symptom by design, and that
 holding cannot produce a damaged value. An `unreadable` member on the sealed side would be a state
 no branch could reach while every exhaustive switch over the union still had to carry a case for
 it, and a case nothing can produce is not caution — it is a branch somebody eventually fills in
-with a guess.
+with a guess. **Indexing a name joins the write side of that asymmetry rather than restating it**:
+its input is a name the caller already holds and its output is a MAC over it, so nothing was opened
+and there is no `unreadable` to have. Its word is `computed` rather than `sealed`, because a keyed
+digest is not an envelope and a shared word would invite a reader to look for a round trip that does
+not exist.
 
 Four more decisions in and around those unions, each of which a reader will collapse or undo:
 
@@ -1084,8 +1154,9 @@ arrives from the codec, and the `catch` is what governs it. An ordering nobody c
 same as one nobody pinned.
 
 **What is compared on the way out of a read is the generation counter, and on the way out of a seal
-it is key identity — two instruments, because the two frames are answering different questions.** A
-read holds plaintext. Published into a tab whose keys were dropped mid-cipher it hands narrative
+it is key identity — two instruments, because the frames are answering different questions.** The
+index compares the counter, and the passage after this one says why it lands beside the read rather
+than beside the seal it looks like. A read holds plaintext. Published into a tab whose keys were dropped mid-cipher it hands narrative
 content to a browser no longer entitled to it, so the read drops its answer whenever the world
 moved at all — and drops `unreadable` with it, because a word claiming the rest of the row is fine
 is a claim about a state that frame has left. A seal holds a ciphertext, which is entitled to
@@ -1108,13 +1179,201 @@ seal, it greens the replacement case and reddens its neighbour, at which point s
 save is in flight silently discards work. Both cases stand in the spec now, arranged identically at
 the two platform boundaries so they read as one decision made twice.
 
-**The blind index is deliberately absent, and an absent operation reads as an oversight unless
-somebody says so.** The third operation is not here. The grammar its values are computed over waits
-on a revision of the specification, so `#indexKey` is still written and read by nothing and keeps
-the one suppression left on this class. There is no placeholder, and that is the decision rather
-than the omission: a method answering something plausible would produce an index nothing could tell
-apart from a real one, and every value it keyed would have to be rewritten the day the grammar
-landed.
+### The blind index, and what it refuses to be
+
+**The third operation is built.** `computeBlindIndex` in `+core/security/blind-index.ts` takes the
+account's index key, a table-and-column pair and a name, and answers 43 characters of unpadded
+base64url; `AccountKeyCustodyService.blindIndex` is how a caller reaches it without being handed a
+key. The grammar it computes over was settled by a revision of the specification, and the message
+carries a **version prefix, the table and the column** in front of the normalized name. The bytes
+are in [`vectors/blind-index-v1.json`](vectors/blind-index-v1.json) — nine frozen answers over four
+tables, with the index key they were computed under — and this chapter deliberately does not restate
+them, for the reason the vectors exist at all: a byte-level contract written down twice is a
+contract whose second copy drifts, and the copy that drifted still passes its own file.
+
+**Deterministic, and that is the whole trade.** One name, one account, one field always gives the
+same value, which is what lets a uniqueness constraint and an equality lookup work over data the
+operator cannot read. What it costs is that the operator learns *which rows share a name*, and that
+anybody holding the index key can dictionary-attack a name they can guess. Neither is a defect to
+close here; both are why the key is per **account** and never global, so nothing learned about one
+account transfers to another.
+
+**The message takes no row identifier, and that omission is the operation.** A blind index has to be
+**equal** across rows — that is exactly what a uniqueness constraint over payee names and a lookup
+for the payee somebody just typed are both asking of it. A row in the message makes every value
+unique by construction: it still computes, still comes out 43 characters, still looks like a working
+index, and answers no query anybody will ever write. It is the precise inverse of the narrative
+grammar, which carries the row *so that* two rows can never share a value — which is why the two
+grammars are two modules and not one with a flag. See
+[ciphertext-envelope.md](ciphertext-envelope.md#two-grammars-one-join).
+
+**The table separates and the column does not — yet — and both are in the message.** The frozen
+vectors prove the first: one name under `payees`, `categories` and `accounts` is three unrelated
+values, so an operator cannot learn that a payee and a category are called the same thing.
+All four indexed pairs carry the value in `name`, so the **column** field is constant in every value
+this product can compute today; it is there for the migration that is one step away — a second
+indexed column on one of those four tables, a payee's alias beside its name, which would otherwise
+collide with the first and answer a lookup with rows from a column nobody asked about. Adding the
+field later is not available, because it changes every value already written. A reader who trims it
+as dead weight is choosing the migration that cannot be done.
+
+**A field is looked up as a *pair*, never as two membership tests.** `payees` is a real table and
+`description` is a real column, and `payees.description` is not one of the four; two independent
+questions both answer yes to it and hand back an index over a column nothing encrypts. The refusal
+is `refuseUnindexedField`, which scans for one entry whose table **and** column both match. It is
+the same rule `refuseInvalidBinding` keeps next door, and it is stated here because the shape a
+reader copies is the one in front of them. **Nothing running can currently tell the two shapes
+apart**, and the custody spec says so at the fixture it drives the case from: with `name` the column
+of all four pairs, "is this column indexed" and "is this table's column indexed" are the same
+question. The distinction becomes observable on the day the column field starts separating, and the
+case for it belongs on that day.
+
+**Which pairs are legal is derived by constraint and not by filter.** The four are written out and
+constrained to be a subset of the eight narrative pairs — a column can only be blind-indexed if it
+is encrypted, or the index is a keyed fingerprint of text sitting in the clear one column over. A
+runtime `filter` over the narrative list looks like stronger derivation and is weaker: drop
+`payees.name` from the eight and the filtered array is silently three entries long, with nothing red
+and every index under that field simply never computed again. What the constraint does **not** hold
+is that these four are *the* four — a fifth pair added here compiles — which is the same named gap
+`NARRATIVE_FIELDS` carries about itself, held by review and by a census of the four against the
+requirement's list in both directions.
+
+**All three operations judge their argument before they look at whether a key is held, through a
+refusal the owning codec exports.** `refuseInvalidBinding` for the two narrative ones,
+`refuseUnindexedField` for this one; each is called **by name and for itself**, never as a builder
+whose answer is thrown away — a statement whose only visible effect is a throw is what a reader
+deletes on the next tidy-up, with every round trip in the suite still green. Ordered the other way,
+a caller's defect is *reported* to an unlocked tab and *swallowed* by a locked one, which is to say
+surfaced exactly where nobody is looking for it; whether a factor has been presented is not a fact
+about whether the caller assembled its argument correctly. Custody holds no second copy of the four
+pairs, for the reason it holds no copy of the eight: the file that must be able to say it names none
+of them cannot be the file that lists them.
+
+**An interrupted index drops its answer in both cases, where an interrupted seal keeps one of
+them — two neighbours, two instruments, and a reader who assumes the operations behave alike will
+get this backwards.** The seal compares **key identity**: a plain `lock()` mid-seal leaves the wire
+value still that account's, readable only under the key it was sealed under, so handing it back
+misleads nobody and answering `locked` would silently discard text somebody had just typed on their
+way out; only a **replacement** invalidates it. The index compares the **generation counter**, which
+moves for both, so both interruptions answer `locked`. The reason is what the value is *for* rather
+than how it was made: an index is not kept beside the key that produced it — it goes straight into a
+query or a column — and one computed under a key the account no longer holds **matches no row**. The
+lookup then comes back **empty rather than failing**: a silence over data that is all still sitting
+there, with nothing on either side of the wire able to see that it happened. That is the failure
+mode this whole chapter is arranged around, and it is the one an instrument chosen by symmetry would
+have introduced.
+
+**Two words on the result and no third**, for the reason the sealed side has two: computing an index
+has no ciphertext to fail against, so there is no `unreadable` to have. The word is `computed`
+rather than `sealed` because a keyed digest is not an envelope — no version byte, no nonce, no
+tag, nothing to open — and a shared word would send a reader looking for the other half of a round
+trip that does not exist. `locked` means what it means everywhere else: this browser holds no key,
+and the way forward is a factor. **Which** key is missing is invisible to a caller by design: the
+pair is taken in one `adopt` or one unlock and dropped in one `lock`, so a screen that can seal can
+always index, and there is no state in which it can do one and not the other.
+
+### The normalization a name is indexed through
+
+**Four steps, in this order, and nothing else: trim, NFKC, full case fold, UTF-8.** They live in
+`+core/security/name-normalization.ts` — a module of its own rather than a private helper of the
+index, because this is the step a second client has to reproduce *exactly* and the one most likely
+to be got wrong: every step has a plausible near-miss. `toLowerCase` for the fold. NFC for NFKC. A
+trim that also collapses interior runs — `Trader Joe's` and `TraderJoe's` are two payees, and the
+merge is silent in the direction that matters, since the second name simply never appears again. An
+encoding that is not UTF-8. Named in one module those four decisions are a thing a reviewer can
+search for and a second implementation can be diffed against; buried inside the index function they
+are lines in the middle of a longer one.
+
+**Nothing else in this client may call it, and the narrative side in particular must not.** Sealing
+does **not** normalise: what was typed is what is stored, NFD included. Folding the two together
+would write a person's payee to the database in a spelling nobody typed — `Straße` stored as
+`strasse`, `ﬁlm` as `film` — with no way back, because every step here but the first is lossy. **The
+index is a key *over* the text and never the text**, and the distance between the two modules is
+what says so.
+
+**The order is the contract rather than a preference, and it is load-bearing on this host today.**
+NFKC before the fold is what makes `ﬁlm`, `FILM` and `film` one name; fold first and U+FB01 is left
+standing, so the two spellings key to two rows for the life of the account. Trim before NFKC is the
+half a reader assumes is arbitrary, and it is not: **measured over the whole plane, 50 code points
+disagree between trim-then-NFKC and NFKC-then-trim.** The mechanism is not the one people look for —
+no code point survives a trim and then becomes *entirely* whitespace under NFKC, and checking that
+is how the claim was got wrong once. What NFKC does is put whitespace at the **edge** of a longer
+result without the whole result being whitespace. U+00A8, the diaeresis, is the plainest: it
+decomposes to a space and a combining mark, so `  ¨  ` is `20cc88` under the contract's order and
+`cc88` under the other. Two spellings of one name, on this runner, with nothing anywhere reporting
+which order a client used. Swapping the two lines silently rekeys every name whose first or last
+character is one of those fifty.
+
+**And nothing follows the fold.** The fold's output is not always NFKC — measured over the whole
+plane against the shipped table, **26** code points fold to something NFKC would still rewrite, and
+U+1E96 is the simplest of them. Seeing that, a reader reaches for a trailing `.normalize('NFKC')`.
+It is wrong twice: it changes the bytes, so every index already written stops matching the names
+that produced it, permanently and with no error naming the cause; and it buys nothing, because NFKC
+already ran before the fold on every input, so two spellings of one name are one string by the time
+the fold sees them. The output is bytes fed to a MAC, not text anybody reads, so "is it a normal
+form" is a question with no consumer. Every frozen vector in the file passes with the extra call in
+place, which is why the client keeps a case built specifically to see it.
+
+**The Unicode version is the product's choice and not the platform's, and that is why a table is
+shipped.** `+core/security/case-fold-table.ts` is `CaseFolding.txt` at **Unicode 17.0**, statuses
+**C and F** — full folding — frozen into two base-36 strings that `case-fold.ts` decodes and nothing
+else reads. Two measurements are what justify its weight, and both were run rather than reasoned:
+
+- **`toLowerCase` is not a fold at all.** It is a lowercase *mapping* — a different transform that
+  agrees on ASCII and diverges wherever the difference decides a match. Of the table's 1585 entries
+  it gives a different answer for **239** and leaves 211 untouched. `ß` stays `ß` where the fold gives
+  `ss`; the `ﬁ` ligature survives; Cherokee folds *upward*, so a lowercasing transform can only ever
+  go the wrong way. It is contextual besides — a final sigma lowercases differently from a
+  mid-word one — where the fold maps both to U+03C3 unconditionally, which is why `ΟΔΟΣ`, `οδος` and
+  `οδοσ` are one name in the frozen vectors.
+- **Every platform API that *is* a fold reads the host's Unicode data.** Measured: the runtime this
+  repository builds on reports Unicode **16.0**, and **52** code points fold in the shipped table
+  that it does not fold at all. Two clients each calling their own platform would key one name to
+  two values — a duplicate that never merges, on a column whose whole purpose is that equal names
+  collide, which is what CON-009 forbids.
+
+`Intl.Collator` at a case-insensitive sensitivity is the third candidate and is not one either: it
+answers an *ordering*, and a blind index needs bytes to take a MAC over.
+
+**A map is the whole of the transform, and that follows from the data.** Full folding at statuses C
+and F is per-code-point, unconditional and locale-independent — no context, no lookahead, no locale,
+no state carried between code points. Status **T**, the Turkic conditional pair, is exactly what was
+left out, and it is the only part that would have needed any of them.
+
+**So `İstanbul` and `istanbul` are two different names under this contract, and that is an accepted
+consequence rather than a bug.** U+0130 folds to `i` followed by U+0307 under statuses C and F; the
+two strings therefore normalize to different bytes and index to different rows. It will be reported
+as a defect, so it is written down here: making the two agree would mean adopting status T, which
+makes the fold **locale-dependent** — the single property the shipped table exists to remove. A
+client that "fixed" it would disagree with every other implementation of the normalization, and with
+whatever uniqueness a column of these values is later given: the database never sees either name and
+only ever sees these bytes, so it cannot notice the disagreement or report it. It is silent in both
+directions. The frozen
+vectors carry both spellings side by side, with their two distinct answers, so that the contract is
+the thing a reader meets rather than an argument they have to reconstruct.
+
+**Raising the Unicode version is a format change, not a dependency bump.** Every blind index already
+written was computed under the fold the version names, and a blind index cannot be recomputed
+without the plaintext it was taken over — which this product does not hold, because the plaintext is
+encrypted. A name that folds differently under a newer table becomes a row that no longer answers
+its own search, silently and forever. The version and a digest of the table's two literals both ride
+in the vectors file beside the frozen answers, so the constant, the data and what they produce are
+held against one another and a regeneration is one line for a reviewer to look at rather than
+hundreds of runs.
+
+**Two smaller rules the module states and a reader will undo.** There is **no length rule and no
+refusal of an empty result**: a name that trims away to nothing yields zero bytes and a perfectly
+well-defined index, and whether an empty name should be indexed at all is a product rule about that
+field, belonging to the screen that knows which field it is. And one loss is inherited rather than
+chosen — `TextEncoder` substitutes U+FFFD for an unpaired surrogate, so two names differing only in
+a lone surrogate index alike. Nothing at this layer can do better: the substitution is the
+platform's, and the alternative is a refusal no caller could act on.
+
+**NFKC stays the platform's, and that asymmetry is deliberate rather than unfinished.** Unicode's
+normalization stability policy fixes the normal form of every code point once it is assigned, so two
+hosts can disagree only about characters one of them has never heard of — and an unassigned code
+point normalizes to itself. That is a far smaller surface than the fold's, and it is the whole
+reason this product ships one table and not two.
 
 ### The third way into custody
 
@@ -1216,8 +1475,11 @@ gets back out.
    `wrapped_account_keys` the application makes, and the browser's one caller is custody. See
    [The one route that hands them back](#the-one-route-that-hands-them-back).
 
-7. **Holding them.** Both keys are imported through their own door and kept as `CryptoKey` objects
-   for the life of the document, on `AccountKeyCustodyService`. **Three paths arrive here.** A
+7. **Holding them, and spending them.** Both keys are imported through their own door and kept as
+   `CryptoKey` objects for the life of the document, on `AccountKeyCustodyService`, which spends
+   them through operations that delegate — `sealField` and `openField` under the content key,
+   `blindIndex` under the index key — and never through a member that returns one. Nothing in the
+   product calls any of the three. **Three paths arrive here.** A
    sign-in reaches it through step 4. Registration reaches it directly, by handing over the pair it
    drew. And the Settings screen's Unlock reaches it through step 4 as well, from a passkey ceremony
    the browser mints and discards — the only one of the three that runs on a session that already
@@ -1259,6 +1521,25 @@ database could have decrypted with it before redeeming too.
   so a provider gates registration and an email change and never holds keys. The database refuses
   such a row.
 
+**Which key does an operation read, and what does it answer when the account is locked?**
+
+- sealing or opening a narrative field → the **content** key. `SealedField` is `sealed` or
+  `locked`; `NarrativeText` is `text`, `locked` or `unreadable`
+- computing a blind index over a name → the **index** key. `BlindIndexValue` is `computed` or
+  `locked`, and there is no `unreadable`: nothing was opened, so there is nothing to have failed
+- **never**: tell a caller which of the two keys was missing. The pair is taken together and dropped
+  together, so a screen that can seal can always index
+
+**A blind index came back `locked`. What happened?**
+
+- the browser holds no index key — a page load, a sign-out, an unlock that has not happened yet →
+  present a factor, and every other field on the screen comes back with it
+- custody moved while the MAC ran, by a `lock()` **or** an `adopt()` → the same answer, deliberately.
+  A value computed under a key the account no longer holds matches no row, and a lookup on it comes
+  back **empty rather than failing** — which is why this operation drops its answer where a seal
+  keeps one
+- **never**: a word about the value being damaged. There is no ciphertext here to fail against
+
 **A wrapped key fails to open. What does that mean?**
 
 - the wrong factor's key-encryption key → the associated data disagrees, or the key does
@@ -1290,7 +1571,9 @@ about why.
   is minted by this client before any server has seen it, so folding is a defence against a
   value arriving from elsewhere; a narrative row id is whatever the row just read handed back,
   in the one spelling it comes in, so a fold there could only invent a second spelling of a
-  value that has one — at the sealing end, where the damage is unrecoverable.
+  value that has one — at the sealing end, where the damage is unrecoverable. **The blind index is
+  not a third grammar of that chapter's kind**: it seals nothing and there is nothing to open, so
+  none of the framing reaches it — that chapter indexes its vectors and this one owns the operation.
 - **`recovery-codes.md`** — the code a key-encryption key is derived from, and why it never reaches
   the server. The verifier branch and this one are separated only by HKDF's `info`.
 - **`registration.md`** — the **third** write path, and the only one that writes eleven rows in one
@@ -1329,14 +1612,15 @@ about why.
   the module; and `unwrapAccountKeys` is called by `AccountKeyCustodyService` on every passkey
   sign-in and on every unlock, which is the same call from two screens and not two
   implementations of it. What is uncalled is not "anything that uses an opened key": `sealField`
-  and `openField` use the content key and reach the codec one file over, and what they lack is a
-  caller of their own — no column holds an envelope for a screen to seal or open, so their only
-  caller is their spec. The blind index is not written at all. So `#contentKey` has readers and
-  `#indexKey` still has none, which is why one
-  `no-unused-private-class-members` suppression is left where there were two — see
-  [The two operations](#the-two-operations-that-delegate-and-the-shape-that-was-forced). Do not
-  answer the remaining one by adding an accessor, and do not relax the server's demand for the
-  envelopes to make a later screen easier to write.
+  and `openField` use the content key and reach the codec one file over, `blindIndex` uses the index
+  key and reaches the codec beside it, and what all three lack is a caller of their own — no column
+  holds an envelope or an index for a screen to seal, open or look up, so their only caller is their
+  spec. **Both key fields now have readers, so neither carries a
+  `no-unused-private-class-members` suppression** — see
+  [The operations that delegate](#the-operations-that-delegate-and-the-shape-that-was-forced), which
+  also records the answer for the next field that arrives read by nothing. Do not answer that
+  question by adding an accessor, and do not relax the server's demand for the envelopes to make a
+  later screen easier to write.
 - **Two clearing lines in the registration flow cannot be shown to fail, and they stay.** `restart()`
   and the failed-POST branch each drop the account keys beside the assembled body. Neither can be
   driven into producing a stale pair, because the minting writes the keys **before** the payload
@@ -1345,18 +1629,18 @@ about why.
   over a hazard the ordering already closes — written down here so the next reader deletes them as a
   decision rather than as dead weight, and so that whoever reorders the minting knows what those two
   lines start protecting.
-- **Nothing outside custody can see which door the *index* key came through.** No public member
-  returns a key, so what a spec observes is `status`, `unlockFailure` and what the two operations
-  answer — and nothing reads the index key, so an implementation that sent it through the AES door
-  would report `unlocked` exactly as the right one does, and go on doing so until something tried
-  to compute an index. **The content key's door is the different case, and the difference is
-  narrower than it looks**: `sealField` delegates to that key, and a key imported as HMAC cannot
-  encrypt at all, so a wrong door there is in principle visible from outside. Nothing takes that
-  observation, because every sealing case reaches custody through `adopt`, which takes key objects
-  and passes no door. What watches both doors is the spy at `crypto.subtle.importKey`, censusing
-  the algorithms an unlock imports under. The registration side is different only because `adopt`
-  is a seam: a spec can stand in for custody and read the two
-  objects it is handed. That asymmetry is the cost of the rule under
+- **Which door a key came through is observable only through an operation, and the observation
+  arrives late.** No public member returns a key, so what a caller sees is `status`,
+  `unlockFailure` and what the operations answer. Each key now has one that would fail under the
+  wrong door — measured at [The two doors](#the-two-doors-and-the-five-decisions-each-holds), the
+  platform refuses `sign` under an AES-imported key and `encrypt` under an HMAC one, both with
+  `InvalidAccessError` — so an index key sent through the AES door reports `unlocked` exactly as the
+  right one does, and goes on doing so until something computes an index. That is the shape of the
+  whole hazard rather than a gap to close: the wrong door is invisible for as long as nothing uses
+  the key. What watches both doors directly is the spy at `crypto.subtle.importKey`, censusing the
+  algorithms an unlock imports under; the registration side is different only because `adopt` is a
+  seam, where a spec can stand in for custody and read the two objects it is handed. That asymmetry
+  is the cost of the rule under
   [The one class that holds them](#the-one-class-that-holds-them) — an accessor would close it and
   would hand any caller the key that decrypts the account.
 - **The PRF output is never sent, and one line is what stops it.** `getClientExtensionResults()`

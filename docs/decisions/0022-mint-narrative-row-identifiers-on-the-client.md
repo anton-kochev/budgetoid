@@ -56,16 +56,24 @@ when it slips.
    option here at any price: it is not a function of its input at all, which is the entire
    requirement."
 
-   **Nothing in the compiler, the database or the test suite tells a version-7 UUID from a
-   version-4 one, so this half is held by review** — the same answer `CLAUDE.md` gives about a
-   second account-creating path, and for the same reason: it is one line that would redden
-   nothing. Stated plainly so the next reader does not go looking for the check that catches it.
-   No column type, check constraint or policy can see a version nibble; the client predicate
+   **Nothing that meets a *stored* identifier can tell a version-7 UUID from a version-4 one,
+   so that half is held by review** — the same answer `CLAUDE.md` gives about a second
+   account-creating path, and for the same reason: it is one line that would redden nothing.
+   Stated plainly so the next reader does not go looking for the check that catches it. No
+   column type, check constraint or policy can see a version nibble; the client predicate
    `isCanonicalFactorId` deliberately inspects neither the version nor the variant nibble, and
    argues for that at its own declaration — a rule invented at that layer starts refusing valid
    identifiers the day the authority over them changes its mind; and the server's canonical
-   parse compares a *spelling*, not a version. A minter reaching for `crypto.randomUUID()` would
-   satisfy every one of them and quietly give up the property this clause exists for.
+   parse compares a *spelling*, not a version.
+
+   **What a minter *emits* is a different question, and a spec answers it exactly.**
+   `mintNarrativeRowId` pins the version nibble at character 14 of the canonical spelling and
+   refuses a `crypto.randomUUID` shortcut by name, so the clause is enforced where it is
+   enforceable. The **big-endian** timestamp needs its own case and gets one: a little-endian
+   layout still produces a well-formed, unique, canonically spelled version-7 UUID that passes
+   every predicate either side owns, and loses only the index locality the whole choice was made
+   for — visible to nothing but two stubbed clocks and a fixed random tail. What remains held by
+   review is which minter a write path calls.
 
    **Which is exactly what `factor_id` does, and the two answers are not in conflict.**
    `factor-id.ts` mints with `crypto.randomUUID()` — version 4 — and that is right there. The
@@ -94,11 +102,16 @@ when it slips.
 This decision fixes **the rule, the canonical form, and the grammar that consumes it**. The
 narrative grammar exists and refuses a non-canonical row id today.
 
-**A client-side minter for narrative row ids, the changes to the six Domain factories, and the
-server-side parse that refuses a non-canonical row id arrive with the work that encrypts the
-eight columns.** Nothing in the API accepts a client-supplied row id today, and no code path
-mints one for a narrative field. Read this document as the decision those changes will be built
-to, not as a description of a surface that is already there.
+**The client-side minter has arrived; the other two changes have not.**
+`+core/security/narrative-row-id.ts` mints a version-7 UUID in the canonical spelling today, and
+its spec holds the version nibble, the canonical spelling and the big-endian timestamp. **Nothing
+calls it**: no path seals a narrative field for a row it just created.
+
+**The changes to the six Domain factories and the server-side parse that refuses a non-canonical
+row id arrive with the work that encrypts the eight columns**, unchanged from what the Context
+above describes: those factories still mint their rows' identifiers themselves, and nothing in
+the API accepts a client-supplied row id. Read those two parts of this document as the decision
+they will be built to, not as a description of a surface that is already there.
 
 ## Alternatives considered
 
@@ -144,11 +157,15 @@ one property rather than on correctness.
   `"D"` admits upper- and mixed-case hex and trims before it reads the format at all. On the
   client the question is already answered once, by `isCanonicalFactorId` in `factor-id.ts`,
   which `narrative-cipher.ts` imports under an alias rather than restating.
-- **Two of this decision's three clauses are enforceable and one is not.** The spelling is
-  refused at the write and at the seal; client custody is a fact about which side calls the
-  minter. The **version** is held by review alone, for the reasons the Decision states — so it
-  is a choice inside a minter and a paragraph in this file, and there is nothing to add to the
-  schema that would make it more than that.
+- **All three clauses are enforced somewhere, and the version is enforced at one end only.** The
+  spelling is refused at the write and at the seal; client custody is a fact about which side
+  calls the minter. The **version** splits in two, and collapsing the halves is how this bullet
+  went wrong once. What a **minter emits** is asserted directly — `narrative-row-id.spec.ts`
+  reads the version nibble, refuses a `crypto.randomUUID` shortcut by name, and pins the
+  big-endian timestamp with stubbed clocks and a fixed random tail. What **which minter a write
+  path calls** is remains held by review alone, and so does every *stored* identifier: no column
+  type, check constraint or policy can see a version nibble, and neither client predicate nor
+  server parse inspects one. Nothing added to the schema would change that half.
 - **A mis-spelled identifier is the worst failure mode in this format and it is silent on both
   sides of the wire.** The write succeeds, every response says success, and the person finds out
   on the day the text stops opening. That is why the refusal sits at the sealing end as well as

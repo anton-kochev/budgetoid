@@ -84,14 +84,16 @@
 // waiting" is no longer the reason to keep any of it.
 //
 // **Nothing in this product is encrypted, and what that leaves uncalled is
-// narrower than "anything that *uses* an opened key".** `sealField` and
-// `openField` on `AccountKeyCustodyService` use the content key and reach the
-// codec one file over, so a field can be sealed and opened today; what those two
-// lack is a caller of their own, because no column holds an envelope for a
-// screen to seal or open — their only caller is their spec. The index half is
-// the one that is genuinely absent: the blind index is written nowhere, since
-// the grammar its values are computed over waits on a revision of the
-// specification, so the index key custody holds is read by nothing at all. The
+// narrower than "anything that *uses* an opened key".** Both of the account's
+// keys have readers, and the two halves stand alike. `sealField` and `openField`
+// on `AccountKeyCustodyService` use the content key and reach the codec one file
+// over; `blindIndex` uses the index key and reaches the grammar beside it. So a
+// field can be sealed and opened and a name can be indexed today, and what all
+// three lack is a caller of their own: no column holds an envelope or an index
+// for a screen to reach, so their only caller is their spec. The asymmetry this
+// paragraph used to draw — a content half that worked against an index half not
+// written yet — is retired, and is worth naming as retired because three files
+// carried it and a reader who remembers it will look for the missing half. The
 // spec remains the only place several of these rules can be checked: the frozen
 // vectors are what a second implementation has to reproduce, and a
 // non-extractable key has no other witness.
@@ -452,8 +454,8 @@ export async function unwrapAccountKeys(
  *
  * The check itself is `requireAccountKeyWidth`, shared with
  * {@link importHmacSha256Key}. Here it closes a two-width gap the platform leaves
- * open; there it is the *entire* guard, because HMAC accepts every width there
- * is. One rule, two doors, and very different amounts of work.
+ * open; there it is the *entire* guard, because HMAC accepts every width but
+ * zero. One rule, two doors, and very different amounts of work.
  *
  * `extractable: false` is the reason the derivations return a `CryptoKey` at all.
  * `encrypt` and `decrypt` and nothing else: this key works through the envelope,
@@ -540,8 +542,12 @@ export async function importAesGcmKey(
  * indexed under it; nothing anywhere names the moment it started; and there is no
  * way back once the rows exist, because a blind index cannot be recomputed
  * without the plaintext it was taken over. The width is *recorded* by the
- * platform, on `key.algorithm.length`, and read by nothing in this client — which
- * is the shape of the whole hazard: the mistake is visible and unwatched.
+ * platform, on `key.algorithm.length`, and read by nothing this client ships —
+ * which is the shape of the whole hazard: at run time the mistake is visible and
+ * unwatched. The spec reads that field once, on the accepted width, which is
+ * what makes this door's own guarantee observable at all; it is no witness for
+ * truncated material, because the only case that reads it is the one where the
+ * width was already right.
  *
  * **`['sign']` and nothing else, and the omission is `verify`.** It is the usage
  * a reader adds without stopping, because HMAC has two halves and a key that only
@@ -652,8 +658,17 @@ function canonicalFactorId(factorId: string): string {
 // refusal under the same `finally` as the success, so material rejected for being
 // the wrong width dies exactly as thoroughly as material that became a key.
 // Lifting this call out of the `try` — the tidier-looking arrangement, validation
-// before work — is a one-line edit that reddens nothing and leaves the rejected
-// bytes on the heap for the collector to get to whenever it does.
+// before work — would leave the rejected bytes on the heap for the collector to
+// get to whenever it does.
+//
+// **That position is held by a test, and this sentence used to say it was not.**
+// Each door's wrong-width cases assert the caller's array reads back all zeroes
+// *after* the refusal, so the only arrangement that satisfies them is one where
+// a `finally` covers the refusing path too. The exception is the zero-width
+// case, where the assertion degenerates to comparing two empty strings and holds
+// nothing — which is why what carries this rule is the non-empty widths, and why
+// a reader trimming those cases as redundant would take the guard's only witness
+// with them.
 //
 // The bound is the constant and never the number it currently holds, and the
 // message interpolates it for the same reason: this is the enforcement of a

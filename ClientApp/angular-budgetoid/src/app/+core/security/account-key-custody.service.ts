@@ -5,11 +5,12 @@
 // stores its own wrapped copy of both. A browser that has just proved a factor
 // holds a key-encryption key and nothing else, so this service does the only
 // thing left: it reads that credential's envelopes, tries each in turn, and keeps
-// what came out as two `CryptoKey` objects. Two operations delegate to what it
-// holds — seal this field, open that one — and they are the whole reason no
-// caller has any occasion to ask for a key. No column in this product holds an
-// envelope yet, so nothing calls them but their spec; the blind index, the third
-// operation, is not here at all.
+// what came out as two `CryptoKey` objects. Three operations delegate to what it
+// holds — seal this field, open that one, index a value so a lookup can key on
+// it — and they are the whole reason no caller has any occasion to ask for a
+// key. No column in this product holds an envelope or an index yet, so all three
+// have landed one commit ahead of their callers and nothing but their spec calls
+// any of them.
 //
 // **`providedIn: 'root'`, and that breaks the habit of the two services beside it
 // deliberately.** `RegisterService` and `SignInService` are provided on their
@@ -53,6 +54,34 @@ import {
   importHmacSha256Key,
   unwrapAccountKeys,
 } from './account-keys';
+// The index grammar: the operation the third member delegates to, the refusal
+// it opens with, and the pair as a **type — and never the list of four**.
+// Which pair a value belongs to is the caller's fact, exactly as the binding
+// below is: this class is handed one already assembled and has no business
+// enumerating them, and a `type` specifier inside the clause crosses nothing
+// into the bundle that a branch here could read.
+//
+// **`refuseUnindexedField` is called for itself and never for a value**, which
+// is the shape `refuseInvalidBinding` has next door and the shape both of them
+// were given for one reason: a caller that wants the refusal and not the bytes
+// asks the codec for the refusal, rather than calling a builder and dropping
+// what it built. The older form is a statement whose only visible effect is a
+// throw — what a reader deletes on the next tidy-up with every round trip in
+// the suite still green.
+//
+// So all three operations below judge their argument through a refusal the
+// codec that owns the grammar exports for the purpose, and none of them judges
+// it in a shape of its own. The alternative was always a copy of the check
+// here, refused for the reason the clause below gives about the eight: it would
+// put the four pairs inside the one file that must be able to say it lists none
+// of them. What makes an exported refusal safe to lean on is that the module's
+// own computing path calls the same function, so the check this class applies
+// cannot drift from the check an index is actually computed under.
+import {
+  computeBlindIndex,
+  refuseUnindexedField,
+  type BlindIndexedField,
+} from './blind-index';
 // The two operations, the binding they take, and the two members that let this
 // class judge a caller — and deliberately not `NARRATIVE_FIELDS`. Which table
 // and which column a value belongs to is the caller's fact; this class is
@@ -76,7 +105,11 @@ import {
   sealNarrativeField,
   type NarrativeFieldBinding,
 } from './narrative-cipher';
-import type { NarrativeText, SealedField } from './narrative-text';
+import type {
+  BlindIndexValue,
+  NarrativeText,
+  SealedField,
+} from './narrative-text';
 
 /**
  * Whether the account's keys are held, and whether an attempt to hold them is in
@@ -150,26 +183,22 @@ export class AccountKeyCustodyService {
   // object every injector in the app can reach — and it would work perfectly,
   // which is why nothing would ever notice.
   //
-  // **One of the two is read now, and the one suppression left is the price of
-  // the rule three paragraphs down.** `#contentKey` has readers — `sealField`
-  // and `openField` are the operations that delegate to it — so the rule it was
-  // suppressed for no longer fires on it, and the directive went with the
-  // reason for it. `#indexKey` is still written and read by nothing: the one
-  // operation that will read it is the blind index, deferred to a later commit
-  // because the grammar its values are computed over is blocked on a revision of
-  // the specification. There is deliberately no placeholder for it here — a
-  // method that answered something plausible would be an index nothing could
-  // tell apart from a real one, and every value it keyed would have to be
-  // rewritten once the grammar landed.
+  // **Both are read now, and no suppression is left on either.** `#contentKey`
+  // has `sealField` and `openField`; `#indexKey` has the third operation, and
+  // the directive that stood over it while that body was a throw went out with
+  // the throw. That is not tidying: `reportUnusedDisableDirectives` is on, so a
+  // directive kept past its reason is itself an error, which is what makes a
+  // suppression here a thing with an expiry rather than a thing with a habit.
   //
-  // The one edit that would satisfy the linter on its own terms is an accessor,
+  // It is worth recording what the suppression was for, because the next field
+  // this class grows will arrive read by nothing and the question will come back.
+  // The one edit that satisfies the linter on its own terms is an accessor,
   // which is precisely the member `#forget` argues must never exist: a getter
   // turns a key nobody can serialise into a key anybody can decrypt a whole
-  // ledger with. So the rule is suppressed here rather than obeyed, with the
-  // reason beside it — the same shape as every other capability this client has
-  // landed one commit ahead of its caller.
+  // ledger with. So the answer is a suppression carrying its reason, never a
+  // getter — the same shape as every other capability this client has landed one
+  // commit ahead of its caller.
   #contentKey: CryptoKey | null = null;
-  // eslint-disable-next-line no-unused-private-class-members -- read by the blind index, which waits on a grammar; an accessor is the forbidden alternative
   #indexKey: CryptoKey | null = null;
 
   // **No signal holds a key, and the shape of this class is that sentence.**
@@ -286,8 +315,9 @@ export class AccountKeyCustodyService {
     binding: NarrativeFieldBinding,
     plaintext: string,
   ): Promise<SealedField> {
-    // **The binding is judged before custody is, on both operations, and the
-    // judgement is the codec's.** Ordered the other way, the one caller defect
+    // **The argument is judged before custody is, on all three of this class's
+    // operations, and in each of them the judgement is a refusal the owning
+    // codec exports.** Ordered the other way, the one caller defect
     // that is unrecoverable — a row id in a spelling no later read of that row
     // reproduces — would be reported to an unlocked tab and swallowed by a
     // locked one, which is to say reported exactly where nobody is looking for
@@ -443,6 +473,104 @@ export class AccountKeyCustodyService {
     // by the same line: the account is not open, so a word that claims the rest
     // of the row is fine would be a claim about a state this frame has left.
     return generation === this.#generation ? opened : { state: 'locked' };
+  }
+
+  /**
+   * Computes the blind index of `plaintext` for `field` under the account's
+   * index key, and hands back the value a lookup or a column keys on.
+   *
+   * **It takes a field and no row id, and that omission is the whole
+   * operation.** The index has to be *equal* for equal values across rows — that
+   * is what a uniqueness constraint over a column, and a lookup that finds the
+   * row somebody has just typed, are both asking of it — so a row inside the
+   * message would make every value unique by construction: still stable, still
+   * the same width, still looking exactly like a working index, and an answer to
+   * no query anybody ever writes. It is the deliberate inverse of what
+   * {@link sealField} and {@link openField} require, where the row is carried
+   * precisely so that two rows can never share a value, and the two rules being
+   * opposites is why the codec for this is a module of its own rather than the
+   * one beside it with a parameter.
+   *
+   * Reads the account's **index** key where those two read the content key, and
+   * answers `locked` on the same terms: this browser is holding no key, and the
+   * way forward is a factor. Which of the two was missing is invisible to a
+   * caller by design — the pair is taken in one `adopt` or one unlock and
+   * dropped in one `lock`, so a screen that can seal can always index, and there
+   * is no state in which it can do one and not the other.
+   *
+   * **Answers `locked` as well when custody moved while the MAC ran, for either
+   * reason — where {@link sealField} keeps its answer after a plain `lock()`.**
+   * The guard below says why the two neighbours need opposite instruments; it is
+   * stated there rather than here because it is the one thing about this member
+   * a reader is most likely to get backwards.
+   *
+   * Rejects on a field the codec refuses — a pair that is not one of the four it
+   * lists — because that is a caller's mistake about which pair it is asking
+   * for, and not a state anybody can be told about. **Only the refusals a
+   * person can act on become a result**, the rule {@link sealField} states and
+   * this one inherits.
+   */
+  public async blindIndex(
+    field: BlindIndexedField,
+    plaintext: string,
+  ): Promise<BlindIndexValue> {
+    // **The field is judged before custody is, the way it is on both operations
+    // above and for the reason `sealField` gives there.** Ordered the other way,
+    // a caller's defect is reported to an unlocked tab and swallowed by a locked
+    // one — reported, that is, exactly where nobody is looking for it — and
+    // whether a factor has been presented is not a fact about whether the caller
+    // assembled its field correctly. The judgement is the codec's in all three
+    // cases, and this file holds no second copy of the four pairs to make it
+    // with.
+    //
+    // Called for itself, so what is wanted is the refusal and there is no value
+    // to drop: the module that owns this grammar exports the refusal, so nothing
+    // here builds a message in order to throw it away. `async` is what turns
+    // that refusal into a rejection — the same rule both codecs keep at their
+    // own doors, and the reason this word is not decoration around a single
+    // `await`.
+    refuseUnindexedField(field);
+
+    const indexKey = this.#indexKey;
+
+    if (indexKey === null) {
+      // No MAC is reached and nothing is asked of the API. The second is the one
+      // worth stating: an operation that read the route to find out whether it
+      // could index would work perfectly, and would put a round trip and a
+      // possible 401 behind every lookup in the product.
+      return { state: 'locked' };
+    }
+
+    // Read before the MAC, so that what is compared afterwards is the world this
+    // answer was computed in.
+    const generation = this.#generation;
+    const value = await computeBlindIndex(indexKey, field, plaintext);
+
+    // **The generation, and never the key identity `sealField` compares. The two
+    // neighbours need opposite instruments, and a reader who assumes the three
+    // operations behave alike will get this backwards — so it is written out
+    // rather than left to be inferred from either body.**
+    //
+    // A seal interrupted by a plain `lock()` **keeps** its answer. A wire value
+    // is readable only under the key it was sealed under, so it stays this
+    // account's whatever the tab does next: handing it back discards no text
+    // somebody had just typed and misleads nobody. It drops only on a
+    // *replacement*, where the value in flight belongs to an account this tab no
+    // longer holds — which is why identity is the right test there and the
+    // counter, bumped by `lock()` and `adopt()` alike by design, cannot make the
+    // distinction at all.
+    //
+    // An index **drops in both cases**, because of what the value is *for*
+    // rather than how it was made. It is not something the caller keeps beside
+    // the key that produced it; it goes straight into a query or a column. One
+    // computed under a key the account no longer holds matches no row — so the
+    // lookup comes back **empty rather than failing**, a silence over data that
+    // is all still sitting there, with nothing on either side of the wire able
+    // to see that it happened. Both interruptions must therefore answer alike,
+    // and the counter is the instrument that treats them alike.
+    return generation === this.#generation
+      ? { state: 'computed', value }
+      : { state: 'locked' };
   }
 
   // The read and the trial, off the main path because `unlock` returns nothing.

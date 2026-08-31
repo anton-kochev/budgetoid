@@ -7,10 +7,10 @@
 // and the wire form the column stores, unpadded base64url.
 //
 // **One caller, and no screen behind it.** `AccountKeyCustodyService` holds the
-// account's content key, and the two operations that delegate to it —
-// `sealField` and `openField` — are what call `sealNarrativeField` and
+// account's content key, and the two of its operations that reach for that key
+// — `sealField` and `openField` — are what call `sealNarrativeField` and
 // `openNarrativeField`. Nothing calls *those*: no column in this product holds
-// an envelope, so the only thing reaching custody's pair today is its spec. The
+// an envelope, so the only thing reaching that pair today is its spec. The
 // claim this module makes about its own standing is therefore a smaller one
 // than it used to be — called, but not yet from anywhere a person can walk to —
 // and the order is still deliberate rather than a module left behind: the
@@ -29,11 +29,19 @@
 // edge runs one way for the same reason — custody imports these functions, and
 // nothing here imports custody.
 //
-// **What remains genuinely uncalled is the blind index**, and an absent
-// operation reads as an oversight unless somebody says so. It is the third
-// operation custody will grow and it is not written anywhere yet: the grammar
-// its values are computed over waits on a revision of the specification, so the
-// index key custody holds is still read by nothing.
+// **The blind index is the other grammar, and what separates the two is the row
+// id rather than which of them exists.** It is custody's third operation, it is
+// written, and `blind-index.ts` makes the same claim about its own standing
+// that the paragraph above makes here — one caller, no screen behind it — for
+// the same reason, against vectors of its own. What is worth stating on this
+// side is the rule that keeps them two modules rather than one with a flag: a
+// narrative ciphertext is bound to its **row**, which is exactly what makes a
+// value moved between rows fail to authenticate, while an index must be
+// **equal across rows** or it answers no lookup anybody writes. The two
+// requirements are exact opposites, so a parameter choosing between them would
+// decide, invisibly, whether a value defends the row it sits in or answers the
+// query it was computed for — and both settings produce a value that looks
+// right.
 //
 // **Associated data is not carried inside the envelope.** It is rebuilt from
 // wherever the ciphertext was found — this table, this column, this row — which
@@ -276,19 +284,24 @@ export function refuseInvalidBinding(binding: NarrativeFieldBinding): void {
   // can repair, so there is no fold to refuse and no choice being made. One
   // check declines to be tolerant; the other has nothing to be tolerant of.
   //
-  // **It runs before the cipher, and today that is held by construction rather
-  // than by a test.** The pair check is inside the function the row-id check is
-  // already inside, so it is reached from the same two call sites, above the
-  // same `sealEnvelope` and `openEnvelope` — there is no arrangement of these
-  // lines in which one refusal is pre-cipher and the other is not. What holds
-  // the *pair's* ordering is therefore exactly what holds the row id's, and
-  // neither is what holds `refuseExtractableKey`'s: that one is watched by spies
-  // on `crypto.subtle.encrypt` and `crypto.subtle.decrypt`, because a function
-  // that sealed first and threw on the way out rejects identically. No spy
-  // watches either binding refusal yet. Said out loud because the cases that
-  // cover this rule ask only which *type* is thrown, and a reader who assumes
-  // the ordering is pinned would move one of these checks under the cipher with
-  // everything still green.
+  // **It runs before the cipher, and that is held twice over — by construction,
+  // and now by a test as well.** The pair check is inside the function the
+  // row-id check is already inside, so it is reached from the same two call
+  // sites, above the same `sealEnvelope` and `openEnvelope` — there is no
+  // arrangement of these lines in which one refusal is pre-cipher and the other
+  // is not. What holds the *pair's* ordering is therefore exactly what holds the
+  // row id's. What used to stand on that alone now stands on the seam
+  // `refuseExtractableKey`'s cases already used: spies on
+  // `crypto.subtle.encrypt` and `crypto.subtle.decrypt`, calling through, over
+  // both binding refusals and both operations — four orderings, each one edit
+  // away from the other three. The spec asserts neither cipher was reached, and
+  // carries positive controls in the same case, because a spy on a method
+  // nothing reaches reports "never called" perfectly.
+  //
+  // The type alone was never enough to hold this, which is why the spies are
+  // worth their length: a function that sealed first and threw on the way out
+  // rejects identically, so a case asking only *which* error arrived cannot see
+  // the difference between a refusal and a cipher that ran before one.
   if (
     !NARRATIVE_FIELDS.some(
       (field) =>
