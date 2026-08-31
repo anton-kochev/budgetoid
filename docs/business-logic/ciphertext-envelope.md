@@ -62,6 +62,17 @@ this framing has a live reader as well as a live writer. What that buys the narr
 nothing at all — a format exercised by one consumer is not a format checked for the other, since
 the two grammars differ and only the frozen vectors speak to both.
 
+**The server does now have a format edge for the narrative side, and it still stores nothing.**
+Four types stand between a client's bytes and a column that does not exist yet:
+`Domain/Security/NarrativeFieldLimits` (the two byte caps), `Domain/Security/NarrativeField` (the
+one type a narrative column will accept), `Domain/Security/IndexedName` (a sealed name and its
+blind index as one value) and `Application/Security/BlindIndexText` (the wire step for an index).
+None of them can open anything — the server holds no key and never will — so what they add is
+*shape*, at the edge, before a value is stored. They are argued below under
+[the two caps](#the-two-caps-and-what-they-measure) onward. The order is the same one this format
+took: agree while agreement is cheap, and let the persistence step arrive against rules that are
+already written.
+
 ## Key Entities
 
 - **Envelope** — the byte sequence above. Not a type anywhere in the client: `sealEnvelope`
@@ -82,7 +93,16 @@ the two grammars differ and only the frozen vectors speak to both.
   per consumer.
 - **Wire form** — unpadded base64url over the whole envelope, and what a column stores.
 - **Narrative field** — one table-and-column pair from the closed list below, together with
-  the row it names.
+  the row it names. On the server it is also a **type**: `NarrativeField`, the only thing a
+  narrative column accepts, holding an envelope and offering no way in from a `string`.
+- **Narrative field cap** — one of `NarrativeFieldLimits`' two numbers, in **envelope** bytes.
+  One per field *class*, not one per field.
+- **Indexed name** — a sealed name and the blind index taken over it, as the single value a
+  searchable name column pair holds. `IndexedName`, and there is deliberately no `BlindIndex`
+  type beside it.
+- **Blind index text** — the 43 characters of unpadded base64url an index arrives as, and
+  `BlindIndexText`, the one member that turns them into bytes. Built on the shared base64url
+  decoder and **not** on `CiphertextEnvelopeText`, because an index is not an envelope.
 
 ```mermaid
 erDiagram
@@ -202,6 +222,49 @@ erDiagram
     states the limit of that, measured on Node 22: `structuredClone` does not carry the name,
     and nothing in this client crosses a worker or a message port today.
 
+- **A narrative column MUST be typed as `NarrativeField`, and that type MUST NOT gain a
+  constructor, factory or conversion taking a `string`.**
+  - **Why**: it is the strongest mechanical expression this codebase can give the rule that no
+    narrative value is ever server-readable. With the column typed this way, writing plaintext
+    into one **does not compile** — the rule moves out of review and into the build. That
+    matters because the mistake is invisible afterwards: a row holding plaintext is a
+    well-formed row, nothing reads back wrong, no constraint fires, and the operator simply has
+    the ledger.
+  - **Enforced in**: the absence of such a member on `NarrativeField`, and by nothing else. See
+    [what no test can hold](#the-strongest-claim-here-is-held-by-an-absence).
+
+- **A sealed narrative value MUST be at most its field class's cap, in envelope bytes.** 1024
+  for the five name columns, 2560 for the three description columns.
+  - **Why**: a cap is a product rule about how much a person may type into two different kinds
+    of field, and this side can measure only one thing — stored bytes. See
+    [the two caps](#the-two-caps-and-what-they-measure).
+  - **Enforced in**: `NarrativeFieldLimits`' two constants, applied by `NarrativeField.Sealed`
+    (which takes the number as a parameter) and by `IndexedName.Of` (which names `NameBytes`
+    itself and takes none). `CiphertextEnvelopeTextTests` runs the wire step at both caps, one
+    byte either side of each.
+
+- **A sealed name and its blind index MUST arrive together, and neither MUST be repaired.**
+  - **Why**: a name ciphertext with no index is a row no lookup can find and no uniqueness
+    constraint can police; an index with no ciphertext is a keyed fingerprint of text that is
+    stored nowhere. A padded or truncated index is worse than a refused one — it stores a
+    well-formed row holding a value that is stable, never collides, keys perfectly and matches
+    nothing for the life of the account.
+  - **Enforced in**: `IndexedName.Of`, whose two parameters are both non-nullable, and — for the
+    row rather than the call — the `NOT NULL` pair on the column pair, which the schema will
+    carry. See [two guards, two moments](#a-pair-type-says-a-call-cannot-be-half).
+
+- **A blind index MUST be decoded through the shared base64url decoder, never through
+  `CiphertextEnvelopeText`.**
+  - **Why**: that type applies the framing rules of an envelope — a 29-byte floor and a leading
+    `0x01`. A blind index is a keyed digest whose first byte is whatever HMAC-SHA-256 produced,
+    so the envelope type would refuse roughly 255 values in 256. What the two genuinely share is
+    the alphabet, and that is the layer `BlindIndexText` reuses.
+  - **Enforced in**: `BlindIndexText.TryDecode`, calling `PasskeyEncoding.TryDecode` with
+    `IndexedName.BlindIndexLength` as the ceiling and then comparing the decoded width.
+    `TryDecode_WithAnIndexWhoseLeadingByteIsNotTheVersion_Decodes` and
+    `TryDecode_WithAnAllZeroIndexOfTheLegalWidth_Decodes` are the two cases that would redden if
+    somebody moved it onto the envelope decoder.
+
 - **Every client MUST implement the identical format.** A field sealed by one client opens in
   another. Divergence is a defect in whichever client departs from it, not a negotiation.
   - **Enforced in**: the frozen vectors, and by nothing below the browser. The server holds no
@@ -234,6 +297,22 @@ erDiagram
     version byte changed means this deployment stops recognising what it is handed *and* reads
     what is already written under a rule it was not sealed with. A change is a new version
     minted alongside the old, never an edit in place.
+
+- **The two caps MUST NOT be restated as character limits, and MUST NOT be written out per
+  column.**
+  - **Why**: the server never sees a character, so a cap on characters is a cap nothing on this
+    side can enforce — and a limit nothing enforces is a comment. Written per column, one rule
+    would have eight owners, six of them redundant, and the copy that drifted upward would still
+    store, still read back and still open. See
+    [the two caps](#the-two-caps-and-what-they-measure).
+
+- **The read side MUST NOT re-validate what a column already holds.**
+  - **Why**: a validating read makes a lowered cap **retroactive**, and turns a one-integer diff
+    into data loss. The same argument protects a future version 2 from destroying the version 1
+    rows it exists to rewrite. See
+    [the read side does not judge](#the-read-side-does-not-judge-and-that-is-the-decision).
+  - **Enforced in**: `NarrativeField.FromStore`, which copies and does nothing else — and by
+    review alone, because nothing outside `Domain` can call it yet.
 
 - **The server MUST NOT hold a value that opens an envelope, and no member that could carry
   one MUST be added.**
@@ -425,7 +504,9 @@ checkable on that side, and that is not a shortcoming.** A nonce of zeros and a 
 are well-formed by every rule it owns. Anything stronger would need a key, and a design in
 which the server had one is the design this product exists to avoid.
 
-Two types split the job:
+Two types split the **framing** job, and four more sit above them for the narrative side — the
+caps, the value type, the pair type and the index's wire step, each argued in its own section
+below:
 
 - **`Domain/Security/CiphertextEnvelope`** owns the format: at least 29 bytes, leading with
   version 1. Length is judged **before** version, and the order is a correctness rule rather
@@ -466,6 +547,196 @@ two extra bytes the text-side allowance let through, so the only member carrying
 post-decode rule of its own was also the only one that could not be over-admitted. A member
 holding nothing but a **floor** has nothing behind it. Today the decoder refuses those bytes
 first, so the width never sees them.
+
+### The two caps, and what they measure
+
+Eight narrative columns, **two** numbers. `NarrativeFieldLimits.NameBytes` is **1024** and covers
+the five name columns; `NarrativeFieldLimits.DescriptionBytes` is **2560** and covers the three
+description columns. The specification states a two-row table — one row for names, one for
+descriptions — so the code declares two constants and not eight. Written per column, one rule would
+have eight owners and six of them would be restatements, which is six chances for the table and the
+code to disagree with no way to see it: a column whose constant drifted upward still stores, still
+reads back, still opens, and differs from every other column of its class only in what it accepts
+from a client nobody is exercising that day.
+
+**They bound the envelope, not the text, and the difference is not slack to reclaim.** The number
+is a bound on what a column stores — version byte, nonce and tag included — because that is the
+only length anything on this side can measure. AES-GCM ciphertext is exactly as long as its
+plaintext, so the text underneath is `CiphertextEnvelope.MinimumLength` bytes shorter than the cap:
+at most 995 bytes of UTF-8 in a name and 2531 in a description. **The server cannot say so, and
+the cap must not be "corrected" into a limit on characters.** It never sees a character. A limit
+expressed in anything but stored bytes is a limit this side cannot enforce, and a limit nothing
+enforces is a comment.
+
+**Neither number is derived from the other and neither is derived from the format.** They are
+product decisions about how much a person may type into two different kinds of field. Writing them
+as sums over `CiphertextEnvelope.MinimumLength` would dress a choice up as a consequence — unlike
+the wrapped key's 61, where the framing plus one fixed plaintext genuinely *is* the width.
+
+They live in `Domain` and are `const`, and the type names two call sites as the reason for both: the
+`[Arguments(...)]` that pin them, which exist today, and the interpolated `length(…) <= …` check
+constraints the persistence configuration will be written from, which do not — no column holds a
+narrative envelope yet. An attribute argument admits nothing but a constant expression, so a static
+property would not compile at the first of those sites and would have nothing to offer at the
+second. `Domain` is the home for the same reason `CiphertextEnvelope` is: a limits type one ring out
+would be a second owner of a rule the innermost ring already holds, and the column constraint would
+then be built from whichever copy the configuration happened to import.
+
+**Where the cap is applied, and by which of the two shapes.** `NarrativeField.Sealed` takes the
+number as a **parameter**, because it serves both classes and one number standing for both would
+refuse whichever field it was not written for. `IndexedName.Of` takes **none** and names
+`NameBytes` itself, because every blind-indexed column in the product is a `name` — a ceiling
+parameter there would be a way to file a description-sized value into a name column, offered for no
+reason anybody could state. The pair of cases that catches a factory reaching for the wrong
+constant is `Of_WithAnEnvelopeAtTheNameCap_IsAccepted` against
+`Of_WithAnEnvelopeOneByteOverTheNameCap_ReportsTheEnvelope`: the value in between clears nothing
+else in that file.
+
+### The type is the rule, and it is the strongest one available here
+
+The only type a narrative column accepts has **no constructor, no factory and no conversion taking
+a `string`**, and none may be added. With the column typed that way, writing plaintext into one
+does not compile — the rule leaves review and enters the build. That matters because the mistake it
+prevents is invisible afterwards: a row holding plaintext is a well-formed row, nothing reads back
+wrong, no constraint fires, and the operator simply has the ledger.
+
+**Two nearby arrangements were rejected, and they fail in different ways.** A private length check
+per entity is six copies of one rule, and the copy that drifts still stores, still reads back and
+still opens. A shared static validator fixes that and leaves the worse half standing: the property
+is still typed as raw bytes, so it is still assignable from any buffer in scope, and the next member
+added to the entity — an update, a rename, a correction on some later path — assigns bytes nothing
+judged, with the validator sitting one file over looking like the rule was kept. What closes that is
+the property's *type*, because a type is the one guard a later caller cannot forget to call.
+
+**A sealed class, deliberately not a `readonly struct`.** A struct carries a public parameterless
+constructor no author can hide, so `default(NarrativeField)` would be a narrative field holding no
+envelope: assignable to a non-nullable property, satisfying every signature, and carrying zero bytes
+into a column whose whole point is that nothing reaches it unjudged. That value is exactly what an
+entity built by a path which forgot to seal a member would hold — the one case the type exists to
+make impossible.
+
+**What it refuses is framing and a ceiling, and nothing more.** A nonce of zeros and a tag of zeros
+are well-formed by every rule here. Anything stronger needs a key, and a design in which this side
+had one is the design the product exists to avoid. It **throws** rather than answering, because the
+`Try` shape belongs at the wire edge where a refusal is worded for a caller; by the time bytes reach
+the domain factory they have already been through that edge, so a value it refuses is a defect in
+this codebase rather than in a request. The refusal is deliberately *not* `ValidationException` —
+that type keys its message on the property a value lands in, and this one is shared by eight columns
+and owns none of them, so all eight would key under one word and produce a 400 naming a member no
+request carries.
+
+**Absent is not empty**, which is why there are two factories rather than a nullable parameter.
+Three of the eight columns are nullable — the descriptions — and for those, no value is a legal
+state of the row. But `default(ReadOnlyMemory<byte>)` is a non-null, zero-length buffer, which is
+precisely what a caller that passed nothing hands over; folded together, an absent description would
+be judged as an envelope, fail the floor, and be refused for a rule written about values that exist.
+Split, the question "is there one?" is answered by which member the caller named, before anything is
+measured — and a zero-length buffer that *was* supplied stays refused.
+
+### A pair type says a call cannot be half
+
+`IndexedName` holds a sealed name and the blind index over it as one value, and refuses either half
+on its own. The schema's two `NOT NULL` columns will say a **row** cannot be half. This type says a
+**call** cannot be. They are two guards over two different moments — one runs when a statement
+reaches the database, the other when a factory is invoked — and the reason to keep both is that the
+first cannot see a caller that meant to write both columns and wrote one, on a path that also writes
+something else the same transaction keeps.
+
+**Collapsing them is the mistake, not the tidy-up.** Read as duplication, either can be deleted with
+everything green. Drop the pair type and the database still refuses a null, so nothing fails until a
+caller finds the shape where it does not — and by then the refusal arrives as a constraint name in a
+500 rather than as a signature nobody could satisfy. Drop the `NOT NULL` and the guarantee becomes a
+property of application code alone, against the rule that a rule belongs to the lowest layer that
+can enforce it declaratively.
+
+**There is no separate `BlindIndex` type, and that is a deliberate stop.** An index never appears
+alone: it is computed from the name it indexes, written with it, replaced with it and meaningless
+without it. A type for it would have one member, one width check and exactly one place it could ever
+be constructed — the factory one line further down. What it would buy is nothing; what it would cost
+is a reader holding three types to understand one column pair, and a plausible-looking way to build
+an index that is attached to no name.
+
+**And the pair is not two envelopes.** The name is AEAD ciphertext with the framing this chapter
+owns. The index is a keyed digest: no version byte, no nonce, no tag, nothing to open, and no way
+back to the text it was taken over. They travel together and are judged by rules that come from two
+different places.
+
+### The read side does not judge, and that is the decision
+
+`NarrativeField.FromStore` rebuilds a value from bytes a column already holds **without checking
+them**, and a reviewer will propose that it should check. The symmetry is the mistake: the write
+side judges what is arriving, the read side hands back what is already there, and the two are
+answering different questions.
+
+A validating read makes the caps **retroactive**. Lower `DescriptionBytes` by one byte and every row
+written under the old number stops materialising — not refused at an edge where somebody could be
+told, but thrown out of the middle of a query, so the screen listing them fails whole and the value
+is unreachable by every path including the export. A limit change would have become data loss,
+silently, in a release whose diff is one integer. The same argument covers the version byte: the day
+a version 2 exists, every version 1 row still has to come back so it can be read and rewritten, and
+a read side that refused it would have destroyed the migration it was meant to protect.
+
+What keeps stored bytes honest is the column's `CHECK` constraint and the fact that the write-side
+factory is the only way they got there — not a second inspection on the way out. This is the
+arrangement `WrappedAccountKeys` already has, written down here because there it is implicit and the
+next reader has nothing to weigh the proposal against.
+
+**It copies even though it does not judge, and those are separate questions.** Only the second is
+the one argued above. The envelope property promises a buffer nobody else holds, and a promise kept
+on one construction path and not the other would oblige every later reader to know which factory
+built the instance in front of them.
+
+**The cost, said plainly: nothing outside `Domain` can call it today.** The member is `internal` —
+public, it would be the hole the type was built to close, a way to put unjudged bytes into a
+narrative column on a call site that reads like bookkeeping — and the solution carries no
+`InternalsVisibleTo`. So the persistence configuration that will materialise these columns cannot
+reach it as things stand. Closing that is a one-line grant on `Domain`, named at the assembly that
+receives it, and it is **a decision worth making visibly rather than discovering**: the alternative
+is a member every ring can reach so that one of them can. Until that grant exists, the rule that
+this member does not re-validate is held by review and by nothing running.
+
+### The blind index gets its own wire type, and the near miss it avoids
+
+`BlindIndexText` decodes the 43 characters an index arrives as. It is built on the shared base64url
+decoder and **not** on `CiphertextEnvelopeText`, which sits beside it in the same request and the
+same row and looks like the natural base. That type applies the framing rules of an envelope: a
+29-byte floor and a leading version byte. A blind index is a keyed digest whose first byte is
+whatever HMAC-SHA-256 produced, so requiring `0x01` would admit roughly one value in 256 and refuse
+the rest as malformed. What the two genuinely share is the alphabet, and that is the layer this type
+reuses. Two cases hold the distinction —
+`TryDecode_WithAnIndexWhoseLeadingByteIsNotTheVersion_Decodes` and
+`TryDecode_WithAnAllZeroIndexOfTheLegalWidth_Decodes` — and both would redden the moment somebody
+moved it onto the envelope decoder.
+
+**What is left after the shared decoder is the width, and only the width.** The alphabet and the
+bound on decoded bytes belong to the decoder, because they are the same rules for every binary
+member this API accepts as text. This type declares no number of its own: the width comes from
+`IndexedName.BlindIndexLength`, which is what keeps the edge and the column from drifting apart.
+
+**Why the width is worth refusing at all, given the server can check nothing else.** This side holds
+no index key, so it can never say a value is the index *of* the name beside it. A correct-width
+value computed over the wrong text, under the wrong key, or straight out of a random number
+generator is accepted and is wrong for the life of the account, silently, because a blind index
+cannot be recomputed by anything but the browser that made it. The width is the whole of the
+defence, which is precisely why it is not left out as the small one — and why it is refused rather
+than padded or truncated into shape.
+
+Two limits of it are measured rather than reasoned, and both are in
+[Edge Cases](#edge-cases--known-gotchas): only the **short** side is this type's own work, and the
+width check cannot today be told apart from a lower bound by anything in the suite.
+
+### The strongest claim here is held by an absence
+
+**"No narrative value is ever server-readable" is held by the type having no member that could take
+one** — no constructor, no factory, no conversion accepting a `string`. A test cannot exercise a
+call that does not exist, so nothing in the suite covers it and nothing can. `NarrativeFieldTests`
+says so at the top of its own file rather than letting the case count imply otherwise; what those
+cases cover is the smaller half — given bytes, what is accepted and what is refused.
+
+That is worth stating twice, because the property is otherwise held by nothing a build can see. The
+comparison is the second account-creating path `CLAUDE.md` describes: one line, nothing red. Typing
+the column is that shape of mistake with the compiler put in front of it — and the compiler is the
+only thing in front of it.
 
 ### Why the wrapped-key entity keeps its own exact width
 
@@ -611,13 +882,20 @@ flipped bit anywhere, and bytes that authenticate but are not UTF-8. That last d
 `U+FFFD`, which reads as damaged text a person typed, is indistinguishable from it, and gets
 written straight back on the next save.
 
-**The server's step**, on the one consumer that exists there today: decode base64url within a
-ceiling — which the decoder applies to the encoded text and then to the buffer it produced —
-and then the floor and the version. `CiphertextEnvelopeText` has exactly one caller,
-`WrappedKeyEnvelope`, which adds its exact width on top. **The narrative side is the next
-story's work**: nothing in the API decodes a narrative envelope today, and when something does
-it reaches the same member with a ceiling of its own rather than a second decode. Nothing on
-that side opens anything.
+**The server's step**, on the one consumer that is wired end to end today: decode base64url within
+a ceiling — which the decoder applies to the encoded text and then to the buffer it produced — and
+then the floor and the version. `WrappedKeyEnvelope` reaches `CiphertextEnvelopeText` and adds its
+exact width on top.
+
+**The narrative side has its edge and no traffic.** A narrative value would take the same three
+steps and two more: `CiphertextEnvelopeText.TryDecode` with one of `NarrativeFieldLimits`' two caps
+as the ceiling — never a second decode of its own — then `NarrativeField.Sealed` with the same cap,
+or `IndexedName.Of` where a blind index rides beside it, in which case `BlindIndexText.TryDecode`
+runs on the index through the *shared* decoder rather than through the envelope one. Nothing walks
+that path today: no column holds a narrative envelope, which is why `FromStore`'s own remarks name
+the persistence configuration that will materialise these columns in the **future** tense, and why
+that member is unreachable from every assembly that would need it. Nothing on that side opens
+anything, and nothing ever will.
 
 ## Decision Trees
 
@@ -654,16 +932,24 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   the way `WrappedAccountKeys` does. Never the shared format.
 - "text in this field may not exceed N characters" → the product rule that owns the field, and
   a screen that can say so. Never this format, which would measure the envelope and refuse
-  through a rejected promise.
+  through a rejected promise. **Never `NarrativeFieldLimits` either**: those two numbers are
+  envelope bytes, and a character count expressed there is a rule the server cannot apply.
+- "a sealed field of this **class** may not exceed N stored bytes" → `NarrativeFieldLimits`, as
+  one number for the whole class. Not one per column, and not a sum over the format's floor.
 - "this request body may not be arbitrarily large" → the ceiling parameter at the edge, named
   by the caller, per field.
+- "this value has one legal width and it follows from an algorithm" → the domain type that owns
+  the value, the way `IndexedName.BlindIndexLength` does, applied at the edge and restated
+  nowhere.
 
 ## Integration Points
 
 - **[account-keys.md](account-keys.md)** — the first consumer: what a wrapped key is, why a
   factor is not a credential, and the wrapped-key associated-data grammar with its frozen
   vectors. The **exact 61-byte width lives there**, and this chapter's floor deliberately does
-  not replace it.
+  not replace it. It also owns what a **blind index means** — the index key, the message and
+  the normalization it is taken over; this chapter owns only the width the server checks and
+  the wire step that applies it, because an index is not an envelope.
 - **[ADR 0022](../decisions/0022-mint-narrative-row-identifiers-on-the-client.md)** — why a
   narrative row identifier is minted by the client, and in which canonical spelling. The
   narrative grammar's fourth field is unreachable at insert time without it.
@@ -743,3 +1029,32 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
 - **A binding whose table and column are each real but which name nothing together is the
   refusal a reader is most likely to weaken.** `transactions.name` passes two membership
   tests and fails the pair lookup; see [the eight narrative fields](#the-eight-narrative-fields).
+- **The wide side of the blind index's width is not caught by the type that declares it, and
+  that is measured.** A 31-byte value encodes to 42 characters, the allowance for a ceiling of
+  32 is 44, and the shared decoder's post-decode comparison is a `>`, so it clears every gate
+  below `BlindIndexText` and arrives with 31 bytes in hand. A 33-byte value encodes to exactly
+  44 — the whole allowance — so it clears the *text* gate and is refused two types down, by the
+  decoder's own comparison on the buffer it just produced. **Exactly one case therefore holds
+  this type's own work, and it is the short side.** A reviewer who reads
+  `TryDecode_WithAnIndexOneByteWiderThanTheWidth_Refuses` as covering the width check will skip
+  a mutation it cannot catch.
+- **That width check cannot be told apart from a lower bound by anything in the suite today**,
+  because the ceiling and the width are the same number. Written `< BlindIndexLength` rather
+  than `!=`, it survives the whole suite — and `<` is the spelling that most looks like caution.
+  It becomes wrong the day those two numbers diverge, which is why it stays written as an
+  inequality against the width rather than as a bound of its own. `WrappedKeyEnvelope` records
+  the same shape for its own upper bound, for the same reason.
+- **A cap over-admitting by a byte or two is width-dependent, so both caps are exercised.**
+  Measured: for a ceiling of 1024 the decoder's text allowance is 1368 characters and a
+  1025-byte envelope encodes to 1367; for 2560 the allowance is 3416 and a 2561-byte envelope
+  encodes to 3415. Both slip past every gate the *text* can carry, so in both cases the refusal
+  comes from the comparison made on the decoded buffer. A limit that admits more than it names
+  is not a limit, and here the excess is silent — the row simply stores a field larger than the
+  product says a field may be.
+- **`NarrativeField.FromStore` is `internal` and nothing outside `Domain` can call it**, so the
+  rule that it does not re-validate is held by review alone. The grant that closes this is one
+  line on `Domain` naming the assembly that receives it, and it belongs in a diff somebody
+  reads rather than in whatever change happens to need it first.
+- **The claim the whole type exists for is covered by no case, and no case can cover it.** See
+  [the strongest claim](#the-strongest-claim-here-is-held-by-an-absence). Do not read the
+  spec files' size as evidence for it.

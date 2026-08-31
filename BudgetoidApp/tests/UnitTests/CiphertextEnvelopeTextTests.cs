@@ -459,6 +459,101 @@ public sealed class CiphertextEnvelopeTextTests
     }
 
     /// <summary>
+    /// An envelope of exactly a narrative field's cap decodes, at each of the two caps.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The cap's polarity, and the reason it needs saying at this layer rather than only at the
+    /// field's.</b> <see cref="NarrativeFieldLimits"/> bounds what a column stores, and this member is
+    /// the step that turns a client's text into the bytes that bound is applied to. An implementation
+    /// comparing <c>&lt;</c> rather than <c>&lt;=</c> refuses a value the limit names as legal, and
+    /// nothing else in this file can see it: every other accepting case here sits at
+    /// <see cref="CiphertextEnvelope.MinimumLength"/> or a few bytes above, hundreds of bytes below
+    /// either cap.
+    /// </para>
+    /// <para>
+    /// <b>Both caps are run, and that is what makes the ceiling parameter provably load-bearing at the
+    /// sizes the fields actually use.</b>
+    /// <see cref="TryDecode_WithAnEnvelopeLongerThanTheMinimum_ReturnsExactlyThoseBytes"/> and
+    /// <see cref="TryDecode_WithTextLongerThanTheCeiling_Refuses"/> already prove the argument decides
+    /// the answer, over a 36-byte envelope; a decoder holding one narrative-sized constant of its own
+    /// would pass both of those and be wrong at one of these two.
+    /// </para>
+    /// <para>
+    /// The numbers are read from the constants that own them and never typed out — this type applies
+    /// the domain's limits and declares none, so a literal here would let the edge and the column drift
+    /// apart while staying green. Content is asserted rather than length, for the reason
+    /// <see cref="TryDecode_WithAnEnvelopeLongerThanTheMinimum_ReturnsExactlyThoseBytes"/> gives: at
+    /// these widths a decoder handing back a fresh buffer of the right size is least likely to be
+    /// noticed by eye.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(NarrativeFieldLimits.NameBytes)]
+    [Arguments(NarrativeFieldLimits.DescriptionBytes)]
+    public async Task TryDecode_WithAnEnvelopeExactlyAtANarrativeCap_Decodes(int cap)
+    {
+        // Arrange
+        byte[] expected = Envelope(cap);
+
+        // Act
+        bool accepted = CiphertextEnvelopeText.TryDecode(Encode(expected), cap, out byte[]? envelope);
+
+        // Assert
+        await Assert.That(accepted).IsTrue();
+        await Assert.That(envelope).IsEquivalentTo(expected);
+    }
+
+    /// <summary>
+    /// An envelope one byte over a narrative field's cap is refused, at each of the two caps, though
+    /// its encoding fits inside the allowance.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The claim <see cref="TryDecode_WithAnEnvelopeOneByteOverTheCeiling_Refuses"/> makes at 29
+    /// bytes, made again at the two widths the narrative columns will actually be given — and it is not
+    /// a restatement, because the arithmetic that lets a value slip through is width-dependent.</b>
+    /// <see cref="Application.Passkeys.PasskeyEncoding.TryDecode"/> gates the <em>text</em> against the
+    /// padded form of the allowance, which overshoots by up to two characters; whether a given
+    /// over-long value lands inside that overshoot depends on where the width falls modulo three.
+    /// Measured, both of these do: for a cap of <see cref="NarrativeFieldLimits.NameBytes"/> the
+    /// allowance is 1368 characters and a 1025-byte envelope encodes to 1367, and for
+    /// <see cref="NarrativeFieldLimits.DescriptionBytes"/> the allowance is 3416 and a 2561-byte
+    /// envelope encodes to 3415. So in both cases the text clears every gate it can be judged by, and
+    /// the refusal has to come from the <c>bytes.Length &gt; maxDecodedBytes</c> comparison made on the
+    /// decoded buffer.
+    /// </para>
+    /// <para>
+    /// <b>That is the whole reason a cap on decoded bytes is worth a case at all.</b> A limit that
+    /// admits more than it names is not a limit, and the excess here is silent: the row stores, the
+    /// column's <c>CHECK</c> constraint is the only thing left to refuse it, and if that constraint were
+    /// ever written from the same padded arithmetic the value would simply be a field larger than the
+    /// product says a field may be.
+    /// </para>
+    /// <para>
+    /// Each envelope is well-formed in every other respect — comfortably past
+    /// <see cref="CiphertextEnvelope.MinimumLength"/>, leading with
+    /// <see cref="CiphertextEnvelope.Version"/> — so neither framing rule can be what refuses it, and
+    /// its accepting twin one byte below is the case above.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(NarrativeFieldLimits.NameBytes)]
+    [Arguments(NarrativeFieldLimits.DescriptionBytes)]
+    public async Task TryDecode_WithAnEnvelopeOneByteOverANarrativeCap_Refuses(int cap)
+    {
+        // Arrange
+        string overlong = Encode(Envelope(cap + 1));
+
+        // Act
+        bool accepted = CiphertextEnvelopeText.TryDecode(overlong, cap, out byte[]? envelope);
+
+        // Assert
+        await Assert.That(accepted).IsFalse();
+        await Assert.That(envelope).IsNull();
+    }
+
+    /// <summary>
     /// A well-formed envelope of <paramref name="width"/> bytes: the version byte, then a payload that
     /// varies per index.
     /// </summary>

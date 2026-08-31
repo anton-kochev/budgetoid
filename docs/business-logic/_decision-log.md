@@ -8,6 +8,63 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-31 — A narrative column takes a value type, and the read side does not judge
+
+**Context:** the server was about to gain columns holding text it must never be able to read. The
+requirement is easy to state and impossible to test: *no narrative value is ever server-readable.*
+Nothing observable goes wrong when it is broken — a row holding plaintext is a well-formed row, it
+stores, it reads back, no constraint fires, no round trip disagrees, and the operator simply has the
+ledger. So the question was not how to check the rule but **what could make breaking it a build
+failure**, given that the checkable surface here is framing and a length and nothing else: the
+server holds no key and never will.
+
+**Decision:** **a narrative column is typed `NarrativeField`, a value type with no constructor,
+factory or conversion taking a `string`.** Bytes get in through one validating factory — framing
+from `CiphertextEnvelope`, a ceiling the caller names — and through nothing else. A searchable name
+goes one step further: `IndexedName` carries the sealed name and its blind index as **one** value,
+so a call cannot supply half. `NarrativeFieldLimits` declares the two caps the factories apply, and
+`BlindIndexText` is the index's own wire step.
+
+**What the type buys that a check cannot.** With the column typed this way, writing plaintext into
+one does not compile. The rule leaves review and enters the build — which is the whole point,
+because every other layer is blind to the mistake. It is the same shape as the second
+account-creating path `CLAUDE.md` warns about, one line that reddens nothing, with the compiler put
+in front of it.
+
+**Alternatives rejected, and they fail differently.** **Raw bytes on the entity with a private
+length check per entity** — eight columns across six entities, so six copies of one rule, and the
+copy that drifts still stores, still reads back and still opens; it differs from its siblings only
+in what it admits from a client nobody exercised that day. **Raw bytes plus one shared static
+validator** — it fixes the drift and leaves the worse half standing: the property is still typed as
+a buffer, so it is still assignable from anything in scope, and the next member added to the entity
+assigns bytes nothing judged while the validator sits one file over looking like the rule was kept.
+A type is the one guard a later caller cannot forget to call. A **`readonly struct`** was rejected
+on a narrower point: its unhidable parameterless constructor makes `default(NarrativeField)` a
+narrative field holding no envelope, assignable to a non-nullable property — exactly what an entity
+built by a path that forgot to seal a member would carry.
+
+**The read side deliberately does not re-validate, and that is the half a reviewer will want to
+"fix".** `FromStore` copies and checks nothing. A validating read makes the caps **retroactive**:
+lower a cap by one byte and every row written under the old number stops materialising — thrown out
+of the middle of a query rather than refused at an edge where somebody could be told — so the screen
+fails whole and the value is unreachable by every path including the export. A one-integer diff
+would have become data loss. The same argument protects a future version 2 from destroying the
+version 1 rows it exists to read and rewrite.
+
+**Consequences.** The caps are **two** numbers over field classes rather than eight over columns,
+and they bound the **envelope**, not the text — the only length this side can measure — so they must
+never be "corrected" into character limits. The pair type and the schema's `NOT NULL` pair are two
+guards at two moments and neither replaces the other; collapsing either passes green. `FromStore` is
+`internal` and the solution grants no assembly access to it, so nothing outside `Domain` can call it
+yet and its no-revalidation rule is held by review alone — the grant that closes that is one line
+naming its recipient, and it belongs in a diff somebody reads. And the headline claim is covered by
+**no test and no test that could exist**: it is held by an absent member, which the spec file states
+about itself so the case count is not mistaken for evidence.
+
+**Affected areas:** [ciphertext-envelope.md](ciphertext-envelope.md), [_overview.md](_overview.md).
+
+---
+
 ## 2026-08-31 — The case fold is a table this product ships, at a Unicode version this product picks
 
 **Context:** a blind index is a MAC over a *normalized* name, and the third step of that

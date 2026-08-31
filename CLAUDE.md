@@ -283,7 +283,20 @@ Load-bearing rules, each explained there or in the linked decision:
   preference — 50 code points where trim-then-NFKC and NFKC-then-trim disagree — and `İstanbul` is
   **not** `istanbul`, which is what a conforming fold does and must not be "fixed" into disagreeing
   with the database's unique index. Do not relax any of it to
-  make a later screen easier. See
+  make a later screen easier. **The server carries the narrative edge and no traffic**:
+  `NarrativeFieldLimits` holds two caps over field *classes* — 1024 for the five name columns, 2560
+  for the three description ones — bounding the **envelope** and never characters, because that is
+  the only length this side can measure; `NarrativeField` is the one type a narrative column accepts
+  and has **no** constructor, factory or conversion taking a `string`, so writing plaintext into a
+  column does not compile — **that absent member, and no test, is what holds "no narrative value is
+  ever server-readable"**; `IndexedName` says a **call** cannot be half where the schema's `NOT NULL`
+  pair will say a **row** cannot, two guards at two moments and neither replaceable by the other; and
+  `BlindIndexText` rides the **shared** base64url decoder, never `CiphertextEnvelopeText`, which would
+  demand a `0x01` a digest has nothing to answer with. `NarrativeField.FromStore` **does not
+  re-validate** — a validating read makes a lowered cap retroactive and turns a one-integer diff into
+  data loss — and it is `internal` with no `InternalsVisibleTo` anywhere, so that rule is held by
+  review until the persistence step grants access, which the dependency-direction guard **cannot
+  see**. See
   [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md) and
   [ADR 0022](docs/decisions/0022-mint-narrative-row-identifiers-on-the-client.md).
 - **The schema carries no remnant of an erasure and the route table offers no way back** — no
