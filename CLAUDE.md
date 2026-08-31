@@ -163,9 +163,13 @@ Load-bearing rules, each explained there or in the linked decision:
 - **The dependency direction is pinned, not described.** MSBuild's cycle detection already refuses
   the outward `ProjectReference` between rings; what it cannot catch is the outward edge that closes
   no loop — a package on `Application`, a `FrameworkReference` or `Sdk` attribute on `Domain`,
-  `UnitTests` reaching `Api`, a whole new project. `ProjectReferenceGraphTests` renders every csproj
-  declaration as a row and pins the set, dropping package *versions* so a routine bump never reddens
-  it. Two guards sit beside it for rules the graph provably cannot express:
+  `UnitTests` reaching `Api`, a whole new project, **and an assembly handing another its internals**.
+  `ProjectReferenceGraphTests` renders every csproj declaration as a row and pins the set, dropping
+  package *versions* so a routine bump never reddens it. It renders `InternalsVisibleTo` too —
+  `Domain: internals Infrastructure`, one row per grant, the solution's only one, argued at the
+  element itself. That row exists because the grant went in first and the guard could not see it:
+  **the renderer knows the kinds it was taught, so a new kind of outward edge is invisible until
+  somebody notices.** Two guards sit beside it for rules the graph provably cannot express:
   `CompositionBoundaryTests` (Api may **compose** Infrastructure, never **consume** it — no route
   delegate takes a persistence port) and `OwnershipKeyImmutabilityTests` (every `UserId` and
   `BudgetId` the Domain declares is written once, `init` included). Each ships permanent negative
@@ -267,9 +271,9 @@ Load-bearing rules, each explained there or in the linked decision:
   binding comes from. **Every refusal the codec makes about its caller is
   `NarrativeFieldMisuseError`**, thrown before any cipher; a ciphertext that failed to authenticate
   never is, and `openField`'s `catch` re-throwing on that type is the only thing keeping a caller's
-  defect out of `unreadable`. **Nothing is
-  encrypted today** — no column holds an envelope or a blind index, and no screen seals, opens or
-  indexes anything — but neither codec is callerless: `AccountKeyCustodyService` reaches both halves
+  defect out of `unreadable`. **One column is typed for an envelope and no row carries one** —
+  `budgets.name` is `bytea`, and nothing else is; no column holds a blind index, and no screen seals,
+  opens or indexes anything — but neither codec is callerless: `AccountKeyCustodyService` reaches both halves
   of the narrative one and the whole of the blind index, which is the only way either key can be
   applied without leaving the class that holds it. **The blind index is built**, over its own
   grammar: `budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ normalized name`, looked up **as a pair**
@@ -283,7 +287,19 @@ Load-bearing rules, each explained there or in the linked decision:
   preference — 50 code points where trim-then-NFKC and NFKC-then-trim disagree — and `İstanbul` is
   **not** `istanbul`, which is what a conforming fold does and must not be "fixed" into disagreeing
   with the database's unique index. Do not relax any of it to
-  make a later screen easier. **The server carries the narrative edge and no traffic**:
+  make a later screen easier. **`budgets.name` is the first column to hold ciphertext, and two things
+  it gave up are decisions rather than gaps.** Per-user name uniqueness is **surrendered, not
+  deferred** — every seal draws a fresh nonce so two identical names produce different bytes, and
+  FR-077 gives this column no blind index, so it never comes back; what survives is `NULLS NOT
+  DISTINCT` on that index, which is the half that always mattered, stopping two racing provisioners
+  each writing a nameless budget. And **the server can no longer refuse a blank or over-long budget
+  name** — it holds an envelope it cannot count characters in, so restoring that check cannot be
+  honest. The `case_insensitive` collation left the column **by force**: `bytea` is not collatable.
+  Its version check is written `substring(name from 1 for 1)` and **not** `get_byte`, which raises
+  `2202E` on a zero-length value rather than answering false — and measured on PostgreSQL 17.10,
+  which of a column's checks fires first is decided by the **constraint name, alphabetically**, not
+  by declaration order. `wrapped_account_keys` still carries `get_byte` and is correct only because
+  "length" sorts before "version". **The server carries the narrative edge and no traffic**:
   `NarrativeFieldLimits` holds two caps over field *classes* — 1024 for the five name columns, 2560
   for the three description ones — bounding the **envelope** and never characters, because that is
   the only length this side can measure; `NarrativeField` is the one type a narrative column accepts

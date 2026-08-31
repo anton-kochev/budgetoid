@@ -54,6 +54,11 @@ and that nothing else notices:
 - **A `ProjectReference` to a project outside the rings.** `Domain → ServiceDefaults` closes no loop
   — `ServiceDefaults` references nothing — and hands Domain the whole ASP.NET Core shared framework
   transitively. Cycle detection covers the rings, not everything shaped like a project reference.
+- **A grant of internal visibility.** `<InternalsVisibleTo Include="…" />` hands the declaring
+  project's internals *outward*, to an assembly that may sit further out than it does. It closes no
+  loop — nothing travels inward and no reference is added — so it is precisely the shape cycle
+  detection cannot see. `Domain` carries the solution's only one, and the argument for it is beside
+  the element in `Domain.csproj`.
 - **A dependency declared outside a csproj.** `Directory.Build.props` is imported into every project
   in the tree; one `PackageReference` there compiles Domain against EF Core with no csproj touched
   at all. The scan reads it, `Directory.Build.targets` and `Directory.Packages.props` for that
@@ -71,14 +76,15 @@ mechanism. They are not.
 `ProjectReferenceGraphTests` reads every `*.csproj`, `Directory.Build.props`,
 `Directory.Build.targets` and `Directory.Packages.props` under the directory holding
 `BudgetoidApp.sln` — skipping `bin` and `obj` — and renders each declaration as one row —
-`"<File>: <kind> <id>"` — against a written-down set of fifty-nine. The subject is **discovered** and the allowance is **written down**, never the reverse:
+`"<File>: <kind> <id>"` — against a written-down set of sixty. The subject is **discovered** and the allowance is **written down**, never the reverse:
 a new project fails the test by existing. That asymmetry is the same one `RlsCoverageTests` argues,
 and for the same reason — a filter over the subject is how a guard silently stops covering things.
 
 **Many kinds of edge, not two.** `ProjectReference` and `PackageReference` do not close the graph.
 A raw `<Reference>` with a `HintPath` is a real dependency carrying neither; `PackageDownload`,
 `GlobalPackageReference`, `COMReference` and `NativeReference` are further spellings of the same
-job; and two more hide in plain sight:
+job; `InternalsVisibleTo` is an edge pointing the other way and is rendered too; and two more hide
+in plain sight:
 
 - `ServiceDefaults.csproj` carries `<FrameworkReference Include="Microsoft.AspNetCore.App" />`. That
   one line pulls the entire ASP.NET Core shared framework with **no package to notice**. Copied onto
@@ -93,6 +99,17 @@ job; and two more hide in plain sight:
 So both are pinned, and every project emits an `sdk` row even when it declares nothing else — which
 is what makes *Domain depends on nothing* a single line that must stay alone, rather than an absence
 no assertion covers.
+
+**A grant of internal visibility is a row, and it is a row of a different sort.** `Domain` declares
+no reference of any kind — that is one pinned line, and it must stay alone — and beside it sits
+`Domain: internals Infrastructure`, the solution's only grant. Nothing travels inward across it:
+`Domain` still references nothing, `Infrastructure` already reaches `Domain`, and what moves is
+visibility rather than a dependency. It is pinned because the alternative was a reviewer remembering
+to look. **One row per grant, never a count or a flag** — "Domain grants its internals to somebody"
+would stay true while the somebody changed — so a second `InternalsVisibleTo` fails the pin by name.
+Why the grant exists at all is argued in `Domain.csproj` and in the
+[decision log](../business-logic/_decision-log.md); this row says only that one exists and who has
+it.
 
 **Package versions are dropped; ids are kept.** A version bump moves no boundary. Pinning versions
 would redden the test on every dependency-update PR, and that reflex — update the array, re-run,
@@ -172,6 +189,11 @@ query filter sitting over the same row.
 - **Whether every handler is actually registered.** A handler nobody wired into
   `Application/DependencyInjection.cs` is a 500 on first request, not a red test. That list is
   hand-maintained and nothing checks it; it is a known gap, deliberately left rather than missed.
+- **Whether a grant of internal visibility deserves to exist.** The pin holds the *set* of grants,
+  not the wisdom of any of them. It cannot tell that `Infrastructure` is the right recipient or that
+  a future grant is a mistake, and a reviewer who widens the pinned set in the same commit passes it.
+  The argument in `Domain.csproj` is what decides that; the guard only makes sure the line cannot
+  land without somebody being sent to read it.
 - **A method that reassigns a tenancy key.** The key guard reads properties; a `Reassign(Guid)`
   method beside one is invisible to it.
 - **A tenancy key under another name.** Rename `UserId` and the mutability check finds nothing to
@@ -180,8 +202,9 @@ query filter sitting over the same row.
 - **`ClientApp/`.** The scan root is the directory holding `BudgetoidApp.sln`.
 
 Tests that lock this: `tests/UnitTests/ProjectReferenceGraphTests.cs` — adding a `PackageReference`,
-a `ProjectReference`, a `FrameworkReference`, or a whole project must move a line in its pinned set,
-and so must changing an `Sdk` attribute; `tests/UnitTests/OwnershipKeyImmutabilityTests.cs` —
+a `ProjectReference`, a `FrameworkReference`, an `InternalsVisibleTo`, or a whole project must move
+a line in its pinned set, and so must changing an `Sdk` attribute;
+`tests/UnitTests/OwnershipKeyImmutabilityTests.cs` —
 the discovered set of `UserId`/`BudgetId` properties, and the absence of an externally reachable
 setter on any of them; and `tests/IntegrationTests/CompositionBoundaryTests.cs` — no route delegate
 takes a persistence port.
@@ -189,5 +212,8 @@ takes a persistence port.
 None of them is allowed to be green merely by having nothing to find. Each ships permanent controls
 on synthetic or derived input — an EF Core package rendered onto `Application`, a public setter, an
 `init` setter, a renamed key, a forbidden set asserted to be non-empty, a count of route delegates
-actually inspected — so a detector that quietly stopped detecting fails its own tests before it
-passes the real ones.
+actually inspected, and one assertion per edge kind that the rendered graph still contains at least
+one of them — so a detector that quietly stopped detecting fails its own tests before it passes the
+real ones. **The internals control is the cheapest of those to lose**: a renderer that stopped
+reading `InternalsVisibleTo` would drop exactly one row, and the set difference would report it as
+*missing* — which is what a legitimate removal of the grant looks like too, in the same words.

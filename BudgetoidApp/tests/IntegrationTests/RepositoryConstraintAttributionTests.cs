@@ -9,6 +9,7 @@ using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -173,8 +174,9 @@ public sealed class RepositoryConstraintAttributionTests
         var repository = new BudgetRepository(db);
 
         // Act
-        Exception? escaped = await CaptureAsync(() =>
-            repository.TryAddAsync(Budget.Create(userId, "Household", UtcNow())));
+        Exception? escaped = await CaptureAsync(() => repository.TryAddAsync(
+            Budget.Create(
+                Guid.CreateVersion7(), userId, SealedNarrative.Name("Household"), UtcNow())));
 
         // Assert — this one does not even lie out loud: TryAddAsync returns false, and provisioning
         // reads that as "someone else won the race, re-read the budget". There is no budget to
@@ -185,17 +187,25 @@ public sealed class RepositoryConstraintAttributionTests
     }
 
     [Test]
-    public async Task AddBudget_WithADuplicateBudgetName_ReportsItsOwnUniqueIndexAsALostRace()
+    public async Task AddBudget_WithASecondNamelessBudget_ReportsItsOwnUniqueIndexAsALostRace()
     {
-        // Arrange — the collision this repository does model: same owner, same name.
+        // Arrange — the collision this repository does model: same owner, no name, which is the half
+        // of IX_budgets_user_id_name that survived the column becoming ciphertext. It used to be
+        // arranged as the same name twice, and that arrangement no longer collides with anything:
+        // every seal draws a fresh nonce, so two rows a client sealed from one word hold different
+        // bytes, and the case_insensitive collation that made "Household" meet "household" went with
+        // the text type. NULLS NOT DISTINCT is untouched, and it is the same index and the same 23505
+        // this test was always about.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         await using BudgetoidDbContext db = new(CreateOptions(host));
         var repository = new BudgetRepository(db);
-        bool firstAdded = await repository.TryAddAsync(Budget.Create(userId, "Household", UtcNow()));
+        bool firstAdded = await repository.TryAddAsync(
+            Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow()));
 
         // Act
-        bool secondAdded = await repository.TryAddAsync(Budget.Create(userId, "household", UtcNow()));
+        bool secondAdded = await repository.TryAddAsync(
+            Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow()));
 
         // Assert
         await Assert.That(firstAdded).IsTrue();

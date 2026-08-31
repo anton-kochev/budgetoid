@@ -52,7 +52,7 @@ public sealed class AuthenticateSessionHandlerTests
         var userId = Guid.CreateVersion7();
         Session session = LiveSessionFor(userId);
         byte[] token = TokenBytes(0x11);
-        Budget budget = Budget.CreateDefault(userId, UtcNow());
+        Budget budget = Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow());
         var writer = new RecordingUserContextWriter();
         AuthenticateSessionHandler handler = HandlerFor(writer, [session], [SessionToken.For(session, token)], [budget]);
 
@@ -111,7 +111,7 @@ public sealed class AuthenticateSessionHandlerTests
         var budgets = new InMemoryBudgetRepository();
         tokens.Seed(SessionToken.For(session, token));
         await sessions.AddAsync(session);
-        budgets.Seed(Budget.CreateDefault(userId, UtcNow()));
+        budgets.Seed(Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow()));
         tokens.ObservePublicationsDuring(writer);
         sessions.ObservePublicationsDuring(writer);
         budgets.ObservePublicationsDuring(writer);
@@ -164,7 +164,7 @@ public sealed class AuthenticateSessionHandlerTests
             writer,
             [session],
             [SessionToken.For(session, token)],
-            [Budget.CreateDefault(userId, UtcNow())]);
+            [Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow())]);
 
         // Act
         AuthenticatedSession? authenticated =
@@ -191,7 +191,7 @@ public sealed class AuthenticateSessionHandlerTests
         var budgets = new InMemoryBudgetRepository();
         tokens.Seed(SessionToken.For(session, stored));
         await sessions.AddAsync(session);
-        budgets.Seed(Budget.CreateDefault(userId, UtcNow()));
+        budgets.Seed(Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow()));
         sessions.ObservePublicationsDuring(writer);
         var handler = new AuthenticateSessionHandler(tokens, sessions, budgets, writer, FixedClock());
 
@@ -225,7 +225,7 @@ public sealed class AuthenticateSessionHandlerTests
             writer,
             [session],
             [SessionToken.For(session, token)],
-            [Budget.CreateDefault(userId, UtcNow())]);
+            [Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow())]);
 
         // Act
         AuthenticatedSession? authenticated =
@@ -268,7 +268,7 @@ public sealed class AuthenticateSessionHandlerTests
             writer,
             [session],
             [SessionToken.For(session, token)],
-            [Budget.CreateDefault(userId, UtcNow())]);
+            [Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow())]);
 
         // Act
         AuthenticatedSession? authenticated =
@@ -310,7 +310,7 @@ public sealed class AuthenticateSessionHandlerTests
             writer,
             [bystander],
             [SessionToken.For(gone, token)],
-            [Budget.CreateDefault(userId, UtcNow()), Budget.CreateDefault(strangerId, UtcNow())]);
+            [Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow()), Budget.CreateDefault(Guid.CreateVersion7(), strangerId, UtcNow())]);
 
         // Act
         AuthenticatedSession? authenticated =
@@ -350,7 +350,7 @@ public sealed class AuthenticateSessionHandlerTests
             writer,
             [session],
             [SessionToken.For(session, token)],
-            [Budget.CreateDefault(strangerId, UtcNow())]);
+            [Budget.CreateDefault(Guid.CreateVersion7(), strangerId, UtcNow())]);
 
         // Act
         InvalidOperationException exception = await ThrowsInvalidOperationExceptionAsync(

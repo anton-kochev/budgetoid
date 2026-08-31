@@ -1,13 +1,14 @@
 using Domain.Budgets;
+using Domain.Security;
 
 namespace UnitTests.Fakes;
 
 /// <summary>
 /// In-memory <see cref="IBudgetRepository"/> that reproduces the two database behaviours the tests
 /// around it depend on: the documented ordering of <see cref="FindFirstForUserAsync"/>, and a unique
-/// index on <c>(UserId, Name)</c> on a case-insensitive collation that makes
-/// <see cref="TryAddAsync"/> report failure instead of throwing. The modelled index treats two
-/// nameless budgets as colliding, matching <c>NULLS NOT DISTINCT</c> on the real index.
+/// index on <c>(UserId, Name)</c> that makes <see cref="TryAddAsync"/> report failure instead of
+/// throwing. The modelled index treats two nameless budgets as colliding, matching
+/// <c>NULLS NOT DISTINCT</c> on the real index.
 /// </summary>
 /// <remarks>
 /// Provisioning no longer reaches <see cref="TryAddAsync"/> at all — the default budget goes in with
@@ -80,18 +81,24 @@ public sealed class InMemoryBudgetRepository : IBudgetRepository
 
     /// <summary>
     /// Reports <see langword="false"/> for a budget the modelled unique index would reject, the way
-    /// the real repository translates PostgreSQL's <c>23505</c>. Two null names count as a
-    /// collision: <see cref="string.Equals(string?, string?, StringComparison)"/> answers
-    /// <see langword="true"/> for a pair of nulls, which is exactly the <c>NULLS NOT DISTINCT</c>
-    /// semantics the real index is declared with.
+    /// the real repository translates PostgreSQL's <c>23505</c>. Two nameless budgets count as a
+    /// collision, which is exactly the <c>NULLS NOT DISTINCT</c> semantics the real index is declared
+    /// with and the half of it that is load-bearing.
     /// </summary>
+    /// <remarks>
+    /// The comparison is over bytes because the column is <c>bytea</c>, and the case-insensitive
+    /// collation that used to make <c>"Household"</c> collide with <c>"household"</c> went with the
+    /// text type — a collation is not a thing <c>bytea</c> has. What survives is the nameless half:
+    /// two rows a client sealed from the same name hold different envelopes anyway, since every seal
+    /// draws a fresh nonce, so this fake models a duplicate-name refusal no index performs any more.
+    /// Refusing duplicate names is a blind index's job and this column has none.
+    /// </remarks>
     public Task<bool> TryAddAsync(Budget budget, CancellationToken cancellationToken = default)
     {
         AddCallCount++;
 
         bool violatesUniqueName = _budgets.Any(existing =>
-            existing.UserId == budget.UserId &&
-            string.Equals(existing.Name, budget.Name, StringComparison.OrdinalIgnoreCase));
+            existing.UserId == budget.UserId && HasSameName(existing.Name, budget.Name));
 
         if (violatesUniqueName)
         {
@@ -110,4 +117,11 @@ public sealed class InMemoryBudgetRepository : IBudgetRepository
     /// </summary>
     public Task<bool> HasTransactionsAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(false);
+
+    // Two nulls are one value to the modelled index, which is what NULLS NOT DISTINCT says; anything
+    // else is compared as the bytes the column holds, because that is all a bytea index can compare.
+    private static bool HasSameName(NarrativeField? left, NarrativeField? right) =>
+        left is null || right is null
+            ? left is null && right is null
+            : left.Envelope.Span.SequenceEqual(right.Envelope.Span);
 }

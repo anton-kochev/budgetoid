@@ -289,6 +289,41 @@ public sealed class BudgetoidDbContextConstructionTests
         [
             "CK_accounts_opening_balance: accounts abs(opening_balance) <= 1000000000",
             "CK_accounts_type: accounts type in ('Checking', 'Savings', 'Cash', 'CreditCard')",
+            // A band and not a width, unlike the wrapped-key pair at the bottom of this list. AES-GCM
+            // ciphertext is exactly the length of its plaintext, and a budget's name is as long as
+            // whatever somebody typed, so only the two ends are decidable: the floor is the shortest
+            // the framing can be — CiphertextEnvelope.MinimumLength, a version, a nonce and a tag over
+            // an empty plaintext — and the ceiling is NarrativeFieldLimits.NameBytes. Both bounds are
+            // inclusive because both name a length that is legal. The configuration renders both from
+            // those constants rather than typing 29 and 1024, so this line is the pin on the RENDERING
+            // and the Domain still owns the numbers; a constant that moves moves this literal too, and
+            // that is the wanted failure rather than a nuisance.
+            //
+            // Nothing here says "or null", and the omission is the rule rather than a gap. A CHECK is
+            // satisfied by NULL — length(null) is null, and a null predicate is not a violation — so
+            // the nameless budget, which is the default budget and the common row, passes both of
+            // these with no arm written for it.
+            "CK_budgets_name_length: budgets length(name) between 29 and 1024",
+            // substring, and deliberately NOT the get_byte idiom the wrapped-key version checks below
+            // use. get_byte reads better and it RAISES 2202E on a zero-length bytea instead of
+            // answering false — no constraint name, no failing row, and nothing a repository filtering
+            // PostgresException on SqlState 23514 can ever see. The length check next door does not
+            // save it: which of two CHECKs on one column fires first is decided by the constraint
+            // NAME, alphabetically, so today's safety is the word "length" sorting before "version"
+            // and nothing else. substring is total over every length, answers false rather than
+            // raising, and still leaves NULL satisfying the predicate.
+            //
+            // That difference is invisible to THIS pin, which compares configured text and cannot see
+            // which constraint fires or what SQLSTATE a bad row produces. The pin's job here is that
+            // somebody rewriting the version check back into get_byte has to move this literal and
+            // read this paragraph on the way past. The wrapped-key pair below still carries get_byte
+            // and is correct today only by that same alphabetical accident; it is recorded in the
+            // hardening backlog and belongs to its own change, not to a drive-by edit here.
+            //
+            // The escaped backslash is one character in the configured SQL: '\x01' is PostgreSQL's
+            // hex-format bytea literal, and the version digit is rendered from CiphertextEnvelope.Version
+            // two hex digits wide for the reason the band above is rendered from its own constants.
+            "CK_budgets_name_version: budgets substring(name from 1 for 1) = '\\x01'::bytea",
             "CK_categories_position: categories position >= 0",
             "CK_category_groups_position: category_groups position >= 0",
             // The issuer vocabulary, bounded the way the type vocabulary below it is: neither the
@@ -504,7 +539,26 @@ public sealed class BudgetoidDbContextConstructionTests
         // deploy fails on the first CREATE TABLE against a database that already holds the schema.
         // Editing this literal by hand is the checkpoint; deriving it from the migrations directory
         // would waive it, which is what the first paragraph above is about.
-        const string frozenBaselineId = "20260816212632_InitialCreate";
+        //
+        // And it moved again for budgets.name becoming bytea. The column stops being text the client
+        // hands over in the clear and starts being a sealed narrative field — an AEAD envelope the
+        // browser produces under a content key the server never sees — so the change is a column TYPE
+        // change rather than an added column, which is the one shape an additive migration cannot
+        // express without a data step. There is no data step to write: the production database holds
+        // no rows (CON-002), which is why the rebaseline window is open and why this lands as one
+        // initial migration rather than as an alter that would have to invent ciphertext for names
+        // that were never sealed. Three things arrive with the type: the case_insensitive collation
+        // leaves the column, because bytea is not a collatable type and that is a forced consequence
+        // rather than a decision anybody took; a length band rendered from
+        // CiphertextEnvelope.MinimumLength and NarrativeFieldLimits.NameBytes; and a version check
+        // spelled with substring rather than get_byte, for the reason BudgetConfiguration states
+        // inline — get_byte raises 2202E on a zero-length bytea instead of answering false, and which
+        // of a column's checks fires first is decided by the constraint NAME, so an idiom that
+        // depends on "length" sorting before "version" is depending on an accident. The obligation is
+        // the one every earlier move carried: whoever regenerates the baseline resets production's
+        // __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3), or that deploy fails on
+        // the first CREATE TABLE against a database that already holds the schema.
+        const string frozenBaselineId = "20260831212803_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act
@@ -626,8 +680,23 @@ public sealed class BudgetoidDbContextConstructionTests
         await Assert.That(ownerNameIndex.IsUnique).IsTrue();
         await Assert.That(designTimeOwnerNameIndex.GetAreNullsDistinct()).IsFalse();
         await Assert.That(nameProperty.IsNullable).IsTrue();
-        await Assert.That(nameProperty.GetMaxLength()).IsEqualTo(200);
-        await Assert.That(designTimeNameProperty.GetCollation()).IsEqualTo("case_insensitive");
+
+        // The column is bytea and carries NEITHER a max length NOR a collation, and both absences are
+        // asserted rather than dropped. This test used to pin 200 and case_insensitive; the name is a
+        // sealed narrative field now, so the length that bounds it is a CHECK over the envelope
+        // (CK_budgets_name_length, pinned in Model_BoundsEveryValueRangeTheDatabaseCanCheck) and not a
+        // varchar width, and a collation is not something bytea can carry at all. Asserting null on
+        // both is the difference between "the pin was updated" and "the pin was deleted": a MaxLength
+        // reappearing means somebody put a width back on a column whose contents are ciphertext, where
+        // a width bounds the ENVELOPE and silently truncates the name it seals, and a collation
+        // reappearing means the column went back to text.
+        //
+        // Read off the design-time model, for the reason stated above where that model is fetched: the
+        // runtime read-optimized model drops annotation-backed values, so a null read there would be
+        // indistinguishable from the null this asserts.
+        await Assert.That(designTimeNameProperty.GetMaxLength()).IsNull();
+        await Assert.That(designTimeNameProperty.GetCollation()).IsNull();
+        await Assert.That(designTimeNameProperty.GetColumnType()).IsEqualTo("bytea");
         await Assert.That(constrainsOwnerAlone).IsFalse();
     }
 

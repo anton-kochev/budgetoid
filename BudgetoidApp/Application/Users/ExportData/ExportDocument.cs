@@ -55,6 +55,16 @@ public sealed record ExportedUser(Guid Id, string Email, DateTime CreatedAtUtc);
 /// half-constructed.
 /// </para>
 /// <para>
+/// <b><see cref="Name" /> is still a <see cref="string" /> and no longer holds a name.</b> The column
+/// is an AEAD envelope this server cannot open, so what ships is that envelope in the one alphabet
+/// every binary member of this API crosses JSON in — unpadded base64url, which the client's strict
+/// decoder already reads. The member keeps its name because the completeness check over this document
+/// maps a table's columns onto a record's members, and because renaming it would say the export had
+/// stopped carrying the column rather than that the column had changed shape. A reader of a saved file
+/// needs the account's content key to get a name back out of it; the document declares
+/// <c>SchemaVersion</c> so that a reader can tell which shape it is holding.
+/// </para>
+/// <para>
 /// <b>The value equality a record advertises does not reach those five.</b> The synthesized
 /// <see cref="object.Equals(object)" /> compares each member through
 /// <see cref="EqualityComparer{T}.Default" />, which for an <see cref="IReadOnlyList{T}" /> is
@@ -64,6 +74,14 @@ public sealed record ExportedUser(Guid Id, string Email, DateTime CreatedAtUtc);
 /// whole answers a question about instances rather than about contents.
 /// </para>
 /// </remarks>
+/// <param name="Id">The budget's identifier.</param>
+/// <param name="UserId">The account that owns it.</param>
+/// <param name="Name">
+/// The budget's <b>sealed</b> name as unpadded base64url, or <see langword="null" /> for the budget
+/// nobody named.
+/// </param>
+/// <param name="BaseCurrencyCode">The budget's base currency, or <see langword="null" />.</param>
+/// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
 public sealed record ExportedBudget(
     Guid Id,
     Guid UserId,

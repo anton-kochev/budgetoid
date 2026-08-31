@@ -206,12 +206,15 @@ public sealed class NarrativeField
     /// and nothing else.
     /// </para>
     /// <para>
-    /// <b>What that costs, said plainly: today nothing outside this assembly can call it.</b> The
-    /// solution carries no <c>InternalsVisibleTo</c> at all — checked — so the persistence
-    /// configuration that will materialise these columns cannot reach this member as it stands. Closing
-    /// that is a one-line grant on <c>Domain</c>, named at the assembly that gets it and reviewable as
-    /// its own decision, which is the point: the alternative is a member every ring can reach so that
-    /// one of them can.
+    /// <b>What that costs is one grant, and it has been made.</b> <c>Domain.csproj</c> carries
+    /// <c>&lt;InternalsVisibleTo Include="Infrastructure" /&gt;</c> — the first in this solution's
+    /// history — so the persistence configurations that materialise these columns can reach this member
+    /// and no other ring can. It is named at the assembly that gets it and argued where it sits, which
+    /// is the point: the alternative is a member every ring can reach so that one of them can.
+    /// <c>ProjectReferenceGraphTests</c> renders that grant as an edge of its own and pins it, so a
+    /// second <c>InternalsVisibleTo</c> reddens the pin by name — what the guard cannot judge is whether
+    /// a grant deserves to exist, which is why the argument for this one lives in that file rather than
+    /// in the pinned set.
     /// </para>
     /// <para>
     /// <b>It does not re-validate, and a reviewer will propose that it should. The symmetry is the

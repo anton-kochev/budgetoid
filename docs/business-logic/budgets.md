@@ -34,10 +34,12 @@ and [transactions.md](transactions.md) assumes the isolation defined here.
 ## Key Entities
 
 - **Budget** — `Id`, `UserId`, `Name` (nullable), `BaseCurrencyCode` (nullable), `CreatedAtUtc`.
-  Created through `Budget.Create(userId, name, createdAtUtc)`, which requires a name and trims it to
-  at most 200 characters, or `Budget.CreateDefault(userId, createdAtUtc)`, which leaves `Name` null.
-  The two factories differ in exactly that one respect. A null name is the budget the user never
-  asked for; what a client shows in place of one is presentation and lives in the client.
+  **`Name` is a sealed narrative envelope and not text**: the property is typed `NarrativeField?`
+  and the column is `bytea`. Created through `Budget.Create(id, userId, name, createdAtUtc)`, which
+  requires a sealed name, or `Budget.CreateDefault(id, userId, createdAtUtc)`, which leaves `Name`
+  null. Both take the row's identifier rather than minting one, and neither offers a minting
+  overload — the rule below says why. A null name is the budget the user never asked for; what a
+  client shows in place of one is presentation and lives in the client.
 - **Base currency** — a nullable ISO-4217 code referencing the shared [Currency](currencies.md)
   reference data. It is null on every budget that exists: no factory takes one and `Budget` exposes
   no method that sets one. The column is schema readiness for a planning layer, not a setting a user
@@ -55,7 +57,7 @@ erDiagram
     BUDGET {
         guid Id
         guid UserId
-        string Name
+        bytea Name "sealed envelope, nullable"
         string BaseCurrencyCode
         datetime CreatedAtUtc
     }
@@ -71,13 +73,24 @@ erDiagram
   - **Enforced in**: `Budget.UserId` is required, and `BudgetConfiguration` maps it to a required
     `user_id` column with a foreign key to `users.id` on `Cascade`.
 
-- **Budget names are unique per owner, case-insensitively.**
-  - **Why**: the name is the only thing that distinguishes one named budget from another, so two
-    budgets called "Wedding" and "wedding" would be a list the user cannot read. The same index
-    carries a second, separate invariant — at most one *unnamed* budget per owner — stated below.
-    Case-insensitivity contributes nothing there: neither racing row has a name to fold.
-  - **Enforced in**: `BudgetConfiguration` puts `name` on the `case_insensitive` collation and adds
-    a unique index over `(user_id, name)`, declared `NULLS NOT DISTINCT`.
+- **A budget's name reaches this server sealed, and nothing on this side can read, measure or
+  compare it.** `budgets.name` is the first column in the product that holds ciphertext.
+  - **Why**: a budget name is narrative text, which is the one thing the product is built not to be
+    able to read. Everything the server used to do with the value followed from holding the
+    characters, so all of it went with them — there is no collation, no length in characters, no
+    trim and no blankness rule left on this side, and none can be added.
+  - **Enforced in**: `Budget.Name` is typed `NarrativeField?` — the one type a narrative column
+    accepts, which has no constructor, factory or conversion taking a `string`, so writing plaintext
+    into this column **does not compile**. `BudgetConfiguration` maps it to a nullable `bytea`
+    through a `ValueConverter` over that type, beside a `ValueComparer` over the envelope's bytes
+    (without one, EF compares a class by reference and reads a rebuilt-but-identical field as an
+    edit while missing an envelope rewritten in place). The table carries two `CHECK` constraints,
+    each rendered from the constant that owns its number rather than from a literal:
+    `CK_budgets_name_length` bounds the stored envelope between `CiphertextEnvelope.MinimumLength`
+    and `NarrativeFieldLimits.NameBytes`, and `CK_budgets_name_version` requires the leading version
+    byte. Both are satisfied by NULL — `length(null)` is null and a null predicate is not a
+    violation — which is how the nameless budget passes them with no arm written for it. See
+    [ciphertext-envelope.md](ciphertext-envelope.md).
 
 - **Every account, category group, category, payee and transaction belongs to exactly one budget, on
   both read and write.**
@@ -214,6 +227,32 @@ erDiagram
     name mentions a budget. A test asserting an absence: if a `/api/budgets/{budgetId}` endpoint is
     ever needed, the rule is being changed, not worked around.
 
+- **Per-owner budget-name uniqueness MUST NOT be reintroduced, and the unique index MUST NOT be
+  deleted.** Both halves of that sentence are load-bearing and they point in opposite directions.
+  - **Why**: uniqueness over this column is **surrendered**, not deferred — see the rule below for
+    the whole argument. What the index still does is bound the *unnamed* budgets at one, which is
+    the invariant registration's race safety rests on, so a reviewer who reads the surrender as a
+    reason to drop the index takes the surviving half out with the dead one.
+  - **Enforced in**: nothing refuses a duplicate name, deliberately.
+    `BudgetoidDbContextConstructionTests.Model_ScopesBudgetNameUniquenessToTheOwner` and
+    `BudgetRepositoryTests.Budgets_WithNoNameForOneUser_AreRejectedAfterTheFirst` hold the
+    declaration and the `NULLS NOT DISTINCT` behaviour respectively.
+
+- **The server MUST NOT be given a rule about a budget name's text** — not a minimum length, not a
+  blankness check, not a trim, not a character cap.
+  - **Why**: this is a **capability that moved to the client**, not a rule that was quietly dropped,
+    and the distinction is the whole point of writing it down. The server holds an envelope; "is
+    this name nothing but spaces?" and "is it longer than a label?" are questions about plaintext it
+    has never seen and never will. A reader who finds the gap in the validator and restores a check
+    can only restore it against the envelope — measuring bytes and calling them characters, or
+    refusing a 29-byte envelope that is the correct sealing of an empty string. Both are wrong
+    answers wearing the shape of the right one, and neither can be honest.
+  - **Enforced in**: `Budget`'s shared `ValidateOrThrow` judges the identifier and the owner and
+    nothing else; its `nameRequired` parameter went with the rules it selected between, because a
+    switch with one arm is not a switch. "A name is not just spaces" is the client's, applied before
+    it seals. What survives on this side is the envelope's framing and the two byte bounds under
+    MUST above — the only length anything here can measure.
+
 ## Business Rules & Invariants
 
 - **Rule**: A budget with **no name** is created for a user in the same save as their account, and
@@ -245,6 +284,11 @@ erDiagram
   anywhere. Nothing about "no name" can drift. The invariant is also exactly the shape multi-budget
   needs — named budgets are unconstrained in number, and the budget the user never asked for stays
   singular.
+  - **Keying on the absence of a name is now the only thing this index *can* key on.** A name is
+    ciphertext, and two budgets carrying the same name carry different bytes, because every seal
+    draws a fresh nonce. "No name" is NULL before and after, so the `NULLS NOT DISTINCT` half is
+    untouched by the column's change of type while the named half stopped refusing anything — which
+    is why the index survives a reviewer's proposal to delete it as dead weight.
 - **Enforced in**: the unique index over `(user_id, name)` in `BudgetConfiguration`, declared
   `NULLS NOT DISTINCT` (`AreNullsDistinct(false)`, PostgreSQL 15+). **Database-owned** under
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) — the schema is the
@@ -264,6 +308,57 @@ erDiagram
   guarantee either: EF sends every mapped, non-store-generated property in the INSERT, so the
   default would never fire, and it would put a UI-visible string in the schema where it cannot be
   localized.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **Two budgets of one owner may carry the same name, and nothing anywhere refuses it.**
+  That uniqueness is *surrendered*, not deferred.
+- **Why**: the guarantee rested on the server holding the characters — a `case_insensitive`
+  collation folding "Wedding" against "wedding", and a unique index comparing the folded values. The
+  column now holds an AEAD envelope, and two seals of one name differ in every byte because each
+  draws a fresh nonce, so a unique index over it can no longer see a duplicate whatever it is
+  declared on. The collation did not survive either, and its departure was **forced rather than
+  chosen**: `case_insensitive` is a text collation and `bytea` is not a collatable type — measured,
+  declaring one raises `collations are not supported by type bytea`. What could bring the refusal
+  back is a **blind index**, the keyed fingerprint that lets a server holding no plaintext see that
+  two names are equal. `budgets.name` does not get one: of the five sealed name columns, the four on
+  `accounts`, `categories`, `category_groups` and `payees` are blind-indexed and this one is
+  excluded. So there is no later slice in which this comes back, and the honest word for it is
+  surrendered.
+- **Enforced in**: nothing, and the absence is the rule. What a reader will misread as the missing
+  enforcement is the unique index over `(user_id, name)`, which still exists and still refuses
+  something — a second *unnamed* budget, stated above.
+- **Counterexample**: adding a blind-index column to `budgets` to restore the refusal. It would
+  bring back a rule nobody asked for, at the cost of a second value per row that cannot be
+  recomputed once written — the client holds the only key that can produce one — and a
+  cross-client contract for a column the requirement leaves out. The cheaper mistake in the same
+  direction is a client that refuses a duplicate name it can see in its own list: harmless as help,
+  and not to be described anywhere as the invariant, because a second client would not have it.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: A budget's identifier is **supplied to the factory, never minted inside it** — and
+  registration is the one place in the product that chooses a narrative row's id server-side.
+- **Why**: a narrative row's id is the associated data its name was sealed against, so a row whose
+  id the server picked holds a name nobody can ever open — with every constraint satisfied and
+  nothing red. That is why the id is the client's for every narrative row
+  ([ADR 0022](../decisions/0022-mint-narrative-row-identifiers-on-the-client.md)). The budget
+  registration creates is the exception, and it is a narrow one: the row carries **no name**, so
+  there is nothing sealed and nothing to seal against, and the browser has no basis on which to
+  choose. A budget that is named is created by whoever sealed the name, and hands its id in with it.
+- **Enforced in**: `Budget.Create` and `Budget.CreateDefault` each take `id` as a parameter, and
+  `Guid.CreateVersion7()` has left `Budget.cs` entirely rather than moving behind an overload — a
+  caller that simply forgot to thread the id through would otherwise compile, pass every test that
+  does not assert the returned identifier, and produce exactly that row. The shared `ValidateOrThrow`
+  refuses `Guid.Empty`, which is reachable for the first time now that the value arrives from
+  outside: all-zero is a legal uuid, so the primary key would store the first such row and report
+  the second under a constraint name that says nothing about a caller who never chose an id.
+  `RegisterAccountHandler` is the one call site that mints one, on a line written out in the open.
+- **Counterexample**: a `Budget.Create(userId, name, createdAtUtc)` overload that mints the id for
+  convenience. Nothing in the domain can tell a good id from a wrong one, so the only protection is
+  that inventing one has to be *written* on a line a reviewer reads in the diff.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -387,7 +482,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → Created | `POST /api/registration`, in the one `SaveChanges` that writes the whole account | `Budget.CreateDefault` validates the owner; there is no name to validate |
+| → Created | `POST /api/registration`, in the one `SaveChanges` that writes the whole account | `Budget.CreateDefault` validates the owner and the supplied identifier; there is no name to validate, and there is nothing about a name this side could validate |
 | UserResolved → BudgetLookup | Every authenticated request, after `ResolveUser` and never before it | `ResolveUser` clears the ambient budget, so the order is the rule |
 | BudgetLookup → BudgetResolved | The account owns a budget | First budget by `CreatedAtUtc`, then `Id`. The read is scoped by owner explicitly — `Budget` carries no query filter |
 | BudgetLookup → Broken | The account owns none | `InvalidOperationException`. Unreachable from the one path that creates an account |
@@ -417,6 +512,10 @@ The user branch that runs before this is in
 
 - **[Users & Ownership](users-and-ownership.md)**: the owning user comes from registration, and the
   budget is written in that same save — "an account exists ⇒ it has its budget" is one idea.
+- **[Ciphertext Envelope](ciphertext-envelope.md)**: `budgets.name` is the first column in the
+  product that stores an envelope, so the framing, the two byte caps, the value type the column
+  accepts and the grammar a name is bound to all live there. This file owns what a budget name
+  *means* and what the schema no longer refuses about it.
 - **[Currencies](currencies.md)**: `BaseCurrencyCode` references the global ISO-4217 reference table
   by code with `Restrict`. `Currency` is the only reference table shared across every budget.
 - **[Accounts](accounts.md)**, **[Transactions](transactions.md)**, **[Payees](payees.md)** and
@@ -448,7 +547,27 @@ The user branch that runs before this is in
   registration creates has no name. The point survives renaming too — a name-based lookup would stop
   finding a budget the day the user renamed it, and a future writer would silently create a second
   one. Do not reintroduce a name — a well-known literal, a marker string, a flag column standing in
-  for one — as the way the default budget is recognized.
+  for one — as the way the default budget is recognized. The column's type now says the same thing
+  from underneath: a `WHERE name = 'something'` over ciphertext matches nothing a person typed, so
+  the mistake has stopped being expressible in SQL as well as forbidden here.
+
+- **Which of the two `CHECK` constraints on `name` reports a violation is decided by the constraint
+  *name*, alphabetically — not by declaration order and not left to right inside an `AND`.**
+  Measured on PostgreSQL 17.10: one pair of predicates answered `23514` or `2202E` depending only on
+  what the constraints were called. That is why the version check is written with `substring` and
+  never with `get_byte`, which reads better and *raises* on a zero-length `bytea` instead of
+  answering false — `get_byte(''::bytea, 0)` fails with `2202E`, which is not a constraint violation
+  at all: no constraint name, no failing row, and nothing a handler filtering on `23514` can ever
+  see. The length check next door does not save it; believing it does is the trap. The whole
+  argument, and the rule for whoever writes the next such constraint, is in
+  [ciphertext-envelope.md](ciphertext-envelope.md#two-checks-on-one-column-and-which-one-bites).
+
+- **A named budget is not a thing this product can create today, and the schema is ready for one
+  anyway.** `Budget.Create` exists, takes a sealed name and a client-minted id, and the column, its
+  converter, its comparer and its two check constraints are all live — but every budget that exists
+  is the nameless one registration writes. Do not read the column's emptiness as permission to relax
+  anything about it: the format is a cross-client contract, and it is cheaper to agree on before a
+  row is written under it than after.
 
 - **A budget with no name renders as the client's own localized default label.** That is the whole
   contract for the missing name, written down before there is anything to write it into: there is no

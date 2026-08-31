@@ -5,6 +5,7 @@ using Domain.Budgets;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -310,7 +311,8 @@ public sealed class DataExportRefusalTests
         // budget an owner holds, so any instant in the past would make this empty row the ambient one,
         // move every furnished id into a budget the export never reads, and leave the caller's eight-id
         // body search unable to find anything even against an implementation that truncates.
-        Budget second = Budget.Create(userId, "Holiday", createdAtUtc);
+        Budget second = Budget.Create(
+            Guid.CreateVersion7(), userId, SealedNarrative.Name("Holiday"), createdAtUtc);
         db.Budgets.Add(second);
         await db.SaveChangesAsync();
 

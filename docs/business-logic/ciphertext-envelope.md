@@ -43,14 +43,18 @@ width or the associated-data binding to drift apart, and every symptom of drift 
 silent: bytes of exactly the right shape that decrypt to nothing on a device that did not
 seal them.
 
-**Nothing is encrypted today, and no screen seals or opens a field.** No column holds a narrative
-envelope. The two functions do have a production caller — `AccountKeyCustodyService.sealField` and
+**One column now holds a narrative envelope, and no screen seals or opens a field.**
+`budgets.name` is the first: it is `bytea`, nullable, and mapped through a converter over
+`NarrativeField`, with a length band and a version check on the table. Every budget that exists is
+the nameless one registration writes, so the column stores NULL in every row today — what changed is
+that the format has left the edge and entered the schema, which is where its rules stop being
+reversible. The two functions do have a production caller — `AccountKeyCustodyService.sealField` and
 `openField` delegate to them, because the account's content key never leaves that class — and
 nothing but a spec calls *that*. See
 [account-keys.md](account-keys.md#the-operations-that-delegate-and-the-shape-that-was-forced),
 which argues why the operations sit there and not beside the codec. That is a deliberate order
 rather than a module left behind: the format is a cross-client contract, so it can be pinned
-against an answer computed outside this codebase before a single column holds an envelope, and a
+against an answer computed outside this codebase before a single row holds an envelope, and a
 format is far cheaper to agree on before it has data written under it than after. The same is said
 again under
 [Edge Cases](#edge-cases--known-gotchas), because whoever lands in one place and not the other
@@ -62,16 +66,25 @@ this framing has a live reader as well as a live writer. What that buys the narr
 nothing at all — a format exercised by one consumer is not a format checked for the other, since
 the two grammars differ and only the frozen vectors speak to both.
 
-**The server does now have a format edge for the narrative side, and it still stores nothing.**
-Four types stand between a client's bytes and a column that does not exist yet:
-`Domain/Security/NarrativeFieldLimits` (the two byte caps), `Domain/Security/NarrativeField` (the
-one type a narrative column will accept), `Domain/Security/IndexedName` (a sealed name and its
-blind index as one value) and `Application/Security/BlindIndexText` (the wire step for an index).
-None of them can open anything — the server holds no key and never will — so what they add is
-*shape*, at the edge, before a value is stored. They are argued below under
-[the two caps](#the-two-caps-and-what-they-measure) onward. The order is the same one this format
-took: agree while agreement is cheap, and let the persistence step arrive against rules that are
-already written.
+**The server's format edge now has a column behind it.** Four types stand between a client's bytes
+and storage: `Domain/Security/NarrativeFieldLimits` (the two byte caps),
+`Domain/Security/NarrativeField` (the one type a narrative column accepts),
+`Domain/Security/IndexedName` (a sealed name and its blind index as one value) and
+`Application/Security/BlindIndexText` (the wire step for an index). None of them can open anything —
+the server holds no key and never will — so what they add is *shape*, before a value is stored. They
+are argued below under [the two caps](#the-two-caps-and-what-they-measure) onward. `budgets.name`
+is what they now stand in front of, and the schema restates two of their rules in SQL: see
+[two checks on one column](#two-checks-on-one-column-and-which-one-bites). The order was the one
+this format asked for and got — agree while agreement is cheap, and let the persistence step arrive
+against rules that are already written.
+
+**`budgets.name` is a narrative field with no blind index, and it is the only one of the five name
+columns like that.** The other four — `accounts`, `categories`, `category_groups`, `payees` — are
+the indexed set: an index rides beside each ciphertext so that equal names can be found equal, which
+is what `IndexedName` exists to carry. A budget name is neither searched nor constrained, so it is
+sealed and nothing more, and its column takes a bare `NarrativeField`.
+[budgets.md](budgets.md) carries what that costs, which is per-owner name uniqueness, surrendered
+rather than deferred.
 
 ## Key Entities
 
@@ -311,8 +324,10 @@ erDiagram
     into data loss. The same argument protects a future version 2 from destroying the version 1
     rows it exists to rewrite. See
     [the read side does not judge](#the-read-side-does-not-judge-and-that-is-the-decision).
-  - **Enforced in**: `NarrativeField.FromStore`, which copies and does nothing else — and by
-    review alone, because nothing outside `Domain` can call it yet.
+  - **Enforced in**: `NarrativeField.FromStore`, which copies and does nothing else. It is
+    `internal`, and `Domain` grants its internals to `Infrastructure` alone, so the one caller
+    that needs it — the read arm of a persistence configuration's converter — reaches it and no
+    other ring can.
 
 - **The server MUST NOT hold a value that opens an envelope, and no member that could carry
   one MUST be added.**
@@ -574,11 +589,23 @@ as sums over `CiphertextEnvelope.MinimumLength` would dress a choice up as a con
 the wrapped key's 61, where the framing plus one fixed plaintext genuinely *is* the width.
 
 They live in `Domain` and are `const`, and the type names two call sites as the reason for both: the
-`[Arguments(...)]` that pin them, which exist today, and the interpolated `length(…) <= …` check
-constraints the persistence configuration will be written from, which do not — no column holds a
-narrative envelope yet. An attribute argument admits nothing but a constant expression, so a static
+`[Arguments(...)]` that pin them, and the interpolated check constraints a persistence configuration
+is written from. **Both call sites exist now.** `BudgetConfiguration` renders
+`CK_budgets_name_length` from `CiphertextEnvelope.MinimumLength` and
+`NarrativeFieldLimits.NameBytes` rather than from a typed `29` and `1024`, which is what stops the
+column and the domain drifting into two versions of one rule — the copy that drifted would still
+store, still read back and still open, differing only in what it accepts from a client nobody
+exercised that day. An attribute argument admits nothing but a constant expression, so a static
 property would not compile at the first of those sites and would have nothing to offer at the
-second. `Domain` is the home for the same reason `CiphertextEnvelope` is: a limits type one ring out
+second.
+
+**The constraint is a band and not a width, and both bounds are inclusive.** Unlike
+`wrapped_account_keys`, whose payload has one legal size, AES-GCM ciphertext is exactly as long as
+its plaintext, so a name is as long as whatever somebody typed: the floor is the format's own
+`MinimumLength` and the ceiling is the field class's cap, and each names a length that is legal.
+Nothing in it says "or null". A `CHECK` is satisfied by NULL — `length(null)` is null, and a null
+predicate is not a violation — so a nameless row passes without an arm written for it, and adding
+one would be noise that reads like a rule. `Domain` is the home for the same reason `CiphertextEnvelope` is: a limits type one ring out
 would be a second owner of a rule the innermost ring already holds, and the column constraint would
 then be built from whichever copy the configuration happened to import.
 
@@ -591,6 +618,43 @@ reason anybody could state. The pair of cases that catches a factory reaching fo
 constant is `Of_WithAnEnvelopeAtTheNameCap_IsAccepted` against
 `Of_WithAnEnvelopeOneByteOverTheNameCap_ReportsTheEnvelope`: the value in between clears nothing
 else in that file.
+
+### Two checks on one column, and which one bites
+
+A narrative column carries **two** `CHECK` constraints: the length band above, and a version check
+requiring the leading byte to be the one version this deployment defines. The version is bounded in
+the schema rather than left to the client because the successor does not exist — a row carrying
+version 2 is a client claiming a contract nothing here has implemented, and storing it files bytes no
+version of this system can interpret, discovered on the day somebody needs the text back. Like the
+band, it is rendered from the constant that owns the number, two hex digits wide; a typed `'\x01'`
+would be a second home for a version the Domain already holds.
+
+**Write the version check with `substring`, never with `get_byte`, and the reason is measured.**
+`get_byte` reads better — the leading byte is a number and comparing it as one keeps the constraint
+reading the way the domain does — but on a zero-length `bytea` it **raises instead of answering
+false**: measured on PostgreSQL 17.10, `get_byte(''::bytea, 0)` fails with SQLSTATE `2202E`, *index
+0 out of valid range, 0..-1*. That is not a constraint violation at all — no constraint name, no
+failing row, and nothing a `catch` filtering on `23514` will ever see.
+
+**The length check next door does not save it, and believing it does is the trap.** Which of two
+`CHECK`s on one column runs first is decided by the **constraint name**, alphabetically — not by
+declaration order, and not left to right inside an `AND`. Measured on the same server: a table
+declaring the version check first still reported the *length* violation, and renaming the version
+check so it sorted ahead of the length one produced `2202E` from an identical pair of predicates.
+Today `CK_budgets_name_length` sorts before `CK_budgets_name_version`, so a zero-length name happens
+to answer `23514` — held by nothing but the word *length* sorting before *version*, which is not a
+decision anybody took. Folding the two into one `AND`-joined constraint only moves the same coin
+flip inside the expression: PostgreSQL does not promise it evaluates `AND` left to right either.
+
+`substring` carries no such dependency. It answers a zero-length `bytea` for a zero-length input,
+that is not the version byte, the check is false rather than fatal, and the violation is `23514`
+under every ordering, on `INSERT` and on `UPDATE` alike — measured on all four. NULL still satisfies
+it, also measured, so a nameless row is unaffected by the spelling.
+
+**The rule for the next such constraint, which is the point of writing this down**: a predicate over
+a narrative column has to be **total over every length its column can hold**, including zero, because
+nothing guarantees a companion check gets there first. Total predicates make a column's error
+behaviour a property of the column; partial ones make it a property of the alphabet.
 
 ### The type is the rule, and it is the strongest one available here
 
@@ -686,14 +750,15 @@ the one argued above. The envelope property promises a buffer nobody else holds,
 on one construction path and not the other would oblige every later reader to know which factory
 built the instance in front of them.
 
-**The cost, said plainly: nothing outside `Domain` can call it today.** The member is `internal` —
-public, it would be the hole the type was built to close, a way to put unjudged bytes into a
-narrative column on a call site that reads like bookkeeping — and the solution carries no
-`InternalsVisibleTo`. So the persistence configuration that will materialise these columns cannot
-reach it as things stand. Closing that is a one-line grant on `Domain`, named at the assembly that
-receives it, and it is **a decision worth making visibly rather than discovering**: the alternative
-is a member every ring can reach so that one of them can. Until that grant exists, the rule that
-this member does not re-validate is held by review and by nothing running.
+**The cost is one grant, and it has been made.** The member is `internal` — public, it would be the
+hole the type was built to close, a way to put unjudged bytes into a narrative column on a call site
+that reads like bookkeeping — so the persistence configuration that materialises these columns could
+not reach it. `Domain.csproj` now carries `<InternalsVisibleTo Include="Infrastructure" />`, the
+first in this solution, argued in place beside the element rather than in a commit message. It names
+one assembly: `Application`, `Api` and both test projects still cannot call `FromStore`. Nothing
+about it inverts the Dependency Rule — `Domain` still references nothing and `Infrastructure`
+already reaches `Domain` — what travels is visibility, not a dependency. See the
+[decision log](_decision-log.md) for what the grant buys and what it rejects.
 
 ### The blind index gets its own wire type, and the near miss it avoids
 
@@ -887,15 +952,16 @@ a ceiling — which the decoder applies to the encoded text and then to the buff
 then the floor and the version. `WrappedKeyEnvelope` reaches `CiphertextEnvelopeText` and adds its
 exact width on top.
 
-**The narrative side has its edge and no traffic.** A narrative value would take the same three
-steps and two more: `CiphertextEnvelopeText.TryDecode` with one of `NarrativeFieldLimits`' two caps
-as the ceiling — never a second decode of its own — then `NarrativeField.Sealed` with the same cap,
-or `IndexedName.Of` where a blind index rides beside it, in which case `BlindIndexText.TryDecode`
-runs on the index through the *shared* decoder rather than through the envelope one. Nothing walks
-that path today: no column holds a narrative envelope, which is why `FromStore`'s own remarks name
-the persistence configuration that will materialise these columns in the **future** tense, and why
-that member is unreachable from every assembly that would need it. Nothing on that side opens
-anything, and nothing ever will.
+**The narrative side has its edge, its column and no traffic.** A narrative value takes the same
+three steps and two more: `CiphertextEnvelopeText.TryDecode` with one of `NarrativeFieldLimits`' two
+caps as the ceiling — never a second decode of its own — then `NarrativeField.Sealed` with the same
+cap, or `IndexedName.Of` where a blind index rides beside it, in which case `BlindIndexText.TryDecode`
+runs on the index through the *shared* decoder rather than through the envelope one. What is
+missing is only the request end: `budgets.name` is mapped, constrained and reachable, its converter
+calls `FromStore` on the way out and `Envelope` on the way in, and no route accepts a sealed budget
+name for either arm to run on. **Storing is where the rules stop being reversible**, which is why
+they were agreed first and why nothing here may be relaxed to make the screen that fills that
+column easier to write. Nothing on this side opens anything, and nothing ever will.
 
 ## Decision Trees
 
@@ -956,6 +1022,9 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
 - **[ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)**
   — the same call, made first for `factor_id`, and where the database's own width and version
   checks live.
+- **[budgets.md](budgets.md)** — the first column that stores a narrative envelope, `budgets.name`,
+  and what its type cost: per-owner name uniqueness, and every server-side rule about the text. It
+  is also the one sealed name column with **no** blind index beside it.
 - **[recovery-codes.md](recovery-codes.md)** and **[passkeys.md](passkeys.md)** — where the
   key-encryption keys that seal the wrapped copies come from. Neither reaches this format
   directly.
@@ -970,7 +1039,9 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
 - **Nothing is encrypted today, and the narrative functions are reached by one caller that nothing
   calls.** `sealNarrativeField` and `openNarrativeField` are reached through
   `AccountKeyCustodyService.sealField` and `openField`, which hold the content key they need; no
-  screen calls those, because no column holds an envelope for one to seal or open. **The
+  screen calls those. A column exists now — `budgets.name` — and it changes nothing about this
+  bullet: no route accepts a sealed name, so every row in it is NULL and no browser has sealed
+  anything for it. **The
   wrapped-key side is the counter-example rather than a companion, and citing the two together is
   the mistake to avoid**: `unwrapAccountKeys` is called on every passkey sign-in, because what it
   needed was a route to hand it an envelope and a class to hold what came out, and it has both. The
@@ -1051,10 +1122,18 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   comes from the comparison made on the decoded buffer. A limit that admits more than it names
   is not a limit, and here the excess is silent — the row simply stores a field larger than the
   product says a field may be.
-- **`NarrativeField.FromStore` is `internal` and nothing outside `Domain` can call it**, so the
-  rule that it does not re-validate is held by review alone. The grant that closes this is one
-  line on `Domain` naming the assembly that receives it, and it belongs in a diff somebody
-  reads rather than in whatever change happens to need it first.
+- **`NarrativeField.FromStore` is `internal`, and exactly one assembly may call it.**
+  `Domain.csproj` grants its internals to `Infrastructure` and to nothing else — the solution's
+  first such grant, argued beside the element. What no test can weigh is whether the grant
+  *deserves* to exist; `ProjectReferenceGraphTests` renders it as one row per grant and pins the
+  set, so a second `InternalsVisibleTo` reddens the pin **by name** instead of arriving with
+  nothing red. One row per grant and never a count or a flag, because "Domain grants its internals
+  to somebody" would stay true while the somebody changed.
+- **The narrative column's `CHECK` constraints are the one thing keeping stored bytes honest, and
+  which of them reports a violation depends on their *names*.** See
+  [two checks on one column](#two-checks-on-one-column-and-which-one-bites): `get_byte` raises
+  rather than answering false on a zero-length `bytea`, and the neighbouring length check saves it
+  only by alphabetical accident. Write the version predicate with `substring`.
 - **The claim the whole type exists for is covered by no case, and no case can cover it.** See
   [the strongest claim](#the-strongest-claim-here-is-held-by-an-absence). Do not read the
   spec files' size as evidence for it.

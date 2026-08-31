@@ -107,11 +107,22 @@ narrative grammar exists and refuses a non-canonical row id today.
 its spec holds the version nibble, the canonical spelling and the big-endian timestamp. **Nothing
 calls it**: no path seals a narrative field for a row it just created.
 
-**The changes to the six Domain factories and the server-side parse that refuses a non-canonical
-row id arrive with the work that encrypts the eight columns**, unchanged from what the Context
-above describes: those factories still mint their rows' identifiers themselves, and nothing in
-the API accepts a client-supplied row id. Read those two parts of this document as the decision
-they will be built to, not as a description of a surface that is already there.
+**One of the six Domain factories has changed, and it carries the decision's one exception.**
+`Budget.Create` and `Budget.CreateDefault` both take the row's identifier as a parameter, and
+`Guid.CreateVersion7()` has left `Budget.cs` entirely rather than moving behind an overload — a
+caller that forgot to thread an id through would otherwise compile, pass every test that does not
+assert the returned identifier, and produce a row whose sealed name nobody can ever open. **The
+exception is that registration mints that id server-side**, on one written-out line in
+`RegisterAccountHandler`: the budget it creates carries **no name**, so nothing is sealed, there is
+nothing to seal against, and the browser has no basis on which to choose. A budget that *is* named
+is created by whoever sealed the name and hands its id in with it. `budgets.name` is the first
+column to hold an envelope; see [budgets.md](../business-logic/budgets.md).
+
+**The other five factories and the server-side parse that refuses a non-canonical row id arrive
+with the work that encrypts the remaining columns**, unchanged from what the Context above
+describes: those factories still mint their rows' identifiers themselves, and nothing in the API
+accepts a client-supplied row id. Read those parts of this document as the decision they will be
+built to, not as a description of a surface that is already there.
 
 ## Alternatives considered
 

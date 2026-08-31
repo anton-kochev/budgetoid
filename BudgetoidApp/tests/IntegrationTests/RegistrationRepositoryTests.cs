@@ -343,7 +343,7 @@ public sealed class RegistrationRepositoryTests
         DateTime now = DateTime.UtcNow;
 
         User user = User.CreateWithId(accountId, email, now);
-        Budget defaultBudget = Budget.CreateDefault(user.Id, now);
+        Budget defaultBudget = Budget.CreateDefault(Guid.CreateVersion7(), user.Id, now);
         Credential federated = Credential.CreateFederated(
             user.Id,
             Credential.GoogleProvider,

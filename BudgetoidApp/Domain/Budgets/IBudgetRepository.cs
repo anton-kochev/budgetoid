@@ -49,6 +49,13 @@ public interface IBudgetRepository
     /// <c>RepositoryConstraintAttributionTests</c> lose their subject.
     /// </para>
     /// <para>
+    /// <b>The rule is narrower than its name since <see cref="Budget.Name"/> became ciphertext.</b> Two
+    /// budgets carrying the same name now carry different bytes — every seal draws a fresh nonce — so
+    /// the index no longer refuses a duplicate name, and the half it still enforces is the one that was
+    /// always load-bearing: <c>NULLS NOT DISTINCT</c>, which is what stops two racing writers each
+    /// leaving an account with a second nameless budget. That is the collision this method reports.
+    /// </para>
+    /// <para>
     /// <see langword="false"/> means that one rule and nothing else, because a caller answers it by
     /// re-reading the owner's budget and only a collision on that rule guarantees a winning row is
     /// there to be read. Every other rejection propagates — including one raised by an unrelated row

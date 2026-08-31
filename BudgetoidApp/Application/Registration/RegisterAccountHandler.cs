@@ -282,7 +282,16 @@ public sealed class RegisterAccountHandler(
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
 
         User user = User.CreateWithId(accountId, command.Email, now);
-        Budget defaultBudget = Budget.CreateDefault(user.Id, now);
+
+        // MINTED HERE, AND THIS IS THE ONE NARRATIVE ROW IDENTIFIER THIS SERVER CHOOSES. Every other
+        // one arrives from the browser, because the browser sealed a value against it: a row's id is
+        // the associated data its envelopes were bound with, so a server that picked the id would pick
+        // an id no client can rebuild and the value would never open again. This budget carries no
+        // name — CreateDefault is the nameless path — so there is nothing sealed and nothing to seal
+        // against, and the browser has no basis on which to choose. Budget.Create, the naming path, has
+        // no minting overload precisely so that this line has to be written out rather than defaulted
+        // into.
+        Budget defaultBudget = Budget.CreateDefault(Guid.CreateVersion7(), user.Id, now);
         Credential federated = Credential.CreateFederated(
             user.Id,
             Credential.GoogleProvider,

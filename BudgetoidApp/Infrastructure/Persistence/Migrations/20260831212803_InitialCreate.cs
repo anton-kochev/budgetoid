@@ -69,13 +69,15 @@ public partial class InitialCreate : Migration
             {
                 id = table.Column<Guid>(type: "uuid", nullable: false),
                 user_id = table.Column<Guid>(type: "uuid", nullable: false),
-                name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: true, collation: "case_insensitive"),
+                name = table.Column<byte[]>(type: "bytea", nullable: true),
                 base_currency_code = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: true),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
             {
                 table.PrimaryKey("PK_budgets", x => x.id);
+                table.CheckConstraint("CK_budgets_name_length", "length(name) between 29 and 1024");
+                table.CheckConstraint("CK_budgets_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
                 table.ForeignKey(
                     name: "FK_budgets_currencies_base_currency_code",
                     column: x => x.base_currency_code,

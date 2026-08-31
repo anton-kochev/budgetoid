@@ -20,8 +20,11 @@ public sealed class ProjectReferenceGraphTests
     [Test]
     public async Task EdgesOf_RendersEveryDependencyKindAndDropsTheVersion()
     {
-        // Arrange — one of each kind the guard recognises. The versions are the point: they are
-        // what the renderer must throw away.
+        // Arrange — one of each kind the solution actually declares, plus the Sdk attribute every
+        // project carries. Not one of each kind the renderer recognises: the raw-assembly and
+        // import forms have a test of their own further down, and the remaining spellings in
+        // DependencyKinds are recognised without being exercised anywhere. The versions are the
+        // point: they are what the renderer must throw away.
         XDocument document = XDocument.Parse(
             """
             <Project Sdk="Microsoft.NET.Sdk">
@@ -29,6 +32,7 @@ public sealed class ProjectReferenceGraphTests
                 <ProjectReference Include="..\Domain\Domain.csproj" />
                 <PackageReference Include="System.Formats.Cbor" Version="10.0.9" />
                 <FrameworkReference Include="Microsoft.AspNetCore.App" />
+                <InternalsVisibleTo Include="Infrastructure" />
               </ItemGroup>
             </Project>
             """);
@@ -37,13 +41,47 @@ public sealed class ProjectReferenceGraphTests
         IReadOnlyList<string> edges = ProjectGraph.EdgesOf("Application", document);
 
         // Assert — a ProjectReference renders as the referenced project's file stem, not its path,
-        // so moving a folder does not move a line but changing what it references does.
+        // so moving a folder does not move a line but changing what it references does. An
+        // InternalsVisibleTo renders as the assembly it was granted to, unreduced: the name in that
+        // attribute is an assembly name and not a path, so there is no stem to take.
         await Assert.That(edges).IsEquivalentTo(new[]
         {
             "Application: sdk Microsoft.NET.Sdk",
             "Application: project Domain",
             "Application: package System.Formats.Cbor",
             "Application: framework Microsoft.AspNetCore.App",
+            "Application: internals Infrastructure",
+        });
+    }
+
+    [Test]
+    public async Task EdgesOf_RendersASecondGrantOfInternalVisibilityAsItsOwnRow()
+    {
+        // Arrange — the edit this item type was taught for: one grant is argued in Domain.csproj and
+        // pinned; a second arrives on a line beside it and, until the renderer knew the item type,
+        // moved nothing at all.
+        XDocument document = XDocument.Parse(
+            """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <ItemGroup>
+                <InternalsVisibleTo Include="Infrastructure" />
+                <InternalsVisibleTo Include="UnitTests" />
+              </ItemGroup>
+            </Project>
+            """);
+
+        // Act
+        IReadOnlyList<string> edges = ProjectGraph.EdgesOf("Domain", document);
+
+        // Assert — one row per grant and never a count or a flag, for the reason every other kind
+        // here is rendered by name: "Domain grants its internals to somebody" would stay true while
+        // the somebody changed. What the renderer does not do is judge either row — the second is
+        // reported exactly as the first, and it is ExpectedEdges that refuses it.
+        await Assert.That(edges).IsEquivalentTo(new[]
+        {
+            "Domain: sdk Microsoft.NET.Sdk",
+            "Domain: internals Infrastructure",
+            "Domain: internals UnitTests",
         });
     }
 
@@ -90,9 +128,9 @@ public sealed class ProjectReferenceGraphTests
             ProjectGraph.SolutionRootFrom(AppContext.BaseDirectory));
 
         // Act — the two directions are separated rather than compared with IsEquivalentTo, which
-        // reports only "collection has 60 items but expected 59" after dumping all fifty-nine rows.
-        // A guard whose failure does not name the line that moved sends the reader to diff two
-        // screenfuls by eye, and that is how the wrong row gets "fixed".
+        // reports only that the collection holds one item more than expected, dumps every row, and
+        // names none of them. A guard whose failure does not name the line that moved sends the
+        // reader to diff two screenfuls by eye, and that is how the wrong row gets "fixed".
         string[] undeclared = [.. edges.Except(ExpectedEdges).Order(StringComparer.Ordinal)];
         string[] missing = [.. ExpectedEdges.Except(edges).Order(StringComparer.Ordinal)];
 
@@ -104,13 +142,20 @@ public sealed class ProjectReferenceGraphTests
         // PackageReference that both directions above would call an exact match.
         await Assert.That(edges.Count).IsEqualTo(ExpectedEdges.Length);
 
-        // Three controls against the failure the comparison cannot see: a renderer that came back
-        // with Sdk rows alone (an XML-namespace bug, say) would agree with an expected array
-        // transcribed from that same broken output, and the pin would stay green while policing
-        // nothing. Every kind must be represented before any of the above means anything.
+        // One control per kind the solution declares, against the failure the comparison cannot
+        // see: a renderer that came back with Sdk rows alone (an XML-namespace bug, say) would
+        // agree with an expected array transcribed from that same broken output, and the pin would
+        // stay green while policing nothing. Every kind must be represented before any of the above
+        // means anything, so a kind that appears in the solution gains a line here.
+        //
+        // The internals control is the newest and the cheapest to lose: a renderer that stopped
+        // reading InternalsVisibleTo would drop exactly one row, and the set difference would report
+        // it as missing — but so would a legitimate removal of the grant, and the two read alike in a
+        // failure message. This line says out loud that the guard must still be able to see one.
         await Assert.That(edges.Count(edge => edge.Contains(": project ", StringComparison.Ordinal))).IsGreaterThan(0);
         await Assert.That(edges.Count(edge => edge.Contains(": package ", StringComparison.Ordinal))).IsGreaterThan(0);
         await Assert.That(edges.Count(edge => edge.Contains(": framework ", StringComparison.Ordinal))).IsGreaterThan(0);
+        await Assert.That(edges.Count(edge => edge.Contains(": internals ", StringComparison.Ordinal))).IsGreaterThan(0);
     }
 
     [Test]
@@ -141,8 +186,8 @@ public sealed class ProjectReferenceGraphTests
     [Test]
     public async Task EdgesOf_RendersTheDependencyFormsThatCarryNoPackageAndNoProject()
     {
-        // Arrange — four ways to hand a project code it did not write, none of which is a
-        // ProjectReference or a PackageReference. Each of these was a silent pass before a review
+        // Arrange — the ways to hand a project code it did not write that are neither a
+        // ProjectReference nor a PackageReference. Each of these was a silent pass before a review
         // went looking for them, and each is here so it cannot become one again.
         XDocument document = XDocument.Parse(
             """
@@ -191,14 +236,15 @@ public sealed class ProjectReferenceGraphTests
     }
 
     /// <summary>
-    /// The whole declared dependency graph of the solution, one row per edge.
+    /// The whole declared graph of the solution — every dependency, and every grant of internal
+    /// visibility — one row per edge.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Rows rather than a per-project block, following the flat snapshot idiom of
     /// <c>SchemaConstraintSnapshotTests</c> — but compared as two one-way set differences rather
-    /// than with <c>IsEquivalentTo</c>, which reports "collection has 60 items but expected 59"
-    /// after dumping all fifty-nine rows and names nothing. A failure has to name the line that
+    /// than with <c>IsEquivalentTo</c>, which reports only that the collection holds one item more
+    /// than expected, dumps every row, and names none of them. A failure has to name the line that
     /// moved, or the reader diffs two screenfuls by eye and "fixes" the wrong one.
     /// </para>
     /// <para>
@@ -217,8 +263,10 @@ public sealed class ProjectReferenceGraphTests
     /// <c>credentials</c> to exactly such a filter.
     /// </para>
     /// <para>
-    /// Sabotaged twice before it was believed: a <c>Microsoft.EntityFrameworkCore</c> package on
-    /// Application, and a <c>FrameworkReference</c> on Domain. Each moved exactly one named row.
+    /// Sabotaged three times before it was believed: a <c>Microsoft.EntityFrameworkCore</c> package on
+    /// Application, a <c>FrameworkReference</c> on Domain, and — the day the renderer learned the item
+    /// type — a second <c>InternalsVisibleTo</c>, on TestSupport, which failed with
+    /// <c>received "TestSupport: internals UnitTests"</c>. Each moved exactly one named row.
     /// </para>
     /// </remarks>
     private static readonly string[] ExpectedEdges =
@@ -244,8 +292,8 @@ public sealed class ProjectReferenceGraphTests
         "AppHost: package Azure.Provisioning.Network",
         "AppHost: package Azure.Provisioning.PrivateDns",
 
-        // Two packages, neither of them data access, and one project edge pointing inward. This is
-        // the Dependency Rule's middle ring stated as data.
+        // No data-access package, and one project edge pointing inward. This is the Dependency
+        // Rule's middle ring stated as data.
         "Application: sdk Microsoft.NET.Sdk",
         "Application: project Domain",
         "Application: package Microsoft.Extensions.DependencyInjection.Abstractions",
@@ -255,10 +303,19 @@ public sealed class ProjectReferenceGraphTests
         "DbProvision: project Infrastructure",
         "DbProvision: package Microsoft.EntityFrameworkCore.Relational",
 
-        // One row, and the row IS the invariant: Domain declares no reference of any kind. Every
-        // project emits an Sdk edge precisely so this can be a line that must stay alone rather
-        // than an absence nothing asserts.
+        // The Sdk row IS the invariant: Domain declares no reference of any kind. Every project
+        // emits an Sdk edge precisely so that can be a line rather than an absence nothing asserts.
+        //
+        // The row beneath it is the solution's only grant of internal visibility, and it is an edge
+        // of a different sort: nothing travels inward, Domain still references nothing, and what
+        // moves is visibility rather than a dependency. It is pinned because the alternative was a
+        // reviewer remembering to look — Domain.csproj argues why NarrativeField.FromStore is
+        // internal and why exactly one assembly may call it, and this row is what makes a second
+        // grant fail a test instead of merely contradicting that comment. The row says a grant
+        // exists and names who got it; whether it should exist is the argument in the csproj, which
+        // no test can weigh.
         "Domain: sdk Microsoft.NET.Sdk",
+        "Domain: internals Infrastructure",
 
         "Infrastructure: sdk Microsoft.NET.Sdk",
         "Infrastructure: project Application",
@@ -311,13 +368,17 @@ public sealed class ProjectReferenceGraphTests
         private const string SolutionFileName = "BudgetoidApp.sln";
 
         /// <summary>
-        /// The item types that hand a project code it did not write, and the word each renders as.
+        /// The item types that move code or visibility across a project boundary, and the word each
+        /// renders as. All but <c>InternalsVisibleTo</c> hand a project code it did not write; that
+        /// one travels the other way, and the comment on its entry says what rendering it holds and
+        /// what it does not.
         /// </summary>
         /// <remarks>
         /// <c>Reference</c> is here because a raw assembly path with a <c>HintPath</c> is a real
-        /// dependency that carries no package and no project, and a switch that knew only the three
-        /// common item types let it through in silence. The rest are the forms NuGet and MSBuild
-        /// accept for the same job; listing them is cheaper than discovering one at a time which
+        /// dependency that carries no package and no project, and a switch that knew only
+        /// <c>ProjectReference</c>, <c>PackageReference</c> and <c>FrameworkReference</c> let it
+        /// through in silence. Everything listed after it is another spelling NuGet and MSBuild
+        /// accept for that same job; listing them is cheaper than discovering one at a time which
         /// spelling the next person reached for.
         /// </remarks>
         private static readonly Dictionary<string, string> DependencyKinds = new(StringComparer.Ordinal)
@@ -325,6 +386,16 @@ public sealed class ProjectReferenceGraphTests
             ["ProjectReference"] = "project",
             ["PackageReference"] = "package",
             ["FrameworkReference"] = "framework",
+
+            // WHAT THIS DOES AND DOES NOT HOLD. An InternalsVisibleTo hands no code to the project
+            // declaring it — it travels the other way, opening this assembly's internals to the one
+            // it names — so it is an outward edge that closes no loop, which is precisely the shape
+            // MSBuild's cycle detection cannot see and this test exists for. Rendering it makes the
+            // grant a row: the first one moved nothing here, and the second would have arrived with
+            // nothing red. It does NOT judge whether a grant is right. Only a reviewer reading the
+            // argument beside the element can say that, and this test's whole claim is that they get
+            // to read it, because the line cannot land without the pinned set moving.
+            ["InternalsVisibleTo"] = "internals",
             ["Reference"] = "assembly",
             ["PackageDownload"] = "package",
             ["GlobalPackageReference"] = "package",
@@ -422,7 +493,7 @@ public sealed class ProjectReferenceGraphTests
 
         /// <summary>
         /// Renders one csproj document as the set of dependency edges it declares. Takes an
-        /// <see cref="XDocument" /> and never a path, which is what lets the negative control below
+        /// <see cref="XDocument" /> and never a path, which is what lets the negative control
         /// prove the guard catches a violation without anyone editing a real project file.
         /// </summary>
         internal static IReadOnlyList<string> EdgesOf(string projectName, XDocument document)

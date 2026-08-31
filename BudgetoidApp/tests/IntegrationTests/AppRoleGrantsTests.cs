@@ -6,6 +6,7 @@ using Domain.Users;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -96,8 +97,17 @@ public sealed class AppRoleGrantsTests
         // "a budgets row is never updated", and column-for-column is the only shape the grant
         // list can hold that in. USD is a real currencies row, for the same leak-detection reason
         // as the second user.
+        //
+        // The name is a sealed envelope, not the word "Renamed", because the column is bytea now —
+        // and the value has to be a WELL-FORMED one rather than any binary. Passing text came back
+        // 42804 from the type checker, and a short buffer would come back 23514 from the length
+        // check; both arrive BEFORE the column grant is consulted, so either would leave this test
+        // asserting a refusal it did not measure. A refusal has to be the one this test is about.
         PostgresException nameRefusal = await ThrowsPostgresExceptionAsync(
-            app, "update budgets set name = @value where id = @id", "Renamed", budgetId);
+            app,
+            "update budgets set name = @value where id = @id",
+            SealedNarrative.Name("Renamed").Envelope.ToArray(),
+            budgetId);
         PostgresException userRefusal = await ThrowsPostgresExceptionAsync(
             app, "update budgets set user_id = @value where id = @id", otherUserId, budgetId);
         PostgresException currencyRefusal = await ThrowsPostgresExceptionAsync(
@@ -111,9 +121,15 @@ public sealed class AppRoleGrantsTests
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
-        await Assert.That(await SelectScalarAsync(
+
+        // Bytes against bytes, and against the envelope the SEEDER produced rather than against a
+        // freshly built one. SealedNarrative.Name is deterministic in its label, so the two agree —
+        // but the claim being made is "the row is unchanged", and building the expectation from the
+        // same label the seed used is the only shape that stays honest if the helper ever starts
+        // varying its filler.
+        await Assert.That(await SelectBytesAsync(
                 admin, "select name from budgets where id = @id", budgetId))
-            .IsEqualTo("Household");
+            .IsEquivalentTo(SealedNarrative.Name("Household").Envelope.ToArray());
         await Assert.That(await SelectScalarAsync(
                 admin, "select user_id from budgets where id = @id", budgetId))
             .IsEqualTo(userId);
@@ -129,7 +145,8 @@ public sealed class AppRoleGrantsTests
             app);
         insert.Parameters.AddWithValue("id", Guid.CreateVersion7());
         insert.Parameters.AddWithValue("user_id", userId);
-        insert.Parameters.AddWithValue("name", "Holiday Fund");
+        insert.Parameters.AddWithValue(
+            "name", SealedNarrative.Name("Holiday Fund").Envelope.ToArray());
         insert.Parameters.AddWithValue("created_at_utc", SeedInstant);
         await Assert.That(await insert.ExecuteNonQueryAsync()).IsEqualTo(1);
     }

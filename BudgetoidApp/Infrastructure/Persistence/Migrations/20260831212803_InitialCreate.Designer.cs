@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BudgetoidDbContext))]
-    [Migration("20260816212632_InitialCreate")]
+    [Migration("20260831212803_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -96,11 +96,9 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
-                    b.Property<string>("Name")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name")
-                        .UseCollation("case_insensitive");
+                    b.Property<byte[]>("Name")
+                        .HasColumnType("bytea")
+                        .HasColumnName("name");
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
@@ -116,7 +114,12 @@ namespace Infrastructure.Persistence.Migrations
 
                     NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("UserId", "Name"), false);
 
-                    b.ToTable("budgets", (string)null);
+                    b.ToTable("budgets", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_budgets_name_length", "length(name) between 29 and 1024");
+
+                            t.HasCheckConstraint("CK_budgets_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
+                        });
                 });
 
             modelBuilder.Entity("Domain.Categories.Category", b =>

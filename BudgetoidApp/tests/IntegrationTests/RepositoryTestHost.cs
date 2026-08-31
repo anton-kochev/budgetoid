@@ -6,6 +6,7 @@ using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -204,7 +205,7 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     {
         Guid userId = await SeedUserOnAsync(connectionString, googleSubject, email, cancellationToken);
         await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
-        Budget budget = Budget.CreateDefault(userId, SeedInstant);
+        Budget budget = Budget.CreateDefault(Guid.CreateVersion7(), userId, SeedInstant);
         db.Budgets.Add(budget);
         await db.SaveChangesAsync(cancellationToken);
         return new SeededOwner(userId, budget.Id);
@@ -690,18 +691,33 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// Adds another budget to an existing owner and returns its id, so a test can exercise two
     /// tenants without inventing a second user.
     /// </summary>
-    public Task<Guid> SeedAdditionalBudgetAsync(Guid userId, string name) =>
-        SeedAdditionalBudgetOnAsync(ConnectionString, userId, name);
+    /// <param name="userId">The owner the budget is filed under.</param>
+    /// <param name="label">
+    /// What tells this row from the next one. <b>It is not a budget name and never reaches the
+    /// column</b> — the column holds an envelope now, and nothing on this side can seal a string. It
+    /// is the label <see cref="SealedNarrative.Name" /> derives its filler from, so two seeded
+    /// budgets differ in bytes and a failure message says which one. That models the real thing more
+    /// closely than a shared buffer would: two people who both type "Household" store different
+    /// envelopes anyway, because every seal draws a fresh nonce.
+    /// </param>
+    public Task<Guid> SeedAdditionalBudgetAsync(Guid userId, string label) =>
+        SeedAdditionalBudgetOnAsync(ConnectionString, userId, label);
 
     /// <inheritdoc cref="SeedOwnerOnAsync" />
     internal static async Task<Guid> SeedAdditionalBudgetOnAsync(
         string connectionString,
         Guid userId,
-        string name,
+        string label,
         CancellationToken cancellationToken = default)
     {
         await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
-        Budget budget = Budget.Create(userId, name, SeedInstant);
+
+        // The id is minted here and threaded into the factory, which is where every budget id comes
+        // from now: it is the associated data a client seals the name against, so nothing downstream
+        // may invent one. Nothing seeded here is ever opened, but a seeder that minted its own id
+        // would be modelling a write path that no longer exists.
+        Budget budget = Budget.Create(
+            Guid.CreateVersion7(), userId, SealedNarrative.Name(label), SeedInstant);
         db.Budgets.Add(budget);
         await db.SaveChangesAsync(cancellationToken);
         return budget.Id;

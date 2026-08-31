@@ -562,12 +562,25 @@ public sealed class KeyMaterialSecrecyTests
     /// entry with no column is a red.
     /// </para>
     /// <para>
-    /// The seven divide into three kinds, and the kinds are worth seeing. Two are the envelopes
+    /// The eight divide into four kinds, and the kinds are worth seeing. Two are the envelopes
     /// themselves — the only key-shaped thing this design lets cross the wire, and safe because the
     /// server holds nothing that opens them. Two are WebAuthn's own material, a handle that selects a
     /// credential and a <i>public</i> key published by design. Three are one-way values, two hashes and
-    /// a nonce, from which nothing is derived. No fourth kind exists, and an eighth column would have to
-    /// argue itself into one of the three or invent a fourth in writing.
+    /// a nonce, from which nothing is derived. No fifth kind exists, and a ninth column would have to
+    /// argue itself into one of the four or invent a fifth in writing.
+    /// </para>
+    /// <para>
+    /// <b>The fourth kind is the newest and it arrived exactly as this list said one would</b> — the
+    /// paragraph above used to end at three, and <c>budgets.name</c> is the eighth column that had to
+    /// invent a kind in writing rather than squeeze into an existing one. It is <i>content</i>: an AEAD
+    /// envelope over a person's own words, sealed under the account's content key. That inverts the
+    /// envelope kind rather than joining it. Those two columns are the key and are safe because nothing
+    /// on this server opens them; this one is safe <i>because one of them is the thing that opens it</i>,
+    /// so the two arguments hold each other up and neither can be pasted over the other. It is also the
+    /// first entry whose argument has to concede something — AES-GCM leaks the plaintext's length, and
+    /// the column's own length already does, so the concession costs nothing and is written down rather
+    /// than left for a reader to notice. Every narrative column sealed after this one is a member of this
+    /// kind and owes the same two sentences.
     /// </para>
     /// <para>
     /// <c>session_tokens.token_hash</c> is the newest of the one-way three and the one whose argument is
@@ -579,6 +592,23 @@ public sealed class KeyMaterialSecrecyTests
     /// </remarks>
     private static IReadOnlyList<BinaryColumnClassification> Classifications { get; } =
     [
+        new(
+            "budgets",
+            "name",
+            "a budget's name sealed as a narrative field — an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the content key that seals it is generated in the browser and reaches this server only "
+            + "as the wrapped_content_key envelopes next door, each sealed under a key-encryption key "
+            + "derived from a recovery factor the operator never holds — so the row and everything "
+            + "that could open it are separated by a step that happens on somebody's device. This is "
+            + "the reverse of the wrapped-key argument rather than a copy of it: those columns are the "
+            + "key and are safe because nothing here opens them, this one is CONTENT and is safe "
+            + "because the thing that opens it is one of those. What AES-GCM leaks without the key is "
+            + "the plaintext's length, and the column's own length already gives that away, so sealing "
+            + "buys nothing against a length oracle and was never claimed to. The tag is the other "
+            + "half: the associated data is rebuilt from where the ciphertext was found, so an "
+            + "operator who moved one budget's name onto another row would produce a value that "
+            + "refuses to open rather than one that opens as somebody else's"),
         new(
             "wrapped_account_keys",
             "wrapped_content_key",

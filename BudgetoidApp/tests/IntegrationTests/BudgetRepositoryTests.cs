@@ -3,11 +3,13 @@ using Domain.Budgets;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Payees;
+using Domain.Security;
 using Domain.Transactions;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -28,7 +30,8 @@ public sealed class BudgetRepositoryTests
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         await using BudgetoidDbContext db = CreateDb(host);
         var repository = new BudgetRepository(db);
-        bool firstAdded = await repository.TryAddAsync(Budget.CreateDefault(userId, UtcAt(hour: 10)));
+        bool firstAdded = await repository.TryAddAsync(
+            Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcAt(hour: 10)));
 
         // Act — the second insert may only be refused because the unique index is declared NULLS NOT
         // DISTINCT; under PostgreSQL's default both NULL names would be distinct and both rows would
@@ -36,39 +39,27 @@ public sealed class BudgetRepositoryTests
         // the caller as false rather than an escaping DbUpdateException, because the provisioning
         // handler's re-read path is what turns the lost race into a normal sign-in. This goes
         // through BudgetRepository rather than raw SQL to hold both halves at once.
-        bool secondAdded = await repository.TryAddAsync(Budget.CreateDefault(userId, UtcAt(hour: 11)));
-
-        // Assert
-        await Assert.That(firstAdded).IsTrue();
-        await Assert.That(secondAdded).IsFalse();
-        await Assert.That(await db.Budgets.CountAsync(budget => budget.UserId == userId)).IsEqualTo(1);
-    }
-
-    [Test]
-    public async Task Budgets_WithNamesDifferingOnlyByCaseForOneUser_AreRejectedAfterTheFirst()
-    {
-        // Arrange — two explicitly named budgets, because the NULL-name test above never touches the
-        // collation: NULLs compare through NULLS NOT DISTINCT, not through case_insensitive, so the
-        // collation on budgets.name could be dropped from BudgetConfiguration with every existing
-        // test staying green.
-        await using RepositoryTestHost host = await StartHostAsync();
-        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
-        await using BudgetoidDbContext db = CreateDb(host);
-        var repository = new BudgetRepository(db);
-        bool firstAdded = await repository.TryAddAsync(
-            Budget.Create(userId, "Household", UtcAt(hour: 10)));
-
-        // Act — through BudgetRepository rather than raw SQL, for the same reason as the NULL-name
-        // test: this has to hold both halves at once, the index refusing the row and the repository
-        // turning 23505 into false instead of letting a DbUpdateException escape.
+        //
+        // Two different ids, so the row the index refuses is refused for its (user_id, name) and not
+        // for its primary key.
         bool secondAdded = await repository.TryAddAsync(
-            Budget.Create(userId, "household", UtcAt(hour: 11)));
+            Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcAt(hour: 11)));
 
         // Assert
         await Assert.That(firstAdded).IsTrue();
         await Assert.That(secondAdded).IsFalse();
         await Assert.That(await db.Budgets.CountAsync(budget => budget.UserId == userId)).IsEqualTo(1);
     }
+
+    // DELETED HERE: Budgets_WithNamesDifferingOnlyByCaseForOneUser_AreRejectedAfterTheFirst, which
+    // seeded "Household" and then "household" and asserted the second was refused. It was the only
+    // test touching the case_insensitive collation on budgets.name, and that collation is gone —
+    // bytea is not a collatable type — along with the behaviour it stood for: two rows sealed from
+    // one word hold different bytes, because every seal draws a fresh nonce, so no index refuses a
+    // duplicate name any more. Refusing one is a blind index's job and this column has none; that is
+    // a later slice rather than a hole this case ever filled after today. The surviving half of the
+    // same index is asserted above, and the capability it used to assert is asserted below, where two
+    // named budgets for one owner are now both accepted.
 
     [Test]
     public async Task Budgets_WithDifferentNamesForOneUser_AreBothAccepted()
@@ -85,10 +76,10 @@ public sealed class BudgetRepositoryTests
         var repository = new BudgetRepository(db);
 
         // Act
-        bool firstAdded = await repository.TryAddAsync(
-            Budget.Create(userId, "Household", UtcAt(hour: 10)));
-        bool secondAdded = await repository.TryAddAsync(
-            Budget.Create(userId, "Side Project", UtcAt(hour: 11)));
+        bool firstAdded = await repository.TryAddAsync(Budget.Create(
+            Guid.CreateVersion7(), userId, SealedNarrative.Name("Household"), UtcAt(hour: 10)));
+        bool secondAdded = await repository.TryAddAsync(Budget.Create(
+            Guid.CreateVersion7(), userId, SealedNarrative.Name("Side Project"), UtcAt(hour: 11)));
 
         // Assert
         await Assert.That(firstAdded).IsTrue();
@@ -106,8 +97,11 @@ public sealed class BudgetRepositoryTests
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         await using BudgetoidDbContext db = CreateDb(host);
         var repository = new BudgetRepository(db);
-        Budget later = Budget.Create(userId, "Later", UtcAt(hour: 18));
-        Budget earlier = Budget.Create(userId, "Earlier", UtcAt(hour: 6));
+        NarrativeField earlierName = SealedNarrative.Name("Earlier");
+        Budget later = Budget.Create(
+            Guid.CreateVersion7(), userId, SealedNarrative.Name("Later"), UtcAt(hour: 18));
+        Budget earlier = Budget.Create(
+            Guid.CreateVersion7(), userId, earlierName, UtcAt(hour: 6));
         await repository.TryAddAsync(later);
         await repository.TryAddAsync(earlier);
 
@@ -117,7 +111,13 @@ public sealed class BudgetRepositoryTests
         // Assert
         await Assert.That(found).IsNotNull();
         await Assert.That(found!.Id).IsEqualTo(earlier.Id);
-        await Assert.That(found.Name).IsEqualTo("Earlier");
+
+        // The name is compared as the bytes the row carries — the only comparison left, and the one
+        // that also proves the column round-trips through the converter rather than coming back as
+        // some other row's envelope.
+        await Assert.That(found.Name).IsNotNull();
+        await Assert.That(found.Name!.Envelope.ToArray())
+            .IsEquivalentTo(earlierName.Envelope.ToArray());
     }
 
     [Test]

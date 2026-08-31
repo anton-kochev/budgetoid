@@ -1,3 +1,4 @@
+using Application.Passkeys;
 using Application.Users.ExportData;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -45,18 +46,42 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // budget is ambient — so this predicate is the only read-side scoping there is, and the
         // user_isolation policy is what enforces it. Do not drop it on the grounds that the policy
         // covers it: the policy makes a wrong query answer empty, not correct.
-        return await dbContext.Budgets
+        //
+        // Projected into an anonymous row and shaped afterwards, the way FindUserAsync above handles
+        // Email and for the same reason: name carries a value converter, so the provider translates the
+        // property itself and the NarrativeField exists only once the row has materialized. Encoding it
+        // inside the Select would be a call the translator has to make sense of.
+        var rows = await dbContext.Budgets
             .AsNoTracking()
             .Where(budget => budget.UserId == userId)
             .OrderBy(budget => budget.CreatedAtUtc)
             .ThenBy(budget => budget.Id)
-            .Select(budget => new ExportedBudget(
+            .Select(budget => new
+            {
                 budget.Id,
                 budget.UserId,
                 budget.Name,
                 budget.BaseCurrencyCode,
-                budget.CreatedAtUtc))
+                budget.CreatedAtUtc,
+            })
             .ToListAsync(cancellationToken);
+
+        // The envelope goes out as text in the one alphabet every binary member of this API crosses
+        // JSON in. PasskeyEncoding is reached for despite its name because it is that alphabet's only
+        // implementation here — CiphertextEnvelopeText decodes through it too — and a second base64url
+        // encoder beside it is exactly the drift CiphertextEnvelopeText argues against. Not
+        // System.Text.Json's own byte[] handling, which emits padded standard base64: the client's
+        // decoder is strict base64url, so the two spellings would disagree on the day somebody reloads
+        // a file they saved.
+        return
+        [
+            .. rows.Select(row => new ExportedBudget(
+                row.Id,
+                row.UserId,
+                row.Name is null ? null : PasskeyEncoding.Encode(row.Name.Envelope.Span),
+                row.BaseCurrencyCode,
+                row.CreatedAtUtc)),
+        ];
     }
 
     /// <inheritdoc />

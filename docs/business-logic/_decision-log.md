@@ -8,6 +8,62 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-08-31 — `Domain` grants its internals to `Infrastructure`, and to nothing else
+
+**Context:** the entry below left one consequence open. `NarrativeField.FromStore` — the unchecked
+door that rebuilds a sealed value from bytes a column already holds — is `internal`, because a public
+member that skips the validating factory *is* the hole the type was built to close: a way to put
+unjudged bytes into a narrative column, on a call site that reads like bookkeeping and passes any
+review not looking for it. With `budgets.name` becoming the first column that stores an envelope,
+something had to materialise it, and the only code that can is a persistence configuration's value
+converter — which lives in `Infrastructure`, one ring out. So the door had to open to exactly one
+assembly, or the column could not be read back at all.
+
+**Decision:** `Domain.csproj` carries `<InternalsVisibleTo Include="Infrastructure" />` — the first
+grant of internal visibility in this solution — and the argument for it is written beside the
+element, not in a commit message. It names one assembly: `Application`, `Api` and both test projects
+still cannot call `FromStore`.
+
+**What it buys, and what it does not cost.** Nothing about it inverts the Dependency Rule. `Domain`
+still declares no reference of any kind, and `Infrastructure` already reaches `Domain`; what travels
+is **visibility, not a dependency**. That is also why it is an edge no compiler notices — an
+outward grant closes no loop, so MSBuild's cycle detection, which refuses the outward
+`ProjectReference` between rings for free, is blind to it.
+
+**Alternatives rejected, and they fail differently.** **Make `FromStore` public** — a member every
+ring can reach so that one of them can, and the mistake it admits is the invisible kind: a row
+holding plaintext is a well-formed row that stores, reads back, violates nothing and simply hands
+the operator the ledger. **Materialise through the validating factory instead**, needing no grant at
+all — rejected on the read side's own argument: a validating read makes the caps retroactive, so
+lowering one by a byte throws every older row out of the middle of a query, and a future version 2
+would destroy the version 1 rows it exists to rewrite. **Put the mapping in `Domain`** — it would
+carry an EF Core package on the innermost ring, which is the Dependency Rule breaking inward and the
+headline case the pinned graph exists to catch. **Grant more widely, to the test projects as well**
+— rejected on the property that makes this grant reviewable at all: one recipient can be weighed
+against one argument, and a list cannot. The pinned edge set names no other recipient, and a second
+row on a test project is the edit the guard was sabotaged with.
+
+**The guard was taught to see it in the same change, and it holds the set rather than the wisdom.**
+`ProjectReferenceGraphTests` renders `InternalsVisibleTo` as an edge kind — one row per grant,
+`Domain: internals Infrastructure`, in the pinned set — so a second grant beside this one reddens
+the pin **by name** instead of arriving with nothing red. One row per grant and never a count or a
+flag: "Domain grants its internals to somebody" would stay true while the somebody changed. It was
+sabotaged with a second grant before it was believed. What the guard cannot judge is whether a grant
+*deserves* to exist — a reviewer widening the pinned set in the same commit passes it — which is
+exactly why the argument lives in the csproj and this entry exists. The guard's whole job is to make
+sure nobody has to notice the line in order to be told it moved.
+
+**Consequences.** The read side's no-revalidation rule is no longer held by review *and by nothing
+running*: it now has a caller, and the converter's read arm is where a reviewer will next propose
+adding a check. `Domain` keeps its "declares nothing" invariant as a single pinned line, with the
+grant as a second line of a different sort beside it. And the next grant, whenever it is proposed,
+has a written precedent to be argued against rather than a blank file to be added to.
+
+**Affected areas:** [ciphertext-envelope.md](ciphertext-envelope.md), [budgets.md](budgets.md),
+[dependency direction](../engineering/dependency-direction.md).
+
+---
+
 ## 2026-08-31 — A narrative column takes a value type, and the read side does not judge
 
 **Context:** the server was about to gain columns holding text it must never be able to read. The

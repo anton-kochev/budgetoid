@@ -6,6 +6,7 @@ using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -1541,7 +1542,19 @@ public sealed class RlsIsolationTests
             connection);
         command.Parameters.AddWithValue("id", Guid.CreateVersion7());
         command.Parameters.AddWithValue("user_id", ownerId);
-        command.Parameters.AddWithValue("name", "Inserted by a user isolation probe");
+
+        // A sealed envelope rather than the label itself, because the column is bytea now. The label
+        // survives only as what makes this probe's row distinguishable by eye; nothing reads it back.
+        //
+        // The envelope has to be WELL FORMED and not merely binary, and that is the point of going
+        // through the shared helper rather than handing over a few bytes. budgets.name carries a length
+        // band and a version check, so a short buffer is refused with 23514 — a refusal this test would
+        // then read as the row-level security verdict it is looking for, on the INSERT that is supposed
+        // to be REFUSED, while the one that is supposed to succeed failed for the same reason and took
+        // the whole pair down with it. Passing text was the same trap one step earlier: it came back
+        // 42804 from the type checker before any policy was consulted.
+        command.Parameters.AddWithValue(
+            "name", SealedNarrative.Name("user isolation probe").Envelope.ToArray());
         command.Parameters.AddWithValue("created_at_utc", SeedInstant);
         return command;
     }
