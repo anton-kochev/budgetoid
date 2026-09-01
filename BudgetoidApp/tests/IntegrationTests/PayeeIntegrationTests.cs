@@ -307,6 +307,266 @@ public sealed class PayeeIntegrationTests
     }
 
     /// <summary>
+    /// The same create sent twice, byte for byte, answers <b>409</b> and says so as an
+    /// <i>identifier</i> collision rather than a name one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the ordinary behaviour of an HTTP client, and it used to answer 500.</b> The
+    /// identifier is minted by the caller — it is the associated data the name envelope was sealed
+    /// against — so a POST retried after a network timeout carries a body identical to the first one,
+    /// down to the byte. Nothing in the product tells the client to change it, and nothing should: the
+    /// second request is a repeat of the first, not a new payee.
+    /// </para>
+    /// <para>
+    /// <b>The detail sentence is the assertion, not the status.</b> A 409 alone is satisfied by an
+    /// implementation that translates the primary-key violation into the neighbouring <i>duplicate
+    /// name</i> conflict — same status, and a remedy that sends the client to re-read a list looking
+    /// for a name that may not be on it. <c>ConflictExceptionHandler</c> writes one fixed title for
+    /// every conflict in the product and adds no extension member, so this sentence is the whole of
+    /// what distinguishes the two and the whole of what the caller is told.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PostPayee_RetriedByteForByte_AnswersConflictNamingTheIdentifier()
+    {
+        // Arrange — one payee, created the way a client creates one.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        var id = Guid.CreateVersion7();
+        var body = new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        };
+        HttpResponseMessage created = await client.PostAsJsonAsync("/api/payees", body);
+
+        // Act — the identical object, sent again. Both the primary key and the name index are broken
+        // by this row; which one PostgreSQL names is what the arms are matched against.
+        HttpResponseMessage retry = await client.PostAsJsonAsync("/api/payees", body);
+        JsonNode problem = (await JsonNode.ParseAsync(await retry.Content.ReadAsStreamAsync()))!;
+        JsonNode list = await GetJsonAsync(client, "/api/payees");
+
+        // Assert
+        await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(retry.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(problem["title"]!.GetValue<string>())
+            .IsEqualTo("The request conflicts with the current state of the resource.");
+
+        // THE IDENTIFIER SENTENCE, IN FULL. Asserting the status alone would pass an implementation
+        // that threw the duplicate-name conflict here.
+        await Assert.That(problem["detail"]!.GetValue<string>()).IsEqualTo(
+            "A payee already exists with this identifier. If this request is a retry, read that payee "
+            + "back by its identifier instead of posting it again; otherwise mint a fresh identifier "
+            + "and post again.");
+
+        // No field errors: there is nothing here for a person to correct. The client either already
+        // has what it asked for or chose an identifier twice, and it is the only party that knows which.
+        await Assert.That(problem["errors"]).IsNull();
+
+        // And the retry wrote nothing — one payee, the one the first request created.
+        await Assert.That(list["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(list["items"]!.AsArray()[0]!["id"]!.GetValue<Guid>()).IsEqualTo(id);
+    }
+
+    /// <summary>
+    /// A create reusing an identifier under a <i>different</i> name answers <b>409</b> with the
+    /// identifier sentence — the case that separates the two arms.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Only the primary key is broken here.</b> The retry case above breaks the key and the name
+    /// index together, so an implementation matching either name would answer something. This one
+    /// breaks the key alone, which is what the route answered <b>500</b> on before the arm existed:
+    /// no <c>catch</c> named <c>PK_payees</c>, so the <c>DbUpdateException</c> reached the global
+    /// handler.
+    /// </para>
+    /// <para>
+    /// It is also the case that shows why the sentence cannot be the name one. The row already wearing
+    /// this identifier holds a different name, so "re-read your payee list and use the payee it already
+    /// holds" would send the client looking for <c>Starbucks</c> and hand it <c>Corner Shop</c>.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PostPayee_ReusingAnIdentifierUnderAnotherName_AnswersConflictNamingTheIdentifier()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        var id = Guid.CreateVersion7();
+        HttpResponseMessage created = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Corner Shop"),
+            nameKey = SealedNarrative.EncodedIndex("Corner Shop"),
+        });
+
+        // Act — same identifier, a name nothing in this budget holds. The name index is untouched.
+        HttpResponseMessage conflict = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
+        JsonNode problem = (await JsonNode.ParseAsync(await conflict.Content.ReadAsStreamAsync()))!;
+        JsonNode list = await GetJsonAsync(client, "/api/payees");
+
+        // Assert
+        await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(conflict.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(problem["detail"]!.GetValue<string>()).IsEqualTo(
+            "A payee already exists with this identifier. If this request is a retry, read that payee "
+            + "back by its identifier instead of posting it again; otherwise mint a fresh identifier "
+            + "and post again.");
+        await Assert.That(problem["errors"]).IsNull();
+
+        // Nothing was written and nothing was renamed: the row keeps the name it was created with.
+        await Assert.That(list["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(list["items"]!.AsArray()[0]!["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Corner Shop"));
+    }
+
+    /// <summary>
+    /// The two collisions this route can raise answer with <b>different sentences</b>, measured side by
+    /// side in one budget.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this is not a duplicate of the two cases above and of
+    /// <see cref="PostPayee_WithABlindIndexAnotherPayeeHolds_AnswersConflict" />.</b> Each of those
+    /// three asserts one sentence in isolation, and all three would stay green if the two arms were
+    /// collapsed into one that threw whichever conflict — as long as the survivor were the one each
+    /// case happened to expect, which is exactly the mistake a reader makes when tidying two <c>catch</c>
+    /// clauses that differ only in a constant. This case asserts the property those cannot: that the
+    /// two are <b>not equal</b>. It is one logical concept — the arms are discriminated — and it needs
+    /// both acts to be observable at all.
+    /// </para>
+    /// <para>
+    /// <b>The inequality is asserted as well as the two values,</b> and neither half is redundant. The
+    /// two literals catch a sentence that was edited into something wrong; the inequality catches an
+    /// implementation where one arm is dead and the other answers both, which is a change that would
+    /// otherwise have to be noticed by reading two constants that are already long.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PostPayee_CollidingOnTheIdentifierOrOnTheName_AnswersTwoDifferentSentences()
+    {
+        // Arrange — one payee to collide against.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        var takenId = Guid.CreateVersion7();
+        HttpResponseMessage seeded = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = takenId.ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
+
+        // Act — a taken identifier under a free name, then a free identifier under a taken name. One
+        // constraint each, and never both at once, so neither answer can be borrowed from the other.
+        HttpResponseMessage identifierCollision = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = takenId.ToString("D"),
+            name = SealedNarrative.EncodedName("Corner Shop"),
+            nameKey = SealedNarrative.EncodedIndex("Corner Shop"),
+        });
+        HttpResponseMessage nameCollision = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
+        string identifierDetail = await DetailOfAsync(identifierCollision);
+        string nameDetail = await DetailOfAsync(nameCollision);
+
+        // Assert — the same status from both, which is why the status proves nothing on its own.
+        await Assert.That(seeded.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(identifierCollision.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(nameCollision.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+
+        await Assert.That(identifierDetail).IsNotEqualTo(nameDetail);
+        await Assert.That(identifierDetail).IsEqualTo(
+            "A payee already exists with this identifier. If this request is a retry, read that payee "
+            + "back by its identifier instead of posting it again; otherwise mint a fresh identifier "
+            + "and post again.");
+        await Assert.That(nameDetail).IsEqualTo(
+            "A payee with this name already exists in this budget. "
+            + "Re-read the payee list and use the payee it already holds.");
+    }
+
+    /// <summary>
+    /// An identifier already used <b>in another budget</b> answers 409, and the caller cannot read the
+    /// row it is being told about.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Pinned because it is a decision, not because it is comfortable.</b> The primary key is over
+    /// <c>id</c> alone and spans the whole table, while <c>GET /api/payees/{id}</c> is scoped to the
+    /// ambient budget — so a caller told "a payee already exists with this identifier" and sent to read
+    /// it back gets a 404. That is why the sentence is phrased as an instruction ("read that payee
+    /// back") and not as a promise ("it is saved"): followed here, the instruction produces the 404
+    /// that leads the caller to the second reading in the same sentence — mint a fresh identifier.
+    /// </para>
+    /// <para>
+    /// <b>The narrow disclosure is accepted, not unnoticed.</b> The 409 tells a caller that <i>some</i>
+    /// budget in this deployment holds the identifier it proposed, which is one bit about a tenant it
+    /// cannot otherwise see. Identifiers are client-minted 128-bit values, so provoking the bit
+    /// deliberately means guessing a uuid; what it is not is zero. The alternative — answering 201 and
+    /// writing nothing, or 500 — trades that bit for a client that cannot tell a stored payee from a
+    /// lost one, and the route already refuses to be idempotent for reasons written on the repository.
+    /// If this is ever closed, it is closed by widening the key to <c>(budget_id, id)</c>, which is a
+    /// schema change, and this case is what will go red and force the decision to be made again.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PostPayee_WithAnIdentifierAnotherBudgetHolds_AnswersConflictThatCannotBeReadBack()
+    {
+        // Arrange — two accounts on one deployment, each with its own budget.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient owner = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient stranger = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
+        var id = Guid.CreateVersion7();
+        HttpResponseMessage created = await owner.PostAsJsonAsync("/api/payees", new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
+
+        // Act — the second budget proposes the same identifier. Its name index is per budget and holds
+        // nothing, so the primary key is the only rule broken.
+        HttpResponseMessage conflict = await stranger.PostAsJsonAsync("/api/payees", new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Corner Shop"),
+            nameKey = SealedNarrative.EncodedIndex("Corner Shop"),
+        });
+        HttpResponseMessage readBack = await stranger.GetAsync($"/api/payees/{id}");
+        JsonNode strangerList = await GetJsonAsync(stranger, "/api/payees");
+        JsonNode ownerList = await GetJsonAsync(owner, "/api/payees");
+
+        // Assert
+        await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(conflict.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(await DetailOfAsync(conflict)).IsEqualTo(
+            "A payee already exists with this identifier. If this request is a retry, read that payee "
+            + "back by its identifier instead of posting it again; otherwise mint a fresh identifier "
+            + "and post again.");
+
+        // The instruction, followed, and what it produces. This is the disclosure and the limit of it
+        // in one pair of lines: the caller learns the identifier is spoken for and learns nothing else,
+        // because the row is not readable, not listable, and not nameable from here.
+        await Assert.That(readBack.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+        await Assert.That(strangerList["items"]!.AsArray().Count).IsEqualTo(0);
+
+        // And the budget that does hold it is untouched — the refused write crossed no boundary.
+        await Assert.That(ownerList["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(ownerList["items"]!.AsArray()[0]!["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Starbucks"));
+    }
+
+    /// <summary>
     /// Two malformed opaque members produce two keys in one problem document.
     /// </summary>
     /// <remarks>
@@ -1372,6 +1632,21 @@ public sealed class PayeeIntegrationTests
 
     private static async Task<JsonNode> GetJsonAsync(HttpClient client, string path) =>
         (await JsonNode.ParseAsync(await client.GetStreamAsync(path)))!;
+
+    /// <summary>
+    /// The <c>detail</c> member of a problem document, as text.
+    /// </summary>
+    /// <remarks>
+    /// Non-null on purpose: every case that calls this is about <i>which</i> sentence came back, and a
+    /// response carrying no detail at all is a failure of that case rather than a value to compare. The
+    /// <c>!</c> turns that into a failure at the point of reading rather than a null flowing into an
+    /// inequality assertion, where it would compare unequal to the other sentence and pass.
+    /// </remarks>
+    private static async Task<string> DetailOfAsync(HttpResponseMessage response)
+    {
+        JsonNode problem = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        return problem["detail"]!.GetValue<string>();
+    }
 
     /// <summary>
     /// Creates one payee through the route that now owns creation and hands back its identifier.

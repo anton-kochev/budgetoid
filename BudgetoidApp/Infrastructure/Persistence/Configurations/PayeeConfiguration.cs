@@ -28,6 +28,25 @@ public sealed class PayeeConfiguration : IEntityTypeConfiguration<Payee>
     // that is what the index is for — finding the row a name is already taken by.
     public const string NameIndexName = "IX_payees_budget_id_name_key";
 
+    // Public, and applied by HasName below, for the reason WrappedAccountKeysConfiguration made its own
+    // primary key's name public: the id in this key arrives MINTED BY THE CLIENT, so a 23505 under this
+    // name is a caller's identifier already being spoken for, which is a thing the caller can be told
+    // something useful about. PayeeRepository.AddAsync matches it, and it is the constraint a retried
+    // POST hits — the same request body sent twice after a network timeout collides here and nowhere
+    // else.
+    //
+    // MEASURED, because the whole shape of AddAsync's two catches rests on it (postgres:17.10, a table
+    // carrying this key, AK_payees_id_budget_id and NameIndexName): a row violating BOTH the key and the
+    // name index is reported under "PK_payees", not under the index. PostgreSQL checks a relation's
+    // indexes in OID order — that is, in creation order — and the primary key is created with the table.
+    // A second probe pinned the mechanism rather than a coincidence: a unique index created BEFORE a
+    // later-added primary key wins the report, so this is creation order and not "the key first". Note it
+    // is also a different rule from the alphabetical one that orders a column's CHECK constraints.
+    //
+    // AK_payees_id_budget_id is therefore unreachable as a reported name and no code matches it: every
+    // row that violates it duplicates an id, so it violates this key too, and this key is checked first.
+    public const string PrimaryKeyName = "PK_payees";
+
     // Pinned for the reason AccountConfiguration pins its three: a constraint name is what PostgreSQL
     // reports and what a repository would have to match a PostgresException against, so it has to outlive
     // a property rename. Spelled the way that file spells its own — the column, then what is being
@@ -159,7 +178,7 @@ public sealed class PayeeConfiguration : IEntityTypeConfiguration<Payee>
                 $"length(name_key) = {IndexedName.BlindIndexLength}");
         });
 
-        builder.HasKey(payee => payee.Id);
+        builder.HasKey(payee => payee.Id).HasName(PrimaryKeyName);
         builder.HasAlternateKey(payee => new { payee.Id, payee.BudgetId });
 
         builder.Property(payee => payee.Id).HasColumnName("id");

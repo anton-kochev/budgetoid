@@ -60,10 +60,29 @@ public sealed class PayeeRepository(BudgetoidDbContext dbContext) : IPayeeReposi
     /// that the rename loses the field-keyed 400.
     /// </para>
     /// <para>
-    /// <b>A collision on <c>PK_payees</c> is left unhandled</b>, matching <c>AccountRepository.AddAsync</c>,
-    /// which names only its name index. It is also a 23505, so an unnamed catch would dress a caller
-    /// re-posting an id it already used as a duplicate <em>name</em> and send it to re-read a list the
-    /// payee is already on.
+    /// <b>A collision on <see cref="PayeeConfiguration.PrimaryKeyName"/> is a conflict too, and a
+    /// different one.</b> It used to be left uncaught, which answered 500 for the most ordinary thing an
+    /// HTTP client does: the id arrives minted by the caller, so a POST retried after a network timeout
+    /// carries a byte-identical body and lands on the key rather than on the name index. Measured on
+    /// postgres:17.10, a row violating both is reported under the key — see that constant for the
+    /// ordering probe.
+    /// </para>
+    /// <para>
+    /// <b>The two 409s must not share a sentence.</b> A duplicate name says somebody already holds this
+    /// name and the remedy is to adopt the row that already exists; a duplicate id says nothing about
+    /// names at all, and the row wearing that id may hold a different one — or, in a budget the caller
+    /// cannot read, no name it will ever see. Sending that caller to re-read its payee list would send it
+    /// looking for a name that is not there. <c>ConflictExceptionHandler</c> renders the message as the
+    /// whole of <c>ProblemDetails.Detail</c> beside a title fixed for every conflict in the product, so
+    /// the sentence is the only place the difference can live.
+    /// </para>
+    /// <para>
+    /// <b>The route stays non-idempotent, deliberately.</b> Answering 200 with the row that already
+    /// exists would mean reading it back and deciding whether it is the same payee — a comparison over
+    /// AEAD envelopes this server cannot open, so it could only compare a blind index, and it would still
+    /// have to choose an answer for the case where the id matches and the index does not. That is a
+    /// decision with its own failure modes and it is not this one. A 409 that says what happened is
+    /// honest and costs the client one <c>GET /api/payees/{id}</c>.
     /// </para>
     /// </remarks>
     public async Task AddAsync(Payee payee, CancellationToken cancellationToken = default)
@@ -72,6 +91,25 @@ public sealed class PayeeRepository(BudgetoidDbContext dbContext) : IPayeeReposi
         try
         {
             await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        // FIRST because it is the one PostgreSQL reports first, not because the runtime cares: the two
+        // filters are mutually exclusive — a PostgresException carries exactly one ConstraintName — so
+        // this order is documentation of the measurement, and reversing it changes no behaviour.
+        //
+        // Named, and never on SQLSTATE alone, for the reason the name-index arm below is named, plus one
+        // that is sharper here: this arm and that one raise the SAME SQLSTATE from the same statement, so
+        // SQLSTATE alone cannot tell an id collision from a name collision and whichever sentence was
+        // written first would be told to both.
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: PayeeConfiguration.PrimaryKeyName,
+        })
+        {
+            // Detach for the reason the arm below detaches: the failed (Added) state must not leak into a
+            // later SaveChanges if the context were reused.
+            dbContext.Entry(payee).State = EntityState.Detached;
+            throw DuplicatePayeeIdConflictException();
         }
         // Named, and never on SQLSTATE alone: SaveChanges flushes every tracked row and not just this
         // payee, so only this index says the blind index the client just computed is the one already
@@ -140,6 +178,28 @@ public sealed class PayeeRepository(BudgetoidDbContext dbContext) : IPayeeReposi
     private static ConflictException DuplicatePayeeConflictException() => new(
         "A payee with this name already exists in this budget. "
         + "Re-read the payee list and use the payee it already holds.");
+
+    // The OTHER conflict this table can raise, and everything the sentence above says about the shared
+    // handler applies here: one Title for every 409 in the product, no extension member, so this string
+    // is the whole of what the caller is told.
+    //
+    // It deliberately does not say "re-read your payee list", which is the neighbouring sentence and the
+    // wrong instruction: the row already wearing this id may carry a different name, so a client sent to
+    // its list would look for a name that is not on it. What it does instead is name the two readings the
+    // server genuinely cannot tell apart — a retry that already succeeded, and an identifier reused by
+    // mistake — and give each its own next step, because the client CAN tell them apart: it knows whether
+    // it sent this body before.
+    //
+    // "Read it back" is deliberately not "it is saved": the id is scoped to the whole table while
+    // GET /api/payees/{id} is scoped to the ambient budget, so a collision with a payee in some other
+    // budget answers 404 on the read-back. Phrasing it as an instruction rather than a promise keeps the
+    // sentence true in that case, where the honest conclusion is the second reading — mint a fresh id.
+    //
+    // Carries no SQLSTATE, constraint name or database text, matching its neighbour: a caller learns what
+    // to do and nothing about the schema that refused it.
+    private static ConflictException DuplicatePayeeIdConflictException() => new(
+        "A payee already exists with this identifier. If this request is a retry, read that payee back by "
+        + "its identifier instead of posting it again; otherwise mint a fresh identifier and post again.");
 
     private static ValidationException DuplicateNameValidationException() => new(new Dictionary<string, string[]>
     {

@@ -320,7 +320,18 @@ Load-bearing rules, each explained there or in the linked decision:
   answers two statuses**: a duplicate blind index is a **409** on the create and a **400** on the
   rename, because a create's remedy is "adopt the row that already exists" — not a field anybody can
   correct — and a rename's is "choose another name", which is; collapsing them costs the rename the
-  field-keyed problem document `payees.md` argues for. **Both transaction handlers lost
+  field-keyed problem document `payees.md` argues for. **The primary key answers a third, on payees
+  and accounts alike**: the id is client-minted, so a POST retried after a network timeout carries a
+  byte-identical body and collides on `PK_payees` / `PK_accounts`, not on the name index — measured
+  on postgres:17.10, a row violating **both** is reported under the **key**, because PostgreSQL
+  checks a relation's indexes in **OID (creation) order** and the key is created with the table,
+  which is a different rule from the alphabetical one ordering a column's `CHECK` constraints. That
+  also makes `AK_{payees,accounts}_id_budget_id` unreachable as a reported name, so nothing matches
+  it. Both repositories translate it to a **409 carrying its own sentence**, never the duplicate-name
+  one: the row wearing that id may hold a different name — or sit in a budget the caller cannot read
+  — so "re-read your list" would send somebody looking for a name that is not there. The route is
+  **not** made idempotent, because deciding whether the existing row is the same one means comparing
+  AEAD envelopes this server has no key for. **Both transaction handlers lost
   `ITransactionalExecutor`** — each is one `SaveChanges` now, and a transaction around a single save
   reads as load-bearing to the next reader — which makes a payee **orphanable** by a failed
   transaction POST, on a table with no `DELETE` grant; accepted, because every alternative either

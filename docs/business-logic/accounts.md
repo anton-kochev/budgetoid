@@ -92,7 +92,10 @@ erDiagram
     of digests.
   - **Enforced in**: the unique index declared in `AccountConfiguration` and pinned there as
     `NameIndexName`, which `AccountRepository` matches `PostgresException.ConstraintName` against on
-    both `AddAsync` and `UpdateAsync` to raise "Account name must be unique." rather than a 500. The
+    both `AddAsync` and `UpdateAsync` to raise "Account name must be unique." rather than a 500 —
+    on a create, that is the answer when the identifier beside the name is **fresh**, the
+    qualification the identifier-conflict rule under [Business Rules](#business-rules--invariants)
+    argues. The
     C# constant is still called `NameIndexName` while its **value** ends in `_name_key`: the index
     is for finding the row a name is already taken by, and the schema follows EF's own convention
     rather than carrying a hand-pinned exception to it. **Both verbs answer 400 here and a payee
@@ -261,13 +264,67 @@ erDiagram
   attempted and every failure is reported, since one piece of client code produces all three.
   `Account.Create` takes the id as a parameter and refuses `Guid.Empty` — reachable for
   the first time now that the value arrives from outside, and refused here rather than left to the
-  primary key, which accepts all-zero as a legal uuid and reports the *second* such row under a
-  constraint name that says nothing about a caller who never chose an id.
+  primary key, which accepts all-zero as a legal uuid and would answer the *second* such row with
+  the identifier conflict below: a sentence true of the row and wrong about the caller, telling
+  somebody who chose no id at all to mint a fresh one.
 - **Counterexample**: `UpdateAccountCommand.Id` is a `Guid` and the route parameter stays
   `{id:guid}`, and that asymmetry is deliberate rather than an oversight. On an update the client
   re-seals against the row's **existing** id, which it read back from this API in the one form a
   `Guid` renders; the text in the URL is never the text anything was sealed under, so there is no
   spelling to preserve. The rule lives where an identifier is *chosen*.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **`POST /api/accounts` has two conflict answers, and the split is between the two
+  constraints rather than between create and rename.** A duplicate **name** is a 400 keyed on
+  `Name`, unchanged. A duplicate **identifier** is a 409 carrying its own sentence: `An account
+  already exists with this identifier. If this request is a retry, read that account back by its
+  identifier instead of posting it again; otherwise mint a fresh identifier and post again.`
+- **Why**: the identifier is minted by the client — it is the associated data the name was sealed
+  against — so **a retry after a network timeout carries a byte-identical body**, which is the
+  ordinary behaviour of an HTTP client and used to answer 500. The two answers differ because the
+  two collisions are different acts. A duplicate name is a person's typed value colliding with
+  another row's: a correction to a field of the request, which is exactly what a validation problem
+  document carries. A duplicate identifier is nothing anybody typed and no field a form could
+  attach a message to — the remedy is to read the account back or to mint a new identifier, and
+  neither is an edit to `Name`.
+  - **"Read it back" is an instruction and not a promise.** The primary key spans the whole table
+    while `GET /api/accounts/{id}` is scoped to the ambient budget, so an identifier held by another
+    budget answers 409 here and 404 on the read-back, at which point the sentence's second reading
+    — mint a fresh identifier — is the honest one. The disclosure that follows is one bit about a
+    tenant the caller cannot otherwise see, over a client-minted 128-bit value, and it is accepted;
+    the argument, and what closing it would cost, is written once in
+    [payees.md](payees.md#business-rules--invariants), whose route carries the identical shape.
+  - **The sentence is worded alongside the payee's twin deliberately.** The caller's situation is
+    identical on both routes — nothing was written and the identifier its client chose is spoken
+    for — so the two are read and changed together, and the fact that a duplicate *name* answers
+    differently on the two tables is a separate rule that survives this one rather than being
+    flattened by it.
+- **Enforced in**: **database-owned for the refusal, application-owned for both sentences.**
+  `AccountRepository.AddAsync` carries two `catch` arms over the **same** SQLSTATE, matched by
+  constraint name — `AccountConfiguration.PrimaryKeyName` and `NameIndexName` — because SQLSTATE
+  alone cannot tell an id collision from a name one and whichever answer was written first would be
+  given to both. Which constraint a row breaking **both** is reported under is decided by **OID**
+  and the measurement is in
+  [ciphertext-envelope.md](ciphertext-envelope.md#which-constraint-a-row-is-reported-under-is-decided-by-oid);
+  the answer is the key, which is what makes the 409 the answer to a byte-for-byte retry.
+  `AccountIntegrationTests.CreateAccount_RetriedByteForByte_AnswersConflictNamingTheIdentifier`
+  asserts the sentence in full rather than the status, which an implementation reaching for the
+  wrong conflict would also satisfy;
+  `…CreateAccount_ReusingAnIdentifierUnderAnotherName_AnswersConflictNamingTheIdentifier` breaks the
+  key **alone**, the shape that used to reach the global handler; and
+  `…CreateAccount_WithATakenName_AnswersBadRequestOnlyUnderAFreshIdentifier` sends one taken name
+  twice, under a fresh identifier and under the seeded account's own, and pins the two answers side
+  by side.
+- **Example**: a create whose response was lost, re-sent unchanged, answers 409 naming the
+  identifier and writes nothing; the same name under a fresh identifier answers 400 keyed on `Name`.
+- **Counterexample**: `CreateAccount_WithDuplicateName_IsRejected` mints a fresh identifier for its
+  second create — correctly, and silently. Inline that identifier, or reuse the first account's
+  while editing the case later, and the same duplicate name answers 409, because the key is the
+  constraint reported when a row breaks both. Every assertion in that case is about a 400, so it
+  goes red without saying why, and the natural repair — changing the expected status — deletes the
+  field-keyed refusal a person actually needs.
 - **Source**: `[SOURCE: discussion]`
 
 ---

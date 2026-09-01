@@ -322,6 +322,161 @@ public sealed class AccountIntegrationTests
         await Assert.That(problem!["errors"]!["Name"] is not null).IsTrue();
     }
 
+    /// <summary>
+    /// The same create sent twice, byte for byte, answers <b>409</b> and says so as an
+    /// <i>identifier</i> collision — not the 400 the same name would earn under a fresh identifier.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the ordinary behaviour of an HTTP client, and it used to answer 500.</b> The
+    /// identifier is minted by the caller — it is the associated data the name envelope was sealed
+    /// against — so a POST retried after a network timeout carries a body identical to the first one,
+    /// down to the byte, and lands on <c>PK_accounts</c>. Nothing in the product tells the client to
+    /// change it, and nothing should: the second request is a repeat of the first.
+    /// </para>
+    /// <para>
+    /// <b>The detail sentence is the assertion, not the status.</b> A 409 alone is satisfied by an
+    /// implementation that reached for the wrong conflict; <c>ConflictExceptionHandler</c> writes one
+    /// fixed title for every conflict in the product and adds no extension member, so the sentence is
+    /// the whole of what a caller is told and the whole of what carries the remedy.
+    /// </para>
+    /// <para>
+    /// <b>And a 400 is asserted against explicitly,</b> because this row breaks the name index as well
+    /// as the key and the account routes answer a duplicate <i>name</i> with a 400 keyed on
+    /// <c>Name</c>. Which of the two the caller gets is decided by which constraint PostgreSQL names,
+    /// and the answer is the key — measured, and written out on
+    /// <c>PayeeConfiguration.PrimaryKeyName</c>.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task CreateAccount_RetriedByteForByte_AnswersConflictNamingTheIdentifier()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
+        var id = Guid.CreateVersion7();
+        object body = CreateBody(id, "Checking");
+        HttpResponseMessage created = await client.PostAsJsonAsync("/api/accounts", body);
+
+        // Act — the identical object, sent again.
+        HttpResponseMessage retry = await client.PostAsJsonAsync("/api/accounts", body);
+        JsonNode problem = (await JsonNode.ParseAsync(await retry.Content.ReadAsStreamAsync()))!;
+        JsonNode list = (await JsonNode.ParseAsync(await client.GetStreamAsync("/api/accounts")))!;
+
+        // Assert
+        await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(retry.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(problem["title"]!.GetValue<string>())
+            .IsEqualTo("The request conflicts with the current state of the resource.");
+        await Assert.That(problem["detail"]!.GetValue<string>()).IsEqualTo(
+            "An account already exists with this identifier. If this request is a retry, read that "
+            + "account back by its identifier instead of posting it again; otherwise mint a fresh "
+            + "identifier and post again.");
+
+        // No field errors, and that is the shape as well as the status: a duplicate name here would
+        // have produced a problem document keyed on Name, asking the person to edit a name they typed
+        // correctly and did not resend by choice.
+        await Assert.That(problem["errors"]).IsNull();
+
+        // The retry wrote nothing — one account, the one the first request created.
+        await Assert.That(list["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(list["items"]!.AsArray()[0]!["id"]!.GetValue<Guid>()).IsEqualTo(id);
+    }
+
+    /// <summary>
+    /// One taken name, two answers, decided by whether the identifier beside it is fresh: <b>400</b>
+    /// keyed on <c>Name</c>, or <b>409</b> naming the identifier.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the trap, and nothing else in the suite can see it.</b>
+    /// <see cref="CreateAccount_WithDuplicateName_IsRejected" /> mints a fresh identifier for its
+    /// second create — correctly, and silently: nothing in it says the freshness is load-bearing. Inline
+    /// that identifier, or reuse the first account's while editing the case later, and the same
+    /// duplicate name answers 409 instead, because the primary key is the constraint PostgreSQL names
+    /// when a row breaks both. Every assertion in that case is about a 400, so it would go red without
+    /// saying why, and the natural repair is to change the expected status — which deletes the
+    /// field-keyed refusal a person actually needs.
+    /// </para>
+    /// <para>
+    /// <b>The asymmetry between the two tables survives this case rather than being flattened by it.</b>
+    /// A duplicate name is a 400 on accounts and a 409 on payees; that is argued where the two
+    /// repositories are written, and this case pins only the account side. What both tables now share
+    /// is the identifier arm, and it is the one that wins when a row breaks both rules.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task CreateAccount_WithATakenName_AnswersBadRequestOnlyUnderAFreshIdentifier()
+    {
+        // Arrange — one account to collide against.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
+        var takenId = Guid.CreateVersion7();
+        HttpResponseMessage seeded = await client.PostAsJsonAsync("/api/accounts", CreateBody(takenId, "Checking"));
+
+        // Act — the same name twice. The only difference between the two bodies is the identifier: the
+        // first is one nothing holds, the second is the seeded account's own.
+        HttpResponseMessage underAFreshId =
+            await client.PostAsJsonAsync("/api/accounts", CreateBody(Guid.CreateVersion7(), "Checking"));
+        HttpResponseMessage underTheTakenId =
+            await client.PostAsJsonAsync("/api/accounts", CreateBody(takenId, "Checking"));
+        JsonNode freshProblem =
+            (await JsonNode.ParseAsync(await underAFreshId.Content.ReadAsStreamAsync()))!;
+
+        // Assert — the name index alone, reported as a correction to the field the person typed.
+        await Assert.That(seeded.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(underAFreshId.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(freshProblem["errors"]!["Name"] is not null).IsTrue();
+
+        // The key and the index together, reported as the key. Same name, same budget, same route —
+        // and a different status, which is the whole point of writing the two side by side.
+        await Assert.That(underTheTakenId.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(await DetailOfAsync(underTheTakenId)).IsEqualTo(
+            "An account already exists with this identifier. If this request is a retry, read that "
+            + "account back by its identifier instead of posting it again; otherwise mint a fresh "
+            + "identifier and post again.");
+    }
+
+    /// <summary>
+    /// A create reusing an identifier under a <i>different</i> name answers <b>409</b> with the
+    /// identifier sentence — the case that separates the two arms.
+    /// </summary>
+    /// <remarks>
+    /// <b>Only the primary key is broken here,</b> which is what the route answered <b>500</b> on
+    /// before the arm existed: no <c>catch</c> named <c>PK_accounts</c>, so the
+    /// <c>DbUpdateException</c> reached the global handler. The name is one nothing in this budget
+    /// holds, so an implementation that matched the name index and nothing else has no answer to give,
+    /// and one that answered the duplicate-name 400 would key the refusal on a name that is free.
+    /// </remarks>
+    [Test]
+    public async Task CreateAccount_ReusingAnIdentifierUnderAnotherName_AnswersConflictNamingTheIdentifier()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
+        var id = Guid.CreateVersion7();
+        HttpResponseMessage created = await client.PostAsJsonAsync("/api/accounts", CreateBody(id, "Checking"));
+
+        // Act — same identifier, a name nothing in this budget holds.
+        HttpResponseMessage conflict = await client.PostAsJsonAsync("/api/accounts", CreateBody(id, "Savings"));
+        JsonNode problem = (await JsonNode.ParseAsync(await conflict.Content.ReadAsStreamAsync()))!;
+        JsonNode list = (await JsonNode.ParseAsync(await client.GetStreamAsync("/api/accounts")))!;
+
+        // Assert
+        await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(conflict.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(problem["detail"]!.GetValue<string>()).IsEqualTo(
+            "An account already exists with this identifier. If this request is a retry, read that "
+            + "account back by its identifier instead of posting it again; otherwise mint a fresh "
+            + "identifier and post again.");
+        await Assert.That(problem["errors"]).IsNull();
+
+        // Nothing was written and nothing was renamed: the row keeps the name it was created with.
+        await Assert.That(list["items"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(list["items"]!.AsArray()[0]!["name"]!.GetValue<string>())
+            .IsEqualTo(EncodedName("Checking"));
+    }
+
     [Test]
     public async Task RenameAccount_ToExistingName_IsRejected()
     {
@@ -405,6 +560,19 @@ public sealed class AccountIntegrationTests
         openingBalance = 100m,
         currencyCode = "USD",
     };
+
+    /// <summary>
+    /// The <c>detail</c> member of a problem document, as text.
+    /// </summary>
+    /// <remarks>
+    /// Non-null on purpose: every case that calls this is about <i>which</i> sentence came back, so a
+    /// response carrying no detail is a failure of that case rather than a value worth comparing.
+    /// </remarks>
+    private static async Task<string> DetailOfAsync(HttpResponseMessage response)
+    {
+        JsonNode problem = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        return problem["detail"]!.GetValue<string>();
+    }
 
     private static object UpdateBody(string label, string type) => new
     {

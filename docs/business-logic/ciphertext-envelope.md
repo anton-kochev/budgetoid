@@ -715,6 +715,42 @@ a narrative column has to be **total over every length its column can hold**, in
 nothing guarantees a companion check gets there first. Total predicates make a column's error
 behaviour a property of the column; partial ones make it a property of the alphabet.
 
+### Which constraint a row is reported under is decided by OID
+
+The rule above governs **one column's `CHECK` constraints**, and it is decided by the constraint
+*name*, alphabetically. A reader who learns it will carry it over to the other question a rejected
+row raises — **which of two unique rules is named when a row breaks both** — and it does not reach
+that far. That one is decided by **OID**, which is creation order. Two unrelated mechanisms
+answering questions phrased the same way, written side by side here so that nobody applies the
+alphabet to a question it has never governed.
+
+**Measured twice on PostgreSQL 17.10**, over a table carrying a primary key, an alternate key and a
+unique index. With the primary key created **alongside the table**, a row violating both the key
+and the index is reported under the **key**. With a unique index created **before** a primary key
+added by a later `ALTER TABLE`, the **index** wins. Inverting the creation order inverts the
+report — which is what makes this OID rather than any preference for keys over indexes, and what a
+single measurement of the first shape could never have established.
+
+**What it decides on the two sealed tables, and what it must not be leaned on for.** `accounts` and
+`payees` each declare their primary key with the table, so a create retried byte for byte — a row
+breaking the key **and** the name index — is reported under the key, which is what puts the
+identifier's answer in front of the name's on both routes
+([accounts.md](accounts.md#business-rules--invariants),
+[payees.md](payees.md#business-rules--invariants)). That is a fact about today's creation order and
+not a promise, so neither repository rests on it: both `catch` arms are matched **by constraint
+name** and are mutually exclusive — a `PostgresException` carries exactly one — so the order they
+are written in documents the measurement and changes no behaviour.
+
+**One constraint on each of those tables is unreachable as a reported name, and a `catch` naming it
+would be dead code that reads convincingly.** `AK_payees_id_budget_id` and its counterpart on
+`accounts` — the alternate keys the composite foreign keys point at — can never be the name a
+failure arrives under: every row that violates one duplicates the id, so it violates the
+lower-OID primary key as well, and the key is what is reported. **No black-box test can see the
+difference.** An arm matching that name and throwing anything at all leaves the whole suite green,
+because nothing any route can send produces a violation it gets to report. A guard that cannot fire
+costs a reader a rule to understand and buys nothing, which is the argument for refusing it in
+review — there is no test that will.
+
 ### The type is the rule, and it is the strongest one available here
 
 The only type a narrative column accepts has **no constructor, no factory and no conversion taking

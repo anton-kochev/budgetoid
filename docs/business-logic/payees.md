@@ -321,8 +321,9 @@ erDiagram
   attempted and every failure is reported, since one piece of client code produces all three.
   `Payee.Create` takes the id as a parameter and refuses `Guid.Empty` — reachable for the first time
   now that the value arrives from outside, and refused here rather than left to the primary key,
-  which accepts all-zero as a legal uuid and reports the *second* such row under a constraint name
-  that says nothing about a caller who never chose an id.
+  which accepts all-zero as a legal uuid and would answer the *second* such row with the identifier
+  conflict below: a sentence true of the row and wrong about the caller, telling somebody who chose
+  no id at all to mint a fresh one.
 - **Counterexample**: `RenamePayeeCommand.Id` is a `Guid` and the route parameter stays `{id:guid}`,
   and that asymmetry is deliberate rather than an oversight. On a rename the client re-seals against
   the row's **existing** id, which it read back from this API in the one form a `Guid` renders; the
@@ -379,6 +380,65 @@ erDiagram
   the corner cases** — a rename can lose a race between two tabs, a create can be a person
   deliberately making a second payee — and each status follows its dominant case. If this is ever
   overruled, the fallback that keeps one status is 409 on both, and the cost is named above.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: A create carrying an identifier the table already holds answers **409 with its own
+  sentence**, and never the duplicate-name one: `A payee already exists with this identifier. If
+  this request is a retry, read that payee back by its identifier instead of posting it again;
+  otherwise mint a fresh identifier and post again.`
+- **Why**: the identifier is the client's, so **a retry after a network timeout is a byte-identical
+  body** — the ordinary behaviour of an HTTP client, on a route that fires from an autocomplete —
+  and the one answer that tells such a client what to do is the one it did not get while this
+  collision was left to propagate. There is no member for a validation problem document to be keyed
+  on either: the id, the envelope and the index are all exactly what the caller meant, and the
+  remedy is to read the row back or to choose a different identifier, neither of which is an edit to
+  a field.
+  - **The two conflicts must not share a sentence.** A duplicate name says somebody already holds
+    this name and the remedy is to adopt the row that already exists. A duplicate identifier says
+    nothing about names at all — the row wearing that id may hold a different one, or a name in a
+    budget the caller cannot read — so sending that caller off to re-read its payee list would send
+    it looking for a name that is not on it. The shared conflict handler writes one title for every
+    409 in the product and adds no extension member, so the sentence is the only place the
+    difference can live.
+  - **"Read it back" is an instruction and not a promise, and the second clause is why.** The
+    primary key spans the whole table while `GET /api/payees/{id}` is scoped to the ambient budget,
+    so an identifier held by *another* budget answers 409 here and 404 on the read-back — at which
+    point the sentence's other reading, mint a fresh identifier, is the honest one. **The narrow
+    disclosure that follows is accepted rather than unnoticed**: the 409 tells a caller that some
+    budget in this deployment holds the identifier it proposed, which is one bit about a tenant it
+    cannot otherwise see. Identifiers are client-minted 128-bit values, so provoking that bit
+    deliberately means guessing a uuid, and no content crosses with it. Closing it means widening
+    the key to `(budget_id, id)`, which is a schema change and a decision to be made again rather
+    than a defect to be patched.
+- **Enforced in**: **database-owned for the refusal, application-owned for the sentence**, exactly
+  as its neighbour. `PayeeRepository.AddAsync` carries two `catch` arms over the **same** SQLSTATE,
+  each matched by constraint name — `PayeeConfiguration.PrimaryKeyName` and the name index — so
+  SQLSTATE alone cannot tell the two apart and whichever sentence was written first would be given
+  to both. Which constraint a row breaking both rules is reported under is decided by **OID**, and
+  the measurement is in
+  [ciphertext-envelope.md](ciphertext-envelope.md#which-constraint-a-row-is-reported-under-is-decided-by-oid).
+  `PayeeIntegrationTests.PostPayee_RetriedByteForByte_AnswersConflictNamingTheIdentifier` sends one
+  body twice and asserts the sentence in full, because the status alone is satisfied by an
+  implementation that reached for the neighbouring conflict;
+  `…PostPayee_ReusingAnIdentifierUnderAnotherName_AnswersConflictNamingTheIdentifier` breaks the key
+  **alone**, which is the shape that used to answer 500; and
+  `…PostPayee_CollidingOnTheIdentifierOrOnTheName_AnswersTwoDifferentSentences` asserts the two are
+  **not equal**, which is the property no case asserting one sentence in isolation can hold — three
+  such cases stay green if the arms are collapsed into one that always throws whichever conflict
+  each of them happened to expect.
+- **Example**: a browser posts a payee, the response is lost, and it sends the same body again. It
+  gets a 409 naming the identifier, follows the instruction, and `GET /api/payees/{id}` hands back
+  the payee its first request created — one row, and the transaction it was in the middle of can
+  name it. `…PostPayee_WithAnIdentifierAnotherBudgetHolds_AnswersConflictThatCannotBeReadBack` is
+  the other end of the same instruction: the same 409, a 404 on the read-back, and an empty list.
+- **Counterexample**: answering **200 with the row that already exists**, which is the tidy-looking
+  idempotent create. It means reading the row back and deciding whether it is the same payee — a
+  comparison over envelopes this server cannot open, so it could only compare a blind index, and it
+  would still have to choose an answer for the case where the id matches and the index does not.
+  That is a decision with its own failure modes and it is not this one; a 409 that says what
+  happened costs the client one `GET /api/payees/{id}`.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -495,7 +555,10 @@ stateDiagram-v2
     Resolving --> Posting : no match — mint an id, seal the name against it, index the folded text
     Posting --> Created : 201 — the payee's id and sealed name come back
     Posting --> Stale : 409 on IX_payees_budget_id_name_key
+    Posting --> Spoken : 409 on PK_payees — the identifier is already taken
     Stale --> Existing : re-read the list, decrypt it, adopt the payee it already holds
+    Spoken --> Existing : a retry — the by-id read hands back the payee the first request created
+    Spoken --> Resolving : not a retry, or the read-back 404s — mint a fresh identifier
     Created --> [*] : a later POST /api/transactions may name the new id — or may never arrive
 ```
 
@@ -504,7 +567,8 @@ stateDiagram-v2
 | Resolving → Existing | The client's own list already holds that blind index | None on this side — the server is not asked |
 | Resolving → Posting | The client's list holds no such index | `CreatePayeeHandler` judges the id's spelling, the envelope's framing and cap, and the index's width, reporting every failure |
 | Posting → Created | The insert was accepted | `Payee.Create` refuses an empty id and an empty budget id; `IndexedName.Of` refuses half a name |
-| Posting → Stale | `IX_payees_budget_id_name_key` refused it | The `23505` is matched **by constraint name**; `PK_payees` raises the same SQLSTATE and is deliberately not caught |
+| Posting → Stale | `IX_payees_budget_id_name_key` refused it | The `23505` is matched **by constraint name**, never on SQLSTATE alone, because the identifier arm raises the identical one |
+| Posting → Spoken | `PK_payees` refused it | The same `23505` under the other name. A row breaking both is reported under the **key**, so this arm wins a byte-for-byte retry |
 | Created → `[*]` | Nothing, necessarily | **The transaction is a separate request and may never be sent.** The payee stands either way |
 
 The rename (`RenamePayeeHandler`) is the whole of the payee's own write surface, and it has three
@@ -536,11 +600,16 @@ IF any error was collected
 ELSE
   Payee.Create(id, ambient budget, IndexedName.Of(envelope, index), now)
   try to insert
-  IF IX_payees_budget_id_name_key refused it             ← the client's list was stale
-    THEN 409 "A payee with this name already exists in this budget.
-              Re-read the payee list and use the payee it already holds."
-  ELSE IF PK_payees refused it                           ← also a 23505, deliberately uncaught,
-    THEN the violation propagates unhandled                because it is not a duplicate NAME
+  IF PK_payees refused it                                ← checked first because it is the one
+    THEN 409 "A payee already exists with this             PostgreSQL reports when a row breaks
+              identifier. If this request is a retry,      both; the two catches are mutually
+              read that payee back by its identifier       exclusive either way
+              instead of posting it again; otherwise
+              mint a fresh identifier and post again."
+  ELSE IF IX_payees_budget_id_name_key refused it        ← the client's list was stale; the same
+    THEN 409 "A payee with this name already exists        23505 under the other name, which is
+              in this budget. Re-read the payee list        why neither arm may match on SQLSTATE
+              and use the payee it already holds."          alone
   ELSE
     THEN 201 with the payee, and a Location naming GET /api/payees/{id}
 ```

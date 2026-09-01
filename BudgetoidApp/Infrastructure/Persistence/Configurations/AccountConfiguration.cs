@@ -23,6 +23,17 @@ public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
     // `catch ... when` clauses read as sentences about a duplicate name, not about a digest.
     public const string NameIndexName = "IX_accounts_budget_id_name_key";
 
+    // The same constant PayeeConfiguration declares, for the same reason and matched by the same shape of
+    // `catch ... when`: the id in this key arrives MINTED BY THE CLIENT, so a 23505 under this name says a
+    // caller's identifier is already spoken for — a retried POST after a network timeout sends a
+    // byte-identical body and collides here and nowhere else.
+    //
+    // The ordering measurement that makes this the name a duplicate id actually arrives under is written
+    // out once, on PayeeConfiguration.PrimaryKeyName, and holds identically here: this table has the same
+    // three constraints in the same creation order, so a row violating both the key and NameIndexName is
+    // reported under "PK_accounts", and AK_accounts_id_budget_id is unreachable as a reported name.
+    public const string PrimaryKeyName = "PK_accounts";
+
     // Pinned for the reason BudgetConfiguration pins its pair and WrappedAccountKeysConfiguration its
     // five: a constraint name is what PostgreSQL reports and what a repository would have to match a
     // PostgresException against, so it has to outlive a property rename. Spelled the way those files
@@ -169,7 +180,7 @@ public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
                 $"length(name_key) = {IndexedName.BlindIndexLength}");
         });
 
-        builder.HasKey(account => account.Id);
+        builder.HasKey(account => account.Id).HasName(PrimaryKeyName);
         builder.HasAlternateKey(account => new { account.Id, account.BudgetId });
 
         builder.Property(account => account.Id).HasColumnName("id");

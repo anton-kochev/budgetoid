@@ -123,6 +123,37 @@ public sealed class RepositoryConstraintAttributionTests
     private const string UserEmailIndex = "IX_users_email";
     private const string PayeeBudgetForeignKey = "FK_payees_budgets_budget_id";
 
+    /// <summary>
+    /// The primary key a duplicate account identifier trips, spelled out here for the reason
+    /// <see cref="AccountNameIndex" /> is.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A second unique rule on one table, which is what makes the pair below different from every
+    /// other pair in this file.</b> Elsewhere a repository translates one constraint and everything
+    /// else escapes; <c>accounts</c> and <c>payees</c> each translate two, so a filter written on
+    /// SQLSTATE alone no longer merely mis-attributes a stranger's violation — it cannot tell the
+    /// table's own two apart either, and hands whichever answer was written first to both.
+    /// </para>
+    /// <para>
+    /// <b>Which of the two PostgreSQL names when a row breaks both is a measurement, not a guess.</b>
+    /// Measured on postgres:17.10 over this table's shape: indexes are checked in OID order — creation
+    /// order — and the primary key is created with the table while the name index is created after it,
+    /// so the key is reported. Inverting the creation order inverts the answer, which is what rules out
+    /// "the primary key first" as the rule. It is also a different rule from the alphabetical ordering
+    /// that decides which of a column's <c>CHECK</c> constraints fires first, and neither covers the
+    /// other. The probe is written out on <c>PayeeConfiguration.PrimaryKeyName</c>.
+    /// </para>
+    /// </remarks>
+    private const string AccountPrimaryKey = "PK_accounts";
+
+    /// <summary>
+    /// The primary key a duplicate payee identifier trips, spelled out here for the reason
+    /// <see cref="AccountPrimaryKey" /> is, and holding the same measurement: <c>payees</c> carries the
+    /// same three constraints created in the same order.
+    /// </summary>
+    private const string PayeePrimaryKey = "PK_payees";
+
     [Test]
     public async Task AddAccount_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape()
     {
@@ -189,6 +220,115 @@ public sealed class RepositoryConstraintAttributionTests
         await Assert.That(escaped).IsTypeOf<ValidationException>();
         await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(Account.Name)))
             .IsTrue();
+    }
+
+    /// <summary>
+    /// The mis-attribution control for <c>AccountRepository.AddAsync</c>'s <b>second</b> arm, staged
+    /// against a stranger's <i>primary key</i> rather than a stranger's name index.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What this holds that <see cref="AddAccount_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape" />
+    /// does not.</b> That case controls widening either arm to the bare SQLSTATE, because the intruder
+    /// it stages is a 23505 under a name index. It says nothing about a filter narrowed by <i>shape</i>
+    /// rather than by name — <c>ConstraintName</c> tested for a <c>"PK_"</c> prefix, or read as a
+    /// table name, both of which look like tidying and both of which swallow the violation below. The
+    /// identifier arm is where such a filter is tempting, because every primary key in the schema is
+    /// spelled the same way.
+    /// </para>
+    /// <para>
+    /// The harm is the file's usual one, one turn sharper: the caller would be told to read back or
+    /// re-mint an account identifier that is not in dispute, and the identifier that <i>is</i> in
+    /// dispute belongs to a payee it never mentioned.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AddAccount_WhenATrackedRowBreaksAnotherPrimaryKey_LetsTheViolationEscape()
+    {
+        // Arrange — the intruder is a payee reusing an identifier a payee already holds, which breaks
+        // PK_payees with the same 23505 PK_accounts would raise. The account being added holds an
+        // identifier and a name that nothing in this budget holds.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenPayeeId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Payees.Add(Payee.Create(
+                takenPayeeId, budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        // A different label, so the payee's own name index is untouched and the identifier is the only
+        // rule this row breaks. Without that, the escaping name would be the index rather than the key
+        // and the case would be a copy of its neighbour.
+        db.Payees.Add(Payee.Create(
+            takenPayeeId, budgetId, SealedNarrative.Indexed("Bakery"), UtcNow()));
+        var repository = new AccountRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Account.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
+
+        // Assert — a payee's identifier collision must not come back as an account conflict telling a
+        // client to re-read an account it just minted a fresh identifier for.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(PayeePrimaryKey);
+    }
+
+    /// <summary>
+    /// The other half: <c>AccountRepository.AddAsync</c> must still translate <b>its own</b> primary
+    /// key, or narrowing the arm could be "fixed" by deleting it.
+    /// </summary>
+    /// <remarks>
+    /// <b>The message is asserted and the type alone would not do.</b> On this table the two arms
+    /// answer with different exception types — a duplicate name is a <c>ValidationException</c> keyed
+    /// on <c>Name</c>, a duplicate identifier a <c>ConflictException</c> — so a type assertion happens
+    /// to discriminate here and does not on <c>payees</c>, where both are conflicts. Writing both
+    /// halves the same way keeps the pair readable as one rule rather than as two accidents, and the
+    /// sentence is the whole of what a caller is ever told: <c>ConflictExceptionHandler</c> renders it
+    /// as <c>ProblemDetails.Detail</c> beside a title fixed for every conflict in the product.
+    /// </remarks>
+    [Test]
+    public async Task AddAccount_WithADuplicateIdentifier_TranslatesItsOwnPrimaryKey()
+    {
+        // Arrange — the collision this repository now models: one identifier, two accounts. The name
+        // differs, so PK_accounts is the only rule broken and the answer cannot be borrowed from the
+        // name index.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Accounts.Add(Account.Create(
+                takenId,
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new AccountRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Account.Create(
+            takenId,
+            budgetId,
+            SealedNarrative.Indexed("Savings"), AccountType.Savings, 0m, "USD", UsdMinorUnit, UtcNow())));
+
+        // Assert — a conflict and not a field-keyed 400: the identifier is not a member of the request
+        // anybody can correct by typing, and the remedy is to read the account back or mint a new one.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(escaped!.Message).IsEqualTo(
+            "An account already exists with this identifier. If this request is a retry, read that "
+            + "account back by its identifier instead of posting it again; otherwise mint a fresh "
+            + "identifier and post again.");
     }
 
     [Test]
@@ -453,6 +593,101 @@ public sealed class RepositoryConstraintAttributionTests
         // and not the ValidationException UpdateAsync raises on the very same index.
         await Assert.That(escaped).IsNotNull();
         await Assert.That(escaped).IsTypeOf<ConflictException>();
+    }
+
+    /// <summary>
+    /// The mis-attribution control for <c>PayeeRepository.AddAsync</c>'s <b>second</b> arm, staged
+    /// against a stranger's <i>primary key</i>.
+    /// </summary>
+    /// <remarks>
+    /// The twin of
+    /// <see cref="AddAccount_WhenATrackedRowBreaksAnotherPrimaryKey_LetsTheViolationEscape" />, and it
+    /// holds what
+    /// <see cref="AddPayee_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape" /> cannot:
+    /// a filter narrowed by the <i>shape</i> of a constraint name rather than by the name itself — a
+    /// <c>"PK_"</c> prefix test, or a read of the table name — looks like tidying, passes that case,
+    /// and swallows this one.
+    /// </remarks>
+    [Test]
+    public async Task AddPayee_WhenATrackedRowBreaksAnotherPrimaryKey_LetsTheViolationEscape()
+    {
+        // Arrange — the intruder is an account reusing an identifier an account already holds, which
+        // breaks PK_accounts with the same 23505 PK_payees would raise. The payee being added holds an
+        // identifier and a blind index nothing in this budget holds.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenAccountId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Accounts.Add(Account.Create(
+                takenAccountId,
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        // A different label, so the account's name index is untouched and the identifier is the only
+        // rule this row breaks.
+        db.Accounts.Add(Account.Create(
+            takenAccountId,
+            budgetId,
+            SealedNarrative.Indexed("Savings"), AccountType.Savings, 0m, "USD", UsdMinorUnit, UtcNow()));
+        var repository = new PayeeRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Payee.Create(
+            Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow())));
+
+        // Assert — an account's identifier collision must not come back as the payee identifier
+        // conflict, which would tell a client to re-read or re-mint a payee identifier nothing disputes.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(AccountPrimaryKey);
+    }
+
+    /// <summary>
+    /// The other half: <c>PayeeRepository.AddAsync</c> must still translate <b>its own</b> primary key,
+    /// and into a sentence that is not the one its name index earns.
+    /// </summary>
+    /// <remarks>
+    /// <b>The type is not enough on this table and that is the point.</b> Both of this repository's arms
+    /// throw <c>ConflictException</c>, so an implementation with a dead identifier arm — or with one
+    /// arm answering both collisions — satisfies every type assertion that could be written here. Only
+    /// the message tells them apart, which is the same reason the route-level cases assert
+    /// <c>ProblemDetails.Detail</c> rather than the 409.
+    /// </remarks>
+    [Test]
+    public async Task AddPayee_WithADuplicateIdentifier_TranslatesItsOwnPrimaryKey()
+    {
+        // Arrange — one identifier, two payees, and two different blind indexes, so PK_payees is the
+        // only rule broken.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Payees.Add(Payee.Create(
+                takenId, budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new PayeeRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Payee.Create(
+            takenId, budgetId, SealedNarrative.Indexed("Bakery"), UtcNow())));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(escaped!.Message).IsEqualTo(
+            "A payee already exists with this identifier. If this request is a retry, read that payee "
+            + "back by its identifier instead of posting it again; otherwise mint a fresh identifier "
+            + "and post again.");
     }
 
     /// <summary>

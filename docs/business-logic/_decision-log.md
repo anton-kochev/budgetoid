@@ -8,6 +8,87 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-02 — A repeated create is a conflict about the identifier, and it gets a sentence of its own
+
+**Context:** a `POST /api/payees` or `POST /api/accounts` carrying an identifier the table already
+held answered **500**. Since the row identifier became the client's — it is the associated data the
+name was sealed against, so nothing on this side may choose it — **a retry after a network timeout
+is a byte-identical body**. That is the ordinary behaviour of an HTTP client, on two routes that
+fire from a form and an autocomplete, and the one answer that would have told the client what to do
+was the one it did not get: the caller could not tell a payee it had stored from one it had lost.
+The *name* collision was settled a day earlier, in the entry below, and this one was dismissed in a
+clause of it: not a duplicate name, therefore not to be sent off to re-read a list. Right about the
+premise, and wrong about what follows from it — not being the name conflict is an argument for its
+**own** answer, not for no answer.
+
+**Decision:** **both add paths translate a `23505` on the primary key into a conflict, and its
+sentence is not the duplicate-name one.** `PayeeRepository.AddAsync` and `AccountRepository.AddAsync`
+each carry a second `catch` arm, matched by constraint name against
+`PayeeConfiguration.PrimaryKeyName` / `AccountConfiguration.PrimaryKeyName`, raising
+`Domain.Common.ConflictException` → **409**. The duplicate-*name* answers are untouched: still 409
+on a payee create, still 400 keyed on `Name` on an account create, still 400 on both renames.
+
+**Two clauses, because the server cannot tell the two readings apart and the client can.** The
+sentence names a retry that already succeeded and an identifier reused by mistake, and gives each
+its own next step — read that row back by its identifier, or mint a fresh one — because the only
+party that knows which of the two happened is the party that knows whether it sent this body
+before. The shared conflict handler writes one title for every 409 in the product and adds no
+extension member, so the sentence is the whole of what distinguishes these two conflicts, and the
+account's is worded alongside the payee's on purpose: the caller's situation is identical on both
+routes, so the two are read and changed together.
+
+**"Read it back" is an instruction and not a promise, and that is the narrow disclosure this entry
+exists to record.** The primary key spans the whole table while a by-id read is scoped to the
+ambient budget, so an identifier another budget holds answers 409 here and **404** on the
+read-back — which is why the sentence carries a second clause at all, and why it is phrased as
+something to try rather than as a claim that the row is saved. The cost is one bit: a caller learns
+that *some* budget in this deployment holds the identifier it proposed. **It is accepted.**
+Identifiers are client-minted 128-bit values, so provoking that bit deliberately means guessing a
+uuid, no content crosses with it, and the alternative is a caller that cannot distinguish a stored
+row from a lost one. Closing it means widening the key to `(budget_id, id)`, which is a schema
+change and a decision to be taken again rather than a defect to patch.
+
+**Which constraint reports a row that breaks both rules is decided by OID — creation order — and
+that is *not* the alphabetical rule this repository already documents for a column's `CHECK`
+constraints.** Measured twice, both directions, and written out in
+[ciphertext-envelope.md](ciphertext-envelope.md#which-constraint-a-row-is-reported-under-is-decided-by-oid)
+beside the rule it will be mistaken for. Two consequences follow: a byte-for-byte retry is reported
+under the **key**, so the identifier's answer arrives in front of the name's on both tables; and the
+alternate key on each table is unreachable as a reported name, so an arm naming it would be dead
+code no black-box test could ever redden.
+
+**Alternatives rejected, and they fail differently.** **Leaving it unhandled**, which is what stood
+until now — it answers 500 to a correct client doing the one thing HTTP clients do, and a 500 is the
+one status that says nothing about what to do next. **One sentence for both conflicts**
+— it is the tidy-looking collapse of two `catch` arms that differ only in a constant, and the row
+already wearing the identifier may hold a different name or a name in a budget the caller cannot
+read, so "re-read the payee list" sends it looking for something that is not on it. **Matching on
+SQLSTATE alone** — the two arms raise the identical `23505` from the identical statement, so
+whichever sentence was written first would be given to both, and a stranger's unique violation
+flushed by the same `SaveChanges` would wear one of them. **Answering 200 with the row that already
+exists**, the idempotent create — it needs the row read back and judged the same payee, which is a
+comparison over envelopes this server cannot open, so it could only compare a blind index and would
+still have to choose an answer for the case where the id matches and the index does not. **A
+precheck before the insert** — it is check-then-act, so the key still has to catch the loser of a
+race, and it cannot see the case that matters: a row in another budget is filtered out of every
+read this side can issue, so the precheck answers "free" and the insert fails anyway. **Widening the
+key to `(budget_id, id)` now** — it removes the disclosure and makes two budgets able to hold one
+identifier, which is a change to what a row id *is* on routes whose ids are also associated data;
+too large to make as a side effect of an error message.
+
+**Consequences.** The payee create now has **three** answers and the account create **two**, so both
+chapters carry the branch and the payee state diagram gained a state. A duplicate name answers 400
+on the account create **only under a fresh identifier**, which is a live trap for the case that
+proves it: reuse the seeded account's id while editing that case later and the status changes to
+409 with nothing saying why, and the natural repair deletes the field-keyed refusal a person needs.
+And the sentence is now load-bearing in the same way its neighbour is — it is the whole of what a
+caller is told, so it names no constraint, no SQLSTATE and no row.
+
+**Affected areas:** [payees.md](payees.md), [accounts.md](accounts.md),
+[ciphertext-envelope.md](ciphertext-envelope.md).
+
+---
+
 ## 2026-09-02 — A duplicate name is a field error on an account and a conflict on a payee, and the difference is who chose the name
 
 **Context:** the entry below argues 409-on-a-create against 400-on-a-rename **within payees**, and
@@ -135,11 +216,12 @@ next by itself — and it names no payee id, no SQLSTATE and no constraint. `Pay
 pins the index name for a **new** reason: it used to protect a swallow-and-re-read inside
 find-or-create, and it now carries **attribution** for two different answers, so matching on
 SQLSTATE alone would put either sentence on a violation of some other rule flushed by the same
-`SaveChanges`. A collision on `PK_payees` is the same SQLSTATE and is deliberately left unhandled,
-because a caller re-posting an id it already used is not a duplicate *name* and must not be sent off
-to re-read a list the payee is already on. And the reviewer's instinct to harmonise the two is
-expected rather than guarded against: the argument is written at both repository members and in
-`payees.md`, because nothing in the build can hold it.
+`SaveChanges`. A collision on `PK_payees` is the same SQLSTATE and is a **third** answer carrying a
+sentence of its own: a caller re-posting an id it already used is not a duplicate *name*, and must
+not be sent off to re-read a list the payee it is being told about may not be on — which is
+precisely why it could not share this one. The entry above on the repeated create carries it. And
+the reviewer's instinct to harmonise the two is expected rather than guarded against: the argument
+is written at both repository members and in `payees.md`, because nothing in the build can hold it.
 
 **Affected areas:** [payees.md](payees.md), [transactions.md](transactions.md),
 [budgets.md](budgets.md), [ciphertext-envelope.md](ciphertext-envelope.md).
