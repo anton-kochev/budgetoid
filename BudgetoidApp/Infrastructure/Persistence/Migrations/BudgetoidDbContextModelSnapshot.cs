@@ -44,12 +44,15 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(3)")
                         .HasColumnName("currency_code");
 
-                    b.Property<string>("Name")
+                    b.Property<byte[]>("Name")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name")
-                        .UseCollation("case_insensitive");
+                        .HasColumnType("bytea")
+                        .HasColumnName("name");
+
+                    b.Property<byte[]>("NameKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("name_key");
 
                     b.Property<decimal>("OpeningBalance")
                         .HasColumnType("numeric(14,4)")
@@ -65,12 +68,18 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CurrencyCode");
 
-                    b.HasIndex("BudgetId", "Name")
+                    b.HasIndex("BudgetId", "NameKey")
                         .IsUnique()
-                        .HasDatabaseName("IX_accounts_budget_id_name");
+                        .HasDatabaseName("IX_accounts_budget_id_name_key");
 
                     b.ToTable("accounts", null, t =>
                         {
+                            t.HasCheckConstraint("CK_accounts_name_key_length", "length(name_key) = 32");
+
+                            t.HasCheckConstraint("CK_accounts_name_length", "length(name) between 29 and 1024");
+
+                            t.HasCheckConstraint("CK_accounts_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
+
                             t.HasCheckConstraint("CK_accounts_opening_balance", "abs(opening_balance) <= 1000000000");
 
                             t.HasCheckConstraint("CK_accounts_type", "type in ('Checking', 'Savings', 'Cash', 'CreditCard')");

@@ -11,6 +11,7 @@ using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -67,7 +68,10 @@ public sealed class TransactionRepositoryTests
 
         await using (BudgetoidDbContext db = new(options))
         {
-            Account account = Account.Create(budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, DateTime.UtcNow);
+            Account account = Account.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, DateTime.UtcNow);
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
 
@@ -125,7 +129,10 @@ public sealed class TransactionRepositoryTests
         Guid accountA;
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetA)))
         {
-            Account account = Account.Create(budgetA, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+            Account account = Account.Create(
+                Guid.CreateVersion7(),
+                budgetA,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
             accountA = account.Id;
@@ -185,7 +192,10 @@ public sealed class TransactionRepositoryTests
         Guid accountB;
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetB)))
         {
-            Account account = Account.Create(budgetB, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+            Account account = Account.Create(
+                Guid.CreateVersion7(),
+                budgetB,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
             accountB = account.Id;
@@ -245,7 +255,10 @@ public sealed class TransactionRepositoryTests
         Guid accountB;
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetB)))
         {
-            Account account = Account.Create(budgetB, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+            Account account = Account.Create(
+                Guid.CreateVersion7(),
+                budgetB,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
             accountB = account.Id;
@@ -298,7 +311,10 @@ public sealed class TransactionRepositoryTests
         // Act
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId)))
         {
-            Account account = Account.Create(budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+            Account account = Account.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
             db.Accounts.Add(account);
             await db.SaveChangesAsync();
 
@@ -889,7 +905,10 @@ public sealed class TransactionRepositoryTests
     private static async Task<Guid> SeedAccountAsync(RepositoryTestHost host, Guid budgetId)
     {
         await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
-        Account account = Account.Create(budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        Account account = Account.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
         db.Accounts.Add(account);
         await db.SaveChangesAsync();
         return account.Id;

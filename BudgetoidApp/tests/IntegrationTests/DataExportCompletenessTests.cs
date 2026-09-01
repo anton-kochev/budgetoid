@@ -356,7 +356,13 @@ public sealed class DataExportCompletenessTests
 
         JsonObject checking = RowFor(accounts, seeded.CheckingAccountId);
         await Assert.That(checking["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
-        await Assert.That(checking["name"]!.GetValue<string>()).IsEqualTo(CheckingName);
+        // THE ENVELOPE, NOT THE WORD. The export carries accounts.name as unpadded base64url, and the
+        // name it is an envelope over is text this server has never seen. What the assertion still says
+        // is what it always said — this row's name came back and it is THIS row's — because
+        // SealedNarrative is deterministic in its label. What it no longer says is anything about the
+        // words, which is the product working rather than coverage lost.
+        await Assert.That(checking["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName(CheckingName));
         await Assert.That(checking["type"]!.GetValue<string>()).IsEqualTo("Checking");
         await Assert.That(checking["openingBalance"]!.GetValue<decimal>()).IsEqualTo(0m);
         await Assert.That(checking["currencyCode"]!.GetValue<string>()).IsEqualTo("USD");
@@ -371,7 +377,8 @@ public sealed class DataExportCompletenessTests
 
         JsonObject savings = RowFor(accounts, seeded.SavingsAccountId);
         await Assert.That(savings["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
-        await Assert.That(savings["name"]!.GetValue<string>()).IsEqualTo(SavingsName);
+        await Assert.That(savings["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName(SavingsName));
         await Assert.That(savings["type"]!.GetValue<string>()).IsEqualTo("Savings");
         await Assert.That(savings["openingBalance"]!.GetValue<decimal>()).IsEqualTo(125.50m);
         await Assert.That(savings["currencyCode"]!.GetValue<string>()).IsEqualTo("EUR");
@@ -634,7 +641,13 @@ public sealed class DataExportCompletenessTests
 
         Guid accountId = await CreateAsync(client, "/api/accounts", new
         {
-            name = CheckingName,
+            // Sealed, indexed and identified through SealedNarrative rather than sent as a flat name:
+            // accounts.name is an AEAD envelope and accounts.name_key a blind index, so plain text is a
+            // 400 from CreateAccountHandler and this seeding would never reach the subject of the test.
+            // The constant is the LABEL both halves are built from, not a value any payload carries.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(CheckingName),
+            nameKey = SealedNarrative.EncodedIndex(CheckingName),
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "USD",
@@ -771,7 +784,13 @@ public sealed class DataExportCompletenessTests
 
         Guid accountId = await CreateAsync(client, "/api/accounts", new
         {
-            name = CheckingName,
+            // Sealed, indexed and identified through SealedNarrative rather than sent as a flat name:
+            // accounts.name is an AEAD envelope and accounts.name_key a blind index, so plain text is a
+            // 400 from CreateAccountHandler and this seeding would never reach the subject of the test.
+            // The constant is the LABEL both halves are built from, not a value any payload carries.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(CheckingName),
+            nameKey = SealedNarrative.EncodedIndex(CheckingName),
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "USD",
@@ -962,8 +981,9 @@ public sealed class DataExportCompletenessTests
         for (int index = 0; index < RowsPerCollection; index++)
         {
             Account account = Account.Create(
+                Guid.CreateVersion7(),
                 budgetId,
-                $"Ordered account {index}",
+                SealedNarrative.Indexed($"Ordered account {index}"),
                 AccountType.Checking,
                 0m,
                 "USD",
@@ -1119,14 +1139,22 @@ public sealed class DataExportCompletenessTests
     {
         Guid checkingAccountId = await CreateAsync(client, "/api/accounts", new
         {
-            name = CheckingName,
+            // Sealed, indexed and identified through SealedNarrative rather than sent as a flat name:
+            // accounts.name is an AEAD envelope and accounts.name_key a blind index, so plain text is a
+            // 400 from CreateAccountHandler and this seeding would never reach the subject of the test.
+            // The constant is the LABEL both halves are built from, not a value any payload carries.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(CheckingName),
+            nameKey = SealedNarrative.EncodedIndex(CheckingName),
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "USD",
         });
         Guid savingsAccountId = await CreateAsync(client, "/api/accounts", new
         {
-            name = SavingsName,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(SavingsName),
+            nameKey = SealedNarrative.EncodedIndex(SavingsName),
             type = "Savings",
             openingBalance = 125.50m,
             currencyCode = "EUR",

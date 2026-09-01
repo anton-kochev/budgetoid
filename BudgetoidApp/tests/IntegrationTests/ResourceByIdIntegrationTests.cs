@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -64,7 +65,14 @@ public sealed class ResourceByIdIntegrationTests
         await Assert.That(getAccount.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode account = await ReadJsonAsync(getAccount);
         await Assert.That(account["id"]!.GetValue<Guid>()).IsEqualTo(accountId);
-        await Assert.That(account["name"]!.GetValue<string>()).IsEqualTo("Checking");
+        // The ENVELOPE, not the word, and the assertion still does its job. This case is about a
+        // Location header pointing at a route that really answers, so what it needs from the body is
+        // that the row it got back is the row it created; the envelope is deterministic in its label,
+        // so it says exactly that. accounts.name is sealed, so the word "Checking" is in no payload
+        // this API can produce — and dropping the check instead would leave a 200 from a route that
+        // answered with somebody else's account passing.
+        await Assert.That(account["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Checking"));
         await Assert.That(account["currencyCode"]!.GetValue<string>()).IsEqualTo("USD");
         await Assert.That(account["currencyName"]!.GetValue<string>()).IsEqualTo("US Dollar");
         await Assert.That(account["currencySymbol"]!.GetValue<string>()).IsEqualTo("$");
@@ -75,7 +83,8 @@ public sealed class ResourceByIdIntegrationTests
         await Assert.That(transaction["amount"]!.GetValue<decimal>()).IsEqualTo(-42.50m);
         await Assert.That(transaction["date"]!.GetValue<string>()).IsEqualTo("2026-06-12");
         await Assert.That(transaction["accountId"]!.GetValue<Guid>()).IsEqualTo(accountId);
-        await Assert.That(transaction["accountName"]!.GetValue<string>()).IsEqualTo("Checking");
+        await Assert.That(transaction["accountName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Checking"));
 
         await Assert.That(unknownGroup.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
         await Assert.That(unknownCategory.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
@@ -167,11 +176,24 @@ public sealed class ResourceByIdIntegrationTests
         return response;
     }
 
-    private static async Task<HttpResponseMessage> CreateAccountAsync(HttpClient client, string name)
+    /// <summary>
+    /// Creates one account, taking <paramref name="label" /> as the text both halves of the name are
+    /// built from rather than as a value any column holds.
+    /// </summary>
+    /// <remarks>
+    /// The parameter kept its job and changed its meaning, which is why it was renamed: callers pass it
+    /// to keep two seeded accounts apart, and it still does that, because SealedNarrative is
+    /// deterministic in its label. What no longer happens is the words reaching the database — the
+    /// envelope and the blind index are what travel, and a flat name is a 400 before any case here
+    /// begins.
+    /// </remarks>
+    private static async Task<HttpResponseMessage> CreateAccountAsync(HttpClient client, string label)
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
         {
-            name,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             type = "Checking",
             openingBalance = 100m,
             currencyCode = "USD",

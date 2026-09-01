@@ -2,6 +2,7 @@ using Domain.Accounts;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Payees;
+using Domain.Security;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -167,7 +168,9 @@ public sealed class AppRoleGrantsTests
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
             Account account = Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
             seed.Accounts.Add(account);
             await seed.SaveChangesAsync();
             accountId = account.Id;
@@ -178,12 +181,41 @@ public sealed class AppRoleGrantsTests
         // leave the refusal it is paired with proving nothing.
         await using NpgsqlConnection app = await host.OpenAppConnectionAsync(owner.UserId, budgetId);
 
-        // Act — currency_code is absent from the accounts grant list; name is on it. Same table,
-        // same row, same connection: only the column decides.
+        // Act — currency_code is absent from the accounts grant list; name and name_key are both on
+        // it. Same table, same row, same connection: only the column decides.
+        //
+        // THE SUCCESS HALF WRITES BOTH HALVES OF THE NAME IN ONE STATEMENT, THE WAY THE DOMAIN DOES,
+        // AND THAT IS THE WHOLE POINT OF THIS CASE. It used to issue `set name = @value` alone, and
+        // that version was GREEN FOR THE ENTIRE TIME RENAMING AN ACCOUNT WAS IMPOSSIBLE FOR THIS ROLE:
+        // the grant named `name` and not `name_key`, PostgreSQL column privileges are checked per
+        // column named in the statement, so one column went through while the statement Account.Update
+        // actually produces — both columns, because Update takes an IndexedName and offers no spelling
+        // for half a name — was refused outright with 42501. The test claimed the role can RENAME AN
+        // ACCOUNT; what it proved was that the role can write to A COLUMN. Nothing else in the suite
+        // noticed, because every path that renames through EF failed on a grant this test was not
+        // exercising. Do not simplify it back to one column to make it read more like its neighbours:
+        // the neighbours' operations are one column, and this one is not.
+        //
+        // Two traps sit under the value itself, and either turns this into a test that measures
+        // something else. The name is a SEALED ENVELOPE rather than the words "Everyday Checking",
+        // because the column is bytea — text comes back 42804 from the type checker. And it has to be
+        // a WELL-FORMED envelope rather than any binary — a short buffer comes back 23514 from
+        // CK_accounts_name_length, and a wrong first byte 23514 from CK_accounts_name_version. The
+        // index gets the same treatment for the same reason: anything but exactly 32 bytes is 23514
+        // from CK_accounts_name_key_length. All of those arrive BEFORE the column grants are
+        // consulted, so any of them would leave this half failing for a reason that has nothing to do
+        // with a grant and the assertion below reading a success it never measured.
         PostgresException refusal = await ThrowsPostgresExceptionAsync(
             app, "update accounts set currency_code = @value where id = @id", "EUR", accountId);
-        int renamed = await ExecuteAsync(
-            app, "update accounts set name = @value where id = @id", "Everyday Checking", accountId);
+
+        IndexedName renamedTo = SealedNarrative.Indexed("Everyday Checking");
+        await using NpgsqlCommand rename = new(
+            "update accounts set name = @name, name_key = @name_key where id = @id",
+            app);
+        rename.Parameters.AddWithValue("name", renamedTo.Name.Envelope.ToArray());
+        rename.Parameters.AddWithValue("name_key", renamedTo.BlindIndex.ToArray());
+        rename.Parameters.AddWithValue("id", accountId);
+        int renamed = await rename.ExecuteNonQueryAsync();
 
         // Assert
         await Assert.That(refusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
@@ -194,9 +226,23 @@ public sealed class AppRoleGrantsTests
         await Assert.That(await SelectScalarAsync(
                 admin, "select currency_code from accounts where id = @id", accountId))
             .IsEqualTo("USD");
-        await Assert.That(await SelectScalarAsync(
+
+        // Bytes against bytes, built from the same label the UPDATE used rather than compared as text.
+        // SealedNarrative is deterministic in its label, so the two agree — and rebuilding the
+        // expectation from the label keeps the claim honest if the helper ever starts varying its
+        // filler.
+        //
+        // BOTH columns are read back, not just the envelope. Asserting the envelope alone would pass
+        // on a statement that wrote the envelope and left the index describing the previous name —
+        // which is the row Account.Update exists to make unspellable, and which nothing in the
+        // database can notice: the uniqueness constraint would go on policing a name the row no longer
+        // holds, and this server holds no index key to recompute either half with.
+        await Assert.That(await SelectBytesAsync(
                 admin, "select name from accounts where id = @id", accountId))
-            .IsEqualTo("Everyday Checking");
+            .IsEquivalentTo(SealedNarrative.Name("Everyday Checking").Envelope.ToArray());
+        await Assert.That(await SelectBytesAsync(
+                admin, "select name_key from accounts where id = @id", accountId))
+            .IsEquivalentTo(SealedNarrative.BlindIndex("Everyday Checking").ToArray());
     }
 
     [Test]
@@ -268,7 +314,9 @@ public sealed class AppRoleGrantsTests
         {
             seed.Payees.Add(Payee.Create(budgetId, "Corner Shop", SeedInstant));
             seed.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
             CategoryGroup categoryGroup =
                 CategoryGroup.Create(budgetId, "Essentials", null, 0, SeedInstant);
             seed.CategoryGroups.Add(categoryGroup);

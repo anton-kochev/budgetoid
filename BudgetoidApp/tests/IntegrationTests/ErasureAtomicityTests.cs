@@ -617,7 +617,14 @@ public sealed class ErasureAtomicityTests
     {
         Guid accountId = await CreateAsync(client, "/api/accounts", new
         {
-            name = "Checking",
+            // Sealed, indexed and identified through SealedNarrative rather than sent as the word
+            // "Checking": accounts.name is an AEAD envelope and accounts.name_key a blind index, so a flat
+            // name is a 400 from CreateAccountHandler and this seeding would never reach the subject of
+            // the test. The id is on the body because the client mints it — it is the associated data the
+            // name was sealed against, so this API has to hand back the spelling it was sent.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Checking"),
+            nameKey = SealedNarrative.EncodedIndex("Checking"),
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "USD",

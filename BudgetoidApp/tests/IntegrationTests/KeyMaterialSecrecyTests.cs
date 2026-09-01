@@ -562,25 +562,42 @@ public sealed class KeyMaterialSecrecyTests
     /// entry with no column is a red.
     /// </para>
     /// <para>
-    /// The eight divide into four kinds, and the kinds are worth seeing. Two are the envelopes
+    /// The ten divide into five kinds, and the kinds are worth seeing. Two are the envelopes
     /// themselves — the only key-shaped thing this design lets cross the wire, and safe because the
     /// server holds nothing that opens them. Two are WebAuthn's own material, a handle that selects a
     /// credential and a <i>public</i> key published by design. Three are one-way values, two hashes and
-    /// a nonce, from which nothing is derived. No fifth kind exists, and a ninth column would have to
-    /// argue itself into one of the four or invent a fifth in writing.
+    /// a nonce, from which nothing is derived. Two are <i>content</i>. One is a <i>blind index</i>. No
+    /// sixth kind exists, and an eleventh column would have to argue itself into one of the five or
+    /// invent a sixth in writing.
     /// </para>
     /// <para>
-    /// <b>The fourth kind is the newest and it arrived exactly as this list said one would</b> — the
-    /// paragraph above used to end at three, and <c>budgets.name</c> is the eighth column that had to
-    /// invent a kind in writing rather than squeeze into an existing one. It is <i>content</i>: an AEAD
-    /// envelope over a person's own words, sealed under the account's content key. That inverts the
-    /// envelope kind rather than joining it. Those two columns are the key and are safe because nothing
-    /// on this server opens them; this one is safe <i>because one of them is the thing that opens it</i>,
-    /// so the two arguments hold each other up and neither can be pasted over the other. It is also the
-    /// first entry whose argument has to concede something — AES-GCM leaks the plaintext's length, and
-    /// the column's own length already does, so the concession costs nothing and is written down rather
-    /// than left for a reader to notice. Every narrative column sealed after this one is a member of this
-    /// kind and owes the same two sentences.
+    /// <b>The fourth kind arrived exactly as this list said one would</b> — the paragraph above used to
+    /// end at three, and <c>budgets.name</c> was the eighth column that had to invent a kind in writing
+    /// rather than squeeze into an existing one. It is <i>content</i>: an AEAD envelope over a person's
+    /// own words, sealed under the account's content key. That inverts the envelope kind rather than
+    /// joining it. Those two columns are the key and are safe because nothing on this server opens them;
+    /// this one is safe <i>because one of them is the thing that opens it</i>, so the two arguments hold
+    /// each other up and neither can be pasted over the other. It was also the first entry whose
+    /// argument has to concede something — AES-GCM leaks the plaintext's length, and the column's own
+    /// length already does, so the concession costs nothing and is written down rather than left for a
+    /// reader to notice. <c>accounts.name</c> is the second member of this kind and owes the same two
+    /// sentences, which is why its entry writes them out instead of pointing at its neighbour: a
+    /// classification that says "see above" stops being a per-column argument, which is the whole
+    /// requirement.
+    /// </para>
+    /// <para>
+    /// <b>The fifth kind is <c>accounts.name_key</c>, and it is a kind rather than a member of the
+    /// one-way three because of what it concedes.</b> It is a keyed digest — HMAC-SHA-256 under an index
+    /// key that never reaches this server — so it looks like the hashes at first glance and its "nothing
+    /// is derived from it" half is genuinely the same. What separates it is that the one-way three are
+    /// each looked up by their own bytes, while this one is DESIGNED TO BE COMPARED: it exists so that
+    /// equality of names comes back as equality of digests, which is the only way a uniqueness rule can
+    /// survive its column being sealed. So it leaks something the other kinds do not — equality within
+    /// one account — and the entry says so in those words rather than borrowing the envelope's
+    /// concession about length. The bound on that leak is the per-account key: across accounts the same
+    /// name is two unrelated digests, so there is no correlation and no frequency analysis over the
+    /// population. Any future blind index is a member of this kind and owes both halves — what equality
+    /// it exposes, and what scopes that exposure.
     /// </para>
     /// <para>
     /// <c>session_tokens.token_hash</c> is the newest of the one-way three and the one whose argument is
@@ -592,6 +609,45 @@ public sealed class KeyMaterialSecrecyTests
     /// </remarks>
     private static IReadOnlyList<BinaryColumnClassification> Classifications { get; } =
     [
+        new(
+            "accounts",
+            "name",
+            "an account's name sealed as a narrative field — an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the same argument budgets.name makes, and deliberately not a pointer at it: the content "
+            + "key that seals this is generated in the browser and reaches this server only as the "
+            + "wrapped_content_key envelopes, each sealed under a key-encryption key derived from a "
+            + "recovery factor the operator never holds, so the row and everything that could open it "
+            + "are separated by a step that happens on somebody's device. It is CONTENT rather than "
+            + "key material, which inverts the wrapped-key argument rather than joining it. The "
+            + "concession is the same one and is written out rather than glossed: AES-GCM without the "
+            + "key yields nothing but the plaintext's LENGTH, which the column's own length already "
+            + "gives away, so sealing buys nothing against a length oracle and never claimed to. The "
+            + "tag is the other half — associated data is rebuilt from where the ciphertext was found, "
+            + "so an operator who moved one account's name onto another row would produce a value that "
+            + "refuses to open rather than one that opens as somebody else's"),
+        new(
+            "accounts",
+            "name_key",
+            "the blind index over the same name — HMAC-SHA-256 under the account's index key, computed "
+            + "by the client over the normalised text, and what IX_accounts_budget_id_name_key "
+            + "enforces uniqueness over",
+            "IT IS NOT AN ENVELOPE AND THE ENVELOPE ARGUMENT ABOVE MUST NOT BE PASTED OVER IT. There "
+            + "is nothing here to open: a blind index is a keyed digest with no version, no nonce and "
+            + "no tag. Recovering the name from it means inverting HMAC-SHA-256 or guessing the "
+            + "plaintext AND holding the index key, which is generated in the browser beside the "
+            + "content key and reaches this server only as the wrapped_index_key envelopes — so the "
+            + "operator can neither invert it nor recompute a candidate to compare against. It "
+            + "unwraps nothing in the second sense too: it is an input to no KDF and no wrapping step, "
+            + "so even a recovered index key opens no envelope, it only lets somebody search this "
+            + "column. WHAT IT DOES LEAK, stated rather than glossed, is EQUALITY WITHIN ONE ACCOUNT. "
+            + "Two rows in one budget cannot carry the same value, which is the entire point of the "
+            + "column, so an operator reading the table learns that a budget's account names are "
+            + "pairwise distinct — which the unique index already announces — and would learn of any "
+            + "repeat across the account's budgets that two names are the same word without learning "
+            + "the word. ACROSS ACCOUNTS IT LEAKS NOTHING, because the index key is per-account: the "
+            + "same name in two accounts is two unrelated digests, so this column supports no "
+            + "cross-account correlation and no frequency analysis over the population"),
         new(
             "budgets",
             "name",
@@ -729,7 +785,17 @@ public sealed class KeyMaterialSecrecyTests
     private static IReadOnlyList<TextMemberArgument> TextMemberArguments { get; } =
     [
         new("AccountEndpoints.UpdateAccountRequest", "Name",
-            "the name a person gave one of their accounts, as they typed it"),
+            "base64url over the AEAD envelope holding the name a person gave one of their accounts. It "
+            + "is NOT the name as they typed it — it was sealed in the browser under a key derived from "
+            + "a recovery factor this server never sees, so what crosses here is ciphertext the operator "
+            + "cannot open and this server cannot measure characters in"),
+        new("AccountEndpoints.UpdateAccountRequest", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this: HMAC-SHA-256 under the account's index key, which lives in a browser. It is "
+            + "a keyed digest and not an envelope — nothing to open and no way back to the text — and it "
+            + "is what makes uniqueness of names survive a column the database cannot read. Not key "
+            + "material: it is an output taken UNDER a key, and the key itself only ever crosses this "
+            + "wire sealed, as AccountKeyEntry.WrappedIndexKey"),
         new("AccountErasureEndpoints.ErasureRequest", "AuthenticatorData",
             "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
         new("AccountErasureEndpoints.ErasureRequest", "ClientDataJson",
@@ -767,8 +833,20 @@ public sealed class KeyMaterialSecrecyTests
             "the name a person gave one of their category groups, as they typed it"),
         new("CreateAccountCommand", "CurrencyCode",
             "an ISO 4217 code chosen from the currencies this product seeds"),
+        new("CreateAccountCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid — the one spelling this "
+            + "API accepts and the one it hands back. It carries no secret; it is here because it is the "
+            + "associated data the Name envelope beside it was sealed against, so a spelling this server "
+            + "cannot reproduce is a name that never opens again"),
         new("CreateAccountCommand", "Name",
-            "the name a person is giving a new account, as they typed it"),
+            "base64url over the AEAD envelope holding the name a person is giving a new account. It is "
+            + "NOT the name as they typed it — it was sealed in the browser, bound to the Id above, "
+            + "under a key derived from a recovery factor this server never sees"),
+        new("CreateAccountCommand", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material — the index key itself crosses this wire only sealed, as "
+            + "AccountKeyEntry.WrappedIndexKey"),
         new("CreateCategoryCommand", "Description",
             "a person's own note about a category they are creating"),
         new("CreateCategoryCommand", "Name",

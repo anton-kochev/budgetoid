@@ -97,19 +97,44 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // Five round trips rather than one join: no entity in this model declares a navigation property,
         // so Include is unavailable and the document is stitched by id in the handler. They run in
         // sequence because one DbContext serves one command at a time.
-        List<ExportedAccount> accounts = await dbContext.Accounts
+        //
+        // Accounts are projected into an anonymous row and shaped afterwards, the way
+        // ListOwnedBudgetsAsync above handles budgets.name and for the same reason: the column carries a
+        // value converter, so the provider translates the property itself and the NarrativeField exists
+        // only once the row has materialized. The other four keep their in-query projection because none
+        // of their columns is sealed yet.
+        //
+        // name_key is deliberately not among the members. It is the one accounts column this document
+        // omits: the blind index is derivable from the name by anybody holding the account's index key —
+        // which is exactly who can read this file — and is a deterministic per-account fingerprint of a
+        // name to anybody who is not.
+        var accountRows = await dbContext.Accounts
             .AsNoTracking()
             .OrderBy(account => account.CreatedAtUtc)
             .ThenBy(account => account.Id)
-            .Select(account => new ExportedAccount(
+            .Select(account => new
+            {
                 account.Id,
                 account.BudgetId,
                 account.Name,
                 account.Type,
                 account.OpeningBalance,
                 account.CurrencyCode,
-                account.CreatedAtUtc))
+                account.CreatedAtUtc,
+            })
             .ToListAsync(cancellationToken);
+
+        List<ExportedAccount> accounts =
+        [
+            .. accountRows.Select(row => new ExportedAccount(
+                row.Id,
+                row.BudgetId,
+                PasskeyEncoding.Encode(row.Name.Envelope.Span),
+                row.Type,
+                row.OpeningBalance,
+                row.CurrencyCode,
+                row.CreatedAtUtc)),
+        ];
 
         List<ExportedCategoryGroup> categoryGroups = await dbContext.CategoryGroups
             .AsNoTracking()

@@ -17,7 +17,8 @@
 
 An account owns **one content key** and **one index key**. The content key is what the narrative
 will be encrypted under; the index key is what a blind index over a name **is** computed under — the
-browser computes one today, and no column stores one yet. Neither is derived from a credential.
+browser computes one today, and `accounts.name_key` is the first column to store one, under a
+uniqueness constraint. Neither is derived from a credential.
 Every **recovery factor** — a registered passkey, or one
 recovery code — derives its own **key-encryption key** and stores its own **wrapped copy of both**.
 
@@ -48,8 +49,11 @@ the third and is the only one reachable **inside** the app — see
 [The third way into custody](#the-third-way-into-custody). The other two write paths are still
 reached only by the integration suite.
 
-**What is *not* built is anywhere for a sealed value or an index to go.** No column in this product
-holds an envelope or a blind index, and no screen seals a field, opens one, or looks a name up. What
+**What is *not* built is a browser that produces either.** The places for them exist now:
+`budgets.name` and `accounts.name` are envelope columns, `accounts.name_key` is a blind index under
+a unique index, and two account routes accept a sealed name and an index as base64url. What no
+screen does is seal a field, open one, or look a name up — `/app/accounts` still sends plaintext, so
+those columns are reached only from the test suite. What
 exists is the **custody** — [The one class that holds them](#the-one-class-that-holds-them) — and
 the operations that delegate to what it holds: `sealField`, `openField` and `blindIndex`, whose only
 caller today is their spec. The index arrived last and closed the one gap left in this class:
@@ -920,13 +924,17 @@ member [The one class that holds them](#the-one-class-that-holds-them) exists to
 location was decided by the codecs' signatures. What was left to decide is narrower — which types
 cross the boundary, and what a refusal looks like — and everything below is about that.
 
-**Nothing in the product calls any of them.** No column holds a narrative envelope and none holds a
-blind index, so `sealField`, `openField` and `blindIndex` have no caller but their spec, on the same
-terms [ciphertext-envelope.md](ciphertext-envelope.md) sets for the codecs beneath them: a
-cross-client format and the custody that will use it are cheaper to agree on before data exists
-under them than after. That argument is **sharper** for the index than for the envelope, and the
-difference is worth carrying: a grammar or a normalisation settled after a column holds index values
-orphans every row in it, and nothing on this side of the wire can repair them. The plaintext is
+**Nothing in the product calls any of them**, and that is now a statement about the client alone.
+The columns exist — `accounts.name` holds an envelope and `accounts.name_key` a blind index — but
+no screen seals, opens or keys anything, so `sealField`, `openField` and `blindIndex` have no caller
+but their spec, on the same terms [ciphertext-envelope.md](ciphertext-envelope.md) sets for the
+codecs beneath them: a cross-client format and the custody that will use it are cheaper to agree on
+before data exists under them than after. That argument is **sharper** for the index than for the
+envelope, and the difference is worth carrying: a grammar or a normalisation settled after a column
+holds index values orphans every row in it, and nothing on this side of the wire can repair them.
+**The window for settling either is closed on `accounts` and open nowhere else that matters** — the
+column, its width check and its unique index are in the schema now, so the next indexed column
+inherits the grammar rather than choosing one. The plaintext is
 encrypted and the only key that could recompute a value lives in a browser, so the migration runs
 through every account's own recovery factors or it does not run at all.
 

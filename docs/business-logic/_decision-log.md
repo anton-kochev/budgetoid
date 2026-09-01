@@ -8,6 +8,72 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-01 — A name and its blind index move together, and the `UPDATE` grant is where that was first broken
+
+**Context:** `accounts.name` became ciphertext with a blind index beside it — the second sealed
+column, and the first where **uniqueness had to survive the change rather than be surrendered**.
+That makes a name two columns: `name`, the envelope nobody on this side can read, and `name_key`,
+the keyed digest `IX_accounts_budget_id_name_key` enforces one-name-per-budget over. The domain
+already refused to write half of one: `Account.Create` and `Account.Update` take a single
+`IndexedName` and offer no spelling for a bare `NarrativeField`, and both columns are `NOT NULL`.
+What nobody had asked was what the **grant** does with a pair, and the answer was already wrong:
+`GRANT UPDATE (name, type, opening_balance)` admitted the envelope and not the index.
+
+**The defect that produced was total and silent in the suite.** PostgreSQL checks column privileges
+per column *named in the statement*. `Account.Update` assigns both properties, EF emits one `UPDATE`
+naming both columns, and PostgreSQL refused the whole statement with `42501` — so **renaming an
+account was impossible for the application role**, on every path, for as long as the grant stood.
+Nothing was red. The test that read as the proof that renaming worked issued
+`update accounts set name = @value`, one column, so it exercised a **column privilege** and reported
+it as an **operation**; every path that renames through EF failed on a grant that test was not
+sending. Measured against a container in both directions: `42501` under the old list, `UPDATE 1`
+under the new.
+
+**Decision:** the grant names `name` and `name_key` together, and the rule written beside it is
+general rather than about this table — **a name and its index move together or not at all**. An
+`UPDATE` list reaching one of a blind-indexed pair and not the other narrows nothing; it has exactly
+two outcomes and both are wrong. A review that finds one half of such a pair on an `UPDATE` list has
+found the defect without needing to know which table it was looking at. Every blind-indexed name
+column that follows wants the same pair — granted together, withheld together, and made immutable,
+if it ever is, by leaving **both** off the list.
+
+**What the other direction produces, and why nothing can see it.** Withholding one column forbids
+the operation loudly. **Permitting one and not the other permits half of it, and that is the worse
+half**: the row would carry an envelope for the new name and a digest taken over the old one. The
+unique index would go on policing a name the row no longer holds; a search for the new name would
+miss the row that has it; a search for the old one would return a row that does not; and a rename
+onto a name already taken would be accepted. Every constraint is satisfied, nothing reads back
+wrong, and **no layer beneath the browser can notice**, because recomputing either half needs the
+account's index key — which this server has never held and never will. There is no `CHECK`, no
+constraint, no trigger and no test below the application that can compare the two columns; the only
+witness is a client that holds the key, months later, looking for a row it cannot find.
+
+**Alternatives rejected, and they fail differently.** **A table-wide `GRANT UPDATE ON accounts`** —
+it would have fixed the rename in one word and taken `budget_id`, `currency_code` and
+`created_at_utc` with it, since PostgreSQL column privileges are additive and a `REVOKE` cannot
+subtract a column from a table-wide grant; the whole immutability story on this table is the
+*omission* of a column from a list. **Splitting `Account.Update` so a rename writes one column** —
+it makes the grant honest by making the domain dishonest, and re-creates the mispaired row above as
+an ordinary code path. **A trigger comparing the two columns** — it cannot compare anything: there
+is nothing on this side to recompute a digest from, and ADR 0002 refuses procedural logic pushed
+down for the sake of being low. **Leaving the test as a one-column `UPDATE` and adding a second
+case** — the one-column statement is not the operation, so a suite containing it would go on
+reporting a column privilege as a rename; the fix was to make the existing success half write the
+statement `Account.Update` actually emits.
+
+**Consequences.** The rule now has three owners at three moments, and none of them is a restatement
+of another: `IndexedName` refuses a **call** that is half a name, the `NOT NULL` pair refuses a
+**row** that is, and the grant permits the **statement** whole. The immutability idiom on this table
+is unchanged in spirit and one column longer in fact. And the general lesson is about tests rather
+than about grants: **a test that pairs a refusal with a permitted write has to issue the write the
+operation issues** — a narrower one passes, proves a privilege, and says nothing about whether the
+product works.
+
+**Affected areas:** [accounts.md](accounts.md), [ciphertext-envelope.md](ciphertext-envelope.md),
+[budgets.md](budgets.md), [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
+
+---
+
 ## 2026-08-31 — `Domain` grants its internals to `Infrastructure`, and to nothing else
 
 **Context:** the entry below left one consequence open. `NarrativeField.FromStore` — the unchecked

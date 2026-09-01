@@ -97,9 +97,15 @@ public sealed class DomainImmutabilityTests
         // These are CLR type names as reflection renders them, not the C# keywords the source is
         // written in: "String", not "string". Editing a line here to look like the declaration is
         // how this test starts failing for no reason.
+        // The name parameter is an IndexedName and not a String, and that is a second rule this set now
+        // pins. Both halves of a name move together because this signature has no spelling for half of
+        // one; an overload taking a bare NarrativeField would write new ciphertext under the previous
+        // name's index — a row whose uniqueness value stops describing its own content, which no
+        // constraint can see and no read can report, because recomputing either half needs the account's
+        // index key and that lives in a browser. Such an overload would appear here as a second entry.
         string[] expected =
         [
-            "Void Update(String name, AccountType type, Decimal openingBalance, Int32 minorUnit)",
+            "Void Update(IndexedName name, AccountType type, Decimal openingBalance, Int32 minorUnit)",
         ];
         await Assert.That(signatures).IsEquivalentTo(expected);
         await Assert.That(signatures.Length).IsGreaterThan(0);

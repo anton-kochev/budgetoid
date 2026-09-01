@@ -100,6 +100,26 @@ public sealed record ExportedBudget(
     public IReadOnlyList<ExportedTransaction> Transactions { get; init; } = [];
 }
 
+/// <summary>One account of a budget — the columns the <c>accounts</c> row carries and no more.</summary>
+/// <param name="Id">The account's identifier.</param>
+/// <param name="BudgetId">The budget that owns it.</param>
+/// <param name="Name">
+/// The account's <b>sealed</b> name as unpadded base64url, for the reason
+/// <see cref="ExportedBudget.Name"/> gives about its own: the column is an AEAD envelope this server
+/// cannot open, and the member keeps its name because the completeness check over this document maps a
+/// table's columns onto a record's members.
+/// </param>
+/// <param name="Type">The kind of account.</param>
+/// <param name="OpeningBalance">The balance the ledger starts from.</param>
+/// <param name="CurrencyCode">The account's ISO 4217 code.</param>
+/// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
+/// <remarks>
+/// <b><c>name_key</c> is not here, and that is the one column this record deliberately omits.</b> The
+/// blind index is derivable from the name by anybody holding the account's index key — which is exactly
+/// who can read the file — and is meaningless to anybody who is not. Shipping it would put a
+/// deterministic per-account fingerprint of every account name into a document the requirement asks to
+/// be a copy of what a person owns, not of what the server needs to police it.
+/// </remarks>
 public sealed record ExportedAccount(
     Guid Id,
     Guid BudgetId,

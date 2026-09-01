@@ -19,8 +19,20 @@ budget (see [budgets.md](budgets.md)) and is denominated in a single currency.
 
 ## Key Entities
 
-- **Account** — `Id`, `BudgetId` (the owning budget), `Name`, `Type` (an `AccountType`),
+- **Account** — `Id`, `BudgetId` (the owning budget), `Name`, `NameKey`, `Type` (an `AccountType`),
   `OpeningBalance`, `CurrencyCode`, `CreatedAtUtc`.
+  - **`Name` is a sealed narrative envelope and not text.** The property is typed `NarrativeField`
+    and the column is `bytea NOT NULL`. That type has no constructor, factory or conversion taking a
+    `string`, so writing plaintext into this column does not compile. See
+    [ciphertext-envelope.md](ciphertext-envelope.md).
+  - **`NameKey` is the blind index over the same name** — `ReadOnlyMemory<byte>`, exactly 32 bytes
+    (`HMAC-SHA-256` under the account's index key, computed in the browser), on its own
+    `bytea NOT NULL` column. It is what the uniqueness rule is now enforced over.
+  - **Both are written from one `IndexedName` parameter and never separately.** `Account.Create` and
+    `Account.Update` each take one, and neither offers a spelling for half a name — the remarks on
+    `Account.Update` spell out what a member taking a bare `NarrativeField` would cost.
+  - **`Id` is supplied to the factory, never minted inside it.** `Guid.CreateVersion7` has left
+    `Account.cs` entirely; the identifier is the associated data the client sealed `Name` against.
 - **AccountType** — enum: `Checking`, `Savings`, `Cash`, `CreditCard`. A classification label; it
   has no lifecycle or transitions.
 
@@ -30,9 +42,10 @@ erDiagram
     CURRENCY ||--o{ ACCOUNT : "denominates (by code)"
     ACCOUNT ||--o{ TRANSACTION : "recorded against"
     ACCOUNT {
-        guid Id
+        guid Id "client-minted, the name's associated data"
         guid BudgetId
-        string Name
+        bytea Name "sealed envelope, NOT NULL"
+        bytea NameKey "blind index, exactly 32 bytes, NOT NULL"
         enum Type
         decimal OpeningBalance
         string CurrencyCode
@@ -43,6 +56,46 @@ erDiagram
 ## Constraints
 
 ### MUST
+
+- **An account's name reaches this server sealed, with its blind index beside it, and nothing on
+  this side can read, measure, fold or compare it.** `accounts.name` is the second column in the
+  product to hold ciphertext and the **first** to carry a blind index.
+  - **Why**: an account name is narrative text, which is the one thing the product is built not to
+    be able to read. What is different here from `budgets.name` is that **uniqueness had to survive
+    the change rather than be surrendered** — one name per budget is a rule a person relies on to
+    tell their accounts apart — and a blind index is the only construction that lets a server
+    holding no plaintext still refuse a duplicate.
+  - **Enforced in**: `Account.Name` is typed `NarrativeField` and `Account.NameKey` is a
+    `ReadOnlyMemory<byte>`; both are assigned from one `IndexedName`, which refuses either half on
+    its own. `AccountConfiguration` maps them to two `bytea` columns, each `IsRequired`, through
+    value converters with **content** comparers over the bytes (without one EF compares a class by
+    reference and a struct by pointer, so a value rebuilt from identical bytes reads as an edit and
+    one rewritten in place inside the same buffer does not — on `name_key` the second is the one
+    that bites, because an index the tracker misses is a row whose uniqueness value stops describing
+    its own name). The table carries **three** `CHECK` constraints, each rendered from the constant
+    that owns its number rather than from a literal: `CK_accounts_name_length` bounds the envelope
+    between `CiphertextEnvelope.MinimumLength` and `NarrativeFieldLimits.NameBytes`,
+    `CK_accounts_name_version` requires the leading version byte through `substring`, and
+    `CK_accounts_name_key_length` is an **equality** on 32 bytes rather than a band, because
+    `HMAC-SHA-256` has one output width and a ceiling would admit a short digest silently. The two
+    `NOT NULL` columns say a **row** cannot be half a name; `IndexedName.Of` says a **call** cannot
+    be. Neither restates the other for error quality — one refuses a statement reaching the
+    database, the other refuses a caller who meant to write both and wrote one.
+
+- **One name per budget, enforced over the index.** `IX_accounts_budget_id_name_key` is unique over
+  `(budget_id, name_key)`.
+  - **Why**: the rule did not change and the mechanism did not change — a unique B-tree index,
+    scoped per budget, reported as `23505` under a name the repository matches. What changed is the
+    **column**. Uniqueness over `name` would now enforce nothing at all: every seal draws a fresh
+    nonce, so two rows holding one name hold different bytes. The blind index is what survives that,
+    being deterministic under the account's index key, so equality of names comes back as equality
+    of digests.
+  - **Enforced in**: the unique index declared in `AccountConfiguration` and pinned there as
+    `NameIndexName`, which `AccountRepository` matches `PostgresException.ConstraintName` against on
+    both `AddAsync` and `UpdateAsync` to raise "Account name must be unique." rather than a 500. The
+    C# constant is still called `NameIndexName` while its **value** ends in `_name_key`: the index
+    is for finding the row a name is already taken by, and the schema follows EF's own convention
+    rather than carrying a hand-pinned exception to it.
 
 - **An account's currency (`CurrencyCode`) must reference a currency that exists.**
   - **Why**: The account's currency drives the precision every amount on it may be recorded at and
@@ -65,20 +118,35 @@ erDiagram
     the old currency's precision, so a switch to a coarser one would leave rows the domain would now
     refuse to write.
   - **Enforced in**: **database-owned, and restated above it for the interface.** The application
-    role's `UPDATE` grant on `accounts` names `name`, `type` and `opening_balance`; `currency_code`
-    is not on that list, so a statement writing it is refused with `42501` before the row is
-    touched, on the connection every request is served by and whatever produced the statement. The
-    enforcement is the column's *omission from the grant's list* rather than a `REVOKE` — PostgreSQL
-    column privileges are additive, so revoking a column out of a table-wide `UPDATE` grant
-    subtracts nothing; the mechanism is in
+    role's `UPDATE` grant on `accounts` names `name`, `name_key`, `type` and `opening_balance`;
+    `currency_code` is not on that list, so a statement writing it is refused with `42501` before the
+    row is touched, on the connection every request is served by and whatever produced the statement.
+    The enforcement is the column's *omission from the grant's list* rather than a `REVOKE` —
+    PostgreSQL column privileges are additive, so revoking a column out of a table-wide `UPDATE`
+    grant subtracts nothing; the mechanism is in
     [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md), and
     `AppRoleGrantsTests.Database_RefusesToChangeAnAccountsCurrency_WhileStillAllowingRename` pins
     both halves — the refusal, and a rename on the same row over the same connection that must
-    succeed, without which the refusal would prove only that the role cannot write. Above that,
+    succeed, without which the refusal would prove only that the role cannot write. **That success
+    half now writes `name` and `name_key` in one statement, the way `Account.Update` does**, and
+    that is not a detail: while it wrote `name` alone it was green throughout a period in which
+    renaming an account was impossible for this role — see the pair rule under
+    [Business Rules](#business-rules--invariants). Above that,
     `UpdateAccountCommand` / `UpdateAccountHandler` accept only name, type, and opening balance —
     there is no path to change `CurrencyCode` — and the Angular UI hides the currency field in edit
     mode (`accounts.service.ts`, `accounts.component.ts`). Both upper layers are there so the
     operation is never offered, not so the rule holds.
+
+- **The server MUST NOT be given a rule about an account name's text** — not a minimum length, not
+  a blankness check, not a trim, not a character cap, and not a case-folding rule.
+  - **Why**: every one of them is a question about plaintext this deployment has never seen. A
+    reader who finds the gap in `ValidateOrThrow` and restores a check can only restore it against
+    the envelope, which measures the wrong thing; a reader who notices the collation is gone and
+    reaches for a folding rule has nothing to fold. Both are argued in full under
+    [Business Rules](#business-rules--invariants), because they are capabilities that **moved**
+    rather than rules that were dropped, and that is what the next reader has to be told.
+  - **Enforced in**: the absence of any name rule in `Account.ValidateOrThrow`, and the byte bounds
+    under MUST above — the only lengths anything on this side can measure.
 
 - **An account MUST NOT be deleted while it still has transactions.**
   - **Why**: Deleting it would orphan or destroy financial history. The user must deal with the
@@ -98,11 +166,105 @@ erDiagram
 
 ## Business Rules & Invariants
 
-- **Rule**: An account requires a non-blank `Name` of at most 200 characters (trimmed).
-- **Why**: The name is how the user tells accounts apart in every list and dropdown; blank or
-  runaway names would make the UI unusable.
-- **Enforced in**: `Account.Create` / `Account.Update` → `ValidateOrThrow` in `Domain/Accounts/Account.cs`.
-- **Example**: `"  Everyday Checking  "` is accepted and stored trimmed as `"Everyday Checking"`.
+- **Rule**: **The server can no longer refuse a blank or a runaway account name.** "A name is not
+  just spaces" and the 200-character ceiling are now the client's, applied before it seals.
+- **Why**: this is a **capability that moved**, not a rule that was quietly dropped, and the
+  distinction is why it is written down rather than left as a gap in a validator. The value arriving
+  is an AEAD envelope over text this server has never seen and holds no key for; "is this nothing
+  but spaces?" and "is it longer than a label?" are questions about plaintext. A reader who finds
+  the absence and restores a check can only restore it against the **envelope** — measuring bytes
+  and calling them characters, or refusing a 29-byte envelope that is the correct sealing of an
+  empty string. Both are wrong answers wearing the shape of the right one.
+- **Enforced in**: what replaced each half is a byte rule and nothing more. The trim and the
+  blankness check are replaced by **nothing on this side**; `Account.ValidateOrThrow` judges the
+  identifier, the tenancy, the kind, the currency code and the two halves of the balance rule, and
+  no name rule at all. The 200-character ceiling is replaced by `NarrativeFieldLimits.NameBytes` —
+  a cap on **stored envelope bytes**, applied by `IndexedName.Of` and restated as the upper bound of
+  `CK_accounts_name_length`. `CiphertextEnvelope.MinimumLength` is the floor of that same check, and
+  it is **not** the blank-name rule restored: an envelope over an empty string satisfies it exactly.
+- **Example**: a client that seals `"   "` gets a `201`. The row is well-formed, the constraints are
+  satisfied, and nothing in this deployment can tell that value from `"Everyday Checking"`.
+- **Counterexample**: adding `if (envelope.Length < 40)` to approximate "not blank". It refuses
+  short real names, admits long blank ones, and is a rule about ciphertext claiming to be a rule
+  about text.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **Case folding relocated to the client; it did not disappear.** Two spellings of one
+  name are still meant to collide, and the database no longer has any way to notice that they do.
+- **Why**: the collation left the column **by force rather than by choice** — `case_insensitive` is
+  a text collation and `bytea` is not a collatable type, so declaring one on this column is not an
+  option that was weighed. What the collation was doing, making `"Groceries"` collide with
+  `"groceries"` on the unique index, moved into the normalization the client applies before it
+  computes the `HMAC`: trim, NFKC, full case fold, UTF-8, in that order. The database still
+  guarantees two identical index values cannot coexist; it no longer guarantees two spellings of one
+  name produce identical index values, and that half is now the client's to get right.
+- **Enforced in**: the client, and by nothing beneath it. `AccountConfiguration` declares no
+  collation on `name` and says why in place. The normalization, its order, the Unicode version its
+  fold table is read at and its frozen answers are in
+  [account-keys.md](account-keys.md#the-normalization-a-name-is-indexed-through) and
+  `vectors/blind-index-v1.json`. **No test below the browser can check any of it** — the server sees
+  a MAC and never a name.
+- **Counterexample**: a client that folds with the host's `toLowerCase` instead of the shipped
+  table. It agrees with a correct client on almost every name a person types, disagrees on the
+  handful where the difference decides a match, and the symptom is a duplicate that never merges on
+  a column whose entire purpose is that equal names collide. And a blind index **cannot be
+  recomputed** after the fact — the plaintext behind it is encrypted — so there is no repair that
+  does not run through the account's own recovery factors.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **A name and its blind index move together or not at all.** That is a rule about
+  blind-indexed name columns generally, and the grant is one of the places it has to hold.
+- **Why**: such a column is a pair — the ciphertext nobody here can read, and the keyed digest that
+  is the only way a row holding a given name can be found or refused as a duplicate. Both are
+  computed from one piece of text by one client and written by one statement, so a rule that reaches
+  one and not the other has only two outcomes and both are wrong. **Withholding one forbids the
+  operation**: PostgreSQL checks column privileges per column named in the statement, `Account.Update`
+  assigns both properties from a single `IndexedName`, EF emits one `UPDATE` naming both columns, and
+  the whole statement is refused with `42501`. **Permitting one and not the other is worse, because
+  it raises nothing**: the row would keep a digest taken over a name it no longer holds, the unique
+  index would go on policing the name that left, a search for the new name would miss the row that
+  has it, and a rename onto a name already taken would be accepted. Nothing on this side can notice
+  — recomputing either half needs the account's index key, which lives in a browser.
+- **Enforced in**: three places, holding three different moments. `Account.Create` and
+  `Account.Update` take an `IndexedName` and offer no spelling for half a name, so a **call** cannot
+  be half; the two `NOT NULL` columns mean a **row** cannot be; and the grant names
+  `name, name_key` together, so the **statement** is permitted whole. The first live failure of this
+  rule was the grant: it admitted `name` alone, and renaming an account was therefore impossible for
+  the application role while the test that claimed to prove renaming worked issued a one-column
+  `UPDATE` and stayed green — it exercised a **column privilege** and called it an **operation**.
+  See the [decision log](_decision-log.md).
+- **Counterexample**: a later `Rename(NarrativeField name)` overload added for a screen that "only
+  changes the name". It compiles, it stores, it reads back, no constraint fires, and every one of
+  the four symptoms above follows silently.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: An account's identifier is **supplied by the client and crosses as text**, in the
+  lower-case 36-character hyphenated spelling and nothing else.
+- **Why**: the identifier is the associated data the name was sealed against, and associated data is
+  rebuilt from where a ciphertext was found rather than carried inside it — so this API has to hand
+  back the same spelling it was sent, and therefore has to refuse the spellings it cannot reproduce.
+  Bound as a `Guid`, `System.Text.Json` folds the braced, upper-case and canonical forms to one value
+  before any handler sees text, and the refusal becomes **unwritable**: it compiles, every test that
+  sends a canonical id passes, and it fails in a browser months later as a name that will not open.
+- **Enforced in**: `CreateAccountCommand.Id` is a `string`, judged by `CanonicalIdentifier.TryParse`
+  in `CreateAccountHandler` — first of the three opaque members, because a spelling this API cannot
+  reproduce makes the envelope beside it irrelevant whatever that envelope looks like. All three are
+  attempted and every failure is reported, since one piece of client code produces all three.
+  `Account.Create` takes the id as a parameter and refuses `Guid.Empty` — reachable for
+  the first time now that the value arrives from outside, and refused here rather than left to the
+  primary key, which accepts all-zero as a legal uuid and reports the *second* such row under a
+  constraint name that says nothing about a caller who never chose an id.
+- **Counterexample**: `UpdateAccountCommand.Id` is a `Guid` and the route parameter stays
+  `{id:guid}`, and that asymmetry is deliberate rather than an oversight. On an update the client
+  re-seals against the row's **existing** id, which it read back from this API in the one form a
+  `Guid` renders; the text in the URL is never the text anything was sealed under, so there is no
+  spelling to preserve. The rule lives where an identifier is *chosen*.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -194,12 +356,30 @@ ELSE
   currency determines both the precision each transaction's amount may carry and how it is
   presented, on creation and on an edit that moves a transaction here alike. The delete guard above
   depends on the transaction data.
-- **Angular client**: `/app/accounts` manages the list. The currency field is offered on create and
-  hidden in edit mode (`accounts.component.ts`, `accounts.service.ts`), which matches — but does not
-  enforce — the immutability rule above.
+- **[Ciphertext Envelope](ciphertext-envelope.md)**: `accounts.name` is the second column to store an
+  envelope and the **first** to be reached by a route that accepts one. The framing, the byte caps,
+  the value type the column accepts, the wire step for the index and the narrative grammar a name is
+  bound to all live there. This file owns what an account name *means* and what the schema no longer
+  refuses about it.
+- **[Account Keys](account-keys.md)**: the index key the blind index is computed under, and the
+  normalization it is taken over. One index key per **account** — two would produce two index values
+  for one name, and the uniqueness rule above would stop colliding while appearing to work.
+- **Angular client**: `/app/accounts` manages the list, and **it has not been moved onto the sealed
+  contract** — this is a gap, named here rather than described as if it worked.
+  `account-api.service.ts` still declares `name` as plain text on both request types, carries no
+  `nameKey` and no client-minted `id`, and `accounts.component.ts` renders `account.name` straight
+  into the list, where the API now returns base64url of an envelope. So today the screen cannot
+  create or rename an account, and the sealed name column is exercised only from the test suite. The
+  currency field is offered on create and hidden in edit mode, which matches — but does not enforce
+  — the immutability rule above.
 - **[Budgets](budgets.md)**: every account is stamped with and filtered by its owning `BudgetId`, and
-  its name is unique within that budget case-insensitively. The same account name in two budgets is
-  two unrelated accounts.
+  its name is unique within that budget — now over the blind index rather than over a
+  case-insensitive collation, with the folding done in the browser. The same account name in two
+  budgets is still two unrelated accounts, and the two rows hold **identical** `name_key` bytes: the
+  index message carries the grammar's version, the table and the column, and **no budget**, while the
+  key is one per account. What keeps them apart is `budget_id` being the leading column of
+  `IX_accounts_budget_id_name_key`, not anything about the digest — which is why that index must
+  never be narrowed to `name_key` alone.
 
 ## Edge Cases & Known Gotchas
 
@@ -228,3 +408,38 @@ ELSE
 - **`OpeningBalance` is the only balance that exists**: there is deliberately no computed current
   balance (opening + sum of transactions) anywhere in the system. Do not assume a running balance is
   available — displaying one would be new domain logic, not a lookup.
+
+- **`GET /api/accounts` hands back the envelope, and no blind index.** `AccountDto.Name` is still a
+  `string` and no longer holds a name: it is the envelope as **unpadded base64url**, the one alphabet
+  every binary member of this API crosses JSON in — deliberately not `System.Text.Json`'s own
+  `byte[]` handling, which emits padded standard base64, two spellings that disagree the first time
+  somebody decodes one with the other. The index is on no read at all, and that absence is a
+  decision: a client recomputes it from the name it just decrypted, under a key only it holds, and
+  needs it solely to write. A member nobody reads would hand every caller a deterministic
+  per-account fingerprint of a name, which is the one property of the pair that survives having no
+  key. Anything that sorts, searches or groups this field client-side is sorting ciphertext.
+
+- **Which of the three `CHECK` constraints reports a violation is decided by the constraint *name*,
+  alphabetically** — not by declaration order and not left to right inside an `AND`. Today
+  `CK_accounts_name_key_length` sorts first, then `CK_accounts_name_length`, then
+  `CK_accounts_name_version`, so a zero-length name happens to answer `23514` rather than something
+  fatal. That is held by nothing but the word *length* sorting before *version*, which is why the
+  version check is written with `substring` and never with `get_byte` — the latter *raises* on a
+  zero-length `bytea` instead of answering false, and `2202E` is not a constraint violation at all:
+  no constraint name, no failing row, and nothing a handler filtering on `23514` will ever see. The
+  whole argument, and the rule for whoever writes the next such constraint, is in
+  [ciphertext-envelope.md](ciphertext-envelope.md#two-checks-on-one-column-and-which-one-bites).
+
+- **A duplicate-name refusal is now unreadable by anybody holding the database.** The `23505` still
+  arrives, `AccountRepository` still turns it into "Account name must be unique.", and the caller
+  still gets a 400 naming the field — but *which* two accounts collided is a question only a browser
+  holding the account's index key can answer. The same is true of support: there is no query anyone
+  can run to find "the account called Groceries".
+
+- **The width of a blind index is the whole of the server's defence, which is why it is an equality.**
+  This side holds no index key, so it can never say a value is the index *of* the name beside it. A
+  correct-width value computed over the wrong text, under the wrong key, or straight out of a random
+  number generator is accepted, is stable, never collides, keys perfectly, and matches nothing for
+  the life of the account. It is refused rather than padded or truncated into shape, in two places
+  for two different arrivals: `IndexedName.Of` refuses a **call**, `CK_accounts_name_key_length`
+  refuses a **row** reaching the database by any other path.

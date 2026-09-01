@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json.Nodes;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -28,7 +29,13 @@ public sealed class TransactionEndpointsTests
         await Assert.That(json!["amount"]!.GetValue<decimal>()).IsEqualTo(-42.50m);
         await Assert.That(json["date"]!.GetValue<string>()).IsEqualTo("2026-06-12");
         await Assert.That(json["accountId"]!.GetValue<Guid>()).IsEqualTo(accountId);
-        await Assert.That(json["accountName"]!.GetValue<string>()).IsEqualTo("Checking");
+        // accountName IS THE ACCOUNT'S SEALED NAME, forwarded rather than resolved to text: the
+        // transaction projection reads accounts.name, which is an AEAD envelope this server holds no key
+        // for. The member kept its name because it still answers "which account", and the assertion
+        // still pins the join — the envelope is deterministic in the seeding label, so a projection
+        // that joined the wrong account, or none, fails here.
+        await Assert.That(json["accountName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Checking"));
         await Assert.That(json["description"]!.GetValue<string>()).IsEqualTo("Groceries");
         await Assert.That(json["createdAtUtc"] is not null).IsTrue();
     }
@@ -145,7 +152,8 @@ public sealed class TransactionEndpointsTests
         await Assert.That(item["amount"]!.GetValue<decimal>()).IsEqualTo(-42.50m);
         await Assert.That(item["date"]!.GetValue<string>()).IsEqualTo("2026-06-12");
         await Assert.That(item["accountId"]!.GetValue<Guid>()).IsEqualTo(accountId);
-        await Assert.That(item["accountName"]!.GetValue<string>()).IsEqualTo("Checking");
+        await Assert.That(item["accountName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Checking"));
     }
 
     [Test]
@@ -280,7 +288,8 @@ public sealed class TransactionEndpointsTests
         await Assert.That(after["date"]!.GetValue<string>()).IsEqualTo("2027-01-31");
         await Assert.That(after["description"]!.GetValue<string>()).IsEqualTo("Rent");
         await Assert.That(after["accountId"]!.GetValue<Guid>()).IsEqualTo(savingsId);
-        await Assert.That(after["accountName"]!.GetValue<string>()).IsEqualTo("Savings");
+        await Assert.That(after["accountName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Savings"));
         await Assert.That(after["payeeName"]!.GetValue<string>()).IsEqualTo("Landlord");
         await Assert.That(after["categoryId"]!.GetValue<Guid>()).IsEqualTo(housingId);
         await Assert.That(after["categoryName"]!.GetValue<string>()).IsEqualTo("Housing");
@@ -620,11 +629,23 @@ public sealed class TransactionEndpointsTests
     private static async Task<JsonNode> GetJsonAsync(HttpClient client, string path) =>
         (await JsonNode.ParseAsync(await client.GetStreamAsync(path)))!;
 
-    private static async Task<Guid> CreateAccountAsync(HttpClient client, string name = "Checking")
+    /// <summary>
+    /// Creates one account, taking <paramref name="label" /> as the text both halves of the name are
+    /// built from rather than as a value any column holds.
+    /// </summary>
+    /// <remarks>
+    /// The parameter kept its job — keeping two seeded accounts apart, which it still does because
+    /// SealedNarrative is deterministic in its label — and lost its old meaning, which is why it was
+    /// renamed. accounts.name is an AEAD envelope and accounts.name_key a blind index, so a flat name is
+    /// a 400 from CreateAccountHandler and every case in this file would fail in its Arrange.
+    /// </remarks>
+    private static async Task<Guid> CreateAccountAsync(HttpClient client, string label = "Checking")
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
         {
-            name,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "USD",

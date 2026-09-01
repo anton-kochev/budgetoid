@@ -6,6 +6,7 @@ using Domain.Transactions;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -67,8 +68,9 @@ public sealed class CategoryRepositoryTests
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId)))
         {
             Account account = Account.Create(
+                Guid.CreateVersion7(),
                 budgetId,
-                "Checking",
+                SealedNarrative.Indexed("Checking"),
                 AccountType.Checking,
                 0m,
                 "USD",

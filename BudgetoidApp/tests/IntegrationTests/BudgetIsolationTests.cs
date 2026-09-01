@@ -5,6 +5,7 @@ using Domain.Accounts;
 using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -26,7 +27,10 @@ public sealed class BudgetIsolationTests
         Guid transactionId;
         await using (BudgetoidDbContext dbA = CreateDb(host, budgetA))
         {
-            Account account = Account.Create(budgetA, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, DateTime.UtcNow);
+            Account account = Account.Create(
+                Guid.CreateVersion7(),
+                budgetA,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, DateTime.UtcNow);
             dbA.Accounts.Add(account);
             await dbA.SaveChangesAsync();
 
@@ -78,8 +82,9 @@ public sealed class BudgetIsolationTests
         await using (BudgetoidDbContext dbA = CreateDb(host, budgetA))
         {
             dbA.Accounts.Add(Account.Create(
+                Guid.CreateVersion7(),
                 budgetA,
-                "Checking",
+                SealedNarrative.Indexed("Checking"),
                 AccountType.Checking,
                 0m,
                 "USD",
@@ -134,7 +139,14 @@ public sealed class BudgetIsolationTests
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
         {
-            name = "Checking",
+            // Sealed, indexed and identified through SealedNarrative rather than sent as the word
+            // "Checking": accounts.name is an AEAD envelope and accounts.name_key a blind index, so a flat
+            // name is a 400 from CreateAccountHandler and this seeding would never reach the subject of
+            // the test. The id is on the body because the client mints it — it is the associated data the
+            // name was sealed against, so this API has to hand back the spelling it was sent.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Checking"),
+            nameKey = SealedNarrative.EncodedIndex("Checking"),
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "USD",

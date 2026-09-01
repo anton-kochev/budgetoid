@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -483,9 +484,18 @@ public sealed class PayeeIntegrationTests
 
     private static async Task<Guid> CreateAccountAsync(HttpClient client)
     {
+        string label = $"Checking {Guid.CreateVersion7()}";
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
         {
-            name = $"Checking {Guid.CreateVersion7()}",
+            // Sealed, indexed and identified through SealedNarrative rather than sent as a flat name:
+            // accounts.name is an AEAD envelope and accounts.name_key a blind index, so plain text is a
+            // 400 from CreateAccountHandler and this seeding would never reach the subject of the test.
+            // The label stays unique per call for the reason it always was — IX_accounts_budget_id_name_key
+            // refuses two accounts indexing alike in one budget, and the index is deterministic in the
+            // label, so a fixed label would make the second call in a budget a 23505.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "USD",

@@ -271,9 +271,11 @@ Load-bearing rules, each explained there or in the linked decision:
   binding comes from. **Every refusal the codec makes about its caller is
   `NarrativeFieldMisuseError`**, thrown before any cipher; a ciphertext that failed to authenticate
   never is, and `openField`'s `catch` re-throwing on that type is the only thing keeping a caller's
-  defect out of `unreadable`. **One column is typed for an envelope and no row carries one** —
-  `budgets.name` is `bytea`, and nothing else is; no column holds a blind index, and no screen seals,
-  opens or indexes anything — but neither codec is callerless: `AccountKeyCustodyService` reaches both halves
+  defect out of `unreadable`. **Two columns are typed for an envelope and one carries a blind index,
+  and no screen has caught up** — `budgets.name` and `accounts.name` are `bytea`, `accounts.name_key`
+  holds the only index, the account routes accept a sealed name and refuse a plaintext one, and
+  `/app/accounts` still sends the old shape, so that screen cannot create or rename until the client
+  is wired. Nothing in the browser seals anything yet. Neither codec is callerless: `AccountKeyCustodyService` reaches both halves
   of the narrative one and the whole of the blind index, which is the only way either key can be
   applied without leaving the class that holds it. **The blind index is built**, over its own
   grammar: `budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ normalized name`, looked up **as a pair**
@@ -287,7 +289,19 @@ Load-bearing rules, each explained there or in the linked decision:
   preference — 50 code points where trim-then-NFKC and NFKC-then-trim disagree — and `İstanbul` is
   **not** `istanbul`, which is what a conforming fold does and must not be "fixed" into disagreeing
   with the database's unique index. Do not relax any of it to
-  make a later screen easier. **`budgets.name` is the first column to hold ciphertext, and two things
+  make a later screen easier. **`accounts.name` is the first column where uniqueness *survived*, and
+  it is what the blind index was for.** `IX_accounts_budget_id_name_key` is the same rule — one name
+  per budget — by the same mechanism, a unique B-tree index, over bytes the database cannot
+  interpret: it never needed to *read* a name to enforce that, only to compare names for equality.
+  Case folding **relocated** rather than vanishing — the collation left by force and the client folds
+  before hashing, so the database still guarantees two identical index values cannot coexist and no
+  longer guarantees two spellings of one name are recognised as identical. **A blind-indexed name is
+  a pair and the pair travels together** — in the domain (`IndexedName`), in the schema (two `NOT
+  NULL` columns) and in `GRANT UPDATE`. Half a grant either forbids the operation outright (`42501`,
+  which is what shipped and what no test saw, because the case proving renames issued a one-column
+  `UPDATE`) or admits half a row whose uniqueness value disagrees with its content, and nothing can
+  see the second: recomputing the digest needs an index key the server does not have.
+  **`budgets.name` is the first column to hold ciphertext, and two things
   it gave up are decisions rather than gaps.** Per-user name uniqueness is **surrendered, not
   deferred** — every seal draws a fresh nonce so two identical names produce different bytes, and
   FR-077 gives this column no blind index, so it never comes back; what survives is `NULLS NOT

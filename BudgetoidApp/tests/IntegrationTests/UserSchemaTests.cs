@@ -6,6 +6,7 @@ using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -80,7 +81,9 @@ public sealed class UserSchemaTests
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
             seed.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
             CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
             seed.CategoryGroups.Add(group);
             seed.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
@@ -130,7 +133,9 @@ public sealed class UserSchemaTests
     {
         await using BudgetoidDbContext db = CreateDb(host, budgetId);
         Account account = Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
         db.Accounts.Add(account);
         await db.SaveChangesAsync();
 

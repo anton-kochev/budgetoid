@@ -458,9 +458,29 @@ GRANT SELECT, INSERT ON budgets TO budgetoid_app;
 
 -- accounts: budget_id (tenancy, rule X1), currency_code (rule A1), and created_at_utc are
 -- immutable by omission.
+--
+-- A NAME AND ITS INDEX MOVE TOGETHER OR NOT AT ALL, and that is a rule about blind-indexed name
+-- columns generally rather than a fact about this table. Such a column is a pair: the ciphertext
+-- nobody here can read, and the keyed digest that is the only way a row holding a given name can be
+-- found or refused as a duplicate. Both are computed from one piece of text by one client and written
+-- by one statement, so an UPDATE list naming one of them narrows nothing — it forbids the operation
+-- both columns exist to serve, or it permits half of it, and those are the only two outcomes.
+--
+-- Withholding name_key was the first of those, and it was live: Account.Update assigns both properties
+-- from a single IndexedName, EF emits one UPDATE naming both columns, PostgreSQL refuses the whole
+-- statement with 42501, and renaming an account was therefore impossible for this role. The other
+-- direction is worse, because it raises nothing: the row would keep a digest taken over a name it no
+-- longer holds, the unique index would go on policing the name that left, a search for the new name
+-- would miss the row that has it and a rename onto a name already taken would be accepted. Nothing on
+-- this side notices — recomputing either half needs the account's index key, which lives in a browser.
+--
+-- So the pair travels together in every direction: granted together, withheld together, and made
+-- immutable, if it ever is, by leaving BOTH off the list. Every blind-indexed name column that follows
+-- wants the same pair, and a review that finds one half of one on an UPDATE list has found the defect
+-- without needing to know which table it was looking at.
 REVOKE ALL ON accounts FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON accounts TO budgetoid_app;
-GRANT UPDATE (name, type, opening_balance) ON accounts TO budgetoid_app;
+GRANT UPDATE (name, name_key, type, opening_balance) ON accounts TO budgetoid_app;
 
 -- category_groups: budget_id and created_at_utc immutable by omission.
 REVOKE ALL ON category_groups FROM budgetoid_app;

@@ -210,8 +210,21 @@ public sealed class BudgetoidDbContextConstructionTests
             .IsTrue();
     }
 
+    /// <summary>
+    /// The three entities whose name is still text this server can read, and whose uniqueness rule is
+    /// therefore still enforced over the name column itself under a case-folding collation.
+    /// </summary>
+    /// <remarks>
+    /// <b><see cref="Account" /> left this set and did not lose the rule</b> — see
+    /// <see cref="Model_ScopesAccountNameUniquenessToTheBudgetOverTheBlindIndex" />, which is where the
+    /// same rule now lives. The absence is worth reading rather than filling back in: an argument
+    /// naming <c>Account</c> here would look for an index over <c>BudgetId, Name</c> that no longer
+    /// exists and for a collation <c>bytea</c> cannot carry, so restoring it fails loudly rather than
+    /// quietly. What that leaves is the honest shape of the schema mid-migration — three name columns
+    /// still in the clear, one sealed — and this set shrinking as the rest are sealed is the schema
+    /// doing the right thing.
+    /// </remarks>
     [Test]
-    [Arguments(typeof(Account))]
     [Arguments(typeof(CategoryGroup))]
     [Arguments(typeof(Category))]
     [Arguments(typeof(Payee))]
@@ -236,6 +249,55 @@ public sealed class BudgetoidDbContextConstructionTests
         // Assert
         await Assert.That(budgetNameIndex.IsUnique).IsTrue();
         await Assert.That(designTimeNameProperty.GetCollation()).IsEqualTo("case_insensitive");
+    }
+
+    [Test]
+    public async Task Model_ScopesAccountNameUniquenessToTheBudgetOverTheBlindIndex()
+    {
+        // Arrange
+        await using BudgetoidDbContext db = CreateDbContext();
+
+        // Act
+        IEntityType entity = db.Model.FindEntityType(typeof(Account))!;
+        IIndex budgetNameKeyIndex = entity
+            .GetIndexes()
+            .Single(index => index.Properties.Select(property => property.Name)
+                .SequenceEqual(new[] { "BudgetId", nameof(Account.NameKey) }));
+        bool anyIndexOverTheEnvelope = entity
+            .GetIndexes()
+            .Any(index => index.Properties.Any(property => property.Name == nameof(Account.Name)));
+
+        // Collation from the design-time model for the reason the sibling case reads it there: the
+        // runtime read-optimized model does not carry one.
+        IDesignTimeModel designTimeModel = db.GetService<IDesignTimeModel>();
+        IEntityType designTimeEntity = designTimeModel.Model.FindEntityType(typeof(Account))!;
+        IProperty designTimeName = designTimeEntity.FindProperty(nameof(Account.Name))!;
+        IProperty designTimeNameKey = designTimeEntity.FindProperty(nameof(Account.NameKey))!;
+
+        // Assert — THE SAME RULE, one name per budget, over a different column. The envelope cannot
+        // carry it: every seal draws a fresh nonce, so two rows holding one name hold different bytes
+        // and a unique index over `name` would refuse nothing while still existing, being reported by
+        // pg_get_indexdef, and passing any test that only checked it was unique. The blind index is
+        // deterministic under the account's index key, which is what makes equality of names come back
+        // as equality of digests.
+        await Assert.That(budgetNameKeyIndex.IsUnique).IsTrue();
+
+        // No index mentions the envelope at all, and this is the assertion that separates "the rule
+        // moved" from "a second index was added beside the old one". A surviving unique index over
+        // (BudgetId, Name) would be worse than useless: it would enforce nothing, cost a write on
+        // every rename, and read to the next person as the rule's home.
+        await Assert.That(anyIndexOverTheEnvelope)
+            .IsFalse()
+            .Because("uniqueness over the sealed envelope enforces nothing — every seal draws a fresh "
+                     + "nonce — so an index there is a rule that looks present and is not");
+
+        // Neither column carries a collation, and both halves of that are forced rather than chosen.
+        // bytea is not a collatable type, so case folding could not live here even if somebody wanted
+        // it to; it moved into the normalisation the client applies before it computes the HMAC, which
+        // this server cannot check and no constraint here can be written to. A collation reappearing
+        // on either property means the column went back to text.
+        await Assert.That(designTimeName.GetCollation()).IsNull();
+        await Assert.That(designTimeNameKey.GetCollation()).IsNull();
     }
 
     [Test]
@@ -287,6 +349,38 @@ public sealed class BudgetoidDbContextConstructionTests
         // stays legal on both sides and only 1000000000.01 is out.
         string[] expected =
         [
+            // AN EQUALITY AND NOT A BAND, which is the difference between this column and the two
+            // narrative bands in this list rather than a stricter mood. HMAC-SHA-256 emits exactly 32
+            // bytes and nothing truncates in between, so there is no range of legal widths to allow
+            // for and a bound written as a ceiling would admit a short digest in silence. The width is
+            // the whole of the defence: the digest is the client's, taken under an index key that
+            // lives in a browser, so this server cannot recompute it, cannot check it against the name
+            // beside it, and cannot tell a correct 32 bytes from a fabricated 32 bytes. A wrong one is
+            // stable, never collides, keys perfectly and matches nothing for the life of the account.
+            // Rendered from IndexedName.BlindIndexLength, so the constant owns the number and moving
+            // it moves this literal.
+            //
+            // No version arm, and there is nothing to write one from: a blind index is a keyed digest
+            // and not an envelope — no version byte, no nonce, no tag, nothing to open.
+            "CK_accounts_name_key_length: accounts length(name_key) = 32",
+            // The account name's band, the same shape and the same two constants as
+            // CK_budgets_name_length below — see that entry for why a band rather than a width, why
+            // both bounds are inclusive, and why the numbers are rendered rather than typed.
+            //
+            // One thing this line does that the budgets one cannot: the floor is what refuses an empty
+            // name at the only level left that can refuse one, because accounts.name is NOT NULL where
+            // budgets.name is not. It is still a floor on ENVELOPE bytes and says nothing about the
+            // text underneath — an envelope over an empty string satisfies it exactly — so it is not
+            // the blank-name rule the entity gave up and must not be described as having restored it.
+            "CK_accounts_name_length: accounts length(name) between 29 and 1024",
+            // substring rather than get_byte, for the reason CK_budgets_name_version states below and
+            // with one addition this table makes concrete. accounts sorts CK_accounts_name_key_length,
+            // then CK_accounts_name_length, then CK_accounts_name_version, so a zero-length name here
+            // happens to answer 23514 rather than a fatal 2202E — held by nothing but the word
+            // "length" sorting before "version", which is not a decision anybody took. substring
+            // carries no such dependency: it answers a zero-length bytea for a zero-length input, the
+            // check is false rather than fatal, and the violation is 23514 under every ordering.
+            "CK_accounts_name_version: accounts substring(name from 1 for 1) = '\\x01'::bytea",
             "CK_accounts_opening_balance: accounts abs(opening_balance) <= 1000000000",
             "CK_accounts_type: accounts type in ('Checking', 'Savings', 'Cash', 'CreditCard')",
             // A band and not a width, unlike the wrapped-key pair at the bottom of this list. AES-GCM
@@ -558,7 +652,27 @@ public sealed class BudgetoidDbContextConstructionTests
         // the one every earlier move carried: whoever regenerates the baseline resets production's
         // __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3), or that deploy fails on
         // the first CREATE TABLE against a database that already holds the schema.
-        const string frozenBaselineId = "20260831212803_InitialCreate";
+        // And it moved again for accounts.name becoming bytea and for the name_key column arriving
+        // beside it. The same type change budgets.name took a commit earlier, with one addition that
+        // budgets does not have and will not get from this story: a blind index. accounts.name is a
+        // sealed narrative field, so uniqueness over it would enforce nothing — every seal draws a
+        // fresh nonce, and two rows holding one name hold different bytes — and accounts is the table
+        // where "one name per budget" is a rule the product keeps. So the rule moved columns rather
+        // than being dropped: IX_accounts_budget_id_name became IX_accounts_budget_id_name_key over
+        // (budget_id, name_key), and the case_insensitive collation left the column, because bytea is
+        // not collatable and case folding is now part of the normalisation the client applies before
+        // it computes the HMAC. Three checks arrive with the pair — an equality on name_key's width,
+        // a length band on name rendered from CiphertextEnvelope.MinimumLength and
+        // NarrativeFieldLimits.NameBytes, and a version check spelled with substring for the reason
+        // BudgetConfiguration already states inline. A column TYPE change and a NOT NULL column added
+        // to a table are both shapes an additive migration cannot express without a data step, and
+        // there is no data step to write: the production database holds no rows (CON-002), which is
+        // why the rebaseline window is open and why this lands as one initial migration rather than
+        // as an alter inventing ciphertext and digests for names that were never sealed. The
+        // obligation is the one every earlier move carried: whoever regenerates the baseline resets
+        // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3), or that
+        // deploy fails on the first CREATE TABLE against a database that already holds the schema.
+        const string frozenBaselineId = "20260901092459_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

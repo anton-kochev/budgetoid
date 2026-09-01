@@ -62,7 +62,12 @@ public static class AccountEndpoints
             CancellationToken cancellationToken) =>
         {
             await handler.HandleAsync(
-                new UpdateAccountCommand(id, request.Name, request.Type, request.OpeningBalance),
+                new UpdateAccountCommand(
+                    id,
+                    request.Name,
+                    request.NameKey,
+                    request.Type,
+                    request.OpeningBalance),
                 cancellationToken);
             return TypedResults.NoContent();
         });
@@ -79,5 +84,24 @@ public static class AccountEndpoints
         return endpoints;
     }
 
-    private sealed record UpdateAccountRequest(string Name, AccountType Type, decimal OpeningBalance);
+    /// <summary>
+    /// The body of <c>PUT /api/accounts/{id}</c> — the command without the identifier, which the route
+    /// carries.
+    /// </summary>
+    /// <param name="Name">The re-sealed name as unpadded base64url.</param>
+    /// <param name="NameKey">The blind index over the same name as unpadded base64url.</param>
+    /// <param name="Type">The kind of account.</param>
+    /// <param name="OpeningBalance">The balance the ledger starts from.</param>
+    /// <remarks>
+    /// <b>The route parameter stays <c>{id:guid}</c> and gets no canonical check, unlike the id in the
+    /// create body.</b> On an update the client re-seals against the row's existing identifier, which it
+    /// read back from this API in the one spelling <see cref="Guid"/> renders; the text in the URL is
+    /// never the text anything was sealed under, so there is no spelling here to preserve. The rule lives
+    /// where an identifier is <em>chosen</em>, and that is <c>POST /api/accounts</c> alone.
+    /// </remarks>
+    private sealed record UpdateAccountRequest(
+        string Name,
+        string NameKey,
+        AccountType Type,
+        decimal OpeningBalance);
 }

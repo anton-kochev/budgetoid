@@ -91,7 +91,8 @@ public sealed class LockedSessionTests
         // the account's keys. Without this arm a policy refusing everybody passes, and asserting it
         // first is what stops a broken control being hidden behind the refusal it exists to qualify.
         await Assert.That(fullAccounts.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(await fullAccounts.Content.ReadAsStringAsync()).Contains(OwnerAccountName);
+        await Assert.That(await fullAccounts.Content.ReadAsStringAsync())
+            .Contains(SealedNarrative.EncodedName(OwnerAccountName));
 
         // The refusal, and that it is this gate's refusal rather than the CSRF control's.
         await Assert.That(lockedAccounts.StatusCode).IsEqualTo(HttpStatusCode.Forbidden);
@@ -130,7 +131,8 @@ public sealed class LockedSessionTests
         // route answers a full session, and the bytes it answers with are the account's own, so the
         // refusal below is not the export refusing everybody over a budget set it could not read.
         await Assert.That(fullExport.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(await fullExport.Content.ReadAsStringAsync()).Contains(OwnerAccountName);
+        await Assert.That(await fullExport.Content.ReadAsStringAsync())
+            .Contains(SealedNarrative.EncodedName(OwnerAccountName));
 
         // The refusal.
         await Assert.That(lockedExport.StatusCode).IsEqualTo(HttpStatusCode.Forbidden);
@@ -356,7 +358,16 @@ public sealed class LockedSessionTests
     private const string OwnerSubject = "google-locked-session-owner";
     private const string OwnerEmail = "locked-session-owner@budgetoid.test";
 
-    /// <summary>The seeded budget content, whose presence in a body is what "reached it" means.</summary>
+    /// <summary>
+    /// The seeded budget content. <b>The label, not the value a body carries</b> — every assertion here
+    /// goes through <see cref="SealedNarrative.EncodedName" />, because <c>accounts.name</c> is a sealed
+    /// envelope and these words appear in no payload the API can produce. Searching a body for them
+    /// again would fail on every response, including the ones this file needs to succeed, and the
+    /// obvious "fix" — dropping the content check and keeping the 200 — would leave the control arm
+    /// unable to tell "a full session reached the account's rows" from "the route answered something".
+    /// The envelope is deterministic in this label, so it is still per-row and still distinguishing; it
+    /// is only unreadable, which is the product working.
+    /// </summary>
     private const string OwnerAccountName = "Owners Current Account";
 
     /// <summary>
@@ -469,13 +480,18 @@ public sealed class LockedSessionTests
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
             """
-            insert into accounts (id, budget_id, name, type, opening_balance, currency_code, created_at_utc)
-            values (@id, @budget_id, @name, 'Checking', 0, 'USD', @created_at_utc)
+            insert into accounts (id, budget_id, name, name_key, type, opening_balance, currency_code, created_at_utc)
+            values (@id, @budget_id, @name, @name_key, 'Checking', 0, 'USD', @created_at_utc)
             """,
             connection);
         command.Parameters.AddWithValue("id", Guid.CreateVersion7());
         command.Parameters.AddWithValue("budget_id", budgetId);
-        command.Parameters.AddWithValue("name", name);
+        // BOTH HALVES, through the shared fixture. name is bytea now, so the label cannot go in as
+        // text — that is 42804 from the type checker — and name_key is NOT NULL, so omitting it is
+        // 23502. Neither is a refusal any caller of this seeder is testing for; both would surface as
+        // a seeding failure attributed to whatever the test was actually about.
+        command.Parameters.AddWithValue("name", SealedNarrative.Name(name).Envelope.ToArray());
+        command.Parameters.AddWithValue("name_key", SealedNarrative.BlindIndex(name).ToArray());
         command.Parameters.AddWithValue("created_at_utc", DateTime.UtcNow);
 
         if (await command.ExecuteNonQueryAsync() is not 1)

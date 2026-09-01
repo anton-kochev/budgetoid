@@ -91,7 +91,20 @@ public sealed class RepositoryConstraintAttributionTests
     /// </summary>
     private const int UsdMinorUnit = 2;
 
-    private const string AccountNameIndex = "IX_accounts_budget_id_name";
+    /// <summary>
+    /// The unique index a duplicate account name trips, spelled out here rather than read off
+    /// <c>AccountConfiguration.NameIndexName</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>A literal on purpose, unlike the constant the repository matches against.</b> Every case in
+    /// this file is about a repository's <c>catch … when</c> attributing a violation to the wrong
+    /// constraint, and the whole mechanism is a string comparison against a name PostgreSQL reports. A
+    /// test that read the same constant the production filter reads would agree with the filter by
+    /// construction and could never catch the two spellings drifting apart — which is the failure this
+    /// file exists to make loud. The value moved once already, when the index moved from <c>name</c> to
+    /// <c>name_key</c>; that move is a schema change a person edits here, having read why.
+    /// </remarks>
+    private const string AccountNameIndex = "IX_accounts_budget_id_name_key";
     private const string PayeeNameIndex = "IX_payees_budget_id_name";
     private const string UserEmailIndex = "IX_users_email";
     private const string PayeeBudgetForeignKey = "FK_payees_budgets_budget_id";
@@ -117,7 +130,9 @@ public sealed class RepositoryConstraintAttributionTests
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
 
         // Assert — a payee collision must not come back as "Account name must be unique.". Nothing
         // about the account is wrong, so this repository has no message to offer and the violation
@@ -137,7 +152,9 @@ public sealed class RepositoryConstraintAttributionTests
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
             seed.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
             await seed.SaveChangesAsync();
         }
 
@@ -146,7 +163,9 @@ public sealed class RepositoryConstraintAttributionTests
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
 
         // Assert — narrowing the catch must not silence it. This is the half that keeps a fix from
         // passing by removing the translation altogether.
@@ -337,13 +356,17 @@ public sealed class RepositoryConstraintAttributionTests
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
             seed.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
             await seed.SaveChangesAsync();
         }
 
         await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
         db.Accounts.Add(Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
         var repository = new PayeeRepository(db, new TestBudgetContext(budgetId), TimeProvider.System);
 
         // Act

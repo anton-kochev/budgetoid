@@ -43,14 +43,20 @@ width or the associated-data binding to drift apart, and every symptom of drift 
 silent: bytes of exactly the right shape that decrypt to nothing on a device that did not
 seal them.
 
-**One column now holds a narrative envelope, and no screen seals or opens a field.**
-`budgets.name` is the first: it is `bytea`, nullable, and mapped through a converter over
+**Two columns now hold a narrative envelope, and no screen seals or opens a field.**
+`budgets.name` is the first: `bytea`, **nullable**, mapped through a converter over
 `NarrativeField`, with a length band and a version check on the table. Every budget that exists is
-the nameless one registration writes, so the column stores NULL in every row today — what changed is
-that the format has left the edge and entered the schema, which is where its rules stop being
-reversible. The two functions do have a production caller — `AccountKeyCustodyService.sealField` and
+the nameless one registration writes, so that column stores NULL in every row.
+`accounts.name` is the second and is different in three ways that matter: it is `bytea` **NOT
+NULL**, it carries a **blind index** on `accounts.name_key` — the first in the product — and it is
+the first sealed column a **route** accepts a value for, since `POST /api/accounts` and
+`PUT /api/accounts/{id}` both take a sealed name and an index as base64url. What changed with the
+first column is that the format left the edge and entered the schema, which is where its rules stop
+being reversible; what changed with the second is that a *contract with a client* now runs over it.
+The two functions do have a production caller — `AccountKeyCustodyService.sealField` and
 `openField` delegate to them, because the account's content key never leaves that class — and
-nothing but a spec calls *that*. See
+nothing but a spec calls *that*: the Angular accounts screen has not been moved onto the sealed
+contract, so no browser in this product seals a name yet. See
 [account-keys.md](account-keys.md#the-operations-that-delegate-and-the-shape-that-was-forced),
 which argues why the operations sit there and not beside the codec. That is a deliberate order
 rather than a module left behind: the format is a cross-client contract, so it can be pinned
@@ -72,9 +78,10 @@ and storage: `Domain/Security/NarrativeFieldLimits` (the two byte caps),
 `Domain/Security/IndexedName` (a sealed name and its blind index as one value) and
 `Application/Security/BlindIndexText` (the wire step for an index). None of them can open anything —
 the server holds no key and never will — so what they add is *shape*, before a value is stored. They
-are argued below under [the two caps](#the-two-caps-and-what-they-measure) onward. `budgets.name`
-is what they now stand in front of, and the schema restates two of their rules in SQL: see
-[two checks on one column](#two-checks-on-one-column-and-which-one-bites). The order was the one
+are argued below under [the two caps](#the-two-caps-and-what-they-measure) onward. `budgets.name` and
+`accounts.name` are what they now stand in front of, and the schema restates their rules in SQL —
+two `CHECK`s on the budget column, three on the account's, the third being the index's exact width:
+see [two checks on one column](#two-checks-on-one-column-and-which-one-bites). The order was the one
 this format asked for and got — agree while agreement is cheap, and let the persistence step arrive
 against rules that are already written.
 
@@ -85,6 +92,17 @@ is what `IndexedName` exists to carry. A budget name is neither searched nor con
 sealed and nothing more, and its column takes a bare `NarrativeField`.
 [budgets.md](budgets.md) carries what that costs, which is per-owner name uniqueness, surrendered
 rather than deferred.
+
+**`accounts` is the first of that indexed set to be built, and it is where the pair pays for
+itself.** `IX_accounts_budget_id_name_key` is unique over `(budget_id, name_key)`: the same shape of
+rule budgets gave up — one name inside its owning scope, here a budget — enforced by the same
+mechanism, a unique B-tree index, over bytes the database cannot interpret. Note what carries the
+scoping: the index message names the grammar's version, the table and the column and **no budget**,
+so one name under one account keys to one value everywhere it is written; it is `budget_id`, the
+index's leading column, that keeps two budgets apart. The other three indexed columns hold plaintext under the
+`case_insensitive` collation and have not been sealed yet. Read the two together before proposing
+anything about a third: **surrendering uniqueness and keeping it are both live outcomes of the same
+change, and which one applies is decided by whether the column has an index beside it.**
 
 ## Key Entities
 
@@ -263,8 +281,12 @@ erDiagram
     well-formed row holding a value that is stable, never collides, keys perfectly and matches
     nothing for the life of the account.
   - **Enforced in**: `IndexedName.Of`, whose two parameters are both non-nullable, and — for the
-    row rather than the call — the `NOT NULL` pair on the column pair, which the schema will
-    carry. See [two guards, two moments](#a-pair-type-says-a-call-cannot-be-half).
+    row rather than the call — the `NOT NULL` pair the schema carries on `accounts.name` and
+    `accounts.name_key`, the first column pair to exist. A third guard joined them on the way to
+    the database and it is not in this chapter, because it is not about the format: the role's
+    `UPDATE` grant names **both** columns, so the *statement* cannot be half a name either. See
+    [two guards, two moments](#a-pair-type-says-a-call-cannot-be-half) and
+    [accounts.md](accounts.md#business-rules--invariants).
 
 - **A blind index MUST be decoded through the shared base64url decoder, never through
   `CiphertextEnvelopeText`.**
@@ -597,12 +619,18 @@ column and the domain drifting into two versions of one rule — the copy that d
 store, still read back and still open, differing only in what it accepts from a client nobody
 exercised that day. An attribute argument admits nothing but a constant expression, so a static
 property would not compile at the first of those sites and would have nothing to offer at the
-second.
+second. `AccountConfiguration` does the same for `CK_accounts_name_length`, and renders a third
+constraint the budget column has no equivalent of: `CK_accounts_name_key_length` from
+`IndexedName.BlindIndexLength`, which is the same discipline applied to a number that belongs to an
+algorithm rather than to a product decision.
 
 **The constraint is a band and not a width, and both bounds are inclusive.** Unlike
-`wrapped_account_keys`, whose payload has one legal size, AES-GCM ciphertext is exactly as long as
-its plaintext, so a name is as long as whatever somebody typed: the floor is the format's own
-`MinimumLength` and the ceiling is the field class's cap, and each names a length that is legal.
+`wrapped_account_keys`, whose payload has one legal size — and unlike `accounts.name_key` beside it,
+whose 32 bytes come out of `HMAC-SHA-256` and are therefore an **equality** — AES-GCM ciphertext is
+exactly as long as its plaintext, so a name is as long as whatever somebody typed: the floor is the
+format's own `MinimumLength` and the ceiling is the field class's cap, and each names a length that
+is legal. A band and a width sitting on two columns of one table is not an inconsistency to tidy;
+each follows from what its column holds.
 Nothing in it says "or null". A `CHECK` is satisfied by NULL — `length(null)` is null, and a null
 predicate is not a violation — so a nameless row passes without an arm written for it, and adding
 one would be noise that reads like a rule. `Domain` is the home for the same reason `CiphertextEnvelope` is: a limits type one ring out
@@ -645,6 +673,14 @@ Today `CK_budgets_name_length` sorts before `CK_budgets_name_version`, so a zero
 to answer `23514` — held by nothing but the word *length* sorting before *version*, which is not a
 decision anybody took. Folding the two into one `AND`-joined constraint only moves the same coin
 flip inside the expression: PostgreSQL does not promise it evaluates `AND` left to right either.
+
+**A blind-indexed column makes it three names to sort, and the accident holds by the same
+alphabet.** `accounts` declares `CK_accounts_name_key_length`, `CK_accounts_name_length` and
+`CK_accounts_name_version`, which sort in exactly that order, so the version check is last there
+too and a zero-length name answers `23514` for the same reason it does on `budgets` — one that has
+nothing to do with either table. Nobody adding a fourth constraint to a narrative table should have
+to work out where it lands, which is why the rule below is written about **predicates** and not
+about names.
 
 `substring` carries no such dependency. It answers a zero-length `bytea` for a zero-length input,
 that is not the version byte, the check is false rather than fatal, and the violation is `23514`
@@ -700,8 +736,8 @@ measured — and a zero-length buffer that *was* supplied stays refused.
 ### A pair type says a call cannot be half
 
 `IndexedName` holds a sealed name and the blind index over it as one value, and refuses either half
-on its own. The schema's two `NOT NULL` columns will say a **row** cannot be half. This type says a
-**call** cannot be. They are two guards over two different moments — one runs when a statement
+on its own. The schema's two `NOT NULL` columns — `accounts.name` and `accounts.name_key` — say a
+**row** cannot be half. This type says a **call** cannot be. They are two guards over two different moments — one runs when a statement
 reaches the database, the other when a factory is invoked — and the reason to keep both is that the
 first cannot see a caller that meant to write both columns and wrote one, on a path that also writes
 something else the same transaction keeps.
@@ -857,8 +893,9 @@ reaches it, and `budgetoid/blind-index/v1` is not a third associated-data gramma
 *seals* a value, and this seals nothing. The file is indexed here because the registry is one
 registry, not because the format is shared.
 
-**The client computes a blind index today and nothing stores one**, which is the order that
-argument asked for and got: the answers were frozen before the code, and every spec that pins
+**The answers were frozen, then the client computed one, and only then did a column start storing
+one** — which is the order that argument asked for and got, and the window it asked to be settled
+inside has now closed on `accounts.name_key`. Every spec that pins
 them **reads this file** rather than a transcribed copy — the fold, the normalisation, the index
 itself, and the custody operation that delegates to it, which reads the same answers precisely to
 tell "it delegated" from "it reimplemented the grammar inline and got my one case right". The
@@ -867,7 +904,11 @@ reason is a sharper version of what
 client holds the only key that can recompute one, so a grammar or a normalisation settled after
 a column holds values orphans every row in it, and there is no way back that does not run
 through every account's own recovery factors. Agreement is free until the first value is
-written and unbuyable afterwards, and no column holds one yet.
+written and unbuyable afterwards. **It is no longer free**: `accounts.name_key` exists, its width
+is a `CHECK`, and `IX_accounts_budget_id_name_key` enforces uniqueness over it. Nothing in
+production has written a value there — no browser in this product computes one for a route yet —
+but the file's status changed the day the column did: from a contract being agreed to a contract
+in force.
 
 **The table is in the message for a disclosure, not for tidiness.** Without it, one name
 produces one value wherever it lives — so a payee and a category called the same thing collide,
@@ -952,16 +993,22 @@ a ceiling — which the decoder applies to the encoded text and then to the buff
 then the floor and the version. `WrappedKeyEnvelope` reaches `CiphertextEnvelopeText` and adds its
 exact width on top.
 
-**The narrative side has its edge, its column and no traffic.** A narrative value takes the same
-three steps and two more: `CiphertextEnvelopeText.TryDecode` with one of `NarrativeFieldLimits`' two
-caps as the ceiling — never a second decode of its own — then `NarrativeField.Sealed` with the same
-cap, or `IndexedName.Of` where a blind index rides beside it, in which case `BlindIndexText.TryDecode`
-runs on the index through the *shared* decoder rather than through the envelope one. What is
-missing is only the request end: `budgets.name` is mapped, constrained and reachable, its converter
-calls `FromStore` on the way out and `Envelope` on the way in, and no route accepts a sealed budget
-name for either arm to run on. **Storing is where the rules stop being reversible**, which is why
-they were agreed first and why nothing here may be relaxed to make the screen that fills that
-column easier to write. Nothing on this side opens anything, and nothing ever will.
+**The narrative side has its edge, two columns, and traffic on one of them.** A narrative value
+takes the same three steps and two more: `CiphertextEnvelopeText.TryDecode` with one of
+`NarrativeFieldLimits`' two caps as the ceiling — never a second decode of its own — then
+`NarrativeField.Sealed` with the same cap, or `IndexedName.Of` where a blind index rides beside it,
+in which case `BlindIndexText.TryDecode` runs on the index through the *shared* decoder rather than
+through the envelope one. **`accounts` is where every one of those steps now runs on a real
+request.** `CreateAccountHandler` decodes three opaque members — the identifier through
+`CanonicalIdentifier`, the envelope through `CiphertextEnvelopeText`, the index through
+`BlindIndexText` — attempting **every** one and reporting **every** failure, because the three
+arrive together from one piece of client code and a caller that got two wrong would otherwise learn
+about the second only after fixing the first; `UpdateAccountHandler` does the same for two members,
+the route carrying the identifier. `budgets.name` is the column with no request end: it is mapped,
+constrained and reachable, its converter calls `FromStore` on the way out and `Envelope` on the way
+in, and no route accepts a sealed budget name for either arm to run on. **Storing is where the rules
+stop being reversible**, which is why they were agreed first and why nothing here may be relaxed to
+make a screen easier to write. Nothing on this side opens anything, and nothing ever will.
 
 ## Decision Trees
 
@@ -1025,6 +1072,12 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
 - **[budgets.md](budgets.md)** — the first column that stores a narrative envelope, `budgets.name`,
   and what its type cost: per-owner name uniqueness, and every server-side rule about the text. It
   is also the one sealed name column with **no** blind index beside it.
+- **[accounts.md](accounts.md)** — the second column, `accounts.name`, and the **first** blind index,
+  `accounts.name_key`. Read it against the entry above: it is the same change to the same kind of
+  column with the opposite outcome for uniqueness, and the difference is the index. It also owns what
+  the pair costs — the server can no longer refuse a blank or over-long name, case folding is the
+  client's, and a name and its index have to move together in the domain, in the schema **and on the
+  `UPDATE` grant**.
 - **[recovery-codes.md](recovery-codes.md)** and **[passkeys.md](passkeys.md)** — where the
   key-encryption keys that seal the wrapped copies come from. Neither reaches this format
   directly.
@@ -1036,12 +1089,16 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
 
 ## Edge Cases & Known Gotchas
 
-- **Nothing is encrypted today, and the narrative functions are reached by one caller that nothing
-  calls.** `sealNarrativeField` and `openNarrativeField` are reached through
+- **No browser in this product seals anything yet, and the narrative functions are reached by one
+  caller that nothing calls.** `sealNarrativeField` and `openNarrativeField` are reached through
   `AccountKeyCustodyService.sealField` and `openField`, which hold the content key they need; no
-  screen calls those. A column exists now — `budgets.name` — and it changes nothing about this
-  bullet: no route accepts a sealed name, so every row in it is NULL and no browser has sealed
-  anything for it. **The
+  screen calls those. **What changed is the server, not the client, and the gap between them is now
+  a broken screen rather than a quiet wait.** `budgets.name` has no route at all, so every row in it
+  is NULL. `accounts.name` and `accounts.name_key` are `NOT NULL` and two routes accept them — but
+  `account-api.service.ts` still sends a plaintext `name`, no `nameKey` and no client-minted `id`,
+  and `accounts.component.ts` renders the response's `name` straight into a list where it is now
+  base64url. So the sealed account column is exercised only from the test suite, and `/app/accounts`
+  cannot create or rename anything until the client is moved onto the contract. **The
   wrapped-key side is the counter-example rather than a companion, and citing the two together is
   the mistake to avoid**: `unwrapAccountKeys` is called on every passkey sign-in, because what it
   needed was a route to hand it an envelope and a class to hold what came out, and it has both. The

@@ -213,7 +213,18 @@ public sealed class AppRoleGrantMatrixTests
         ("users", ["email"]),
         ("sessions", ["revoked_at_utc"]),
         ("passkey_signature_counters", ["signature_counter"]),
-        ("accounts", ["name", "type", "opening_balance"]),
+        // name_key joins name, and the two are ONE entry on this line rather than two facts that
+        // happen to sit beside each other. A rename writes the sealed envelope and the blind index
+        // over the same text in one UPDATE, because Account.Update takes an IndexedName and offers
+        // no spelling for half a name. Grant one without the other and that statement fails with
+        // 42501 — the whole rename, not the half it was not allowed — so renaming an account becomes
+        // impossible for the application role while a test that writes `name` alone stays green. That
+        // is not a hypothetical: it is exactly what
+        // AppRoleGrantsTests.Database_RefusesToChangeAnAccountsCurrency_WhileStillAllowingRename
+        // measured for the whole time the grant named one column, which is why that case now writes
+        // both halves in one statement. Removing either column from this list is therefore not a
+        // narrowing of what may be edited; it is the rename path going away.
+        ("accounts", ["name", "name_key", "type", "opening_balance"]),
         ("category_groups", ["name", "description", "position"]),
         ("categories", ["name", "description", "position", "category_group_id"]),
         ("payees", ["name"]),

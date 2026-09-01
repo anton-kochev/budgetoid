@@ -1,6 +1,8 @@
 using System.Globalization;
 using Domain.Accounts;
 using Domain.Common;
+using Domain.Security;
+using TestSupport;
 
 namespace UnitTests;
 
@@ -13,53 +15,145 @@ public sealed class AccountTests
     private const int UsdMinorUnit = 2;
 
     [Test]
-    public async Task Create_WithValidInput_TrimsNameStoresTypeOpeningBalanceAndCreatedAtUtc()
+    public async Task Create_UsesTheIdItWasGiven()
     {
+        // Arrange — an id minted here and threaded in, so the assertion is not "an id came back" but
+        // "this one did".
+        var id = Guid.CreateVersion7();
         var budgetId = Guid.CreateVersion7();
+
+        // Act
+        Account account = Account.Create(
+            id, budgetId, SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+
+        // Assert — the identifier is the associated data the client sealed the name against, so a
+        // factory that ignored this parameter and minted its own would satisfy every other case in this
+        // file and produce a row whose name nobody can ever open: no constraint violated, nothing red,
+        // and the symptom arriving months later as text that will not decrypt. Guid.CreateVersion7 has
+        // left the production file for that reason, and this is the case that would notice it coming
+        // back.
+        await Assert.That(account.Id).IsEqualTo(id);
+    }
+
+    [Test]
+    public async Task Create_WithValidInput_StoresBothHalvesOfTheNameTypeOpeningBalanceAndCreatedAtUtc()
+    {
+        // Arrange
+        var id = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
+        IndexedName name = SealedNarrative.Indexed("Checking");
         DateTime createdAtUtc = new(2026, 6, 25, 13, 14, 15, DateTimeKind.Utc);
 
-        Account account = Account.Create(budgetId, "  Checking  ", AccountType.Checking, 100.25m, " usd ", UsdMinorUnit, createdAtUtc);
+        // Act
+        Account account = Account.Create(
+            id, budgetId, name, AccountType.Checking, 100.25m, " usd ", UsdMinorUnit, createdAtUtc);
 
-        await Assert.That(account.Id).IsNotEqualTo(Guid.Empty);
+        // Assert — both halves are compared as the bytes they carry rather than by reference. Neither
+        // NarrativeField nor ReadOnlyMemory<byte> gives content equality here for free, and a reference
+        // comparison would pass for any instance the factory happened to hold on to.
+        //
+        // The name half used to be asserted as the string "Checking", trimmed from "  Checking  ". Both
+        // the value and the trim are gone: the column holds an envelope over text this server has never
+        // seen, so there is no string to compare and no whitespace to strip. What survives is that the
+        // factory stored the value it was handed, unaltered, in both columns.
         await Assert.That(account.BudgetId).IsEqualTo(budgetId);
-        await Assert.That(account.Name).IsEqualTo("Checking");
+        await Assert.That(account.Name.Envelope.ToArray()).IsEquivalentTo(name.Name.Envelope.ToArray());
+        await Assert.That(account.NameKey.ToArray()).IsEquivalentTo(name.BlindIndex.ToArray());
         await Assert.That(account.Type).IsEqualTo(AccountType.Checking);
         await Assert.That(account.OpeningBalance).IsEqualTo(100.25m);
         await Assert.That(account.CreatedAtUtc).IsEqualTo(createdAtUtc);
     }
 
     [Test]
+    public async Task Create_WithEmptyId_ThrowsValidationExceptionForId()
+    {
+        // Act — the empty Guid became reachable the day the identifier stopped being minted here: it is
+        // what a caller that threaded a default through hands over.
+        ValidationException exception = ThrowsValidationException(() => Account.Create(
+            Guid.Empty,
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
+            AccountType.Checking,
+            0m,
+            "USD",
+            UsdMinorUnit,
+            UtcNow()));
+
+        // Assert — keyed on the id, not merely thrown. Left to the primary key instead, all-zero is a
+        // legal uuid: the first such row stores and the second collides under a constraint name that
+        // says nothing about the caller that never chose an id at all.
+        await Assert.That(exception.Errors.ContainsKey("Id")).IsTrue();
+    }
+
+    [Test]
     public async Task Create_WithEmptyBudgetId_ThrowsValidationException()
     {
-        ValidationException exception = ThrowsValidationException(() =>
-            Account.Create(Guid.Empty, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+        ValidationException exception = ThrowsValidationException(() => Account.Create(
+            Guid.CreateVersion7(),
+            Guid.Empty,
+            SealedNarrative.Indexed("Checking"),
+            AccountType.Checking,
+            0m,
+            "USD",
+            UsdMinorUnit,
+            UtcNow()));
 
         await Assert.That(exception.Errors.ContainsKey("BudgetId")).IsTrue();
     }
 
     [Test]
-    public async Task Create_WithBlankName_ThrowsValidationException()
+    public async Task Create_WithABlankName_IsAccepted()
     {
-        ValidationException exception = ThrowsValidationException(() =>
-            Account.Create(Guid.CreateVersion7(), "   ", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+        // Arrange — the shortest envelope the format can produce: a version, a nonce and a tag over an
+        // empty plaintext. This is exactly what a client sealing a blank name, or a name of nothing but
+        // spaces, sends.
+        IndexedName blank = SealedNarrative.Indexed();
 
-        await Assert.That(exception.Errors.ContainsKey("Name")).IsTrue();
+        // Act
+        Account account = Account.Create(
+            Guid.CreateVersion7(), Guid.CreateVersion7(), blank, AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+
+        // Assert — this factory used to refuse a blank name with a ValidationException keyed on Name,
+        // and it no longer can. The capability moved to the client, which is the only side that holds a
+        // key; it was not quietly dropped. THE SERVER CANNOT MEASURE CHARACTERS IN AN ENVELOPE AND NEVER
+        // WILL — it holds ciphertext over text it has never seen, so "is this just whitespace?" is a
+        // question about a plaintext that exists nowhere on this side. A future reader who reads the
+        // absence as an oversight and restores the check has nothing to check it against; this case is
+        // what stops that edit.
+        await Assert.That(account.Name.Envelope.Length).IsEqualTo(CiphertextEnvelope.MinimumLength);
     }
 
     [Test]
-    public async Task Create_WithNameLongerThan200Characters_ThrowsValidationException()
+    public async Task Create_WithANameFarPastTheOldCharacterLimit_IsAccepted()
     {
-        ValidationException exception = ThrowsValidationException(() =>
-            Account.Create(Guid.CreateVersion7(), new string('x', 201), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+        // Arrange — an envelope well past the two hundred characters this factory used to refuse, and
+        // well under NarrativeFieldLimits.NameBytes, which is the only ceiling left and is measured in
+        // stored bytes by NarrativeField before the value ever reaches Account.
+        IndexedName longName = SealedNarrative.Indexed(new string('x', 400));
 
-        await Assert.That(exception.Errors.ContainsKey("Name")).IsTrue();
+        // Act
+        Account account = Account.Create(
+            Guid.CreateVersion7(), Guid.CreateVersion7(), longName, AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+
+        // Assert — the same relocation as the blank case, in the other direction. A length rule here
+        // would be a rule about characters, and the server counts none: AES-GCM ciphertext is exactly as
+        // long as its plaintext, but the framing and the encoding sit on top of it, so bytes stored and
+        // characters typed are different questions and only the first is answerable here.
+        await Assert.That(account.Name.Envelope.Length).IsGreaterThan(200);
     }
 
     [Test]
     public async Task Create_WithUndefinedAccountType_ThrowsValidationException()
     {
-        ValidationException exception = ThrowsValidationException(() =>
-            Account.Create(Guid.CreateVersion7(), "Checking", (AccountType)999, 0m, "USD", UsdMinorUnit, UtcNow()));
+        ValidationException exception = ThrowsValidationException(() => Account.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
+            (AccountType)999,
+            0m,
+            "USD",
+            UsdMinorUnit,
+            UtcNow()));
 
         await Assert.That(exception.Errors.ContainsKey("Type")).IsTrue();
     }
@@ -71,7 +165,14 @@ public sealed class AccountTests
 
         // Act
         Account account = Account.Create(
-            Guid.CreateVersion7(), "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
+            AccountType.Checking,
+            0m,
+            "USD",
+            UsdMinorUnit,
+            UtcNow());
 
         // Assert
         await Assert.That(account.OpeningBalance).IsEqualTo(0m);
@@ -100,7 +201,8 @@ public sealed class AccountTests
         // Act
         ValidationException exception = ThrowsValidationException(() => Account.Create(
             Guid.CreateVersion7(),
-            "Checking",
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
             AccountType.Checking,
             Money(openingBalance),
             "USD",
@@ -128,7 +230,8 @@ public sealed class AccountTests
         // Act
         Account account = Account.Create(
             Guid.CreateVersion7(),
-            "Checking",
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
             AccountType.Checking,
             expected,
             "USD",
@@ -153,7 +256,8 @@ public sealed class AccountTests
         // Act
         ValidationException exception = ThrowsValidationException(() => Account.Create(
             Guid.CreateVersion7(),
-            "Checking",
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
             AccountType.Checking,
             Money(openingBalance),
             "USD",
@@ -176,7 +280,8 @@ public sealed class AccountTests
         // Act
         Account account = Account.Create(
             Guid.CreateVersion7(),
-            "Checking",
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
             AccountType.Checking,
             expected,
             "USD",
@@ -201,7 +306,8 @@ public sealed class AccountTests
         // Act
         ArgumentOutOfRangeException exception = ThrowsArgumentOutOfRangeException(() => Account.Create(
             Guid.CreateVersion7(),
-            "Checking",
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
             AccountType.Checking,
             0m,
             "USD",
@@ -213,13 +319,63 @@ public sealed class AccountTests
     }
 
     [Test]
-    public async Task Update_WithValidInput_ReplacesNameTypeAndOpeningBalance()
+    public async Task Create_WithoutAName_ThrowsArgumentNullException()
     {
-        Account account = Account.Create(Guid.CreateVersion7(), "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        // Arrange — the signature says a name is present, so a null is a defect in this codebase rather
+        // than a field a caller corrects by editing a request. It is refused ahead of ValidateOrThrow
+        // and as an ArgumentNullException, not as the ValidationException that becomes a 400 about a
+        // member the request may not even have.
 
-        account.Update("  Savings  ", AccountType.Savings, 50m, UsdMinorUnit);
+        // Act
+        ArgumentNullException? caught = null;
+        try
+        {
+            Account.Create(
+                Guid.CreateVersion7(), Guid.CreateVersion7(), null!, AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        }
+        catch (ArgumentNullException exception)
+        {
+            caught = exception;
+        }
 
-        await Assert.That(account.Name).IsEqualTo("Savings");
+        // Assert
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ParamName).IsEqualTo("name");
+    }
+
+    [Test]
+    public async Task Update_ReplacesBothHalvesOfTheNameTogether()
+    {
+        // Arrange — an account created under one label, updated to another. The two labels are what
+        // make the halves distinguishable: SealedNarrative derives both from the same text, so
+        // "Savings" produces an envelope and an index that neither matches "Checking".
+        Account account = Account.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
+            AccountType.Checking,
+            0m,
+            "USD",
+            UsdMinorUnit,
+            UtcNow());
+
+        // Act
+        account.Update(SealedNarrative.Indexed("Savings"), AccountType.Savings, 50m, UsdMinorUnit);
+
+        // Assert — THE INDEX IS ASSERTED TO BE THE NEW ONE AND EXPLICITLY NOT THE PREVIOUS ONE, which
+        // is the whole of what the IndexedName parameter buys. A member that took a bare NarrativeField
+        // would pass the envelope assertion below and fail only this one: the row would hold new
+        // ciphertext under the old name's index, and every consequence of that is silent. The uniqueness
+        // constraint would go on policing a name the row no longer holds, a search for "Savings" would
+        // miss it, a search for "Checking" would return it, and a rename onto a name already taken would
+        // be accepted. Nothing reads back wrong and no constraint is violated, because recomputing
+        // either half needs the account's index key, which lives in a browser.
+        await Assert.That(account.Name.Envelope.ToArray())
+            .IsEquivalentTo(SealedNarrative.Name("Savings").Envelope.ToArray());
+        await Assert.That(account.NameKey.ToArray())
+            .IsEquivalentTo(SealedNarrative.BlindIndex("Savings").ToArray());
+        await Assert.That(account.NameKey.ToArray())
+            .IsNotEquivalentTo(SealedNarrative.BlindIndex("Checking").ToArray());
         await Assert.That(account.Type).IsEqualTo(AccountType.Savings);
         await Assert.That(account.OpeningBalance).IsEqualTo(50m);
     }
@@ -227,13 +383,33 @@ public sealed class AccountTests
     [Test]
     public async Task Update_WithInvalidInput_ThrowsValidationExceptionAndLeavesAccountUnchanged()
     {
-        Account account = Account.Create(Guid.CreateVersion7(), "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        // Arrange — this case used to be triggered by a blank name, which is no longer a rule this side
+        // can state. The claim it was making — a refused update changes NOTHING, not even the members
+        // that were acceptable — is untouched by that, so it is triggered by an undefined account type
+        // instead: a rule ValidateOrThrow still owns, reached on the same path, after the name has
+        // already been handed over.
+        Account account = Account.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
+            AccountType.Checking,
+            0m,
+            "USD",
+            UsdMinorUnit,
+            UtcNow());
 
+        // Act
         ValidationException exception = ThrowsValidationException(() =>
-            account.Update("   ", AccountType.Savings, 50m, UsdMinorUnit));
+            account.Update(SealedNarrative.Indexed("Savings"), (AccountType)999, 50m, UsdMinorUnit));
 
-        await Assert.That(exception.Errors.ContainsKey("Name")).IsTrue();
-        await Assert.That(account.Name).IsEqualTo("Checking");
+        // Assert — BOTH HALVES OF THE NAME ARE STILL THE OLD ONES. Update validates before it assigns,
+        // and a version that assigned the name first would leave a row whose name says "Savings" and
+        // whose type, balance and index say otherwise.
+        await Assert.That(exception.Errors.ContainsKey("Type")).IsTrue();
+        await Assert.That(account.Name.Envelope.ToArray())
+            .IsEquivalentTo(SealedNarrative.Name("Checking").Envelope.ToArray());
+        await Assert.That(account.NameKey.ToArray())
+            .IsEquivalentTo(SealedNarrative.BlindIndex("Checking").ToArray());
         await Assert.That(account.Type).IsEqualTo(AccountType.Checking);
         await Assert.That(account.OpeningBalance).IsEqualTo(0m);
     }
@@ -248,12 +424,11 @@ public sealed class AccountTests
     {
         // Arrange — Update is the path that had no currency at all until now: it re-validated
         // against the account's stored CurrencyCode while rounding to a hard-coded 2.
-        Account account = Account.Create(
-            Guid.CreateVersion7(), "Cash", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        Account account = NewAccount("Cash");
 
         // Act
         ValidationException exception = ThrowsValidationException(() =>
-            account.Update("Cash", AccountType.Checking, Money(openingBalance), minorUnit));
+            account.Update(SealedNarrative.Indexed("Cash"), AccountType.Checking, Money(openingBalance), minorUnit));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("OpeningBalance")).IsTrue();
@@ -270,12 +445,11 @@ public sealed class AccountTests
         string openingBalance)
     {
         // Arrange
-        Account account = Account.Create(
-            Guid.CreateVersion7(), "Cash", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        Account account = NewAccount("Cash");
         decimal expected = Money(openingBalance);
 
         // Act
-        account.Update("Cash", AccountType.Checking, expected, minorUnit);
+        account.Update(SealedNarrative.Indexed("Cash"), AccountType.Checking, expected, minorUnit);
 
         // Assert
         await Assert.That(account.OpeningBalance).IsEqualTo(expected);
@@ -290,12 +464,11 @@ public sealed class AccountTests
     {
         // Arrange — same regression guard as on Create: the magnitude branch must survive the
         // rewrite of the decimal branch it shares an else-if chain with.
-        Account account = Account.Create(
-            Guid.CreateVersion7(), "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        Account account = NewAccount("Checking");
 
         // Act
         ValidationException exception = ThrowsValidationException(() =>
-            account.Update("Checking", AccountType.Checking, Money(openingBalance), UsdMinorUnit));
+            account.Update(SealedNarrative.Indexed("Checking"), AccountType.Checking, Money(openingBalance), UsdMinorUnit));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("OpeningBalance")).IsTrue();
@@ -309,12 +482,11 @@ public sealed class AccountTests
         string openingBalance)
     {
         // Arrange
-        Account account = Account.Create(
-            Guid.CreateVersion7(), "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        Account account = NewAccount("Checking");
         decimal expected = Money(openingBalance);
 
         // Act
-        account.Update("Checking", AccountType.Checking, expected, UsdMinorUnit);
+        account.Update(SealedNarrative.Indexed("Checking"), AccountType.Checking, expected, UsdMinorUnit);
 
         // Assert
         await Assert.That(account.OpeningBalance).IsEqualTo(expected);
@@ -327,21 +499,51 @@ public sealed class AccountTests
         int minorUnit)
     {
         // Arrange
-        Account account = Account.Create(
-            Guid.CreateVersion7(), "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        Account account = NewAccount("Checking");
 
         // Act — a programmer error, not user input, for the same reason as on Create.
         ArgumentOutOfRangeException exception = ThrowsArgumentOutOfRangeException(() =>
-            account.Update("Checking", AccountType.Checking, 0m, minorUnit));
+            account.Update(SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, minorUnit));
 
         // Assert
         await Assert.That(exception.ParamName).IsEqualTo("minorUnit");
     }
 
     [Test]
+    public async Task Update_WithoutAName_ThrowsArgumentNullException()
+    {
+        // Arrange — Create's argument, restated on the other write path: half a name has no spelling
+        // this signature accepts, and neither does no name at all.
+        Account account = NewAccount("Checking");
+
+        // Act
+        ArgumentNullException? caught = null;
+        try
+        {
+            account.Update(null!, AccountType.Savings, 50m, UsdMinorUnit);
+        }
+        catch (ArgumentNullException exception)
+        {
+            caught = exception;
+        }
+
+        // Assert
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ParamName).IsEqualTo("name");
+    }
+
+    [Test]
     public async Task Create_StoresNormalizedCurrencyCode()
     {
-        Account account = Account.Create(Guid.CreateVersion7(), "Checking", AccountType.Checking, 0m, " usd ", UsdMinorUnit, UtcNow());
+        Account account = Account.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
+            AccountType.Checking,
+            0m,
+            " usd ",
+            UsdMinorUnit,
+            UtcNow());
 
         await Assert.That(account.CurrencyCode).IsEqualTo("USD");
     }
@@ -353,8 +555,15 @@ public sealed class AccountTests
     [Test]
     public async Task Create_WithInvalidCurrencyCode_ThrowsValidationException(string currencyCode)
     {
-        ValidationException exception = ThrowsValidationException(() =>
-            Account.Create(Guid.CreateVersion7(), "Checking", AccountType.Checking, 0m, currencyCode, UsdMinorUnit, UtcNow()));
+        ValidationException exception = ThrowsValidationException(() => Account.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Checking"),
+            AccountType.Checking,
+            0m,
+            currencyCode,
+            UsdMinorUnit,
+            UtcNow()));
 
         await Assert.That(exception.Errors.ContainsKey("CurrencyCode")).IsTrue();
     }
@@ -362,12 +571,26 @@ public sealed class AccountTests
     [Test]
     public async Task Update_DoesNotChangeCurrencyCode()
     {
-        Account account = Account.Create(Guid.CreateVersion7(), "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+        Account account = NewAccount("Checking");
 
-        account.Update("Savings", AccountType.Savings, 50m, UsdMinorUnit);
+        account.Update(SealedNarrative.Indexed("Savings"), AccountType.Savings, 50m, UsdMinorUnit);
 
         await Assert.That(account.CurrencyCode).IsEqualTo("USD");
     }
+
+    /// <summary>
+    /// A USD account at zero, for the cases whose subject is the balance or the minor unit rather than
+    /// the identifier or the name.
+    /// </summary>
+    private static Account NewAccount(string label) => Account.Create(
+        Guid.CreateVersion7(),
+        Guid.CreateVersion7(),
+        SealedNarrative.Indexed(label),
+        AccountType.Checking,
+        0m,
+        "USD",
+        UsdMinorUnit,
+        UtcNow());
 
     private static DateTime UtcNow() => new(2026, 6, 25, 13, 14, 15, DateTimeKind.Utc);
 

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Domain.Currencies;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -60,7 +61,16 @@ public sealed class CurrencyIntegrationTests
 
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
         {
-            name = "Checking",
+            // THE ONLY THING WRONG WITH THIS BODY IS THE CURRENCY, and that is the whole design of the
+            // case. The id, the sealed name and the blind index all have to be well-formed, because
+            // CreateAccountHandler joins every shape failure into one errors dictionary: a flat name or a
+            // missing id would still produce a 400, the status assertion below would still pass, and the
+            // errors check would then be reading a document that happens to also carry CurrencyCode
+            // rather than one that carries it alone. Routed through SealedNarrative so the two opaque
+            // members are the values the route accepts.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Checking"),
+            nameKey = SealedNarrative.EncodedIndex("Checking"),
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "ZZZ",
@@ -69,6 +79,11 @@ public sealed class CurrencyIntegrationTests
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
         await Assert.That(problem!["errors"]!["CurrencyCode"] is not null).IsTrue();
+
+        // And NOTHING ELSE is reported, which is what pins the paragraph above rather than leaving it as
+        // a claim. Without this line the case passes on a body whose id, name and index are all malformed,
+        // and stops being a test about an unknown currency at all.
+        await Assert.That(problem["errors"]!.AsObject().Count).IsEqualTo(1);
     }
 
     /// <summary>

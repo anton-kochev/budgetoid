@@ -185,7 +185,25 @@ public sealed class SchemaConstraintSnapshotTests
             // handle naming a session belonging to somebody else — and session_tokens is exempt from
             // row-level security, so nothing underneath would notice.
             """CREATE UNIQUE INDEX "AK_sessions_id_user_id" ON public.sessions USING btree (id, user_id)""",
-            """CREATE UNIQUE INDEX "IX_accounts_budget_id_name" ON public.accounts USING btree (budget_id, name)""",
+            // THE SAME RULE — one name per budget — OVER A DIFFERENT COLUMN, and the column is the
+            // whole of what moved. `name` is a sealed narrative field now, and every seal draws a
+            // fresh nonce, so two rows holding one name hold different bytes: a unique index left on
+            // `name` would still exist, still be rendered here, still be unique, and refuse nothing.
+            // name_key is deterministic under the account's index key, so equality of names comes back
+            // as equality of digests and this index refuses the second one.
+            //
+            // The identifier follows EF's own convention rather than being pinned by hand, which is
+            // why the tail is _name_key. AccountRepository matches PostgresException.ConstraintName
+            // against AccountConfiguration.NameIndexName to decide whether a 23505 is the collision it
+            // models, so the two spellings have to agree; a name only the schema knows about costs
+            // that 400 outright.
+            //
+            // Two things this index cannot do that its predecessor could. It cannot fold case — that
+            // moved into the normalisation the client applies before it computes the HMAC, which no
+            // constraint on this side can be written to, and which is why accounts.name leaves the
+            // collation snapshot below. And nobody with the database open can read which two accounts
+            // collided: that is a question only a browser holding the account's keys can answer.
+            """CREATE UNIQUE INDEX "IX_accounts_budget_id_name_key" ON public.accounts USING btree (budget_id, name_key)""",
             // The trailing clause is the rule, not rendering noise. Without it PostgreSQL counts
             // every NULL as distinct, so both provisioning racers insert an unnamed (user_id, NULL)
             // budget — the default budget is exactly the one with no name — and a user silently ends
@@ -334,6 +352,42 @@ public sealed class SchemaConstraintSnapshotTests
         // line here to look like the configuration is how this test starts failing for no reason.
         string[] expected =
         [
+            // An EQUALITY, and this is the one narrative-adjacent bound in this file that is a width
+            // rather than a band. HMAC-SHA-256 emits exactly 32 bytes and nothing truncates in
+            // between, so there is no range of legal sizes and a ceiling would admit a short digest in
+            // silence. It bounds what MAY BE STORED and restates nothing this server computed: the
+            // digest is taken under an index key that lives in a browser, so this side cannot
+            // recompute it, cannot check it against the name beside it, and cannot tell a correct 32
+            // bytes from a fabricated 32 bytes. The width is the whole of the defence here.
+            //
+            // pg_get_constraintdef renders the integer bare rather than casting it, unlike the numeric
+            // comparison on opening_balance two lines down: length() returns integer and 32 is already
+            // one, so there is no cast to print. "Correcting" this line to carry one is how this test
+            // starts failing for no reason.
+            """CK_accounts_name_key_length: accounts CHECK ((length(name_key) = 32))""",
+            // The account name's band, rendered as two ANDed comparisons the way pg_get_constraintdef
+            // renders every BETWEEN. Same two constants and same argument as CK_budgets_name_length
+            // below — 29 is CiphertextEnvelope.MinimumLength, 1024 is NarrativeFieldLimits.NameBytes,
+            // both rendered from those constants in the configuration.
+            //
+            // Unlike its budgets twin this one meets no NULL: accounts.name is NOT NULL, so the "a
+            // CHECK is satisfied by NULL" sentence that carries the nameless default budget has no
+            // work to do here. What that buys is a floor that actually refuses something — the
+            // shortest legal envelope — at the only level left that can refuse anything about a name.
+            // It is still a floor on ENVELOPE bytes and says nothing about the text underneath.
+            """CK_accounts_name_length: accounts CHECK (((length(name) >= 29) AND (length(name) <= 1024)))""",
+            // The one envelope version this deployment implements, over the second narrative column to
+            // arrive. substring rather than get_byte for the reason CK_budgets_name_version states
+            // below at length, and on this table the accident that reason describes is visible: the
+            // three CK_accounts_name* constraints sort key_length, length, version, so a zero-length
+            // name answers 23514 only because "length" sorts before "version". substring does not
+            // depend on that — it answers a zero-length bytea for a zero-length input, so the check is
+            // false rather than fatal under every ordering.
+            //
+            // SUBSTRING comes back upper-cased and in the SQL-standard FROM/FOR spelling, because
+            // PostgreSQL 14 and later print substring as SQL syntax rather than as a function call.
+            // The configuration writes it lower-case with the same keywords.
+            """CK_accounts_name_version: accounts CHECK ((SUBSTRING(name FROM 1 FOR 1) = '\x01'::bytea))""",
             """CK_accounts_opening_balance: accounts CHECK ((abs(opening_balance) <= (1000000000)::numeric))""",
             """CK_accounts_type: accounts CHECK (((type)::text = ANY ((ARRAY['Checking'::character varying, 'Savings'::character varying, 'Cash'::character varying, 'CreditCard'::character varying])::text[])))""",
             // The budget name's length band, rendered the way pg_get_constraintdef renders every
@@ -609,32 +663,36 @@ public sealed class SchemaConstraintSnapshotTests
         // uniqueness rule rather than a lookup convenience: drop it and Sam@x.com and sam@x.com
         // become two accounts for one mailbox.
         //
-        // BUDGETS.NAME LEFT THIS SET AND ITS ABSENCE IS AS DELIBERATE AS EVERY ENTRY. The column is
-        // bytea now — a sealed narrative field — and bytea is not a collatable type, so the collation
-        // did not lose an argument, it lost the type that could carry one. That is a forced
-        // consequence rather than a decision, and it is worth reading as a preview: the remaining four
-        // name columns are the ones that have not been sealed yet, so this set SHRINKS as narrative
-        // columns become ciphertext, and shrinking is the schema doing the right thing.
+        // BUDGETS.NAME AND NOW ACCOUNTS.NAME HAVE LEFT THIS SET, AND EACH ABSENCE IS AS DELIBERATE AS
+        // EVERY ENTRY. Both columns are bytea — sealed narrative fields — and bytea is not a
+        // collatable type, so the collation did not lose an argument, it lost the type that could
+        // carry one. That is a forced consequence rather than a decision, and it is the preview the
+        // budgets paragraph promised arriving on schedule: this set SHRINKS as narrative columns
+        // become ciphertext, and shrinking is the schema doing the right thing.
         //
-        // Losing that entry cost this test the argument it used to lead with, and it is worth being
-        // exact about what is left rather than leaving a reader to assume it is now decoration. The
-        // "drop it and a snapshot stays byte-identical" half is INTACT and still covers four
-        // uniqueness rules that live nowhere else in this file — accounts, categories, category_groups
-        // and payees all enforce case-insensitive names through their column and not through their
-        // index — plus users.email, which is the strongest of the five. What this test no longer does
-        // is guard budgets: refusing "Groceries" against "groceries" on a budget is now a blind
-        // index's job, and that column has none, so the rule is a later slice rather than something
-        // this line stopped covering.
+        // THE TWO DEPARTURES ARE NOT THE SAME EVENT, and collapsing them is the mistake to refuse.
+        // budgets.name left and the case-folding uniqueness rule left with it, because that column has
+        // no blind index and the requirement excludes one. accounts.name left and the rule STAYED: it
+        // moved to IX_accounts_budget_id_name_key over (budget_id, name_key), which the unique-index
+        // snapshot above pins, and the case folding moved into the normalisation the client applies
+        // before it computes the HMAC. This server cannot check that the folding happened and no
+        // constraint here can be written to it, which is the honest cost of the move and is worth
+        // writing down rather than leaving a reader to infer that nothing changed.
         //
-        // And the other half — the one this test's own comment already names — is the half that grew.
-        // Asserting the WHOLE SET rather than five columns individually catches a collation added
-        // where it was not intended, and there is now a specific such addition worth naming: a
-        // collation reappearing on budgets.name would mean the column had gone back to text, because
-        // bytea cannot carry one. So the entry's absence is not a hole in the coverage; it is an
-        // assertion that the sealing survived.
+        // What is left of this test's leading argument is worth being exact about rather than letting
+        // a reader assume it is now decoration. The "drop it and a snapshot stays byte-identical" half
+        // is INTACT and still covers three uniqueness rules that live nowhere else in this file —
+        // categories, category_groups and payees all enforce case-insensitive names through their
+        // column and not through their index — plus users.email, which is the strongest of the four.
+        //
+        // And the other half — the one this test's own comment already names — is the half that grew
+        // again. Asserting the WHOLE SET rather than four columns individually catches a collation
+        // added where it was not intended, and there are now two such additions worth naming: a
+        // collation reappearing on budgets.name or on accounts.name would mean that column had gone
+        // back to text, because bytea cannot carry one. So neither absence is a hole in the coverage;
+        // each is an assertion that the sealing survived.
         string[] expected =
         [
-            "accounts.name COLLATE case_insensitive",
             "categories.name COLLATE case_insensitive",
             "category_groups.name COLLATE case_insensitive",
             "payees.name COLLATE case_insensitive",

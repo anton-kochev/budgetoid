@@ -2,10 +2,12 @@ using Domain.Accounts;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Payees;
+using Domain.Security;
 using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -60,7 +62,9 @@ public sealed class TenancySchemaTests
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
             Account account = Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
             seed.Accounts.Add(account);
             await seed.SaveChangesAsync();
 
@@ -162,7 +166,9 @@ public sealed class TenancySchemaTests
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
             Account account = Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
             seed.Accounts.Add(account);
             await seed.SaveChangesAsync();
             accountId = account.Id;
@@ -188,11 +194,34 @@ public sealed class TenancySchemaTests
         await Assert.That(await CountRowsAsync(connection, "accounts", "budget_id", otherBudgetId))
             .IsEqualTo(0L);
 
-        // The success half of the pair (see the class remarks): name is on the accounts grant
-        // list, so the same role renaming the same row must go through. Same connection as the
-        // refusal, so the session's ambient budget is identical too and only the column differs.
-        await Assert.That(await UpdateNameAsync(app, "accounts", accountId, "Everyday Checking"))
-            .IsEqualTo(1);
+        // The success half of the pair (see the class remarks): name and name_key are both on the
+        // accounts grant list, so the same role renaming the same row must go through. Same connection
+        // as the refusal, so the session's ambient budget is identical too and only the column differs.
+        //
+        // NOT UpdateNameAsync, WHICH THE OTHER TWO FLIPPED TESTS STILL USE, and the divergence is the
+        // point rather than a duplication to fold back. That helper writes one text `name`, which is
+        // still exactly right for category_groups and payees and is wrong here in two separate ways.
+        // A text literal into a bytea column is refused by the TYPE CHECKER with 42804 — before any
+        // grant or policy is consulted, so it never reaches the question this pair is asking, and its
+        // SQLSTATE is easy to mistake for a refusal somebody measured. And one column is not the
+        // operation: Account.Update takes an IndexedName and writes the envelope and the index in one
+        // statement, so a rename this role can actually perform names both columns, and a grant that
+        // covered only one would refuse the whole statement while leaving a one-column probe green.
+        // That is not hypothetical — AppRoleGrantsTests carried exactly that probe.
+        //
+        // Two further traps under the values themselves, both of which answer 23514 and both of which
+        // would be read as the row-level-security verdict this file is about: a short or wrongly
+        // versioned envelope trips CK_accounts_name_length or CK_accounts_name_version, and an index
+        // of any width but 32 trips CK_accounts_name_key_length. SealedNarrative.Indexed is what makes
+        // both halves well-formed by construction.
+        IndexedName renamedTo = SealedNarrative.Indexed("Everyday Checking");
+        await using NpgsqlCommand rename = new(
+            "update accounts set name = @name, name_key = @name_key where id = @id",
+            app);
+        rename.Parameters.AddWithValue("name", renamedTo.Name.Envelope.ToArray());
+        rename.Parameters.AddWithValue("name_key", renamedTo.BlindIndex.ToArray());
+        rename.Parameters.AddWithValue("id", accountId);
+        await Assert.That(await rename.ExecuteNonQueryAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -344,12 +373,21 @@ public sealed class TenancySchemaTests
     }
 
     /// <summary>
-    /// Renames a row over <paramref name="connection" /> and returns the affected-row count. The
-    /// flipped tests use it as the success half of their refusal/success pair: <c>name</c> is a
-    /// granted column on <c>accounts</c>, <c>category_groups</c> and <c>payees</c> alike. It takes
-    /// the open connection so the pair runs on one session — the affected count is only evidence of
-    /// a grant if the row was visible to that session in the first place.
+    /// Renames a row over <paramref name="connection" /> and returns the affected-row count. Two of the
+    /// flipped tests use it as the success half of their refusal/success pair: <c>name</c> is a granted
+    /// <b>text</b> column on <c>category_groups</c> and <c>payees</c>. It takes the open connection so
+    /// the pair runs on one session — the affected count is only evidence of a grant if the row was
+    /// visible to that session in the first place.
     /// </summary>
+    /// <remarks>
+    /// <b><c>accounts</c> left this helper's list and must not be added back.</b> That column is
+    /// <c>bytea</c>, so the text parameter below is refused by the type checker with <c>42804</c> before
+    /// any grant or policy is reached — an SQLSTATE that reads like a refusal somebody measured and is
+    /// not one. And a rename there is two columns, not one, because <c>Account.Update</c> writes the
+    /// sealed envelope and the blind index in one statement; a one-column probe cannot tell a role that
+    /// may rename an account from one that may write to a column. The empty-account test therefore
+    /// spells its own <c>UPDATE</c> out, with the argument beside it.
+    /// </remarks>
     private static async Task<int> UpdateNameAsync(
         NpgsqlConnection connection,
         string table,

@@ -70,7 +70,8 @@ public sealed class SessionCookieAuthenticationTests
 
         // Assert
         await Assert.That(accounts.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(await accounts.Content.ReadAsStringAsync()).Contains(OwnerAccountName);
+        await Assert.That(await accounts.Content.ReadAsStringAsync())
+            .Contains(SealedNarrative.EncodedName(OwnerAccountName));
         await Assert.That(me.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(await EmailOfAsync(me)).IsEqualTo(OwnerEmail);
     }
@@ -109,16 +110,16 @@ public sealed class SessionCookieAuthenticationTests
         // rows at once satisfies "mine is present" just as well as the right one does.
         await Assert.That(secondAccounts.StatusCode).IsEqualTo(HttpStatusCode.OK);
         string secondPayload = await secondAccounts.Content.ReadAsStringAsync();
-        await Assert.That(secondPayload).Contains(StrangerAccountName);
-        await Assert.That(secondPayload).DoesNotContain(OwnerAccountName);
+        await Assert.That(secondPayload).Contains(SealedNarrative.EncodedName(StrangerAccountName));
+        await Assert.That(secondPayload).DoesNotContain(SealedNarrative.EncodedName(OwnerAccountName));
         await Assert.That(await EmailOfAsync(secondMe)).IsEqualTo(StrangerEmail);
 
         // And the first caller still gets its own, which is what refuses an implementation that had
         // simply been made to answer the LAST row instead of the first.
         await Assert.That(firstAccounts.StatusCode).IsEqualTo(HttpStatusCode.OK);
         string firstPayload = await firstAccounts.Content.ReadAsStringAsync();
-        await Assert.That(firstPayload).Contains(OwnerAccountName);
-        await Assert.That(firstPayload).DoesNotContain(StrangerAccountName);
+        await Assert.That(firstPayload).Contains(SealedNarrative.EncodedName(OwnerAccountName));
+        await Assert.That(firstPayload).DoesNotContain(SealedNarrative.EncodedName(StrangerAccountName));
     }
 
     [Test]
@@ -397,13 +398,15 @@ public sealed class SessionCookieAuthenticationTests
         // against a 200 carrying an empty list; the body alone would pass against a 200 that answered
         // the budgetless account with nothing at all, which is the quiet success this refuses.
         await Assert.That(response.StatusCode).IsNotEqualTo(HttpStatusCode.OK);
-        await Assert.That(await response.Content.ReadAsStringAsync()).DoesNotContain(StrangerAccountName);
+        await Assert.That(await response.Content.ReadAsStringAsync())
+            .DoesNotContain(SealedNarrative.EncodedName(StrangerAccountName));
 
         // The bystander's own request succeeding is what makes the refusal above a verdict on the
         // broken account rather than on every cookie this host would ever see — which is a state an
         // application with no cookie authentication at all satisfies perfectly.
         await Assert.That(bystanderResponse.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(await bystanderResponse.Content.ReadAsStringAsync()).Contains(StrangerAccountName);
+        await Assert.That(await bystanderResponse.Content.ReadAsStringAsync())
+            .Contains(SealedNarrative.EncodedName(StrangerAccountName));
     }
 
     /// <summary>The subject and address of the account most tests here sign in as.</summary>
@@ -417,9 +420,26 @@ public sealed class SessionCookieAuthenticationTests
     private const string StrangerEmail = "cookie-stranger@budgetoid.test";
 
     /// <summary>
-    /// Names of the seeded budget content. Distinct strings and neither a substring of the other, so a
+    /// Labels for the seeded budget content. Distinct strings and neither a substring of the other, so a
     /// payload check for one cannot be satisfied by the other.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Labels, not the values any payload carries.</b> <c>accounts.name</c> is a sealed envelope now,
+    /// so these words appear in no response this API can produce and every check below goes through
+    /// <see cref="SealedNarrative.EncodedName" />. The distinctness argument above survives the change
+    /// intact — the fixture is deterministic in its label and position-varying within it, so two labels
+    /// give two envelopes and neither encoding is a substring of the other.
+    /// </para>
+    /// <para>
+    /// <b>The <c>DoesNotContain</c> checks are why this could not be answered by dropping the content
+    /// assertions and keeping the statuses.</b> A 200 is satisfied by a payload carrying everybody's
+    /// rows; what rules that out is looking for the OTHER caller's row and not finding it, and that
+    /// needs a per-row value. Left as the plain words, those checks would pass against every response
+    /// the product can emit — including one that handed the stranger the owner's whole budget — because
+    /// the words are absent from all of them.
+    /// </para>
+    /// </remarks>
     private const string OwnerAccountName = "Owners Current Account";
 
     private const string StrangerAccountName = "Strangers Savings Pot";
@@ -539,13 +559,18 @@ public sealed class SessionCookieAuthenticationTests
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
             """
-            insert into accounts (id, budget_id, name, type, opening_balance, currency_code, created_at_utc)
-            values (@id, @budget_id, @name, 'Checking', 0, 'USD', @created_at_utc)
+            insert into accounts (id, budget_id, name, name_key, type, opening_balance, currency_code, created_at_utc)
+            values (@id, @budget_id, @name, @name_key, 'Checking', 0, 'USD', @created_at_utc)
             """,
             connection);
         command.Parameters.AddWithValue("id", Guid.CreateVersion7());
         command.Parameters.AddWithValue("budget_id", budgetId);
-        command.Parameters.AddWithValue("name", name);
+        // BOTH HALVES, through the shared fixture. name is bytea now, so the label cannot go in as
+        // text — that is 42804 from the type checker — and name_key is NOT NULL, so omitting it is
+        // 23502. Neither is a refusal any caller of this seeder is testing for; both would surface as
+        // a seeding failure attributed to whatever the test was actually about.
+        command.Parameters.AddWithValue("name", SealedNarrative.Name(name).Envelope.ToArray());
+        command.Parameters.AddWithValue("name_key", SealedNarrative.BlindIndex(name).ToArray());
         command.Parameters.AddWithValue("created_at_utc", DateTime.UtcNow);
 
         if (await command.ExecuteNonQueryAsync() is not 1)

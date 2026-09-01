@@ -1,6 +1,7 @@
 using System.Globalization;
 using Domain.Accounts;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -176,13 +177,19 @@ public sealed class AccountSchemaTests
     {
         NpgsqlCommand command = new(
             """
-            insert into accounts (id, budget_id, name, type, opening_balance, currency_code, created_at_utc)
-            values (@id, @budget_id, @name, @type, @opening_balance, @currency_code, @created_at_utc)
+            insert into accounts (id, budget_id, name, name_key, type, opening_balance, currency_code, created_at_utc)
+            values (@id, @budget_id, @name, @name_key, @type, @opening_balance, @currency_code, @created_at_utc)
             """,
             connection);
         command.Parameters.AddWithValue("id", Guid.CreateVersion7());
         command.Parameters.AddWithValue("budget_id", budgetId);
-        command.Parameters.AddWithValue("name", name);
+        // BOTH HALVES, through the shared fixture. `name` is the label these cases tell their rows
+        // apart by, not a name: the column is bytea, so text in it is 42804 from the type checker, and
+        // name_key is NOT NULL. Every case in this file is about the type, the balance or the column's
+        // numeric shape, so either refusal would arrive as a seeding failure wearing the SQLSTATE the
+        // case was hunting.
+        command.Parameters.AddWithValue("name", SealedNarrative.Name(name).Envelope.ToArray());
+        command.Parameters.AddWithValue("name_key", SealedNarrative.BlindIndex(name).ToArray());
         command.Parameters.AddWithValue("type", type);
         command.Parameters.AddWithValue("opening_balance", openingBalance);
         command.Parameters.AddWithValue("currency_code", "USD");

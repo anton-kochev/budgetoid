@@ -124,7 +124,8 @@ public partial class InitialCreate : Migration
             {
                 id = table.Column<Guid>(type: "uuid", nullable: false),
                 budget_id = table.Column<Guid>(type: "uuid", nullable: false),
-                name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
+                name = table.Column<byte[]>(type: "bytea", nullable: false),
+                name_key = table.Column<byte[]>(type: "bytea", nullable: false),
                 type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
                 opening_balance = table.Column<decimal>(type: "numeric(14,4)", nullable: false),
                 currency_code = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: false),
@@ -134,6 +135,9 @@ public partial class InitialCreate : Migration
             {
                 table.PrimaryKey("PK_accounts", x => x.id);
                 table.UniqueConstraint("AK_accounts_id_budget_id", x => new { x.id, x.budget_id });
+                table.CheckConstraint("CK_accounts_name_key_length", "length(name_key) = 32");
+                table.CheckConstraint("CK_accounts_name_length", "length(name) between 29 and 1024");
+                table.CheckConstraint("CK_accounts_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
                 table.CheckConstraint("CK_accounts_opening_balance", "abs(opening_balance) <= 1000000000");
                 table.CheckConstraint("CK_accounts_type", "type in ('Checking', 'Savings', 'Cash', 'CreditCard')");
                 table.ForeignKey(
@@ -438,9 +442,9 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateIndex(
-            name: "IX_accounts_budget_id_name",
+            name: "IX_accounts_budget_id_name_key",
             table: "accounts",
-            columns: new[] { "budget_id", "name" },
+            columns: new[] { "budget_id", "name_key" },
             unique: true);
 
         migrationBuilder.CreateIndex(

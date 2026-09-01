@@ -279,7 +279,9 @@ public sealed class BudgetRepositoryTests
     {
         await using BudgetoidDbContext db = CreateDb(host, budgetId);
         db.Accounts.Add(Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
         CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
         db.CategoryGroups.Add(group);
         db.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
@@ -295,7 +297,9 @@ public sealed class BudgetRepositoryTests
     {
         await using BudgetoidDbContext db = CreateDb(host, budgetId);
         Account account = Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
         db.Accounts.Add(account);
         await db.SaveChangesAsync();
 

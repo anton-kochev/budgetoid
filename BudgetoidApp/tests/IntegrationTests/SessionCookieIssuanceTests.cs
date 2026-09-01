@@ -173,7 +173,8 @@ public sealed class SessionCookieIssuanceTests
         await Assert.That(me.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(await EmailOfAsync(me)).IsEqualTo(OwnerEmail);
         await Assert.That(accounts.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(await accounts.Content.ReadAsStringAsync()).Contains(OwnerAccountName);
+        await Assert.That(await accounts.Content.ReadAsStringAsync())
+            .Contains(SealedNarrative.EncodedName(OwnerAccountName));
     }
 
     /// <summary>
@@ -690,7 +691,13 @@ public sealed class SessionCookieIssuanceTests
 
     private const string OwnerEmail = "cookie-issuing-owner@budgetoid.test";
 
-    /// <summary>The name of the seeded budget content, distinctive enough to find in a payload.</summary>
+    /// <summary>
+    /// The LABEL of the seeded budget content, distinctive enough that the envelope built from it is
+    /// findable in a payload. <c>accounts.name</c> is sealed, so these words are in no response this API
+    /// can produce and the check goes through <see cref="SealedNarrative.EncodedName" />. The content
+    /// check is what makes this case say "the cookie reached this owner's rows" rather than "the route
+    /// answered 200", which a cookie belonging to anybody would also do.
+    /// </summary>
     private const string OwnerAccountName = "Issuing Owners Current Account";
 
     /// <summary>One <c>sessions</c> row, in the columns this file asks about.</summary>
@@ -1266,13 +1273,18 @@ public sealed class SessionCookieIssuanceTests
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
             """
-            insert into accounts (id, budget_id, name, type, opening_balance, currency_code, created_at_utc)
-            values (@id, @budget_id, @name, 'Checking', 0, 'USD', @created_at_utc)
+            insert into accounts (id, budget_id, name, name_key, type, opening_balance, currency_code, created_at_utc)
+            values (@id, @budget_id, @name, @name_key, 'Checking', 0, 'USD', @created_at_utc)
             """,
             connection);
         command.Parameters.AddWithValue("id", Guid.CreateVersion7());
         command.Parameters.AddWithValue("budget_id", budgetId);
-        command.Parameters.AddWithValue("name", name);
+        // BOTH HALVES, through the shared fixture. name is bytea now, so the label cannot go in as
+        // text — that is 42804 from the type checker — and name_key is NOT NULL, so omitting it is
+        // 23502. Neither is a refusal any caller of this seeder is testing for; both would surface as
+        // a seeding failure attributed to whatever the test was actually about.
+        command.Parameters.AddWithValue("name", SealedNarrative.Name(name).Envelope.ToArray());
+        command.Parameters.AddWithValue("name_key", SealedNarrative.BlindIndex(name).ToArray());
         command.Parameters.AddWithValue("created_at_utc", DateTime.UtcNow);
 
         if (await command.ExecuteNonQueryAsync() is not 1)

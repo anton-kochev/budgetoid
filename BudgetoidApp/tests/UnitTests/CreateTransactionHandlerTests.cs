@@ -5,6 +5,7 @@ using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Common;
 using Microsoft.Extensions.Time.Testing;
+using TestSupport;
 using UnitTests.Fakes;
 
 namespace UnitTests;
@@ -28,7 +29,11 @@ public sealed class CreateTransactionHandlerTests
         await Assert.That(stored.BudgetId).IsEqualTo(fixture.BudgetId);
         await Assert.That(dto.Id).IsEqualTo(stored.Id);
         await Assert.That(dto.AccountId).IsEqualTo(fixture.Account.Id);
-        await Assert.That(dto.AccountName).IsEqualTo("Checking");
+        // The account's name crosses this DTO as the base64url envelope the accounts column holds, not
+        // as text — the enrichment still reaches the right account, which is what this line is for, but
+        // it can no longer say what that account is called.
+        await Assert.That(dto.AccountName)
+            .IsEqualTo(Base64UrlText.Encode(SealedNarrative.Name("Checking").Envelope.Span));
         await Assert.That(dto.CurrencyCode).IsEqualTo("USD");
         await Assert.That(dto.CurrencySymbol).IsEqualTo("$");
         await Assert.That(dto.CategoryId).IsNull();

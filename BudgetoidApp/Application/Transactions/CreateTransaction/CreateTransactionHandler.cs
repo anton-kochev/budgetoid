@@ -1,5 +1,6 @@
 using Application.Abstractions;
 using Application.Currencies;
+using Application.Passkeys;
 using Domain.Accounts;
 using Domain.Categories;
 using Domain.CategoryGroups;
@@ -84,9 +85,15 @@ public sealed class CreateTransactionHandler(
 
             await repository.AddAsync(transaction, token);
 
+            // THIS BROKE BECAUSE IT WAS ALWAYS A READ OF THE ACCOUNT'S NAME, AND THE FIX IS NOT TO OPEN
+            // IT. accounts.name is an AEAD envelope this server holds no key for; what the row carries is
+            // handed on untouched, in the alphabet every binary member of this API crosses JSON in, and
+            // the browser that asked for it is what turns it back into a name. Decoding here would need a
+            // key on this side, which is the design the product exists to avoid — and a placeholder
+            // string would be a lie the screen renders.
             return TransactionDto.FromTransaction(
                 transaction,
-                account.Name,
+                PasskeyEncoding.Encode(account.Name.Envelope.Span),
                 account.CurrencyCode,
                 currency.Symbol,
                 payee?.Name,
