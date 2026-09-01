@@ -227,7 +227,19 @@ public sealed class AppRoleGrantMatrixTests
         ("accounts", ["name", "name_key", "type", "opening_balance"]),
         ("category_groups", ["name", "description", "position"]),
         ("categories", ["name", "description", "position", "category_group_id"]),
-        ("payees", ["name"]),
+        // The same pair, on the same terms, and it is ONE entry rather than two facts sitting beside
+        // each other for the reason the accounts line above states: Payee.Rename takes an IndexedName
+        // and offers no spelling for half a name, so a rename is one UPDATE naming both columns and a
+        // grant covering one of them refuses the whole statement with 42501.
+        //
+        // What differs is what a lost rename costs here. On accounts it is a feature that stops
+        // working. On payees the deduplication of counterparties runs through this column pair, so a
+        // half-grant that somehow admitted only `name` would leave rows indexed under names they no
+        // longer hold — a payee the client can neither find nor re-create. PostgreSQL refuses the
+        // statement outright rather than half-applying it, which is what keeps that state unreachable
+        // from here; the reason it is written down is that the ONE-COLUMN PROBE is what hid this exact
+        // defect on accounts, and TenancySchemaTests now spells both columns out for that reason.
+        ("payees", ["name", "name_key"]),
         ("transactions", ["amount", "date", "description", "account_id", "payee_id", "category_id"]),
     ];
 

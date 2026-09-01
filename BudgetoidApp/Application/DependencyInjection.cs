@@ -23,6 +23,8 @@ using Application.Passkeys.CompleteAssertion;
 using Application.Passkeys.CompleteRegistration;
 using Application.Passkeys.Reauthentication;
 using Application.Passkeys.RevokePasskey;
+using Application.Payees.CreatePayee;
+using Application.Payees.GetPayee;
 using Application.Payees.GetPayees;
 using Application.Payees.RenamePayee;
 using Application.RecoveryCodes.CountRecoveryCodes;
@@ -73,7 +75,9 @@ public static class DependencyInjection
         services.AddScoped<GetTransactionHandler>();
         services.AddScoped<UpdateTransactionHandler>();
         services.AddScoped<DeleteTransactionHandler>();
+        services.AddScoped<CreatePayeeHandler>();
         services.AddScoped<GetPayeesHandler>();
+        services.AddScoped<GetPayeeHandler>();
         services.AddScoped<RenamePayeeHandler>();
         services.AddScoped<EraseAccountHandler>();
         services.AddScoped<ExportDataHandler>();

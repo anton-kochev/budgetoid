@@ -14,8 +14,9 @@
 ## Purpose
 
 A **Transaction** is a signed amount recorded against one Account on a date. It can optionally name
-a **Payee** and select a **Category**. What a transaction does with a payee — supply a name and get
-back a row — is documented here; everything about the payee itself is in [payees.md](payees.md).
+a **Payee** and select a **Category**. What a transaction does with a payee — name one that already
+exists, by its id — is documented here; everything about the payee itself, including the separate
+request that brings one into existence, is in [payees.md](payees.md).
 
 ## Key Entities
 
@@ -54,6 +55,18 @@ erDiagram
   - **Enforced in**: `CreateTransactionHandler` and `UpdateTransactionHandler` each resolve it
     through the budget-filtered repository and report "Account was not found." otherwise; the
     composite `(account_id, budget_id)` foreign key is what holds beneath them.
+
+- **A supplied Payee must exist and belong to the ambient budget.** This is new: while the payee
+  arrived as a name there was nothing to resolve, because a miss created the row.
+  - **Why**: the counterparty is part of what a recorded movement says, so a payee from another pool
+    would file this budget's spending against a party it never dealt with. The check has to be a
+    *read*, not a catch: without it the id reaches the composite `(payee_id, budget_id)` foreign key,
+    and `TransactionRepository` translates no payee violation, so a bad request would be reported as
+    a 500.
+  - **Enforced in**: `CreateTransactionHandler` and `UpdateTransactionHandler` each resolve it
+    through the budget-filtered repository, above every mutation, and report "Payee was not found."
+    otherwise — indistinguishable from an id matching no row anywhere, which is the tenancy answer
+    [budgets.md](budgets.md#must-not) owns. The composite foreign key is what holds beneath them.
 
 - **A supplied Category must exist and belong to the ambient budget.**
   - **Why**: Categorization is what the money picture is grouped by, so a category from another pool
@@ -162,21 +175,30 @@ erDiagram
 
 ---
 
-- **Rule**: A Transaction may name a Payee or none, and the Payee is supplied as a free-text
-  **name** while the Category is supplied as an existing **id**.
-- **Why**: The asymmetry follows from when each is chosen. The counterparty is typed mid-entry, and
-  making the user create one first would slow down the entry the model most needs to keep fast; the
-  category is picked from a list they arranged deliberately, where a name would be a second way to
-  say something they can already point at. Both are optional for the same reason a Transaction may
-  be uncategorized: recording that money moved must never be blocked on describing it.
-- **Enforced in**: `CreateTransactionCommand` carries a nullable `PayeeName` and a nullable
+- **Rule**: A Transaction may name a Payee or none, and **both the Payee and the Category are
+  supplied as existing ids.** The asymmetry this rule used to describe — a free-text payee name
+  against a category id — is gone.
+- **Why**: it was never a preference about entry speed alone; it rested on the server being able to
+  turn a typed name into a row. It cannot: `payees.name` is an AEAD envelope drawn under a fresh
+  nonce, so two seals of one name are different bytes, and the digest that is stable is computed
+  under a key that lives in a browser. A name arriving here is a value nothing on this side can
+  match, so what arrives is the row the caller already created through `POST /api/payees`. Both are
+  optional for the same reason a Transaction may be uncategorized: recording that money moved must
+  never be blocked on describing it — and the entry stays fast because the browser resolves the
+  counterparty against its own decrypted list, not because the server guesses.
+- **Enforced in**: `CreateTransactionCommand` carries a nullable `PayeeId` and a nullable
   `CategoryId`; `Transaction.PayeeId` is nullable and set only through `AssignPayee`.
-  `CreateTransactionHandler` turns the name into a row by calling
-  `IPayeeRepository.GetOrCreateAsync` in the ambient budget. What that call does with the name —
-  trimming, case-insensitive matching, what a blank name means, and what happens when two requests
-  race — is documented in [payees.md](payees.md#business-rules--invariants).
-- **Example**: a transaction submitted with `payeeName: "tesco"` comes back carrying the `payeeId`
-  and the stored spelling `Tesco` of the payee that already existed.
+  `CreateTransactionHandler` resolves the id through the `BudgetIsolation`-filtered
+  `IPayeeRepository` **above** the write and reports "Payee was not found." on a miss — the same
+  shape the account and the category use, and the reason a cross-budget id is a 400 rather than a
+  `23503` becoming a 500. It writes nothing to `payees`; what a payee is and how one comes to exist
+  is documented in [payees.md](payees.md#business-rules--invariants).
+- **Example**: a transaction submitted with the `payeeId` of a payee created a moment earlier comes
+  back carrying that id and that payee's **sealed** name.
+- **Counterexample**: keeping a `payeeName` member and resolving it here. There is no lookup it
+  could perform, so the only implementations available are one that creates a payee unconditionally
+  — a second creating path, and a duplicate per transaction — and one that compares ciphertext
+  against ciphertext, which answers "no such payee" for a payee sitting in the table.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -198,14 +220,33 @@ erDiagram
 
 - **Rule**: Transaction responses are self-contained for display — they carry `CategoryId`,
   `CategoryName`, `CategoryGroupId` and `CategoryGroupName`, plus the account's name, currency code
-  and symbol.
+  and symbol. **Two of the four names are envelopes and two are still text, and no rule covers all
+  four.**
 - **Why**: A transaction list has to render an amount and its context without the client stitching
   together three other endpoints, and the projection is from current data so a rename shows up
-  immediately.
+  immediately. What the sealing changed is not the shape but what two of the members mean:
+  `AccountName` and `PayeeName` are still typed `string` and no longer hold names — each is its
+  column's AEAD envelope as unpadded base64url — while `CategoryName` and `CategoryGroupName` are
+  readable text, because those columns are not sealed yet. Folding the four into one rule is wrong in
+  both directions: decoding a category name as base64url, and rendering a payee name as a caption.
+  **Each envelope is also bound to a different row than the response is about.** Associated data is
+  rebuilt from wherever a ciphertext was found, so opening `PayeeName` needs the binding for
+  `payees.name` under the **payee's** row id — which the client rebuilds from `PayeeId` — and
+  `AccountName` needs `accounts.name` under `AccountId`. A client reaching for the transaction's own
+  binding gets an authentication failure rather than garbage, with nothing naming the cause; each
+  envelope travels beside the identifier it was sealed against, which is why both identifiers are on
+  the wire.
 - **Enforced in**: `TransactionDto.FromTransaction`, fed by the handler's resolved account,
-  currency, payee, category and category group.
-- **Example**: renaming an account is visible in the transaction list on the next read, because the
-  name is joined rather than snapshotted.
+  currency, payee, category and category group. Its two sealed parameters are typed `string` like
+  the two text ones, so nothing in the signature tells a caller which is which — every caller
+  encodes through `PasskeyEncoding.Encode`, the one alphabet every binary member of this API crosses
+  JSON in, and never `System.Text.Json`'s own `byte[]` handling, which emits padded standard base64
+  the client's strict decoder refuses. `TransactionReadService` carries both sealed names **out** of
+  its `Select` and encodes them once the row has materialised, because a value converter is not
+  something the provider can translate a call over.
+- **Example**: renaming a payee is visible in the transaction list on the next read, because the
+  name is joined rather than snapshotted — and what appears is the new envelope, which only a
+  browser holding the account's content key can turn back into a name.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -213,7 +254,7 @@ erDiagram
 - **Rule**: A Transaction is corrected **in place**, by a partial edit that keeps its identity.
   Every mutable field carries three states: **absent** leaves the stored value alone, **present with
   a value** replaces it, and **present and null** clears it. The mutable fields are `amount`,
-  `date`, `description`, `accountId`, `payeeName` and `categoryId`; the budget, the `id` and
+  `date`, `description`, `accountId`, `payeeId` and `categoryId`; the budget, the `id` and
   `CreatedAtUtc` are not accepted at all. Success is 204 No Content, and an id belonging to another
   budget answers 404 exactly as an id that never existed does.
 - **Why**: a partial edit has to answer a question a whole-row replace never asks — what does an
@@ -252,7 +293,7 @@ erDiagram
 ---
 
 - **Rule**: Clearing a field and not mentioning it are different requests, and only three of the six
-  mutable fields can be cleared. `description`, `payeeName` and `categoryId` accept an explicit null
+  mutable fields can be cleared. `description`, `payeeId` and `categoryId` accept an explicit null
   and empty out. `amount`, `date` and `accountId` have no empty state: an explicit null for one of
   them is a malformed request answered with 400, not an instruction to empty the field.
 - **Why**: a transaction without an amount, a date or an account is not a transaction — it records
@@ -269,7 +310,7 @@ erDiagram
   `UpdateTransactionHandler` mentions the case, and under
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) none should: the type
   system is the lowest layer that can state this declaratively.
-- **Example**: `{"description": null}` stores a null description; `{"payeeName": null}` and
+- **Example**: `{"description": null}` stores a null description; `{"payeeId": null}` and
   `{"categoryId": null}` detach the payee and the category. `{"amount": null}` is a 400 naming the
   field, and so are `{"date": null}` and `{"accountId": null}`.
 - **Counterexample**: declaring all six over nullable types and treating a null amount as a clear.
@@ -312,29 +353,35 @@ erDiagram
 
 ---
 
-- **Rule**: On an edit the Payee is supplied **by name** with the same find-or-create as on
-  creation, so an edit can bring a new Payee into existence. A blank or whitespace-only name means
-  **no payee** — the same as an explicit null — rather than a payee named with whitespace.
-- **Why**: it is the same field, filled in the same way, and an edit is where a mistyped
-  counterparty is corrected. Resolving "Tesco" differently according to which verb carried it would
-  leave a corrected transaction pointing at a different row from an identical one typed right the
-  first time — exactly the duplication a shared payee row exists to prevent. The blank case keeps
-  meaning what it means on creation for the same reason it means it there.
-- **Enforced in**: **application-owned**, and nothing lower can hold it — "no payee" and "a rejected
-  blank name" are indistinguishable to a column. `UpdateTransactionHandler` treats a set `PayeeName`
-  that is null or whitespace as `Transaction.ClearPayee`, and any other value as
-  `IPayeeRepository.GetOrCreateAsync` followed by `Transaction.AssignPayee`; an absent `PayeeName`
-  leaves `PayeeId` alone. Because that call can insert a row, it runs inside the handler's
-  `ITransactionalExecutor` boundary. Trimming, case-insensitive matching and what happens when two
-  requests race are in [payees.md](payees.md#business-rules--invariants).
-- **Example**: editing a transaction with `payeeName: "  tesco "` attaches the existing `Tesco` row
-  and writes no new payee; `payeeName: "Tescoo"` on a budget that has never seen that spelling mints
-  a second payee, permanently. `payeeName: null` and `payeeName: "   "` both leave the transaction
-  with no payee and write nothing to `payees`. Omitting `payeeName` leaves the existing payee
-  attached.
-- **Counterexample**: passing a blank name through to `GetOrCreateAsync`. `Payee.Create` throws on
-  the empty name, so clearing the counterparty comes back a 400 naming a field the person
-  deliberately emptied.
+- **Rule**: On an edit the Payee is supplied **by id**, exactly as on creation, and **an edit brings
+  no Payee into existence.** The three states are the whole of the semantics: absent leaves whatever
+  payee the transaction already names, present-and-null detaches it, present with an id attaches the
+  payee that id names. **There is no blank branch**, because there is no blank id.
+- **Why**: it is the same field, filled the same way, and resolving a counterparty differently
+  according to which verb carried it would leave a corrected transaction pointing at a different row
+  from an identical one typed right the first time. What went with the name is the fourth reading it
+  carried: a blank or whitespace-only string used to mean "no payee", because a name was something
+  somebody typed and an empty one identified nothing. An identifier has no empty spelling, so the
+  clear is expressed by the explicit null and by nothing else — which removes an ambiguity rather
+  than a capability.
+- **Enforced in**: **application- and transport-owned**, and it falls out of the type as much as
+  from a branch. `UpdateTransactionCommand.PayeeId` is an `Optional<Guid?>`;
+  `UpdateTransactionHandler` resolves a present, non-null id through the `BudgetIsolation`-filtered
+  `IPayeeRepository` **above every mutation**, reporting "Payee was not found." on a miss, and then
+  branches on `IsSet` **outside** and the value **inside** — `ClearPayee` when the member was
+  present and null, `AssignPayee` otherwise. That order is the contract rather than a style: tested
+  the other way round, present-and-null falls through with the absent case, the payee is silently
+  left attached, and the one request that asks for a counterparty to be detached does nothing and
+  answers 204.
+- **Example**: `{"payeeId": "<an existing payee>"}` repoints the transaction at that payee and
+  writes nothing to `payees`. `{"payeeId": null}` detaches whatever payee it had. Omitting `payeeId`
+  leaves the existing payee attached. An id belonging to another budget answers 400 "Payee was not
+  found.", byte for byte the answer a randomly generated GUID gets.
+- **Counterexample**: dropping the filtered read and letting the id reach the database. The
+  composite `(payee_id, budget_id)` foreign key still refuses it, but `TransactionRepository.AddAsync`
+  carries no `catch` at all and `UpdateAsync` filters `23503` by constraint name for the account and
+  category keys only — so a payee violation reaches the catch-all handler and a bad request is
+  reported as a 500.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -394,14 +441,16 @@ ELSE IF the account's currency code has no seeded Currency row
 ELSE
   Transaction.Create validates the amount's precision against that currency's minor unit,
     its magnitude, and the description length
+  IF a PayeeId was supplied
+    IF it does not resolve in the ambient budget
+      THEN validation error "Payee was not found."        ← also the cross-budget answer
+    ELSE assign it
   IF a CategoryId was supplied
     IF it does not resolve in the ambient budget
       THEN validation error "Category was not found."
     ELSE resolve its Category Group and assign the category
-  ── the database transaction opens here ──               ← reads and validation above, writes below
-  IF a PayeeName was supplied and is not blank
-    THEN find-or-create the payee in the ambient budget and assign it
-  THEN persist and return the self-contained response
+  THEN persist and return the self-contained response     ← one SaveChanges, and no database
+                                                            transaction: there is only one write
 ```
 
 The category and payee steps are independent — either, both, or neither may run.
@@ -417,19 +466,21 @@ ELSE
     THEN validation error "Account was not found."        ← also the cross-budget answer
   ELSE IF the account's currency code has no seeded Currency row
     THEN InvalidOperationException                        ← unreachable; the currency FK forbids it
+  IF PayeeId was mentioned with a value
+    IF it does not resolve in the ambient budget
+      THEN validation error "Payee was not found."        ← also the cross-budget answer
   IF CategoryId was mentioned with a value
     IF it does not resolve in the ambient budget
       THEN validation error "Category was not found."
   Transaction.Update lays the mentioned fields over the stored ones and re-validates the amount's
     precision against the target account's currency, its magnitude, and the description length
+  IF PayeeId was mentioned                                ← IsSet outside, the value inside; the
+    THEN assign the resolved payee, or clear it if the      other order drops the clear silently
+         value was null
   IF CategoryId was mentioned
     THEN assign the resolved category, or clear it if the value was null
-  ── the database transaction opens here ──               ← reads and validation above, writes below
-  IF PayeeName was mentioned
-    IF it is null, blank or whitespace-only
-      THEN clear the payee
-    ELSE find-or-create the payee in the ambient budget and assign it
-  THEN save and return 204 No Content
+  THEN save and return 204 No Content                     ← one SaveChanges, and no database
+                                                            transaction: there is only one write
 ```
 
 Every field step is independent — any subset may run, and a request that mentions no field at all is
@@ -458,19 +509,26 @@ ELSE
   Deleting the last Transaction filed under a Category, or editing it onto another Category or none,
   clears the first refusal the same way, and emptying the Category out of its group clears the
   second.
-- **[Payees](payees.md)**: optional counterparty, and the only thing a Transaction can bring into
-  existence. Recording a transaction and editing one are the two writers of the `payees` table, both
-  through the same find-or-create, and a Transaction that references a payee is what makes that
-  payee undeletable. The relationship is one-way: neither deleting the Transaction nor editing it to
-  name a different counterparty removes the payee it created, and nothing else will either.
+- **[Payees](payees.md)**: optional counterparty, **named by id and never created here.** Neither
+  handler writes to `payees` any more — the server cannot resolve a name to a row, so a payee is
+  created by `POST /api/payees` before the transaction that names it. A Transaction that references
+  a payee is what makes that payee undeletable, and the relationship is one-way: neither deleting
+  the Transaction nor editing it to name a different counterparty removes the payee, and nothing
+  else will either. The payee's name on a transaction response is that payee's **envelope**, bound
+  to the payee's own row id.
 - **[Budgets](budgets.md)**: Transactions, Payees, Accounts, Categories and Category Groups are
   budget-filtered, and the `transactions → accounts | categories | payees` references are composite
   foreign keys so PostgreSQL, not only the query filter, refuses a cross-budget reference. Both
   rules and their reasoning live in [budgets.md](budgets.md#constraints). A Transaction's existence
   is also what makes its Budget undeletable, unlike the Budget's other owned entities — the
   budget-level half of the never-as-a-side-effect rule stated under [Constraints](#must-not) above.
-- **Angular client**: `/app/transactions` records and edits entries (`TransactionsComponent`). It
-  owns one rule outright rather than restating one: the amount input must require a value rather
+- **Angular client**: `/app/transactions` records and edits entries (`TransactionsComponent`), and
+  **it has not been moved onto the payee-by-id contract, so it cannot write at all** —
+  `transactions-api.service.ts` still declares `payeeName` on the create request, which the API now
+  refuses by name with a 400, and renders the response's `payeeName` straight into the list where it
+  is base64url of an envelope. That is a gap, named here rather than described as if it worked. It
+  also owns one rule outright rather than restating one:
+  the amount input must require a value rather
   than default to `0`, and an edit form must omit a field it did not collect rather than send a
   default — there is no layer beneath it that can tell a deliberate zero from an untouched input.
   See [Edge Cases & Known Gotchas](#edge-cases--known-gotchas) below.
@@ -488,11 +546,13 @@ ELSE
   target currency in the same request, which the three-state contract allows — but the error message
   does not say so, and a client that surfaces it against the amount input will point the user at a
   field they never touched.
-- **A Payee can be stranded by two different acts, and both are permanent.** Deleting a Transaction
+- **A Payee can be stranded by three different acts, and all are permanent.** Deleting a Transaction
   strands the payee it named; so does editing a Transaction to name a different counterparty, or
-  none. The payee row stays behind either way and nothing removes it, so a counterparty reached by
-  either route sits in the autocomplete list forever. These are the two routes to the state
-  [payees.md](payees.md#edge-cases--known-gotchas) describes.
+  none; and so does a `POST /api/payees` whose transaction never lands, which is new and is the one
+  reachable without any transaction ever existing. The payee row stays behind in every case and
+  nothing removes it — the role holds no `DELETE` on that table — so a counterparty reached by any of
+  the three sits in the list forever. [payees.md](payees.md#edge-cases--known-gotchas) argues why the
+  third is accepted rather than answered with a compensating delete.
 - **The account and category delete guards are racy in both directions, and their foreign-key
   catches are what actually holds.** `DeleteAccountHandler` and `DeleteCategoryHandler` ask
   `HasTransactionsAsync` before removing the row, and either answer can be stale by the time the
@@ -512,15 +572,31 @@ ELSE
   omit the field it did not collect rather than send a default.** That is the right layer — the rule
   is about the interaction, not about what a ledger may hold — but it is also the only layer holding
   it.
-- **A write that names a new payee writes two rows, and both go in one database transaction.** Both
-  handlers run the payee find-or-create and the transaction save inside `ITransactionalExecutor`, so
-  a failure between them commits neither. The boundary is load-bearing rather than tidy: payees have
-  no delete path, so a payee committed without the write that named it would be permanent litter,
-  and a client disconnect is enough to reach that point — the handlers' `CancellationToken` is the
-  request's `RequestAborted`. In both it starts *after* the account, currency and category lookups,
-  which commit nothing and would only hold the connection and its locks longer. Do not narrow
-  either, and do not widen either to the whole handler; the reasoning is in
-  [ADR 0003](../decisions/0003-wrap-multi-repository-writes-in-one-transaction.md).
+- **Neither handler opens a database transaction, because each has exactly one write left.** Both
+  used to commit two rows — a payee found-or-created from a name, and the transaction that needed it
+  — inside `ITransactionalExecutor`, so a failure between them committed neither. The payee write is
+  gone: the server can no longer resolve a name to a row, so a payee is created by a request of its
+  own, and everything above each handler's single `SaveChangesAsync` is reads and domain validation.
+  An `ITransactionalExecutor` around one save commits exactly what the save commits and reads to the
+  next author as though something here needed atomicity. **What the boundary used to prevent is now
+  reachable from the other side, and it is accepted**: a successful `POST /api/payees` followed by a
+  failing `POST /api/transactions` leaves a payee no transaction names, on a table with no `DELETE`
+  grant. The alternatives and why each is worse are argued in
+  [payees.md](payees.md#edge-cases--known-gotchas). Do not re-add a boundary here to "restore" the
+  guarantee: the two writes are in two requests, so no server-side transaction can span them.
+
+- **A transaction body still carrying `payeeName` is refused with a 400, and the Angular form sends
+  exactly that shape.** The member no longer binds, and **both** transaction wire shapes —
+  `CreateTransactionCommand` and the `UpdateTransactionRequest` the `PATCH` binds — carry
+  `[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]`, so `System.Text.Json` refuses
+  a member it cannot map rather than dropping it. The attribute is **per-type**, reaching the shape
+  it sits on and no other, which is why it is on those two and on nothing else: the payee routes'
+  own shapes still ignore an unmappable member, because that is a decision each shape makes for
+  itself, and the API's shared JSON options carry no `UnmappedMemberHandling` at all. What it costs
+  is that `/app/transactions` cannot write until the client sends `payeeId` — chosen, because a
+  screen that fails visibly beats a ledger that quietly loses who the money went to. The caller gets
+  a bare 400 dressed as `application/problem+json`, naming no field; the member is named in the
+  server log. See [payees.md](payees.md#edge-cases--known-gotchas).
 - Renaming a Category or Category Group, or moving a Category, immediately changes historical
   Transaction display; see [categories.md](categories.md#edge-cases--known-gotchas).
 - A missing Currency row for an Account fails loudly rather than guessing a symbol, but the

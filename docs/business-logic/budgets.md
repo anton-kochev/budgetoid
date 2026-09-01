@@ -127,7 +127,7 @@ erDiagram
     rather than a `REVOKE`, because PostgreSQL column privileges are additive; see
     [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md). `BudgetId` is stamped at
     creation from `IBudgetContext` by `CreateAccountHandler`, `CreateCategoryGroupHandler`,
-    `CreateCategoryHandler`, `CreateTransactionHandler` and `PayeeRepository.GetOrCreateAsync`.
+    `CreateCategoryHandler`, `CreateTransactionHandler` and `CreatePayeeHandler`.
     There is no `UserId` on any of the five entities — `Budget.UserId` is the only owner link in the
     schema.
 
@@ -155,25 +155,33 @@ erDiagram
     different budgets is normal. Scoping uniqueness any wider would make one pool's naming constrain
     another's.
   - **Enforced in**: a unique index per budget on all four, over **two different columns**, because
-    one of the four has been sealed and three have not.
-    - `accounts` is the sealed one. `IX_accounts_budget_id_name_key` is unique over
-      `(budget_id, name_key)` — the **blind index**, not the name. Uniqueness over `name` would
-      enforce nothing there: every seal draws a fresh nonce, so two rows holding one name hold
-      different bytes. Case folding did not disappear with the collation, which `bytea` cannot
-      carry; it moved into the normalization the client applies before it computes the index, and
-      **nothing on this side can check that it happened**. See
-      [accounts.md](accounts.md#business-rules--invariants).
-    - `category_groups`, `categories` and `payees` still hold plaintext: each configuration puts
-      `name` on the `case_insensitive` collation and indexes `(budget_id, name)`, so PostgreSQL
-      folds the case itself.
+    two of the four have been sealed and two have not.
+    - `accounts` and `payees` are the sealed ones. `IX_accounts_budget_id_name_key` and
+      `IX_payees_budget_id_name_key` are unique over `(budget_id, name_key)` — the **blind index**,
+      not the name. Uniqueness over `name` would enforce nothing there: every seal draws a fresh
+      nonce, so two rows holding one name hold different bytes. Case folding did not disappear with
+      the collation, which `bytea` cannot carry; it moved into the normalization the client applies
+      before it computes the index, and **nothing on this side can check that it happened**. See
+      [accounts.md](accounts.md#business-rules--invariants) and
+      [payees.md](payees.md#business-rules--invariants).
+    - `category_groups` and `categories` still hold plaintext: each configuration puts `name` on the
+      `case_insensitive` collation and indexes `(budget_id, name)`, so PostgreSQL folds the case
+      itself.
 
-    What happens on a collision differs by entity and is unaffected by which column the index is
-    over: `AccountRepository`, `CategoryRepository` and `CategoryGroupRepository` translate the
-    unique violation into a validation error the user has to resolve, while `PayeeRepository`
-    swallows it and re-reads, because for a find-or-create payee a name collision is the hit rather
-    than a mistake (see [payees.md](payees.md#business-rules--invariants)). What *is* affected is
-    who can read the collision: on `accounts`, which two rows matched is a question only a browser
-    holding the account's index key can answer.
+    What happens on a collision differs by entity and by verb, and is unaffected by which column the
+    index is over. `AccountRepository`, `CategoryRepository` and `CategoryGroupRepository` translate
+    the unique violation into a validation error the user has to resolve, and so does
+    `PayeeRepository` **on a rename**; on a payee **create** the same index produces a 409 instead.
+    **Those four answers are one rule with two inputs — the verb, and who chose the name — and not
+    three agreements with an exception.** A name a person typed into a form is a field they can
+    correct, so the answer names it; a payee create's name was resolved by the client against a list
+    it decrypted, so a collision means that list was stale and the remedy is to re-read and adopt the
+    row already there, which no field-keyed 400 has anywhere to put. The create-against-rename half
+    is argued in [payees.md](payees.md#business-rules--invariants); the payee-against-account half,
+    which is the one a reader meets first in this paragraph, is argued in the
+    [decision log](_decision-log.md). What *is* affected is who can read the collision: on the two
+    sealed tables, which rows matched is a question only a browser holding the account's index key
+    can answer.
 
 - **Ordering is per budget.**
   - **Why**: position is a deliberate personal arrangement of one pool's categories. Order that
@@ -231,7 +239,10 @@ erDiagram
     event budget is the event's payee, and merging them would put the event's spending history into
     the user's own autocomplete and totals.
   - **Enforced in**: `Payee` carries a required `BudgetId`, is covered by the `BudgetIsolation`
-    filter, and `PayeeRepository.GetOrCreateAsync` find-or-creates within the ambient budget only.
+    filter, and `CreatePayeeHandler` — the one path that inserts a payee — stamps
+    `IBudgetContext.BudgetId` and accepts no budget from the caller. Beneath both, the
+    `budget_isolation` policy's `WITH CHECK` refuses an insert naming any budget but the session's,
+    which is what makes the rule hold for a write path that does not go through the handler.
 
 - **A route MUST NOT carry a budget identifier.**
   - **Why**: the budget is a singular ambient resource, resolved server-side from the authenticated
@@ -337,11 +348,12 @@ erDiagram
   chosen**: `case_insensitive` is a text collation and `bytea` is not a collatable type — measured,
   declaring one raises `collations are not supported by type bytea`. What could bring the refusal
   back is a **blind index**, the keyed fingerprint that lets a server holding no plaintext see that
-  two names are equal. **That mechanism now exists and is in use one table over**:
-  `accounts.name_key` is the first of them, and `IX_accounts_budget_id_name_key` is this same
-  uniqueness rule surviving this same change, by the same mechanism, over bytes the database cannot
-  interpret ([accounts.md](accounts.md#must)). So the exclusion here has been re-read against a
-  working example rather than against an idea nobody tried, and it stands: the requirement
+  two names are equal. **That mechanism now exists and is in use on two tables**:
+  `accounts.name_key` is the first and `payees.name_key` the second, and each unique index over
+  `(budget_id, name_key)` is this same uniqueness rule surviving this same change, by the same
+  mechanism, over bytes the database cannot interpret ([accounts.md](accounts.md#must),
+  [payees.md](payees.md#must)). So the exclusion here has been re-read against two working examples
+  rather than against an idea nobody tried, and it stands: the requirement
   blind-indexes the name columns on `accounts`, `categories`, `category_groups` and `payees`, and
   leaves this one out. There is no later slice in which this comes back, and the honest word for it
   is surrendered.

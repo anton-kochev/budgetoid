@@ -496,9 +496,25 @@ GRANT UPDATE (name, description, position, category_group_id) ON categories TO b
 
 -- payees: no DELETE — no delete path exists. budget_id and created_at_utc immutable by
 -- omission.
+--
+-- name and name_key are the pair the accounts block above argues at length; that argument is not
+-- restated here, only pointed at, because it is a rule about blind-indexed name columns generally
+-- and a second copy is a second thing to correct the day it changes. This table is the second
+-- column to want it, and it wanted it in exactly the live form: Payee.Rename assigns both
+-- properties from a single IndexedName, EF emits one UPDATE naming both columns, and a (name)-only
+-- list refuses the whole statement with 42501 — renaming a payee would be impossible for this
+-- role. That is the defect that shipped on accounts and that no test saw, because the case
+-- exercising renames issued a one-column UPDATE and so reported a column privilege while claiming
+-- to report an operation.
+--
+-- SELECT and INSERT are deliberately left table-wide, which is why name_key needed no edit there:
+-- PostgreSQL's table-level privilege covers every column, including ones added later. Only the
+-- column-list grant had to move. Do not "simplify" this UPDATE to table-wide either — budget_id
+-- and created_at_utc are immutable BY OMISSION from this list, and column privileges are additive,
+-- so a REVOKE cannot take back what a table-wide grant handed out.
 REVOKE ALL ON payees FROM budgetoid_app;
 GRANT SELECT, INSERT ON payees TO budgetoid_app;
-GRANT UPDATE (name) ON payees TO budgetoid_app;
+GRANT UPDATE (name, name_key) ON payees TO budgetoid_app;
 
 -- transactions: budget_id (rule X1) and created_at_utc immutable by omission. The updatable
 -- references (account_id, payee_id, category_id) are each half of a composite foreign key

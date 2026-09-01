@@ -3,6 +3,7 @@ using Domain.Accounts;
 using Domain.Common;
 using Domain.Security;
 using TestSupport;
+using TUnit.Assertions.Enums;
 
 namespace UnitTests;
 
@@ -56,9 +57,19 @@ public sealed class AccountTests
         // the value and the trim are gone: the column holds an envelope over text this server has never
         // seen, so there is no string to compare and no whitespace to strip. What survives is that the
         // factory stored the value it was handed, unaltered, in both columns.
+        //
+        // CollectionOrdering.Matching IS PART OF THE ASSERTION, everywhere in this file. IsEqualTo over
+        // two byte[] compares REFERENCES and fails even when the contents and the order agree, and
+        // TUnit's failure message names IsEquivalentTo as the fix — whose default is
+        // CollectionOrdering.Any, so the bare overload passes on every permutation of an envelope's or a
+        // digest's bytes. Order is the whole of what a ciphertext is: a factory that permuted either
+        // half would satisfy the bare overload and produce right-width, wrong-value bytes that no key
+        // opens and no recomputation on this side can notice.
         await Assert.That(account.BudgetId).IsEqualTo(budgetId);
-        await Assert.That(account.Name.Envelope.ToArray()).IsEquivalentTo(name.Name.Envelope.ToArray());
-        await Assert.That(account.NameKey.ToArray()).IsEquivalentTo(name.BlindIndex.ToArray());
+        await Assert.That(account.Name.Envelope.ToArray())
+            .IsEquivalentTo(name.Name.Envelope.ToArray(), CollectionOrdering.Matching);
+        await Assert.That(account.NameKey.ToArray())
+            .IsEquivalentTo(name.BlindIndex.ToArray(), CollectionOrdering.Matching);
         await Assert.That(account.Type).IsEqualTo(AccountType.Checking);
         await Assert.That(account.OpeningBalance).IsEqualTo(100.25m);
         await Assert.That(account.CreatedAtUtc).IsEqualTo(createdAtUtc);
@@ -370,10 +381,16 @@ public sealed class AccountTests
         // miss it, a search for "Checking" would return it, and a rename onto a name already taken would
         // be accepted. Nothing reads back wrong and no constraint is violated, because recomputing
         // either half needs the account's index key, which lives in a browser.
+        //
+        // CollectionOrdering.Matching on the two positive assertions, for the reason
+        // Create_WithValidInput_StoresBothHalvesOfTheNameTypeOpeningBalanceAndCreatedAtUtc states. The
+        // NEGATIVE one below
+        // deliberately keeps the default: CollectionOrdering.Any there means "not even a permutation of
+        // the old index", which is the stronger claim and the one worth making.
         await Assert.That(account.Name.Envelope.ToArray())
-            .IsEquivalentTo(SealedNarrative.Name("Savings").Envelope.ToArray());
+            .IsEquivalentTo(SealedNarrative.Name("Savings").Envelope.ToArray(), CollectionOrdering.Matching);
         await Assert.That(account.NameKey.ToArray())
-            .IsEquivalentTo(SealedNarrative.BlindIndex("Savings").ToArray());
+            .IsEquivalentTo(SealedNarrative.BlindIndex("Savings").ToArray(), CollectionOrdering.Matching);
         await Assert.That(account.NameKey.ToArray())
             .IsNotEquivalentTo(SealedNarrative.BlindIndex("Checking").ToArray());
         await Assert.That(account.Type).IsEqualTo(AccountType.Savings);
@@ -405,11 +422,14 @@ public sealed class AccountTests
         // Assert — BOTH HALVES OF THE NAME ARE STILL THE OLD ONES. Update validates before it assigns,
         // and a version that assigned the name first would leave a row whose name says "Savings" and
         // whose type, balance and index say otherwise.
+        //
+        // CollectionOrdering.Matching for the reason stated on
+        // Create_WithValidInput_StoresBothHalvesOfTheNameTypeOpeningBalanceAndCreatedAtUtc.
         await Assert.That(exception.Errors.ContainsKey("Type")).IsTrue();
         await Assert.That(account.Name.Envelope.ToArray())
-            .IsEquivalentTo(SealedNarrative.Name("Checking").Envelope.ToArray());
+            .IsEquivalentTo(SealedNarrative.Name("Checking").Envelope.ToArray(), CollectionOrdering.Matching);
         await Assert.That(account.NameKey.ToArray())
-            .IsEquivalentTo(SealedNarrative.BlindIndex("Checking").ToArray());
+            .IsEquivalentTo(SealedNarrative.BlindIndex("Checking").ToArray(), CollectionOrdering.Matching);
         await Assert.That(account.Type).IsEqualTo(AccountType.Checking);
         await Assert.That(account.OpeningBalance).IsEqualTo(0m);
     }

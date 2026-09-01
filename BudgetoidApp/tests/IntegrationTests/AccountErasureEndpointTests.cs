@@ -581,13 +581,24 @@ public sealed class AccountErasureEndpointTests
             description = (string?)null,
             categoryGroupId,
         });
+        // The payee is a request of its own now: POST /api/transactions takes an identifier, and the
+        // server can no longer resolve a name into a row — payees.name is an AEAD envelope drawn under
+        // a fresh nonce, so two seals of one name are different bytes. Seeded here rather than dropped
+        // because a budget with no payee row would leave this file measuring one relation fewer than
+        // its name claims, silently.
+        Guid payeeId = await CreateAsync(client, "/api/payees", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
         await CreateAsync(client, "/api/transactions", new
         {
             amount = -10m,
             date = "2026-06-26",
             accountId,
             description = "Coffee",
-            payeeName = "Starbucks",
+            payeeId,
             categoryId,
         });
 

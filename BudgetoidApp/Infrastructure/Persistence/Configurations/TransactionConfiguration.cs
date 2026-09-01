@@ -85,8 +85,10 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         // change tracker fails the same fixup on the non-nullable Guid. A referenced payee cannot be
         // deleted at all - the same guard accounts and categories have. Refusing forces an explicit
         // decision about historical rows instead of silently erasing the counterparty from past
-        // transactions. No application code path deletes a payee (IPayeeRepository exposes only
-        // GetOrCreateAsync), so nothing in the app depends on the delete succeeding.
+        // transactions. No application code path deletes a payee — IPayeeRepository offers AddAsync,
+        // GetByIdAsync and UpdateAsync and nothing that removes a row, and the app role is granted
+        // SELECT, INSERT and UPDATE (name, name_key) on payees and no DELETE of any shape — so nothing
+        // in the app depends on the delete succeeding.
         builder.HasOne<Payee>()
             .WithMany()
             .HasForeignKey(transaction => new { transaction.PayeeId, transaction.BudgetId })

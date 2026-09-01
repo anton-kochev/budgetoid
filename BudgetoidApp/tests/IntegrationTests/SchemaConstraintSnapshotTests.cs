@@ -253,7 +253,15 @@ public sealed class SchemaConstraintSnapshotTests
             // under is the whole of what the lookup has to go on, so a second row under the same
             // handle would make "whose key is this" ambiguous before anybody is authenticated.
             """CREATE UNIQUE INDEX "IX_passkey_public_keys_webauthn_credential_id" ON public.passkey_public_keys USING btree (webauthn_credential_id)""",
-            """CREATE UNIQUE INDEX "IX_payees_budget_id_name" ON public.payees USING btree (budget_id, name)""",
+            // Over the BLIND INDEX and not over the name, the same move accounts made and for the same
+            // reason: payees.name is an AEAD envelope drawn under a fresh nonce, so two rows a client
+            // sealed from one word hold different bytes and an index over that column could not see a
+            // duplicate at all. Uniqueness — one counterparty per budget, which on this table is the
+            // whole of deduplication rather than a convenience — survived by moving to a column the
+            // database cannot interpret and can still compare for equality. The case folding did not
+            // survive here: it moved into the normalisation the client applies before it computes the
+            // HMAC, and nothing on this side can check that it happened.
+            """CREATE UNIQUE INDEX "IX_payees_budget_id_name_key" ON public.payees USING btree (budget_id, name_key)""",
             // One email, one account. The index is only half the rule: users.email carries
             // case_insensitive, which the collation snapshot below pins, and pg_get_indexdef does
             // not render it here.
@@ -477,6 +485,32 @@ public sealed class SchemaConstraintSnapshotTests
             // renders as a quoted ::bigint literal because the column is bigint and the value exceeds
             // integer — matching the lower bound's bare 0 would be the wrong rendering.
             """CK_passkey_signature_counters_value: passkey_signature_counters CHECK (((signature_counter >= 0) AND (signature_counter <= '4294967295'::bigint)))""",
+            // The payee blind index's width, an EQUALITY for the reason CK_accounts_name_key_length
+            // states: HMAC-SHA-256 emits exactly 32 bytes, nothing truncates in between, and a ceiling
+            // would admit a short digest in silence. The width is the whole of the defence — the digest
+            // is taken under an index key that lives in a browser, so this side cannot recompute it,
+            // cannot check it against the name beside it, and cannot tell a correct 32 bytes from a
+            // fabricated 32 bytes.
+            """CK_payees_name_key_length: payees CHECK ((length(name_key) = 32))""",
+            // The payee name's band, same two constants and same argument as its accounts twin: 29 is
+            // CiphertextEnvelope.MinimumLength, 1024 is NarrativeFieldLimits.NameBytes, both rendered
+            // from those constants in the configuration. Like accounts and unlike budgets it meets no
+            // NULL, because payees.name is NOT NULL.
+            //
+            // It is a floor on ENVELOPE bytes and says nothing about the text underneath, which is
+            // load-bearing on this table specifically: the 200-character ceiling and the "a name is not
+            // just spaces" rule that used to live in Payee.ValidateOrThrow were SURRENDERED, not moved
+            // here. This line cannot count characters and no line here can.
+            """CK_payees_name_length: payees CHECK (((length(name) >= 29) AND (length(name) <= 1024)))""",
+            // The one envelope version this deployment implements, over the third sealed column to
+            // arrive — budgets.name, accounts.name, payees.name, in that order and no others.
+            // substring rather than get_byte for the reason CK_budgets_name_version states at
+            // length below: get_byte raises 2202E on a zero-length bytea instead of answering false,
+            // which carries no constraint name and no failing row. The three CK_payees_name*
+            // constraints sort key_length, length, version, so a zero-length name would answer 23514
+            // from a length check under this ordering — but substring is what makes that irrelevant
+            // rather than lucky, because no predicate here can raise under any ordering.
+            """CK_payees_name_version: payees CHECK ((SUBSTRING(name FROM 1 FOR 1) = '\x01'::bytea))""",
             // The third copy of a credential's type pinned to the one value its table may hold, owed
             // separately for the reason the two above are owed separately: each table carries its own
             // column, so one constraint cannot cover the others. Here the pin is a single value rather
@@ -655,47 +689,49 @@ public sealed class SchemaConstraintSnapshotTests
             """);
 
         // Assert — pg_get_indexdef does not render this collation, because it belongs to the column
-        // rather than to the index. IX_payees_budget_id_name enforces case-insensitive uniqueness
-        // only by virtue of payees.name carrying case_insensitive: drop it from the configuration
-        // and every line of the unique-index snapshot stays byte-identical while the rule quietly
-        // flips to case-sensitive. PayeeIntegrationTests covers one of these columns behaviourally.
-        // users.email is the one non-name column in the set, and the one whose collation carries a
-        // uniqueness rule rather than a lookup convenience: drop it and Sam@x.com and sam@x.com
-        // become two accounts for one mailbox.
+        // rather than to the index. IX_categories_budget_id_category_group_id_name enforces
+        // case-insensitive uniqueness only by virtue of categories.name carrying case_insensitive:
+        // drop it from the configuration and every line of the unique-index snapshot stays
+        // byte-identical while the rule quietly flips to case-sensitive. users.email is the one
+        // non-name column in the set, and the one whose collation carries a uniqueness rule rather
+        // than a lookup convenience: drop it and Sam@x.com and sam@x.com become two accounts for one
+        // mailbox.
         //
-        // BUDGETS.NAME AND NOW ACCOUNTS.NAME HAVE LEFT THIS SET, AND EACH ABSENCE IS AS DELIBERATE AS
-        // EVERY ENTRY. Both columns are bytea — sealed narrative fields — and bytea is not a
-        // collatable type, so the collation did not lose an argument, it lost the type that could
-        // carry one. That is a forced consequence rather than a decision, and it is the preview the
-        // budgets paragraph promised arriving on schedule: this set SHRINKS as narrative columns
+        // BUDGETS.NAME, ACCOUNTS.NAME AND NOW PAYEES.NAME HAVE LEFT THIS SET, AND EACH ABSENCE IS AS
+        // DELIBERATE AS EVERY ENTRY. All three columns are bytea — sealed narrative fields — and bytea
+        // is not a collatable type, so the collation did not lose an argument, it lost the type that
+        // could carry one. That is a forced consequence rather than a decision, and it is the preview
+        // the budgets paragraph promised arriving on schedule: this set SHRINKS as narrative columns
         // become ciphertext, and shrinking is the schema doing the right thing.
         //
-        // THE TWO DEPARTURES ARE NOT THE SAME EVENT, and collapsing them is the mistake to refuse.
+        // THE THREE DEPARTURES ARE NOT ONE EVENT, and collapsing them is the mistake to refuse.
         // budgets.name left and the case-folding uniqueness rule left with it, because that column has
         // no blind index and the requirement excludes one. accounts.name left and the rule STAYED: it
         // moved to IX_accounts_budget_id_name_key over (budget_id, name_key), which the unique-index
         // snapshot above pins, and the case folding moved into the normalisation the client applies
-        // before it computes the HMAC. This server cannot check that the folding happened and no
-        // constraint here can be written to it, which is the honest cost of the move and is worth
-        // writing down rather than leaving a reader to infer that nothing changed.
+        // before it computes the HMAC. payees.name left on the accounts terms — the rule moved to
+        // IX_payees_budget_id_name_key — and it is the departure that costs the most, because on that
+        // table the uniqueness IS the deduplication of counterparties rather than a convenience.
+        // This server cannot check that the folding happened and no constraint here can be written to
+        // it, which is the honest cost of the move and is worth writing down rather than leaving a
+        // reader to infer that nothing changed.
         //
         // What is left of this test's leading argument is worth being exact about rather than letting
         // a reader assume it is now decoration. The "drop it and a snapshot stays byte-identical" half
-        // is INTACT and still covers three uniqueness rules that live nowhere else in this file —
-        // categories, category_groups and payees all enforce case-insensitive names through their
-        // column and not through their index — plus users.email, which is the strongest of the four.
+        // is INTACT and still covers two uniqueness rules that live nowhere else in this file —
+        // categories and category_groups both enforce case-insensitive names through their column and
+        // not through their index — plus users.email, which is the strongest of the three.
         //
         // And the other half — the one this test's own comment already names — is the half that grew
-        // again. Asserting the WHOLE SET rather than four columns individually catches a collation
-        // added where it was not intended, and there are now two such additions worth naming: a
-        // collation reappearing on budgets.name or on accounts.name would mean that column had gone
-        // back to text, because bytea cannot carry one. So neither absence is a hole in the coverage;
-        // each is an assertion that the sealing survived.
+        // again. Asserting the WHOLE SET rather than three columns individually catches a collation
+        // added where it was not intended, and there are now three such additions worth naming: a
+        // collation reappearing on budgets.name, accounts.name or payees.name would mean that column
+        // had gone back to text, because bytea cannot carry one. So no absence is a hole in the
+        // coverage; each is an assertion that the sealing survived.
         string[] expected =
         [
             "categories.name COLLATE case_insensitive",
             "category_groups.name COLLATE case_insensitive",
-            "payees.name COLLATE case_insensitive",
             "users.email COLLATE case_insensitive",
         ];
         await Assert.That(collatedColumns).IsEquivalentTo(expected);

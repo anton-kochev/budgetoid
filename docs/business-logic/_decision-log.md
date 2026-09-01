@@ -8,6 +8,144 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-02 — A duplicate name is a field error on an account and a conflict on a payee, and the difference is who chose the name
+
+**Context:** the entry below argues 409-on-a-create against 400-on-a-rename **within payees**, and
+it left a larger disagreement unexamined. `POST /api/accounts` carrying a name whose blind index
+another account in the budget already holds answers **400** with an error keyed on `Name`.
+`POST /api/payees` carrying a duplicate index answers **409** with no `errors` member at all. Two
+creates, and everything underneath them is the same: a unique B-tree index over
+`(budget_id, name_key)`, a `23505` matched by constraint name in a repository, and a rename leg on
+each table that answers 400. The only place the two tables disagree is the create — and **every
+copy of the 409-versus-400 argument, in the docs and at both repository members, argues the payee's
+create against the payee's rename and stops there.** Not one of them says why an account create is
+not a 409 as well. [budgets.md](budgets.md#must) lists all four entities' collision behaviour in one
+paragraph and names the payee create as the exception, as a fact. Stated and unargued is exactly the
+shape an accidental departure takes, and it reads as one to anybody arriving without the history.
+
+**Decision:** the two statuses stay apart, and the distinction that holds them apart is **who chose
+the name**.
+
+**An account is named by a person, in a form.** A duplicate means they picked a name they had
+already used in that budget, which is a mistake about a field they are looking at — so the answer
+names the field, the message attaches to the input, and retyping resolves it. There is nothing to
+re-read: the account that already holds the name is not the account they were trying to open, and
+adopting it is not an outcome anybody asked for. Two accounts called "Savings" is a person's error
+and a 400 is what an error about a field is for.
+
+**A payee is not named at the moment it is created; it is resolved.** The client folds and indexes
+the typed counterparty, compares the digest against the payee list it already holds and can decrypt,
+and posts only on a miss. So a collision does not say the person chose badly — it says **the list
+the decision was made against was stale**, because another tab created the row, or the list was read
+before it existed. The text they typed was right, and the remedy is to re-read and use the payee
+already there, which is precisely what a bare 409 says and what no field-keyed 400 has anywhere to
+put. Keying that failure on `Id`, `Name` or `NameKey` would ask a browser to correct three values it
+computed exactly as intended.
+
+**Said once, the rule is about the request rather than the table: a 400 is for a request its caller
+can rewrite, a 409 is for a request that was correct against a state the caller no longer has.** The
+verb is not the input — a rename collides on both tables and answers 400 on both, because a rename
+is a name a person chose in both cases. The author is.
+
+**Alternatives rejected, and they fail differently.** **409 on the account create too**, the option
+that makes the four answers uniform — it buys consistency and spends the one thing the account form
+needs, a field for the message to attach to, and it tells somebody who typed a name they already own
+to go and re-read a list that will not help them. **400 on the payee create** — argued in the entry
+below and unchanged: the members are all exactly what the caller meant, so the document would name a
+field nobody can act on. **Deciding by verb — creates conflict, renames validate** — it happens to
+produce today's payee answers and is the wrong rule underneath: applied evenly it turns the account
+create into a 409, and it has nothing to say about a future entity whose names are machine-resolved
+on a rename as well as on a create. **Aligning the statuses in either direction to remove the
+asymmetry** — rejected because the asymmetry is carrying information; what was wrong was that it was
+undocumented, not that it existed.
+
+**Where the argument is weak, and it is weak in the same way the entry below is.** Each status
+follows its dominant case and misses the other. A person can deliberately want a second payee for
+one counterparty, and "re-read the list" is unhelpful advice to them; two tabs can race an account
+create, and "correct the field" is unhelpful advice there. Neither miss is silent and neither loses
+a row, which is why the dominant case is allowed to decide.
+
+**Consequences.** The four collision answers now read as one rule with two inputs — the verb and the
+author of the name — rather than as three agreements and an exception. `categories` and
+`category_groups` fall out of it on the account's side without a decision of their own: their names
+are typed into a form, so their creates stay 400, and their name columns being plaintext has nothing
+to do with it. A fifth named entity gets its status by asking the same question. And
+`ConflictExceptionHandler` staying extension-free stays load-bearing: the payee create's `Detail`
+sentence has to carry the whole instruction, because it is the only place the instruction can live.
+
+**Affected areas:** [payees.md](payees.md), [accounts.md](accounts.md), [budgets.md](budgets.md),
+[categories.md](categories.md).
+
+---
+
+## 2026-09-01 — One payee-name index, two statuses: 409 on a create, 400 on a rename
+
+**Context:** `payees.name` became ciphertext with a blind index beside it, and the consequence was
+larger than on any column before it. `payees` was the one table this server looked rows up in **by
+name**: `PayeeRepository.GetOrCreateAsync` trimmed a name, matched it through a `case_insensitive`
+collation, and inserted only on a miss. None of that survives sealing — two seals of one name are
+different bytes, the stable digest is taken under a key that lives in a browser, and `bytea` is not
+collatable — so find-or-create became **unimplementable**, creating a payee became a request of its
+own, and `IX_payees_budget_id_name_key` became the only thing standing between one counterparty and
+two rows. That index is now reached by two verbs that were previously one, and each of them has to
+be told something when it fires.
+
+**Decision:** **a create that collides answers `409`, and a rename that collides answers `400` keyed
+on `Name`.** `PayeeRepository.AddAsync` matches the `23505` **by constraint name** and raises
+`Domain.Common.ConflictException`; `PayeeRepository.UpdateAsync` matches the identical violation on
+the identical index and raises `Domain.Common.ValidationException`. One constraint, one table, two
+statuses.
+
+**What differs is the remedy, not the constraint, and that is the whole argument.** A create that
+collides means a payee already carries this name in this budget and the client's list was stale. The
+resolution is to **adopt the row that already exists**, which is not something a person corrects by
+editing a field — so there is no member for a validation problem document to be keyed on, and a 400
+would name a field nobody can act on. That reading is the one find-or-create used to make silently,
+and the sentence [payees.md](payees.md) already carried about it survives intact: *reporting a race
+somebody had no part in, over a payee that now exists and is the one they meant*. What changed is
+**who re-reads** — this side cannot, so the 409 is what asks the client to. A rename that collides
+means a person chose a name another row holds, and the resolution is to **choose a different one** —
+a statement about `Name` in the request, which is exactly what a validation problem document carries
+and a bare conflict status has nowhere to put.
+
+**Both readings are wrong in the corner cases, and the status follows the dominant one.** A rename
+can lose a race between two tabs, where "choose another name" is bad advice; a create can be a
+person deliberately making a second payee, where "adopt the existing row" is. Neither miss is silent
+and neither loses data.
+
+**Alternatives rejected, and they fail differently.** **`409` on both**, the option that keeps one
+status per constraint — rejected because the rename would lose the field-keyed `400`, and that loss
+is larger than the asymmetry it removes: the status would say two things disagree without saying
+*which field*, a form would have nothing to attach the message to, and a caller would handle two
+statuses for one kind of mistake depending on which entity they were editing. That is the argument
+`payees.md` has always made against answering a rename with a conflict, and the create does not
+contradict it — it is a different act. **`400` on both** — it keys a create's failure on a member
+the caller cannot usefully change; the id, the envelope and the index are all exactly what the
+caller meant, and the only correct next step is a re-read. **Putting the existing payee's id in the
+409 body** — `ConflictExceptionHandler` is shared by every conflict in the product and adds no
+extension member, so there is nowhere to carry one, and the client has to decrypt the list to
+confirm the row is the one it meant regardless. **A precheck before either write** — it cannot be
+written: there is no name to look up, and the index-shaped version of it answers "taken" for the row
+being renamed, so every case-only correction would be rejected as a duplicate of itself. It is
+check-then-act besides, so the index still has to catch the loser of a race.
+
+**Consequences.** The conflict handler's `Detail` sentence is now load-bearing: it is the whole of
+what distinguishes this 409 from any other in the product, so it has to say what the caller does
+next by itself — and it names no payee id, no SQLSTATE and no constraint. `PayeeConfiguration`
+pins the index name for a **new** reason: it used to protect a swallow-and-re-read inside
+find-or-create, and it now carries **attribution** for two different answers, so matching on
+SQLSTATE alone would put either sentence on a violation of some other rule flushed by the same
+`SaveChanges`. A collision on `PK_payees` is the same SQLSTATE and is deliberately left unhandled,
+because a caller re-posting an id it already used is not a duplicate *name* and must not be sent off
+to re-read a list the payee is already on. And the reviewer's instinct to harmonise the two is
+expected rather than guarded against: the argument is written at both repository members and in
+`payees.md`, because nothing in the build can hold it.
+
+**Affected areas:** [payees.md](payees.md), [transactions.md](transactions.md),
+[budgets.md](budgets.md), [ciphertext-envelope.md](ciphertext-envelope.md).
+
+---
+
 ## 2026-09-01 — A name and its blind index move together, and the `UPDATE` grant is where that was first broken
 
 **Context:** `accounts.name` became ciphertext with a blind index beside it — the second sealed

@@ -244,7 +244,7 @@ public sealed class TransactionRepositoryTests
         Guid payeeA;
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetA)))
         {
-            Payee payee = Payee.Create(budgetA, "Corner Shop", UtcNow());
+            Payee payee = Payee.Create(Guid.CreateVersion7(), budgetA, SealedNarrative.Indexed("Corner Shop"), UtcNow());
             db.Payees.Add(payee);
             await db.SaveChangesAsync();
             payeeA = payee.Id;
@@ -762,7 +762,14 @@ public sealed class TransactionRepositoryTests
             ?? throw new InvalidOperationException(
                 "The seeded transaction was not readable through the repository before the act.");
 
-        db.Payees.Add(Payee.Create(Guid.CreateVersion7(), "Corner Shop", UtcNow()));
+        // Named rather than inlined, because the payee now takes two identifiers and only the second
+        // one is the broken rule: the row's own id is fine and its budget names nothing.
+        Guid budgetThatWasNeverCreated = Guid.CreateVersion7();
+        db.Payees.Add(Payee.Create(
+            Guid.CreateVersion7(),
+            budgetThatWasNeverCreated,
+            SealedNarrative.Indexed("Corner Shop"),
+            UtcNow()));
 
         // A real edit, against the account it already has — so the UPDATE is in the batch and is
         // beyond reproach.

@@ -13,11 +13,11 @@ is exactly what makes a ciphertext moved to another row fail to authenticate rat
 decrypt into something. See [ciphertext-envelope.md](../business-logic/ciphertext-envelope.md).
 
 The grammar therefore needs the row's identifier **at the moment the client seals**, and on an
-insert the client does not have one. Every row a narrative field could be bound to takes its id
+insert the client does not have one. Every row a narrative field could be bound to took its id
 server-side inside a Domain factory: `Transaction.Create`, `Payee`, `Account`, `Category`,
-`CategoryGroup` and `Budget` each call `Guid.CreateVersion7()` and assign the result to `Id`. So on the path that
-matters most — creating a row whose narrative is encrypted — the client seals before the row
-exists, and **the row half of the binding is unreachable**.
+`CategoryGroup` and `Budget` each called `Guid.CreateVersion7()` and assigned the result to `Id`. So
+on the path that matters most — creating a row whose narrative is encrypted — the client sealed
+before the row existed, and **the row half of the binding was unreachable**.
 
 Dropping the row from the grammar is not an option available here: without it, every row in a
 column is interchangeable with every other, which is the exact case the binding requirement
@@ -102,27 +102,38 @@ when it slips.
 This decision fixes **the rule, the canonical form, and the grammar that consumes it**. The
 narrative grammar exists and refuses a non-canonical row id today.
 
-**The client-side minter has arrived; the other two changes have not.**
-`+core/security/narrative-row-id.ts` mints a version-7 UUID in the canonical spelling today, and
-its spec holds the version nibble, the canonical spelling and the big-endian timestamp. **Nothing
-calls it**: no path seals a narrative field for a row it just created.
+**The client-side minter and the server-side refusal have both arrived; what is left is the rest of
+the factories and a caller.** `+core/security/narrative-row-id.ts` mints a version-7 UUID in the
+canonical spelling today, and its spec holds the version nibble, the canonical spelling and the
+big-endian timestamp. **Nothing calls it**: no path seals a narrative field for a row it just created.
 
-**One of the six Domain factories has changed, and it carries the decision's one exception.**
-`Budget.Create` and `Budget.CreateDefault` both take the row's identifier as a parameter, and
-`Guid.CreateVersion7()` has left `Budget.cs` entirely rather than moving behind an overload — a
-caller that forgot to thread an id through would otherwise compile, pass every test that does not
-assert the returned identifier, and produce a row whose sealed name nobody can ever open. **The
-exception is that registration mints that id server-side**, on one written-out line in
-`RegisterAccountHandler`: the budget it creates carries **no name**, so nothing is sealed, there is
-nothing to seal against, and the browser has no basis on which to choose. A budget that *is* named
-is created by whoever sealed the name and hands its id in with it. `budgets.name` is the first
-column to hold an envelope; see [budgets.md](../business-logic/budgets.md).
+**Three of the six Domain factories have changed, and the first of them carries the decision's one
+exception.** `Budget.Create` and `Budget.CreateDefault`, `Account.Create` and `Payee.Create` all take
+the row's identifier as a parameter, and `Guid.CreateVersion7()` has left `Budget.cs`, `Account.cs`
+and `Payee.cs` entirely rather than moving behind an overload — a caller that forgot to thread an id
+through would otherwise compile, pass every test that does not assert the returned identifier, and
+produce a row whose sealed name nobody can ever open. Each of the three refuses `Guid.Empty`, which
+is reachable for the first time now that the value arrives from outside. **The exception is that
+registration mints the budget's id server-side**, on one written-out line in `RegisterAccountHandler`:
+the budget it creates carries **no name**, so nothing is sealed, there is nothing to seal against, and
+the browser has no basis on which to choose. A budget that *is* named is created by whoever sealed the
+name and hands its id in with it. See [budgets.md](../business-logic/budgets.md).
 
-**The other five factories and the server-side parse that refuses a non-canonical row id arrive
-with the work that encrypts the remaining columns**, unchanged from what the Context above
-describes: those factories still mint their rows' identifiers themselves, and nothing in the API
-accepts a client-supplied row id. Read those parts of this document as the decision they will be
-built to, not as a description of a surface that is already there.
+**The server-side parse that refuses a non-canonical row id is built, and two routes run it.**
+`CanonicalIdentifier.TryParse` compares the supplied text **ordinally against what the parsed value
+renders as**, per the Consequences below; `POST /api/accounts` and `POST /api/payees` each bind their
+`Id` as a `string` and judge it there, first of three opaque members, because a spelling this API
+cannot reproduce makes the envelope beside it irrelevant. **The two `PATCH`/`PUT` legs deliberately do
+not**: on an update the client re-seals against the row's **existing** id, read back from this API in
+the one form a `Guid` renders, so the text in a URL is never what anything was sealed under and there
+is no spelling to preserve.
+
+**The remaining three factories arrive with the work that encrypts their columns** —
+`Transaction.Create`, `Category.Create` and `CategoryGroup.Create` still mint their own identifiers,
+and no route accepts one for them. Read those parts of this document as the decision they will be
+built to. **What is still unbuilt on the client is the caller**: `narrative-row-id.ts` mints, and no
+path seals a narrative field for a row it just created, because no browser in this product seals
+anything.
 
 ## Alternatives considered
 

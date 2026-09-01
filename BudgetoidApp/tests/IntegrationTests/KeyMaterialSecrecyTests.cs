@@ -562,12 +562,12 @@ public sealed class KeyMaterialSecrecyTests
     /// entry with no column is a red.
     /// </para>
     /// <para>
-    /// The ten divide into five kinds, and the kinds are worth seeing. Two are the envelopes
+    /// The twelve divide into five kinds, and the kinds are worth seeing. Two are the envelopes
     /// themselves — the only key-shaped thing this design lets cross the wire, and safe because the
     /// server holds nothing that opens them. Two are WebAuthn's own material, a handle that selects a
     /// credential and a <i>public</i> key published by design. Three are one-way values, two hashes and
-    /// a nonce, from which nothing is derived. Two are <i>content</i>. One is a <i>blind index</i>. No
-    /// sixth kind exists, and an eleventh column would have to argue itself into one of the five or
+    /// a nonce, from which nothing is derived. Three are <i>content</i>. Two are <i>blind indexes</i>.
+    /// No sixth kind exists, and a thirteenth column would have to argue itself into one of the five or
     /// invent a sixth in writing.
     /// </para>
     /// <para>
@@ -580,10 +580,10 @@ public sealed class KeyMaterialSecrecyTests
     /// each other up and neither can be pasted over the other. It was also the first entry whose
     /// argument has to concede something — AES-GCM leaks the plaintext's length, and the column's own
     /// length already does, so the concession costs nothing and is written down rather than left for a
-    /// reader to notice. <c>accounts.name</c> is the second member of this kind and owes the same two
-    /// sentences, which is why its entry writes them out instead of pointing at its neighbour: a
-    /// classification that says "see above" stops being a per-column argument, which is the whole
-    /// requirement.
+    /// reader to notice. <c>accounts.name</c> is the second member of this kind and <c>payees.name</c>
+    /// the third, and each owes the same two sentences, which is why every entry writes them out
+    /// instead of pointing at its neighbour: a classification that says "see above" stops being a
+    /// per-column argument, which is the whole requirement.
     /// </para>
     /// <para>
     /// <b>The fifth kind is <c>accounts.name_key</c>, and it is a kind rather than a member of the
@@ -597,7 +597,11 @@ public sealed class KeyMaterialSecrecyTests
     /// concession about length. The bound on that leak is the per-account key: across accounts the same
     /// name is two unrelated digests, so there is no correlation and no frequency analysis over the
     /// population. Any future blind index is a member of this kind and owes both halves — what equality
-    /// it exposes, and what scopes that exposure.
+    /// it exposes, and what scopes that exposure. <c>payees.name_key</c> is the second member and pays
+    /// them in its own words, because the equality it exposes is not the same equality: on accounts a
+    /// duplicate name is a nuisance, while on payees the index IS the deduplication of counterparties,
+    /// so what the column announces is a fact about how many distinct parties a person deals with
+    /// rather than about how they organised their money.
     /// </para>
     /// <para>
     /// <c>session_tokens.token_hash</c> is the newest of the one-way three and the one whose argument is
@@ -665,6 +669,51 @@ public sealed class KeyMaterialSecrecyTests
             + "half: the associated data is rebuilt from where the ciphertext was found, so an "
             + "operator who moved one budget's name onto another row would produce a value that "
             + "refuses to open rather than one that opens as somebody else's"),
+        new(
+            "payees",
+            "name",
+            "a payee's name sealed as a narrative field — an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the same content-key argument accounts.name and budgets.name make, written out again "
+            + "rather than pointed at, because a classification that says \"see above\" stops being a "
+            + "per-column argument: the content key is generated in the browser and reaches this "
+            + "server only as the wrapped_content_key envelopes, each sealed under a key-encryption "
+            + "key derived from a recovery factor the operator never holds, so the row and everything "
+            + "that could open it are separated by a step that happens on somebody's device. WHAT THIS "
+            + "COLUMN IN PARTICULAR STOPS BEING LEGIBLE IS WORTH NAMING, because it is the strongest "
+            + "case of the three: a payee list is the set of counterparties one person deals with — a "
+            + "landlord, a pharmacy, a clinic, an employer — and it reads as a life without a single "
+            + "amount beside it. It is also the narrative column with the fewest distinct values per "
+            + "budget, which is what would have made it the easiest of the eight to read at a glance. "
+            + "The same concession as its neighbours and no more: AES-GCM without the key yields the "
+            + "plaintext's LENGTH, which the column's own length already gives away. The tag is the "
+            + "other half — associated data is rebuilt from where the ciphertext was found, so an "
+            + "operator who moved one payee's name onto another row would produce a value that "
+            + "refuses to open rather than one that opens as somebody else's"),
+        new(
+            "payees",
+            "name_key",
+            "the blind index over the same name — HMAC-SHA-256 under the account's index key, computed "
+            + "by the client over the normalised text, and what IX_payees_budget_id_name_key enforces "
+            + "uniqueness over",
+            "IT IS NOT AN ENVELOPE AND NO ENVELOPE ARGUMENT MAY BE PASTED OVER IT. There is nothing "
+            + "here to open: a blind index is a keyed digest with no version, no nonce and no tag. "
+            + "Recovering the name means inverting HMAC-SHA-256, or guessing the plaintext AND holding "
+            + "the index key — which is generated in the browser beside the content key and reaches "
+            + "this server only as the wrapped_index_key envelopes, so the operator can neither invert "
+            + "it nor recompute a candidate to compare against. It unwraps nothing in the second sense "
+            + "either: it is an input to no KDF and no wrapping step, so even a recovered index key "
+            + "opens no envelope, it only lets somebody search this column. WHAT IT LEAKS IS EQUALITY "
+            + "WITHIN ONE ACCOUNT, and the equality is a different fact from the one accounts.name_key "
+            + "exposes rather than the same fact on another table. Two rows in one budget cannot carry "
+            + "the same value, so an operator reading the table learns that a budget's counterparty "
+            + "names are pairwise distinct — which the unique index already announces — and therefore "
+            + "learns HOW MANY DISTINCT PARTIES a person deals with and, across a person's budgets, "
+            + "which of those parties recur, without learning one name. That is a shape of a life "
+            + "rather than a filing habit, which is why this entry states it instead of borrowing the "
+            + "accounts wording. ACROSS ACCOUNTS IT LEAKS NOTHING: the index key is per-account, so the "
+            + "same counterparty in two accounts is two unrelated digests and this column supports no "
+            + "cross-account correlation and no frequency analysis over the population"),
         new(
             "wrapped_account_keys",
             "wrapped_content_key",
@@ -855,10 +904,30 @@ public sealed class KeyMaterialSecrecyTests
             "a person's own note about a category group they are creating"),
         new("CreateCategoryGroupCommand", "Name",
             "the name a person is giving a new category group, as they typed it"),
+        new("CreatePayeeCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid — the one spelling this "
+            + "API accepts and the one it hands back. It carries no secret; it is here because it is the "
+            + "associated data the Name envelope beside it was sealed against, so a spelling this server "
+            + "cannot reproduce is a name that never opens again. Written out rather than pointed at "
+            + "CreateAccountCommand.Id because what an unopenable name COSTS differs: an account gets one "
+            + "unreadable row, while a payee the client cannot read is a payee it cannot match, so it "
+            + "mints a second one for the same counterparty and the deduplication this table exists for "
+            + "fails silently"),
+        new("CreatePayeeCommand", "Name",
+            "base64url over the AEAD envelope holding the name a person is giving a new payee. It is NOT "
+            + "who they say they paid as they typed it — that is what this member used to be, on a "
+            + "transaction body, and the change is the point of the slice. It was sealed in the browser, "
+            + "bound to the Id above, under a key derived from a recovery factor this server never sees, "
+            + "so this side can neither read it nor measure characters in it"),
+        new("CreatePayeeCommand", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material — the index key itself crosses this wire only sealed, as "
+            + "AccountKeyEntry.WrappedIndexKey. On this table it is also what REPLACED a server-side "
+            + "lookup: the server used to fold a payee name's case and re-read the table, and it can do "
+            + "neither now, so uniqueness of counterparties rests entirely on this value"),
         new("CreateTransactionCommand", "Description",
             "a person's own note about one transaction, as they typed it"),
-        new("CreateTransactionCommand", "PayeeName",
-            "who a person says they paid, as they typed it"),
         new("CredentialEndpoints.CredentialListEntry", "Type",
             "a response member: one credential's type, as CredentialTypeSpelling writes it"),
         new("CredentialEndpoints.RevocationRequest", "AuthenticatorData",
@@ -901,7 +970,15 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the same envelope for the index key, sealed under the same non-extractable "
             + "key and bound to a different purpose"),
         new("PayeeEndpoints.RenamePayeeRequest", "Name",
-            "who a person says they paid, as they typed it"),
+            "base64url over the AEAD envelope holding the name a person gave one of their payees. It is "
+            + "NOT the name as they typed it — it was re-sealed in the browser against the row's "
+            + "existing identifier, under a key derived from a recovery factor this server never sees"),
+        new("PayeeEndpoints.RenamePayeeRequest", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this. It is required rather than optional, and the pair is why: a body carrying "
+            + "only Name would leave the row indexed under the name it no longer holds, which on this "
+            + "table produces a payee the client can neither find nor re-create. Not key material — the "
+            + "index key crosses this wire only sealed, as AccountKeyEntry.WrappedIndexKey"),
         new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "AuthenticatorData",
             "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
         new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "ClientDataJson",
@@ -949,8 +1026,6 @@ public sealed class KeyMaterialSecrecyTests
             + "a different purpose"),
         new("TransactionEndpoints.UpdateTransactionRequest", "Description",
             "a person's own note about one transaction, present or absent, as they typed it"),
-        new("TransactionEndpoints.UpdateTransactionRequest", "PayeeName",
-            "who a person says they paid, present or absent, as they typed it"),
     ];
 
     /// <summary>

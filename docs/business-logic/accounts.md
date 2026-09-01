@@ -95,7 +95,10 @@ erDiagram
     both `AddAsync` and `UpdateAsync` to raise "Account name must be unique." rather than a 500. The
     C# constant is still called `NameIndexName` while its **value** ends in `_name_key`: the index
     is for finding the row a name is already taken by, and the schema follows EF's own convention
-    rather than carrying a hand-pinned exception to it.
+    rather than carrying a hand-pinned exception to it. **Both verbs answer 400 here and a payee
+    create answers 409 on the same shape of index**; the difference is that an account's name is
+    typed into a form by a person and a payee's is resolved by the client against a list it
+    decrypted, and the argument is in the [decision log](_decision-log.md).
 
 - **An account's currency (`CurrencyCode`) must reference a currency that exists.**
   - **Why**: The account's currency drives the precision every amount on it may be recorded at and

@@ -50,9 +50,11 @@ namespace IntegrationTests;
 /// </para>
 /// <para>
 /// The money data is seeded over HTTP, so every row is one the application itself could have
-/// written — same validation, same repositories, same least-privilege role — and the two reads that
-/// go out of band (creation instants, payee ids) go to the container superuser because no endpoint
-/// exposes either. The seeder is duplicated from <c>ErasureAtomicityTests.FurnishAccountAsync</c>
+/// written — same validation, same repositories, same least-privilege role — and the one read that
+/// goes out of band (creation instants) goes to the container superuser because no endpoint exposes
+/// them. Payee ids are NOT among them any more: <c>POST /api/payees</c> creates a payee and hands its
+/// id back on the 201, so they arrive from the seeding like every other id here — see the remark on
+/// <see cref="SeededBudget" />. The seeder is duplicated from <c>ErasureAtomicityTests.FurnishAccountAsync</c>
 /// rather than extracted, which is the local convention in this folder and is stated as such at
 /// <c>ErasureAtomicityTests.cs:618-622</c>; four files already carry their own copy.
 /// </para>
@@ -506,46 +508,58 @@ public sealed class DataExportCompletenessTests
     [Test]
     public async Task Export_CarriesEveryPayeeOfTheBudget()
     {
-        // Arrange — two payees means two transactions naming different payees, because nothing else
-        // writes that table: there is no payee endpoint that creates one, and a payee exists only
-        // because a transaction named it.
+        // Arrange — two payees, created by two requests of their own. That is the change this slice
+        // made and the sentence that used to sit here is false: there IS a payee endpoint that creates
+        // one, and a payee no longer exists only because a transaction named it. The two transactions
+        // below still name these rows, which is what keeps the export's payee arm non-empty for the
+        // reason it always was.
         await using PostgresTestHost host = await StartSignedInHostAsync();
         (HttpClient client, _, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         SeededBudget seeded = await FurnishTwoOfEachAsync(client);
-        IReadOnlyDictionary<string, Guid> payeeIds = await ReadPayeeIdsAsync(host);
         IReadOnlyDictionary<Guid, DateTime> created = await ReadCreationInstantsAsync(host, "payees");
 
         // Act
         JsonNode document = await GetExportAsync(client);
         JsonArray payees = OnlyBudget(document)["payees"]!.AsArray();
 
-        // Assert — the ids come from the database rather than from a response, because no endpoint
-        // returns a payee id and the transaction that minted the row names the payee by name only.
-        Guid[] expected = [payeeIds[CoffeeShopPayeeName], payeeIds[TransitPayeeName]];
+        // Assert — the ids come from the 201 bodies like every other id in this file. They used to be
+        // read out of band, from `select name, id from payees`, and that read is gone twice over: no
+        // endpoint returned a payee id when it was written, and payees.name is bytea now, so the
+        // GetString it called would throw before any assertion ran.
+        Guid[] expected = [seeded.CoffeeShopPayeeId, seeded.TransitPayeeId];
         await Assert.That(expected.Distinct().Count()).IsEqualTo(2);
         await Assert.That(SortedIds(payees)).IsEqualTo(Sorted(expected));
 
-        JsonObject coffeeShop = RowFor(payees, payeeIds[CoffeeShopPayeeName]);
+        JsonObject coffeeShop = RowFor(payees, seeded.CoffeeShopPayeeId);
         await Assert.That(coffeeShop["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
-        await Assert.That(coffeeShop["name"]!.GetValue<string>()).IsEqualTo(CoffeeShopPayeeName);
+        // THE ENVELOPE, NOT THE WORD, on the accounts terms. The export carries payees.name as
+        // unpadded base64url over a name this server has never seen. The assertion still says what it
+        // always said — this row's name came back and it is THIS row's — because SealedNarrative is
+        // deterministic in its label; what it no longer says is anything about the words.
+        await Assert.That(coffeeShop["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName(CoffeeShopPayeeName));
         await Assert.That(coffeeShop["createdAtUtc"]!.GetValue<DateTime>())
-            .IsEqualTo(created[payeeIds[CoffeeShopPayeeName]]);
+            .IsEqualTo(created[seeded.CoffeeShopPayeeId]);
 
-        // And exactly four — id, budgetId, name, createdAtUtc.
+        // And exactly four — id, budgetId, name, createdAtUtc. STILL FOUR, and the count is where the
+        // omission of name_key is held: that column exists on the row and is deliberately not exported,
+        // for the reason ExportedAccount gives — a deterministic per-budget fingerprint of every
+        // counterparty name, which a client recomputes from text it just decrypted. Add a NameKey
+        // member and this line is the only thing in either suite that goes red.
         await Assert.That(coffeeShop.Count).IsEqualTo(4);
 
-        JsonObject transit = RowFor(payees, payeeIds[TransitPayeeName]);
+        JsonObject transit = RowFor(payees, seeded.TransitPayeeId);
         await Assert.That(transit["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
-        await Assert.That(transit["name"]!.GetValue<string>()).IsEqualTo(TransitPayeeName);
+        await Assert.That(transit["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName(TransitPayeeName));
         await Assert.That(transit["createdAtUtc"]!.GetValue<DateTime>())
-            .IsEqualTo(created[payeeIds[TransitPayeeName]]);
+            .IsEqualTo(created[seeded.TransitPayeeId]);
 
-        // Non-vacuity for the seeding itself: two transactions really named two different payees, so
-        // the set above was compared against two rows the product wrote rather than two the test
-        // invented. A furnishing step that stopped naming a payee would otherwise leave both sides of
-        // the comparison empty.
-        await Assert.That(payeeIds.Count).IsEqualTo(2);
+        // Non-vacuity for the seeding itself: two payees really were written, so the set above was
+        // compared against two rows the product wrote rather than two the test invented. A furnishing
+        // step that stopped creating them would otherwise leave both sides of the comparison empty.
+        await Assert.That(created.Count).IsEqualTo(2);
     }
 
     [Test]
@@ -557,7 +571,6 @@ public sealed class DataExportCompletenessTests
         (HttpClient client, _, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
 
         SeededBudget seeded = await FurnishTwoOfEachAsync(client);
-        IReadOnlyDictionary<string, Guid> payeeIds = await ReadPayeeIdsAsync(host);
         IReadOnlyDictionary<Guid, DateTime> created =
             await ReadCreationInstantsAsync(host, "transactions");
 
@@ -579,7 +592,7 @@ public sealed class DataExportCompletenessTests
         await Assert.That(coffee["amount"]!.GetValue<decimal>()).IsEqualTo(-10.25m);
         await Assert.That(coffee["date"]!.GetValue<string>()).IsEqualTo(CoffeeDate);
         await Assert.That(coffee["description"]!.GetValue<string>()).IsEqualTo(CoffeeDescription);
-        await Assert.That(coffee["payeeId"]!.GetValue<Guid>()).IsEqualTo(payeeIds[CoffeeShopPayeeName]);
+        await Assert.That(coffee["payeeId"]!.GetValue<Guid>()).IsEqualTo(seeded.CoffeeShopPayeeId);
         await Assert.That(coffee["categoryId"]!.GetValue<Guid>())
             .IsEqualTo(seeded.GroceriesCategoryId);
         await Assert.That(coffee["createdAtUtc"]!.GetValue<DateTime>())
@@ -595,7 +608,7 @@ public sealed class DataExportCompletenessTests
         await Assert.That(busPass["amount"]!.GetValue<decimal>()).IsEqualTo(-25m);
         await Assert.That(busPass["date"]!.GetValue<string>()).IsEqualTo(BusPassDate);
         await Assert.That(busPass["description"]!.GetValue<string>()).IsEqualTo(BusPassDescription);
-        await Assert.That(busPass["payeeId"]!.GetValue<Guid>()).IsEqualTo(payeeIds[TransitPayeeName]);
+        await Assert.That(busPass["payeeId"]!.GetValue<Guid>()).IsEqualTo(seeded.TransitPayeeId);
         await Assert.That(busPass["categoryId"]!.GetValue<Guid>())
             .IsEqualTo(seeded.TransportCategoryId);
         await Assert.That(busPass["createdAtUtc"]!.GetValue<DateTime>())
@@ -669,7 +682,7 @@ public sealed class DataExportCompletenessTests
             date = CoffeeDate,
             accountId,
             description = (string?)null,
-            payeeName = (string?)null,
+            payeeId = (Guid?)null,
             categoryId = (Guid?)null,
         });
 
@@ -805,7 +818,7 @@ public sealed class DataExportCompletenessTests
                 date = CoffeeDate,
                 accountId,
                 description = (string?)null,
-                payeeName = (string?)null,
+                payeeId = (Guid?)null,
                 categoryId = (Guid?)null,
             }));
         }
@@ -956,9 +969,12 @@ public sealed class DataExportCompletenessTests
     /// that out.
     /// </para>
     /// <para>
-    /// Every name is unique within the budget on purpose: accounts, category groups, categories and
-    /// payees each sit under a <c>UNIQUE (budget_id, name)</c> index, and a collision here would fail
-    /// this test on the index rather than on the export.
+    /// Every label is unique within the budget on purpose: category groups and categories sit under a
+    /// <c>UNIQUE (budget_id, name)</c> index, while accounts and payees sit under a
+    /// <c>UNIQUE (budget_id, name_key)</c> one — their name column is a <c>bytea</c> envelope, so the
+    /// uniqueness moved to the blind index beside it, which <see cref="SealedNarrative.Indexed" />
+    /// derives from the same label. A collision in either shape would fail this test on the index
+    /// rather than on the export.
     /// </para>
     /// </remarks>
     private static async Task<InvertedSeed> SeedWithCreationOrderInvertedAsync(
@@ -1001,7 +1017,7 @@ public sealed class DataExportCompletenessTests
             db.CategoryGroups.Add(categoryGroup);
             categoryGroups.Add(categoryGroup.Id);
 
-            Payee payee = Payee.Create(budgetId, $"Ordered payee {index}", StampedAt(index));
+            Payee payee = Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed($"Ordered payee {index}"), StampedAt(index));
             db.Payees.Add(payee);
             payees.Add(payee.Id);
         }
@@ -1058,9 +1074,13 @@ public sealed class DataExportCompletenessTests
     /// same values the seeding wrote.
     /// </summary>
     /// <remarks>
-    /// The payees are absent deliberately: no endpoint returns a payee id, the rows exist only
-    /// because two transactions named them, and reading them back belongs with the other out-of-band
-    /// read rather than in a record the HTTP seeding fills.
+    /// <b>The payees used to be absent from this record and are now on it, and the sentence that
+    /// justified their absence is false.</b> It said no endpoint returns a payee id and the rows exist
+    /// only because two transactions named them. Both halves went with this slice:
+    /// <c>POST /api/payees</c> creates a payee and hands its id back on the 201, and a transaction now
+    /// NAMES a payee by that id rather than describing one by name. So the ids come from the seeding
+    /// like every other id here, and the out-of-band read that used to fetch them — which called
+    /// <c>GetString</c> on a column that is <c>bytea</c> now — is gone.
     /// </remarks>
     private sealed record SeededBudget(
         Guid CheckingAccountId,
@@ -1070,6 +1090,8 @@ public sealed class DataExportCompletenessTests
         Guid GroceriesCategoryId,
         Guid TransportCategoryId,
         Guid LeisureCategoryId,
+        Guid CoffeeShopPayeeId,
+        Guid TransitPayeeId,
         Guid CoffeeTransactionId,
         Guid BusPassTransactionId);
 
@@ -1190,13 +1212,29 @@ public sealed class DataExportCompletenessTests
             categoryGroupId = lifestyleGroupId,
         });
 
+        // Two requests where the two transactions below used to be the only writers of this table.
+        // The id is on the body because the client mints it — it is the associated data the name was
+        // sealed against — and "D" is the one spelling CanonicalIdentifier accepts.
+        Guid coffeeShopPayeeId = await CreateAsync(client, "/api/payees", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(CoffeeShopPayeeName),
+            nameKey = SealedNarrative.EncodedIndex(CoffeeShopPayeeName),
+        });
+        Guid transitPayeeId = await CreateAsync(client, "/api/payees", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(TransitPayeeName),
+            nameKey = SealedNarrative.EncodedIndex(TransitPayeeName),
+        });
+
         Guid coffeeTransactionId = await CreateAsync(client, "/api/transactions", new
         {
             amount = -10.25m,
             date = CoffeeDate,
             accountId = checkingAccountId,
             description = CoffeeDescription,
-            payeeName = CoffeeShopPayeeName,
+            payeeId = coffeeShopPayeeId,
             categoryId = groceriesCategoryId,
         });
         Guid busPassTransactionId = await CreateAsync(client, "/api/transactions", new
@@ -1205,7 +1243,7 @@ public sealed class DataExportCompletenessTests
             date = BusPassDate,
             accountId = savingsAccountId,
             description = BusPassDescription,
-            payeeName = TransitPayeeName,
+            payeeId = transitPayeeId,
             categoryId = transportCategoryId,
         });
 
@@ -1217,6 +1255,8 @@ public sealed class DataExportCompletenessTests
             groceriesCategoryId,
             transportCategoryId,
             leisureCategoryId,
+            coffeeShopPayeeId,
+            transitPayeeId,
             coffeeTransactionId,
             busPassTransactionId);
     }
@@ -1366,30 +1406,6 @@ public sealed class DataExportCompletenessTests
         return instants;
     }
 
-    /// <summary>
-    /// The payee rows the seeded transactions minted, keyed by name.
-    /// </summary>
-    /// <remarks>
-    /// Out of band because no endpoint returns a payee id: the row exists only because a transaction
-    /// named a payee, and reading it through <c>GET /api/payees</c> would couple this file to that
-    /// endpoint's wire shape for a value it uses as an opaque identifier.
-    /// </remarks>
-    private static async Task<IReadOnlyDictionary<string, Guid>> ReadPayeeIdsAsync(
-        PostgresTestHost host)
-    {
-        await using NpgsqlConnection connection = new(host.ConnectionString);
-        await connection.OpenAsync();
-        await using NpgsqlCommand command = new("select name, id from payees", connection);
-        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
-        Dictionary<string, Guid> payees = new(StringComparer.Ordinal);
-
-        while (await reader.ReadAsync())
-        {
-            payees.Add(reader.GetString(0), reader.GetGuid(1));
-        }
-
-        return payees;
-    }
 
     /// <summary>
     /// Posts <paramref name="body" /> and returns the id of the row it created, failing loudly on any

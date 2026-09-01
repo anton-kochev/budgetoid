@@ -43,16 +43,22 @@ width or the associated-data binding to drift apart, and every symptom of drift 
 silent: bytes of exactly the right shape that decrypt to nothing on a device that did not
 seal them.
 
-**Two columns now hold a narrative envelope, and no screen seals or opens a field.**
+**Three columns now hold a narrative envelope, and no screen seals or opens a field.**
 `budgets.name` is the first: `bytea`, **nullable**, mapped through a converter over
 `NarrativeField`, with a length band and a version check on the table. Every budget that exists is
 the nameless one registration writes, so that column stores NULL in every row.
 `accounts.name` is the second and is different in three ways that matter: it is `bytea` **NOT
 NULL**, it carries a **blind index** on `accounts.name_key` — the first in the product — and it is
 the first sealed column a **route** accepts a value for, since `POST /api/accounts` and
-`PUT /api/accounts/{id}` both take a sealed name and an index as base64url. What changed with the
+`PUT /api/accounts/{id}` both take a sealed name and an index as base64url. `payees.name` is the
+third, shaped exactly like the second — `NOT NULL`, three `CHECK`s, a blind index on
+`payees.name_key`, two routes accepting the pair — and it is the first column whose sealing
+**removed a capability the server had**: `payees` was the one table this side looked rows up in *by
+name*, and find-or-create went with the plaintext. See [payees.md](payees.md). What changed with the
 first column is that the format left the edge and entered the schema, which is where its rules stop
-being reversible; what changed with the second is that a *contract with a client* now runs over it.
+being reversible; what changed with the second is that a *contract with a client* now runs over it;
+what changed with the third is that a domain behaviour was written out of the server rather than
+merely re-expressed.
 The two functions do have a production caller — `AccountKeyCustodyService.sealField` and
 `openField` delegate to them, because the account's content key never leaves that class — and
 nothing but a spec calls *that*: the Angular accounts screen has not been moved onto the sealed
@@ -99,10 +105,18 @@ rule budgets gave up — one name inside its owning scope, here a budget — enf
 mechanism, a unique B-tree index, over bytes the database cannot interpret. Note what carries the
 scoping: the index message names the grammar's version, the table and the column and **no budget**,
 so one name under one account keys to one value everywhere it is written; it is `budget_id`, the
-index's leading column, that keeps two budgets apart. The other three indexed columns hold plaintext under the
-`case_insensitive` collation and have not been sealed yet. Read the two together before proposing
-anything about a third: **surrendering uniqueness and keeping it are both live outcomes of the same
-change, and which one applies is decided by whether the column has an index beside it.**
+index's leading column, that keeps two budgets apart.
+
+**`payees` is the second, and it is where the pair stops being a convenience.**
+`IX_payees_budget_id_name_key` is the identical declaration over the identical mechanism, and what
+it carries is different in kind: on accounts a duplicate name is a confusing list, while on payees
+one index value per budget **is** counterparty deduplication — the property a server-side
+find-or-create used to hold by folding case and re-reading the table, and which nothing on this side
+can hold any more. The remaining two indexed columns, `categories.name` and `category_groups.name`,
+still hold plaintext under the `case_insensitive` collation and have not been sealed yet. Read all
+three together before proposing anything about a fourth: **surrendering uniqueness and keeping it
+are both live outcomes of the same change, and which one applies is decided by whether the column
+has an index beside it.**
 
 ## Key Entities
 
@@ -281,12 +295,15 @@ erDiagram
     well-formed row holding a value that is stable, never collides, keys perfectly and matches
     nothing for the life of the account.
   - **Enforced in**: `IndexedName.Of`, whose two parameters are both non-nullable, and — for the
-    row rather than the call — the `NOT NULL` pair the schema carries on `accounts.name` and
-    `accounts.name_key`, the first column pair to exist. A third guard joined them on the way to
-    the database and it is not in this chapter, because it is not about the format: the role's
-    `UPDATE` grant names **both** columns, so the *statement* cannot be half a name either. See
-    [two guards, two moments](#a-pair-type-says-a-call-cannot-be-half) and
-    [accounts.md](accounts.md#business-rules--invariants).
+    row rather than the call — the `NOT NULL` pairs the schema carries on `accounts.name` /
+    `accounts.name_key` and `payees.name` / `payees.name_key`. A third guard joined them on the way
+    to the database and it is not in this chapter, because it is not about the format: the role's
+    `UPDATE` grant names **both** columns of each pair, so the *statement* cannot be half a name
+    either. See [two guards, two moments](#a-pair-type-says-a-call-cannot-be-half),
+    [accounts.md](accounts.md#business-rules--invariants) — where the live defect that rule was
+    found by is recorded — and [payees.md](payees.md#business-rules--invariants), where the same
+    half-a-name row produces two further failures because that table's index is what deduplicates
+    counterparties.
 
 - **A blind index MUST be decoded through the shared base64url decoder, never through
   `CiphertextEnvelopeText`.**
@@ -622,7 +639,9 @@ property would not compile at the first of those sites and would have nothing to
 second. `AccountConfiguration` does the same for `CK_accounts_name_length`, and renders a third
 constraint the budget column has no equivalent of: `CK_accounts_name_key_length` from
 `IndexedName.BlindIndexLength`, which is the same discipline applied to a number that belongs to an
-algorithm rather than to a product decision.
+algorithm rather than to a product decision. `PayeeConfiguration` renders the same three from the
+same three constants — the reason to note it is that a second copy of a spelling is where a typed
+literal creeps back in, and the family now has two members that have to agree.
 
 **The constraint is a band and not a width, and both bounds are inclusive.** Unlike
 `wrapped_account_keys`, whose payload has one legal size — and unlike `accounts.name_key` beside it,
@@ -678,9 +697,13 @@ flip inside the expression: PostgreSQL does not promise it evaluates `AND` left 
 alphabet.** `accounts` declares `CK_accounts_name_key_length`, `CK_accounts_name_length` and
 `CK_accounts_name_version`, which sort in exactly that order, so the version check is last there
 too and a zero-length name answers `23514` for the same reason it does on `budgets` — one that has
-nothing to do with either table. Nobody adding a fourth constraint to a narrative table should have
-to work out where it lands, which is why the rule below is written about **predicates** and not
-about names.
+nothing to do with either table. `payees` inherits the identical ordering, having chosen nothing:
+its three names are forced by its column names, and measured against the real three-constraint table
+a zero-length name reports `CK_payees_name_length`. **What `substring` buys is that the ordering
+stops mattering** — no predicate can raise, so every ordering yields `23514` naming *some*
+constraint, and the alphabet decides only which of two true violations is named first. Nobody adding
+a fourth constraint to a narrative table should have to work out where it lands, which is why the
+rule below is written about **predicates** and not about names.
 
 `substring` carries no such dependency. It answers a zero-length `bytea` for a zero-length input,
 that is not the version byte, the check is false rather than fatal, and the violation is `23514`
@@ -736,8 +759,9 @@ measured — and a zero-length buffer that *was* supplied stays refused.
 ### A pair type says a call cannot be half
 
 `IndexedName` holds a sealed name and the blind index over it as one value, and refuses either half
-on its own. The schema's two `NOT NULL` columns — `accounts.name` and `accounts.name_key` — say a
-**row** cannot be half. This type says a **call** cannot be. They are two guards over two different moments — one runs when a statement
+on its own. The schema's `NOT NULL` pairs — `accounts.name` with `accounts.name_key`, and
+`payees.name` with `payees.name_key` — say a **row** cannot be half. This type says a **call**
+cannot be. They are two guards over two different moments — one runs when a statement
 reaches the database, the other when a factory is invoked — and the reason to keep both is that the
 first cannot see a caller that meant to write both columns and wrote one, on a path that also writes
 something else the same transaction keeps.
@@ -895,7 +919,7 @@ registry, not because the format is shared.
 
 **The answers were frozen, then the client computed one, and only then did a column start storing
 one** — which is the order that argument asked for and got, and the window it asked to be settled
-inside has now closed on `accounts.name_key`. Every spec that pins
+inside has now closed on `accounts.name_key` and on `payees.name_key`. Every spec that pins
 them **reads this file** rather than a transcribed copy — the fold, the normalisation, the index
 itself, and the custody operation that delegates to it, which reads the same answers precisely to
 tell "it delegated" from "it reimplemented the grammar inline and got my one case right". The
@@ -904,11 +928,11 @@ reason is a sharper version of what
 client holds the only key that can recompute one, so a grammar or a normalisation settled after
 a column holds values orphans every row in it, and there is no way back that does not run
 through every account's own recovery factors. Agreement is free until the first value is
-written and unbuyable afterwards. **It is no longer free**: `accounts.name_key` exists, its width
-is a `CHECK`, and `IX_accounts_budget_id_name_key` enforces uniqueness over it. Nothing in
-production has written a value there — no browser in this product computes one for a route yet —
-but the file's status changed the day the column did: from a contract being agreed to a contract
-in force.
+written and unbuyable afterwards. **It is no longer free**: `accounts.name_key` and
+`payees.name_key` both exist, each width is a `CHECK`, and a unique index enforces one name per
+budget over each. Nothing in production has written a value into either — no browser in this product
+computes one for a route yet — but the file's status changed the day the first column did: from a
+contract being agreed to a contract in force.
 
 **The table is in the message for a disclosure, not for tidiness.** Without it, one name
 produces one value wherever it lives — so a payee and a category called the same thing collide,
@@ -993,20 +1017,21 @@ a ceiling — which the decoder applies to the encoded text and then to the buff
 then the floor and the version. `WrappedKeyEnvelope` reaches `CiphertextEnvelopeText` and adds its
 exact width on top.
 
-**The narrative side has its edge, two columns, and traffic on one of them.** A narrative value
+**The narrative side has its edge, three columns, and traffic on two of them.** A narrative value
 takes the same three steps and two more: `CiphertextEnvelopeText.TryDecode` with one of
 `NarrativeFieldLimits`' two caps as the ceiling — never a second decode of its own — then
 `NarrativeField.Sealed` with the same cap, or `IndexedName.Of` where a blind index rides beside it,
 in which case `BlindIndexText.TryDecode` runs on the index through the *shared* decoder rather than
-through the envelope one. **`accounts` is where every one of those steps now runs on a real
-request.** `CreateAccountHandler` decodes three opaque members — the identifier through
-`CanonicalIdentifier`, the envelope through `CiphertextEnvelopeText`, the index through
-`BlindIndexText` — attempting **every** one and reporting **every** failure, because the three
-arrive together from one piece of client code and a caller that got two wrong would otherwise learn
-about the second only after fixing the first; `UpdateAccountHandler` does the same for two members,
-the route carrying the identifier. `budgets.name` is the column with no request end: it is mapped,
-constrained and reachable, its converter calls `FromStore` on the way out and `Envelope` on the way
-in, and no route accepts a sealed budget name for either arm to run on. **Storing is where the rules
+through the envelope one. **`accounts` and `payees` are where every one of those steps now runs on a
+real request.** `CreateAccountHandler` and `CreatePayeeHandler` each decode three opaque members —
+the identifier through `CanonicalIdentifier`, the envelope through `CiphertextEnvelopeText`, the
+index through `BlindIndexText` — attempting **every** one and reporting **every** failure, because
+the three arrive together from one piece of client code and a caller that got two wrong would
+otherwise learn about the second only after fixing the first; `UpdateAccountHandler` and
+`RenamePayeeHandler` do the same for two members, the route carrying the identifier. `budgets.name`
+is the column with no request end: it is mapped, constrained and reachable, its converter calls
+`FromStore` on the way out and `Envelope` on the way in, and no route accepts a sealed budget name
+for either arm to run on. **Storing is where the rules
 stop being reversible**, which is why they were agreed first and why nothing here may be relaxed to
 make a screen easier to write. Nothing on this side opens anything, and nothing ever will.
 
@@ -1078,6 +1103,12 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   the pair costs — the server can no longer refuse a blank or over-long name, case folding is the
   client's, and a name and its index have to move together in the domain, in the schema **and on the
   `UPDATE` grant**.
+- **[payees.md](payees.md)** — the third column, `payees.name`, and the **second** blind index,
+  `payees.name_key`. Read it for what the two entries above cannot show: the same change on a table
+  the server used to **look rows up in**. Find-or-create by name became unimplementable rather than
+  unfashionable, creating a payee became a route of its own, and a payee row stopped implying a
+  transaction. It also owns the one place a duplicate index answers two different statuses — 409 on
+  a create, 400 on a rename — and why that follows from the remedy rather than from the constraint.
 - **[recovery-codes.md](recovery-codes.md)** and **[passkeys.md](passkeys.md)** — where the
   key-encryption keys that seal the wrapped copies come from. Neither reaches this format
   directly.
@@ -1093,12 +1124,18 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   caller that nothing calls.** `sealNarrativeField` and `openNarrativeField` are reached through
   `AccountKeyCustodyService.sealField` and `openField`, which hold the content key they need; no
   screen calls those. **What changed is the server, not the client, and the gap between them is now
-  a broken screen rather than a quiet wait.** `budgets.name` has no route at all, so every row in it
-  is NULL. `accounts.name` and `accounts.name_key` are `NOT NULL` and two routes accept them — but
+  two broken screens rather than a quiet wait.** `budgets.name` has no route at all, so every row in
+  it is NULL. `accounts.name` and `accounts.name_key` are `NOT NULL` and two routes accept them — but
   `account-api.service.ts` still sends a plaintext `name`, no `nameKey` and no client-minted `id`,
   and `accounts.component.ts` renders the response's `name` straight into a list where it is now
-  base64url. So the sealed account column is exercised only from the test suite, and `/app/accounts`
-  cannot create or rename anything until the client is moved onto the contract. **The
+  base64url. `payees.name` and `payees.name_key` are the same story with a sharper edge:
+  `payees-api.service.ts` offers only `getPayees()`, so nothing in the browser can create or rename a
+  payee at all, and the transaction form still posts a `payeeName` that both transaction wire shapes
+  now refuse by name — a **400**, so that screen cannot record an entry either. The refusal is the
+  deliberate half: a body carrying the retired member would otherwise be accepted with the
+  counterparty dropped, which is the one way this gap could lose data rather than render it wrongly,
+  and a screen that fails is the cheaper failure. So both sealed columns are exercised only from the
+  test suite. **The
   wrapped-key side is the counter-example rather than a companion, and citing the two together is
   the mistake to avoid**: `unwrapAccountKeys` is called on every passkey sign-in, because what it
   needed was a route to hand it an envelope and a class to hold what came out, and it has both. The

@@ -271,11 +271,21 @@ Load-bearing rules, each explained there or in the linked decision:
   binding comes from. **Every refusal the codec makes about its caller is
   `NarrativeFieldMisuseError`**, thrown before any cipher; a ciphertext that failed to authenticate
   never is, and `openField`'s `catch` re-throwing on that type is the only thing keeping a caller's
-  defect out of `unreadable`. **Two columns are typed for an envelope and one carries a blind index,
-  and no screen has caught up** — `budgets.name` and `accounts.name` are `bytea`, `accounts.name_key`
-  holds the only index, the account routes accept a sealed name and refuse a plaintext one, and
-  `/app/accounts` still sends the old shape, so that screen cannot create or rename until the client
-  is wired. Nothing in the browser seals anything yet. Neither codec is callerless: `AccountKeyCustodyService` reaches both halves
+  defect out of `unreadable`. **Three columns are typed for an envelope and two carry a blind index,
+  and no screen has caught up** — `budgets.name`, `accounts.name` and `payees.name` are `bytea`,
+  `accounts.name_key` and `payees.name_key` hold the indexes, those routes accept a sealed name and
+  refuse a plaintext one, and `/app/accounts` still sends the old shape, so that screen cannot create
+  or rename until the client is wired. **The transaction form is unwired the same way, and it is now
+  audible.** It posts `payeeName`, a member the API no longer binds; that answered **201 with no payee
+  attached** until `[JsonUnmappedMemberHandling(Disallow)]` went onto the **two** shapes that carried
+  the retired member — `CreateTransactionCommand` and `TransactionEndpoints.UpdateTransactionRequest`
+  — where the same body now answers **400**. The attribute is **per-type, measured**: the options in
+  `Api/Program.cs` stay `Skip` and an unannotated sibling still ignores an unknown member. Do not
+  widen it into a global setting, and do not paste it onto a type that never carried `payeeName` —
+  refusing what a caller was not asked for is a contract decision each shape makes for itself. The
+  cost is that every write the transaction form makes 400s until the client sends `payeeId`; chosen,
+  because losing the counterparty invisibly is worse than failing visibly. Nothing in the browser seals
+  anything yet. Neither codec is callerless: `AccountKeyCustodyService` reaches both halves
   of the narrative one and the whole of the blind index, which is the only way either key can be
   applied without leaving the class that holds it. **The blind index is built**, over its own
   grammar: `budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ normalized name`, looked up **as a pair**
@@ -301,6 +311,27 @@ Load-bearing rules, each explained there or in the linked decision:
   which is what shipped and what no test saw, because the case proving renames issued a one-column
   `UPDATE`) or admits half a row whose uniqueness value disagrees with its content, and nothing can
   see the second: recomputing the digest needs an index key the server does not have.
+  **`payees.name` is the first column whose sealing took a *capability* away, and the route table
+  changed to say so.** The server used to find-or-create a payee by name inside the transaction
+  write; it cannot any more — it holds an envelope it has no key for and the index is computed in a
+  browser, so it can neither fold case nor match text. `IPayeeRepository.GetOrCreateAsync` is
+  therefore **deleted**, `POST /api/payees` is the one creating path, and `PayeeName` on both
+  transaction commands became `PayeeId`. Four consequences a reader will try to undo. **One index now
+  answers two statuses**: a duplicate blind index is a **409** on the create and a **400** on the
+  rename, because a create's remedy is "adopt the row that already exists" — not a field anybody can
+  correct — and a rename's is "choose another name", which is; collapsing them costs the rename the
+  field-keyed problem document `payees.md` argues for. **Both transaction handlers lost
+  `ITransactionalExecutor`** — each is one `SaveChanges` now, and a transaction around a single save
+  reads as load-bearing to the next reader — which makes a payee **orphanable** by a failed
+  transaction POST, on a table with no `DELETE` grant; accepted, because every alternative either
+  needs the lookup that no longer exists or gives payees a second creating path. **Case-insensitive
+  reuse survives only as client behaviour**: two integration cases asserting the server did it were
+  deleted with no replacement, because there is no server behaviour left to assert. And the
+  never-materialise habit has a new instance — a **model-only** mutation here cannot be measured by
+  the suite at all: changing a `CHECK` in the configuration desynchronises the frozen baseline, and
+  `PendingModelChangesWarning` kills ~1200 tests *before* the database ever sees the new constraint,
+  so a zero-length-name case reddens on drift and not on the SQLSTATE it was written for. Measuring
+  those claims needs a container probe, not the suite.
   **`budgets.name` is the first column to hold ciphertext, and two things
   it gave up are decisions rather than gaps.** Per-user name uniqueness is **surrendered, not
   deferred** — every seal draws a fresh nonce so two identical names produce different bytes, and

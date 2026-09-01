@@ -285,7 +285,7 @@ public sealed class BudgetRepositoryTests
         CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
         db.CategoryGroups.Add(group);
         db.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
-        db.Payees.Add(Payee.Create(budgetId, "Corner Shop", SeedInstant));
+        db.Payees.Add(Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant));
         await db.SaveChangesAsync();
     }
 

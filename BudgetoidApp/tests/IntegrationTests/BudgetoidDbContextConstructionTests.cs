@@ -211,23 +211,22 @@ public sealed class BudgetoidDbContextConstructionTests
     }
 
     /// <summary>
-    /// The three entities whose name is still text this server can read, and whose uniqueness rule is
+    /// The two entities whose name is still text this server can read, and whose uniqueness rule is
     /// therefore still enforced over the name column itself under a case-folding collation.
     /// </summary>
     /// <remarks>
-    /// <b><see cref="Account" /> left this set and did not lose the rule</b> — see
-    /// <see cref="Model_ScopesAccountNameUniquenessToTheBudgetOverTheBlindIndex" />, which is where the
-    /// same rule now lives. The absence is worth reading rather than filling back in: an argument
-    /// naming <c>Account</c> here would look for an index over <c>BudgetId, Name</c> that no longer
-    /// exists and for a collation <c>bytea</c> cannot carry, so restoring it fails loudly rather than
-    /// quietly. What that leaves is the honest shape of the schema mid-migration — three name columns
-    /// still in the clear, one sealed — and this set shrinking as the rest are sealed is the schema
-    /// doing the right thing.
+    /// <b><see cref="Account" /> and now <see cref="Payee" /> have both left this set, and neither lost
+    /// the rule</b> — see <see cref="Model_ScopesNameUniquenessToTheBudgetOverTheBlindIndex" />, which
+    /// is where the same rule lives for both. The absences are worth reading rather than filling back
+    /// in: an argument naming either here would look for an index over <c>BudgetId, Name</c> that no
+    /// longer exists and for a collation <c>bytea</c> cannot carry, so restoring one fails loudly
+    /// rather than quietly. What that leaves is the honest shape of the schema mid-migration — two name
+    /// columns still in the clear, two sealed — and this set shrinking as the rest are sealed is the
+    /// schema doing the right thing.
     /// </remarks>
     [Test]
     [Arguments(typeof(CategoryGroup))]
     [Arguments(typeof(Category))]
-    [Arguments(typeof(Payee))]
     public async Task Model_ScopesNameUniquenessToTheBudget(Type entityClrType)
     {
         // Arrange
@@ -251,28 +250,43 @@ public sealed class BudgetoidDbContextConstructionTests
         await Assert.That(designTimeNameProperty.GetCollation()).IsEqualTo("case_insensitive");
     }
 
+    /// <summary>
+    /// The two entities whose name is a sealed envelope, and whose uniqueness rule therefore lives on
+    /// the blind index beside it.
+    /// </summary>
+    /// <remarks>
+    /// <b>Data-driven over both rather than one case each, because the rule is one rule.</b> A second
+    /// hand-written case would be the place a later reader relaxes one table's assertion without
+    /// noticing the other still makes it. What the two do NOT share is what a lost rule costs: on
+    /// accounts a duplicate name is a nuisance, while on payees this index IS the deduplication of
+    /// counterparties — the client resolves a name against the list it decrypted and mints a new payee
+    /// when it finds no match — so a payee index that enforced nothing would hand one budget two rows
+    /// for one counterparty with nothing on this side able to see it.
+    /// </remarks>
     [Test]
-    public async Task Model_ScopesAccountNameUniquenessToTheBudgetOverTheBlindIndex()
+    [Arguments(typeof(Account))]
+    [Arguments(typeof(Payee))]
+    public async Task Model_ScopesNameUniquenessToTheBudgetOverTheBlindIndex(Type entityClrType)
     {
         // Arrange
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act
-        IEntityType entity = db.Model.FindEntityType(typeof(Account))!;
+        IEntityType entity = db.Model.FindEntityType(entityClrType)!;
         IIndex budgetNameKeyIndex = entity
             .GetIndexes()
             .Single(index => index.Properties.Select(property => property.Name)
-                .SequenceEqual(new[] { "BudgetId", nameof(Account.NameKey) }));
+                .SequenceEqual(new[] { "BudgetId", "NameKey" }));
         bool anyIndexOverTheEnvelope = entity
             .GetIndexes()
-            .Any(index => index.Properties.Any(property => property.Name == nameof(Account.Name)));
+            .Any(index => index.Properties.Any(property => property.Name == "Name"));
 
         // Collation from the design-time model for the reason the sibling case reads it there: the
         // runtime read-optimized model does not carry one.
         IDesignTimeModel designTimeModel = db.GetService<IDesignTimeModel>();
-        IEntityType designTimeEntity = designTimeModel.Model.FindEntityType(typeof(Account))!;
-        IProperty designTimeName = designTimeEntity.FindProperty(nameof(Account.Name))!;
-        IProperty designTimeNameKey = designTimeEntity.FindProperty(nameof(Account.NameKey))!;
+        IEntityType designTimeEntity = designTimeModel.Model.FindEntityType(entityClrType)!;
+        IProperty designTimeName = designTimeEntity.FindProperty("Name")!;
+        IProperty designTimeNameKey = designTimeEntity.FindProperty("NameKey")!;
 
         // Assert — THE SAME RULE, one name per budget, over a different column. The envelope cannot
         // carry it: every seal draws a fresh nonce, so two rows holding one name hold different bytes
@@ -407,6 +421,11 @@ public sealed class BudgetoidDbContextConstructionTests
             // and nothing else. substring is total over every length, answers false rather than
             // raising, and still leaves NULL satisfying the predicate.
             //
+            // Two tables now make that accident concrete rather than one: accounts and payees both
+            // sort key_length, then length, then version. Neither ordering was chosen — the names are
+            // forced by the column names — which is the whole reason the predicate has to be the thing
+            // that cannot raise.
+            //
             // That difference is invisible to THIS pin, which compares configured text and cannot see
             // which constraint fires or what SQLSTATE a bad row produces. The pin's job here is that
             // somebody rewriting the version check back into get_byte has to move this literal and
@@ -462,6 +481,29 @@ public sealed class BudgetoidDbContextConstructionTests
             // comparisons rather than between because the upper bound exceeds int.
             "CK_passkey_signature_counters_value: passkey_signature_counters signature_counter >= 0 "
             + "and signature_counter <= 4294967295",
+            // The payee blind index's width, an equality for exactly the reason
+            // CK_accounts_name_key_length is one and rendered from the same
+            // IndexedName.BlindIndexLength. What differs is what a wrong value costs on this table:
+            // accounts uniqueness is a convenience, while a payee's blind index IS the deduplication
+            // of counterparties — the client resolves a name against the list it decrypted and mints a
+            // new payee when it finds no match, so an index that is the right width and the wrong
+            // value produces a second row for one counterparty with nothing on this side able to see
+            // it. No version arm here either: a blind index is a keyed digest, not an envelope.
+            "CK_payees_name_key_length: payees length(name_key) = 32",
+            // The payee name's band, same shape and same two constants as its accounts twin, and NOT
+            // NULL like it, so the floor refuses an empty value at the only level left that can. It is
+            // a floor on ENVELOPE bytes: an envelope over an empty string satisfies it exactly. Do not
+            // describe it as restoring the blank-name rule or the 200-character ceiling that
+            // Payee.ValidateOrThrow gave up — both were SURRENDERED to the client, and nothing here
+            // can count characters through ciphertext.
+            "CK_payees_name_length: payees length(name) between 29 and 1024",
+            // substring rather than get_byte, for the reason CK_budgets_name_version states below and
+            // the one CK_accounts_name_version makes concrete: this table sorts
+            // CK_payees_name_key_length, then CK_payees_name_length, then CK_payees_name_version, so a
+            // zero-length name happens to answer 23514 from a length check — held by nothing but
+            // "length" sorting before "version". substring is what makes that ordering cosmetic rather
+            // than load-bearing, because no predicate here can raise under any ordering.
+            "CK_payees_name_version: payees substring(name from 1 for 1) = '\\x01'::bytea",
             // The third table carrying a copy of its credential's type, and it owes its own pin for
             // the reason the two above do: the copy is what the composite foreign key ties back to
             // the credential, and a copy free to say 'passkey' would be a recovery code hanging off
@@ -672,7 +714,19 @@ public sealed class BudgetoidDbContextConstructionTests
         // obligation is the one every earlier move carried: whoever regenerates the baseline resets
         // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3), or that
         // deploy fails on the first CREATE TABLE against a database that already holds the schema.
-        const string frozenBaselineId = "20260901092459_InitialCreate";
+        // And it moved again for payees.name becoming bytea and payees.name_key arriving beside it —
+        // the accounts move, verbatim, on the table where it matters most. accounts uniqueness is a
+        // convenience; the payee index IS the deduplication of counterparties, because the client
+        // resolves a name against the list it decrypted and mints a new payee when it finds no match.
+        // So IX_payees_budget_id_name became IX_payees_budget_id_name_key over (budget_id, name_key),
+        // the case_insensitive collation left the column by force, and the same three checks arrived.
+        // WHAT THIS ONE ALSO TOOK AWAY, unlike its two predecessors: the server's ability to look a
+        // payee up by name at all, which is what deleted find-or-create and made POST /api/payees a
+        // route. A column type change and a NOT NULL column added to a populated table are shapes an
+        // additive migration cannot express without a data step, and there is none to write for the
+        // reason above. Same obligation, unchanged: whoever regenerates the baseline resets
+        // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3).
+        const string frozenBaselineId = "20260901155207_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

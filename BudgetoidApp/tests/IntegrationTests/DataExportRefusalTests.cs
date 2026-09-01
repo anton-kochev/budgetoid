@@ -231,10 +231,12 @@ public sealed class DataExportRefusalTests
     /// </summary>
     /// <remarks>
     /// The money data goes in through the real endpoints, so every row is one the application itself
-    /// could have written — same validation, same repositories, same least-privilege role. Only the
-    /// payee id is read back out of band: no endpoint returns it, the payee row exists solely because
-    /// the transaction named one, and reading it through <c>GET /api/payees</c> would couple this file
-    /// to that endpoint's wire shape for a value it uses as an opaque string.
+    /// could have written — same validation, same repositories, same least-privilege role. Nothing is
+    /// read out of band, and the payee is what changed: the sentence here used to say no endpoint
+    /// returned a payee id and that the row existed solely because a transaction named one. Both
+    /// halves are false now — <c>POST /api/payees</c> creates the row and answers with its id, and
+    /// <c>POST /api/transactions</c> NAMES a payee by that id rather than describing one by name,
+    /// because <c>payees.name</c> is an AEAD envelope this server cannot resolve a name against.
     /// </remarks>
     private static async Task<FurnishedIds> FurnishAccountAsync(PostgresTestHost host, HttpClient client)
     {
@@ -263,17 +265,26 @@ public sealed class DataExportRefusalTests
             description = (string?)null,
             categoryGroupId,
         });
+        // The payee is a request of its own now: POST /api/transactions takes an identifier, and the
+        // server can no longer resolve a name into a row — payees.name is an AEAD envelope drawn under
+        // a fresh nonce, so two seals of one name are different bytes. Seeded here rather than dropped
+        // because a budget with no payee row would leave this file measuring one relation fewer than
+        // its name claims, silently.
+        Guid payeeId = await CreateAsync(client, "/api/payees", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
         Guid transactionId = await CreateAsync(client, "/api/transactions", new
         {
             amount = -10m,
             date = "2026-06-26",
             accountId,
             description = "Coffee",
-            payeeName = "Starbucks",
+            payeeId,
             categoryId,
         });
-
-        Guid payeeId = await ReadSingleIdAsync(host, "select id from payees");
 
         return new FurnishedIds(accountId, categoryGroupId, categoryId, payeeId, transactionId);
     }
@@ -350,25 +361,6 @@ public sealed class DataExportRefusalTests
             DateTime createdAtUtc => createdAtUtc,
             var unexpected => throw new InvalidOperationException(
                 $"No budget stands under id '{budgetId}', got '{unexpected ?? "null"}'."),
-        };
-    }
-
-    /// <summary>
-    /// Runs <paramref name="sql" /> on the container superuser and returns the one id it selects,
-    /// refusing anything else — a furnishing step that quietly wrote no row would otherwise reach the
-    /// assertions as an empty <see cref="Guid" /> that no body contains, which reads as a pass.
-    /// </summary>
-    private static async Task<Guid> ReadSingleIdAsync(PostgresTestHost host, string sql)
-    {
-        await using NpgsqlConnection connection = new(host.ConnectionString);
-        await connection.OpenAsync();
-        await using NpgsqlCommand command = new(sql, connection);
-
-        return await command.ExecuteScalarAsync() switch
-        {
-            Guid id => id,
-            var unexpected => throw new InvalidOperationException(
-                $"Expected exactly one id from '{sql}', got '{unexpected ?? "null"}'."),
         };
     }
 

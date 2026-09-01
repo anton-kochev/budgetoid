@@ -44,7 +44,8 @@ namespace IntegrationTests;
 /// column lists and <c>budget_id</c> is on none of them, so <c>set budget_id = …</c> is refused
 /// with <c>42501</c> by the column grant before row-level security is consulted — a probe shaped
 /// that way passes today, against no policy at all, and measures the grant matrix instead. The
-/// updates below therefore write a granted text column, and the inserts satisfy every foreign key
+/// updates below therefore write a granted narrative column — text on three tables, a <c>bytea</c>
+/// envelope on <c>accounts</c> and <c>payees</c> — and the inserts satisfy every foreign key
 /// they touch by building each row out of the parents of the very budget it names, so that the only
 /// thing wrong with a rejected statement is the budget.
 /// </para>
@@ -72,11 +73,16 @@ public sealed class RlsIsolationTests
     ];
 
     /// <summary>
-    /// One writable text column per budget-owned table, with the value the seeding gives it. The
+    /// One writable narrative column per budget-owned table, with the label the seeding gives it. The
     /// column is chosen off the role's <c>UPDATE</c> grant lists, so a refusal can only come from
     /// row-level security: <c>transactions</c> has no <c>name</c>, hence <c>description</c>.
     /// </summary>
-    private static readonly (string Table, string Column, string SeededLabel)[] WritableTextColumns =
+    /// <remarks>
+    /// <b>The third member is a LABEL and no longer always a value.</b> Two of the five columns are
+    /// <c>bytea</c> now, so what is written is derived from the label rather than being it — see
+    /// <see cref="NarrativeValueFor" />, which is the one place that decision is taken.
+    /// </remarks>
+    private static readonly (string Table, string Column, string SeededLabel)[] WritableNarrativeColumns =
     [
         ("accounts", "name", "Checking"),
         ("category_groups", "name", "Everyday"),
@@ -90,22 +96,23 @@ public sealed class RlsIsolationTests
     /// read-back compares against.
     /// </summary>
     /// <remarks>
-    /// <b><c>accounts.name</c> is bytea and the other four are still text, so the VALUE follows the
-    /// table.</b> Writing a text literal into the sealed column comes back <c>42804</c> from the type
-    /// checker, before any policy is consulted — and this test reads its verdict off an AFFECTED-ROW
-    /// COUNT, so a type error does not merely mislead it, it throws out of the loop entirely. A short
-    /// buffer would be the same trap one step later, refused by <c>CK_accounts_name_length</c> with
-    /// <c>23514</c>. Both go through the shared fixture, so what is written is an envelope this server
-    /// would accept from a client.
+    /// <b><c>accounts.name</c> and <c>payees.name</c> are bytea and the other three are still text, so
+    /// the VALUE follows the table.</b> Writing a text literal into a sealed column comes back
+    /// <c>42804</c> from the type checker, before any policy is consulted — and this test reads its
+    /// verdict off an AFFECTED-ROW COUNT, so a type error does not merely mislead it, it throws out of
+    /// the loop entirely. A short buffer would be the same trap one step later, refused by
+    /// <c>CK_accounts_name_length</c> or <c>CK_payees_name_length</c> with <c>23514</c>. Both go
+    /// through the shared fixture, so what is written is an envelope this server would accept from a
+    /// client.
     /// </remarks>
     private static object NarrativeValueFor(string table, string label) =>
-        table is "accounts"
+        table is "accounts" or "payees"
             ? SealedNarrative.Name(label).Envelope.ToArray()
             : label;
 
     /// <summary>
-    /// Compares what a column actually holds against the label it was written from, bytes for
-    /// <c>accounts.name</c> and text for the rest.
+    /// Compares what a column actually holds against the label it was written from, bytes for the two
+    /// sealed columns and text for the rest.
     /// </summary>
     private static bool NarrativeColumnHolds(string table, object? actual, string label) =>
         NarrativeValueFor(table, label) switch
@@ -177,7 +184,7 @@ public sealed class RlsIsolationTests
         const string renamed = "Renamed in place";
         List<string> foreignRowsReached = [];
         List<string> ownRowsUnreachable = [];
-        foreach ((string table, string column, _) in WritableTextColumns)
+        foreach ((string table, string column, _) in WritableNarrativeColumns)
         {
             int foreign = await UpdateTextAsync(
                 app, table, column, other.RowIn(table), NarrativeValueFor(table, overwritten));
@@ -204,7 +211,7 @@ public sealed class RlsIsolationTests
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         List<string> foreignRowsChanged = [];
-        foreach ((string table, string column, string seeded) in WritableTextColumns)
+        foreach ((string table, string column, string seeded) in WritableNarrativeColumns)
         {
             object? actual = await ReadColumnAsync(admin, table, column, other.RowIn(table));
             if (!NarrativeColumnHolds(table, actual, seeded))
@@ -1118,9 +1125,11 @@ public sealed class RlsIsolationTests
     /// two owners for the mirrored reason.
     /// </para>
     /// <para>
-    /// Names repeat across the two budgets on purpose — the unique indexes are on
-    /// <c>(budget_id, name)</c>, so identical names are legal and make the two tenants genuinely
-    /// indistinguishable except by <c>budget_id</c>. The budget names themselves differ, against
+    /// Names repeat across the two budgets on purpose — every unique index here leads with
+    /// <c>budget_id</c>, over <c>name</c> on <c>category_groups</c> and <c>categories</c> and over
+    /// <c>name_key</c> on <c>accounts</c> and <c>payees</c>, whose name column is a <c>bytea</c>
+    /// envelope — so identical names are legal in both shapes and make the two tenants genuinely
+    /// indistinguishable except by <c>budget_id</c>. The two budgets themselves differ, against
     /// <c>IX_budgets_user_id_name</c>.
     /// </para>
     /// <para>
@@ -1178,7 +1187,7 @@ public sealed class RlsIsolationTests
             SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
         CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
         Category category = Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant);
-        Payee payee = Payee.Create(budgetId, "Corner Shop", SeedInstant);
+        Payee payee = Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant);
         Transaction transaction = Transaction.Create(
             budgetId,
             account.Id,
@@ -1506,8 +1515,10 @@ public sealed class RlsIsolationTests
         string table,
         BudgetRows target)
     {
-        // Distinct from every seeded name, so the case-insensitive unique index on
-        // (budget_id, name) never turns a probe into a 23505 about something else.
+        // Distinct from every seeded name, so no per-budget uniqueness index turns a probe into a
+        // 23505 about something else — the case-insensitive one over (budget_id, name) on
+        // category_groups and categories, and the one over (budget_id, name_key) on accounts and
+        // payees, which the parameter block below derives from this same label.
         const string probeName = "Inserted by an isolation probe";
 
         // 'USD' is a real currencies row seeded by the migration and 'Checking' satisfies
@@ -1530,9 +1541,12 @@ public sealed class RlsIsolationTests
                 "insert into categories (id, budget_id, category_group_id, name, description, position, created_at_utc) " +
                 "values (@id, @budget_id, @parent_id, @name, null, 1, @created_at_utc)",
                 target.CategoryGroupId),
+            // payees carries BOTH halves of a sealed name too, for the same reason and with the same
+            // trap: name_key is NOT NULL, so a probe naming only `name` is refused with 23502 before
+            // any policy is consulted and this test reads a not-null violation as the RLS verdict.
             "payees" => (
-                "insert into payees (id, budget_id, name, created_at_utc) " +
-                "values (@id, @budget_id, @name, @created_at_utc)",
+                "insert into payees (id, budget_id, name, name_key, created_at_utc) " +
+                "values (@id, @budget_id, @name, @name_key, @created_at_utc)",
                 null),
             "transactions" => (
                 "insert into transactions (id, budget_id, account_id, amount, date, description, created_at_utc) " +
@@ -1547,20 +1561,22 @@ public sealed class RlsIsolationTests
         command.Parameters.AddWithValue("budget_id", target.BudgetId);
         command.Parameters.AddWithValue("created_at_utc", SeedInstant);
 
-        // accounts.name is bytea and the other four probes still write text, so the value follows the
-        // table rather than the parameter name. THE ENVELOPE HAS TO BE WELL FORMED AND NOT MERELY
-        // BINARY, which is the point of going through the shared fixture instead of handing over a few
-        // bytes: the column carries a length band and a version check, so a short buffer is refused
-        // with 23514 and a text literal with 42804 — from the type checker, before any policy is
-        // consulted. Either would be read here as the row-level-security refusal this test is looking
-        // for, on the INSERT that is supposed to be REFUSED, while the one that is supposed to SUCCEED
-        // failed the same way and took the whole pair down with it.
+        // accounts.name and payees.name are bytea and the other three probes still write text, so the
+        // value follows the table rather than the parameter name. THE ENVELOPE HAS TO BE WELL FORMED
+        // AND NOT MERELY BINARY, which is the point of going through the shared fixture instead of
+        // handing over a few bytes: each column carries a length band and a version check, so a short
+        // buffer is refused with 23514 and a text literal with 42804 — from the type checker, before
+        // any policy is consulted. Either would be read here as the row-level-security refusal this
+        // test is looking for, on the INSERT that is supposed to be REFUSED, while the one that is
+        // supposed to SUCCEED failed the same way and took the whole pair down with it.
         //
         // The label survives only as what makes the probe's row distinguishable; nothing reads it back.
-        // On accounts it also does the job the comment above the literal describes — the unique index
-        // is over (budget_id, name_key) now, so it is the INDEX that has to be unlike anything seeded,
-        // and deriving both halves from one distinctive label is what keeps that true.
-        if (table is "accounts")
+        // On both sealed tables it also does the job the comment above the literal describes — the
+        // unique index is over (budget_id, name_key) now, so it is the INDEX that has to be unlike
+        // anything seeded, and DERIVING BOTH HALVES FROM ONE DISTINCTIVE LABEL is what keeps that true.
+        // A fixed index would collide with whatever a seeder happened to write and answer 23505, which
+        // this test would read as the policy firing.
+        if (table is "accounts" or "payees")
         {
             command.Parameters.AddWithValue("name", SealedNarrative.Name(probeName).Envelope.ToArray());
             command.Parameters.AddWithValue("name_key", SealedNarrative.BlindIndex(probeName).ToArray());
@@ -1641,8 +1657,10 @@ public sealed class RlsIsolationTests
     }
 
     /// <summary>
-    /// Writes one granted text column of one row and returns the affected-row count. Never
+    /// Writes one granted narrative column of one row and returns the affected-row count. Never
     /// <c>budget_id</c> — see the class remarks for why that column would make the probe vacuous.
+    /// The name is older than the columns: two of the five it is called on are <c>bytea</c>, which is
+    /// why <paramref name="value" /> is an <see cref="object" /> rather than a <see cref="string" />.
     /// </summary>
     private static async Task<int> UpdateTextAsync(
         NpgsqlConnection connection,
@@ -1653,8 +1671,8 @@ public sealed class RlsIsolationTests
     {
         // Table and column are interpolated because every call site passes them from the literal
         // arrays above; the values are parameters, as they must be. The value is an `object` because
-        // accounts.name is bytea while the other four narrative columns are still text — see
-        // NarrativeValueFor for what a text literal in the sealed column actually does here.
+        // accounts.name and payees.name are bytea while the other three narrative columns are still
+        // text — see NarrativeValueFor for what a text literal in a sealed column actually does here.
         await using NpgsqlCommand command = new(
             $"update {table} set {column} = @value where id = @id",
             connection);

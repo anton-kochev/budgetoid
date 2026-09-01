@@ -98,11 +98,11 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // so Include is unavailable and the document is stitched by id in the handler. They run in
         // sequence because one DbContext serves one command at a time.
         //
-        // Accounts are projected into an anonymous row and shaped afterwards, the way
+        // Accounts and payees are projected into an anonymous row and shaped afterwards, the way
         // ListOwnedBudgetsAsync above handles budgets.name and for the same reason: the column carries a
         // value converter, so the provider translates the property itself and the NarrativeField exists
-        // only once the row has materialized. The other four keep their in-query projection because none
-        // of their columns is sealed yet.
+        // only once the row has materialized. The other three keep their in-query projection because
+        // none of their columns is sealed yet — that is a statement about today, not a rule.
         //
         // name_key is deliberately not among the members. It is the one accounts column this document
         // omits: the blind index is derivable from the name by anybody holding the account's index key —
@@ -163,16 +163,35 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
                 category.CreatedAtUtc))
             .ToListAsync(cancellationToken);
 
-        List<ExportedPayee> payees = await dbContext.Payees
+        // Payees are projected into an anonymous row and shaped afterwards for the reason the accounts
+        // above give: payees.name carries a value converter, so the provider translates the property
+        // itself and the NarrativeField exists only once the row has materialized.
+        //
+        // name_key is deliberately not among the members, the second column this document omits and for
+        // the argument ExportedAccount already carries — a per-budget fingerprint of a name is
+        // derivable by anybody holding the index key, which is exactly who can read this file, and
+        // meaningless to anybody who is not.
+        var payeeRows = await dbContext.Payees
             .AsNoTracking()
             .OrderBy(payee => payee.CreatedAtUtc)
             .ThenBy(payee => payee.Id)
-            .Select(payee => new ExportedPayee(
+            .Select(payee => new
+            {
                 payee.Id,
                 payee.BudgetId,
                 payee.Name,
-                payee.CreatedAtUtc))
+                payee.CreatedAtUtc,
+            })
             .ToListAsync(cancellationToken);
+
+        List<ExportedPayee> payees =
+        [
+            .. payeeRows.Select(row => new ExportedPayee(
+                row.Id,
+                row.BudgetId,
+                PasskeyEncoding.Encode(row.Name.Envelope.Span),
+                row.CreatedAtUtc)),
+        ];
 
         // Description, PayeeId and CategoryId are projected as they are persisted. TransactionDto
         // coerces a null description to the empty string because a screen has to render something; a

@@ -312,7 +312,7 @@ public sealed class AppRoleGrantsTests
         // the seeding by adding one.
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
-            seed.Payees.Add(Payee.Create(budgetId, "Corner Shop", SeedInstant));
+            seed.Payees.Add(Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant));
             seed.Accounts.Add(Account.Create(
                 Guid.CreateVersion7(),
                 budgetId,

@@ -146,6 +146,25 @@ public sealed record ExportedCategory(
     int Position,
     DateTime CreatedAtUtc);
 
+/// <summary>One payee of a budget — the columns the <c>payees</c> row carries, less one.</summary>
+/// <param name="Id">The payee's identifier.</param>
+/// <param name="BudgetId">The budget that owns it.</param>
+/// <param name="Name">
+/// The payee's <b>sealed</b> name as unpadded base64url, for the reason
+/// <see cref="ExportedBudget.Name"/> gives about its own: the column is an AEAD envelope this server
+/// cannot open, and the member keeps its name because the completeness check over this document maps a
+/// table's columns onto a record's members.
+/// </param>
+/// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
+/// <remarks>
+/// <b><c>name_key</c> is not here, and it is the one column this record deliberately omits</b> — the
+/// treatment <see cref="ExportedAccount"/> already argues for its own. The blind index is derivable
+/// from the name by anybody holding the account's index key, which is exactly who can read this file,
+/// and is meaningless to anybody who is not. Shipping it would put a deterministic per-budget
+/// fingerprint of every counterparty name into a document the requirement asks to be a copy of what a
+/// person owns, not of what the server needs to police it — and on this table that fingerprint is the
+/// more telling of the two, because a payee list is the set of counterparties one person deals with.
+/// </remarks>
 public sealed record ExportedPayee(Guid Id, Guid BudgetId, string Name, DateTime CreatedAtUtc);
 
 public sealed record ExportedTransaction(

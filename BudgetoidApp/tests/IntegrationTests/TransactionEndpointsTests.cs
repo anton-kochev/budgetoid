@@ -166,7 +166,8 @@ public sealed class TransactionEndpointsTests
         Guid accountId = await CreateAccountAsync(client);
         Guid categoryGroupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, categoryGroupId, "Groceries");
-        Guid transactionId = await CreateTransactionAsync(client, accountId, "Starbucks", categoryId);
+        Guid payeeId = await CreatePayeeAsync(client, "Starbucks");
+        Guid transactionId = await CreateTransactionAsync(client, accountId, payeeId, categoryId);
 
         // Act
         HttpResponseMessage delete = await client.DeleteAsync($"/api/transactions/{transactionId}");
@@ -185,7 +186,7 @@ public sealed class TransactionEndpointsTests
         await Assert.That(accounts["items"]!.AsArray()
             .Any(node => node!["id"]!.GetValue<Guid>() == accountId)).IsTrue();
         await Assert.That(payees["items"]!.AsArray()
-            .Any(node => node!["name"]!.GetValue<string>() == "Starbucks")).IsTrue();
+            .Any(node => node!["id"]!.GetValue<Guid>() == payeeId)).IsTrue();
         await Assert.That(categories["items"]!.AsArray()
             .Any(node => node!["id"]!.GetValue<Guid>() == categoryId)).IsTrue();
     }
@@ -267,7 +268,9 @@ public sealed class TransactionEndpointsTests
         Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid groceriesId = await CreateCategoryAsync(client, groupId, "Groceries");
         Guid housingId = await CreateCategoryAsync(client, groupId, "Housing");
-        Guid transactionId = await CreateTransactionAsync(client, checkingId, "Starbucks", groceriesId);
+        Guid starbucksId = await CreatePayeeAsync(client, "Starbucks");
+        Guid landlordId = await CreatePayeeAsync(client, "Landlord");
+        Guid transactionId = await CreateTransactionAsync(client, checkingId, starbucksId, groceriesId);
         JsonNode before = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
 
         // Act
@@ -277,7 +280,7 @@ public sealed class TransactionEndpointsTests
             date = "2027-01-31",
             description = "Rent",
             accountId = savingsId,
-            payeeName = "Landlord",
+            payeeId = landlordId,
             categoryId = housingId,
         });
         JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
@@ -290,7 +293,9 @@ public sealed class TransactionEndpointsTests
         await Assert.That(after["accountId"]!.GetValue<Guid>()).IsEqualTo(savingsId);
         await Assert.That(after["accountName"]!.GetValue<string>())
             .IsEqualTo(SealedNarrative.EncodedName("Savings"));
-        await Assert.That(after["payeeName"]!.GetValue<string>()).IsEqualTo("Landlord");
+        await Assert.That(after["payeeId"]!.GetValue<Guid>()).IsEqualTo(landlordId);
+        await Assert.That(after["payeeName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Landlord"));
         await Assert.That(after["categoryId"]!.GetValue<Guid>()).IsEqualTo(housingId);
         await Assert.That(after["categoryName"]!.GetValue<string>()).IsEqualTo("Housing");
 
@@ -311,7 +316,8 @@ public sealed class TransactionEndpointsTests
         Guid accountId = await CreateAccountAsync(client);
         Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, groupId, "Groceries");
-        Guid transactionId = await CreateTransactionAsync(client, accountId, "Starbucks", categoryId);
+        Guid payeeId = await CreatePayeeAsync(client, "Starbucks");
+        Guid transactionId = await CreateTransactionAsync(client, accountId, payeeId, categoryId);
         JsonNode before = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
 
         // Act
@@ -337,7 +343,8 @@ public sealed class TransactionEndpointsTests
         Guid accountId = await CreateAccountAsync(client);
         Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, groupId, "Groceries");
-        Guid transactionId = await CreateTransactionAsync(client, accountId, "Starbucks", categoryId);
+        Guid payeeId = await CreatePayeeAsync(client, "Starbucks");
+        Guid transactionId = await CreateTransactionAsync(client, accountId, payeeId, categoryId);
 
         // Act
         HttpResponseMessage patch = await client.PatchAsJsonAsync(
@@ -349,7 +356,9 @@ public sealed class TransactionEndpointsTests
         await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
         await Assert.That(after["amount"]!.GetValue<decimal>()).IsEqualTo(-12.75m);
         await Assert.That(after["description"]!.GetValue<string>()).IsEqualTo("Coffee");
-        await Assert.That(after["payeeName"]!.GetValue<string>()).IsEqualTo("Starbucks");
+        await Assert.That(after["payeeId"]!.GetValue<Guid>()).IsEqualTo(payeeId);
+        await Assert.That(after["payeeName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Starbucks"));
         await Assert.That(after["categoryId"]!.GetValue<Guid>()).IsEqualTo(categoryId);
         await Assert.That(after["date"]!.GetValue<string>()).IsEqualTo("2026-06-26");
         await Assert.That(after["accountId"]!.GetValue<Guid>()).IsEqualTo(accountId);
@@ -365,13 +374,24 @@ public sealed class TransactionEndpointsTests
         Guid accountId = await CreateAccountAsync(client);
         Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
         Guid categoryId = await CreateCategoryAsync(client, groupId, "Groceries");
-        Guid transactionId = await CreateTransactionAsync(client, accountId, "Starbucks", categoryId);
+        Guid payeeId = await CreatePayeeAsync(client, "Starbucks");
+        Guid transactionId = await CreateTransactionAsync(client, accountId, payeeId, categoryId);
 
-        // Act
+        // Act — payeeId and NOT payeeName. That member no longer binds anything, and a body still
+        // sending it is now a 400: UpdateTransactionRequest carries
+        // [JsonUnmappedMemberHandling(Disallow)], which is per-type and reaches exactly it and
+        // CreateTransactionCommand — the two shapes that held payeeName. It deliberately does NOT reach
+        // CreatePayeeCommand or RenamePayeeRequest, so an extra member on POST /api/payees is still
+        // ignored in silence. The refusal itself is asserted by
+        // PatchTransaction_WithTheRetiredPayeeNameMember_IsRefusedAndChangesNothing, not here.
+        //
+        // This is the ONLY case that kills an inverted three-state branch: one written as
+        // `if (command.PayeeId.Value is { } id)` with no IsSet arm silently drops present-and-null and
+        // leaves the payee attached.
         HttpResponseMessage patch = await client.PatchAsJsonAsync($"/api/transactions/{transactionId}", new
         {
             description = (string?)null,
-            payeeName = (string?)null,
+            payeeId = (Guid?)null,
             categoryId = (Guid?)null,
         });
         JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
@@ -386,51 +406,259 @@ public sealed class TransactionEndpointsTests
         await Assert.That(after["categoryName"] is null).IsTrue();
     }
 
+    /// <summary>
+    /// Attaching a payee to a transaction that had none, by naming a row the caller created first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This replaced <c>PatchTransaction_WithNewPayeeName_CreatesThePayee</c>, and the replacement is
+    /// not a rename. That case asserted the patch <b>created</b> a payee, which was the whole of what
+    /// it was for; a patch creates nothing now, so the assertion "the payee landed in the budget's
+    /// list" moved to the create route and what is left here is the attachment.
+    /// </para>
+    /// <para>
+    /// The count is what stops this passing against a handler that minted a second row beside the one
+    /// it was pointed at — which no longer has a code path to arrive by, and is asserted anyway because
+    /// nothing but this line would notice one coming back.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task PatchTransaction_WithNewPayeeName_CreatesThePayee()
+    public async Task PatchTransaction_WithAPayeeId_AttachesThatPayeeAndCreatesNothing()
     {
         // Arrange
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         Guid transactionId = await CreateTransactionAsync(client, accountId);
+        Guid landlordId = await CreatePayeeAsync(client, "Landlord");
 
         // Act
         HttpResponseMessage patch = await client.PatchAsJsonAsync(
             $"/api/transactions/{transactionId}",
-            new { payeeName = "Landlord" });
+            new { payeeId = landlordId });
         JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
         JsonNode payees = await GetJsonAsync(client, "/api/payees");
 
-        // Assert — the payee must land in the budget's payee list, not just on the transaction row.
+        // Assert
         await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
-        await Assert.That(after["payeeName"]!.GetValue<string>()).IsEqualTo("Landlord");
-        await Assert.That(payees["items"]!.AsArray()
-            .Any(node => node!["name"]!.GetValue<string>() == "Landlord")).IsTrue();
+        await Assert.That(after["payeeId"]!.GetValue<Guid>()).IsEqualTo(landlordId);
+        await Assert.That(after["payeeName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Landlord"));
+        await Assert.That(payees["items"]!.AsArray().Count).IsEqualTo(1);
     }
 
+    /// <summary>
+    /// A <c>payeeId</c> naming no payee this budget holds is a <b>400</b>, whether it names no row at
+    /// all or a row another budget owns.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>payees.GetByIdAsync</c> guard in the handler can be deleted today and nothing
+    /// objects.</b> <c>TransactionRepository.AddAsync</c> has no <c>catch</c> of any kind, so an
+    /// unsatisfiable foreign key reaches <c>GlobalExceptionHandler</c> as a <c>23503</c> and the caller
+    /// gets a 500 — a defect report for what is a bad request. These two cases are the whole of what
+    /// closes it.
+    /// </para>
+    /// <para>
+    /// <b>The cross-budget case is what separates "unknown id" from "foreign id", and neither covers
+    /// the other.</b> A foreign payee SATISFIES the foreign key: the row exists, so a handler with no
+    /// guard would answer 201 and file a transaction pointing at another budget's counterparty, with
+    /// nothing red anywhere. What refuses it is the <c>BudgetIsolation</c> query filter making the read
+    /// come back null, which is why it lands on the same sentence as an identifier matching nothing.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task PatchTransaction_WithExistingPayeeNameInAnotherCase_ReusesThatPayee()
+    public async Task PostTransaction_WithAnUnknownOrForeignPayeeId_ReturnsBadRequest()
     {
-        // Arrange — one transaction already owns the payee "Starbucks"; a second one has none.
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient clientA = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient clientB = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
+        Guid accountB = await CreateAccountAsync(clientB);
+        Guid payeeA = await CreatePayeeAsync(clientA, "Starbucks");
+
+        // Act
+        HttpResponseMessage unknown = await clientB.PostAsJsonAsync("/api/transactions", new
+        {
+            amount = -10m,
+            date = "2026-06-26",
+            accountId = accountB,
+            description = "Coffee",
+            payeeId = Guid.CreateVersion7(),
+        });
+        JsonNode unknownProblem =
+            (await JsonNode.ParseAsync(await unknown.Content.ReadAsStreamAsync()))!;
+
+        HttpResponseMessage foreign = await clientB.PostAsJsonAsync("/api/transactions", new
+        {
+            amount = -10m,
+            date = "2026-06-26",
+            accountId = accountB,
+            description = "Coffee",
+            payeeId = payeeA,
+        });
+        JsonNode foreignProblem =
+            (await JsonNode.ParseAsync(await foreign.Content.ReadAsStreamAsync()))!;
+
+        JsonNode transactionsB = await GetJsonAsync(clientB, "/api/transactions");
+
+        // Assert — 400 and not 500, keyed on the member the caller can correct.
+        await Assert.That(unknown.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(unknownProblem["errors"]!["PayeeId"] is not null).IsTrue();
+        await Assert.That(foreign.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(foreignProblem["errors"]!["PayeeId"] is not null).IsTrue();
+
+        // Neither refusal wrote a transaction. A handler that saved first and validated afterwards
+        // would satisfy both status codes.
+        await Assert.That(transactionsB["items"]!.AsArray().Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The patch leg's half of
+    /// <see cref="PostTransaction_WithAnUnknownOrForeignPayeeId_ReturnsBadRequest" />, and it is owed
+    /// separately: the two handlers resolve the payee in two different blocks of code.
+    /// </summary>
+    /// <remarks>
+    /// <c>UpdateTransactionHandler</c> reads the payee <b>above every mutation</b>, so a refused patch
+    /// must leave the transaction exactly as it was — including the payee it already had. A guard that
+    /// ran after <c>transaction.Update(...)</c> would answer 400 having already changed the row in
+    /// memory, and the assertions below are what would notice if that save ever went through.
+    /// </remarks>
+    [Test]
+    public async Task PatchTransaction_WithAnUnknownOrForeignPayeeId_ReturnsBadRequestAndChangesNothing()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient clientA = (await host.Factory.CreateSignedInClientAsync("google-a")).Client;
+        HttpClient clientB = (await host.Factory.CreateSignedInClientAsync("google-b")).Client;
+        Guid accountB = await CreateAccountAsync(clientB);
+        Guid payeeB = await CreatePayeeAsync(clientB, "Landlord");
+        Guid transactionB = await CreateTransactionAsync(clientB, accountB, payeeB);
+        Guid payeeA = await CreatePayeeAsync(clientA, "Starbucks");
+
+        // Act — an amount rides along on both, so a handler that applied the rest of the patch before
+        // refusing the payee is visible in the row rather than only in the status.
+        HttpResponseMessage unknown = await clientB.PatchAsJsonAsync(
+            $"/api/transactions/{transactionB}",
+            new { amount = -99m, payeeId = Guid.CreateVersion7() });
+        JsonNode unknownProblem =
+            (await JsonNode.ParseAsync(await unknown.Content.ReadAsStreamAsync()))!;
+
+        HttpResponseMessage foreign = await clientB.PatchAsJsonAsync(
+            $"/api/transactions/{transactionB}",
+            new { amount = -99m, payeeId = payeeA });
+        JsonNode foreignProblem =
+            (await JsonNode.ParseAsync(await foreign.Content.ReadAsStreamAsync()))!;
+
+        JsonNode after = await GetJsonAsync(clientB, $"/api/transactions/{transactionB}");
+
+        // Assert
+        await Assert.That(unknown.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(unknownProblem["errors"]!["PayeeId"] is not null).IsTrue();
+        await Assert.That(foreign.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(foreignProblem["errors"]!["PayeeId"] is not null).IsTrue();
+
+        // Untouched: the payee it already had, and the amount the refused patches carried.
+        await Assert.That(after["payeeId"]!.GetValue<Guid>()).IsEqualTo(payeeB);
+        await Assert.That(after["amount"]!.GetValue<decimal>()).IsEqualTo(-10m);
+    }
+
+    /// <summary>
+    /// A create body still carrying the retired <c>payeeName</c> member is <b>refused</b>, and nothing
+    /// is written.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It is the exact shape the shipped Angular client sends — <c>transactions-api.service.ts</c> still
+    /// declares <c>payeeName?: string</c>. With nothing declared, <c>System.Text.Json</c> drops a
+    /// property matching no parameter without a word, so this body used to answer <b>201</b> with a
+    /// transaction naming no counterparty: a person's counterparty lost with nothing on either side
+    /// seeing it. <c>[JsonUnmappedMemberHandling(Disallow)]</c> on
+    /// <see cref="Application.Transactions.CreateTransaction.CreateTransactionCommand" /> is what turns
+    /// that silence into a 400.
+    /// </para>
+    /// <para>
+    /// <b>The refusal is per-type and reaches exactly two wire shapes</b> — this command and
+    /// <c>TransactionEndpoints.UpdateTransactionRequest</c>, the two that carried <c>payeeName</c>. It
+    /// is deliberately <b>not</b> on <c>CreatePayeeCommand</c> or <c>RenamePayeeRequest</c>, so an extra
+    /// member on <c>POST /api/payees</c> is still ignored in silence; whether a shape refuses what it
+    /// was not asked for is a contract decision that shape makes for itself, and no
+    /// <c>UnmappedMemberHandling</c> belongs in <c>Api/Program.cs</c>, whose options every route shares.
+    /// </para>
+    /// <para>
+    /// <b>The empty transaction list is the half a reader will drop.</b> A refusal that still persisted
+    /// the row would be worse than the silent 201 it replaced: the caller is told the write failed while
+    /// the payee-less transaction is filed anyway.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PostTransaction_WithTheRetiredPayeeNameMember_IsRefusedAndWritesNothing()
+    {
+        // Arrange
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
-        await CreateTransactionAsync(client, accountId, "Starbucks");
-        Guid transactionId = await CreateTransactionAsync(client, accountId);
 
-        // Act
-        HttpResponseMessage patch = await client.PatchAsJsonAsync(
-            $"/api/transactions/{transactionId}",
-            new { payeeName = "STARBUCKS" });
-        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+        // Act — the stale client's body verbatim: a payee NAME and no payeeId.
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
+        {
+            amount = -10m,
+            date = "2026-06-26",
+            accountId,
+            description = "Coffee",
+            payeeName = "Starbucks",
+        });
+        JsonNode transactions = await GetJsonAsync(client, "/api/transactions");
         JsonNode payees = await GetJsonAsync(client, "/api/payees");
 
-        // Assert — the count is the assertion that matters. Matching on the name alone would stay
-        // green against a handler that minted a second "STARBUCKS" row beside the first.
-        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
-        await Assert.That(payees["items"]!.AsArray().Count).IsEqualTo(1);
-        await Assert.That(after["payeeName"]!.GetValue<string>()).IsEqualTo("Starbucks");
+        // Assert — refused, and nothing landed. The two empty lists are the point: neither a
+        // payee-less transaction nor a payee minted from the word.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(transactions["items"]!.AsArray().Count).IsEqualTo(0);
+        await Assert.That(payees["items"]!.AsArray().Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The patch leg's half of
+    /// <see cref="PostTransaction_WithTheRetiredPayeeNameMember_IsRefusedAndWritesNothing" />, and it is
+    /// owed separately: the attribute is per-type, so the create command carrying it says nothing about
+    /// the patch request, which is a different declaration in a different file.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The body names an <c>amount</c> beside the retired member, so a binder that dropped
+    /// <c>payeeName</c> and bound the rest is visible in the row and not only in the status. Without
+    /// that, an implementation that refused nothing and applied the amount would still fail the status
+    /// assertion for a reason nobody could read off the case.
+    /// </para>
+    /// <para>
+    /// The payee the transaction already holds is asserted for the same reason it is on
+    /// <see cref="PatchTransaction_WithAnUnknownOrForeignPayeeId_ReturnsBadRequestAndChangesNothing" />:
+    /// a refusal that detached the counterparty on its way out is the failure this member was retired
+    /// to stop.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PatchTransaction_WithTheRetiredPayeeNameMember_IsRefusedAndChangesNothing()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        Guid accountId = await CreateAccountAsync(client);
+        Guid payeeId = await CreatePayeeAsync(client, "Landlord");
+        Guid transactionId = await CreateTransactionAsync(client, accountId, payeeId);
+
+        // Act — the stale client's patch body: a payee NAME riding beside a field that does bind.
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}",
+            new { amount = -99m, payeeName = "Starbucks" });
+        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+
+        // Assert — refused, and the row is exactly as it was: the amount the refused patch carried
+        // never landed, and the counterparty it did not name is still attached.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(after["amount"]!.GetValue<decimal>()).IsEqualTo(-10m);
+        await Assert.That(after["payeeId"]!.GetValue<Guid>()).IsEqualTo(payeeId);
     }
 
     [Test]
@@ -578,10 +806,21 @@ public sealed class TransactionEndpointsTests
         await Assert.That(nullAccountId.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
     }
 
+    /// <summary>
+    /// Creates one transaction, naming a payee <b>this caller already created</b> rather than
+    /// describing one by name.
+    /// </summary>
+    /// <remarks>
+    /// The parameter used to be a <c>string? payeeName</c> that the server resolved into a row,
+    /// creating one if no row held that name. It cannot: <c>payees.name</c> is an AEAD envelope drawn
+    /// under a fresh nonce, so two seals of one name are different bytes and no lookup by name is a
+    /// question this side can answer. Creating the payee is a request of its own now — see
+    /// <see cref="CreatePayeeAsync" /> — and what arrives here is the row it created.
+    /// </remarks>
     private static async Task<Guid> CreateTransactionAsync(
         HttpClient client,
         Guid accountId,
-        string? payeeName = null,
+        Guid? payeeId = null,
         Guid? categoryId = null)
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
@@ -590,8 +829,29 @@ public sealed class TransactionEndpointsTests
             date = "2026-06-26",
             accountId,
             description = "Coffee",
-            payeeName,
+            payeeId,
             categoryId,
+        });
+        response.EnsureSuccessStatusCode();
+        JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        return json["id"]!.GetValue<Guid>();
+    }
+
+    /// <summary>
+    /// Creates one payee through the route that now owns creation and hands back its identifier.
+    /// </summary>
+    /// <remarks>
+    /// The id is on the body because the client mints it: it is the associated data
+    /// <paramref name="label" />'s envelope was sealed against, so this API has to be sent the spelling
+    /// it will hand back. <c>"D"</c> is the one spelling <c>CanonicalIdentifier</c> accepts.
+    /// </remarks>
+    private static async Task<Guid> CreatePayeeAsync(HttpClient client, string label)
+    {
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
         });
         response.EnsureSuccessStatusCode();
         JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;

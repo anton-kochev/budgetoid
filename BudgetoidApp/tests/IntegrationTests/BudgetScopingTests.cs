@@ -14,18 +14,19 @@ namespace IntegrationTests;
 /// <remarks>
 /// <para>
 /// Deliberate coverage judgement: uniqueness is proven end-to-end for <c>Account</c> only. Category
-/// groups, categories and payees carry an identical-in-shape <c>(BudgetId, Name)</c> unique index, so
-/// <c>Model_ScopesNameUniquenessToTheBudget</c> covers them and a fourth Testcontainer would buy
+/// groups and categories carry a <c>(BudgetId, Name)</c> unique index and <c>Payee</c> carries a
+/// <c>(BudgetId, NameKey)</c> one shaped exactly like the account's, so the two
+/// <c>Model_ScopesNameUniqueness…</c> cases cover all three and a fourth Testcontainer would buy
 /// nothing. This is not an oversight.
 /// </para>
 /// <para>
-/// <b>"Byte-for-byte identical" and "on the same collation" have both stopped being true of
-/// <c>Account</c>, which is why they are gone from the sentence above.</b> Those three tables still
-/// index the name COLUMN under <c>case_insensitive</c>; accounts indexes <c>name_key</c>, a blind
-/// index, and carries no collation at all because <c>bytea</c> cannot. The judgement survives the
-/// difference — the rule being proven is still "one name per budget", and the model test still covers
-/// the other three — but the two claims about sameness did not, and leaving them in would have made
-/// this remark evidence for a schema it had stopped describing.
+/// <b>"Byte-for-byte identical" and "on the same collation" stopped being true of <c>Account</c>, and
+/// then of <c>Payee</c>, which is why they are gone from the sentence above.</b> Category groups and
+/// categories still index the name COLUMN under <c>case_insensitive</c>; accounts and payees index
+/// <c>name_key</c>, a blind index, and carry no collation at all because <c>bytea</c> cannot. The
+/// judgement survives the difference — the rule being proven is still "one name per budget", and the
+/// model tests still cover the other three — but the two claims about sameness did not, and leaving
+/// them in would have made this remark evidence for a schema it had stopped describing.
 /// </para>
 /// </remarks>
 public sealed class BudgetScopingTests

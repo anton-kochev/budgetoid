@@ -1561,6 +1561,25 @@ The product's most repeated unit. M3 base: none — a plain semantic list.
 - Uncategorized shows "No category" muted — a plain fact, not a warning.
 - Press: `--bud-state-pressed` layer. No swipe actions (transactions are immutable).
 
+**Two departures, named rather than tidied away. The first: line 1 does not render a payee today, it
+renders ciphertext.** `payees.name` and `accounts.name` are sealed columns, so `payeeName` and
+`accountName` on a transaction response are AEAD envelopes in base64url, and `/app/transactions`
+writes the value straight into the line. Nothing in the browser opens one yet. The row above stays the target — the
+line shows the counterparty's name — and what it waits on is the client being moved onto the sealed
+contract: the account's content key is held by `AccountKeyCustodyService`, and each envelope has to
+be opened under the binding for its own table, column and **row id**, which is why the response
+carries `payeeId` and `accountId` beside the two names.
+
+**The second departure is larger and points the same way: nothing can be recorded from this screen
+at all.** The entry form still posts `payeeName`, which both transaction wire shapes now refuse by
+name, so every create and every edit answers 400. That is the API's choice rather than an accident,
+and it is the better of two failures: the alternative — an unmappable member dropped in silence —
+accepts the body and files the transaction with no counterparty on it, which is a ledger quietly
+losing who the money went to. The row above and the entry flow in [patterns](patterns.md) stay the
+target; what closes both departures is one piece of wiring — create the payee through its own route,
+send `payeeId`, and open the two envelopes under their own row ids. See [payees.md](../business-logic/payees.md) and
+[transactions.md](../business-logic/transactions.md).
+
 ## Cards
 
 - `--bud-surface`, 1px `--bud-hairline` border, `--bud-radius-md`, padding

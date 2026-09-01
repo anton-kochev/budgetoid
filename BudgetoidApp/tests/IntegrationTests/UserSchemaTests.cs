@@ -87,7 +87,7 @@ public sealed class UserSchemaTests
             CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
             seed.CategoryGroups.Add(group);
             seed.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
-            seed.Payees.Add(Payee.Create(budgetId, "Corner Shop", SeedInstant));
+            seed.Payees.Add(Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant));
             await seed.SaveChangesAsync();
         }
 

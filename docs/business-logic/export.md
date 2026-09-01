@@ -42,7 +42,9 @@ erDiagram
 The document carries a schema version, the user record, and an array of budgets each holding its
 five collections as nested arrays. Property names are camelCase. Every persisted column of every row
 it names ships, **including the parent ids the nesting already implies** — `budgets.userId` and each
-row's `budgetId`.
+row's `budgetId` — with **two named exceptions, both blind indexes**: `accounts.name_key` and
+`payees.name_key` are deliberately absent, argued under
+[Business Rules](#business-rules--invariants).
 
 Out of the document: `credentials`, `sessions`, `passkey_public_keys`, `passkey_signature_counters`,
 `webauthn_challenges` and `recovery_code_hashes` are identity material rather than the person's own
@@ -53,10 +55,12 @@ no tenant.
 
 ### MUST
 
-- **Carry every persisted column of every row it names** — a row present with a null name, a zeroed
-  balance or a dropped parent id satisfies a set comparison exactly, and a person restoring from
-  that file would find the rows there and the data gone. `ExportDocument`, pinned by
-  `DataExportCompletenessTests`.
+- **Carry every persisted column of every row it names**, less the two blind indexes named below — a
+  row present with a null name, a zeroed balance or a dropped parent id satisfies a set comparison
+  exactly, and a person restoring from that file would find the rows there and the data gone.
+  `ExportDocument`, pinned by `DataExportCompletenessTests`. The sealed name columns satisfy this by
+  shipping the **envelope**: the column's bytes, unaltered, which is the whole of what this side
+  holds.
 - **Carry a schema version identifier** — a saved file outlives the deployment that wrote it, and
   the version is the only thing telling a reader which shape they hold.
 - **Order every array by `CreatedAtUtc`** — without an `ORDER BY`, PostgreSQL row order is
@@ -132,8 +136,11 @@ no tenant.
   null `Description` to `string.Empty`, turning "wrote no description" into "wrote an empty string";
   `PayeeDto` is `(Id, Name)` and carries neither `CreatedAtUtc` nor `BudgetId`; `AccountDto`
   denormalizes currency name and symbol, adding fields no column holds. The read services behind
-  them order for display — `PayeeReadService` orders by name, the one order an export must not use,
-  because a rename would reshuffle the whole file and make two exports of unchanged data diff.
+  them order for display, and **that two of them currently order the way the export contract also
+  demands is a coincidence, not a reason to fold them together**: `PayeeReadService` sorts on
+  `CreatedAtUtc` then `Id` because a sealed name has no order worth sorting on — the first differing
+  byte after the version is the nonce — and it is free to change the day a client asks for something
+  else, where the export's ordering is a contract.
 - **Enforced in**: `Application/Users/ExportData/ExportDocument.cs` and `ExportReadService`.
   `DataExportCompletenessTests.Export_PreservesTheNullsAPersistedRowCarries` goes red the moment the
   document is rebuilt on `TransactionDto`, and asserts present-and-null rather than reading the
@@ -142,6 +149,34 @@ no tenant.
 - **Counterexample**: folding the document back onto the display DTOs to remove "duplication". Those
   shapes are free to change with the screens that consume them, and an export bound to them would
   follow.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: **Three exported names are envelopes and no blind index ships.** `budgets.name`,
+  `accounts.name` and `payees.name` cross as the column's AEAD envelope in unpadded base64url, under
+  the member names they always had; `accounts.name_key` and `payees.name_key` are the only persisted
+  columns the document leaves out.
+- **Why**: the server holds no key, so an envelope is the whole of what it can hand back — and the
+  member keeps its name because the completeness check maps a table's columns onto a record's
+  members, and renaming it would say the export had stopped carrying the column rather than that the
+  column had changed shape. The two index columns are excluded on the opposite argument: a blind
+  index is **derivable from the name** by anybody holding the account's index key, which is exactly
+  who can read the file, and meaningless to anybody who is not. Shipping one would put a
+  deterministic per-budget fingerprint of every name into an artifact that lands in a downloads
+  folder, a backup and a cloud sync — and on `payees` that fingerprint is the more telling of the
+  two, because a payee list is the set of counterparties one person deals with. The document is a
+  copy of what a person owns, not of what the server needs to police it.
+- **Enforced in**: `ExportedBudget.Name`, `ExportedAccount.Name` and `ExportedPayee.Name` are
+  `string`s carrying `PasskeyEncoding`-encoded bytes — never `System.Text.Json`'s own `byte[]`
+  handling, which emits padded standard base64 the client's strict decoder refuses — and neither
+  `ExportedAccount` nor `ExportedPayee` declares a `NameKey` member. `DataExportCompletenessTests`
+  asserts the exact encoded string rather than a substring or an equivalence, which is what makes it
+  able to see the wrong alphabet, and counts each row's properties, which is what makes it redden if
+  an index member is ever added.
+- **Counterexample**: decoding the names into text on the way out so the file reads nicely. There is
+  nothing on this side to decode with, so the only implementable version of that idea is the one
+  where the server holds a key — the design the product exists to avoid.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -163,7 +198,9 @@ no tenant.
   inversion the test is a decoration: rows written over HTTP get monotonic timestamps and monotonic
   v7 ids at once, so insertion, id and creation order coincide and nothing can be distinguished.
 - **Example**: a payee renamed between two exports keeps its position; only its name line diffs.
-  Under the display services' name ordering, the same rename reshuffles the whole array.
+  Ordering that array by the name itself would be worse than unstable now that the column is sealed:
+  every save draws a fresh nonce, so the whole array would reshuffle when an *unrelated* payee was
+  renamed, and no order a person recognises would ever come back.
 - **Source**: `[SOURCE: user-story]`
 
 ---

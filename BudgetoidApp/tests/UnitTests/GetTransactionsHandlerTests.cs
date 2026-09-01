@@ -108,8 +108,7 @@ public sealed class GetTransactionsHandlerTests
             categories,
             categoryGroups,
             new StubBudgetContext(account.BudgetId),
-            timeProvider,
-            new InMemoryTransactionalExecutor());
+            timeProvider);
         return handler.HandleAsync(new CreateTransactionCommand(
             20m,
             DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime),

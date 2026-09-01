@@ -184,13 +184,17 @@ public partial class InitialCreate : Migration
             {
                 id = table.Column<Guid>(type: "uuid", nullable: false),
                 budget_id = table.Column<Guid>(type: "uuid", nullable: false),
-                name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
+                name = table.Column<byte[]>(type: "bytea", nullable: false),
+                name_key = table.Column<byte[]>(type: "bytea", nullable: false),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
             {
                 table.PrimaryKey("PK_payees", x => x.id);
                 table.UniqueConstraint("AK_payees_id_budget_id", x => new { x.id, x.budget_id });
+                table.CheckConstraint("CK_payees_name_key_length", "length(name_key) = 32");
+                table.CheckConstraint("CK_payees_name_length", "length(name) between 29 and 1024");
+                table.CheckConstraint("CK_payees_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
                 table.ForeignKey(
                     name: "FK_payees_budgets_budget_id",
                     column: x => x.budget_id,
@@ -539,9 +543,9 @@ public partial class InitialCreate : Migration
             column: "user_id");
 
         migrationBuilder.CreateIndex(
-            name: "IX_payees_budget_id_name",
+            name: "IX_payees_budget_id_name_key",
             table: "payees",
-            columns: new[] { "budget_id", "name" },
+            columns: new[] { "budget_id", "name_key" },
             unique: true);
 
         migrationBuilder.CreateIndex(
