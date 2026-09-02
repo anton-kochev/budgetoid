@@ -271,11 +271,36 @@ Load-bearing rules, each explained there or in the linked decision:
   binding comes from. **Every refusal the codec makes about its caller is
   `NarrativeFieldMisuseError`**, thrown before any cipher; a ciphertext that failed to authenticate
   never is, and `openField`'s `catch` re-throwing on that type is the only thing keeping a caller's
-  defect out of `unreadable`. **Three columns are typed for an envelope and two carry a blind index,
-  and no screen has caught up** — `budgets.name`, `accounts.name` and `payees.name` are `bytea`,
-  `accounts.name_key` and `payees.name_key` hold the indexes, those routes accept a sealed name and
-  refuse a plaintext one, and `/app/accounts` still sends the old shape, so that screen cannot create
-  or rename until the client is wired. **The transaction form is unwired the same way, and it is now
+  defect out of `unreadable`. **Five columns are typed for an envelope and three carry a blind index,
+  and no screen has caught up** — `budgets.name`, `accounts.name`, `payees.name`,
+  `category_groups.name` and `category_groups.description` are `bytea`, and `accounts.name_key`,
+  `payees.name_key` and `category_groups.name_key` hold the indexes; those routes accept a sealed
+  name and refuse a plaintext one, and `/app/accounts` still sends the old shape, so that screen
+  cannot create or rename until the client is wired. **`category_groups.description` is the first
+  sealed *free-text* column and it carries rules no name column ever needed.** It is
+  **nullable**, capped at `NarrativeFieldLimits.DescriptionBytes` (2560) and not `NameBytes` (1024) —
+  the two are field *classes*, and this column is the first production caller of either the wider cap
+  or `NarrativeField.SealedOrAbsent` — and it gets **no blind index, ever**, because a description is
+  never looked up and one would publish a deterministic fingerprint of somebody's free text. **A lost
+  description is invisible where a lost name is `23502`**: a write path that decodes one and forgets
+  to assign it writes a legal `NULL`, byte-identical to a note nobody filed, so what holds it is that
+  every write path is covered by a case reading a **non-null** description back — never one asserting
+  the member is present or the response was a 204. **"Cleared" and "never filled" stay two rows**: an
+  empty note seals to exactly 29 bytes and an absent one is `NULL`, so the handlers' absence test is
+  `is null` and never `IsNullOrEmpty`/`IsNullOrWhiteSpace`, the DTO member stays `string?` with no
+  `?? string.Empty`, and the deleted `NormalizeDescription` — which folded whitespace onto `NULL` —
+  cannot come back in any form. Its `CHECK` pair also makes this the first table whose alphabetical
+  constraint ordering **crosses two columns** (`description_length` first of six), which is why a
+  `get_byte` spelling on the description's version check is shielded by the length band and caught by
+  **nothing in the suite** — held by review, measurable only with a container probe. And the group
+  half of `/app/categories` is the **third** screen that cannot write: `category-groups-api.service.ts`
+  still sends a plaintext `name` with no `id` and no `nameKey`, so a create 400s on three members at
+  once and a rename on two, while the category half still works because `categories.name` is still
+  text. A duplicate group name answers **400 keyed on `Name`** on both verbs — deliberately not the
+  payee create's 409, because the input to that rule is who *chose* the name and sealing a column
+  does not change it — and a duplicate **identifier** answers 409 with its own sentence, as on
+  accounts and payees.
+  **The transaction form is unwired the same way, and it is now
   audible.** It posts `payeeName`, a member the API no longer binds; that answered **201 with no payee
   attached** until `[JsonUnmappedMemberHandling(Disallow)]` went onto the **two** shapes that carried
   the retired member — `CreateTransactionCommand` and `TransactionEndpoints.UpdateTransactionRequest`
@@ -320,14 +345,18 @@ Load-bearing rules, each explained there or in the linked decision:
   answers two statuses**: a duplicate blind index is a **409** on the create and a **400** on the
   rename, because a create's remedy is "adopt the row that already exists" — not a field anybody can
   correct — and a rename's is "choose another name", which is; collapsing them costs the rename the
-  field-keyed problem document `payees.md` argues for. **The primary key answers a third, on payees
-  and accounts alike**: the id is client-minted, so a POST retried after a network timeout carries a
-  byte-identical body and collides on `PK_payees` / `PK_accounts`, not on the name index — measured
+  field-keyed problem document `payees.md` argues for. **The primary key answers a third, on payees,
+  accounts and category groups alike**: the id is client-minted, so a POST retried after a network
+  timeout carries a byte-identical body and collides on
+  `PK_payees` / `PK_accounts` / `PK_category_groups`, not on the name index — measured
   on postgres:17.10, a row violating **both** is reported under the **key**, because PostgreSQL
   checks a relation's indexes in **OID (creation) order** and the key is created with the table,
-  which is a different rule from the alphabetical one ordering a column's `CHECK` constraints. That
-  also makes `AK_{payees,accounts}_id_budget_id` unreachable as a reported name, so nothing matches
-  it. Both repositories translate it to a **409 carrying its own sentence**, never the duplicate-name
+  which is a different rule from the alphabetical one ordering a column's `CHECK` constraints. It was
+  measured once, on payees; the later tables inherit it by declaring the key with the table rather
+  than by anybody re-observing it. That
+  also makes `AK_{payees,accounts,category_groups}_id_budget_id` unreachable as a reported name, so
+  nothing matches it. All three repositories translate it to a **409 carrying its own sentence**,
+  never the duplicate-name
   one: the row wearing that id may hold a different name — or sit in a budget the caller cannot read
   — so "re-read your list" would send somebody looking for a name that is not there. The route is
   **not** made idempotent, because deciding whether the existing row is the same one means comparing
@@ -355,9 +384,12 @@ Load-bearing rules, each explained there or in the linked decision:
   `2202E` on a zero-length value rather than answering false — and measured on PostgreSQL 17.10,
   which of a column's checks fires first is decided by the **constraint name, alphabetically**, not
   by declaration order. `wrapped_account_keys` still carries `get_byte` and is correct only because
-  "length" sorts before "version". **The server carries the narrative edge and no traffic**:
+  "length" sorts before "version". **The server carries the narrative edge and four columns of
+  traffic on it** — accounts, payees and both of a category group's — **while `budgets.name` still
+  has none**:
   `NarrativeFieldLimits` holds two caps over field *classes* — 1024 for the five name columns, 2560
-  for the three description ones — bounding the **envelope** and never characters, because that is
+  for the three description ones, **both with production callers now** — bounding the **envelope**
+  and never characters, because that is
   the only length this side can measure; `NarrativeField` is the one type a narrative column accepts
   and has **no** constructor, factory or conversion taking a `string`, so writing plaintext into a
   column does not compile — **that absent member, and no test, is what holds "no narrative value is
@@ -366,9 +398,10 @@ Load-bearing rules, each explained there or in the linked decision:
   `BlindIndexText` rides the **shared** base64url decoder, never `CiphertextEnvelopeText`, which would
   demand a `0x01` a digest has nothing to answer with. `NarrativeField.FromStore` **does not
   re-validate** — a validating read makes a lowered cap retroactive and turns a one-integer diff into
-  data loss — and it is `internal` with no `InternalsVisibleTo` anywhere, so that rule is held by
-  review until the persistence step grants access, which the dependency-direction guard **cannot
-  see**. See
+  data loss — and it is `internal`, reachable by `Infrastructure` alone through the solution's one
+  `InternalsVisibleTo`, so every narrative converter's read arm calls it and no other ring can. That
+  grant is a row in the pinned edge set, so a second one reddens **by name**; what no guard can judge
+  is whether a grant deserves to exist, which is why the argument sits at the element. See
   [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md) and
   [ADR 0022](docs/decisions/0022-mint-narrative-row-identifiers-on-the-client.md).
 - **The schema carries no remnant of an erasure and the route table offers no way back** — no

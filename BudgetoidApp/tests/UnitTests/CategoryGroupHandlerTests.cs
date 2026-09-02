@@ -1,46 +1,48 @@
 using Application.CategoryGroups;
-using Application.CategoryGroups.CreateCategoryGroup;
 using Application.CategoryGroups.DeleteCategoryGroup;
 using Application.CategoryGroups.GetCategoryGroup;
 using Application.CategoryGroups.MoveCategoryGroup;
 using Domain.Common;
 using Microsoft.Extensions.Time.Testing;
+using TestSupport;
 using UnitTests.Fakes;
 
 namespace UnitTests;
 
+/// <summary>
+/// The three category-group handlers whose subject is not a narrative value: move, delete and read.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>This file is what is LEFT after the create and update legs moved out, and it is not a remnant.</b>
+/// <c>CreateCategoryGroupHandlerTests</c> and <c>UpdateCategoryGroupHandlerTests</c> supersede exactly one
+/// case that used to live here — the create leg's append rule, now
+/// <c>CreateCategoryGroupHandlerTests.HandleAsync_AppendsTheNextPosition</c> — and cover none of the five
+/// below. <see cref="MoveCategoryGroupHandler" />, <see cref="DeleteCategoryGroupHandler" /> and
+/// <see cref="GetCategoryGroupHandler" /> have no other unit coverage anywhere in the solution, so
+/// deleting the file with the two new ones landing would have taken reindexing, the out-of-range refusal,
+/// the has-categories refusal and both read outcomes with it.
+/// </para>
+/// <para>
+/// <b>Sealing changed one thing here and it is the seeding, not the subject.</b> A group's position, its
+/// identifier and whether it holds categories are all values this server can still read, so every rule
+/// these handlers own survives the columns moving untouched. What moved is that a seeded name is now a
+/// sealed envelope and its index — <see cref="SealedNarrative.Indexed" /> — and that the one assertion
+/// reading a name back off a DTO reads the ENVELOPE the fixture sealed, in the alphabet the API carries
+/// it in.
+/// </para>
+/// </remarks>
 public sealed class CategoryGroupHandlerTests
 {
-    [Test]
-    public async Task Create_AppendsGroupsInUserOrder()
-    {
-        // Arrange
-        var budgetId = Guid.CreateVersion7();
-        var timeProvider = TimeProvider();
-        var repository = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
-        var handler = new CreateCategoryGroupHandler(
-            repository,
-            new StubBudgetContext(budgetId),
-            timeProvider);
-
-        // Act
-        var first = await handler.HandleAsync(new CreateCategoryGroupCommand("Essentials", null));
-        var second = await handler.HandleAsync(new CreateCategoryGroupCommand("Lifestyle", null));
-
-        // Assert
-        await Assert.That(first.Position).IsEqualTo(0);
-        await Assert.That(second.Position).IsEqualTo(1);
-    }
-
     [Test]
     public async Task Move_ReindexesGroupsContiguously()
     {
         // Arrange
         var budgetId = Guid.CreateVersion7();
         var repository = new InMemoryCategoryGroupRepository(budgetId, TimeProvider());
-        var first = await repository.CreateAsync("First");
-        var second = await repository.CreateAsync("Second");
-        var third = await repository.CreateAsync("Third");
+        var first = await repository.CreateAsync(SealedNarrative.Indexed("First"));
+        var second = await repository.CreateAsync(SealedNarrative.Indexed("Second"));
+        var third = await repository.CreateAsync(SealedNarrative.Indexed("Third"));
         var handler = new MoveCategoryGroupHandler(repository);
 
         // Act
@@ -62,7 +64,7 @@ public sealed class CategoryGroupHandlerTests
         // Arrange
         var budgetId = Guid.CreateVersion7();
         var repository = new InMemoryCategoryGroupRepository(budgetId, TimeProvider());
-        var categoryGroup = await repository.CreateAsync("Only");
+        var categoryGroup = await repository.CreateAsync(SealedNarrative.Indexed("Only"));
         var handler = new MoveCategoryGroupHandler(repository);
 
         // Act
@@ -80,7 +82,7 @@ public sealed class CategoryGroupHandlerTests
         // Arrange
         var budgetId = Guid.CreateVersion7();
         var repository = new InMemoryCategoryGroupRepository(budgetId, TimeProvider());
-        var categoryGroup = await repository.CreateAsync();
+        var categoryGroup = await repository.CreateAsync(SealedNarrative.Indexed("Encumbered"));
         repository.MarkHasCategories(categoryGroup.Id);
         var handler = new DeleteCategoryGroupHandler(repository);
 
@@ -100,7 +102,7 @@ public sealed class CategoryGroupHandlerTests
         // Arrange
         var budgetId = Guid.CreateVersion7();
         var repository = new InMemoryCategoryGroupRepository(budgetId, TimeProvider());
-        var categoryGroup = await repository.CreateAsync("Essentials");
+        var categoryGroup = await repository.CreateAsync(SealedNarrative.Indexed("Lifestyle"));
         var handler = new GetCategoryGroupHandler(repository);
 
         // Act
@@ -110,7 +112,7 @@ public sealed class CategoryGroupHandlerTests
         // Assert
         await Assert.That(dto).IsNotNull();
         await Assert.That(dto!.Id).IsEqualTo(categoryGroup.Id);
-        await Assert.That(dto.Name).IsEqualTo("Essentials");
+        await Assert.That(dto.Name).IsEqualTo(SealedNarrative.EncodedName("Lifestyle"));
     }
 
     [Test]

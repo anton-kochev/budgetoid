@@ -211,21 +211,23 @@ public sealed class BudgetoidDbContextConstructionTests
     }
 
     /// <summary>
-    /// The two entities whose name is still text this server can read, and whose uniqueness rule is
+    /// The one entity whose name is still text this server can read, and whose uniqueness rule is
     /// therefore still enforced over the name column itself under a case-folding collation.
     /// </summary>
     /// <remarks>
-    /// <b><see cref="Account" /> and now <see cref="Payee" /> have both left this set, and neither lost
-    /// the rule</b> — see <see cref="Model_ScopesNameUniquenessToTheBudgetOverTheBlindIndex" />, which
-    /// is where the same rule lives for both. The absences are worth reading rather than filling back
-    /// in: an argument naming either here would look for an index over <c>BudgetId, Name</c> that no
+    /// <b><see cref="Account" />, <see cref="Payee" /> and now <see cref="CategoryGroup" /> have all
+    /// left this set, and none of them lost the rule</b> — see
+    /// <see cref="Model_ScopesNameUniquenessToTheBudgetOverTheBlindIndex" />, which is where the same
+    /// rule lives for all three. The absences are worth reading rather than filling back in: an
+    /// argument naming any of them here would look for an index over <c>BudgetId, Name</c> that no
     /// longer exists and for a collation <c>bytea</c> cannot carry, so restoring one fails loudly
-    /// rather than quietly. What that leaves is the honest shape of the schema mid-migration — two name
-    /// columns still in the clear, two sealed — and this set shrinking as the rest are sealed is the
-    /// schema doing the right thing.
+    /// rather than quietly. What that leaves is the honest shape of the schema mid-migration — one name
+    /// column still in the clear, three sealed — and this set shrinking as the rest are sealed is the
+    /// schema doing the right thing. It is now a single-argument case and stays data-driven for that
+    /// reason: <see cref="Category" /> is the next column to move, and the day it does this member goes
+    /// with it rather than being quietly rewritten around one hard-coded type.
     /// </remarks>
     [Test]
-    [Arguments(typeof(CategoryGroup))]
     [Arguments(typeof(Category))]
     public async Task Model_ScopesNameUniquenessToTheBudget(Type entityClrType)
     {
@@ -251,21 +253,24 @@ public sealed class BudgetoidDbContextConstructionTests
     }
 
     /// <summary>
-    /// The two entities whose name is a sealed envelope, and whose uniqueness rule therefore lives on
+    /// The three entities whose name is a sealed envelope, and whose uniqueness rule therefore lives on
     /// the blind index beside it.
     /// </summary>
     /// <remarks>
-    /// <b>Data-driven over both rather than one case each, because the rule is one rule.</b> A second
-    /// hand-written case would be the place a later reader relaxes one table's assertion without
-    /// noticing the other still makes it. What the two do NOT share is what a lost rule costs: on
+    /// <b>Data-driven over all three rather than one case each, because the rule is one rule.</b> A
+    /// second hand-written case would be the place a later reader relaxes one table's assertion without
+    /// noticing the others still make it. What the three do NOT share is what a lost rule costs: on
     /// accounts a duplicate name is a nuisance, while on payees this index IS the deduplication of
     /// counterparties — the client resolves a name against the list it decrypted and mints a new payee
     /// when it finds no match — so a payee index that enforced nothing would hand one budget two rows
-    /// for one counterparty with nothing on this side able to see it.
+    /// for one counterparty with nothing on this side able to see it. Category groups read as accounts
+    /// do: two groups under one name are a confusion a person can see and correct, and nothing in the
+    /// product looks a group up by name, so the index's whole job is to refuse the second row.
     /// </remarks>
     [Test]
     [Arguments(typeof(Account))]
     [Arguments(typeof(Payee))]
+    [Arguments(typeof(CategoryGroup))]
     public async Task Model_ScopesNameUniquenessToTheBudgetOverTheBlindIndex(Type entityClrType)
     {
         // Arrange
@@ -438,6 +443,49 @@ public sealed class BudgetoidDbContextConstructionTests
             // two hex digits wide for the reason the band above is rendered from its own constants.
             "CK_budgets_name_version: budgets substring(name from 1 for 1) = '\\x01'::bytea",
             "CK_categories_position: categories position >= 0",
+            // THE FIRST SEALED DESCRIPTION COLUMN IN THE PRODUCT, and the first table whose CHECK
+            // ordering crosses two columns. Same band shape as every name above, a DIFFERENT ceiling —
+            // NarrativeFieldLimits.DescriptionBytes, not NameBytes — because those are two caps over
+            // field CLASSES rather than two guesses at one number. A reviewer pasting NameBytes onto
+            // this line refuses values the column is meant to accept, and the failure lands on a client
+            // that sent a perfectly legal note.
+            //
+            // NOTHING SAYS "OR NULL" AND THAT IS THE RULE, not a gap: a CHECK is satisfied by NULL, so
+            // a group filing no note passes both description arms vacuously. Measured on
+            // postgres:17.10 over exactly these six constraints — NULL accepted, 29 bytes accepted,
+            // 2560 accepted, 2561 refused under this name, and clearing a description back to NULL by
+            // UPDATE succeeds.
+            "CK_category_groups_description_length: category_groups length(description) between 29 "
+            + "and 2560",
+            // substring, AND THE REASON A READER WILL GET BACKWARDS. The instinct is that a nullable
+            // column escapes get_byte's zero-length trap. It does not. Measured on postgres:17.10:
+            // get_byte(NULL::bytea, 0) answers NULL and does not raise, so a get_byte-spelled version
+            // check here is green on every row holding a NULL and every row holding a valid envelope,
+            // and bites only on the PRESENT, ZERO-LENGTH value — which is exactly what a client sending
+            // an empty bytea produces and the one value this check exists for. get_byte(''::bytea, 0)
+            // still raises 2202E from inside a CHECK on a nullable column.
+            //
+            // So nullability makes the wrong spelling QUIETER rather than safer, and the single case
+            // that catches it is the one a reviewer is most likely to call redundant with the name's.
+            "CK_category_groups_description_version: category_groups substring(description from 1 for "
+            + "1) = '\\x01'::bytea",
+            // The blind index's width, an equality for the reason CK_accounts_name_key_length and
+            // CK_payees_name_key_length are equalities, rendered from the same
+            // IndexedName.BlindIndexLength. No version arm: a blind index is a keyed digest, not an
+            // envelope.
+            "CK_category_groups_name_key_length: category_groups length(name_key) = 32",
+            "CK_category_groups_name_length: category_groups length(name) between 29 and 1024",
+            // A THIRD TABLE MAKES THE ALPHABETICAL ACCIDENT CONCRETE, and this one is the first where
+            // it crosses columns. Measured on postgres:17.10 over exactly these six: the sort is
+            // description_length, description_version, name_key_length, name_length, name_version,
+            // position — so a row violating a NAME rule and a DESCRIPTION rule is reported under the
+            // DESCRIPTION, and a row violating a description rule and the position rule is reported
+            // under the description too. Nothing in the configuration depends on that, because every
+            // narrative predicate here is spelled with substring and none of them can raise. What it
+            // forbids is a case asserting a constraint NAME for a row carrying more than one violation:
+            // a zero-length-name case must leave the description NULL, or it reports the description's.
+            "CK_category_groups_name_version: category_groups substring(name from 1 for 1) = "
+            + "'\\x01'::bytea",
             "CK_category_groups_position: category_groups position >= 0",
             // The issuer vocabulary, bounded the way the type vocabulary below it is: neither the
             // column nor UserRepository's lookup folds case, so without this 'Google' and 'google'
@@ -726,7 +774,22 @@ public sealed class BudgetoidDbContextConstructionTests
         // additive migration cannot express without a data step, and there is none to write for the
         // reason above. Same obligation, unchanged: whoever regenerates the baseline resets
         // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3).
-        const string frozenBaselineId = "20260901155207_InitialCreate";
+        // And it moved a fourth time for category_groups, which is the first move to carry a column
+        // the three before it did not have: category_groups.name becomes bytea with
+        // category_groups.name_key beside it — the accounts and payees move verbatim, index repointed
+        // to (budget_id, name_key), collation gone by force, the same three checks — AND
+        // category_groups.description becomes the product's first sealed free-text column. That one is
+        // NULLABLE, capped at NarrativeFieldLimits.DescriptionBytes rather than NameBytes, and carries
+        // NO blind index, because a description is never looked up and a deterministic digest over
+        // free text is a fingerprint nothing on the other side asked for. So this baseline declares
+        // FIVE new checks on one table rather than three, and the two description ones are the first
+        // in the schema that a NULL satisfies vacuously. WHAT THIS ONE ALSO TOOK AWAY: the server can
+        // no longer refuse a blank or over-long group name OR description — it holds envelopes it
+        // cannot count characters in — and, unique to the nullable column, a write path that decodes a
+        // description and forgets to assign it writes a legal NULL row where the NOT NULL name would
+        // have answered 23502. Same obligation, unchanged: whoever regenerates the baseline resets
+        // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3).
+        const string frozenBaselineId = "20260902093424_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

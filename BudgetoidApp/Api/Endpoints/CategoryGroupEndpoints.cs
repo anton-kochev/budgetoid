@@ -56,7 +56,8 @@ public static class CategoryGroupEndpoints
             CancellationToken cancellationToken) =>
         {
             await handler.HandleAsync(
-                new UpdateCategoryGroupCommand(id, request.Name, request.Description),
+                new UpdateCategoryGroupCommand(
+                    id, request.Name, request.NameKey, request.Description),
                 cancellationToken);
             return TypedResults.NoContent();
         });
@@ -85,6 +86,23 @@ public static class CategoryGroupEndpoints
         return endpoints;
     }
 
-    private sealed record UpdateCategoryGroupRequest(string Name, string? Description);
+    // The body of the PUT, and the only thing this slice lands in the Api ring: the subject is the
+    // request body, which Application already owns everywhere else.
+    //
+    // NameKey is required beside Name, because a group's name is two columns computed from one piece of
+    // text by one client — see CategoryGroup.Update for what a half-written name costs. Description is
+    // the only optional member, and a PUT with none CLEARS the note the group held; `null` and an absent
+    // member mean the same thing, while `""` is a malformed envelope and a 400.
+    //
+    // NO [JsonUnmappedMemberHandling(Disallow)] HERE. That attribute went onto the two transaction shapes
+    // because each had RETIRED a member a client was still sending, and refusing it visibly was better
+    // than dropping it in silence. Nothing on this shape is retired — every member is added — so pasting
+    // the attribute on would be a contract change with no argument behind it. The serializer options stay
+    // Skip.
+    private sealed record UpdateCategoryGroupRequest(
+        string Name,
+        string NameKey,
+        string? Description);
+
     private sealed record MoveCategoryGroupRequest(int Position);
 }

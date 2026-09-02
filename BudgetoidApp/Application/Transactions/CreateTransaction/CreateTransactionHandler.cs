@@ -109,8 +109,11 @@ public sealed class CreateTransactionHandler(
         // handed on untouched, in the alphabet every binary member of this API crosses JSON in, and
         // the browser that asked for it is what turns it back into a name. Decoding here would need a
         // key on this side, which is the design the product exists to avoid — and a placeholder
-        // string would be a lie the screen renders. payees.name is now the second such column, and it
-        // crosses the same way.
+        // string would be a lie the screen renders. payees.name and category_groups.name are the second
+        // and third such columns, and both cross the same way.
+        //
+        // category.Name is the one name here that is still text: categories.name is not sealed yet, and
+        // it is the next column to be. Do not fold the four into one rule in either direction.
         return TransactionDto.FromTransaction(
             transaction,
             PasskeyEncoding.Encode(account.Name.Envelope.Span),
@@ -119,6 +122,6 @@ public sealed class CreateTransactionHandler(
             payee is null ? null : PasskeyEncoding.Encode(payee.Name.Envelope.Span),
             category?.Name,
             categoryGroup?.Id,
-            categoryGroup?.Name);
+            categoryGroup is null ? null : PasskeyEncoding.Encode(categoryGroup.Name.Envelope.Span));
     }
 }

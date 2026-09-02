@@ -179,7 +179,13 @@ public sealed class TransactionRepositoryTests
         Guid categoryA;
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetA)))
         {
-            CategoryGroup categoryGroup = CategoryGroup.Create(budgetA, "Essentials", null, 0, UtcNow());
+            CategoryGroup categoryGroup = CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetA,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow());
             db.CategoryGroups.Add(categoryGroup);
             Category category = Category.Create(budgetA, categoryGroup.Id, "Groceries", null, 0, UtcNow());
             db.Categories.Add(category);
@@ -855,7 +861,13 @@ public sealed class TransactionRepositoryTests
     private static async Task<Guid> SeedCategoryGroupAsync(RepositoryTestHost host, Guid budgetId)
     {
         await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
-        CategoryGroup categoryGroup = CategoryGroup.Create(budgetId, "Essentials", null, 0, UtcNow());
+        CategoryGroup categoryGroup = CategoryGroup.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Essentials"),
+            null,
+            0,
+            UtcNow());
         db.CategoryGroups.Add(categoryGroup);
         await db.SaveChangesAsync();
         return categoryGroup.Id;

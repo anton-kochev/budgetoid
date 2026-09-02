@@ -42,9 +42,10 @@ erDiagram
 The document carries a schema version, the user record, and an array of budgets each holding its
 five collections as nested arrays. Property names are camelCase. Every persisted column of every row
 it names ships, **including the parent ids the nesting already implies** — `budgets.userId` and each
-row's `budgetId` — with **two named exceptions, both blind indexes**: `accounts.name_key` and
-`payees.name_key` are deliberately absent, argued under
-[Business Rules](#business-rules--invariants).
+row's `budgetId` — with **three named exceptions, all blind indexes**: `accounts.name_key`,
+`payees.name_key` and `category_groups.name_key` are deliberately absent, argued under
+[Business Rules](#business-rules--invariants). There is deliberately no fourth to omit on
+`category_groups`: a description carries no index at all.
 
 Out of the document: `credentials`, `sessions`, `passkey_public_keys`, `passkey_signature_counters`,
 `webauthn_challenges` and `recovery_code_hashes` are identity material rather than the person's own
@@ -153,24 +154,35 @@ no tenant.
 
 ---
 
-- **Rule**: **Three exported names are envelopes and no blind index ships.** `budgets.name`,
-  `accounts.name` and `payees.name` cross as the column's AEAD envelope in unpadded base64url, under
-  the member names they always had; `accounts.name_key` and `payees.name_key` are the only persisted
-  columns the document leaves out.
+- **Rule**: **Four exported names and one exported description are envelopes, and no blind index
+  ships.** `budgets.name`, `accounts.name`, `payees.name`, `category_groups.name` and
+  `category_groups.description` cross as the column's AEAD envelope in unpadded base64url, under the
+  member names they always had; `accounts.name_key`, `payees.name_key` and
+  `category_groups.name_key` are the only persisted columns the document leaves out.
 - **Why**: the server holds no key, so an envelope is the whole of what it can hand back — and the
   member keeps its name because the completeness check maps a table's columns onto a record's
   members, and renaming it would say the export had stopped carrying the column rather than that the
-  column had changed shape. The two index columns are excluded on the opposite argument: a blind
+  column had changed shape. The three index columns are excluded on the opposite argument: a blind
   index is **derivable from the name** by anybody holding the account's index key, which is exactly
   who can read the file, and meaningless to anybody who is not. Shipping one would put a
   deterministic per-budget fingerprint of every name into an artifact that lands in a downloads
-  folder, a backup and a cloud sync — and on `payees` that fingerprint is the more telling of the
-  two, because a payee list is the set of counterparties one person deals with. The document is a
+  folder, a backup and a cloud sync — and on `payees` that fingerprint is the most telling of the
+  three, because a payee list is the set of counterparties one person deals with. The document is a
   copy of what a person owns, not of what the server needs to police it.
-- **Enforced in**: `ExportedBudget.Name`, `ExportedAccount.Name` and `ExportedPayee.Name` are
+  - **The description is the first sealed column here that may legitimately be absent, and its null
+    is carried rather than coerced.** `null` is a note nobody wrote and a 29-byte envelope is a note
+    somebody wrote and then emptied; a copy of a person's data has to keep the two apart, and a
+    `?? string.Empty` on the way out would fold them and hand a reader a value that is not a legal
+    envelope. That is the same argument the document already makes for refusing `TransactionDto`'s
+    coercion, reaching a column where the coerced value would also be undecodable.
+  - **There is no `description_key` to omit**, and the absence is a decision rather than a gap in
+    this list: a description is never looked up, so it carries no index anywhere.
+- **Enforced in**: `ExportedBudget.Name`, `ExportedAccount.Name`, `ExportedPayee.Name`,
+  `ExportedCategoryGroup.Name` and `ExportedCategoryGroup.Description` are
   `string`s carrying `PasskeyEncoding`-encoded bytes — never `System.Text.Json`'s own `byte[]`
-  handling, which emits padded standard base64 the client's strict decoder refuses — and neither
-  `ExportedAccount` nor `ExportedPayee` declares a `NameKey` member. `DataExportCompletenessTests`
+  handling, which emits padded standard base64 the client's strict decoder refuses — and none of
+  `ExportedAccount`, `ExportedPayee` and `ExportedCategoryGroup` declares a `NameKey` member.
+  `DataExportCompletenessTests`
   asserts the exact encoded string rather than a substring or an equivalence, which is what makes it
   able to see the wrong alphabet, and counts each row's properties, which is what makes it redden if
   an index member is ever added.

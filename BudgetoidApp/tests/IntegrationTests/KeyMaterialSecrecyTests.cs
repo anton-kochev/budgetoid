@@ -562,12 +562,12 @@ public sealed class KeyMaterialSecrecyTests
     /// entry with no column is a red.
     /// </para>
     /// <para>
-    /// The twelve divide into five kinds, and the kinds are worth seeing. Two are the envelopes
+    /// The fifteen divide into five kinds, and the kinds are worth seeing. Two are the envelopes
     /// themselves — the only key-shaped thing this design lets cross the wire, and safe because the
     /// server holds nothing that opens them. Two are WebAuthn's own material, a handle that selects a
     /// credential and a <i>public</i> key published by design. Three are one-way values, two hashes and
-    /// a nonce, from which nothing is derived. Three are <i>content</i>. Two are <i>blind indexes</i>.
-    /// No sixth kind exists, and a thirteenth column would have to argue itself into one of the five or
+    /// a nonce, from which nothing is derived. Five are <i>content</i>. Three are <i>blind indexes</i>.
+    /// No sixth kind exists, and a sixteenth column would have to argue itself into one of the five or
     /// invent a sixth in writing.
     /// </para>
     /// <para>
@@ -580,10 +580,22 @@ public sealed class KeyMaterialSecrecyTests
     /// each other up and neither can be pasted over the other. It was also the first entry whose
     /// argument has to concede something — AES-GCM leaks the plaintext's length, and the column's own
     /// length already does, so the concession costs nothing and is written down rather than left for a
-    /// reader to notice. <c>accounts.name</c> is the second member of this kind and <c>payees.name</c>
-    /// the third, and each owes the same two sentences, which is why every entry writes them out
-    /// instead of pointing at its neighbour: a classification that says "see above" stops being a
-    /// per-column argument, which is the whole requirement.
+    /// reader to notice. <c>accounts.name</c> is the second member of this kind, <c>payees.name</c> the
+    /// third and <c>category_groups.name</c> the fourth, and each owes the same two sentences, which is
+    /// why every entry writes them out instead of pointing at its neighbour: a classification that says
+    /// "see above" stops being a per-column argument, which is the whole requirement.
+    /// </para>
+    /// <para>
+    /// <b><c>category_groups.description</c> is the fifth member of that kind and the first entry in
+    /// this list to owe a concession none of the others makes, which is precisely why it must not
+    /// inherit the name's paragraph.</b> The four name columns are <c>NOT NULL</c>, so their presence
+    /// says nothing about the person. This one is nullable, and NULL is distinguishable from a
+    /// twenty-nine-byte envelope by looking, so the column announces <i>which groups somebody bothered
+    /// to annotate</i> while announcing nothing about what they wrote. It cannot be closed by sealing an
+    /// empty string into every row: "cleared" and "never filled" are two states this product keeps
+    /// apart on purpose. It is also the first narrative column with no blind index, and that absence is
+    /// a decision rather than a gap — a note is not looked up, is not unique and is not a name, so an
+    /// index over one would publish a deterministic fingerprint of free text with nothing asking for it.
     /// </para>
     /// <para>
     /// <b>The fifth kind is <c>accounts.name_key</c>, and it is a kind rather than a member of the
@@ -601,7 +613,11 @@ public sealed class KeyMaterialSecrecyTests
     /// them in its own words, because the equality it exposes is not the same equality: on accounts a
     /// duplicate name is a nuisance, while on payees the index IS the deduplication of counterparties,
     /// so what the column announces is a fact about how many distinct parties a person deals with
-    /// rather than about how they organised their money.
+    /// rather than about how they organised their money. <c>category_groups.name_key</c> is the third
+    /// and the weakest of them: nothing in the product looks a group up by name, so the index exists
+    /// only to refuse a second row, and what it announces across a person's budgets is which coarse
+    /// labels recur — a filing habit rather than a set of counterparties. Three members, three
+    /// different equalities, three sets of words.
     /// </para>
     /// <para>
     /// <c>session_tokens.token_hash</c> is the newest of the one-way three and the one whose argument is
@@ -669,6 +685,76 @@ public sealed class KeyMaterialSecrecyTests
             + "half: the associated data is rebuilt from where the ciphertext was found, so an "
             + "operator who moved one budget's name onto another row would produce a value that "
             + "refuses to open rather than one that opens as somebody else's"),
+        new(
+            "category_groups",
+            "name",
+            "a category group's name sealed as a narrative field \u2014 an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the same content-key argument budgets.name, accounts.name and payees.name make, written "
+            + "out again rather than pointed at, because a classification that says \"see above\" stops "
+            + "being a per-column argument: the content key is generated in the browser and reaches "
+            + "this server only as the wrapped_content_key envelopes, each sealed under a "
+            + "key-encryption key derived from a recovery factor the operator never holds, so the row "
+            + "and everything that could open it are separated by a step that happens on somebody's "
+            + "device. WHAT THIS COLUMN IN PARTICULAR STOPS BEING LEGIBLE is the COARSEST label in a "
+            + "person's ledger and therefore the shortest read: a handful of rows saying Medical, "
+            + "Legal, Debt, Childcare describes a life without a single amount beside them, and there "
+            + "are few enough of them per budget that an operator would not have to look twice. The "
+            + "same concession as its neighbours and no more: AES-GCM without the key yields the "
+            + "plaintext's LENGTH, which the column's own length already gives away. The tag is the "
+            + "other half \u2014 associated data is rebuilt from where the ciphertext was found, so an "
+            + "operator who moved one group's name onto another row would produce a value that refuses "
+            + "to open rather than one that opens as somebody else's"),
+        new(
+            "category_groups",
+            "description",
+            "the note filed against a category group, sealed as a narrative field under the account's "
+            + "content key \u2014 the first sealed FREE-TEXT column in the product, and the first "
+            + "narrative column that is nullable",
+            "the content-key half is its neighbour's and is restated rather than pointed at for the "
+            + "same reason: the key is generated in the browser and reaches this server only as the "
+            + "wrapped_content_key envelopes, each sealed under a key-encryption key derived from a "
+            + "recovery factor the operator never holds. IT OWES A CONCESSION NO OTHER CONTENT ENTRY "
+            + "MAKES, and pasting the name's paragraph over this one is exactly how it would be lost. "
+            + "The four name columns are NOT NULL, so their presence says nothing; this column is "
+            + "nullable, and NULL is distinguishable from twenty-nine bytes at a glance, so the table "
+            + "ANNOUNCES WHICH GROUPS A PERSON BOTHERED TO ANNOTATE without announcing what they wrote. "
+            + "That is small and it is real: an operator learns that this person keeps notes on two of "
+            + "their eleven groups. It cannot be closed by writing an envelope over an empty string "
+            + "into every row, because \"cleared\" and \"never filled\" are two states the product "
+            + "deliberately keeps apart. The length concession is the ordinary one \u2014 AES-GCM without "
+            + "the key yields the plaintext's length, which the column's own length already gives away, "
+            + "and here it is a wider band than a name's because the cap is "
+            + "NarrativeFieldLimits.DescriptionBytes. There is NO description_key and there never will "
+            + "be: a note is not looked up, is not unique and is not a name, so an index over one would "
+            + "publish a deterministic per-account fingerprint of somebody's free text with nothing on "
+            + "the other side asking for it. The tag is the last half \u2014 associated data is rebuilt "
+            + "from where the ciphertext was found, so a note moved onto another row refuses to open "
+            + "rather than opening as somebody else's"),
+        new(
+            "category_groups",
+            "name_key",
+            "the blind index over the same name \u2014 HMAC-SHA-256 under the account's index key, "
+            + "computed by the client over the normalised text, and what "
+            + "IX_category_groups_budget_id_name_key enforces uniqueness over",
+            "IT IS NOT AN ENVELOPE AND NO ENVELOPE ARGUMENT MAY BE PASTED OVER IT, least of all the one "
+            + "two entries up on this same table. There is nothing here to open: a blind index is a "
+            + "keyed digest with no version, no nonce and no tag. Recovering the name means inverting "
+            + "HMAC-SHA-256, or guessing the plaintext AND holding the index key \u2014 which is generated "
+            + "in the browser beside the content key and reaches this server only as the "
+            + "wrapped_index_key envelopes, so the operator can neither invert it nor recompute a "
+            + "candidate to compare against. It unwraps nothing in the second sense either: it is an "
+            + "input to no KDF and no wrapping step, so even a recovered index key opens no envelope, "
+            + "it only lets somebody search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE ACCOUNT, "
+            + "and the equality here is the WEAKEST of the three rather than the same fact a third "
+            + "time. Nothing in the product looks a group up by name, so this index's whole job is to "
+            + "refuse a second row: what an operator learns is that a budget's group names are pairwise "
+            + "distinct, which the unique index already announces, plus \u2014 across a person's budgets "
+            + "\u2014 which coarse labels recur. That is a filing habit rather than the set of "
+            + "counterparties payees.name_key exposes, and saying so is what stops the payees wording "
+            + "being pasted here. ACROSS ACCOUNTS IT LEAKS NOTHING: the index key is per-account, so the "
+            + "same label in two accounts is two unrelated digests and this column supports no "
+            + "cross-account correlation and no frequency analysis over the population"),
         new(
             "payees",
             "name",
@@ -877,9 +963,23 @@ public sealed class KeyMaterialSecrecyTests
         new("CategoryEndpoints.UpdateCategoryRequest", "Name",
             "the name a person gave one of their categories, as they typed it"),
         new("CategoryGroupEndpoints.UpdateCategoryGroupRequest", "Description",
-            "a person's own note about one of their category groups"),
+            "base64url over the AEAD envelope holding a person's own note about one of their category "
+            + "groups \u2014 or absent, which is a group filing no note and is NOT the same as an envelope "
+            + "over an empty string. It is NOT the note as they typed it; nothing on this route is. It "
+            + "was sealed in the browser, bound to the row id in the PATH rather than to a member of "
+            + "this body, under a key derived from a recovery factor this server never sees"),
         new("CategoryGroupEndpoints.UpdateCategoryGroupRequest", "Name",
-            "the name a person gave one of their category groups, as they typed it"),
+            "base64url over the AEAD envelope holding the name a person is giving one of their category "
+            + "groups. It is NOT the name as they typed it \u2014 that is what this member used to be, and "
+            + "the change is the point of the slice. It was sealed in the browser, bound to the row id "
+            + "in the PATH, under a key derived from a recovery factor this server never sees"),
+        new("CategoryGroupEndpoints.UpdateCategoryGroupRequest", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material \u2014 the index key itself crosses this wire only sealed, as "
+            + "AccountKeyEntry.WrappedIndexKey. It rides the update body because a rename must rewrite "
+            + "both halves in one statement: an envelope written without its index leaves the row "
+            + "indexed under the name it no longer holds, which nothing on this side can detect"),
         new("CreateAccountCommand", "CurrencyCode",
             "an ISO 4217 code chosen from the currencies this product seeds"),
         new("CreateAccountCommand", "Id",
@@ -901,9 +1001,31 @@ public sealed class KeyMaterialSecrecyTests
         new("CreateCategoryCommand", "Name",
             "the name a person is giving a new category, as they typed it"),
         new("CreateCategoryGroupCommand", "Description",
-            "a person's own note about a category group they are creating"),
+            "base64url over the AEAD envelope holding a person's own note about a category group they "
+            + "are creating \u2014 or absent, which is a group filing no note. THE TWO ARE DIFFERENT ROWS "
+            + "and the distinction survives the whole way down: an emptied note seals to a legal "
+            + "twenty-nine-byte envelope and an unwritten one is NULL, so this member is judged with "
+            + "`is null` and never with a spelling that folds the empty string into absence. It was "
+            + "sealed in the browser, bound to the Id below, under a key derived from a recovery factor "
+            + "this server never sees"),
+        new("CreateCategoryGroupCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid \u2014 the one spelling "
+            + "this API accepts and the one it hands back. It carries no secret; it is here because it "
+            + "is the associated data BOTH narrative members beside it were sealed against, which is "
+            + "what makes it differ from CreateAccountCommand.Id and CreatePayeeCommand.Id rather than "
+            + "restate them: a spelling this server cannot reproduce costs the group its name AND the "
+            + "note filed against it, in one row, with every constraint satisfied and nothing red"),
         new("CreateCategoryGroupCommand", "Name",
-            "the name a person is giving a new category group, as they typed it"),
+            "base64url over the AEAD envelope holding the name a person is giving a new category group. "
+            + "It is NOT the name as they typed it \u2014 it was sealed in the browser, bound to the Id "
+            + "above, under a key derived from a recovery factor this server never sees"),
+        new("CreateCategoryGroupCommand", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material \u2014 the index key itself crosses this wire only sealed, as "
+            + "AccountKeyEntry.WrappedIndexKey. What it buys on THIS table is the narrowest of the "
+            + "three: nothing in the product looks a group up by name, so it exists only to refuse a "
+            + "second group under a name this budget already holds"),
         new("CreatePayeeCommand", "Id",
             "the row identifier the CLIENT minted, as text rather than as a uuid — the one spelling this "
             + "API accepts and the one it hands back. It carries no secret; it is here because it is the "

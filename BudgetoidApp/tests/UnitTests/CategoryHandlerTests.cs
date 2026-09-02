@@ -5,6 +5,7 @@ using Application.Categories.GetCategory;
 using Application.Categories.PlaceCategory;
 using Domain.Common;
 using Microsoft.Extensions.Time.Testing;
+using TestSupport;
 using UnitTests.Fakes;
 
 namespace UnitTests;
@@ -35,7 +36,8 @@ public sealed class CategoryHandlerTests
         // Assert
         await Assert.That(first.Position).IsEqualTo(0);
         await Assert.That(second.Position).IsEqualTo(1);
-        await Assert.That(second.CategoryGroupName).IsEqualTo("Essentials");
+        await Assert.That(second.CategoryGroupName)
+            .IsEqualTo(SealedNarrative.EncodedName("Essential Obligations"));
     }
 
     [Test]
@@ -162,7 +164,8 @@ public sealed class CategoryHandlerTests
         await Assert.That(dto).IsNotNull();
         await Assert.That(dto!.Id).IsEqualTo(category.Id);
         await Assert.That(dto.Name).IsEqualTo("Groceries");
-        await Assert.That(dto.CategoryGroupName).IsEqualTo("Essentials");
+        await Assert.That(dto.CategoryGroupName)
+            .IsEqualTo(SealedNarrative.EncodedName("Essential Obligations"));
     }
 
     [Test]
@@ -207,8 +210,14 @@ public sealed class CategoryHandlerTests
             var timeProvider = new FakeTimeProvider(
                 new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));
             var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
-            var source = await categoryGroups.CreateAsync("Essentials");
-            var destination = await categoryGroups.CreateAsync("Lifestyle");
+            // "Essential Obligations" rather than "Essentials", and that is not cosmetic: the two
+            // CategoryGroupName assertions in this file are the only ones outside the category-group
+            // suite that read a name off CategoryGroupDto.FromCategoryGroup, and a 39-byte envelope —
+            // which is exactly what "Essentials" seals to — spells identically in padded standard
+            // base64 and in unpadded base64url, so a DTO encoding through the wrong one passes.
+            var source = await categoryGroups.CreateAsync(
+                SealedNarrative.Indexed("Essential Obligations"));
+            var destination = await categoryGroups.CreateAsync(SealedNarrative.Indexed("Lifestyle"));
             var categories = new InMemoryCategoryRepository(budgetId, timeProvider, categoryGroups);
             return new Fixture(
                 budgetId,

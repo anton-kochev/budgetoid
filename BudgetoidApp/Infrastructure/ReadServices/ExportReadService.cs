@@ -98,11 +98,12 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // so Include is unavailable and the document is stitched by id in the handler. They run in
         // sequence because one DbContext serves one command at a time.
         //
-        // Accounts and payees are projected into an anonymous row and shaped afterwards, the way
-        // ListOwnedBudgetsAsync above handles budgets.name and for the same reason: the column carries a
-        // value converter, so the provider translates the property itself and the NarrativeField exists
-        // only once the row has materialized. The other three keep their in-query projection because
-        // none of their columns is sealed yet — that is a statement about today, not a rule.
+        // Accounts, category groups and payees are projected into an anonymous row and shaped afterwards,
+        // the way ListOwnedBudgetsAsync above handles budgets.name and for the same reason: the column
+        // carries a value converter, so the provider translates the property itself and the
+        // NarrativeField exists only once the row has materialized. The other two keep their in-query
+        // projection because none of their columns is sealed yet — that is a statement about today, not a
+        // rule, and categories is the next set to move.
         //
         // name_key is deliberately not among the members. It is the one accounts column this document
         // omits: the blind index is derivable from the name by anybody holding the account's index key —
@@ -136,18 +137,45 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
                 row.CreatedAtUtc)),
         ];
 
-        List<ExportedCategoryGroup> categoryGroups = await dbContext.CategoryGroups
+        // Category groups are projected into an anonymous row and shaped afterwards for the reason the
+        // accounts above give, and this set is the first here to carry TWO sealed columns — the name and
+        // the description, which is the first sealed free-text column in the product.
+        //
+        // name_key is deliberately not among the members, the third column this document omits and for
+        // the argument ExportedAccount already carries. There is no description_key to omit: a
+        // description carries no blind index at all, because it is never looked up.
+        //
+        // The ordering is untouched — the creation instant and then the id, neither of them sealed.
+        var categoryGroupRows = await dbContext.CategoryGroups
             .AsNoTracking()
             .OrderBy(categoryGroup => categoryGroup.CreatedAtUtc)
             .ThenBy(categoryGroup => categoryGroup.Id)
-            .Select(categoryGroup => new ExportedCategoryGroup(
+            .Select(categoryGroup => new
+            {
                 categoryGroup.Id,
                 categoryGroup.BudgetId,
                 categoryGroup.Name,
                 categoryGroup.Description,
                 categoryGroup.Position,
-                categoryGroup.CreatedAtUtc))
+                categoryGroup.CreatedAtUtc,
+            })
             .ToListAsync(cancellationToken);
+
+        // The null description is carried rather than coerced, exactly as the transactions below carry
+        // theirs and for the same reason: a copy of somebody's data must keep "no note" and "a note they
+        // emptied" apart, and the empty string is not a legal envelope for either.
+        List<ExportedCategoryGroup> categoryGroups =
+        [
+            .. categoryGroupRows.Select(row => new ExportedCategoryGroup(
+                row.Id,
+                row.BudgetId,
+                PasskeyEncoding.Encode(row.Name.Envelope.Span),
+                row.Description is null
+                    ? null
+                    : PasskeyEncoding.Encode(row.Description.Envelope.Span),
+                row.Position,
+                row.CreatedAtUtc)),
+        ];
 
         List<ExportedCategory> categories = await dbContext.Categories
             .AsNoTracking()

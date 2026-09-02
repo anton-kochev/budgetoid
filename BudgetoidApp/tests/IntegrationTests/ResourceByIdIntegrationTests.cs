@@ -53,14 +53,27 @@ public sealed class ResourceByIdIntegrationTests
         await Assert.That(getGroup.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode group = await ReadJsonAsync(getGroup);
         await Assert.That(group["id"]!.GetValue<Guid>()).IsEqualTo(categoryGroupId);
-        await Assert.That(group["name"]!.GetValue<string>()).IsEqualTo("Essentials");
+        // The ENVELOPE, not the word, on the account's terms one table over: category_groups.name is
+        // sealed, so "Essentials" is in no payload this API can produce. The check still does its job
+        // — the envelope is deterministic in its label, so it says the row that came back is the row
+        // this test created — and dropping it instead would let a 200 carrying somebody else's group
+        // pass.
+        await Assert.That(group["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Essentials"));
 
         await Assert.That(getCategory.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode category = await ReadJsonAsync(getCategory);
         await Assert.That(category["id"]!.GetValue<Guid>()).IsEqualTo(categoryId);
-        await Assert.That(category["name"]!.GetValue<string>()).IsEqualTo("Groceries");
         await Assert.That(category["categoryGroupId"]!.GetValue<Guid>()).IsEqualTo(categoryGroupId);
-        await Assert.That(category["categoryGroupName"]!.GetValue<string>()).IsEqualTo("Essentials");
+
+        // ONE RECORD, TWO KINDS OF NAME, AND THE PAIR IS THE POINT. CategoryDto carries the category's
+        // own name as text and the GROUP's name as an envelope, because categories.name is not sealed
+        // yet and category_groups.name is. That mixed state lasts one slice; until it ends, these two
+        // lines sitting beside each other are what stops somebody "correcting" either into the other's
+        // shape. The envelope member is bound to the GROUP's row id, which is already on the wire above.
+        await Assert.That(category["name"]!.GetValue<string>()).IsEqualTo("Groceries");
+        await Assert.That(category["categoryGroupName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Essentials"));
 
         await Assert.That(getAccount.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode account = await ReadJsonAsync(getAccount);
@@ -148,13 +161,26 @@ public sealed class ResourceByIdIntegrationTests
         await Assert.That(owner.StatusCode).IsEqualTo(HttpStatusCode.OK);
     }
 
+    /// <summary>
+    /// Creates one category group from <paramref name="label" /> and returns the whole response, whose
+    /// <c>Location</c> header is what the caller is here to read.
+    /// </summary>
+    /// <remarks>
+    /// <b>The parameter is a LABEL, not a name</b> — category_groups.name is an AEAD envelope and
+    /// category_groups.name_key a blind index, so a flat string is a 400 and the Location header this
+    /// helper exists to produce would never be written. The response, not the id, is returned because
+    /// the caller's subject is the header; the body's id and the minted id agree, and asserting that
+    /// belongs to the create route's own cases rather than to this seeding.
+    /// </remarks>
     private static async Task<HttpResponseMessage> CreateCategoryGroupAsync(
         HttpClient client,
-        string name)
+        string label)
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/category-groups", new
         {
-            name,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             description = (string?)null,
         });
         response.EnsureSuccessStatusCode();

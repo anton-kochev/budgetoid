@@ -483,9 +483,37 @@ GRANT SELECT, INSERT, DELETE ON accounts TO budgetoid_app;
 GRANT UPDATE (name, name_key, type, opening_balance) ON accounts TO budgetoid_app;
 
 -- category_groups: budget_id and created_at_utc immutable by omission.
+--
+-- name and name_key are the pair the accounts block above argues at length; that argument is not
+-- restated here, only pointed at, because it is a rule about blind-indexed name columns generally
+-- and a third copy is a third thing to correct the day it changes. This table is the third column
+-- to want it.
+--
+-- WHAT IS NEW HERE, AND IT MAKES A HALF GRANT HARDER TO SEE THAN ON ACCOUNTS OR PAYEES: this
+-- table's update writes THREE narrative columns, and EF names only the ones that changed. On
+-- accounts and payees the update assigns both halves of the name from one IndexedName every time,
+-- so any rename issues a statement naming both columns and a half grant refuses the whole of it
+-- with 42501 — the defect is loud on the first rename anybody exercises. Here a rename that leaves
+-- the description alone emits two columns and SUCCEEDS under a grant missing `description`.
+--
+-- Measured on postgres:17.10 under GRANT UPDATE (name, name_key, position) — description withheld:
+--   update ... set name = ..., name_key = ...                     -> UPDATE 1
+--   update ... set name = ..., name_key = ..., description = ...  -> 42501, permission denied
+--   update ... set description = null                             -> 42501
+--   update ... set position = 3                                   -> UPDATE 1
+-- So a route case that renames a group whose description is unchanged is green under a broken
+-- grant; only a case that writes the name AND the description catches it, and only a raw statement
+-- naming all four catches a missing `position` as well. The controls for this line are written to
+-- that shape deliberately.
+--
+-- SELECT, INSERT and DELETE are left table-wide, which is why name_key needed no edit there:
+-- PostgreSQL's table-level privilege covers every column, including ones added later. Only the
+-- column-list grant had to move. Do not "simplify" this UPDATE to table-wide either — budget_id
+-- and created_at_utc are immutable BY OMISSION from this list, and column privileges are additive,
+-- so a REVOKE cannot take back what a table-wide grant handed out.
 REVOKE ALL ON category_groups FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON category_groups TO budgetoid_app;
-GRANT UPDATE (name, description, position) ON category_groups TO budgetoid_app;
+GRANT UPDATE (name, name_key, description, position) ON category_groups TO budgetoid_app;
 
 -- categories: budget_id and created_at_utc immutable by omission; category_group_id is
 -- updatable — moving a category between groups is a real operation, and the composite

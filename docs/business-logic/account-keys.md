@@ -50,9 +50,12 @@ the third and is the only one reachable **inside** the app — see
 reached only by the integration suite.
 
 **What is *not* built is a browser that produces either.** The places for them exist now:
-`budgets.name` and `accounts.name` are envelope columns, `accounts.name_key` is a blind index under
-a unique index, and two account routes accept a sealed name and an index as base64url. What no
-screen does is seal a field, open one, or look a name up — `/app/accounts` still sends plaintext, so
+`budgets.name`, `accounts.name`, `payees.name`, `category_groups.name` and
+`category_groups.description` are envelope columns; `accounts.name_key`, `payees.name_key` and
+`category_groups.name_key` are blind indexes, each under a unique index; and the account, payee and
+category-group routes accept a sealed name and an index as base64url. What no
+screen does is seal a field, open one, or look a name up — `/app/accounts`, `/app/transactions` and
+the group half of `/app/categories` all still send plaintext, so
 those columns are reached only from the test suite. What
 exists is the **custody** — [The one class that holds them](#the-one-class-that-holds-them) — and
 the operations that delegate to what it holds: `sealField`, `openField` and `blindIndex`, whose only

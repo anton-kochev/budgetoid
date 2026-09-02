@@ -220,30 +220,35 @@ erDiagram
 
 - **Rule**: Transaction responses are self-contained for display — they carry `CategoryId`,
   `CategoryName`, `CategoryGroupId` and `CategoryGroupName`, plus the account's name, currency code
-  and symbol. **Two of the four names are envelopes and two are still text, and no rule covers all
+  and symbol. **Three of the four names are envelopes and one is still text, and no rule covers all
   four.**
 - **Why**: A transaction list has to render an amount and its context without the client stitching
   together three other endpoints, and the projection is from current data so a rename shows up
-  immediately. What the sealing changed is not the shape but what two of the members mean:
-  `AccountName` and `PayeeName` are still typed `string` and no longer hold names — each is its
-  column's AEAD envelope as unpadded base64url — while `CategoryName` and `CategoryGroupName` are
-  readable text, because those columns are not sealed yet. Folding the four into one rule is wrong in
-  both directions: decoding a category name as base64url, and rendering a payee name as a caption.
+  immediately. What the sealing changed is not the shape but what three of the members mean:
+  `AccountName`, `PayeeName` and `CategoryGroupName` are still typed `string` and no longer hold
+  names — each is its column's AEAD envelope as unpadded base64url — while `CategoryName` alone is
+  readable text, because `categories.name` is not sealed yet and is the next column to be. Folding the
+  four into one rule is wrong in both directions: decoding the category name as base64url, and
+  rendering a group name as a caption. This paragraph is provisional and is to be **rewritten rather
+  than patched** when that last column moves.
   **Each envelope is also bound to a different row than the response is about.** Associated data is
   rebuilt from wherever a ciphertext was found, so opening `PayeeName` needs the binding for
-  `payees.name` under the **payee's** row id — which the client rebuilds from `PayeeId` — and
-  `AccountName` needs `accounts.name` under `AccountId`. A client reaching for the transaction's own
+  `payees.name` under the **payee's** row id — which the client rebuilds from `PayeeId` —
+  `AccountName` needs `accounts.name` under `AccountId`, and `CategoryGroupName` needs
+  `category_groups.name` under `CategoryGroupId`. The argument gets stronger with each member rather
+  than weaker. A client reaching for the transaction's own
   binding gets an authentication failure rather than garbage, with nothing naming the cause; each
-  envelope travels beside the identifier it was sealed against, which is why both identifiers are on
-  the wire.
+  envelope travels beside the identifier it was sealed against, which is why all three identifiers are
+  on the wire.
 - **Enforced in**: `TransactionDto.FromTransaction`, fed by the handler's resolved account,
-  currency, payee, category and category group. Its two sealed parameters are typed `string` like
-  the two text ones, so nothing in the signature tells a caller which is which — every caller
+  currency, payee, category and category group. Its three sealed parameters are typed `string` like
+  the one text parameter, so nothing in the signature tells a caller which is which — every caller
   encodes through `PasskeyEncoding.Encode`, the one alphabet every binary member of this API crosses
   JSON in, and never `System.Text.Json`'s own `byte[]` handling, which emits padded standard base64
-  the client's strict decoder refuses. `TransactionReadService` carries both sealed names **out** of
-  its `Select` and encodes them once the row has materialised, because a value converter is not
-  something the provider can translate a call over.
+  the client's strict decoder refuses. `TransactionReadService` carries all three sealed names **out**
+  of its `Select` and encodes them once the row has materialised, because a value converter is not
+  something the provider can translate a call over; the category's name stays inside the `Select`,
+  and that split is a statement about today rather than a rule.
 - **Example**: renaming a payee is visible in the transaction list on the next read, because the
   name is joined rather than snapshotted — and what appears is the new envelope, which only a
   browser holding the account's content key can turn back into a name.
@@ -508,7 +513,10 @@ ELSE
   Category cannot be deleted; its Category Group cannot be deleted while the Category exists.
   Deleting the last Transaction filed under a Category, or editing it onto another Category or none,
   clears the first refusal the same way, and emptying the Category out of its group clears the
-  second.
+  second. **The group's name on a transaction response is that group's envelope**, bound to the
+  group's own row id and joined at read time; the category's name is still text. A rename of either
+  reaches every transaction that named it without a transaction row being written, and on the group
+  what arrives is a fresh envelope only a browser holding the account's content key can read.
 - **[Payees](payees.md)**: optional counterparty, **named by id and never created here.** Neither
   handler writes to `payees` any more — the server cannot resolve a name to a row, so a payee is
   created by `POST /api/payees` before the transaction that names it. A Transaction that references
@@ -526,7 +534,10 @@ ELSE
   **it has not been moved onto the payee-by-id contract, so it cannot write at all** —
   `transactions-api.service.ts` still declares `payeeName` on the create request, which the API now
   refuses by name with a 400, and renders the response's `payeeName` straight into the list where it
-  is base64url of an envelope. That is a gap, named here rather than described as if it worked. It
+  is base64url of an envelope. Its **read** is degrading a column at a time as the slices land:
+  `accountName` and `payeeName` were the first two, and `categoryGroupName` is the third, so the group
+  heading beside each entry is base64url now as well, while `categoryName` is still readable.
+  That is a gap, named here rather than described as if it worked. It
   also owns one rule outright rather than restating one:
   the amount input must require a value rather
   than default to `0`, and an edit form must omit a field it did not collect rather than send a

@@ -160,8 +160,9 @@ public partial class InitialCreate : Migration
             {
                 id = table.Column<Guid>(type: "uuid", nullable: false),
                 budget_id = table.Column<Guid>(type: "uuid", nullable: false),
-                name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
-                description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
+                name = table.Column<byte[]>(type: "bytea", nullable: false),
+                name_key = table.Column<byte[]>(type: "bytea", nullable: false),
+                description = table.Column<byte[]>(type: "bytea", nullable: true),
                 position = table.Column<int>(type: "integer", nullable: false),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
@@ -169,6 +170,11 @@ public partial class InitialCreate : Migration
             {
                 table.PrimaryKey("PK_category_groups", x => x.id);
                 table.UniqueConstraint("AK_category_groups_id_budget_id", x => new { x.id, x.budget_id });
+                table.CheckConstraint("CK_category_groups_description_length", "length(description) between 29 and 2560");
+                table.CheckConstraint("CK_category_groups_description_version", "substring(description from 1 for 1) = '\\x01'::bytea");
+                table.CheckConstraint("CK_category_groups_name_key_length", "length(name_key) = 32");
+                table.CheckConstraint("CK_category_groups_name_length", "length(name) between 29 and 1024");
+                table.CheckConstraint("CK_category_groups_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
                 table.CheckConstraint("CK_category_groups_position", "position >= 0");
                 table.ForeignKey(
                     name: "FK_category_groups_budgets_budget_id",
@@ -485,9 +491,9 @@ public partial class InitialCreate : Migration
             columns: new[] { "category_group_id", "position" });
 
         migrationBuilder.CreateIndex(
-            name: "IX_category_groups_budget_id_name",
+            name: "IX_category_groups_budget_id_name_key",
             table: "category_groups",
-            columns: new[] { "budget_id", "name" },
+            columns: new[] { "budget_id", "name_key" },
             unique: true);
 
         migrationBuilder.CreateIndex(

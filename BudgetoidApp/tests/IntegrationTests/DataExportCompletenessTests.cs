@@ -414,21 +414,28 @@ public sealed class DataExportCompletenessTests
         // otherwise leave the ordering of somebody's budget unrecoverable from their own file.
         JsonObject essentials = RowFor(groups, seeded.EssentialsGroupId);
         await Assert.That(essentials["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
-        await Assert.That(essentials["name"]!.GetValue<string>()).IsEqualTo(EssentialsGroupName);
+        await Assert.That(essentials["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName(EssentialsGroupName));
         await Assert.That(essentials["description"]!.GetValue<string>())
-            .IsEqualTo(EssentialsGroupDescription);
+            .IsEqualTo(SealedNarrative.EncodedDescription(EssentialsGroupDescription));
         await Assert.That(essentials["position"]!.GetValue<int>()).IsEqualTo(0);
         await Assert.That(essentials["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.EssentialsGroupId]);
 
-        // And exactly six — id, budgetId, name, description, position, createdAtUtc.
+        // And exactly six — id, budgetId, name, description, position, createdAtUtc. STILL SIX AFTER
+        // THE COLUMN GREW A name_key BESIDE IT, and that is the teeth of this line rather than an
+        // incidental count: the blind index is stored and never returned, because a client recomputes
+        // it from the name it just decrypted under a key only it holds. A member nobody reads is a
+        // standing surface with no reason, and this one would be a deterministic per-account
+        // fingerprint of every group name travelling in a file people are told to keep.
         await Assert.That(essentials.Count).IsEqualTo(6);
 
         JsonObject lifestyle = RowFor(groups, seeded.LifestyleGroupId);
         await Assert.That(lifestyle["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
-        await Assert.That(lifestyle["name"]!.GetValue<string>()).IsEqualTo(LifestyleGroupName);
+        await Assert.That(lifestyle["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName(LifestyleGroupName));
         await Assert.That(lifestyle["description"]!.GetValue<string>())
-            .IsEqualTo(LifestyleGroupDescription);
+            .IsEqualTo(SealedNarrative.EncodedDescription(LifestyleGroupDescription));
         await Assert.That(lifestyle["position"]!.GetValue<int>()).IsEqualTo(1);
         await Assert.That(lifestyle["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.LifestyleGroupId]);
@@ -667,7 +674,9 @@ public sealed class DataExportCompletenessTests
         });
         Guid groupId = await CreateAsync(client, "/api/category-groups", new
         {
-            name = EssentialsGroupName,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(EssentialsGroupName),
+            nameKey = SealedNarrative.EncodedIndex(EssentialsGroupName),
             description = (string?)null,
         });
         Guid categoryId = await CreateAsync(client, "/api/categories", new
@@ -1009,10 +1018,11 @@ public sealed class DataExportCompletenessTests
             accounts.Add(account.Id);
 
             CategoryGroup categoryGroup = CategoryGroup.Create(
+                Guid.CreateVersion7(),
                 budgetId,
-                $"Ordered group {index}",
-                description: null,
-                position: index,
+                SealedNarrative.Indexed($"Ordered group {index}"),
+                null,
+                index,
                 StampedAt(index));
             db.CategoryGroups.Add(categoryGroup);
             categoryGroups.Add(categoryGroup.Id);
@@ -1182,15 +1192,22 @@ public sealed class DataExportCompletenessTests
             currencyCode = "EUR",
         });
 
+        // As the two accounts above: the constants are LABELS both halves are built from and not
+        // values any payload carries. The description rides the same rule, capped at its own field
+        // class, so a note past the name's ceiling still crosses.
         Guid essentialsGroupId = await CreateAsync(client, "/api/category-groups", new
         {
-            name = EssentialsGroupName,
-            description = EssentialsGroupDescription,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(EssentialsGroupName),
+            nameKey = SealedNarrative.EncodedIndex(EssentialsGroupName),
+            description = SealedNarrative.EncodedDescription(EssentialsGroupDescription),
         });
         Guid lifestyleGroupId = await CreateAsync(client, "/api/category-groups", new
         {
-            name = LifestyleGroupName,
-            description = LifestyleGroupDescription,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(LifestyleGroupName),
+            nameKey = SealedNarrative.EncodedIndex(LifestyleGroupName),
+            description = SealedNarrative.EncodedDescription(LifestyleGroupDescription),
         });
 
         Guid groceriesCategoryId = await CreateAsync(client, "/api/categories", new

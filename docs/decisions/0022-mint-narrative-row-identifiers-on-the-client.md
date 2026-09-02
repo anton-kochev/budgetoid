@@ -107,29 +107,39 @@ the factories and a caller.** `+core/security/narrative-row-id.ts` mints a versi
 canonical spelling today, and its spec holds the version nibble, the canonical spelling and the
 big-endian timestamp. **Nothing calls it**: no path seals a narrative field for a row it just created.
 
-**Three of the six Domain factories have changed, and the first of them carries the decision's one
-exception.** `Budget.Create` and `Budget.CreateDefault`, `Account.Create` and `Payee.Create` all take
-the row's identifier as a parameter, and `Guid.CreateVersion7()` has left `Budget.cs`, `Account.cs`
-and `Payee.cs` entirely rather than moving behind an overload — a caller that forgot to thread an id
+**Four of the six Domain factories have changed, and the first of them carries the decision's one
+exception.** `Budget.Create` and `Budget.CreateDefault`, `Account.Create`, `Payee.Create` and
+`CategoryGroup.Create` all take
+the row's identifier as a parameter, and `Guid.CreateVersion7()` has left `Budget.cs`, `Account.cs`,
+`Payee.cs` and `CategoryGroup.cs` entirely rather than moving behind an overload — a caller that
+forgot to thread an id
 through would otherwise compile, pass every test that does not assert the returned identifier, and
-produce a row whose sealed name nobody can ever open. Each of the three refuses `Guid.Empty`, which
+produce a row whose sealed name nobody can ever open. Each of the four refuses `Guid.Empty`, which
 is reachable for the first time now that the value arrives from outside. **The exception is that
 registration mints the budget's id server-side**, on one written-out line in `RegisterAccountHandler`:
 the budget it creates carries **no name**, so nothing is sealed, there is nothing to seal against, and
 the browser has no basis on which to choose. A budget that *is* named is created by whoever sealed the
 name and hands its id in with it. See [budgets.md](../business-logic/budgets.md).
 
-**The server-side parse that refuses a non-canonical row id is built, and two routes run it.**
+**`CategoryGroup.Create` is the first factory where the identifier is the associated data of *two*
+narrative members**, not one — the sealed name and the sealed description are both bound to it — so a
+spelling this API cannot reproduce costs a name and a note together, with every constraint satisfied
+and nothing red. That widens the blast radius the third clause of this decision is about; it changes
+nothing about the rule.
+
+**The server-side parse that refuses a non-canonical row id is built, and three routes run it.**
 `CanonicalIdentifier.TryParse` compares the supplied text **ordinally against what the parsed value
-renders as**, per the Consequences below; `POST /api/accounts` and `POST /api/payees` each bind their
-`Id` as a `string` and judge it there, first of three opaque members, because a spelling this API
-cannot reproduce makes the envelope beside it irrelevant. **The two `PATCH`/`PUT` legs deliberately do
+renders as**, per the Consequences below; `POST /api/accounts`, `POST /api/payees` and
+`POST /api/category-groups` each bind their
+`Id` as a `string` and judge it there, first of the opaque members that arrive with it, because a
+spelling this API cannot reproduce makes the envelopes beside it irrelevant. **The three
+`PATCH`/`PUT` legs deliberately do
 not**: on an update the client re-seals against the row's **existing** id, read back from this API in
 the one form a `Guid` renders, so the text in a URL is never what anything was sealed under and there
 is no spelling to preserve.
 
-**The remaining three factories arrive with the work that encrypts their columns** —
-`Transaction.Create`, `Category.Create` and `CategoryGroup.Create` still mint their own identifiers,
+**The remaining two factories arrive with the work that encrypts their columns** —
+`Transaction.Create` and `Category.Create` still mint their own identifiers,
 and no route accepts one for them. Read those parts of this document as the decision they will be
 built to. **What is still unbuilt on the client is the caller**: `narrative-row-id.ts` mints, and no
 path seals a narrative field for a row it just created, because no browser in this product seals

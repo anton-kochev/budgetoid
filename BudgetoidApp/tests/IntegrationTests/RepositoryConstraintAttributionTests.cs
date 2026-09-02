@@ -410,7 +410,13 @@ public sealed class RepositoryConstraintAttributionTests
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(
-            CategoryGroup.Create(budgetId, "Essentials", null, 0, UtcNow())));
+            CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow())));
 
         // Assert — "Category group name must be unique." would be a lie about a name nobody else
         // holds, and the client would render it against the name field the user just typed.
@@ -422,22 +428,42 @@ public sealed class RepositoryConstraintAttributionTests
     [Test]
     public async Task AddCategoryGroup_WithADuplicateGroupName_TranslatesItsOwnUniqueIndex()
     {
-        // Arrange — the collision this repository does model.
+        // Arrange — the collision this repository does model, and it is a DIFFERENT collision from the
+        // one this case used to seed. It inserted "Essentials" and then "essentials", relying on the
+        // case-insensitive collation the column carried; that collation left with the plaintext —
+        // bytea is not collatable — and folding is now the client's, before it computes the index. So
+        // the two rows collide the only way this table can still see: the SAME blind index. Two
+        // SealedNarrative.Indexed calls over one label produce it, which is exactly what a client that
+        // folded two spellings to one text would send.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
         DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
-            seed.CategoryGroups.Add(CategoryGroup.Create(budgetId, "Essentials", null, 0, UtcNow()));
+            seed.CategoryGroups.Add(CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow()));
             await seed.SaveChangesAsync();
         }
 
         await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
         var repository = new CategoryGroupRepository(db);
 
-        // Act
+        // Act — a fresh identifier, so the row breaks IX_category_groups_budget_id_name_key and not
+        // PK_category_groups. The two answer different statuses and the repository translates them
+        // separately.
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(
-            CategoryGroup.Create(budgetId, "essentials", null, 1, UtcNow())));
+            CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                1,
+                UtcNow())));
 
         // Assert
         await Assert.That(escaped).IsNotNull();
@@ -460,7 +486,13 @@ public sealed class RepositoryConstraintAttributionTests
         Guid categoryGroupId;
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
-            CategoryGroup categoryGroup = CategoryGroup.Create(budgetId, "Essentials", null, 0, UtcNow());
+            CategoryGroup categoryGroup = CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow());
             seed.CategoryGroups.Add(categoryGroup);
             await seed.SaveChangesAsync();
             categoryGroupId = categoryGroup.Id;

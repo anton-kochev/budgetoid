@@ -129,6 +129,28 @@ public sealed record ExportedAccount(
     string CurrencyCode,
     DateTime CreatedAtUtc);
 
+/// <summary>One category group of a budget — the columns the <c>category_groups</c> row carries, less one.</summary>
+/// <param name="Id">The group's identifier.</param>
+/// <param name="BudgetId">The budget that owns it.</param>
+/// <param name="Name">
+/// The group's <b>sealed</b> name as unpadded base64url, for the reason
+/// <see cref="ExportedBudget.Name"/> gives about its own: the column is an AEAD envelope this server
+/// cannot open, and the member keeps its name because the completeness check over this document maps a
+/// table's columns onto a record's members.
+/// </param>
+/// <param name="Description">
+/// The group's <b>sealed</b> note as unpadded base64url, or <see langword="null"/> where the group has
+/// none. The first sealed free-text column in this document, and the null is carried rather than coerced
+/// — a copy of somebody's data must keep "no note" and "a note they emptied" apart.
+/// </param>
+/// <param name="Position">Where the group sits in the person's own ordering.</param>
+/// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
+/// <remarks>
+/// <b><c>name_key</c> is not here, and it is the one column this record deliberately omits</b> — the
+/// treatment <see cref="ExportedAccount"/> argues for its own and <see cref="ExportedPayee"/> repeats,
+/// pointed at rather than copied a third time. There is deliberately no <c>description_key</c> to omit:
+/// a description carries no blind index at all, because it is never looked up.
+/// </remarks>
 public sealed record ExportedCategoryGroup(
     Guid Id,
     Guid BudgetId,

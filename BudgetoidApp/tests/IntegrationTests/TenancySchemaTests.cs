@@ -120,7 +120,13 @@ public sealed class TenancySchemaTests
         Guid categoryId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
-            CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
+            CategoryGroup group = CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Everyday"),
+                null,
+                0,
+                SeedInstant);
             seed.CategoryGroups.Add(group);
             Category category = Category.Create(
                 budgetId, group.Id, "Groceries", null, 0, SeedInstant);
@@ -198,9 +204,10 @@ public sealed class TenancySchemaTests
         // accounts grant list, so the same role renaming the same row must go through. Same connection
         // as the refusal, so the session's ambient budget is identical too and only the column differs.
         //
-        // NOT UpdateNameAsync, WHICH THE OTHER TWO FLIPPED TESTS STILL USE, and the divergence is the
-        // point rather than a duplication to fold back. That helper writes one text `name`, which is
-        // still exactly right for category_groups and payees and is wrong here in two separate ways.
+        // SPELLED OUT INLINE, AS ALL THREE FLIPPED TESTS NOW ARE, and the divergence is the
+        // point rather than a duplication to fold back. There used to be a helper writing one text
+        // `name`; category_groups was its last caller and it left when that column was sealed. It was
+        // wrong for a bytea column in two separate ways.
         // A text literal into a bytea column is refused by the TYPE CHECKER with 42804 — before any
         // grant or policy is consulted, so it never reaches the question this pair is asking, and its
         // SQLSTATE is easy to mistake for a refusal somebody measured. And one column is not the
@@ -235,7 +242,13 @@ public sealed class TenancySchemaTests
         Guid groupId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
-            CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
+            CategoryGroup group = CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Everyday"),
+                null,
+                0,
+                SeedInstant);
             seed.CategoryGroups.Add(group);
             await seed.SaveChangesAsync();
             groupId = group.Id;
@@ -257,11 +270,45 @@ public sealed class TenancySchemaTests
         await Assert.That(await CountRowsAsync(connection, "category_groups", "budget_id", otherBudgetId))
             .IsEqualTo(0L);
 
-        // The success half of the pair (see the class remarks): name is on the category_groups
-        // grant list, so the same role renaming the same row must go through. Same connection as
-        // the refusal, so the session's ambient budget is identical too.
-        await Assert.That(await UpdateNameAsync(app, "category_groups", groupId, "Essentials"))
-            .IsEqualTo(1);
+        // The success half of the pair (see the class remarks): all four mutable columns are on the
+        // category_groups grant list, so the same role rewriting the same row must go through. Same
+        // connection as the refusal, so the session's ambient budget is identical too.
+        //
+        // UpdateNameAsync IS GONE AND THIS WAS ITS LAST CALLER. That helper wrote one text `name`,
+        // which is wrong here in the two ways it was already wrong on accounts and payees - a text
+        // literal into a bytea column is refused by the TYPE CHECKER with 42804, before any grant or
+        // policy is consulted, so it never reaches the question this pair asks, and its SQLSTATE reads
+        // like a refusal somebody measured - plus one that is this table's own.
+        //
+        // FOUR COLUMNS IN ONE STATEMENT, AND THREE WOULD NOT DO. On accounts and payees a rename always
+        // names both halves of the name, so ANY rename catches a half grant. Here EF names only the
+        // columns that changed, so a rename leaving the description alone emits two columns and
+        // SUCCEEDS under a grant missing `description` - measured on postgres:17.10 under
+        // GRANT UPDATE (name, name_key, position): the two-column statement answers UPDATE 1, the
+        // three-column one answers 42501, and `set description = null` answers 42501. `position` shares
+        // the same grant list, so a three-column control cannot tell a four-column grant from a
+        // three-column one either. Only naming all four in one statement reddens on any single missing
+        // column, which is why this is spelled out inline rather than behind a helper that would invite
+        // the next table to reuse a shape that does not fit it.
+        //
+        // The values are built by SealedNarrative for the reason the two cases above give, and this
+        // table adds two more traps to the list: a short or wrongly versioned description trips
+        // CK_category_groups_description_length or CK_category_groups_description_version, both 23514
+        // and both easy to read as the row-level-security verdict this file is about. The description
+        // is deliberately NON-NULL here - writing null would still exercise the grant, but it would
+        // leave the case unable to tell "the column was written" from "the column was cleared".
+        IndexedName renamedTo = SealedNarrative.Indexed("Essentials");
+        NarrativeField note = SealedNarrative.Description("Required spending");
+        await using NpgsqlCommand rewrite = new(
+            "update category_groups set name = @name, name_key = @name_key, "
+            + "description = @description, position = @position where id = @id",
+            app);
+        rewrite.Parameters.AddWithValue("name", renamedTo.Name.Envelope.ToArray());
+        rewrite.Parameters.AddWithValue("name_key", renamedTo.BlindIndex.ToArray());
+        rewrite.Parameters.AddWithValue("description", note.Envelope.ToArray());
+        rewrite.Parameters.AddWithValue("position", 1);
+        rewrite.Parameters.AddWithValue("id", groupId);
+        await Assert.That(await rewrite.ExecuteNonQueryAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -302,9 +349,9 @@ public sealed class TenancySchemaTests
         // payees grant list, so the same role renaming the same row must go through. Same connection
         // as the refusal, so the session's ambient budget is identical too and only the column differs.
         //
-        // NOT UpdateNameAsync, WHICH THIS CASE USED TO CALL, and the divergence is the point rather
-        // than a duplication to fold back. That helper writes one text `name`, which is wrong here in
-        // two separate ways now that payees.name is bytea. A text literal into a bytea column is
+        // SPELLED OUT INLINE, LIKE ITS TWO NEIGHBOURS, and the divergence is the point rather
+        // than a duplication to fold back. The deleted helper wrote one text `name`, which was wrong
+        // here in two separate ways once payees.name became bytea. A text literal into a bytea column is
         // refused by the TYPE CHECKER with 42804 — before any grant or policy is consulted, so it never
         // reaches the question this pair is asking, and its SQLSTATE is easy to mistake for a refusal
         // somebody measured. And one column is not the operation: Payee.Rename takes an IndexedName and
@@ -351,14 +398,14 @@ public sealed class TenancySchemaTests
     /// </para>
     /// <para>
     /// The destination is also left empty. All four named tables keep one name per budget, by two
-    /// mechanisms rather than one. <c>category_groups</c> and <c>categories</c> still index the name
-    /// COLUMN, under the <c>case_insensitive</c> collation, as
-    /// <c>IX_category_groups_budget_id_name</c> and <c>IX_categories_budget_id_name</c>. On
-    /// <c>accounts</c> and <c>payees</c> the name is a <c>bytea</c> envelope this server holds no key
-    /// for, so <c>IX_accounts_budget_id_name_key</c> and <c>IX_payees_budget_id_name_key</c> are
-    /// unique over <c>(budget_id, name_key)</c> — the blind index the client computes over a name it
-    /// case-folded first — and the <c>case_insensitive</c> collation left both columns BY FORCE,
-    /// because <c>bytea</c> is not a collatable type. The consequence for this helper is the same
+    /// mechanisms rather than one. <c>categories</c> alone still indexes the name COLUMN, under the
+    /// <c>case_insensitive</c> collation, as <c>IX_categories_budget_id_name</c>. On <c>accounts</c>,
+    /// <c>payees</c> and now <c>category_groups</c> the name is a <c>bytea</c> envelope this server
+    /// holds no key for, so <c>IX_accounts_budget_id_name_key</c>, <c>IX_payees_budget_id_name_key</c>
+    /// and <c>IX_category_groups_budget_id_name_key</c> are unique over <c>(budget_id, name_key)</c> —
+    /// the blind index the client computes over a name it case-folded first — and the
+    /// <c>case_insensitive</c> collation left all three columns BY FORCE, because <c>bytea</c> is not a
+    /// collatable type. The consequence for this helper is the same
     /// either way: a row waiting in the destination under the same name — the same index value on the
     /// sealed pair — would make the UPDATE fail with <c>23505</c> instead of doing what the test is
     /// about. The two budgets differ for the same reason, against <c>IX_budgets_user_id_name</c>: that
@@ -403,38 +450,6 @@ public sealed class TenancySchemaTests
         }
 
         throw new InvalidOperationException("Expected PostgresException.");
-    }
-
-    /// <summary>
-    /// Renames a row over <paramref name="connection" /> and returns the affected-row count. One of the
-    /// flipped tests uses it as the success half of its refusal/success pair: <c>name</c> is a granted
-    /// <b>text</b> column on <c>category_groups</c>. It takes the open connection so the pair runs on
-    /// one session — the affected count is only evidence of a grant if the row was visible to that
-    /// session in the first place.
-    /// </summary>
-    /// <remarks>
-    /// <b><c>accounts</c> and <c>payees</c> have both left this helper's list and must not be added
-    /// back.</b> Those columns are <c>bytea</c>, so the text parameter below is refused by the type
-    /// checker with <c>42804</c> before any grant or policy is reached — an SQLSTATE that reads like a
-    /// refusal somebody measured and is not one. And a rename on either is two columns, not one,
-    /// because <c>Account.Update</c> and <c>Payee.Rename</c> each write the sealed envelope and the
-    /// blind index in one statement; a one-column probe cannot tell a role that may rename a row from
-    /// one that may write to a column. Both tests therefore spell their own <c>UPDATE</c> out, with the
-    /// argument beside it. <c>category_groups</c> is the only caller left, and this helper stops being
-    /// right for it the day that column is sealed too.
-    /// </remarks>
-    private static async Task<int> UpdateNameAsync(
-        NpgsqlConnection connection,
-        string table,
-        Guid rowId,
-        string newName)
-    {
-        await using NpgsqlCommand command = new(
-            $"update {table} set name = @name where id = @id",
-            connection);
-        command.Parameters.AddWithValue("name", newName);
-        command.Parameters.AddWithValue("id", rowId);
-        return await command.ExecuteNonQueryAsync();
     }
 
     private static NpgsqlCommand BuildMove(

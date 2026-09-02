@@ -158,7 +158,8 @@ public sealed class CreateTransactionHandlerTests
     {
         // Arrange
         Fixture fixture = await Fixture.CreateAsync();
-        CategoryGroup categoryGroup = await fixture.CategoryGroups.CreateAsync("Essential Obligations");
+        CategoryGroup categoryGroup =
+            await fixture.CategoryGroups.CreateAsync(SealedNarrative.Indexed("Essential Obligations"));
         Category category = await fixture.Categories.CreateAsync(categoryGroup.Id, "Groceries");
 
         // Act
@@ -175,7 +176,8 @@ public sealed class CreateTransactionHandlerTests
         await Assert.That(dto.CategoryId).IsEqualTo(category.Id);
         await Assert.That(dto.CategoryName).IsEqualTo("Groceries");
         await Assert.That(dto.CategoryGroupId).IsEqualTo(categoryGroup.Id);
-        await Assert.That(dto.CategoryGroupName).IsEqualTo("Essential Obligations");
+        await Assert.That(dto.CategoryGroupName)
+            .IsEqualTo(SealedNarrative.EncodedName("Essential Obligations"));
     }
 
     [Test]

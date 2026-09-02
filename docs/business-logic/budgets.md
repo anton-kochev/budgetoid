@@ -155,18 +155,20 @@ erDiagram
     different budgets is normal. Scoping uniqueness any wider would make one pool's naming constrain
     another's.
   - **Enforced in**: a unique index per budget on all four, over **two different columns**, because
-    two of the four have been sealed and two have not.
-    - `accounts` and `payees` are the sealed ones. `IX_accounts_budget_id_name_key` and
-      `IX_payees_budget_id_name_key` are unique over `(budget_id, name_key)` — the **blind index**,
-      not the name. Uniqueness over `name` would enforce nothing there: every seal draws a fresh
-      nonce, so two rows holding one name hold different bytes. Case folding did not disappear with
-      the collation, which `bytea` cannot carry; it moved into the normalization the client applies
-      before it computes the index, and **nothing on this side can check that it happened**. See
-      [accounts.md](accounts.md#business-rules--invariants) and
-      [payees.md](payees.md#business-rules--invariants).
-    - `category_groups` and `categories` still hold plaintext: each configuration puts `name` on the
+    three of the four have been sealed and one has not.
+    - `accounts`, `payees` and `category_groups` are the sealed ones.
+      `IX_accounts_budget_id_name_key`, `IX_payees_budget_id_name_key` and
+      `IX_category_groups_budget_id_name_key` are unique over `(budget_id, name_key)` — the **blind
+      index**, not the name. Uniqueness over `name` would enforce nothing there: every seal draws a
+      fresh nonce, so two rows holding one name hold different bytes. Case folding did not disappear
+      with the collation, which `bytea` cannot carry; it moved into the normalization the client
+      applies before it computes the index, and **nothing on this side can check that it happened**.
+      See [accounts.md](accounts.md#business-rules--invariants),
+      [payees.md](payees.md#business-rules--invariants) and
+      [categories.md](categories.md#constraints).
+    - `categories` alone still holds plaintext: its configuration puts `name` on the
       `case_insensitive` collation and indexes `(budget_id, name)`, so PostgreSQL folds the case
-      itself.
+      itself. It is the last of the four in that state.
 
     What happens on a collision differs by entity and by verb, and is unaffected by which column the
     index is over. `AccountRepository`, `CategoryRepository` and `CategoryGroupRepository` translate
@@ -179,9 +181,19 @@ erDiagram
     row already there, which no field-keyed 400 has anywhere to put. The create-against-rename half
     is argued in [payees.md](payees.md#business-rules--invariants); the payee-against-account half,
     which is the one a reader meets first in this paragraph, is argued in the
-    [decision log](_decision-log.md). What *is* affected is who can read the collision: on the two
+    [decision log](_decision-log.md). Sealing a table's name column does **not** move it between the
+    two answers, and `category_groups` is the worked example: its name became ciphertext and its
+    create still answers 400, because the person still typed it into a form. What *is* affected is
+    who can read the collision: on the three
     sealed tables, which rows matched is a question only a browser holding the account's index key
     can answer.
+
+    **A third answer exists on two of these tables and it is not about names at all.** `accounts`,
+    `payees` and `category_groups` all take a **client-minted** row identifier now, so a create
+    retried after a network timeout carries a byte-identical body and breaks the primary key rather
+    than the name index; the account and payee repositories answer that with a 409 carrying its own
+    sentence, and so does `CategoryGroupRepository`. `categories` has no such answer because its
+    identifier is still the server's.
 
 - **Ordering is per budget.**
   - **Why**: position is a deliberate personal arrangement of one pool's categories. Order that
@@ -348,15 +360,20 @@ erDiagram
   chosen**: `case_insensitive` is a text collation and `bytea` is not a collatable type — measured,
   declaring one raises `collations are not supported by type bytea`. What could bring the refusal
   back is a **blind index**, the keyed fingerprint that lets a server holding no plaintext see that
-  two names are equal. **That mechanism now exists and is in use on two tables**:
-  `accounts.name_key` is the first and `payees.name_key` the second, and each unique index over
+  two names are equal. **That mechanism now exists and is in use on three tables**:
+  `accounts.name_key` is the first, `payees.name_key` the second and `category_groups.name_key` the
+  third, and each unique index over
   `(budget_id, name_key)` is this same uniqueness rule surviving this same change, by the same
   mechanism, over bytes the database cannot interpret ([accounts.md](accounts.md#must),
-  [payees.md](payees.md#must)). So the exclusion here has been re-read against two working examples
+  [payees.md](payees.md#must), [categories.md](categories.md#constraints)). So the exclusion here has
+  been re-read against three working examples
   rather than against an idea nobody tried, and it stands: the requirement
   blind-indexes the name columns on `accounts`, `categories`, `category_groups` and `payees`, and
   leaves this one out. There is no later slice in which this comes back, and the honest word for it
-  is surrendered.
+  is surrendered. **A second exclusion has since joined it and is not the same kind of thing**: no
+  *description* column gets a blind index either, because a description is never looked up — that is
+  a mechanism nobody wanted, where this is a rule given up. Do not read the two absences as one
+  policy. See [categories.md](categories.md#constraints).
 - **Enforced in**: nothing, and the absence is the rule. What a reader will misread as the missing
   enforcement is the unique index over `(user_id, name)`, which still exists and still refuses
   something — a second *unnamed* budget, stated above.

@@ -256,7 +256,14 @@ public sealed class DataExportRefusalTests
         });
         Guid categoryGroupId = await CreateAsync(client, "/api/category-groups", new
         {
-            name = "Essentials",
+            // Sealed and indexed through SealedNarrative rather than sent as a flat name:
+            // category_groups.name is an AEAD envelope and category_groups.name_key a blind index, so
+            // plain text is a 400 from CreateCategoryGroupHandler and this seeding would never reach
+            // the subject of the test. The id is client-minted because it is the associated data the
+            // name is sealed against; CreateAsync reads the same value back off the 201.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Essentials"),
+            nameKey = SealedNarrative.EncodedIndex("Essentials"),
             description = (string?)null,
         });
         Guid categoryId = await CreateAsync(client, "/api/categories", new

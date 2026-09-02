@@ -225,7 +225,17 @@ public sealed class AppRoleGrantMatrixTests
         // both halves in one statement. Removing either column from this list is therefore not a
         // narrowing of what may be edited; it is the rename path going away.
         ("accounts", ["name", "name_key", "type", "opening_balance"]),
-        ("category_groups", ["name", "description", "position"]),
+        // The same name/name_key pair the accounts line above argues, and a THIRD column that makes a
+        // half grant harder to see here than on either neighbour. This table's update writes three
+        // narrative columns and EF names only the ones that changed, so a rename leaving the
+        // description alone emits `name, name_key` and SUCCEEDS under a grant missing `description` —
+        // measured on postgres:17.10: that two-column statement answers UPDATE 1, the three-column one
+        // answers 42501, and `set description = null` answers 42501. On accounts and payees any rename
+        // at all names both halves and a half grant is loud on the first one anybody exercises; here
+        // the loud case has to be written on purpose, which is why the raw control in
+        // TenancySchemaTests spells all FOUR columns in one statement — `position` shares this list, so
+        // a three-column control cannot tell a four-column grant from a three-column one.
+        ("category_groups", ["name", "name_key", "description", "position"]),
         ("categories", ["name", "description", "position", "category_group_id"]),
         // The same pair, on the same terms, and it is ONE entry rather than two facts sitting beside
         // each other for the reason the accounts line above states: Payee.Rename takes an IndexedName

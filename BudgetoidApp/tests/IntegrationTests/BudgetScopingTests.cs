@@ -144,14 +144,32 @@ public sealed class BudgetScopingTests
 
         await using (BudgetoidDbContext dbA = CreateDb(host, budgetA))
         {
-            dbA.CategoryGroups.Add(CategoryGroup.Create(budgetA, "Essentials", null, 0, UtcNow()));
-            dbA.CategoryGroups.Add(CategoryGroup.Create(budgetA, "Lifestyle", null, 1, UtcNow()));
+            dbA.CategoryGroups.Add(CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetA,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow()));
+            dbA.CategoryGroups.Add(CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetA,
+                SealedNarrative.Indexed("Lifestyle"),
+                null,
+                1,
+                UtcNow()));
             await dbA.SaveChangesAsync();
         }
 
         // Act — budget B starts its own sequence at 0; positions in budget A must not interfere.
         await using BudgetoidDbContext dbB = CreateDb(host, budgetB);
-        dbB.CategoryGroups.Add(CategoryGroup.Create(budgetB, "Essentials", null, 0, UtcNow()));
+        dbB.CategoryGroups.Add(CategoryGroup.Create(
+            Guid.CreateVersion7(),
+            budgetB,
+            SealedNarrative.Indexed("Essentials"),
+            null,
+            0,
+            UtcNow()));
         await dbB.SaveChangesAsync();
         List<CategoryGroup> groupsOfB = await dbB.CategoryGroups
             .OrderBy(group => group.Position)

@@ -8,6 +8,143 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-03 — A sealed description carries no blind index, and "cleared" is not "never filled"
+
+**Context:** `category_groups.description` is the first sealed **free-text** column in the product.
+Every sealed column before it was a `name`, and every one a route could write was `NOT NULL`, carried
+a blind index, and held a value some rule elsewhere compares. `budgets.name` is the near miss and not
+the precedent: it is nullable and unindexed, with the same converter shape and the same NULL-tolerant
+`CHECK`s, but **no route accepts one**, so nothing before now had to decide what an absent member on
+the wire means. A description is none of those things, and two questions the earlier
+slices never had to answer arrived together — whether it gets an index like its neighbours, and what
+a nullable sealed column does with the difference between a value somebody removed and a value
+nobody ever supplied. `CategoryGroup.NormalizeDescription` had been answering the second one for as
+long as the column held text, by mapping a whitespace-only description onto `null`.
+
+**Decision:** **the description is sealed and nothing else.** No `description_key`, not now and not
+in a later slice. It is `NarrativeField?` against a nullable `bytea`, capped at
+`NarrativeFieldLimits.DescriptionBytes` rather than `NameBytes`, with a length band and a version
+check that pass vacuously on NULL. And **`NULL` and a 29-byte envelope are two different rows that
+must stay two**: `NormalizeDescription` is deleted and may not return in any form.
+
+**No index, because an index answers a question nothing asks here.** A blind index exists so that
+equal names can be found equal — for a uniqueness constraint or an equality lookup. A description is
+not looked up, is not unique and is not a name, so an index over one would buy nothing and would
+publish a deterministic per-account fingerprint of somebody's free text, with the operator holding
+every row. Read that beside `budgets.name`'s exclusion and keep the two apart: the budget's is a
+uniqueness rule **surrendered** and this is a mechanism that was never wanted. `IndexedName.Of` says
+the same thing from the other end — it names `NameBytes` itself and takes no ceiling parameter,
+because every blind-indexed column in the product is a `name`.
+
+**The fold had to go, and its removal is forced rather than chosen.** An empty plaintext seals to
+exactly `CiphertextEnvelope.MinimumLength` bytes, and a note nobody wrote is `NULL`; the schema
+represents both and distinguishes them, measured. `NormalizeDescription` collapsed the first onto the
+second, and it cannot be rewritten to survive the change because there is no text on this side to
+inspect — it left with the `string` parameter. Two layers above it could still collapse the
+distinction and neither may: the handlers' absence test is `command.Description is null` and never
+`string.IsNullOrEmpty` or `string.IsNullOrWhiteSpace`, because the decoder underneath refuses `null`
+and `""` identically; and `CategoryGroupDto.Description` stays `string?` with no `?? string.Empty`,
+because `""` is not a legal envelope and a client cannot tell a coercion from a value it is expected
+to decode.
+
+**The hazard this column adds to the product, which no schema rule can close.** The column is
+nullable, so **a write path that decodes a description and then forgets to assign it writes `NULL`** —
+a legal row, violating no constraint, byte-identical to one belonging to somebody who deliberately
+filed no note. On the `NOT NULL` name the same omission is `23502`. Nothing in the schema can tell a
+bug from an operation here, so what holds it is a **test shape**: every write path is covered by a
+case that reads a *non-null* description back, never one asserting the member is merely present or
+that the response was a 204. That obligation is written into
+[categories.md](categories.md#business-rules--invariants) because it is the kind of rule a later
+author weakens while tidying an assertion.
+
+**Alternatives rejected, and they fail differently.** **Give the description an index for
+consistency with the name beside it** — it is the tidy-looking symmetry and it hands out a
+fingerprint of free text for a lookup nobody performs. **Keep a normalisation step that maps an
+empty envelope to NULL** — unimplementable: this side cannot tell an envelope over `"   "` from an
+envelope over a paragraph. **Reuse `NameBytes` as the cap so there is one number** — the two caps are
+field *classes*, and a description sealed under the name's ceiling is refused at a size this column
+is meant to accept. **Use `NarrativeField.Sealed` with a nullable parameter instead of
+`SealedOrAbsent`** — `default(ReadOnlyMemory<byte>)` is a non-null, zero-length buffer, so an absent
+description would be judged as an envelope and refused for a rule written about values that exist.
+**Let the `PUT` carry `Optional<string?>` so an absent member means "leave it alone"** — that invents
+a third state a full replacement does not have and no client has ever sent; the transaction routes
+carry it because they are `PATCH`.
+
+**Consequences.** `NarrativeFieldLimits.DescriptionBytes` and `NarrativeField.SealedOrAbsent` have
+production callers for the first time, so the two caps are a pair rather than a constant and a spare
+— and a swap between them is quiet in both directions. `CategoryGroupConfiguration` is the first
+persistence configuration holding **two narrative converters of different nullability**, which a
+reviewer will propose unifying and which is argued against in place: a nullable converter on the
+`NOT NULL` name column moves "this arm never runs" from a fact about the property's type to a fact
+about the schema. And the alphabetical `CHECK` ordering now crosses two columns, which produced the
+one measurement that corrected an earlier reading: `description_length` sorts before
+`description_version`, so the length band **shields** a `get_byte` spelling on the version check and
+nothing in the suite can catch one — recorded in
+[ciphertext-envelope.md](ciphertext-envelope.md#two-checks-on-one-column-and-which-one-bites) rather
+than left as a rule somebody assumes a test holds.
+
+**Affected areas:** [categories.md](categories.md),
+[ciphertext-envelope.md](ciphertext-envelope.md), [export.md](export.md),
+[_overview.md](_overview.md).
+
+---
+
+## 2026-09-03 — A duplicate category group name stays a field error, and sealing a column does not move it
+
+**Context:** `category_groups.name` became ciphertext with a blind index beside it — the third
+table to take that change — and `IX_category_groups_budget_id_name_key` now refuses a duplicate over
+`name_key` instead of over a case-insensitively collated `name`. The entry below settled that an
+account create answers **400** and a payee create answers **409** on the identical shape of index,
+by asking who chose the name. This table was named in that entry's consequences as falling out of the
+rule with no decision of its own, on the grounds that its names are typed into a form — and the same
+sentence dismissed the column's plaintext type as irrelevant to the answer. That column is no longer
+plaintext, so the dismissal is now load-bearing rather than incidental, and a reviewer looking at
+three sealed tables with two different create answers will read it as drift.
+
+**Decision:** **the group create keeps its 400 keyed on `Name`, and so does the rename.** Sealing a
+name column moves nothing about which status a collision earns. `CategoryGroupRepository.AddAsync`
+and `UpdateAsync` both match the `23505` **by constraint name** and raise
+`Domain.Common.ValidationException` naming `Name`.
+
+**Because the input to the rule is the author of the name, and sealing does not change who that is.**
+A person opens a form and types "Essentials"; a collision is a mistake about a field they are looking
+at, the message attaches to the input, and retyping resolves it. There is nothing to re-read — the
+group already holding the name is not the group they were creating. A payee's name is **resolved** by
+the client against a list it decrypted before it posts, so a payee collision says that list was stale
+rather than that anybody chose badly, and a bare 409 is the only answer with somewhere to put "adopt
+the row that already exists". Ciphertext changes what the *server* can see about the name; it changes
+nothing about where the name came from.
+
+**A third answer arrives with the client-minted identifier, and it is not this one.**
+`CategoryGroupRepository.AddAsync` carries a second `catch` arm on
+`CategoryGroupConfiguration.PrimaryKeyName` raising `ConflictException` → **409**, with the sentence
+the account and payee repositories already carry: a POST retried after a network timeout sends a
+byte-identical body, and the row wearing that id may hold a different name — or sit in a budget the
+caller cannot read — so it must never be sent off to re-read a group list. Both arms catch the same
+SQLSTATE from the same statement, so neither may match on SQLSTATE alone.
+
+**Alternatives rejected, and they fail differently.** **409 on the group create, to match the payee**
+— it reads as consistency between the two most recently sealed tables and it spends the field a form
+needs, telling somebody who typed a name they already own to go re-read a list that will not help
+them. **Deciding by whether the column is sealed** — the rule this entry exists to refuse: it would
+have flipped this table's answer as a side effect of an encryption slice, which is a product change
+with no product argument behind it, and it says nothing at all about `categories`, whose create must
+keep answering 400 while its column is still text. **Deciding by verb — creates conflict, renames
+validate** — rejected in the entry below and unchanged: applied evenly it turns the account create
+into a 409 too.
+
+**Consequences.** The four collision answers still read as one rule with two inputs, and the rule now
+has a worked example of the input that does *not* matter: `category_groups` changed columns and kept
+its status. [budgets.md](budgets.md#must) says so in the paragraph that lists all four, so the next
+sealed table is not read as a reason to revisit its own answer. And a fifth named entity gets its
+status by asking the same question it always did — who chose the name — rather than by asking whether
+the server can read it.
+
+**Affected areas:** [categories.md](categories.md), [budgets.md](budgets.md),
+[payees.md](payees.md), [ciphertext-envelope.md](ciphertext-envelope.md).
+
+---
+
 ## 2026-09-02 — A repeated create is a conflict about the identifier, and it gets a sentence of its own
 
 **Context:** a `POST /api/payees` or `POST /api/accounts` carrying an identifier the table already

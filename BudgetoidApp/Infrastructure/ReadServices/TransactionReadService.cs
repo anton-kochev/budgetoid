@@ -6,15 +6,16 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.ReadServices;
 
-// Neither query builds the TransactionDto inside the Select any more. accounts.name and payees.name both
-// carry a value converter, so the provider translates the property itself and the NarrativeField exists
-// only once the row has materialized; encoding either in the projection would be a call the translator
-// has to make sense of. AccountReadService and ExportReadService take the same shape for the same reason.
+// Neither query builds the TransactionDto inside the Select any more. accounts.name, payees.name and
+// category_groups.name all carry a value converter, so the provider translates the property itself and
+// the NarrativeField exists only once the row has materialized; encoding any of them in the projection
+// would be a call the translator has to make sense of. AccountReadService, PayeeReadService,
+// CategoryReadService and ExportReadService take the same shape for the same reason.
 //
-// Two of the four names are sealed and two are not. The account's and the payee's leave the Select and
-// are encoded in Shape; the category's and the category group's stay inside it, because those columns
-// are still readable text. A reader must not fold the four into one rule — the payee joined the sealed
-// pair, it did not make the set uniform.
+// Three of the four names are sealed and one is not. The account's, the payee's and the category group's
+// leave the Select and are encoded in Shape; the category's stays inside it, because categories.name is
+// still readable text and is the next column to move. A reader must not fold the four into one rule — the
+// group joined the sealed set, it did not make the set uniform.
 public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITransactionReadService
 {
     public async Task<IReadOnlyList<TransactionDto>> GetAllWithPayeeAsync(
@@ -103,8 +104,8 @@ public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITran
     }
 
     /// <summary>
-    /// One materialized row of either query, carrying the account's and the payee's names as their
-    /// columns hold them.
+    /// One materialized row of either query, carrying the account's, the payee's and the category
+    /// group's names as their columns hold them.
     /// </summary>
     /// <remarks>
     /// A named type rather than an anonymous one, and shared by both queries rather than declared twice:
@@ -112,7 +113,8 @@ public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITran
     /// added to one projection and not the other stops compiling instead of quietly shipping on one route
     /// only. <c>Description</c> stays nullable here — the coercion to the empty string is the DTO's, and
     /// doing it in the projection would be a second owner for a rule the export deliberately does not
-    /// follow.
+    /// follow. <c>CategoryName</c> stays <see cref="string"/> because <c>categories.name</c> is not
+    /// sealed yet; it is the one member of these four that a later slice moves.
     /// </remarks>
     private sealed record Row(
         Guid Id,
@@ -129,19 +131,20 @@ public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITran
         Guid? CategoryId,
         string? CategoryName,
         Guid? CategoryGroupId,
-        string? CategoryGroupName);
+        NarrativeField? CategoryGroupName);
 
     /// <summary>
-    /// Turns one materialized row into the shape the wire carries, which is where the two sealed names
+    /// Turns one materialized row into the shape the wire carries, which is where the three sealed names
     /// become text.
     /// </summary>
     /// <remarks>
-    /// Both envelopes go out in the one alphabet every binary member of this API crosses JSON in.
+    /// All three envelopes go out in the one alphabet every binary member of this API crosses JSON in.
     /// <see cref="PasskeyEncoding"/> despite its name, because it is that alphabet's only implementation
     /// here and a second base64url encoder beside it is exactly the drift its neighbours argue against —
     /// and not <c>System.Text.Json</c>'s own <see cref="byte"/><c>[]</c> handling, which emits padded
-    /// standard base64 the client's strict decoder refuses. A null payee stays null: the member is
-    /// absent on a transaction naming no payee, which is not the same as an envelope over an empty name.
+    /// standard base64 the client's strict decoder refuses. A null payee and a null category group stay
+    /// null: the members are absent on a transaction naming neither, which is not the same as an envelope
+    /// over an empty name.
     /// </remarks>
     private static TransactionDto Shape(Row row) => new(
         row.Id,
@@ -158,5 +161,7 @@ public sealed class TransactionReadService(BudgetoidDbContext dbContext) : ITran
         row.CategoryId,
         row.CategoryName,
         row.CategoryGroupId,
-        row.CategoryGroupName);
+        row.CategoryGroupName is null
+            ? null
+            : PasskeyEncoding.Encode(row.CategoryGroupName.Envelope.Span));
 }

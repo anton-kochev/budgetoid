@@ -29,8 +29,9 @@ public sealed class CategoryRepositoryTests
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId)))
         {
             CategoryGroup categoryGroup = CategoryGroup.Create(
+                Guid.CreateVersion7(),
                 budgetId,
-                "Essentials",
+                SealedNarrative.Indexed("Essentials"),
                 null,
                 0,
                 UtcNow());
@@ -77,8 +78,9 @@ public sealed class CategoryRepositoryTests
                 UsdMinorUnit,
                 UtcNow());
             CategoryGroup categoryGroup = CategoryGroup.Create(
+                Guid.CreateVersion7(),
                 budgetId,
-                "Essentials",
+                SealedNarrative.Indexed("Essentials"),
                 null,
                 0,
                 UtcNow());

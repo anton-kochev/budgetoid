@@ -858,16 +858,31 @@ public sealed class TransactionEndpointsTests
         return json["id"]!.GetValue<Guid>();
     }
 
-    private static async Task<Guid> CreateCategoryGroupAsync(HttpClient client, string name)
+    /// <summary>
+    /// Creates one category group from <paramref name="label" /> and returns the identifier it minted.
+    /// </summary>
+    /// <remarks>
+    /// <b>The parameter is a LABEL, not a name.</b> category_groups.name is an AEAD envelope and
+    /// category_groups.name_key a blind index, so a flat string is a 400 from
+    /// CreateCategoryGroupHandler and this seeding would never reach the subject of any case below.
+    /// The identifier is minted here rather than read off the 201 for the reason the sibling helper in
+    /// CategoryIntegrationTests writes out: the row id is the associated data the name is sealed
+    /// against, so reading a server-invented one back would hand out a group nobody can open.
+    /// The description is left absent — every caller here seeds a group only to hang a category off
+    /// it, and a description would add two CHECKs for these cases to trip over for nothing.
+    /// </remarks>
+    private static async Task<Guid> CreateCategoryGroupAsync(HttpClient client, string label)
     {
+        Guid id = Guid.CreateVersion7();
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/category-groups", new
         {
-            name,
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             description = (string?)null,
         });
         response.EnsureSuccessStatusCode();
-        JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
-        return json["id"]!.GetValue<Guid>();
+        return id;
     }
 
     private static async Task<Guid> CreateCategoryAsync(

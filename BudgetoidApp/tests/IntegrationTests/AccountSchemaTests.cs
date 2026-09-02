@@ -56,6 +56,56 @@ public sealed class AccountSchemaTests
             .IsEqualTo((long)definedTypes.Length);
     }
 
+    /// <summary>
+    /// A blind index of any width but exactly 32 bytes is refused by
+    /// <c>CK_accounts_name_key_length</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>31 AND 33, because one of them alone measures a ceiling rather than a width.</b> The
+    /// constraint is written <c>= 32</c> and both <c>SchemaConstraintSnapshotTests</c> and
+    /// <c>BudgetoidDbContextConstructionTests</c> pin that as text — but a pin is not a firing. Until
+    /// this case existed, <c>&lt;= 32</c> would have shipped green in every sense that matters: it
+    /// refuses 33 exactly as the equality does, and admits a 31-byte digest that stores, reads back,
+    /// keys perfectly through <c>IX_accounts_budget_id_name_key</c>, never collides, and matches no
+    /// account the client will ever look for. Nothing on this side can recompute it to notice, because
+    /// the index key lives in a browser.
+    /// </para>
+    /// <para>
+    /// The envelope, the type and the balance beside it are all legal, because PostgreSQL reports a
+    /// multiply-violating row under whichever constraint sorts first alphabetically. The three
+    /// <c>CK_accounts_name*</c> constraints sort <c>key_length</c>, <c>length</c>, <c>version</c>, so
+    /// the width would still be reported here — but <c>opening_balance</c> and <c>type</c> sort after
+    /// it and a malformed name would not, and a case that leans on the alphabet to pick the right
+    /// answer is one edit away from asserting the wrong refusal while looking like it passed.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(31)]
+    [Arguments(33)]
+    public async Task Database_RefusesABlindIndexThatIsNotExactlyThirtyTwoBytes(int width)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Non-vacuity, and it has to come first: the same insert with the one legal width goes
+        // through, so the refusal below is about the width and not about the statement.
+        await InsertAccountAsync(connection, budgetId, "Everyday", "Checking", 0m);
+
+        // Act
+        PostgresException refusal = await ThrowsPostgresExceptionAsync(
+            connection, budgetId, "Wrong width", "Checking", 0m, new byte[width]);
+
+        // Assert — the constraint is named beside the SQLSTATE because every other check on this table
+        // raises 23514 as well, and the case would otherwise pass on the wrong rejection.
+        await Assert.That(refusal.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(refusal.ConstraintName).IsEqualTo("CK_accounts_name_key_length");
+        await Assert.That(refusal.TableName).IsEqualTo("accounts");
+    }
+
     [Test]
     [Arguments("1000000000.01")]
     [Arguments("-1000000000.01")]
@@ -141,9 +191,11 @@ public sealed class AccountSchemaTests
         Guid budgetId,
         string name,
         string type,
-        decimal openingBalance)
+        decimal openingBalance,
+        byte[]? nameKey = null)
     {
-        await using NpgsqlCommand command = BuildInsert(connection, budgetId, name, type, openingBalance);
+        await using NpgsqlCommand command =
+            BuildInsert(connection, budgetId, name, type, openingBalance, nameKey);
         await command.ExecuteNonQueryAsync();
     }
 
@@ -152,9 +204,11 @@ public sealed class AccountSchemaTests
         Guid budgetId,
         string name,
         string type,
-        decimal openingBalance)
+        decimal openingBalance,
+        byte[]? nameKey = null)
     {
-        await using NpgsqlCommand command = BuildInsert(connection, budgetId, name, type, openingBalance);
+        await using NpgsqlCommand command =
+            BuildInsert(connection, budgetId, name, type, openingBalance, nameKey);
 
         try
         {
@@ -168,12 +222,19 @@ public sealed class AccountSchemaTests
         throw new InvalidOperationException("Expected PostgresException.");
     }
 
+    /// <remarks>
+    /// <paramref name="nameKey" /> is <see langword="null" /> for "derive it from the label", which is
+    /// what every case but the width one wants. It is a parameter at all because the blind index's
+    /// width cannot be reached any other way: the fixture only ever emits the legal 32 bytes, so a
+    /// case about a wrong width has to hand its own bytes in.
+    /// </remarks>
     private static NpgsqlCommand BuildInsert(
         NpgsqlConnection connection,
         Guid budgetId,
         string name,
         string type,
-        decimal openingBalance)
+        decimal openingBalance,
+        byte[]? nameKey = null)
     {
         NpgsqlCommand command = new(
             """
@@ -189,7 +250,8 @@ public sealed class AccountSchemaTests
         // numeric shape, so either refusal would arrive as a seeding failure wearing the SQLSTATE the
         // case was hunting.
         command.Parameters.AddWithValue("name", SealedNarrative.Name(name).Envelope.ToArray());
-        command.Parameters.AddWithValue("name_key", SealedNarrative.BlindIndex(name).ToArray());
+        command.Parameters.AddWithValue(
+            "name_key", nameKey ?? SealedNarrative.BlindIndex(name).ToArray());
         command.Parameters.AddWithValue("type", type);
         command.Parameters.AddWithValue("opening_balance", openingBalance);
         command.Parameters.AddWithValue("currency_code", "USD");

@@ -78,7 +78,7 @@ public sealed class RlsIsolationTests
     /// row-level security: <c>transactions</c> has no <c>name</c>, hence <c>description</c>.
     /// </summary>
     /// <remarks>
-    /// <b>The third member is a LABEL and no longer always a value.</b> Two of the five columns are
+    /// <b>The third member is a LABEL and no longer always a value.</b> Three of the five columns are
     /// <c>bytea</c> now, so what is written is derived from the label rather than being it — see
     /// <see cref="NarrativeValueFor" />, which is the one place that decision is taken.
     /// </remarks>
@@ -96,22 +96,23 @@ public sealed class RlsIsolationTests
     /// read-back compares against.
     /// </summary>
     /// <remarks>
-    /// <b><c>accounts.name</c> and <c>payees.name</c> are bytea and the other three are still text, so
-    /// the VALUE follows the table.</b> Writing a text literal into a sealed column comes back
-    /// <c>42804</c> from the type checker, before any policy is consulted — and this test reads its
-    /// verdict off an AFFECTED-ROW COUNT, so a type error does not merely mislead it, it throws out of
-    /// the loop entirely. A short buffer would be the same trap one step later, refused by
-    /// <c>CK_accounts_name_length</c> or <c>CK_payees_name_length</c> with <c>23514</c>. Both go
-    /// through the shared fixture, so what is written is an envelope this server would accept from a
-    /// client.
+    /// <b><c>accounts.name</c>, <c>payees.name</c> and now <c>category_groups.name</c> are bytea and the
+    /// other two are still text, so the VALUE follows the table.</b> Writing a text literal into a
+    /// sealed column comes back <c>42804</c> from the type checker, before any policy is consulted —
+    /// and this test reads its verdict off an AFFECTED-ROW COUNT, so a type error does not merely
+    /// mislead it, it throws out of the loop entirely and DESTROYS the case rather than failing it. A
+    /// short buffer would be the same trap one step later, refused by <c>CK_accounts_name_length</c>,
+    /// <c>CK_payees_name_length</c> or <c>CK_category_groups_name_length</c> with <c>23514</c>. All
+    /// three go through the shared fixture, so what is written is an envelope this server would accept
+    /// from a client.
     /// </remarks>
     private static object NarrativeValueFor(string table, string label) =>
-        table is "accounts" or "payees"
+        table is "accounts" or "payees" or "category_groups"
             ? SealedNarrative.Name(label).Envelope.ToArray()
             : label;
 
     /// <summary>
-    /// Compares what a column actually holds against the label it was written from, bytes for the two
+    /// Compares what a column actually holds against the label it was written from, bytes for the three
     /// sealed columns and text for the rest.
     /// </summary>
     private static bool NarrativeColumnHolds(string table, object? actual, string label) =>
@@ -1126,8 +1127,8 @@ public sealed class RlsIsolationTests
     /// </para>
     /// <para>
     /// Names repeat across the two budgets on purpose — every unique index here leads with
-    /// <c>budget_id</c>, over <c>name</c> on <c>category_groups</c> and <c>categories</c> and over
-    /// <c>name_key</c> on <c>accounts</c> and <c>payees</c>, whose name column is a <c>bytea</c>
+    /// <c>budget_id</c>, over <c>name</c> on <c>categories</c> and over <c>name_key</c> on
+    /// <c>accounts</c>, <c>payees</c> and <c>category_groups</c>, whose name column is a <c>bytea</c>
     /// envelope — so identical names are legal in both shapes and make the two tenants genuinely
     /// indistinguishable except by <c>budget_id</c>. The two budgets themselves differ, against
     /// <c>IX_budgets_user_id_name</c>.
@@ -1185,7 +1186,13 @@ public sealed class RlsIsolationTests
             Guid.CreateVersion7(),
             budgetId,
             SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
-        CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
+        CategoryGroup group = CategoryGroup.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Everyday"),
+            null,
+            0,
+            SeedInstant);
         Category category = Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant);
         Payee payee = Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant);
         Transaction transaction = Transaction.Create(
@@ -1516,9 +1523,9 @@ public sealed class RlsIsolationTests
         BudgetRows target)
     {
         // Distinct from every seeded name, so no per-budget uniqueness index turns a probe into a
-        // 23505 about something else — the case-insensitive one over (budget_id, name) on
-        // category_groups and categories, and the one over (budget_id, name_key) on accounts and
-        // payees, which the parameter block below derives from this same label.
+        // 23505 about something else — the case-insensitive one over (budget_id, name) on categories,
+        // and the one over (budget_id, name_key) on accounts, payees and category_groups, which the
+        // parameter block below derives from this same label.
         const string probeName = "Inserted by an isolation probe";
 
         // 'USD' is a real currencies row seeded by the migration and 'Checking' satisfies
@@ -1533,9 +1540,14 @@ public sealed class RlsIsolationTests
                 "insert into accounts (id, budget_id, name, name_key, type, opening_balance, currency_code, created_at_utc) " +
                 "values (@id, @budget_id, @name, @name_key, 'Checking', 0, 'USD', @created_at_utc)",
                 (Guid?)null),
+            // category_groups carries both halves of a sealed name now, and the same 23502 trap the two
+            // tables above describe: name_key is NOT NULL, so a probe naming only `name` is refused
+            // before any policy is consulted and this test reads a not-null violation as the
+            // row-level-security verdict. `description` stays null deliberately — a probe writing one
+            // tests nothing this case is about and adds two CHECK constraints to trip over.
             "category_groups" => (
-                "insert into category_groups (id, budget_id, name, description, position, created_at_utc) " +
-                "values (@id, @budget_id, @name, null, 1, @created_at_utc)",
+                "insert into category_groups (id, budget_id, name, name_key, description, position, created_at_utc) " +
+                "values (@id, @budget_id, @name, @name_key, null, 1, @created_at_utc)",
                 null),
             "categories" => (
                 "insert into categories (id, budget_id, category_group_id, name, description, position, created_at_utc) " +
@@ -1561,8 +1573,8 @@ public sealed class RlsIsolationTests
         command.Parameters.AddWithValue("budget_id", target.BudgetId);
         command.Parameters.AddWithValue("created_at_utc", SeedInstant);
 
-        // accounts.name and payees.name are bytea and the other three probes still write text, so the
-        // value follows the table rather than the parameter name. THE ENVELOPE HAS TO BE WELL FORMED
+        // accounts.name, payees.name and category_groups.name are bytea and the other two probes still
+        // write text, so the value follows the table rather than the parameter name. THE ENVELOPE HAS TO BE WELL FORMED
         // AND NOT MERELY BINARY, which is the point of going through the shared fixture instead of
         // handing over a few bytes: each column carries a length band and a version check, so a short
         // buffer is refused with 23514 and a text literal with 42804 — from the type checker, before
@@ -1571,12 +1583,12 @@ public sealed class RlsIsolationTests
         // supposed to SUCCEED failed the same way and took the whole pair down with it.
         //
         // The label survives only as what makes the probe's row distinguishable; nothing reads it back.
-        // On both sealed tables it also does the job the comment above the literal describes — the
+        // On all three sealed tables it also does the job the comment above the literal describes — the
         // unique index is over (budget_id, name_key) now, so it is the INDEX that has to be unlike
         // anything seeded, and DERIVING BOTH HALVES FROM ONE DISTINCTIVE LABEL is what keeps that true.
         // A fixed index would collide with whatever a seeder happened to write and answer 23505, which
         // this test would read as the policy firing.
-        if (table is "accounts" or "payees")
+        if (table is "accounts" or "payees" or "category_groups")
         {
             command.Parameters.AddWithValue("name", SealedNarrative.Name(probeName).Envelope.ToArray());
             command.Parameters.AddWithValue("name_key", SealedNarrative.BlindIndex(probeName).ToArray());

@@ -4,6 +4,7 @@ using Domain.Accounts;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Microsoft.Extensions.Time.Testing;
+using TestSupport;
 using UnitTests.Fakes;
 
 namespace UnitTests;
@@ -50,7 +51,8 @@ public sealed class GetTransactionsHandlerTests
         Account account = await accounts.CreateAsync();
         var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
         var categories = new InMemoryCategoryRepository(budgetId, timeProvider, categoryGroups);
-        CategoryGroup categoryGroup = await categoryGroups.CreateAsync("Essential Obligations");
+        CategoryGroup categoryGroup =
+            await categoryGroups.CreateAsync(SealedNarrative.Indexed("Essential Obligations"));
         Category category = await categories.CreateAsync(categoryGroup.Id, "Groceries");
         await CreateAsync(
             repository,
@@ -61,11 +63,14 @@ public sealed class GetTransactionsHandlerTests
             account,
             "Food",
             category.Id);
+        // The group's name crosses the wire as an envelope now, so the projection is fed the encoded
+        // value rather than the entity's NarrativeField: what this fake stands in for is the read
+        // service's shaped row, not the entity.
         repository.SetCategoryProjection(
             category.Id,
             category.Name,
             categoryGroup.Id,
-            categoryGroup.Name);
+            SealedNarrative.EncodedName("Essential Obligations"));
 
         // Act
         var response = await new GetTransactionsHandler(repository)
@@ -76,7 +81,8 @@ public sealed class GetTransactionsHandlerTests
         await Assert.That(dto.CategoryId).IsEqualTo(category.Id);
         await Assert.That(dto.CategoryName).IsEqualTo("Groceries");
         await Assert.That(dto.CategoryGroupId).IsEqualTo(categoryGroup.Id);
-        await Assert.That(dto.CategoryGroupName).IsEqualTo("Essential Obligations");
+        await Assert.That(dto.CategoryGroupName)
+            .IsEqualTo(SealedNarrative.EncodedName("Essential Obligations"));
     }
 
     [Test]

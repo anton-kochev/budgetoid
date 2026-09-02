@@ -318,7 +318,13 @@ public sealed class AppRoleGrantsTests
                 budgetId,
                 SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
             CategoryGroup categoryGroup =
-                CategoryGroup.Create(budgetId, "Essentials", null, 0, SeedInstant);
+                CategoryGroup.Create(
+                    Guid.CreateVersion7(),
+                    budgetId,
+                    SealedNarrative.Indexed("Essentials"),
+                    null,
+                    0,
+                    SeedInstant);
             seed.CategoryGroups.Add(categoryGroup);
             seed.Categories.Add(Category.Create(
                 budgetId, categoryGroup.Id, "Groceries", null, 0, SeedInstant));

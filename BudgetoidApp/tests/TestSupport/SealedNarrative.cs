@@ -67,6 +67,66 @@ public static class SealedNarrative
     }
 
     /// <summary>
+    /// A well-formed sealed description, as long as the framing's floor plus <paramref name="label" />.
+    /// </summary>
+    /// <param name="label">
+    /// What distinguishes this fixture from the next one. The default is the empty label, which produces
+    /// the shortest envelope the format can carry — what a note somebody emptied seals to, since AES-GCM
+    /// ciphertext is exactly the length of its plaintext. That value is not the same as no description at
+    /// all, which is <see langword="null" /> and reaches a nullable column as NULL.
+    /// </param>
+    /// <returns>The value a <c>description</c> column will hold.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Not a wrapper over <see cref="Name(string)" />, because the cap is the honest part of the
+    /// fixture.</b> <see cref="NarrativeFieldLimits" /> carries two ceilings over field <em>classes</em> —
+    /// <see cref="NarrativeFieldLimits.NameBytes" /> for the five name columns and
+    /// <see cref="NarrativeFieldLimits.DescriptionBytes" /> for the three description ones — so a
+    /// description fixture built on the name's factory would be refused for a limit written about a
+    /// different field. A test wanting a two-thousand-byte note has to be able to build one.
+    /// </para>
+    /// <para>
+    /// <b>There is deliberately no <c>Indexed</c> twin for a description, and there must not be one.</b> A
+    /// blind index answers "which row holds this name". A description is not looked up, is not unique and
+    /// is not a name; an index over one would be a deterministic per-account fingerprint of somebody's
+    /// free text with nothing on the other side asking for it.
+    /// </para>
+    /// <para>
+    /// <b>It caps by construction, which is why the cases about the cap cannot use it.</b> A test that
+    /// needs an envelope one byte over <see cref="NarrativeFieldLimits.DescriptionBytes" /> has to build
+    /// it inline — this helper would refuse to produce the one value that catches a widened ceiling.
+    /// </para>
+    /// </remarks>
+    public static NarrativeField Description(string label = "")
+    {
+        ArgumentNullException.ThrowIfNull(label);
+
+        byte[] labelBytes = Encoding.UTF8.GetBytes(label);
+        byte[] envelope = new byte[CiphertextEnvelope.MinimumLength + labelBytes.Length];
+
+        // Position-varying, and the SAME filler the name uses, which is what makes a description and a
+        // name derived from ONE label distinguishable from each other only by their lengths — while two
+        // DIFFERENT labels share no byte at any offset. That is the property the entity tests rely on to
+        // see a factory that assigned one parameter to two fields.
+        for (int position = 1; position < envelope.Length; position++)
+        {
+            byte source = labelBytes.Length == 0
+                ? (byte)0
+                : labelBytes[(position - 1) % labelBytes.Length];
+
+            envelope[position] = (byte)(source + (position * 31));
+        }
+
+        // Written last, so a filler loop that walked from zero could not overwrite it.
+        envelope[0] = CiphertextEnvelope.Version;
+
+        // Through the judging factory and never through the unchecked door, for the reason
+        // Name(string) gives — and under the DESCRIPTION's cap, which is the whole point of this member
+        // existing beside it.
+        return NarrativeField.Sealed(envelope, NarrativeFieldLimits.DescriptionBytes);
+    }
+
+    /// <summary>
     /// The blind index over <paramref name="label" />: exactly
     /// <see cref="IndexedName.BlindIndexLength" /> bytes, equal for equal labels and different for
     /// different ones.
@@ -164,9 +224,46 @@ public static class SealedNarrative
     /// the envelope is deterministic in the label; what it no longer is, is readable, which is the
     /// product working.
     /// </para>
+    /// <para>
+    /// <b>A CASE THAT PINS THE ENCODING RATHER THAN THE VALUE MUST CHOOSE ITS LABEL, AND MOST LABELS
+    /// CANNOT SEE THE DEFECT.</b> Padded standard base64 and unpadded base64url differ in exactly two
+    /// ways — the trailing <c>=</c> characters, and the two alphabet slots 62 and 63 (<c>+/</c> against
+    /// <c>-_</c>) — so an envelope whose length is a multiple of three AND none of whose six-bit groups
+    /// lands on 62 or 63 spells identically under both. Such a label makes an assertion against this
+    /// member green whichever encoder the production code reached for, which is the whole thing the
+    /// assertion was written to catch.
+    /// </para>
+    /// <para>
+    /// This is measured rather than theoretical: <c>Name("Essentials")</c> is 39 bytes and satisfies
+    /// both conditions, and a mutation replacing <c>PasskeyEncoding.Encode</c> with
+    /// <c>Convert.ToBase64String</c> in <c>CategoryGroupDto.FromCategoryGroup</c> killed no test while
+    /// every encoding case in the category-group suite used it. <b>Neither condition is on its own the
+    /// rule</b> — <c>Name("Sinking Funds")</c> is 42 bytes and emits no padding, and is still caught,
+    /// because it happens to carry a 62/63 byte. A label is safe when the two spellings differ, which is
+    /// a property to check rather than to reason about from the length. Across the suite as it stands,
+    /// "Essentials" was the only label of either kind that was blind.
+    /// </para>
     /// </remarks>
     public static string EncodedName(string label = "") =>
         Base64UrlText.Encode(Name(label).Envelope.Span);
+
+    /// <summary>
+    /// The sealed description over <paramref name="label" /> in the alphabet the API carries it in:
+    /// unpadded base64url.
+    /// </summary>
+    /// <param name="label">What distinguishes this fixture from the next one.</param>
+    /// <returns>The value a request body's <c>description</c> member, and a response's, holds.</returns>
+    /// <remarks>
+    /// <b>The alphabet argument is <see cref="EncodedName(string)" />'s and is not restated; what is this
+    /// member's own is the cap.</b> It encodes <see cref="Description(string)" />, so it carries that
+    /// member's ceiling — a test reaching for <see cref="EncodedName(string)" /> to build a description
+    /// body would be sending a value capped at the wrong number and would find out only for labels
+    /// between the two limits. <b>An absent description is <see langword="null" /> and never the output of
+    /// this member with an empty label</b>: that produces a legal twenty-nine-byte envelope, which is a
+    /// note somebody emptied, and the route tells the two apart.
+    /// </remarks>
+    public static string EncodedDescription(string label = "") =>
+        Base64UrlText.Encode(Description(label).Envelope.Span);
 
     /// <summary>
     /// The blind index over <paramref name="label" /> in the same alphabet.

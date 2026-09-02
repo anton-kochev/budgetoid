@@ -221,7 +221,15 @@ public sealed class SchemaConstraintSnapshotTests
             // refusing duplicate names and never stopped refusing a second unnamed budget.
             """CREATE UNIQUE INDEX "IX_budgets_user_id_name" ON public.budgets USING btree (user_id, name) NULLS NOT DISTINCT""",
             """CREATE UNIQUE INDEX "IX_categories_budget_id_name" ON public.categories USING btree (budget_id, name)""",
-            """CREATE UNIQUE INDEX "IX_category_groups_budget_id_name" ON public.category_groups USING btree (budget_id, name)""",
+            // The same rule — one group name per budget — over the blind index, on the accounts terms
+            // the two lines above already argue and which are not restated a third time. The value
+            // moved and the identifier did not: CategoryGroupConfiguration.NameIndexName still says
+            // "Name" in C# because refusing a name this budget already holds is what the index is FOR,
+            // while the tail here is _name_key because that is the column it is over. Pointing the
+            // index back at `name` leaves a unique index that refuses nothing — every seal draws a
+            // fresh nonce — while still existing, still being rendered here, and still passing any
+            // check that only asked whether it was unique.
+            """CREATE UNIQUE INDEX "IX_category_groups_budget_id_name_key" ON public.category_groups USING btree (budget_id, name_key)""",
             // One account per provider identity. The WHERE is rendered here, so this line alone
             // catches its removal — and removing it would make the index cover passkey rows too,
             // where every row carries (NULL, NULL) and the second one would be refused. Only
@@ -436,6 +444,43 @@ public sealed class SchemaConstraintSnapshotTests
             // match the configuration is how this test starts failing for no reason.
             """CK_budgets_name_version: budgets CHECK ((SUBSTRING(name FROM 1 FOR 1) = '\x01'::bytea))""",
             """CK_categories_position: categories CHECK (("position" >= 0))""",
+            // THE FIRST SEALED DESCRIPTION COLUMN IN THE PRODUCT. Same band shape as every narrative
+            // length check above, a DIFFERENT ceiling — NarrativeFieldLimits.DescriptionBytes rather
+            // than NameBytes — because those are two caps over field CLASSES and not two guesses at one
+            // number. Rendered as two comparisons for the reason the accounts and payees bands are:
+            // PostgreSQL expands BETWEEN.
+            //
+            // Nothing says "or null" and that is the rule rather than a gap: a CHECK is satisfied by
+            // NULL, so a group filing no note passes both description arms vacuously. Measured on
+            // postgres:17.10 over exactly these six constraints — NULL accepted, 29 accepted, 2560
+            // accepted, 2561 refused under this name, present-and-zero-length refused under this name
+            // on INSERT and on UPDATE alike, and clearing back to NULL by UPDATE accepted.
+            """CK_category_groups_description_length: category_groups CHECK (((length(description) >= 29) AND (length(description) <= 2560)))""",
+            // SUBSTRING again, AND THE NULLABLE COLUMN IS WHERE A READER GETS THIS BACKWARDS. The
+            // instinct is that a nullable column escapes get_byte's zero-length trap. Measured on
+            // postgres:17.10: get_byte(NULL::bytea, 0) answers NULL and does not raise, so a
+            // get_byte-spelled version check here would be green on every row holding a NULL and every
+            // row holding a valid envelope, and would bite only on the PRESENT, ZERO-LENGTH value —
+            // which is exactly what a client sending an empty bytea produces and the one value this
+            // check exists for. get_byte(''::bytea, 0) still raises 2202E from inside a CHECK on a
+            // nullable column, with no constraint name and no failing row.
+            //
+            // Nullability therefore makes the wrong spelling QUIETER rather than safer, which is why
+            // the single case that catches it is the one a reviewer is most likely to call redundant.
+            """CK_category_groups_description_version: category_groups CHECK ((SUBSTRING(description FROM 1 FOR 1) = '\x01'::bytea))""",
+            // The blind index's width, an equality for the reason CK_accounts_name_key_length and
+            // CK_payees_name_key_length are equalities. No version arm: a keyed digest has no framing.
+            """CK_category_groups_name_key_length: category_groups CHECK ((length(name_key) = 32))""",
+            """CK_category_groups_name_length: category_groups CHECK (((length(name) >= 29) AND (length(name) <= 1024)))""",
+            // THE THIRD TABLE MAKING THE ALPHABETICAL ACCIDENT CONCRETE, and the first where it crosses
+            // two columns. Measured on postgres:17.10 over exactly these six: the sort is
+            // description_length, description_version, name_key_length, name_length, name_version,
+            // position — so a row breaking a NAME rule and a DESCRIPTION rule is reported under the
+            // description, and one breaking a description rule and the position rule is reported under
+            // the description too. Nothing here depends on that, because every narrative predicate on
+            // this table is spelled with SUBSTRING and none can raise. What it forbids is a case
+            // asserting a constraint NAME for a row carrying more than one violation.
+            """CK_category_groups_name_version: category_groups CHECK ((SUBSTRING(name FROM 1 FOR 1) = '\x01'::bytea))""",
             """CK_category_groups_position: category_groups CHECK (("position" >= 0))""",
             // Bounds the issuer vocabulary the way CK_credentials_type below bounds the type
             // vocabulary, and without it 'Google' and 'google' are two accounts for one person.
@@ -697,14 +742,15 @@ public sealed class SchemaConstraintSnapshotTests
         // than a lookup convenience: drop it and Sam@x.com and sam@x.com become two accounts for one
         // mailbox.
         //
-        // BUDGETS.NAME, ACCOUNTS.NAME AND NOW PAYEES.NAME HAVE LEFT THIS SET, AND EACH ABSENCE IS AS
-        // DELIBERATE AS EVERY ENTRY. All three columns are bytea — sealed narrative fields — and bytea
+        // BUDGETS.NAME, ACCOUNTS.NAME, PAYEES.NAME AND NOW CATEGORY_GROUPS.NAME HAVE LEFT THIS SET, AND
+        // EACH ABSENCE IS AS DELIBERATE AS EVERY ENTRY. All four columns are bytea — sealed narrative
+        // fields — and bytea
         // is not a collatable type, so the collation did not lose an argument, it lost the type that
         // could carry one. That is a forced consequence rather than a decision, and it is the preview
         // the budgets paragraph promised arriving on schedule: this set SHRINKS as narrative columns
         // become ciphertext, and shrinking is the schema doing the right thing.
         //
-        // THE THREE DEPARTURES ARE NOT ONE EVENT, and collapsing them is the mistake to refuse.
+        // THE FOUR DEPARTURES ARE NOT ONE EVENT, and collapsing them is the mistake to refuse.
         // budgets.name left and the case-folding uniqueness rule left with it, because that column has
         // no blind index and the requirement excludes one. accounts.name left and the rule STAYED: it
         // moved to IX_accounts_budget_id_name_key over (budget_id, name_key), which the unique-index
@@ -712,26 +758,31 @@ public sealed class SchemaConstraintSnapshotTests
         // before it computes the HMAC. payees.name left on the accounts terms — the rule moved to
         // IX_payees_budget_id_name_key — and it is the departure that costs the most, because on that
         // table the uniqueness IS the deduplication of counterparties rather than a convenience.
+        // category_groups.name left on the ACCOUNTS terms and not the budgets ones — the rule moved to
+        // IX_category_groups_budget_id_name_key — and the cost sits between the two neighbours: nothing
+        // in the product looks a group up by name, so the index's whole job is to refuse the second
+        // row, which is a confusion a person can see rather than a deduplication anything rests on.
         // This server cannot check that the folding happened and no constraint here can be written to
         // it, which is the honest cost of the move and is worth writing down rather than leaving a
         // reader to infer that nothing changed.
         //
         // What is left of this test's leading argument is worth being exact about rather than letting
         // a reader assume it is now decoration. The "drop it and a snapshot stays byte-identical" half
-        // is INTACT and still covers two uniqueness rules that live nowhere else in this file —
-        // categories and category_groups both enforce case-insensitive names through their column and
-        // not through their index — plus users.email, which is the strongest of the three.
+        // is INTACT and still covers ONE uniqueness rule that lives nowhere else in this file —
+        // categories enforces case-insensitive names through its column and not through its index —
+        // plus users.email, which is the stronger of the two. It was two such rules until this commit;
+        // category_groups was the other, and the sentence shrank with the set rather than being left
+        // to describe a table that is no longer here.
         //
         // And the other half — the one this test's own comment already names — is the half that grew
         // again. Asserting the WHOLE SET rather than three columns individually catches a collation
-        // added where it was not intended, and there are now three such additions worth naming: a
-        // collation reappearing on budgets.name, accounts.name or payees.name would mean that column
-        // had gone back to text, because bytea cannot carry one. So no absence is a hole in the
+        // added where it was not intended, and there are now four such additions worth naming: a
+        // collation reappearing on budgets.name, accounts.name, payees.name or category_groups.name
+        // would mean that column had gone back to text, because bytea cannot carry one. So no absence is a hole in the
         // coverage; each is an assertion that the sealing survived.
         string[] expected =
         [
             "categories.name COLLATE case_insensitive",
-            "category_groups.name COLLATE case_insensitive",
             "users.email COLLATE case_insensitive",
         ];
         await Assert.That(collatedColumns).IsEquivalentTo(expected);
