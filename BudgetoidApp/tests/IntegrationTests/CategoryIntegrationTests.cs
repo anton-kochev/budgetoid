@@ -248,12 +248,22 @@ public sealed class CategoryIntegrationTests
         // case is not the grant control for this table: EF emits only what changed, so this statement
         // succeeds under a grant that has forgotten `description`. The four-column control lives in
         // TenancySchemaTests and the route-level one is its own case.
+        //
+        // "Sinking Funds" AND NOT "Discretionary", and this is the label choice the whole encoding
+        // class turns on. TransactionDto.CategoryGroupName is asserted in EXACTLY ONE PLACE — the last
+        // line of this case — so whatever label it renames to is the entire evidence that
+        // TransactionReadService encodes that member as base64url. Name("Discretionary") is 42 bytes
+        // that spell IDENTICALLY under padded standard base64 and unpadded base64url, so swapping
+        // PasskeyEncoding.Encode for Convert.ToBase64String on that line reddened nothing anywhere in
+        // the product. "Sinking Funds" is 42 bytes too and carries a 62/63 byte, so the two alphabets
+        // disagree about it. SealedNarrative.EncodedName holds the measurement and the list of the four
+        // blind labels; the property is not readable off the length, which is what this pair proves.
         await client.PutAsJsonAsync(
             $"/api/category-groups/{lifestyleId}",
             new
             {
-                name = SealedNarrative.EncodedName("Discretionary"),
-                nameKey = SealedNarrative.EncodedIndex("Discretionary"),
+                name = SealedNarrative.EncodedName("Sinking Funds"),
+                nameKey = SealedNarrative.EncodedIndex("Sinking Funds"),
                 description = (string?)null,
             });
         await client.PutAsJsonAsync(
@@ -270,7 +280,15 @@ public sealed class CategoryIntegrationTests
         await Assert.That(item["categoryName"]!.GetValue<string>()).IsEqualTo("Food Shopping");
         await Assert.That(item["categoryGroupId"]!.GetValue<Guid>()).IsEqualTo(lifestyleId);
         await Assert.That(item["categoryGroupName"]!.GetValue<string>())
-            .IsEqualTo(SealedNarrative.EncodedName("Discretionary"));
+            .IsEqualTo(SealedNarrative.EncodedName("Sinking Funds"));
+
+        // The precondition for the line above, stated rather than trusted, and it belongs to this
+        // assertion and not to the fixture: this is the ONLY assertion of TransactionDto's group name
+        // in either suite, so if the label were blind nothing in the product would be pinning
+        // TransactionReadService's alphabet at all. It failed against the label this case shipped with.
+        await Assert.That(Convert.ToBase64String(
+                SealedNarrative.Name("Sinking Funds").Envelope.ToArray()))
+            .IsNotEqualTo(SealedNarrative.EncodedName("Sinking Funds"));
     }
 
     [Test]
@@ -463,6 +481,7 @@ public sealed class CategoryIntegrationTests
     /// <c>CK_category_groups_name_length</c>, never as <c>2202E</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <b>THE SEEDED ROW'S DESCRIPTION IS NULL AND THAT IS THE CASE, NOT AN ACCIDENT.</b> Measured on
     /// postgres:17.10: PostgreSQL reports a multiply-violating row under whichever constraint sorts
     /// first ALPHABETICALLY, and that ordering crosses columns on this table —
@@ -471,6 +490,15 @@ public sealed class CategoryIntegrationTests
     /// bad in the description comes back naming the DESCRIPTION, and this case would assert the wrong
     /// constraint while looking like it passed. A NULL description satisfies both description checks
     /// vacuously, which is what leaves the name's the first one that can fire.
+    /// </para>
+    /// <para>
+    /// <b>THE SAME ORDERING IS WHY THE CONSTRAINT NAME IS ASSERTED AND NOT MERELY BOUNDED.</b> A
+    /// zero-length name violates the floor and the version rule together, so the reported name is
+    /// decided by that alphabet and by nothing else: <c>name_length</c> sorts before
+    /// <c>name_version</c>, and the answer is <c>CK_category_groups_name_length</c> every time. The
+    /// assertion at the bottom of this case says so. A membership test over the pair would be this file
+    /// claiming, forty-five lines apart, that the ordering both is and is not knowable.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Database_RefusesAZeroLengthName_WithACheckViolation()
@@ -509,18 +537,42 @@ public sealed class CategoryIntegrationTests
             await blank.ExecuteNonQueryAsync();
         });
 
-        // Assert — 23514 is the whole claim, and it is what 2202E is not. Spell either name check with
-        // get_byte instead of substring and this comes back as an internal error carrying no constraint
-        // name, no table and no failing row.
+        // Assert — 23514 is the whole claim, and it is what 2202E is not. WHAT EARNS IT IS THE LENGTH
+        // BAND AND NOT THE SPELLING, which corrects the obvious reading: name_key_length and
+        // name_length both sort ahead of name_version, so a zero-length name is refused as a length
+        // violation before CK_category_groups_name_version is evaluated at all. Measured on
+        // postgres:17.10 over a table carrying all six shipped constraints with BOTH version checks
+        // spelled get_byte: no probe produced 2202E, and every refusal came back 23514 under a length
+        // constraint. So this case would NOT redden on a get_byte spelling, and no other case in this
+        // repository would either — the wrong predicate is unreachable through the schema as declared,
+        // and measuring it needs a container probe over a table carrying a version check alone.
+        // substring is still the right spelling, for a reason that owes nothing to the alphabet: it is
+        // TOTAL over every length the column can hold, answering false where get_byte raises. That rule
+        // is held by review and by that probe, not by this case. What this case does hold is the length
+        // floor: delete it and the version predicate reaches the value, answers false rather than
+        // raising, and the refusal arrives under CK_category_groups_name_version — reddening the
+        // constraint-name assertion below, which is the only line here that can see the difference.
         await Assert.That(onInsert.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
         await Assert.That(onUpdate.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
 
-        // Membership in the pair the alphabet may choose between, never one of them: a zero-length
-        // value violates the floor AND the version rule, and which is reported is PostgreSQL's to pick.
-        string[] namesTheAlphabetMayChoose =
-            ["CK_category_groups_name_length", "CK_category_groups_name_version"];
-        await Assert.That(namesTheAlphabetMayChoose).Contains(onInsert.ConstraintName!);
-        await Assert.That(namesTheAlphabetMayChoose).Contains(onUpdate.ConstraintName!);
+        // THE EXACT NAME, because the ordering is deterministic and this case already depends on that.
+        // A zero-length value violates the floor AND the version rule, and PostgreSQL reports a
+        // multiply-violating row under whichever constraint sorts first ALPHABETICALLY - which is the
+        // same fact the remarks above lean on to explain why the seeded description must be NULL. Only
+        // one reading can be true: either the alphabet decides, in which case `length` < `version` and
+        // the answer is knowable, or it does not, in which case the NULL description buys nothing. It
+        // decides, measured on postgres:17.10 - a zero-length name beside a NULL description reports
+        // CK_category_groups_name_length - so the name is asserted rather than admitted as one of two.
+        //
+        // PayeeIntegrationTests.Database_RefusesAZeroLengthPayeeName_WithACheckViolationRatherThanAFatal
+        // faces the identical pair and CHOOSES MEMBERSHIP, arguing that pinning the name turns a rename
+        // into a failure. That is a real argument and this is not a correction of it: what differs is
+        // that THIS file has already spent the determinism. Its remarks explain the seeded NULL
+        // description by the alphabet crossing columns on this table, so a membership test 45 lines
+        // later says the ordering is unknowable while the case above it only works because it is not.
+        // One of the two had to go, and the assertion is the cheaper one to keep honest.
+        await Assert.That(onInsert.ConstraintName).IsEqualTo("CK_category_groups_name_length");
+        await Assert.That(onUpdate.ConstraintName).IsEqualTo("CK_category_groups_name_length");
         await Assert.That(onInsert.TableName).IsEqualTo("category_groups");
     }
 
@@ -585,19 +637,169 @@ public sealed class CategoryIntegrationTests
     }
 
     /// <summary>
+    /// The other two rules on <c>category_groups.name</c> fired, rather than merely rendered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The twin of <c>PayeeIntegrationTests.Database_RefusesANameTheEnvelopeRulesForbid</c>, and it
+    /// is owed here rather than inherited.</b> A constraint is a property of a table; the payees case
+    /// fires <c>CK_payees_name_*</c> and can say nothing about a second table's copy of the same rule.
+    /// Before this case, <c>CiphertextEnvelope.MinimumLength</c> was named exactly once in this file —
+    /// in a description case — and neither <c>CK_category_groups_name_length</c> nor
+    /// <c>CK_category_groups_name_version</c> had ever fired.
+    /// </para>
+    /// <para>
+    /// <b>Neither shape is reachable through the API, which is why they are written raw.</b>
+    /// <c>CiphertextEnvelopeText</c> refuses an over-cap envelope and an unimplemented version before
+    /// either reaches a row, so a route-level case measures the Application ring's copy of the rule and
+    /// says nothing about the column's. MEASURED on postgres:17.10, by altering the constraint on a live
+    /// container: rewrite the floor as <c>length(name) between 1 and 1024</c> and the twenty-eight-byte
+    /// value below STORES, while <c>Database_RefusesAZeroLengthName_WithACheckViolation</c> beside it
+    /// stays green — zero is still outside a floor of one, so that case answers <c>23514</c> naming
+    /// <c>CK_category_groups_name_length</c> exactly as before and cannot see the widening. Drop the
+    /// version check outright and the version value below stores while every other case in this file
+    /// stays green. The 1024 ceiling had never fired at all.
+    /// </para>
+    /// <para>
+    /// The floor argument is the one a reader will think the zero-length case already covers, and it
+    /// does not — the measurement above is what says so. Only a well-versioned envelope ONE BYTE short
+    /// can tell 29 from any smaller number, and 29 is where
+    /// <see cref="CiphertextEnvelope.MinimumLength" /> puts it because a version, a nonce and a tag over
+    /// an empty plaintext is the shortest thing the framing can produce.
+    /// </para>
+    /// <para>
+    /// The constraint names ARE asserted here, unlike on the zero-length case: each of these values
+    /// violates exactly one check, so which one PostgreSQL reports is decided by the value rather than
+    /// by the alphabet.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("one byte under the framing floor", "CK_category_groups_name_length")]
+    [Arguments("one byte over the column's cap", "CK_category_groups_name_length")]
+    [Arguments("a version this deployment has never implemented", "CK_category_groups_name_version")]
+    public async Task Database_RefusesANameTheEnvelopeRulesForbid(string shape, string constraint)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Non-vacuity: the same statement with a well-formed envelope goes through.
+        await InsertCategoryGroupAsync(
+            connection,
+            budgetId,
+            SealedNarrative.Name("Everyday").Envelope.ToArray(),
+            SealedNarrative.BlindIndex("Everyday").ToArray(),
+            description: null,
+            position: 0);
+
+        // Act — the index is exactly 32 bytes and the description is NULL, or the alphabet would report
+        // name_key_length, description_length or description_version and this case would pass on the
+        // wrong refusal: the five sort description_length < description_version < name_key_length <
+        // name_length < name_version.
+        PostgresException refusal = await ThrowsPostgresExceptionAsync(() => InsertCategoryGroupAsync(
+            connection,
+            budgetId,
+            MalformedNameEnvelope(shape),
+            SealedNarrative.BlindIndex(shape).ToArray(),
+            description: null,
+            position: 1));
+
+        // Assert
+        await Assert.That(refusal.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(refusal.ConstraintName).IsEqualTo(constraint);
+        await Assert.That(refusal.TableName).IsEqualTo("category_groups");
+    }
+
+    /// <summary>
+    /// A description of a legal LENGTH but leading with a version this deployment has never implemented
+    /// is refused by <c>CK_category_groups_description_version</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The one description rule nothing fired.</b> Its neighbour above catches a zero-length value
+    /// and the cap case catches one byte too many — both land on
+    /// <c>CK_category_groups_description_length</c>, so delete the version check outright and every
+    /// description case in this file stays green while the column starts accepting bytes no version of
+    /// this deployment can interpret. The value is exactly
+    /// <see cref="CiphertextEnvelope.MinimumLength" /> bytes so the length check passes and the version
+    /// check is the only one left that can fire, and its leading byte is derived from
+    /// <see cref="CiphertextEnvelope.Version" /> rather than written as <c>2</c>, so a deployment that
+    /// implemented a second version moves this with it.
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesADescriptionVersionThisDeploymentHasNeverImplemented()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        byte[] wrongVersion = new byte[CiphertextEnvelope.MinimumLength];
+        wrongVersion[0] = CiphertextEnvelope.Version + 1;
+
+        // Non-vacuity: the same statement carrying a well-versioned description of the SAME length is
+        // accepted, so the refusal below is about the leading byte and not about the length.
+        await InsertCategoryGroupAsync(
+            connection,
+            budgetId,
+            SealedNarrative.Name("Everyday").Envelope.ToArray(),
+            SealedNarrative.BlindIndex("Everyday").ToArray(),
+            SealedNarrative.Description().Envelope.ToArray(),
+            position: 0);
+
+        // Act
+        PostgresException refusal = await ThrowsPostgresExceptionAsync(() => InsertCategoryGroupAsync(
+            connection,
+            budgetId,
+            SealedNarrative.Name("Emptied note").Envelope.ToArray(),
+            SealedNarrative.BlindIndex("Emptied note").ToArray(),
+            wrongVersion,
+            position: 1));
+
+        // Assert
+        await Assert.That(refusal.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(refusal.ConstraintName)
+            .IsEqualTo("CK_category_groups_description_version");
+        await Assert.That(refusal.TableName).IsEqualTo("category_groups");
+    }
+
+    /// <summary>
     /// A PRESENT, zero-length <c>description</c> is refused as <c>23514</c> naming
     /// <c>CK_category_groups_description_length</c>.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <b>This is not the previous case with a different column, and a reviewer will say that it is.</b>
-    /// Measured on postgres:17.10: <c>get_byte(NULL::bytea, 0)</c> answers <c>NULL</c> and does not
-    /// raise, while <c>get_byte(''::bytea, 0)</c> raises <c>2202E</c> —
-    /// <c>index 0 out of valid range, 0..-1</c> — from inside a CHECK on a NULLABLE column. So a
-    /// version check spelled with <c>get_byte</c> here is green on every ordinary row this suite
-    /// writes, green on every NULL, and bites on exactly one value: the present-and-empty one a client
-    /// sending a zero-length <c>bytea</c> produces. <b>This case is the entire defence for that
-    /// column.</b>
+    /// The name is <c>NOT NULL</c>, so absent and empty are one thing there; here they are two, and only
+    /// one of them is refused. A NULL description is the ordinary row — a group nobody annotated —
+    /// while a present, zero-length one is what a client sending an empty <c>bytea</c> produces, and
+    /// this is the only place in the file that hands the column that value on an <c>INSERT</c> and on
+    /// an <c>UPDATE</c>.
+    /// </para>
+    /// <para>
+    /// <b>WHAT IT DEFENDS IS THE LENGTH FLOOR, and an earlier reading of it claimed more.</b> Remove
+    /// the floor from <c>CK_category_groups_description_length</c> — leaving the ceiling, which
+    /// <c>Database_AcceptsAnAbsentDescriptionAndOneAtTheCap</c> holds — and this case reddens on the
+    /// constraint NAME rather than on the SQLSTATE: measured on postgres:17.10, the version predicate
+    /// then reaches the value, answers false rather than raising, and the refusal arrives as
+    /// <c>23514</c> under <c>CK_category_groups_description_version</c>.
+    /// </para>
+    /// <para>
+    /// <b>It does NOT catch a version check spelled with <c>get_byte</c>, and nothing in this suite
+    /// does.</b> Measured on postgres:17.10: <c>get_byte(NULL::bytea, 0)</c> answers <c>NULL</c> and
+    /// does not raise, while <c>get_byte(''::bytea, 0)</c> raises <c>2202E</c> —
+    /// <c>index 0 out of valid range, 0..-1</c> — from inside a CHECK on a NULLABLE column, so the
+    /// wrong spelling bites on exactly the value below and on no other. But <c>description_length</c>
+    /// sorts ahead of <c>description_version</c>, and a multiply-violating row is reported under
+    /// whichever constraint sorts first, so the floor reaches that value first and the version
+    /// predicate is never evaluated. Measured over a table carrying all six shipped constraints with
+    /// both version checks spelled <c>get_byte</c>: no probe produced <c>2202E</c>, and every refusal
+    /// came back <c>23514</c> under a length constraint. The wrong spelling is unreachable through the
+    /// schema as declared; <c>substring</c> is right because it is <i>total</i> over every length the
+    /// column can hold, which no ordering can take away, and that rule is held by review and by a
+    /// container probe over a table carrying a version check alone — not by this case.
     /// </para>
     /// <para>
     /// Insert and update are both asserted because the constraint has to bite on both, and the update
@@ -642,10 +844,13 @@ public sealed class CategoryIntegrationTests
             await blank.ExecuteNonQueryAsync();
         });
 
-        // Assert — 23514 and a constraint name, which is what 2202E carries none of. The name IS
-        // asserted here rather than left to a membership test, unlike the name case above: the length
-        // check sorts first among the two description constraints, so the alphabet has no choice to
-        // make and a report naming the version check would be a real disagreement.
+        // Assert — 23514 AND the constraint name, and the name is the half that can move. The SQLSTATE
+        // is what a length band earns on any spelling; naming description_length is what says the FLOOR
+        // did the refusing rather than the version check. description_length sorts ahead of
+        // description_version, so the alphabet has no choice to make here and a report naming the
+        // version check is a real disagreement — it is what a deleted floor produces, measured.
+        // The name case above pins its constraint too, for the reason its own remarks give; the payee
+        // twin chooses membership, which is an argument about renames and not about this ordering.
         await Assert.That(onInsert.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
         await Assert.That(onInsert.ConstraintName)
             .IsEqualTo("CK_category_groups_description_length");
@@ -822,8 +1027,16 @@ public sealed class CategoryIntegrationTests
         });
         JsonNode problem = (await JsonNode.ParseAsync(await empty.Content.ReadAsStreamAsync()))!;
 
-        // Assert — the absent leg is a row whose description is NULL, read off the column rather than
-        // off the response, because the DTO renders a stored zero-length value as null too.
+        // Assert — the absent leg is a row whose description is NULL, read off the COLUMN and not off
+        // the response, because the 201 body is built by CategoryGroupDto.FromCategoryGroup over the
+        // entity the handler just wrote: it is a picture of what was sent, not evidence of what landed.
+        // A handler that decoded the member and then failed to assign it would answer the same body.
+        //
+        // NOT for the reason a reader will assume, and the wrong one was written here first: the DTO
+        // does NOT render a stored zero-length value as null. Both shaping sites branch on `is null`
+        // only, and PasskeyEncoding.Encode answers "" for an empty span, so a zero-length column would
+        // come back as "" and be distinguishable from NULL on the wire. The column is read because the
+        // response cannot testify about the column, not because the two answers collide.
         await Assert.That(absent.StatusCode).IsEqualTo(HttpStatusCode.Created);
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
@@ -944,6 +1157,161 @@ public sealed class CategoryIntegrationTests
         await Assert.That(problem["errors"]!.AsObject().Count).IsEqualTo(2);
         await Assert.That(problem["errors"]!["Name"] is not null).IsTrue();
         await Assert.That(problem["errors"]!["Description"] is not null).IsTrue();
+    }
+
+    /// <summary>
+    /// A POST carrying a member this shape does not declare answers <b>400</b>, and writes nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The defect this closes is a typo that binds identically to an absent member.</b> Measured
+    /// under <c>JsonSerializerDefaults.Web</c> with the options <c>Api/Program.cs</c> registers — whose
+    /// <c>UnmappedMemberHandling</c> is the default <c>Skip</c> — a body sending <c>descriptionn</c> and
+    /// a body sending no description at all both leave <c>Description</c> <see langword="null" />. On
+    /// this route that is a 201 and a note that never arrives; <c>category_groups.description</c> is
+    /// nullable, so the row is legal, the schema is satisfied and every later read agrees the group has
+    /// no note. Nothing downstream can tell the defect from the operation, which is what makes
+    /// <c>[JsonUnmappedMemberHandling(Disallow)]</c> on
+    /// <see cref="Application.CategoryGroups.CreateCategoryGroup.CreateCategoryGroupCommand" /> a
+    /// contract change rather than a lint.
+    /// </para>
+    /// <para>
+    /// <b>The misspelling is of the member whose loss is invisible</b>, not of a required one. Misspell
+    /// <c>name</c> and the shape's non-nullable parameter is missing, which System.Text.Json refuses on
+    /// its own — that body is a 400 whether or not the attribute exists, and a case built on it would be
+    /// green against a shape carrying nothing.
+    /// </para>
+    /// <para>
+    /// <b>The empty list is the half a reader will drop.</b> A refusal that still wrote the row would be
+    /// worse than the silent 201 it replaces: the caller is told the write failed while the note-less
+    /// group is filed anyway.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PostCategoryGroup_WithAnUnknownMember_IsRefusedAndWritesNothing()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+
+        // Act — every declared member is correct and well-formed; the ONLY fault is the extra one.
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/category-groups", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Essentials"),
+            nameKey = SealedNarrative.EncodedIndex("Essentials"),
+            descriptionn = SealedNarrative.EncodedDescription("Rent, food and the bus"),
+        });
+        JsonNode listed = await GetJsonAsync(client, "/api/category-groups");
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(listed["items"]!.AsArray().Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A PUT carrying a member this shape does not declare answers <b>400</b>, and the note the group
+    /// held is still there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This leg is owed separately and it is the destructive half.</b> The attribute is per-type, so
+    /// <c>CreateCategoryGroupCommand</c> carrying it says nothing about
+    /// <c>CategoryGroupEndpoints.UpdateCategoryGroupRequest</c>, which is a different declaration in a
+    /// different project. Measured before this case existed: with the attribute on the POST shape alone
+    /// and the PUT shape left bare, the whole suite stayed green at 1613/0 — nothing else in it sends an
+    /// unknown member anywhere. This case is what the half-applied fix now reddens.
+    /// </para>
+    /// <para>
+    /// <b>A PUT replaces, so an unmapped <c>description</c> is not a note that fails to arrive — it is a
+    /// note that is DELETED.</b> The route reads an absent member as "this group has none", which is a
+    /// real operation a caller performs, so the 204 it used to answer was indistinguishable from the one
+    /// somebody asked for. The surviving description is therefore the assertion that matters; the status
+    /// alone would be satisfied by a refusal that had already cleared the column.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PutCategoryGroup_WithAnUnknownMember_IsRefusedAndLeavesTheNoteStanding()
+    {
+        // Arrange — a group that HOLDS a note, or there is nothing for the refusal to fail to destroy.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        var id = Guid.CreateVersion7();
+        (await client.PostAsJsonAsync("/api/category-groups", new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Essentials"),
+            nameKey = SealedNarrative.EncodedIndex("Essentials"),
+            description = SealedNarrative.EncodedDescription("Rent, food and the bus"),
+        })).EnsureSuccessStatusCode();
+
+        // Act — a rename that also means to change the note, with the note's member misspelled.
+        HttpResponseMessage update = await client.PutAsJsonAsync($"/api/category-groups/{id}", new
+        {
+            name = SealedNarrative.EncodedName("Lifestyle"),
+            nameKey = SealedNarrative.EncodedIndex("Lifestyle"),
+            descriptionn = SealedNarrative.EncodedDescription("Coffee, books and the odd trip"),
+        });
+        JsonNode after = await GetJsonAsync(client, $"/api/category-groups/{id}");
+
+        // Assert — refused, and BOTH columns are exactly as they were. Under Skip this answered 204
+        // with the name rewritten and the note gone, and no status, constraint or later read could
+        // separate that from a caller who asked for it.
+        await Assert.That(update.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(after["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Rent, food and the bus"));
+        await Assert.That(after["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Essentials"));
+    }
+
+    /// <summary>
+    /// The NEGATIVE CONTROL for the two cases above: <c>MoveCategoryGroupRequest</c> carries no
+    /// <c>[JsonUnmappedMemberHandling(Disallow)]</c>, and an unknown member on its route is still
+    /// ignored in silence.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Without this case a GLOBAL setting passes both of its neighbours, and a global setting is what
+    /// this repository forbids.</b> Measured: putting
+    /// <c>options.SerializerOptions.UnmappedMemberHandling = Disallow</c> in <c>Api/Program.cs</c> — one
+    /// line, silently changing the contract of every route in the product — left the whole suite green,
+    /// because no case in it sent an unknown member anywhere. The two cases above cannot see the
+    /// difference between a per-type decision and that; this one can, and it is the only reason they
+    /// mean what they claim.
+    /// </para>
+    /// <para>
+    /// <b>The sibling is chosen for being as close as a sibling gets.</b> It is declared in the same
+    /// file, on the same route group, beside the shape under test — so the property asserted here is
+    /// exactly per-TYPE, and not per-file, per-group or per-assembly. The production comment on
+    /// <c>UpdateCategoryGroupRequest</c> names this record as the neighbour that deliberately does not
+    /// get the attribute for company; this is where that sentence is checked.
+    /// </para>
+    /// <para>
+    /// <b>The move is asserted as well as the status.</b> A 204 alone would be satisfied by a handler
+    /// that refused nothing and did nothing, which is not the claim: the declared member has to bind
+    /// while the undeclared one is dropped.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PatchCategoryGroupPosition_WithAnUnknownMember_StillIgnoresIt()
+    {
+        // Arrange — two groups, so a move to position 0 is a real reorder rather than a no-op.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        Guid first = await CreateCategoryGroupAsync(client, "Essentials");
+        Guid second = await CreateCategoryGroupAsync(client, "Lifestyle");
+
+        // Act
+        HttpResponseMessage move = await client.PatchAsJsonAsync(
+            $"/api/category-groups/{second}/position",
+            new { position = 0, positionn = 1 });
+        JsonNode listed = await GetJsonAsync(client, "/api/category-groups");
+
+        // Assert — accepted, and the member that DOES bind took effect.
+        await Assert.That(move.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        List<Guid> ids =
+            [.. listed["items"]!.AsArray().Select(item => item!["id"]!.GetValue<Guid>())];
+        await Assert.That(ids).IsEquivalentTo(new[] { second, first }, CollectionOrdering.Matching);
     }
 
     /// <summary>
@@ -1071,6 +1439,78 @@ public sealed class CategoryIntegrationTests
             .IsEquivalentTo(
                 SealedNarrative.BlindIndex("Discretionary").ToArray(),
                 CollectionOrdering.Matching);
+    }
+
+    /// <summary>
+    /// <c>PUT /api/category-groups/{id}</c> with NO description CLEARS the note the group held, and the
+    /// column reads back NULL.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>PUT's replacement semantics is written down in three places and was reachable by no route
+    /// case.</b> <c>UpdateCategoryGroupRequest</c>'s remarks say a PUT with no description clears the
+    /// note; <c>UpdateCategoryGroupHandler</c> says the same at its <c>is null</c> test; and
+    /// <c>NarrativeField.SealedOrAbsent</c> is the member that carries it. What existed under all three
+    /// was a unit case over an in-memory fake. Through EF, through the converter and through
+    /// <c>GRANT UPDATE (…, description, …)</c>, nothing had ever cleared this column.
+    /// </para>
+    /// <para>
+    /// <b>The starting row HOLDS a note, which is the whole of the case.</b> The existing projection
+    /// case PUTs a null description onto a group that never had one — EF names only what its comparer
+    /// says changed, so that statement emits <c>name, name_key</c> and cannot tell "cleared" from
+    /// "already absent". Here the column moves, so the UPDATE names <c>description</c> and this is also
+    /// the ROUTE-LEVEL half of the grant pair. Measured on postgres:17.10 by narrowing the live grant to
+    /// <c>UPDATE (name, name_key, position)</c> and replaying this exact request: it answers <b>500</b>,
+    /// the <c>42501</c> arriving as an unhandled <c>PostgresException</c> that nothing translates. So
+    /// this case fails on the status line under a half grant, which is the whole reason it is worth the
+    /// round trip — <c>AppRoleGrantMatrixTests</c> pins the column list and a pinned list is not a
+    /// statement issued.
+    /// </para>
+    /// <para>
+    /// <b>The column is read, not the response.</b> A 204 carries no body, and the follow-up GET is the
+    /// read service — which renders NULL and a zero-length envelope differently, but is still one more
+    /// piece of code between the assertion and the row. <c>octet_length</c> of NULL is NULL, which is
+    /// what tells "the note is gone" from "the note was replaced by something short".
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PutCategoryGroup_WithNoDescription_ClearsTheNoteThroughTheRoute()
+    {
+        // Arrange — created WITH a note.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        var id = Guid.CreateVersion7();
+        (await client.PostAsJsonAsync("/api/category-groups", new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Essentials"),
+            nameKey = SealedNarrative.EncodedIndex("Essentials"),
+            description = SealedNarrative.EncodedDescription("Rent, food and the bus"),
+        })).EnsureSuccessStatusCode();
+
+        // Act — the same name back, so the ONLY column that moves is the description and a green
+        // assertion below cannot be a rename carrying it along. `null` rather than an absent member
+        // because the two mean the same thing here and the explicit spelling is what a client sends.
+        HttpResponseMessage update = await client.PutAsJsonAsync($"/api/category-groups/{id}", new
+        {
+            name = SealedNarrative.EncodedName("Essentials"),
+            nameKey = SealedNarrative.EncodedIndex("Essentials"),
+            description = (string?)null,
+        });
+        JsonNode after = await GetJsonAsync(client, $"/api/category-groups/{id}");
+
+        // Assert
+        await Assert.That(update.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        // The COLUMN is NULL. Under a handler reading absence as "leave it alone" this is still the
+        // twenty-nine-byte-plus envelope it was, and the 204 above says nothing either way.
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await Assert.That(await DescriptionLengthAsync(connection, id)).IsNull();
+
+        // And the read service agrees, so a client is told the note is gone rather than shown "".
+        await Assert.That(after["description"] is null || after["description"]!.GetValueKind()
+            == System.Text.Json.JsonValueKind.Null).IsTrue();
     }
 
     /// <summary>
@@ -1242,6 +1682,24 @@ public sealed class CategoryIntegrationTests
         await using PostgresTestHost host = await StartApiHostAsync();
         HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         var id = Guid.CreateVersion7();
+
+        // THE PRECONDITION, AND IT IS WHAT MAKES EVERY COMPARISON BELOW MEAN ANYTHING. A label whose
+        // envelope spells identically under padded standard base64 and unpadded base64url renders this
+        // case decoration: all four equalities pass, the DoesNotContain loop passes, and the encoder the
+        // production code reached for is unobservable. FOUR such labels are already in this suite -
+        // "Essentials", "Discretionary", "Empty note" and "No note" - and the property is not readable
+        // off the length: "Sinking Funds" and "Discretionary" are both 42 bytes and only one of them is
+        // blind. So the case states the property for its OWN fixture rather than trusting the choice,
+        // and an author who swaps in a prettier label gets a red bar here instead of a silent deletion.
+        // Convert.ToBase64String is named because it IS the mutation - it is what System.Text.Json
+        // reaches for on a byte[] by default, which is why the wrong encoder is a live mistake.
+        byte[] nameBytes = SealedNarrative.Name("Sinking Funds").Envelope.ToArray();
+        byte[] descriptionBytes =
+            SealedNarrative.Description("Rent, food and the bus").Envelope.ToArray();
+        await Assert.That(Convert.ToBase64String(nameBytes))
+            .IsNotEqualTo(SealedNarrative.EncodedName("Sinking Funds"));
+        await Assert.That(Convert.ToBase64String(descriptionBytes))
+            .IsNotEqualTo(SealedNarrative.EncodedDescription("Rent, food and the bus"));
         HttpResponseMessage create = await client.PostAsJsonAsync("/api/category-groups", new
         {
             id = id.ToString("D"),
@@ -1365,6 +1823,47 @@ public sealed class CategoryIntegrationTests
         command.Parameters.AddWithValue("id", id);
         object? length = await command.ExecuteScalarAsync();
         return length is null or DBNull ? null : (int)length;
+    }
+
+    /// <summary>
+    /// A <c>name</c> value the column must refuse, one shape per argument of
+    /// <see cref="Database_RefusesANameTheEnvelopeRulesForbid" />.
+    /// </summary>
+    /// <remarks>
+    /// Built from the constants that own the rules rather than from literals, so a floor, a cap or a
+    /// version that moves moves these values with it instead of leaving a case measuring a number
+    /// nobody uses any more. Bytes rather than base64url, unlike the payee twin's helper: nothing here
+    /// crosses the wire, and a round trip through an encoder would put a second thing between the case
+    /// and the constraint it is firing.
+    /// </remarks>
+    private static byte[] MalformedNameEnvelope(string shape)
+    {
+        switch (shape)
+        {
+            case "one byte under the framing floor":
+                {
+                    byte[] tooShort = new byte[CiphertextEnvelope.MinimumLength - 1];
+                    tooShort[0] = CiphertextEnvelope.Version;
+                    return tooShort;
+                }
+
+            case "one byte over the column's cap":
+                {
+                    byte[] tooLong = new byte[NarrativeFieldLimits.NameBytes + 1];
+                    tooLong[0] = CiphertextEnvelope.Version;
+                    return tooLong;
+                }
+
+            case "a version this deployment has never implemented":
+                {
+                    byte[] wrongVersion = new byte[CiphertextEnvelope.MinimumLength];
+                    wrongVersion[0] = CiphertextEnvelope.Version + 1;
+                    return wrongVersion;
+                }
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(shape), shape, "Unknown envelope shape.");
+        }
     }
 
     private static async Task<PostgresException> ThrowsPostgresExceptionAsync(Func<Task> statement)

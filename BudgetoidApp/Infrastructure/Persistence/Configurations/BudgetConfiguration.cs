@@ -38,6 +38,17 @@ public sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
     // equality as Func<T?, T?, bool> and the hash and snapshot arms as Func<T, …>, so EF is stating that
     // it may compare a null against a value and will never ask for the hash or the snapshot of one. An
     // arm written wider than its own signature would be dead code that reads like a rule.
+    //
+    // NONE OF THE THREE ARMS IS HELD BY A TEST, AND BUDGETS SIT FURTHEST FROM ONE. The suite's single
+    // change-tracking class reads the statements a save composes for category_groups; this table has
+    // nothing of the kind, so the equality arm is as unheld as the snapshot arm below. What separates it
+    // from accounts and payees is that a failure here could not be quiet: the role holds no UPDATE grant
+    // on budgets of any shape — a budgets row is never updated at all, which app-role-grants.sql states
+    // as rule B2 — so a restatement this comparer failed to suppress would be refused for want of
+    // privilege, the fail-closed 42501 that file argues for, rather than committing like an edit nobody
+    // asked for. Unreachable, though, and not covered: no path modifies a tracked budget, so this arm
+    // runs on every save with one in scope and is never handed two different values. The comparer is
+    // depth for a path the product does not have, and review is all that holds it.
     private static readonly ValueComparer<NarrativeField> EnvelopeContentComparer = new(
         (left, right) => HasSameBytes(left, right),
         field => ComputeHashCode(field),
@@ -90,22 +101,31 @@ public sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
             // That is not a constraint violation at all: no constraint name, no failing row, and nothing
             // a `catch (PostgresException) when (… SqlState is 23514)` will ever see.
             //
-            // The length check next door does not save it, and believing it does is the trap. Which of
-            // two CHECKs on one column runs first is decided by the CONSTRAINT NAME and not by the order
-            // they are declared in: measured, a table declaring the version check first still reported
-            // the length violation, while renaming the version check so it sorts ahead of the length one
-            // produced 2202E from an identical pair of predicates. Today the sort is
-            // CK_budgets_name_length before CK_budgets_name_version, so the length check happens to bite
-            // first and a zero-length name happens to answer 23514 — held by nothing but the word
-            // "length" sorting before "version", which is not a decision anybody took. Folding the two
-            // into one AND-joined constraint only moves the same coin flip inside the expression, since
-            // PostgreSQL does not promise it evaluates AND left to right either.
+            // THE LENGTH CHECK NEXT DOOR SAVES IT ONLY BY ACCIDENT, AND READING THAT ACCIDENT AS A
+            // GUARANTEE IS THE TRAP. Which of two CHECKs on one column runs first is decided by the
+            // CONSTRAINT NAME and not by the order they are declared in: measured, a table declaring the
+            // version check first still reported the length violation, while renaming the version check
+            // so it sorts ahead of the length one produced 2202E from an identical pair of predicates.
+            // Today the sort is CK_budgets_name_length before CK_budgets_name_version, so a zero-length
+            // name meets the band BEFORE the version predicate is evaluated at all and comes back 23514.
+            // That is held by nothing but the word "length" sorting before "version", which is not a
+            // decision anybody took and not a property anybody should have to preserve. Measured on
+            // postgres:17.10 over the six-constraint narrative shape category_groups declares, with BOTH
+            // version checks spelled get_byte: no probe produced 2202E, and every refusal came back 23514
+            // under a length constraint — so a get_byte spelling on this column would be unreachable
+            // through the schema as declared rather than merely quiet. Folding the two into one
+            // AND-joined constraint only moves the same coin flip inside the expression, since PostgreSQL
+            // does not promise it evaluates AND left to right either.
             //
-            // substring carries no such dependency. It answers a zero-length bytea for a zero-length
-            // input, that is not the version byte, the check is false rather than fatal, and the
-            // violation is 23514 under every ordering, on INSERT and on UPDATE alike — measured on all
-            // four. NULL still satisfies it, also measured, so the nameless budget is unaffected by the
-            // change of spelling.
+            // So substring is still the right spelling, for the PROPERTY rather than for the symptom: it
+            // makes the predicate TOTAL over every length this column can hold, including zero, so the
+            // check is false rather than fatal and the violation is 23514 under EVERY ordering — on
+            // INSERT and on UPDATE alike, measured on all four, and whatever constraint some later slice
+            // adds beside it. What it buys is not the SQLSTATE, which the length band already earns; it
+            // is that the ordering stops mattering. NULL still satisfies it, also measured, so the
+            // nameless budget is unaffected by the spelling. Nothing here is held by a test: measuring
+            // the wrong spelling needs a container probe over a table carrying the version check alone,
+            // and this rule is held by review.
             //
             // The version is bounded here and not left to the client because the successor does not
             // exist — a row carrying version 2 is a client claiming a contract this deployment has
@@ -204,6 +224,12 @@ public sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
     // instance the tracker holds must not share a buffer with the one the entity holds, or the
     // "old value" changes whenever the new one does. FromStore copies on the way through, which is why
     // there is nothing to do here but call it.
+    //
+    // HELD BY REVIEW, like the two arms beside it — the comparer says why that is the whole comparer on
+    // this table. This one could not be held by a test in any case: an aliased snapshot diverges from
+    // the tracked value only if an accepted envelope's bytes are overwritten in place, and
+    // NarrativeField's shape leaves nothing able to do that. CategoryGroupConfiguration.CopyEnvelope
+    // argues it in full over the same value type; the copy stays for the reason given there.
     private static NarrativeField Copy(NarrativeField field) =>
         NarrativeField.FromStore(field.Envelope);
 }

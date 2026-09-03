@@ -424,19 +424,23 @@ public sealed class SchemaConstraintSnapshotTests
             // two wrapped-key version checks at the bottom of this list use. That is not a style
             // difference. get_byte RAISES 2202E on a zero-length bytea instead of answering false: no
             // constraint name, no failing row, and nothing a repository filtering PostgresException on
-            // SqlState 23514 can see. The length check above does not rescue it, because which of a
-            // column's CHECKs fires first is decided by the constraint NAME and not by declaration
-            // order or by left-to-right evaluation inside an AND — so the wrapped-key pair is correct
-            // today only because "length" sorts before "version", which is not a decision anybody
-            // took. That is recorded in the hardening backlog and belongs to its own change; do not
-            // fix it by editing these lines.
+            // SqlState 23514 can see. The length check above DOES rescue it, and reading that rescue as
+            // a guarantee is the trap: which of a column's CHECKs fires first is decided by the
+            // constraint NAME and not by declaration order or by left-to-right evaluation inside an AND,
+            // so "length" sorting before "version" is what keeps a zero-length name answering 23514 —
+            // and that is not a decision anybody took. The wrapped-key pair at the bottom of this list
+            // is shielded by the same accident; it is recorded in the hardening backlog and belongs to
+            // its own change, so do not fix it by editing these lines.
             //
             // What this snapshot can and cannot see is the point of saying it here. It compares
             // RENDERED TEXT, so it moves when the spelling moves and it is blind to which constraint
-            // fires and to what SQLSTATE a zero-length name produces. Nothing here would go red if the
-            // narrative column went back to get_byte and started raising a fatal on the empty case
-            // except this literal, and a literal moving is a paste unless somebody reads why. This
-            // paragraph is what stands between the red line and the paste.
+            // fires and to what SQLSTATE a zero-length name produces. But so is every other test:
+            // measured on postgres:17.10 over a table carrying a length band beside a get_byte-spelled
+            // version check, the band answers 23514 first and no probe reaches the raise, so a narrative
+            // column going back to get_byte reddens THIS LITERAL AND NOTHING ELSE IN THE REPOSITORY —
+            // not because the snapshot is weak, but because the wrong predicate is unreachable through
+            // the schema as declared. A literal moving is a paste unless somebody reads why, and this
+            // paragraph is the whole of what stands between the red line and the paste.
             //
             // SUBSTRING comes back upper-cased and in the SQL-standard FROM/FOR spelling because
             // PostgreSQL 14 and later print substring as SQL syntax rather than as a function call.
@@ -465,8 +469,13 @@ public sealed class SchemaConstraintSnapshotTests
             // check exists for. get_byte(''::bytea, 0) still raises 2202E from inside a CHECK on a
             // nullable column, with no constraint name and no failing row.
             //
-            // Nullability therefore makes the wrong spelling QUIETER rather than safer, which is why
-            // the single case that catches it is the one a reviewer is most likely to call redundant.
+            // Nullability therefore makes the wrong spelling QUIETER rather than safer — and it is
+            // quieter still than that, which is the correction. NO CASE IN THIS REPOSITORY CATCHES IT:
+            // description_length sorts ahead of description_version, so on the one value the wrong
+            // spelling bites on, the length floor answers 23514 first and the version predicate is never
+            // evaluated. Measured on postgres:17.10 over a table carrying all six shipped constraints
+            // with both version checks spelled get_byte, nothing produced 2202E. This line is the pin,
+            // and review is the rest of it.
             """CK_category_groups_description_version: category_groups CHECK ((SUBSTRING(description FROM 1 FOR 1) = '\x01'::bytea))""",
             // The blind index's width, an equality for the reason CK_accounts_name_key_length and
             // CK_payees_name_key_length are equalities. No version arm: a keyed digest has no framing.

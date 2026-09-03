@@ -119,9 +119,13 @@ erDiagram
     rather than as a malformed envelope. `CategoryGroupConfiguration` maps three `bytea` columns
     through value converters with **content** comparers over the bytes, and — because the name is
     `NOT NULL` and the description is not — through **two** converters of different nullability, which
-    a reviewer will propose unifying and which the file argues against in place. The table carries
-    **five** narrative `CHECK` constraints, each rendered from the constant that owns its number
-    rather than from a literal: `CK_category_groups_name_length` and
+    a reviewer will propose unifying and which the file argues against in place. What holds those
+    comparers is this table's own change-tracking class and nothing product-wide — the other three
+    sealed tables have no equivalent, and the snapshot arm is held by review on all four; see
+    [Edge Cases](#edge-cases--known-gotchas). The table carries **five** `CHECK` constraints over its
+    sealed and keyed columns — four narrative, one over the
+    blind index — each rendered from the constant that owns its number rather than from a literal:
+    `CK_category_groups_name_length` and
     `CK_category_groups_description_length` bound their envelopes between
     `CiphertextEnvelope.MinimumLength` and the **two different caps**
     `NarrativeFieldLimits.NameBytes` and `NarrativeFieldLimits.DescriptionBytes`;
@@ -338,13 +342,15 @@ erDiagram
   from an operation on this column** — which is exactly why the two states have to be kept apart
   everywhere else, since the only evidence that a note survived a round trip is the note itself coming
   back.
-- **Enforced in**: three layers keeping one distinction, and each could collapse it on its own.
+- **Enforced in**: four layers keeping one distinction, and each could collapse it on its own.
   `CategoryGroup.Description` is **assigned and never normalised** — `NormalizeDescription` is deleted
   and cannot return, per [MUST NOT](#must-not) above. Both handlers test `command.Description is null`
-  and nothing more forgiving. And `CategoryGroupDto.Description` stays `string?` and must never gain a
+  and nothing more forgiving. `CategoryGroupDto.Description` stays `string?` and must never gain a
   `?? string.Empty`: `TransactionDto` coerces a null description because a screen has to render
   something, but here the member is an envelope, `""` is not a legal one, and a client cannot tell the
-  coercion from a value it is expected to decode. What holds the *invisible* half is neither a
+  coercion from a value it is expected to decode. And **both wire shapes refuse a member they do not
+  declare**, which is the one exposure the three above cannot reach, because it arrives on a path
+  named by no member of either shape — the rule below. What holds the *invisible* half is neither a
   constraint nor a type but a **test shape**: every write path is covered by a case that reads a
   **non-null** description back, never one asserting the member is merely present or that the response
   was a 204.
@@ -354,6 +360,51 @@ erDiagram
 - **Counterexample**: a `PUT` handler that decodes the description into a local and then calls
   `Update` with the name alone. It compiles, it answers 204, every constraint is satisfied, and the
   note is gone.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **Both category-group write shapes refuse a member they do not declare**, and answer
+  **400**. `CreateCategoryGroupCommand` and `CategoryGroupEndpoints.UpdateCategoryGroupRequest` carry
+  `[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]`; the API's shared JSON options
+  carry no such setting, and no sibling shape gets the attribute for company.
+- **Why**: these two bind a **nullable narrative column**, where an unmapped member is
+  indistinguishable from an absent one. Measured under `JsonSerializerDefaults.Web` with the options
+  `Api/Program.cs` registers — whose `UnmappedMemberHandling` is the default `Skip` — a body sending
+  `descriptionn` and a body sending no description at all both leave `Description` null. On the
+  `POST` that is a **201 carrying a note that never arrived**; on the `PUT`, which replaces, it is a
+  **204 and the note the group held is gone**. The second is the destructive half and the harder one
+  to see: clearing a note is a real operation this route performs, so no status, no constraint and no
+  later read separates "the caller asked" from "the caller typed the member wrong". It is the same
+  hazard the null-versus-`""` care above exists to close, reached by a path outside every member
+  either shape names.
+  - **This is not the transaction shapes' argument, and the two must not be folded together.** There
+    the attribute answers wire **drift**: `CreateTransactionCommand` and
+    `TransactionEndpoints.UpdateTransactionRequest` retired `payeeName`, a member a released client
+    still sends, and refusing it visibly beat dropping it in silence. Nothing here is retired — every
+    member is new — so a shape that binds no nullable narrative member earns nothing from either
+    argument.
+  - **What it costs**: any client sending an unknown member to these two routes now gets a 400,
+    dressed as `application/problem+json` by this product's pipeline and naming no field; the
+    unmappable member reaches the server log and not the response. Nothing sends to them today —
+    `category-groups-api.service.ts` still posts a plaintext name, so that screen already cannot
+    write.
+- **Enforced in**: the attribute on those two declarations, and **per type is the whole discipline**.
+  `PostCategoryGroup_WithAnUnknownMember_IsRefusedAndWritesNothing` and
+  `PutCategoryGroup_WithAnUnknownMember_IsRefusedAndLeavesTheNoteStanding` hold one shape each — the
+  second is owed separately, because an attribute on a record in `Application` says nothing about a
+  record declared in `Api` — and each misspells the member whose loss is **invisible**, never a
+  required one, which `System.Text.Json` would refuse on its own. Beside them
+  `PatchCategoryGroupPosition_WithAnUnknownMember_StillIgnoresIt` is the **negative control** over
+  `MoveCategoryGroupRequest`, declared in the same file on the same route group and deliberately
+  bare: without it a global `UnmappedMemberHandling` in `Api/Program.cs` satisfies both of its
+  neighbours while silently changing the contract of every route in the product.
+- **Example**: a `PUT` that renames a group and misspells `description` is refused, and both the name
+  and the note are exactly as they were. A `PATCH` to the position route carrying an extra member is
+  still a 204, and the position it did declare takes effect.
+- **Counterexample**: moving the setting into `Api/Program.cs` to "apply it everywhere". Whether a
+  shape refuses what it was not asked for is a contract decision each shape makes for itself, and the
+  shapes that bind no nullable narrative member have not made it.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -374,13 +425,16 @@ erDiagram
   the role's grant is `UPDATE (name, name_key, description, position)`, so the **statement** is
   permitted whole.
   - **What is new here, and it makes a half grant harder to see than on accounts or payees**: this
-    table's update writes **three** narrative columns and EF names only the ones that changed. On
-    those two tables every rename emits a statement naming both name columns, so a half grant refuses
-    the whole of it with `42501` on the first rename anybody exercises. Here a rename that leaves the
-    description alone emits two columns and **succeeds** under a grant missing `description`. Measured
-    on `postgres:17.10` under `GRANT UPDATE (name, name_key, position)`: name plus index is
-    `UPDATE 1`, name plus index plus description is `42501`, `set description = null` alone is
-    `42501`, and `set position = 3` is `UPDATE 1`.
+    table's update writes **three** columns the client sealed or keyed — the narrative pair `name`
+    and `description`, plus the blind index `name_key`, which is **not** narrative: `NarrativeField`
+    types exactly `name` and `description`, and `KeyMaterialSecrecyTests` gives the index a kind of
+    its own. EF names only the ones that changed. On those two tables every rename emits a statement
+    naming both name columns, so a half grant refuses the whole of it with `42501` on the first
+    rename anybody exercises. Here a rename that leaves the description alone emits two columns and
+    **succeeds** under a grant missing `description`. Measured on `postgres:17.10` under
+    `GRANT UPDATE (name, name_key, position)`: name plus index is `UPDATE 1`, name plus index plus
+    description is `42501`, `set description = null` alone is `42501`, and `set position = 3` is
+    `UPDATE 1`.
   - **So two different cases guard two different defects, and they must not be collapsed into one
     sentence.** A route case that changes a **non-empty description** is what catches the broken
     grant — the `PUT` then emits three columns and the statement is refused, whether or not anything
@@ -581,6 +635,9 @@ rewritten as a set on every move:
 Creating a Category Group (`CreateCategoryGroupHandler`, `POST /api/category-groups`):
 
 ```
+IF the body carries a member this shape does not declare ← body binding, above the handler: the
+  THEN 400 naming no field                                 shape carries Disallow, so the tree
+                                                           below is never entered
 judge all four opaque members and collect every failure  ← one piece of client code produced all
   IF Id is not the lower-case 36-character hyphenated      four, so a caller that got two wrong must
      uuid, or is the all-zero one                          not learn about the second only after
@@ -689,21 +746,29 @@ ELSE                                                      ← mutually exclusive
   `name_key_length`, `name_length`, `name_version`, `position`. So a row breaking a **name** rule and
   a **description** rule is reported under the description, and a row breaking a description rule and
   the position rule is reported under the description too. Nothing in the schema depends on that —
-  every narrative predicate is written with `substring`, so none of them can raise and every ordering
-  yields `23514` naming *some* constraint. What it does forbid is a test asserting a constraint
+  every predicate here is **total** over every value its column can hold, the two version checks
+  through `substring` and the three length checks through `length`, so none of them can raise and
+  every ordering yields `23514` naming *some* constraint. What it does forbid is a test asserting a
+  constraint
   **name** for a row carrying more than one violation: a zero-length-name case must leave the
   description `NULL`, or it reports the description's constraint.
 
-- **A `get_byte` spelling on the description's version check is caught by nothing in the suite, and
-  the reason is the alphabet above.** `get_byte` reads better and *raises* `2202E` on a zero-length
+- **A `get_byte` spelling on *either* version check is caught by nothing in the suite, and the reason
+  is the alphabet above.** `get_byte` reads better and *raises* `2202E` on a zero-length
   `bytea` instead of answering false — no constraint name, no failing row, nothing a `catch` filtering
   on `23514` will ever see — which is why both version checks are written with `substring`. The
   instinct that a nullable column is safe from it is wrong: measured, `get_byte(NULL::bytea, 0)`
   answers NULL and does not raise, so the trap bites only on a **present, zero-length** value, which is
   exactly what a client sending an empty `bytea` produces. But `description_length` sorts before
-  `description_version`, so the length band gets there first and **shields** the wrong spelling on
-  every value the schema can be handed. Measuring that spelling needs a container probe against a
-  table carrying the version check alone; the suite cannot see it. The whole argument, and the rule
+  `description_version`, and `name_key_length` and `name_length` both sort before `name_version`, so a
+  length band gets there first on both columns and **shields** the wrong spelling on every value the
+  schema can be handed. Measured on `postgres:17.10` over a table carrying all six constraints with
+  both version checks spelled `get_byte`: nothing produced `2202E`, and every refusal came back
+  `23514` under `name_length`, `name_key_length` or `description_length`. **So the length band is
+  what earns the `23514` here and the spelling is not** — `substring` is right because it is *total*
+  over every length the column can hold, which is a property no ordering can take away. Measuring
+  either wrong spelling needs a container probe against a table carrying that version check alone;
+  the suite cannot see it. The whole argument, and the rule
   for whoever writes the next such constraint, is in
   [ciphertext-envelope.md](ciphertext-envelope.md#two-checks-on-one-column-and-which-one-bites).
 
@@ -733,6 +798,21 @@ ELSE                                                      ← mutually exclusive
   group in the budget and reindex through `SetPosition`, emitting `UPDATE … SET position` per row.
   `position` is granted, so nothing about the sealing changes them — named here so that their silence
   is not read as coverage of the converter.
+
+- **This table's comparers are the only ones over a sealed column that a test holds, and their
+  snapshot arm is still held by review.** `CategoryGroupChangeTrackingTests` composes a context over a
+  statement-recording interceptor and asserts **which columns an `UPDATE` names**, so dropping either
+  comparer — the narrative one `name` and `description` share, or the blind index's — or falsifying
+  the equality arm reddens it. Two things follow that a reader will otherwise take for a product-wide
+  guarantee. **`accounts`, `payees` and `budgets` have no equivalent class**, so their comparer arms
+  are held by review alone — and on `accounts` and `payees` a broken one is **quiet**: EF restates a
+  column with the bytes the row already holds, both halves of the name sit inside that table's
+  `UPDATE` grant, so nothing answers `42501` and the spurious statement commits exactly like a rename
+  would. And **the snapshot arm could not be held by a test on any of the four**: an aliased snapshot
+  diverges from the tracked value only if an accepted envelope's bytes are overwritten **in place**,
+  and `NarrativeField` gives nothing the means — the buffer is private, `Envelope` is a window onto a
+  copy the factory made, and every write path replaces the whole field. The copy stays anyway,
+  because that unobservability is a property of the type as it stands rather than a permanent one.
 - Deleting an empty Category Group is allowed; deleting a non-empty one is not. Categories must be
   moved or deleted first.
 - **A Category's deletability is read live, not marked on the row.** Deleting the last Transaction

@@ -21,7 +21,13 @@ public sealed class ResourceByIdIntegrationTests
         // Arrange — one of each resource whose creation returns a Location. There are exactly four.
         await using PostgresTestHost host = await StartApiHostAsync();
         (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
-        HttpResponseMessage createGroup = await CreateCategoryGroupAsync(client, "Essentials");
+        // "Sinking Funds" AND NOT "Essentials", and the label is chosen rather than picked. Two members
+        // below are assertions about an ENCODED response — group.name and category.categoryGroupName —
+        // and Name("Essentials") is 39 bytes that spell identically under padded standard base64 and
+        // unpadded base64url, so both would have been green whichever encoder the read services reached
+        // for. SealedNarrative.EncodedName carries the measurement and the list of the four such labels
+        // in this suite. This one's 42-byte envelope carries a 62/63 byte, so the two alphabets differ.
+        HttpResponseMessage createGroup = await CreateCategoryGroupAsync(client, "Sinking Funds");
         Guid categoryGroupId = await ReadIdAsync(createGroup);
         HttpResponseMessage createCategory =
             await CreateCategoryAsync(client, categoryGroupId, "Groceries");
@@ -54,12 +60,13 @@ public sealed class ResourceByIdIntegrationTests
         JsonNode group = await ReadJsonAsync(getGroup);
         await Assert.That(group["id"]!.GetValue<Guid>()).IsEqualTo(categoryGroupId);
         // The ENVELOPE, not the word, on the account's terms one table over: category_groups.name is
-        // sealed, so "Essentials" is in no payload this API can produce. The check still does its job
+        // sealed, so "Sinking Funds" is in no payload this API can produce. The check does two jobs now
         // — the envelope is deterministic in its label, so it says the row that came back is the row
-        // this test created — and dropping it instead would let a 200 carrying somebody else's group
-        // pass.
+        // this test created, AND the label is one the two base64 alphabets disagree about, so it also
+        // says CategoryGroupReadService encoded it as base64url. Dropping it would let a 200 carrying
+        // somebody else's group pass.
         await Assert.That(group["name"]!.GetValue<string>())
-            .IsEqualTo(SealedNarrative.EncodedName("Essentials"));
+            .IsEqualTo(SealedNarrative.EncodedName("Sinking Funds"));
 
         await Assert.That(getCategory.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode category = await ReadJsonAsync(getCategory);
@@ -71,9 +78,14 @@ public sealed class ResourceByIdIntegrationTests
         // yet and category_groups.name is. That mixed state lasts one slice; until it ends, these two
         // lines sitting beside each other are what stops somebody "correcting" either into the other's
         // shape. The envelope member is bound to the GROUP's row id, which is already on the wire above.
+        //
+        // This line is also the ONE place CategoryReadService's encoding of categoryGroupName is
+        // observable outside CategoryIntegrationTests, which is why the label had to stop being blind:
+        // the two sites are a different projection over a different query and either could re-encode
+        // with the other still green.
         await Assert.That(category["name"]!.GetValue<string>()).IsEqualTo("Groceries");
         await Assert.That(category["categoryGroupName"]!.GetValue<string>())
-            .IsEqualTo(SealedNarrative.EncodedName("Essentials"));
+            .IsEqualTo(SealedNarrative.EncodedName("Sinking Funds"));
 
         await Assert.That(getAccount.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode account = await ReadJsonAsync(getAccount);

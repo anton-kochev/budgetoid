@@ -490,7 +490,10 @@ GRANT UPDATE (name, name_key, type, opening_balance) ON accounts TO budgetoid_ap
 -- to want it.
 --
 -- WHAT IS NEW HERE, AND IT MAKES A HALF GRANT HARDER TO SEE THAN ON ACCOUNTS OR PAYEES: this
--- table's update writes THREE narrative columns, and EF names only the ones that changed. On
+-- table's update writes THREE sealed-or-keyed columns — TWO narrative ones, `name` and
+-- `description`, and the blind index `name_key`, which is not narrative and must not be called
+-- one: NarrativeField types exactly `name` and `description`, and KeyMaterialSecrecyTests gives
+-- the index a kind of its own — and EF names only the ones that changed. On
 -- accounts and payees the update assigns both halves of the name from one IndexedName every time,
 -- so any rename issues a statement naming both columns and a half grant refuses the whole of it
 -- with 42501 — the defect is loud on the first rename anybody exercises. Here a rename that leaves

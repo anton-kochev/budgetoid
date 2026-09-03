@@ -227,8 +227,11 @@ public sealed class AppRoleGrantMatrixTests
         ("accounts", ["name", "name_key", "type", "opening_balance"]),
         // The same name/name_key pair the accounts line above argues, and a THIRD column that makes a
         // half grant harder to see here than on either neighbour. This table's update writes three
-        // narrative columns and EF names only the ones that changed, so a rename leaving the
-        // description alone emits `name, name_key` and SUCCEEDS under a grant missing `description` —
+        // columns the client sealed or keyed — the narrative pair `name` and `description`, plus the
+        // blind index `name_key`, which is NOT narrative: NarrativeField types exactly `name` and
+        // `description`, and KeyMaterialSecrecyTests gives the index a kind of its own. EF names
+        // only the ones that changed, so a rename leaving the description alone emits
+        // `name, name_key` and SUCCEEDS under a grant missing `description` —
         // measured on postgres:17.10: that two-column statement answers UPDATE 1, the three-column one
         // answers 42501, and `set description = null` answers 42501. On accounts and payees any rename
         // at all names both halves and a half grant is loud on the first one anybody exercises; here

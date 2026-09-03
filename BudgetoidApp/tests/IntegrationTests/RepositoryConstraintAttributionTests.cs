@@ -472,6 +472,88 @@ public sealed class RepositoryConstraintAttributionTests
             .IsTrue();
     }
 
+    /// <summary>
+    /// A RENAME onto a name the budget already holds is translated by
+    /// <c>CategoryGroupRepository.UpdateAsync</c>'s own arm into the same 400 keyed on
+    /// <c>Name</c> that the create leg answers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What <see cref="AddCategoryGroup_WithADuplicateGroupName_TranslatesItsOwnUniqueIndex" />
+    /// does not cover is this method.</b> That case exercises <c>AddAsync</c>, whose catch arms are
+    /// its own: it stages an <c>INSERT</c>, it carries a second arm for
+    /// <c>PK_category_groups</c> that this method deliberately has none of, and it says nothing
+    /// about whether <c>UpdateAsync</c> translates anything at all. Measured on this tree: delete
+    /// the <c>NameIndexName</c> arm from <c>UpdateAsync</c> and the whole suite stayed green while
+    /// a rename onto a taken name went from a 400 the caller can act on to a
+    /// <see cref="DbUpdateException" /> — a 500 carrying a constraint name. The slice's own
+    /// description claims the answer is "400 keyed on Name on <i>both</i> verbs", and until this
+    /// case existed that was half a claim.
+    /// </para>
+    /// <para>
+    /// <b>The collision is on the blind index and it is staged through the entity, not through
+    /// SQL.</b> Two seeded groups carry two labels; the second is loaded and handed the FIRST
+    /// label's <see cref="SealedNarrative.Indexed" /> value, which is exactly what a client that
+    /// re-typed an existing name would send — the envelope beside it differs, since every seal
+    /// draws a fresh nonce, and only the index can see the duplicate.
+    /// </para>
+    /// <para>
+    /// <b>No identifier arm is reachable here and that is why none is asserted.</b> A rename does
+    /// not move a row's primary key, so <c>PK_category_groups</c> cannot fire on this statement;
+    /// the create leg's 409 has no counterpart on this verb. The mis-attribution half of this
+    /// repository's coverage stays where it is, on
+    /// <see cref="AddCategoryGroup_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape" />
+    /// — the narrowing it measures is <c>IsUniqueViolationOf</c>, one helper shared by both
+    /// methods, so a second staging here would re-measure the same predicate.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task UpdateCategoryGroup_RenamedOntoATakenName_TranslatesItsOwnUniqueIndex()
+    {
+        // Arrange — two groups under two labels, so the budget genuinely holds the name the rename
+        // below collides with. One group renamed onto its own label would collide with nothing.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var renamedId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.CategoryGroups.Add(CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow()));
+            seed.CategoryGroups.Add(CategoryGroup.Create(
+                renamedId,
+                budgetId,
+                SealedNarrative.Indexed("Lifestyle"),
+                null,
+                1,
+                UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        CategoryGroup renamed = await db.CategoryGroups.SingleAsync(group => group.Id == renamedId);
+        var repository = new CategoryGroupRepository(db);
+
+        // Act — the entity is mutated the way UpdateCategoryGroupHandler mutates it, so the
+        // statement the repository flushes is the UPDATE that route emits and not an insert wearing
+        // a different name.
+        renamed.Update(SealedNarrative.Indexed("Essentials"), null);
+        Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(renamed));
+
+        // Assert — the type AND the key. A DbUpdateException here is the 500 this arm exists to
+        // prevent; a ValidationException keyed on anything else would be a 400 the client renders
+        // against a field the person never touched.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ValidationException>();
+        await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(CategoryGroup.Name)))
+            .IsTrue();
+    }
+
     [Test]
     public async Task AddCategory_WhenATrackedRowBreaksAnotherForeignKey_LetsTheViolationEscape()
     {

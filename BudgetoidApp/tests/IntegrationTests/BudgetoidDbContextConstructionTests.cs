@@ -420,11 +420,12 @@ public sealed class BudgetoidDbContextConstructionTests
             // substring, and deliberately NOT the get_byte idiom the wrapped-key version checks below
             // use. get_byte reads better and it RAISES 2202E on a zero-length bytea instead of
             // answering false — no constraint name, no failing row, and nothing a repository filtering
-            // PostgresException on SqlState 23514 can ever see. The length check next door does not
-            // save it: which of two CHECKs on one column fires first is decided by the constraint
-            // NAME, alphabetically, so today's safety is the word "length" sorting before "version"
-            // and nothing else. substring is total over every length, answers false rather than
-            // raising, and still leaves NULL satisfying the predicate.
+            // PostgresException on SqlState 23514 can ever see. The length check next door DOES save
+            // it, and reading that as a guarantee is the trap: which of two CHECKs on one column fires
+            // first is decided by the constraint NAME, alphabetically, so today's safety is the word
+            // "length" sorting before "version" and nothing else. substring is total over every length,
+            // answers false rather than raising, and still leaves NULL satisfying the predicate — which
+            // is a property of the predicate and survives any renaming.
             //
             // Two tables now make that accident concrete rather than one: accounts and payees both
             // sort key_length, then length, then version. Neither ordering was chosen — the names are
@@ -432,9 +433,14 @@ public sealed class BudgetoidDbContextConstructionTests
             // that cannot raise.
             //
             // That difference is invisible to THIS pin, which compares configured text and cannot see
-            // which constraint fires or what SQLSTATE a bad row produces. The pin's job here is that
+            // which constraint fires or what SQLSTATE a bad row produces — and it is invisible to every
+            // runtime case as well, because the length band gets to the one value the wrong spelling
+            // bites on before the version predicate is evaluated. Measured on postgres:17.10: a table
+            // carrying a length band beside a get_byte-spelled version check refuses a zero-length value
+            // as 23514 under the band, never as 2202E. The pin's job here is therefore the whole job:
             // somebody rewriting the version check back into get_byte has to move this literal and
-            // read this paragraph on the way past. The wrapped-key pair below still carries get_byte
+            // read this paragraph on the way past, because nothing else in the repository will stop
+            // them. The wrapped-key pair below still carries get_byte
             // and is correct today only by that same alphabetical accident; it is recorded in the
             // hardening backlog and belongs to its own change, not to a drive-by edit here.
             //
@@ -465,8 +471,13 @@ public sealed class BudgetoidDbContextConstructionTests
             // an empty bytea produces and the one value this check exists for. get_byte(''::bytea, 0)
             // still raises 2202E from inside a CHECK on a nullable column.
             //
-            // So nullability makes the wrong spelling QUIETER rather than safer, and the single case
-            // that catches it is the one a reviewer is most likely to call redundant with the name's.
+            // So nullability makes the wrong spelling QUIETER rather than safer — and quieter than the
+            // sentence above suggests, because NO CASE CATCHES IT. description_length sorts ahead of
+            // description_version, so on the present-and-zero-length value the floor answers 23514 and
+            // the version predicate never runs. Measured on postgres:17.10 over a table carrying all six
+            // shipped constraints with both version checks spelled get_byte: nothing produced 2202E.
+            // Removing the floor is what makes the raise reachable, which no test does and no schema
+            // ships. This line and review are the whole defence.
             "CK_category_groups_description_version: category_groups substring(description from 1 for "
             + "1) = '\\x01'::bytea",
             // The blind index's width, an equality for the reason CK_accounts_name_key_length and

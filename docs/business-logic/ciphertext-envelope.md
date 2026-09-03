@@ -95,8 +95,8 @@ the server holds no key and never will — so what they add is *shape*, before a
 are argued below under [the two caps](#the-two-caps-and-what-they-measure) onward. Five columns are
 what they now stand in front of, and the schema restates their rules in SQL — two `CHECK`s on the
 budget column, three each on the account's and the payee's, the third being the index's exact width,
-and **five narrative ones on `category_groups`** beside the position rule that table already had,
-because it is the first to carry two narrative columns at once:
+and **five on `category_groups`** — four narrative, one the index's width — beside the position rule
+that table already had, because it is the first to carry two narrative columns at once:
 see [two checks on one column](#two-checks-on-one-column-and-which-one-bites). The order was the one
 this format asked for and got — agree while agreement is cheap, and let the persistence step arrive
 against rules that are already written.
@@ -331,8 +331,8 @@ erDiagram
     found by is recorded — [payees.md](payees.md#business-rules--invariants), where the same
     half-a-name row produces two further failures because that table's index is what deduplicates
     counterparties, and [categories.md](categories.md#business-rules--invariants), where the grant
-    is hardest to test because a third narrative column shares the list and EF names only the
-    columns that changed.
+    is hardest to test because a **second narrative column** shares the list beside the name and its
+    index, and EF names only the columns that changed.
 
 - **A blind index MUST be decoded through the shared base64url decoder, never through
   `CiphertextEnvelopeText`.**
@@ -728,8 +728,9 @@ false**: measured on PostgreSQL 17.10, `get_byte(''::bytea, 0)` fails with SQLST
 0 out of valid range, 0..-1*. That is not a constraint violation at all — no constraint name, no
 failing row, and nothing a `catch` filtering on `23514` will ever see.
 
-**The length check next door does not save it, and believing it does is the trap.** Which of two
-`CHECK`s on one column runs first is decided by the **constraint name**, alphabetically — not by
+**The length check next door saves it only by accident, and reading that accident as a guarantee is
+the trap.** Which of two `CHECK`s on one column runs first is decided by the **constraint name**,
+alphabetically — not by
 declaration order, and not left to right inside an `AND`. Measured on the same server: a table
 declaring the version check first still reported the *length* violation, and renaming the version
 check so it sorted ahead of the length one produced `2202E` from an identical pair of predicates.
@@ -744,14 +745,18 @@ alphabet.** `accounts` declares `CK_accounts_name_key_length`, `CK_accounts_name
 too and a zero-length name answers `23514` for the same reason it does on `budgets` — one that has
 nothing to do with either table. `payees` inherits the identical ordering, having chosen nothing:
 its three names are forced by its column names, and measured against the real three-constraint table
-a zero-length name reports `CK_payees_name_length`. **What `substring` buys is that the ordering
-stops mattering** — no predicate can raise, so every ordering yields `23514` naming *some*
+a zero-length name reports `CK_payees_name_length`. It follows from that ordering — reasoned from
+the names rather than probed on those two tables — that a `get_byte` spelling would be shielded
+there too, because a length check reaches a zero-length value before a version check named after it
+ever runs. **What `substring` buys is that the ordering stops mattering** — no predicate can raise,
+so every ordering yields `23514` naming *some*
 constraint, and the alphabet decides only which of two true violations is named first. Nobody adding
 a fourth constraint to a narrative table should have to work out where it lands, which is why the
 rule below is written about **predicates** and not about names.
 
-**`category_groups` is where the alphabet stops being one column's business, and where the accident
-turns into a blind spot.** Six constraints sort `description_length`, `description_version`,
+**`category_groups` is where the alphabet stops being one column's business, and where the blind
+spot was measured rather than reasoned.** Six constraints sort `description_length`,
+`description_version`,
 `name_key_length`, `name_length`, `name_version`, `position` — measured on PostgreSQL 17.10 over
 exactly those six — so a row breaking a **name** rule and a **description** rule is reported under
 the *description*, and a row breaking a description rule and the position rule is reported under the
@@ -760,18 +765,23 @@ description too. Two consequences, and the second is the one to carry away.
 First, a test asserting a constraint **name** must not hand the row more than one violation: a
 zero-length-name case has to leave the description NULL, or it reports the neighbour's constraint.
 
-Second — and this corrects the obvious guess — **a `get_byte` spelling on the description's version
-check is caught by nothing.** The instinct is that a nullable column escapes the zero-length trap,
-and that is wrong: measured, `get_byte(NULL::bytea, 0)` answers NULL and does not raise, so a
-`get_byte`-spelled check is green on every row holding a NULL *and* every row holding a valid
-envelope, and bites only on a **present, zero-length** value. But `description_length` sorts *before*
-`description_version`, so the length band reaches that value first and answers `23514` — the length
-check **shields** the wrong spelling on every value the schema can be handed. The two-column
-neighbour cannot help either, because a zero-length description is not a name violation. So on this
-column the wrong predicate is not merely quiet, it is **unreachable through the schema as declared**:
-measuring it needs a container probe over a table carrying the version check alone, which no test in
-this repository is. The rule below is therefore the whole of the protection here, and it is held by
-review.
+Second — and this corrects the obvious guess — **neither version check on this table is caught by
+anything, and the shielding is not the nullable column's peculiarity.** The instinct about the
+description is that a nullable column escapes the zero-length trap, and that is wrong: measured,
+`get_byte(NULL::bytea, 0)` answers NULL and does not raise, so a `get_byte`-spelled check is green
+on every row holding a NULL *and* every row holding a valid envelope, and bites only on a
+**present, zero-length** value. But `description_length` sorts *before* `description_version`, so
+the length band reaches that value first and answers `23514`. The **name** is shielded the same way
+and by two neighbours rather than one — `name_key_length` and `name_length` both sort ahead of
+`name_version` — so a zero-length name is refused as a length violation before the version predicate
+is evaluated at all. Measured on PostgreSQL 17.10 over a table carrying all six shipped constraints
+with **both** version checks spelled `get_byte`: no probe produced `2202E`, and every refusal came
+back `23514` under a length constraint — `name_length`, `name_key_length` or `description_length`.
+So on both columns the wrong predicate is not merely quiet, it is **unreachable through the schema
+as declared**: measuring it needs a container probe over a table carrying a version check alone,
+which no test in this repository is. **The length band is what earns the `23514`; the spelling does
+not** — so nothing here may be written as though `substring` were the reason a refusal arrives with
+a constraint name on it. The rule below is the whole of the protection, and it is held by review.
 
 `substring` carries no such dependency. It answers a zero-length `bytea` for a zero-length input,
 that is not the version byte, the check is false rather than fatal, and the violation is `23514`
@@ -1371,13 +1381,16 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   [two checks on one column](#two-checks-on-one-column-and-which-one-bites): `get_byte` raises
   rather than answering false on a zero-length `bytea`, and the neighbouring length check saves it
   only by alphabetical accident. Write the version predicate with `substring`.
-- **On `category_groups.description` that accident is total, and the suite cannot see through it.**
-  The alphabet puts `description_length` ahead of `description_version`, so the length band answers
-  every value the schema can be handed and a `get_byte` spelling on the version check is reachable by
-  no test in this repository. It is held by review, and measuring it needs a container probe over a
-  table carrying the version check alone. The nullable column does **not** escape the trap — NULL is
-  safe under both spellings and the dangerous value is the present, zero-length one — so nobody should
-  read the nullability as the reason it never fires.
+- **On `category_groups` that accident is total on *both* sealed columns, and the suite cannot see
+  through either.** The alphabet puts `description_length` ahead of `description_version`, and
+  `name_key_length` and `name_length` both ahead of `name_version`, so a length band answers every
+  value the schema can be handed and a `get_byte` spelling on either version check is reachable by no
+  test in this repository. Measured with both spelled `get_byte`: nothing produced `2202E`, and every
+  refusal was a `23514` under a length constraint. Both are held by review, and measuring either
+  needs a container probe over a table carrying that version check alone. The nullable column does
+  **not** escape the trap — NULL is safe under both spellings and the dangerous value is the present,
+  zero-length one — so nobody should read the nullability as the reason it never fires, and nobody
+  should read the `NOT NULL` name as the column where the trap is still catchable.
 - **The claim the whole type exists for is covered by no case, and no case can cover it.** See
   [the strongest claim](#the-strongest-claim-here-is-held-by-an-absence). Do not read the
   spec files' size as evidence for it.

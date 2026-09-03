@@ -586,16 +586,35 @@ public sealed class KeyMaterialSecrecyTests
     /// "see above" stops being a per-column argument, which is the whole requirement.
     /// </para>
     /// <para>
-    /// <b><c>category_groups.description</c> is the fifth member of that kind and the first entry in
-    /// this list to owe a concession none of the others makes, which is precisely why it must not
-    /// inherit the name's paragraph.</b> The four name columns are <c>NOT NULL</c>, so their presence
-    /// says nothing about the person. This one is nullable, and NULL is distinguishable from a
-    /// twenty-nine-byte envelope by looking, so the column announces <i>which groups somebody bothered
-    /// to annotate</i> while announcing nothing about what they wrote. It cannot be closed by sealing an
-    /// empty string into every row: "cleared" and "never filled" are two states this product keeps
-    /// apart on purpose. It is also the first narrative column with no blind index, and that absence is
-    /// a decision rather than a gap — a note is not looked up, is not unique and is not a name, so an
-    /// index over one would publish a deterministic fingerprint of free text with nothing asking for it.
+    /// <b><c>category_groups.description</c> is the fifth member of that kind and owes a concession its
+    /// neighbours on this table do not, which is precisely why it must not inherit the name's
+    /// paragraph.</b> <c>accounts.name</c>, <c>category_groups.name</c> and <c>payees.name</c> are
+    /// <c>NOT NULL</c>, so their presence says nothing about the person. This one is nullable, and NULL
+    /// is distinguishable from a twenty-nine-byte envelope by looking, so the column announces <i>which
+    /// groups somebody bothered to annotate</i> while announcing nothing about what they wrote. It
+    /// cannot be closed by sealing an empty string into every row: "cleared" and "never filled" are two
+    /// states this product keeps apart on purpose.
+    /// </para>
+    /// <para>
+    /// <b>NEITHER HALF OF THAT MAY BE WRITTEN AS A FIRST, AND <c>budgets.name</c> IS WHY.</b> This
+    /// paragraph twice said something the entry five hundred lines down contradicts, so both are
+    /// narrowed here rather than left to be found: it is <b>not</b> true that the four name columns are
+    /// <c>NOT NULL</c> — <c>budgets.name</c> is <c>nullable: true</c> in the emitted baseline, which is
+    /// what lets a provisioner write a nameless budget — and it is <b>not</b> the first narrative column
+    /// with no blind index, because that column has none either and never will. Each claim, written as a
+    /// first, would be a per-column argument leaning on a neighbour it had never checked, which is the
+    /// one thing this file exists to refuse.
+    /// </para>
+    /// <para>
+    /// <b>The two absent indexes are different absences and collapsing them is the mistake to avoid.</b>
+    /// On <c>budgets.name</c> the index is missing because a rule was <i>surrendered</i>: per-user name
+    /// uniqueness used to be enforced there and FR-077 gives the column no blind index, so it does not
+    /// come back — every seal draws a fresh nonce, and what survives is <c>NULLS NOT DISTINCT</c>, which
+    /// is a rule about nameless rows rather than about names. On <c>category_groups.description</c>
+    /// nothing was surrendered, because nothing was ever wanted: a note is not looked up, is not unique
+    /// and is not a name, so an index over one would publish a deterministic per-account fingerprint of
+    /// free text with nothing on the other side asking for it. A lost capability and a mechanism nobody
+    /// asked for read the same in a schema diff and are opposite decisions.
     /// </para>
     /// <para>
     /// <b>The fifth kind is <c>accounts.name_key</c>, and it is a kind rather than a member of the
@@ -709,28 +728,34 @@ public sealed class KeyMaterialSecrecyTests
             "category_groups",
             "description",
             "the note filed against a category group, sealed as a narrative field under the account's "
-            + "content key \u2014 the first sealed FREE-TEXT column in the product, and the first "
-            + "narrative column that is nullable",
+            + "content key \u2014 the first sealed FREE-TEXT column in the product, and the second "
+            + "narrative column that is nullable after budgets.name",
             "the content-key half is its neighbour's and is restated rather than pointed at for the "
             + "same reason: the key is generated in the browser and reaches this server only as the "
             + "wrapped_content_key envelopes, each sealed under a key-encryption key derived from a "
-            + "recovery factor the operator never holds. IT OWES A CONCESSION NO OTHER CONTENT ENTRY "
-            + "MAKES, and pasting the name's paragraph over this one is exactly how it would be lost. "
-            + "The four name columns are NOT NULL, so their presence says nothing; this column is "
-            + "nullable, and NULL is distinguishable from twenty-nine bytes at a glance, so the table "
-            + "ANNOUNCES WHICH GROUPS A PERSON BOTHERED TO ANNOTATE without announcing what they wrote. "
-            + "That is small and it is real: an operator learns that this person keeps notes on two of "
-            + "their eleven groups. It cannot be closed by writing an envelope over an empty string "
-            + "into every row, because \"cleared\" and \"never filled\" are two states the product "
-            + "deliberately keeps apart. The length concession is the ordinary one \u2014 AES-GCM without "
-            + "the key yields the plaintext's length, which the column's own length already gives away, "
-            + "and here it is a wider band than a name's because the cap is "
+            + "recovery factor the operator never holds. IT OWES A CONCESSION NO OTHER ENTRY ON THIS "
+            + "TABLE MAKES, and pasting the name's paragraph over this one is exactly how it would be "
+            + "lost. accounts.name, category_groups.name and payees.name are NOT NULL, so their "
+            + "presence says nothing; this column is nullable, and NULL is distinguishable from "
+            + "twenty-nine bytes at a glance, so the table ANNOUNCES WHICH GROUPS A PERSON BOTHERED TO "
+            + "ANNOTATE without announcing what they wrote. That is small and it is real: an operator "
+            + "learns that this person keeps notes on two of their eleven groups. It cannot be closed "
+            + "by writing an envelope over an empty string into every row, because \"cleared\" and "
+            + "\"never filled\" are two states the product deliberately keeps apart. NOT WRITTEN AS A "
+            + "FIRST, and the correction is the entry's own: budgets.name is nullable too \u2014 the "
+            + "baseline emits it as nullable so a provisioner can write a nameless budget \u2014 so what is "
+            + "particular here is WHAT the absence discloses, an annotation habit per group, and not "
+            + "that a narrative column is nullable at all. The length concession is the ordinary one \u2014 "
+            + "AES-GCM without the key yields the plaintext's length, which the column's own length "
+            + "already gives away, and here it is a wider band than a name's because the cap is "
             + "NarrativeFieldLimits.DescriptionBytes. There is NO description_key and there never will "
             + "be: a note is not looked up, is not unique and is not a name, so an index over one would "
             + "publish a deterministic per-account fingerprint of somebody's free text with nothing on "
-            + "the other side asking for it. The tag is the last half \u2014 associated data is rebuilt "
-            + "from where the ciphertext was found, so a note moved onto another row refuses to open "
-            + "rather than opening as somebody else's"),
+            + "the other side asking for it \u2014 WHICH IS NOT budgets.name's REASON FOR HAVING NONE, and "
+            + "the two must not be filed together: there a uniqueness rule was surrendered and FR-077 "
+            + "does not restore it, here no mechanism was ever wanted. The tag is the last half \u2014 "
+            + "associated data is rebuilt from where the ciphertext was found, so a note moved onto "
+            + "another row refuses to open rather than opening as somebody else's"),
         new(
             "category_groups",
             "name_key",

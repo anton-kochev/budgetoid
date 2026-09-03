@@ -239,9 +239,37 @@ public static class SealedNarrative
     /// <c>Convert.ToBase64String</c> in <c>CategoryGroupDto.FromCategoryGroup</c> killed no test while
     /// every encoding case in the category-group suite used it. <b>Neither condition is on its own the
     /// rule</b> — <c>Name("Sinking Funds")</c> is 42 bytes and emits no padding, and is still caught,
-    /// because it happens to carry a 62/63 byte. A label is safe when the two spellings differ, which is
-    /// a property to check rather than to reason about from the length. Across the suite as it stands,
-    /// "Essentials" was the only label of either kind that was blind.
+    /// because it happens to carry a 62/63 byte. <b>A LABEL IS SAFE WHEN THE TWO SPELLINGS DIFFER,
+    /// WHICH IS A PROPERTY TO CHECK AND NEVER ONE TO INFER FROM THE LENGTH</b> — the 42-byte pair
+    /// "Discretionary" and "Sinking Funds" is the whole argument: same width, opposite answers.
+    /// </para>
+    /// <para>
+    /// <b>FOUR LABELS ARE BLIND, NOT ONE.</b> This paragraph used to end "Essentials was the only label
+    /// of either kind that was blind", and it was wrong. Enumerated over every label reaching
+    /// <see cref="EncodedName(string)" /> or <see cref="EncodedDescription(string)" /> anywhere in
+    /// either suite, and comparing padded standard base64 against unpadded base64url character for
+    /// character:
+    /// <list type="bullet">
+    /// <item><description><c>"Essentials"</c> — 39 bytes</description></item>
+    /// <item><description><c>"Discretionary"</c> — 42 bytes</description></item>
+    /// <item><description><c>"Empty note"</c> — 39 bytes</description></item>
+    /// <item><description><c>"No note"</c> — 36 bytes</description></item>
+    /// </list>
+    /// The last three arrived with the category-group slice, so the count grew in the same commit that
+    /// wrote the sentence claiming it was one. An assertion against a response member built from any of
+    /// them is green under either encoder and is therefore decoration. Four more labels — <c>"Blank
+    /// name"</c>, <c>"Cash"</c>, <c>"Encumbered"</c> and <c>"Only"</c> — are blind too and do not
+    /// matter: they reach <see cref="Name(string)" /> and <see cref="BlindIndex(string)" /> only, where
+    /// nothing is encoded and there is no alphabet to get wrong.
+    /// </para>
+    /// <para>
+    /// <b>The list above is a snapshot and the guard is not.</b> A case that pins the ENCODING rather
+    /// than the value states the property for its own fixture, in the Arrange, as
+    /// <c>Convert.ToBase64String(bytes) != </c><see cref="EncodedName(string)" /> — see
+    /// <c>CategoryIntegrationTests.PostAndGetCategoryGroup_EncodeTheSameNameAndDescription</c>. That is
+    /// what stops a later author swapping in a prettier label and silently deleting the test; a
+    /// <c>DoesNotContain("+")</c> loop over the output is NOT that guard, because on a blind label it is
+    /// green under both encoders too.
     /// </para>
     /// </remarks>
     public static string EncodedName(string label = "") =>

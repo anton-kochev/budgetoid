@@ -1334,23 +1334,34 @@ public sealed class PayeeIntegrationTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b><c>SchemaConstraintSnapshotTests</c> compares RENDERED TEXT, so swapping <c>substring</c> for
-    /// <c>get_byte</c> moves a literal there — and a literal moving is a paste unless somebody reads
-    /// why.</b> Nothing proved the SQLSTATE, which is the actual claim. <c>get_byte(name, 0)</c> RAISES
-    /// on a zero-length <c>bytea</c> instead of answering false: <c>2202E</c> out of
-    /// <c>byteaGetByte</c>, with no constraint name, no table and no failing row — nothing a
-    /// <c>catch (PostgresException) when (SqlState is 23514)</c> will ever see.
+    /// <b>What this case holds is the LENGTH BAND, and it does not hold the spelling — which corrects
+    /// an earlier reading of it.</b> <c>get_byte(name, 0)</c> RAISES on a zero-length <c>bytea</c>
+    /// instead of answering false: <c>2202E</c> out of <c>byteaGetByte</c>, with no constraint name, no
+    /// table and no failing row — nothing a <c>catch (PostgresException) when (SqlState is 23514)</c>
+    /// will ever see. But this table sorts <c>CK_payees_name_key_length</c>,
+    /// <c>CK_payees_name_length</c>, <c>CK_payees_name_version</c>, and a multiply-violating row is
+    /// reported under whichever constraint sorts first, so the band reaches a zero-length name before
+    /// the version predicate is evaluated at all. Measured on postgres:17.10 against a table carrying a
+    /// length band beside a <c>get_byte</c>-spelled version check: the refusal comes back <c>23514</c>
+    /// under the band, never <c>2202E</c>. <b>So this case would stay green on a <c>get_byte</c>
+    /// spelling</b>, as would every other case in the repository; <c>SchemaConstraintSnapshotTests</c>
+    /// moving a literal is the whole of what a reader gets, and a literal moving is a paste unless
+    /// somebody reads why. <c>substring</c> is right because it is TOTAL over every length this column
+    /// can hold, which is a property of the predicate rather than of the alphabet — held by review and
+    /// by a container probe over a table carrying the version check alone.
     /// </para>
     /// <para>
-    /// <b>WHICH constraint fires is deliberately not asserted.</b> PostgreSQL decides that by the
-    /// constraint NAME, alphabetically, so a zero-length name answers the length check only because
-    /// "length" sorts before "version" — an accident nobody chose. Pinning it would turn a rename into
-    /// a failure. What <c>substring</c> buys is that no predicate on this column can raise, so the
-    /// answer is <c>23514</c> under EVERY ordering, which is what is asserted.
+    /// <b>WHICH constraint fires is deliberately not asserted, and that is an argument about renames
+    /// rather than about ignorance.</b> PostgreSQL decides it by the constraint NAME, alphabetically,
+    /// so a zero-length name answers the length check because "key_length" and "length" sort before
+    /// "version" — an accident nobody chose, and one a rename would move. What is asserted is
+    /// <c>23514</c> and membership in the pair the alphabet may choose between. The category twin pins
+    /// its constraint instead, because that file has already spent the determinism elsewhere; neither
+    /// is a correction of the other.
     /// </para>
     /// <para>
-    /// The UPDATE leg is not a duplicate of the INSERT leg: a CHECK is evaluated on both, and a value
-    /// that is fatal rather than false on one path is fatal on the other.
+    /// The UPDATE leg is not a duplicate of the INSERT leg: a CHECK is evaluated on both, and a band
+    /// that refused a value on one path has to refuse it on the other.
     /// </para>
     /// </remarks>
     [Test]

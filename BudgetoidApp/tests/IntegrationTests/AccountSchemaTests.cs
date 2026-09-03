@@ -1,5 +1,6 @@
 using System.Globalization;
 using Domain.Accounts;
+using Domain.Security;
 using Npgsql;
 using TestSupport;
 
@@ -106,6 +107,75 @@ public sealed class AccountSchemaTests
         await Assert.That(refusal.TableName).IsEqualTo("accounts");
     }
 
+    /// <summary>
+    /// The other two rules on <c>accounts.name</c> fired, rather than merely rendered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>THE THIRD MEMBER OF A CLASS, AND IT SHIPPED WITH NEITHER OF ITS RULES EVER FIRING.</b>
+    /// <c>CK_accounts_name_length</c> and <c>CK_accounts_name_version</c> were NAMED in three files —
+    /// <c>SchemaConstraintSnapshotTests</c> and <c>BudgetoidDbContextConstructionTests</c> render them
+    /// as text, <c>AppRoleGrantsTests</c>, <c>RlsIsolationTests</c> and <c>TenancySchemaTests</c> mention
+    /// them in prose — and fired by none. A pin is not a firing, and this was MEASURED by altering the
+    /// constraint on a live postgres:17.10 container rather than reasoned: rewritten as
+    /// <c>length(name) between 1 and 1024</c>, the twenty-eight-byte value below STORED, and every one
+    /// of those five files stayed green. Deleting the version check outright is invisible to all of them
+    /// in the same way.
+    /// </para>
+    /// <para>
+    /// <b>Neither shape is reachable through the API, which is why they are written raw.</b>
+    /// <c>CiphertextEnvelopeText</c> refuses an over-cap envelope and an unimplemented version before
+    /// either reaches a row, so a route-level case measures the Application ring's copy of the rule and
+    /// says nothing about the column's. Unlike its two siblings this table has no zero-length-name case
+    /// at all, so these three are the whole of what fires here.
+    /// </para>
+    /// <para>
+    /// The floor argument is the one a reader will think a zero-length case would cover, and it would
+    /// not — measured on the sibling table, where such a case exists: under a floor of 1 a zero-length
+    /// name is still outside it, so that case answers the same <c>23514</c> naming the same length check
+    /// and cannot tell 29 from 1. Only a well-versioned envelope ONE BYTE short can, and 29 is where
+    /// <see cref="Domain.Security.CiphertextEnvelope.MinimumLength" /> puts it because a version, a
+    /// nonce and a tag over an empty plaintext is the shortest thing the framing can produce.
+    /// </para>
+    /// <para>
+    /// The type, the balance and the index beside each value are all legal, or the alphabet would report
+    /// something else and the case would pass on the wrong refusal: the three name checks sort
+    /// <c>key_length</c> &lt; <c>length</c> &lt; <c>version</c>, and <c>opening_balance</c> and
+    /// <c>type</c> sort after all of them. The constraint names ARE asserted, because each of these
+    /// values violates exactly one check and the alphabet is left with no choice to make.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("one byte under the framing floor", "CK_accounts_name_length")]
+    [Arguments("one byte over the column's cap", "CK_accounts_name_length")]
+    [Arguments("a version this deployment has never implemented", "CK_accounts_name_version")]
+    public async Task Database_RefusesANameTheEnvelopeRulesForbid(string shape, string constraint)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+
+        // Non-vacuity, and it has to come first: the same statement with a well-formed envelope goes
+        // through, so the refusal below is about the name and not about the insert shape.
+        await InsertAccountAsync(connection, budgetId, "Everyday", "Checking", 0m);
+
+        // Act
+        PostgresException refusal = await ThrowsPostgresExceptionAsync(
+            connection,
+            budgetId,
+            shape,
+            "Checking",
+            0m,
+            nameEnvelope: MalformedNameEnvelope(shape));
+
+        // Assert
+        await Assert.That(refusal.SqlState).IsEqualTo(PostgresErrorCodes.CheckViolation);
+        await Assert.That(refusal.ConstraintName).IsEqualTo(constraint);
+        await Assert.That(refusal.TableName).IsEqualTo("accounts");
+    }
+
     [Test]
     [Arguments("1000000000.01")]
     [Arguments("-1000000000.01")]
@@ -186,16 +256,56 @@ public sealed class AccountSchemaTests
     /// </summary>
     private static decimal Money(string value) => decimal.Parse(value, CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// A <c>name</c> value the column must refuse, one shape per argument of
+    /// <see cref="Database_RefusesANameTheEnvelopeRulesForbid" />.
+    /// </summary>
+    /// <remarks>
+    /// Built from the constants that own the rules rather than from literals, so a floor, a cap or a
+    /// version that moves moves these values with it instead of leaving a case measuring a number
+    /// nobody uses any more.
+    /// </remarks>
+    private static byte[] MalformedNameEnvelope(string shape)
+    {
+        switch (shape)
+        {
+            case "one byte under the framing floor":
+                {
+                    byte[] tooShort = new byte[CiphertextEnvelope.MinimumLength - 1];
+                    tooShort[0] = CiphertextEnvelope.Version;
+                    return tooShort;
+                }
+
+            case "one byte over the column's cap":
+                {
+                    byte[] tooLong = new byte[NarrativeFieldLimits.NameBytes + 1];
+                    tooLong[0] = CiphertextEnvelope.Version;
+                    return tooLong;
+                }
+
+            case "a version this deployment has never implemented":
+                {
+                    byte[] wrongVersion = new byte[CiphertextEnvelope.MinimumLength];
+                    wrongVersion[0] = CiphertextEnvelope.Version + 1;
+                    return wrongVersion;
+                }
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(shape), shape, "Unknown envelope shape.");
+        }
+    }
+
     private static async Task InsertAccountAsync(
         NpgsqlConnection connection,
         Guid budgetId,
         string name,
         string type,
         decimal openingBalance,
-        byte[]? nameKey = null)
+        byte[]? nameKey = null,
+        byte[]? nameEnvelope = null)
     {
         await using NpgsqlCommand command =
-            BuildInsert(connection, budgetId, name, type, openingBalance, nameKey);
+            BuildInsert(connection, budgetId, name, type, openingBalance, nameKey, nameEnvelope);
         await command.ExecuteNonQueryAsync();
     }
 
@@ -205,10 +315,11 @@ public sealed class AccountSchemaTests
         string name,
         string type,
         decimal openingBalance,
-        byte[]? nameKey = null)
+        byte[]? nameKey = null,
+        byte[]? nameEnvelope = null)
     {
         await using NpgsqlCommand command =
-            BuildInsert(connection, budgetId, name, type, openingBalance, nameKey);
+            BuildInsert(connection, budgetId, name, type, openingBalance, nameKey, nameEnvelope);
 
         try
         {
@@ -223,10 +334,19 @@ public sealed class AccountSchemaTests
     }
 
     /// <remarks>
+    /// <para>
     /// <paramref name="nameKey" /> is <see langword="null" /> for "derive it from the label", which is
     /// what every case but the width one wants. It is a parameter at all because the blind index's
     /// width cannot be reached any other way: the fixture only ever emits the legal 32 bytes, so a
     /// case about a wrong width has to hand its own bytes in.
+    /// </para>
+    /// <para>
+    /// <paramref name="nameEnvelope" /> exists for the same reason and is its exact counterpart:
+    /// <see cref="SealedNarrative.Name" /> only ever emits a well-versioned envelope between the
+    /// framing's floor and the column's cap, so the three shapes those rules forbid have to be handed
+    /// in. Both stay optional and both default to the label, so the cases that are about a type, a
+    /// balance or a numeric shape keep reading as one argument.
+    /// </para>
     /// </remarks>
     private static NpgsqlCommand BuildInsert(
         NpgsqlConnection connection,
@@ -234,7 +354,8 @@ public sealed class AccountSchemaTests
         string name,
         string type,
         decimal openingBalance,
-        byte[]? nameKey = null)
+        byte[]? nameKey = null,
+        byte[]? nameEnvelope = null)
     {
         NpgsqlCommand command = new(
             """
@@ -249,7 +370,8 @@ public sealed class AccountSchemaTests
         // name_key is NOT NULL. Every case in this file is about the type, the balance or the column's
         // numeric shape, so either refusal would arrive as a seeding failure wearing the SQLSTATE the
         // case was hunting.
-        command.Parameters.AddWithValue("name", SealedNarrative.Name(name).Envelope.ToArray());
+        command.Parameters.AddWithValue(
+            "name", nameEnvelope ?? SealedNarrative.Name(name).Envelope.ToArray());
         command.Parameters.AddWithValue(
             "name_key", nameKey ?? SealedNarrative.BlindIndex(name).ToArray());
         command.Parameters.AddWithValue("type", type);

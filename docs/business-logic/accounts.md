@@ -72,7 +72,13 @@ erDiagram
     reference and a struct by pointer, so a value rebuilt from identical bytes reads as an edit and
     one rewritten in place inside the same buffer does not — on `name_key` the second is the one
     that bites, because an index the tracker misses is a row whose uniqueness value stops describing
-    its own name). The table carries **three** `CHECK` constraints, each rendered from the constant
+    its own name). **Nothing in the suite holds any arm of either comparer here.** The product's one
+    change-tracking class is scoped to `category_groups`, this table has no equivalent, and a broken
+    arm is **quiet** rather than loud: EF restates a column with the bytes the row already holds, and
+    `name` and `name_key` both sit inside this table's `UPDATE` grant, so nothing answers `42501` and
+    the spurious statement commits exactly like a rename would. What that class does and does not
+    reach is in [categories.md](categories.md#edge-cases--known-gotchas). The table carries **three**
+    `CHECK` constraints, each rendered from the constant
     that owns its number rather than from a literal: `CK_accounts_name_length` bounds the envelope
     between `CiphertextEnvelope.MinimumLength` and `NarrativeFieldLimits.NameBytes`,
     `CK_accounts_name_version` requires the leading version byte through `substring`, and

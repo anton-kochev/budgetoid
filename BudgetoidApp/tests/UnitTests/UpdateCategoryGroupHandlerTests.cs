@@ -37,6 +37,27 @@ namespace UnitTests;
 /// arriving with some later request. Every refusal case below reads all three columns back for that
 /// reason.
 /// </para>
+/// <para>
+/// <b>Two caps, and this leg owes its own three cases because a constraint is a property of a code
+/// path.</b> <c>CreateCategoryGroupHandlerTests</c> holds the identical trio and says nothing at all
+/// about the lines in <c>UpdateCategoryGroupHandler</c> — measured: swapping either of this handler's
+/// two <see cref="NarrativeFieldLimits.DescriptionBytes" /> references for
+/// <see cref="NarrativeFieldLimits.NameBytes" />, or handing <c>int.MaxValue</c> to its name decode,
+/// killed no test in the suite while every create-leg case stayed green.
+/// <see cref="HandleAsync_WithADescriptionPastTheNameCap_IsAccepted" /> says the description's ceiling
+/// is not the name's, <see cref="HandleAsync_WithADescriptionOverItsOwnCap_RefusesAndLeavesTheRowUnchanged" />
+/// says there is one at all, and
+/// <see cref="HandleAsync_WithANameOverItsOwnCap_ThrowsValidationExceptionRatherThanArgumentException" />
+/// says the name's refusal is the caller's 400 and not the domain's 500.
+/// </para>
+/// <para>
+/// <b>The first of those three is the one whose SIZE is the case</b>, and it is what the file was
+/// missing rather than a fourth restatement. A description over BOTH caps is refused whichever number
+/// is in force, so the over-cap case beside it cannot tell them apart; only a value <em>between</em>
+/// <see cref="NarrativeFieldLimits.NameBytes" /> and <see cref="NarrativeFieldLimits.DescriptionBytes" />
+/// can. The two cases that build envelopes by hand do so because <c>SealedNarrative</c> caps by
+/// construction and therefore cannot produce the values that catch a widened ceiling.
+/// </para>
 /// </remarks>
 public sealed class UpdateCategoryGroupHandlerTests
 {
@@ -306,6 +327,89 @@ public sealed class UpdateCategoryGroupHandlerTests
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("Description")).IsTrue();
+        await Assert.That(group.Description).IsNotNull();
+        await Assert.That(fixture.Groups.UpdateCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task HandleAsync_WithADescriptionPastTheNameCap_IsAccepted()
+    {
+        // Arrange — THE VALUE THAT SEPARATES THE TWO CAPS, AND ITS SIZE IS THE WHOLE OF THE CASE. An
+        // envelope longer than NarrativeFieldLimits.NameBytes and well under DescriptionBytes: a value
+        // OVER BOTH caps is refused whichever number is in force and therefore cannot tell them apart,
+        // which is exactly why the neighbour below —
+        // HandleAsync_WithADescriptionOverItsOwnCap_RefusesAndLeavesTheRowUnchanged, whose value is
+        // DescriptionBytes + 1 — leaves this claim uncovered. It has to sit BETWEEN them.
+        //
+        // Two lines of this handler read a cap for the description and both are mutable to the name's
+        // with nothing going red: the decode, which would answer a 400 on a note the column accepts,
+        // and NarrativeField.SealedOrAbsent one line lower, which would throw ArgumentException and
+        // reach the caller as a 500. This case is the only one on this leg that sees either.
+        // CreateCategoryGroupHandlerTests carries the twin for the create leg; a constraint is a
+        // property of a code path, and that one says nothing about this one.
+        Fixture fixture = Fixture.Create();
+        CategoryGroup group = await fixture.SeedAsync("Essential Obligations", null);
+        string longLabel = new('x', NarrativeFieldLimits.NameBytes);
+
+        // Act
+        await fixture.Handler.HandleAsync(new UpdateCategoryGroupCommand(
+            group.Id,
+            SealedNarrative.EncodedName("Essentials"),
+            SealedNarrative.EncodedIndex("Essentials"),
+            SealedNarrative.EncodedDescription(longLabel)));
+
+        // Assert — the note landed AND it is past the name's ceiling. Without the second assertion a
+        // fixture whose label stopped producing an over-cap envelope would leave this case green while
+        // measuring nothing.
+        await Assert.That(group.Description).IsNotNull();
+        await Assert.That(group.Description!.Envelope.Length)
+            .IsGreaterThan(NarrativeFieldLimits.NameBytes);
+        await Assert.That(fixture.Groups.UpdateCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task HandleAsync_WithANameOverItsOwnCap_ThrowsValidationExceptionRatherThanArgumentException()
+    {
+        // Arrange — the same value one column over, and the assertion is about WHICH exception. The
+        // domain refuses an over-cap name too, but as an ArgumentException that becomes a 500:
+        // IndexedName.Of is written to catch a ceiling mistyped in this codebase, not a body a caller
+        // can correct. So the claim is not "an over-long name is refused" — it would be, either way —
+        // but that the refusal reaches the caller as the 400 naming the member they sent.
+        //
+        // Hand int.MaxValue to this handler's name decode and every other case in this file stays
+        // green: the over-cap envelope sails through the wire edge, reaches IndexedName.Of, and the
+        // caller gets a 500 on a request that named its own fault.
+        //
+        // The row is seeded rather than left missing, so the value gets past the lookup and reaches the
+        // domain factory at all. Against an unknown id the handler answers NotFoundException under the
+        // mutation and this case would redden for the wrong reason.
+        //
+        // The envelope is built here and not by SealedNarrative, because that fixture caps at
+        // NameBytes by construction and cannot produce the one value that catches this.
+        Fixture fixture = Fixture.Create();
+        CategoryGroup group = await fixture.SeedAsync("Essential Obligations", "Required spending");
+        byte[] overCap = new byte[NarrativeFieldLimits.NameBytes + 1];
+        overCap[0] = CiphertextEnvelope.Version;
+
+        // Act
+        ValidationException exception = await ThrowsAsync<ValidationException>(() =>
+            fixture.Handler.HandleAsync(new UpdateCategoryGroupCommand(
+                group.Id,
+                Base64UrlText.Encode(overCap),
+                SealedNarrative.EncodedIndex("Essentials"),
+                null)));
+
+        // Assert — all three columns, for the reason the class remarks give: the entity is tracked in
+        // production, so a mutation that survived the throw commits with some later request.
+        await Assert.That(exception.Errors.ContainsKey("Name")).IsTrue();
+        await Assert.That(group.Name.Envelope.ToArray())
+            .IsEquivalentTo(
+                SealedNarrative.Name("Essential Obligations").Envelope.ToArray(),
+                CollectionOrdering.Matching);
+        await Assert.That(group.NameKey.ToArray())
+            .IsEquivalentTo(
+                SealedNarrative.BlindIndex("Essential Obligations").ToArray(),
+                CollectionOrdering.Matching);
         await Assert.That(group.Description).IsNotNull();
         await Assert.That(fixture.Groups.UpdateCallCount).IsEqualTo(0);
     }

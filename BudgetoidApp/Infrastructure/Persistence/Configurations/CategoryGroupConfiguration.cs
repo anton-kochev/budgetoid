@@ -158,11 +158,25 @@ public sealed class CategoryGroupConfiguration : IEntityTypeConfiguration<Catego
             // byteaGetByte. That is not a constraint violation at all: no constraint name, no failing
             // row, and nothing a `catch (PostgresException) when (... SqlState is 23514)` will ever see.
             //
-            // The length check next door does not save it, and believing it does is the trap - which of
-            // a column's CHECKs runs first is decided by the constraint NAME, as the ToTable comment
-            // above says. substring carries no such dependency: it answers a zero-length bytea for a
-            // zero-length input, that is not the version byte, the check is false rather than fatal, and
-            // the violation is 23514 under every ordering, on INSERT and on UPDATE alike.
+            // WHAT THIS SPELLING BUYS ON THIS TABLE IS NOT THE SQLSTATE, AND SAYING OTHERWISE WOULD BE
+            // FALSE. Measured on postgres:17.10 over a table carrying exactly these six constraints with
+            // BOTH version checks spelled get_byte: no probe produced 2202E: every refusal came back
+            // 23514 under a LENGTH constraint - name_length, name_key_length or description_length. The
+            // alphabet is why. name_key_length and name_length both sort ahead of name_version, so a
+            // zero-length name meets the length band first and is refused there; the wrong spelling on
+            // this column is shielded by two neighbours whose names happen to sort first, which is not a
+            // decision anybody took and not a property anybody should have to preserve. The description's
+            // pair below is shielded the same way by description_length, and ciphertext-envelope.md says
+            // so for that column already.
+            //
+            // So substring is still the right spelling, for the property rather than for the symptom: it
+            // makes the predicate TOTAL over every length this column can hold, including zero, so the
+            // check is false rather than fatal and the violation is 23514 under EVERY ordering - on
+            // INSERT and on UPDATE alike, and whatever constraint some later slice adds beside it. A
+            // get_byte spelling would be correct today and wrong the day a name-column check sorts ahead
+            // of name_length. Nothing here is held by a test: through the schema as declared the wrong
+            // spelling is unreachable, so measuring it needs a container probe over a table carrying the
+            // version check alone, and this rule is held by review.
             //
             // The version is bounded here and not left to the client because the successor does not
             // exist - a row carrying version 2 is a client claiming a contract this deployment has never
@@ -224,9 +238,14 @@ public sealed class CategoryGroupConfiguration : IEntityTypeConfiguration<Catego
             // one value this check exists for. get_byte(''::bytea, 0) raises 2202E from inside a CHECK on
             // a nullable column just as it does on a NOT NULL one.
             //
-            // So the nullable column makes the wrong spelling QUIETER rather than safer: it would survive
-            // every test whose rows are NULL or valid, and the single case that catches it is the one a
-            // reviewer is most likely to call redundant with the name's.
+            // AND THERE IS NO CASE THAT CATCHES IT, which is the sharper half. description_length sorts
+            // ahead of description_version, so the length band reaches a present, zero-length value first
+            // and answers 23514 - the neighbour SHIELDS the wrong spelling on every value this schema can
+            // be handed, exactly as name_length and name_key_length shield the name's. Measured on
+            // postgres:17.10 with both version checks spelled get_byte: nothing produced 2202E. So the
+            // wrong predicate here is not merely quiet, it is unreachable through the schema as declared,
+            // and measuring it would need a container probe over a table carrying this check alone -
+            // which no test in this repository is. ciphertext-envelope.md states it the same way.
             table.HasCheckConstraint(
                 DescriptionVersionCheckName,
                 $"substring(description from 1 for 1) = '\\x{CiphertextEnvelope.Version:x2}'::bytea");
@@ -347,6 +366,18 @@ public sealed class CategoryGroupConfiguration : IEntityTypeConfiguration<Catego
     // instance the tracker holds must not share a buffer with the one the entity holds, or the "old
     // value" changes whenever the new one does. FromStore copies on the way through, which is why there
     // is nothing to do here but call it.
+    //
+    // THIS ARM IS HELD BY REVIEW AND BY NO TEST, and its three neighbours are not - drop either comparer
+    // or falsify HasSameEnvelope and CategoryGroupChangeTrackingTests reddens on the columns an UPDATE
+    // names. Measured: returning the instance here - so the snapshot ALIASES the tracked value rather
+    // than copying it - leaves every case in that class green, because for the two to differ somebody
+    // would have to overwrite the bytes of an already-accepted envelope IN PLACE, and nothing can:
+    // NarrativeField's buffer is private, Envelope is a window onto the copy the factory made - Sealed
+    // and FromStore both ToArray() - and every write path replaces the whole field, so reaching it needs
+    // MemoryMarshal and measures a hazard no route leads to. The copy stays anyway: what makes the
+    // difference unobservable is NarrativeField's CURRENT shape and not a permanent property, and the
+    // day a member rewrites an envelope in place this arm is the only thing keeping the tracker's "old
+    // value" from moving with the new one.
     private static NarrativeField CopyEnvelope(NarrativeField field) =>
         NarrativeField.FromStore(field.Envelope);
 

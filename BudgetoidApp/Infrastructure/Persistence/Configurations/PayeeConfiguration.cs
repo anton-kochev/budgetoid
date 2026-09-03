@@ -68,6 +68,15 @@ public sealed class PayeeConfiguration : IEntityTypeConfiguration<Payee>
     // signature speaking rather than this column: equality is Func<T?, T?, bool>, the hash and snapshot
     // arms are Func<T, …>. This column is NOT NULL and Payee.Name is non-nullable, so the null branch is
     // unreachable in practice; it is written because the delegate type asks for it.
+    //
+    // AND NOTHING ON THIS TABLE HOLDS ANY OF IT — these three arms, and the blind index comparer's three
+    // below. The only class in the suite that can see a comparer's failure reads the statements a save
+    // composes, and it reads them for category_groups; payees have no equivalent, so what is unheld here
+    // is not the snapshot arm alone but the equality arm the paragraph above rests on. The failure is
+    // quiet either way: a comparer that reads a value rebuilt from identical bytes as an edit makes EF
+    // restate the column with what it already held, and GRANT UPDATE (name, name_key) covers both
+    // halves, so the spurious statement commits exactly like a rename would. Nothing in this repository
+    // is looking at it — no case here reads a SaveChangesAsync count either.
     private static readonly ValueComparer<NarrativeField> EnvelopeContentComparer = new(
         (left, right) => HasSameEnvelope(left, right),
         field => ComputeEnvelopeHashCode(field),
@@ -132,20 +141,31 @@ public sealed class PayeeConfiguration : IEntityTypeConfiguration<Payee>
             // against `check (substring(name from 1 for 1) = '\x01'::bytea)` answered 23514 naming the
             // constraint, and so did the same value arriving by UPDATE.
             //
-            // The length check next door does not save it, and believing it does is the trap. Which of a
-            // column's CHECKs runs first is decided by the CONSTRAINT NAME and not by the order they are
-            // declared in — the finding AccountConfiguration measured, and this table inherits its
-            // consequence without having chosen it: the names sort CK_payees_name_key_length, then
-            // CK_payees_name_length, then CK_payees_name_version, so a zero-length name happens to answer
-            // 23514 from the length check (measured: it did). That is held by nothing but the word
-            // "length" sorting before "version", which is not a decision anybody took — and the names are
-            // forced by the column names anyway. Folding two checks into one AND-joined constraint only
-            // moves the same coin flip inside the expression, since PostgreSQL does not promise it
-            // evaluates AND left to right either.
+            // THE LENGTH CHECK NEXT DOOR SAVES IT ONLY BY ACCIDENT, AND READING THAT ACCIDENT AS A
+            // GUARANTEE IS THE TRAP. Which of a column's CHECKs runs first is decided by the CONSTRAINT
+            // NAME and not by the order they are declared in — the finding AccountConfiguration measured,
+            // and this table inherits its consequence without having chosen it: the names sort
+            // CK_payees_name_key_length, then CK_payees_name_length, then CK_payees_name_version, so a
+            // zero-length name meets a length band BEFORE the version predicate is evaluated at all and
+            // comes back 23514 from the length check (measured: it did). The wrong spelling on this
+            // column is shielded by two neighbours whose names happen to sort first — held by nothing but
+            // the word "length" sorting before "version", which is not a decision anybody took, is not a
+            // property anybody should have to preserve, and the names are forced by the column names
+            // anyway. Measured on postgres:17.10 over the six-constraint narrative shape category_groups
+            // declares, with BOTH version checks spelled get_byte: no probe produced 2202E, and every
+            // refusal came back 23514 under a length constraint. Folding two checks into one AND-joined
+            // constraint only moves the same coin flip inside the expression, since PostgreSQL does not
+            // promise it evaluates AND left to right either.
             //
-            // substring carries no such dependency. It answers a zero-length bytea for a zero-length
-            // input, that is not the version byte, the check is false rather than fatal, and the violation
-            // is 23514 under every ordering, on INSERT and on UPDATE alike.
+            // So substring is still the right spelling, for the PROPERTY rather than for the symptom: it
+            // makes the predicate TOTAL over every length this column can hold, including zero, so the
+            // check is false rather than fatal and the violation is 23514 under EVERY ordering — on
+            // INSERT and on UPDATE alike, and whatever constraint some later slice adds beside it. What
+            // it buys is not the SQLSTATE, which the length band already earns; it is that the ordering
+            // stops mattering. No test holds that: through the schema as declared the wrong spelling is
+            // unreachable, so PayeeIntegrationTests asserting 23514 on a zero-length name would stay
+            // green under get_byte, and measuring it needs a container probe over a table carrying the
+            // version check alone. This rule is held by review.
             //
             // The version is bounded here and not left to the client because the successor does not
             // exist — a row carrying version 2 is a client claiming a contract this deployment has never
@@ -262,6 +282,13 @@ public sealed class PayeeConfiguration : IEntityTypeConfiguration<Payee>
     // instance the tracker holds must not share a buffer with the one the entity holds, or the "old value"
     // changes whenever the new one does. FromStore copies on the way through, which is why there is
     // nothing to do here but call it.
+    //
+    // HELD BY REVIEW, along with every other arm here — the comparer naming this one says why that is
+    // wider on payees than on category groups. The snapshot arm carries a second reason of its own: no
+    // test could hold it, because an aliased snapshot only diverges from the tracked value if an
+    // accepted envelope's bytes are overwritten in place, which NarrativeField's shape does not allow.
+    // CategoryGroupConfiguration.CopyEnvelope argues that in full and it holds identically here. The
+    // copy stays for the reason given there rather than because anything measures the difference.
     private static NarrativeField CopyEnvelope(NarrativeField field) =>
         NarrativeField.FromStore(field.Envelope);
 

@@ -58,6 +58,16 @@ public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
     // non-nullable, so the null branch below is unreachable in practice; it is written because the
     // delegate type asks for it, and an arm narrower than its own signature is a nullability warning
     // rather than a guarantee.
+    //
+    // NONE OF THE THREE ARMS IS HELD BY A TEST, AND THIS TABLE IS WORSE OFF THAN CATEGORY GROUPS, WHERE
+    // ONLY THE SNAPSHOT ARM IS UNHELD. CategoryGroupChangeTrackingTests composes a context over a
+    // statement-recording interceptor and asserts which columns an UPDATE names; it is scoped to
+    // category_groups and accounts have no equivalent. A wrong arm here is quiet rather than loud: EF
+    // restates a column with the bytes the row already holds, so the value reads back exactly as
+    // expected, and name and name_key both sit inside this table's GRANT UPDATE, so nothing answers
+    // 42501 either. The symptom is a statement that should not have been sent, nothing in this
+    // repository reads one for this table, and no case anywhere reads a SaveChangesAsync count. The same
+    // is true arm for arm of the blind index comparer below.
     private static readonly ValueComparer<NarrativeField> EnvelopeContentComparer = new(
         (left, right) => HasSameEnvelope(left, right),
         field => ComputeEnvelopeHashCode(field),
@@ -133,20 +143,31 @@ public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
             // That is not a constraint violation at all: no constraint name, no failing row, and nothing
             // a `catch (PostgresException) when (… SqlState is 23514)` will ever see.
             //
-            // The length checks next door do not save it, and believing they do is the trap. Which of a
-            // column's CHECKs runs first is decided by the CONSTRAINT NAME and not by the order they are
-            // declared in — measured: a table declaring the version check first still reported the length
-            // violation, while renaming the version check so it sorts ahead produced 2202E from an
-            // identical pair of predicates. This table happens to sort CK_accounts_name_key_length, then
-            // CK_accounts_name_length, then CK_accounts_name_version, so a zero-length name happens to
-            // answer 23514 — held by nothing but the word "length" sorting before "version", which is not
-            // a decision anybody took. Folding two checks into one AND-joined constraint only moves the
-            // same coin flip inside the expression, since PostgreSQL does not promise it evaluates AND
-            // left to right either.
+            // THE LENGTH CHECKS NEXT DOOR SAVE IT ONLY BY ACCIDENT, AND READING THAT ACCIDENT AS A
+            // GUARANTEE IS THE TRAP. Which of a column's CHECKs runs first is decided by the CONSTRAINT
+            // NAME and not by the order they are declared in — measured: a table declaring the version
+            // check first still reported the length violation, while renaming the version check so it
+            // sorts ahead produced 2202E from an identical pair of predicates. This table sorts
+            // CK_accounts_name_key_length, then CK_accounts_name_length, then CK_accounts_name_version,
+            // so a zero-length name meets a length band BEFORE the version predicate is evaluated at all
+            // and comes back 23514. The wrong spelling on this column is shielded by two neighbours whose
+            // names happen to sort first — held by nothing but the word "length" sorting before
+            // "version", which is not a decision anybody took and not a property anybody should have to
+            // preserve. Measured on postgres:17.10 over the six-constraint narrative shape
+            // category_groups declares, with BOTH version checks spelled get_byte: no probe produced
+            // 2202E, and every refusal came back 23514 under a length constraint. The shielding here is
+            // read off the same alphabet rather than probed on this table. Folding two checks into one
+            // AND-joined constraint only moves the same coin flip inside the expression, since PostgreSQL
+            // does not promise it evaluates AND left to right either.
             //
-            // substring carries no such dependency. It answers a zero-length bytea for a zero-length
-            // input, that is not the version byte, the check is false rather than fatal, and the
-            // violation is 23514 under every ordering, on INSERT and on UPDATE alike.
+            // So substring is still the right spelling, for the PROPERTY rather than for the symptom: it
+            // makes the predicate TOTAL over every length this column can hold, including zero, so the
+            // check is false rather than fatal and the violation is 23514 under EVERY ordering — on
+            // INSERT and on UPDATE alike, and whatever constraint some later slice adds beside it. What
+            // it buys is not the SQLSTATE, which the length band already earns; it is that the ordering
+            // stops mattering. Nothing here is held by a test: through the schema as declared the wrong
+            // spelling is unreachable, so measuring it needs a container probe over a table carrying the
+            // version check alone, and this rule is held by review.
             //
             // The version is bounded here and not left to the client because the successor does not
             // exist — a row carrying version 2 is a client claiming a contract this deployment has never
@@ -273,6 +294,14 @@ public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
     // instance the tracker holds must not share a buffer with the one the entity holds, or the "old
     // value" changes whenever the new one does. FromStore copies on the way through, which is why there
     // is nothing to do here but call it.
+    //
+    // HELD BY REVIEW, like every other arm on this table — the comparer naming this one says why that is
+    // wider here than on category groups. What is additionally true of THIS arm is that no test could
+    // hold it: aliasing instead of copying only becomes visible if an accepted envelope's bytes are
+    // overwritten in place, which NarrativeField's shape does not allow.
+    // CategoryGroupConfiguration.CopyEnvelope makes that argument in full over the same value type and
+    // it transfers unchanged. The copy stays for the reason given there — the unobservability is a
+    // property of that type as it stands today rather than a permanent one.
     private static NarrativeField CopyEnvelope(NarrativeField field) =>
         NarrativeField.FromStore(field.Envelope);
 

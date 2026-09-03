@@ -130,7 +130,9 @@ public sealed class UpdateCategoryGroupHandler(ICategoryGroupRepository reposito
 
         // A collision on the blind index comes back from here as a 400 keyed on Name, which is the same
         // status a duplicate name gets on the create leg of this table - and deliberately not the payees
-        // split, where a create answers 409. CategoryGroupRepository argues it at both members.
+        // split, where a create answers 409. CategoryGroupRepository argues it at AddAsync and at
+        // DuplicateNameValidationException, which the two verbs share; its UpdateAsync only points at the
+        // first, so a reader following this line goes to those two members and not to the catch below it.
         await repository.UpdateAsync(categoryGroup, cancellationToken);
     }
 }

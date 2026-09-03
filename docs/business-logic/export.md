@@ -56,9 +56,10 @@ no tenant.
 
 ### MUST
 
-- **Carry every persisted column of every row it names**, less the two blind indexes named below — a
-  row present with a null name, a zeroed balance or a dropped parent id satisfies a set comparison
-  exactly, and a person restoring from that file would find the rows there and the data gone.
+- **Carry every persisted column of every row it names**, less the three blind indexes named
+  below — a row present with a null name, a zeroed balance or a dropped parent id satisfies a set
+  comparison exactly, and a person restoring from that file would find the rows there and the data
+  gone.
   `ExportDocument`, pinned by `DataExportCompletenessTests`. The sealed name columns satisfy this by
   shipping the **envelope**: the column's bytes, unaltered, which is the whole of what this side
   holds.

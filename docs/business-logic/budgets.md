@@ -84,8 +84,16 @@ erDiagram
     into this column **does not compile**. `BudgetConfiguration` maps it to a nullable `bytea`
     through a `ValueConverter` over that type, beside a `ValueComparer` over the envelope's bytes
     (without one, EF compares a class by reference and reads a rebuilt-but-identical field as an
-    edit while missing an envelope rewritten in place). The table carries two `CHECK` constraints,
-    each rendered from the constant that owns its number rather than from a literal:
+    edit while missing an envelope rewritten in place). **No test holds any arm of that comparer,
+    and this table sits furthest from one**: the product's single change-tracking class reads the
+    statements a save composes for `category_groups`
+    ([categories.md](categories.md#edge-cases--known-gotchas)) and nothing here is equivalent. A
+    failure could not be quiet, though — the role holds **no `UPDATE` grant on `budgets` of any
+    shape**, so a restatement the comparer failed to suppress is refused with `42501` rather than
+    committing like an edit nobody asked for. It is also unreachable: no path modifies a tracked
+    budget, so the comparer is depth for an operation the product does not have. The table carries
+    two `CHECK` constraints, each rendered from the constant that owns its number rather than from a
+    literal:
     `CK_budgets_name_length` bounds the stored envelope between `CiphertextEnvelope.MinimumLength`
     and `NarrativeFieldLimits.NameBytes`, and `CK_budgets_name_version` requires the leading version
     byte. Both are satisfied by NULL — `length(null)` is null and a null predicate is not a
@@ -604,12 +612,17 @@ The user branch that runs before this is in
 - **Which of the two `CHECK` constraints on `name` reports a violation is decided by the constraint
   *name*, alphabetically — not by declaration order and not left to right inside an `AND`.**
   Measured on PostgreSQL 17.10: one pair of predicates answered `23514` or `2202E` depending only on
-  what the constraints were called. That is why the version check is written with `substring` and
-  never with `get_byte`, which reads better and *raises* on a zero-length `bytea` instead of
-  answering false — `get_byte(''::bytea, 0)` fails with `2202E`, which is not a constraint violation
-  at all: no constraint name, no failing row, and nothing a handler filtering on `23514` can ever
-  see. The length check next door does not save it; believing it does is the trap. The whole
-  argument, and the rule for whoever writes the next such constraint, is in
+  what the constraints were called. `get_byte` reads better — the leading byte is a number — and it
+  *raises* on a zero-length `bytea` instead of answering false: `get_byte(''::bytea, 0)` fails with
+  `2202E`, which is not a constraint violation at all — no constraint name, no failing row, and
+  nothing a handler filtering on `23514` can ever see. **The length check next door saves it only by
+  accident, and reading that accident as a guarantee is the trap.** `CK_budgets_name_length` sorts
+  ahead of `CK_budgets_name_version`, so a zero-length name meets the band first, the version
+  predicate is never evaluated on it, and a `get_byte` spelling here would be unreachable through the
+  schema as declared rather than merely quiet. So `substring` is written for the **property** and not
+  for the symptom: it makes the predicate total over every length this column can hold, which is what
+  takes the ordering out of the answer. The whole argument, and the rule for whoever writes the next
+  such constraint, is in
   [ciphertext-envelope.md](ciphertext-envelope.md#two-checks-on-one-column-and-which-one-bites).
 
 - **A named budget is not a thing this product can create today, and the schema is ready for one

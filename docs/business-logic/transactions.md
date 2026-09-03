@@ -601,10 +601,16 @@ ELSE
   `CreateTransactionCommand` and the `UpdateTransactionRequest` the `PATCH` binds — carry
   `[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]`, so `System.Text.Json` refuses
   a member it cannot map rather than dropping it. The attribute is **per-type**, reaching the shape
-  it sits on and no other, which is why it is on those two and on nothing else: the payee routes'
-  own shapes still ignore an unmappable member, because that is a decision each shape makes for
-  itself, and the API's shared JSON options carry no `UnmappedMemberHandling` at all. What it costs
-  is that `/app/transactions` cannot write until the client sends `payeeId` — chosen, because a
+  it sits on and no other: the payee routes' own shapes still ignore an unmappable member, because
+  that is a decision each shape makes for itself, and the API's shared JSON options carry no
+  `UnmappedMemberHandling` at all. **What earns it here is not what earns it elsewhere** — these two
+  shapes retired a member, so the attribute answers wire *drift*, while the two category-group write
+  shapes carry it for a different reason entirely, a nullable narrative column on which an unmapped
+  member is indistinguishable from an absent one; see
+  [categories.md](categories.md#business-rules--invariants). Do not fold the two arguments, and do
+  not paste either onto a shape that has made neither decision.
+  What it costs is that `/app/transactions` cannot write until the client sends `payeeId` — chosen,
+  because a
   screen that fails visibly beats a ledger that quietly loses who the money went to. The caller gets
   a bare 400 dressed as `application/problem+json`, naming no field; the member is named in the
   server log. See [payees.md](payees.md#edge-cases--known-gotchas).

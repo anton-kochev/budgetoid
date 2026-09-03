@@ -305,9 +305,17 @@ Load-bearing rules, each explained there or in the linked decision:
   attached** until `[JsonUnmappedMemberHandling(Disallow)]` went onto the **two** shapes that carried
   the retired member — `CreateTransactionCommand` and `TransactionEndpoints.UpdateTransactionRequest`
   — where the same body now answers **400**. The attribute is **per-type, measured**: the options in
-  `Api/Program.cs` stay `Skip` and an unannotated sibling still ignores an unknown member. Do not
-  widen it into a global setting, and do not paste it onto a type that never carried `payeeName` —
-  refusing what a caller was not asked for is a contract decision each shape makes for itself. The
+  `Api/Program.cs` stay `Skip` and an unannotated sibling still ignores an unknown member. **It sits on
+  four shapes for two different reasons and the reasons must not be folded**: on the transaction pair it
+  answers wire **drift**, a retired member a released client still sends; on `CreateCategoryGroupCommand`
+  and `CategoryGroupEndpoints.UpdateCategoryGroupRequest` nothing is retired, and what earns it is a
+  **nullable narrative column** — under `Skip` a misspelled `descriptionn` binds identically to an absent
+  member, so `POST` answered 201 with a note that never arrived and `PUT` answered **204 having cleared a
+  note nobody asked to remove**. Do not
+  widen it into a global setting, and do not paste it onto a shape that has made neither decision —
+  refusing what a caller was not asked for is a contract decision each shape makes for itself, and
+  `PatchCategoryGroupPosition_WithAnUnknownMember_StillIgnoresIt` is the negative control that reddens
+  the day somebody makes it global. The
   cost is that every write the transaction form makes 400s until the client sends `payeeId`; chosen,
   because losing the counterparty invisibly is worse than failing visibly. Nothing in the browser seals
   anything yet. Neither codec is callerless: `AccountKeyCustodyService` reaches both halves

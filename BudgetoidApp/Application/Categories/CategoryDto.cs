@@ -6,8 +6,12 @@ namespace Application.Categories;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>THIS RECORD CARRIES A SEALED NAME AND A PLAINTEXT NAME SIDE BY SIDE, AND IT IS THE FIRST IN THE
-/// PRODUCT TO DO SO.</b> <see cref="CategoryGroupName"/> is still typed <see cref="string"/> and no
+/// <b>THIS RECORD CARRIES A SEALED NAME AND A PLAINTEXT NAME SIDE BY SIDE, AND IT IS THE SECOND IN THE
+/// PRODUCT TO DO SO.</b> <see cref="Transactions.TransactionDto"/> has since the accounts slice, and
+/// still does — its own remarks say which of its four name members are envelopes and which one is not.
+/// The mixed shape is therefore a state this product has already reasoned about rather than a new one,
+/// and the rule below is that record's rule restated over three members instead of four.
+/// <see cref="CategoryGroupName"/> is still typed <see cref="string"/> and no
 /// longer holds a name — it is <c>category_groups.name</c>'s AEAD envelope as unpadded base64url, the
 /// treatment <c>AccountDto.Name</c>, <c>PayeeDto.Name</c> and <c>CategoryGroupDto.Name</c> carry, because
 /// this server holds no key for it. <see cref="Name"/> and <see cref="Description"/> are readable text:
