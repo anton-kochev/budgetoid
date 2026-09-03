@@ -79,14 +79,8 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import {
-  CategoryGroupDto,
-  CategoryGroupsApiService,
-} from '@app-core/api/category-groups-api.service';
-import {
-  CategoriesApiService,
-  CategoryDto,
-} from '@app-core/api/categories-api.service';
+import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
+import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { PayeesApiService } from '@app-core/api/payees-api.service';
 import { TransactionsApiService } from '@app-core/api/transactions-api.service';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
@@ -96,6 +90,7 @@ import type {
   NarrativeOpener,
 } from '@app-core/security/narrative-text';
 import {
+  EMPTY,
   Observable,
   Subject,
   catchError,
@@ -106,6 +101,11 @@ import {
   of,
   switchMap,
 } from 'rxjs';
+import {
+  toCategoryGroupView,
+  type CategoryGroupView,
+} from '../categories/category-group-view';
+import { toCategoryView, type CategoryView } from '../categories/category-view';
 import {
   PAYEE_NAME_FIELD,
   matchPayeeByIndex,
@@ -172,8 +172,8 @@ export class TransactionsService {
   readonly #custody = inject(AccountKeyCustodyService);
   readonly #transactions = signal<readonly TransactionView[] | null>(null);
   readonly #payees = signal<readonly PayeeView[] | null>(null);
-  readonly #categoryGroups = signal<readonly CategoryGroupDto[]>([]);
-  readonly #categories = signal<readonly CategoryDto[]>([]);
+  readonly #categoryGroups = signal<readonly CategoryGroupView[]>([]);
+  readonly #categories = signal<readonly CategoryView[]>([]);
   readonly #loading = signal(false);
   readonly #loads = new Subject<void>();
 
@@ -241,17 +241,58 @@ export class TransactionsService {
     void this.#readPayees();
   }
 
+  /**
+   * Reads the picker's two lists and opens every name in them.
+   *
+   * **The mappers are the categories screen's own and this file declares
+   * none.** Both names are sealed columns, so the picker used to render
+   * base64url; the fix was never a transform belonging here, because a second
+   * one would be a second definition of the bindings those envelopes were
+   * sealed against — and `categories.categoryGroupName` in particular is opened
+   * under the **group's** identifier, which is the mistake a local copy makes
+   * first.
+   *
+   * `Promise.all` rather than `allSettled`, for the reason every read path in
+   * this product gives: a `NarrativeFieldMisuseError` is a defect in this client
+   * and has to reach the failure branch. `catchError` is what stops that being
+   * an unhandled error on a path that previously had no handling at all; the
+   * picker is left holding whatever it held, which for a first load is nothing.
+   */
   public loadCategories(): void {
     forkJoin({
       groups: this.#categoryGroupsApi.getCategoryGroups(),
       categories: this.#categoriesApi.getCategories(),
-    }).subscribe(({ groups, categories }) => {
-      this.#categoryGroups.set(groups.items);
-      this.#categories.set(categories.items);
-    });
+    })
+      .pipe(
+        switchMap((response) =>
+          from(
+            Promise.all([
+              Promise.all(
+                response.groups.items.map((dto) =>
+                  toCategoryGroupView(dto, this.#open),
+                ),
+              ),
+              Promise.all(
+                response.categories.items.map((dto) =>
+                  toCategoryView(dto, this.#open),
+                ),
+              ),
+            ]),
+          ),
+        ),
+        catchError((error: unknown) => {
+          this.#report(error);
+
+          return EMPTY;
+        }),
+      )
+      .subscribe(([groups, categories]) => {
+        this.#categoryGroups.set(groups);
+        this.#categories.set(categories);
+      });
   }
 
-  public categoriesForGroup(categoryGroupId: string): readonly CategoryDto[] {
+  public categoriesForGroup(categoryGroupId: string): readonly CategoryView[] {
     return this.#categories().filter(
       (category) => category.categoryGroupId === categoryGroupId,
     );

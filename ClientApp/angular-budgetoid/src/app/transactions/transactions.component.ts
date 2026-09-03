@@ -46,12 +46,20 @@
 // text field and a row with no text has nothing to offer; no word is turned
 // into a string anywhere, the row is simply not a suggestion.
 //
-// **The category picker still renders ciphertext**, and it is the one thing on
-// this screen this phase does not fix. `category_groups.name` and
-// `categories.name` are sealed columns and the categories screens are unwired,
-// so nothing owns a view model for either; both names arrive as base64url and
-// the picker prints them. Written down rather than patched here, because the
-// fix is a categories mapper and it belongs to the categories screens.
+// **The category picker renders words now, through the categories screen's own
+// view models.** It used to print base64url, because `category_groups.name` and
+// `categories.name` are sealed columns and nothing owned a mapper for either.
+// The fix was never a transform belonging to this folder: a second one would be
+// a second definition of the bindings those envelopes were sealed against, and
+// `categories.categoryGroupName` is opened under the **group's** identifier,
+// which is the mistake a local copy makes first. `TransactionsService` imports
+// `toCategoryGroupView` and `toCategoryView` and declares neither.
+//
+// **The group label carries no `[label]` binding, and that is forced.** The
+// input takes a `string`, and a group's name is a word — collapsing it to one
+// on the way in is the thing "The locked account" forbids. `MatOptgroup`
+// projects its default slot inside the label element, so the value goes in as
+// content.
 import {
   ChangeDetectionStrategy,
   Component,
@@ -218,13 +226,26 @@ function nonBlankWhenPresent(
         <mat-select formControlName="categoryId">
           <mat-option [value]="''">None</mat-option>
           @for (group of transactions.categoryGroups(); track group.id) {
-            <mat-optgroup [label]="group.name">
+            <!--
+              No label binding, and that is forced rather than chosen: the input
+              takes a string and a group's name is a **word** — the text, or the
+              reason there is none — so binding it would mean collapsing a
+              locked or unreadable value into a string on the way in, which is
+              the one thing docs/design/components.md forbids under "The locked
+              account". MatOptgroup's template interpolates its label input and
+              then projects its **default** slot inside the same label element,
+              with a second slot selecting mat-option for the options — so the
+              marker lands in the label and the options stay where they were.
+              Measured against the shipped template, not assumed.
+            -->
+            <mat-optgroup>
+              <app-narrative-value [value]="group.name" />
               @for (
                 category of transactions.categoriesForGroup(group.id);
                 track category.id
               ) {
                 <mat-option [value]="category.id">
-                  {{ category.name }}
+                  <app-narrative-value [value]="category.name" />
                 </mat-option>
               }
             </mat-optgroup>

@@ -872,17 +872,23 @@ ELSE                                                      ← mutually exclusive
   key the two blind indexes are computed under, and the normalization they are taken over. One index
   key per **account** — two would produce two index values for one name, and the uniqueness rules
   would stop colliding while appearing to work.
-- **Angular client**: `/app/categories` manages both levels with drag-and-drop, and **neither half of
-  it can write any more.** `category-groups-api.service.ts` and the category half's own API service
-  both
-  still declare `name` as plain text, send no `id` and no `nameKey`, and render the response's `name`
-  straight into a list where it is now base64url — so a create on either level is refused on three
-  members at once (`id`, `name`, `nameKey`) and a rename on two. **The half that used to work stopped
-  working with this slice**, which is the sentence a reader who remembers otherwise needs: the
-  category half survived the group's sealing only because `categories.name` was still text, and it is
-  not. That is a gap, named here rather than described as though it worked. Transaction entry groups
-  Category options under Category Group headings, and **both the options and the headings are
-  envelopes now**.
+- **Angular client**: `/app/categories` manages both levels with drag-and-drop, and **both halves are
+  on the sealed contract**: each mints its own row id, seals the name against it, computes the blind
+  index, and opens what it reads. A category's denormalised group name is opened under the
+  **group's** id and not the category's — the two are different rows and the wrong binding
+  authenticates against nothing.
+
+  **This is the first screen whose narrative column is nullable, and that is where its rules diverge
+  from the name-only screens.** An **empty** note posts `null`, which on a `PUT` is how a note is
+  cleared; a **whitespace-only** note is a note and is sealed as typed. The deleted
+  `NormalizeDescription` may not come back one layer up either, so nothing in the browser folds
+  blanks. What the browser cannot express is the *other* clearing: it has no path producing the
+  29-byte envelope over an empty string, so *cleared* and *never filled* are one thing from here even
+  though the server keeps them as two rows. A gap, named rather than described as if it worked.
+
+  Transaction entry groups Category options under Category Group headings, and **the picker opens
+  both through this screen's view models** — `transaction-view.ts` imports the two bindings from
+  here, because a second model beside it would have been a guaranteed duplicate.
 
 ## Edge Cases & Known Gotchas
 

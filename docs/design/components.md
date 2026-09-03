@@ -1030,9 +1030,12 @@ nothing an earlier check could save, and the ceremony already answers `unsupport
 A copy would be a second enforcement with no observable difference, which
 [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) refuses.
 
-**Nothing is encrypted, so being locked costs nothing anybody can see**, which is what makes this a
-section rather than a screen standing in front of the app — and what the copy above has to keep
-saying for exactly as long as it stays true.
+**Being locked now costs something anybody can see**, because every narrative screen seals what it
+writes: a reload leaves the account's names unreadable until this control is pressed. It stays a
+section rather than a screen standing in front of the app for a different reason than it used to —
+the app is navigable while locked, and the [locked account](#the-locked-account) chapter is what each
+content screen renders in the meantime. This control is the only way out of that state, which is why
+nothing may put it behind one.
 
 ## The locked account
 
@@ -1231,15 +1234,17 @@ Ghost button — is work this book owes.
 
 ### What ships today
 
-**Nothing in the browser seals anything yet, so no value is ever `locked` or `unreadable` in
-practice** and both components are, today, built and unreached — no screen imports either. One
-consequence worth knowing before trusting a green bar: `tsconfig.app.json` is `files:
+**Every narrative screen now seals what it writes and opens what it reads** — `/app/accounts`, the
+transaction form and both halves of `/app/categories` — so both components below are reached in
+earnest and a reload really does leave names unreadable until Unlock. The sentence closing the
+Account keys section above, that being locked costs nothing anybody can see, is retired with this
+change.
+
+One consequence worth knowing before trusting a green bar: `tsconfig.app.json` is `files:
 ["src/main.ts"]`, so `npm run build` compiles only what `main.ts` reaches and says **nothing** about
-an unimported component. Measured — a mutation that fails `npm test` to compile exits 0 on the
-build. `npm test` is the gate for these until a screen imports them. The four narrative screens still
-send the old plaintext shape and cannot write at all. This chapter is the target the client wiring
-builds to; when it lands, the sentence closing the Account keys section above — that being locked
-costs nothing anybody can see — stops being true and moves in the same commit.
+a file no screen imports. Measured — a mutation that fails `npm test` to compile exits 0 on the
+build. `npm test` is the gate that compiles specs, and `npx ng lint` is the only one of the three
+that sees an unused import or a missing return type.
 
 ## The welcome screen
 

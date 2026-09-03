@@ -1055,21 +1055,40 @@ describe('TransactionsService', () => {
   });
 
   describe('the category picker', () => {
+    // Both names cross the wire sealed, and the group's name on a category row
+    // is sealed under the **group's** id. Fixtures that carried plaintext could
+    // not tell an opened name from a wire value, which is how this picker
+    // rendered base64url for a whole phase with a green suite.
     async function loadCategories(): Promise<void> {
       service.loadCategories();
       http.expectOne(CATEGORY_GROUPS_URL).flush({
         items: [
-          { id: GROUP_ID, name: 'Essentials', description: null, position: 0 },
+          {
+            id: GROUP_ID,
+            name: sealedWire('category_groups', 'name', GROUP_ID, 'Essentials'),
+            description: sealedWire(
+              'category_groups',
+              'description',
+              GROUP_ID,
+              'The bills',
+            ),
+            position: 0,
+          },
         ],
       });
       http.expectOne(CATEGORIES_URL).flush({
         items: [
           {
             id: CATEGORY_ID,
-            name: 'Groceries',
+            name: sealedWire('categories', 'name', CATEGORY_ID, 'Groceries'),
             description: null,
             categoryGroupId: GROUP_ID,
-            categoryGroupName: 'Essentials',
+            categoryGroupName: sealedWire(
+              'category_groups',
+              'name',
+              GROUP_ID,
+              'Essentials',
+            ),
             position: 0,
           },
         ],
@@ -1077,13 +1096,30 @@ describe('TransactionsService', () => {
       await settle();
     }
 
-    it('loads category groups and categories for the picker', async () => {
+    it('publishes opened names and never wire values', async () => {
       // Act
       await loadCategories();
 
-      // Assert
-      expect(service.categoryGroups()).toHaveLength(1);
-      expect(service.categories()).toHaveLength(1);
+      // Assert — words, not strings, and the group's name on the category row
+      // opened under the group's identifier rather than the category's.
+      expect(service.categoryGroups()).toEqual([
+        {
+          description: { state: 'text', value: 'The bills' },
+          id: GROUP_ID,
+          name: { state: 'text', value: 'Essentials' },
+          position: 0,
+        },
+      ]);
+      expect(service.categories()).toEqual([
+        {
+          categoryGroupId: GROUP_ID,
+          categoryGroupName: { state: 'text', value: 'Essentials' },
+          description: null,
+          id: CATEGORY_ID,
+          name: { state: 'text', value: 'Groceries' },
+          position: 0,
+        },
+      ]);
     });
 
     it('returns categories belonging to a selected group', async () => {
@@ -1095,6 +1131,46 @@ describe('TransactionsService', () => {
 
       // Assert
       expect(categories.map((category) => category.id)).toEqual([CATEGORY_ID]);
+    });
+
+    it('publishes no picker at all when one row’s open is refused', async () => {
+      // Arrange — `NarrativeFieldMisuseError` is a defect in this client, so it
+      // travels rather than being filed as one name that did not open. This
+      // path had no error handling at all before the picker opened anything,
+      // which would now make that rejection an unhandled observable error.
+      //
+      // **Two groups, and only one of them refused**, which is the whole design
+      // of this case: with every row refused, `Promise.allSettled` and a
+      // failed `Promise.all` both leave the picker holding `[]` and the case
+      // cannot tell them apart. One good row is what makes the substitution
+      // visible — `allSettled` would publish a picker one group short.
+      const otherGroupId = '0199c3d4-5f6a-7b8c-9d0e-000000000006';
+
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      custody.openWith = (binding, wire) =>
+        binding.rowId === otherGroupId
+          ? Promise.reject(new NarrativeFieldMisuseError('refused'))
+          : { state: 'text', value: wire };
+      service.loadCategories();
+      http.expectOne(CATEGORY_GROUPS_URL).flush({
+        items: [
+          { id: GROUP_ID, name: 'anything', description: null, position: 0 },
+          {
+            id: otherGroupId,
+            name: 'anything',
+            description: null,
+            position: 1,
+          },
+        ],
+      });
+      http.expectOne(CATEGORIES_URL).flush({ items: [] });
+
+      // Act
+      await settle();
+
+      // Assert — nothing published, rather than the one group that opened.
+      expect(service.categoryGroups()).toEqual([]);
+      expect(service.categories()).toEqual([]);
     });
   });
 });

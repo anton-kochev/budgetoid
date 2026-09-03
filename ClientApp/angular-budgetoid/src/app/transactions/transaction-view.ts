@@ -19,13 +19,14 @@
 // member rather than weaker, which is why the mapper never reaches for a
 // default binding: there is no "close enough" here.
 //
-// **The two bindings that already have owners are imported rather than
-// restated.** `accountNameBinding` belongs to the accounts screen and
-// `payeeNameBinding` to `payee-view.ts`, and a second spelling of either is a
-// second definition of the value an envelope was sealed against. The two
-// categories bindings are declared here because nothing owns them yet — the
-// categories screens are unwired and have no view model — and they move to that
-// module the day it exists.
+// **Every binding on this row is imported rather than restated, and none of
+// them is declared here.** `accountNameBinding` belongs to the accounts screen,
+// `payeeNameBinding` to `payee-view.ts`, and `categoryNameBinding` and
+// `categoryGroupNameBinding` to the categories screen's own view models — where
+// they moved the day that screen got one, which is what this file said would
+// happen while it was holding them. A second spelling of any of them is a
+// second definition of the value an envelope was sealed against, and the two
+// copies would go on sealing and opening the envelopes each of them wrote.
 //
 // **A column holding no value is `NarrativeText | null`, and the null arm is
 // answered before any key is involved.** Whether a column is null is known
@@ -55,6 +56,8 @@ import type {
   NarrativeText,
 } from '@app-core/security/narrative-text';
 import { accountNameBinding } from '../accounts/account-view';
+import { categoryGroupNameBinding } from '../categories/category-group-view';
+import { categoryNameBinding } from '../categories/category-view';
 import { payeeNameBinding } from './payee-view';
 
 /** The binding this transaction's own note is sealed under. */
@@ -62,22 +65,6 @@ export function transactionDescriptionBinding(
   rowId: string,
 ): NarrativeFieldBinding {
   return { table: 'transactions', column: 'description', rowId };
-}
-
-/**
- * The binding one category's name is sealed under.
- *
- * Declared here because the categories screens are unwired and own no view
- * model; it moves to that module the day one exists, rather than being
- * duplicated into it.
- */
-export function categoryNameBinding(rowId: string): NarrativeFieldBinding {
-  return { table: 'categories', column: 'name', rowId };
-}
-
-/** The binding one category group's name is sealed under. See above. */
-export function categoryGroupNameBinding(rowId: string): NarrativeFieldBinding {
-  return { table: 'category_groups', column: 'name', rowId };
 }
 
 /** One transaction as a template may render it: five words, not five strings. */

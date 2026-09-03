@@ -24,10 +24,12 @@
 import { signal, type Signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { FormGroup } from '@angular/forms';
+import { MatSelect } from '@angular/material/select';
+import { By } from '@angular/platform-browser';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { provideRouter } from '@angular/router';
-import type { CategoryDto } from '@app-core/api/categories-api.service';
-import type { CategoryGroupDto } from '@app-core/api/category-groups-api.service';
+import type { CategoryGroupView } from '../categories/category-group-view';
+import type { CategoryView } from '../categories/category-view';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -101,16 +103,21 @@ class TransactionsServiceStub
   public readonly payeesSignal = signal<readonly PayeeView[] | null>([
     cornerShop,
   ]);
-  public readonly categoryGroupsSignal = signal<readonly CategoryGroupDto[]>([
-    { id: GROUP_ID, name: 'Essentials', description: null, position: 0 },
-  ]);
-  public readonly categoriesSignal = signal<readonly CategoryDto[]>([
+  public readonly categoryGroupsSignal = signal<readonly CategoryGroupView[]>([
     {
-      id: CATEGORY_ID,
-      name: 'Groceries',
       description: null,
+      id: GROUP_ID,
+      name: { state: 'text', value: 'Essentials' },
+      position: 0,
+    },
+  ]);
+  public readonly categoriesSignal = signal<readonly CategoryView[]>([
+    {
       categoryGroupId: GROUP_ID,
-      categoryGroupName: 'Essentials',
+      categoryGroupName: { state: 'text', value: 'Essentials' },
+      description: null,
+      id: CATEGORY_ID,
+      name: { state: 'text', value: 'Groceries' },
       position: 0,
     },
   ]);
@@ -125,7 +132,7 @@ class TransactionsServiceStub
   public load = vi.fn();
   public loadPayees = vi.fn();
   public loadCategories = vi.fn();
-  public categoriesForGroup = vi.fn((): readonly CategoryDto[] =>
+  public categoriesForGroup = vi.fn((): readonly CategoryView[] =>
     this.categoriesSignal(),
   );
   public add = vi.fn((): Promise<void> => Promise.resolve());
@@ -233,6 +240,81 @@ describe('TransactionsComponent', () => {
     }).compileComponents();
     fixture = TestBed.createComponent(TransactionsComponent);
     fixture.detectChanges();
+  });
+
+  // Opens the category picker and hands back its panel. The panel renders into
+  // the overlay container on `document`, not into the fixture host, so nothing
+  // about it can be read off `host()`.
+  function openCategoryPicker(): HTMLElement | null {
+    const picker = fixture.debugElement
+      .queryAll(By.directive(MatSelect))
+      .find(
+        (candidate) =>
+          (candidate.nativeElement as HTMLElement).getAttribute(
+            'formcontrolname',
+          ) === 'categoryId',
+      );
+
+    (picker?.componentInstance as MatSelect | undefined)?.open();
+    fixture.detectChanges();
+
+    return document.querySelector<HTMLElement>('.mat-mdc-select-panel');
+  }
+
+  it('renders the picker’s names as words and never as ciphertext', () => {
+    // Arrange — this picker printed base64url until the categories screen owned
+    // a view model, which is the one thing the previous phase wrote down and
+    // did not fix.
+
+    // Act
+    const panel = openCategoryPicker();
+
+    // Assert
+    expect(panel?.textContent ?? '').toContain('Essentials');
+    expect(panel?.textContent ?? '').toContain('Groceries');
+    expect(panel?.textContent ?? '').not.toContain('[object Object]');
+  });
+
+  it('puts the group’s name in the optgroup label and leaves the options outside it', () => {
+    // Arrange — `mat-optgroup`'s `label` takes a `string`, and a group's name
+    // is a word, so the value goes in as **content** instead. That works
+    // because `MatOptgroup` projects its default slot inside the label element
+    // and selects `mat-option, ng-container` into a second slot outside it.
+    // This case is the measurement of that claim: without the second slot the
+    // options would render *inside* the label and the picker would be a single
+    // unusable line.
+
+    // Act
+    const panel = openCategoryPicker();
+    const label = panel?.querySelector('.mat-mdc-optgroup-label');
+
+    // Assert
+    expect(label?.textContent ?? '').toContain('Essentials');
+    expect(label?.querySelector('mat-option')).toBeNull();
+    expect(panel?.querySelectorAll('mat-option')).toHaveLength(2);
+  });
+
+  it('draws a marker for a group name that did not open and collapses nothing', () => {
+    // Arrange — a picker is not exempt from "The locked account": a name that
+    // did not open is a marker with an accessible name, never `''` and never a
+    // dash chosen here.
+    transactions.categoryGroupsSignal.set([
+      {
+        description: null,
+        id: GROUP_ID,
+        name: { state: 'locked' },
+        position: 0,
+      },
+    ]);
+
+    // Act
+    const panel = openCategoryPicker();
+    const label = panel?.querySelector('.mat-mdc-optgroup-label');
+
+    // Assert
+    expect(
+      label?.querySelector('[role="img"]')?.getAttribute('aria-label'),
+    ).toBe('Locked');
   });
 
   it('loads categories for the grouped picker', () => {

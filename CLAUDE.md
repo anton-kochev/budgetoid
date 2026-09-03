@@ -276,10 +276,10 @@ Load-bearing rules, each explained there or in the linked decision:
   `category_groups.name`, `category_groups.description`, `categories.name`, `categories.description`
   and `transactions.description` are `bytea`, and `accounts.name_key`, `payees.name_key`,
   `category_groups.name_key` and `categories.name_key` hold the indexes; those routes accept a sealed
-  name and refuse a plaintext one, and **two screens have caught up** — `/app/accounts` and the
-  transaction form each mint their own row id, seal what they write and compute the index where the
-  column carries one, while **both** halves of `/app/categories` still send the old shape and so
-  cannot create or rename until they are wired.
+  name and refuse a plaintext one, and **every screen has caught up** — `/app/accounts`, the
+  transaction form and both halves of `/app/categories` each mint their own row id, seal what they
+  write and compute the index where the column carries one. Nothing in the browser sends a plaintext
+  narrative value any more.
   Three rules that screen established and the next three inherit, each held by tests alone: **the
   form is usable only when the key status is `unlocked`** and never `!== 'locked'`, so `unlocking`
   and any later state arrive disabled rather than live and silent, while the **locked notice follows
@@ -322,9 +322,15 @@ Load-bearing rules, each explained there or in the linked decision:
   the wrong spelling is **behaviourally** invisible — but it is not invisible: `pg_get_constraintdef`
   renders the two differently and `SchemaConstraintSnapshotTests` pins that text, so a `get_byte`
   spelling reddens there. Do not read any of this as licence to retire a version check as dead
-  weight. And **both** halves of `/app/categories` are screens that
-  cannot write: each still sends a plaintext `name` with no `id` and no `nameKey`, so a create 400s
-  on three members at once and a rename on two. A duplicate group **or category** name answers
+  weight. **Both** halves of `/app/categories` are wired, and each carries a **nullable** narrative
+  column, which is where their rules differ from the name-only screens: an **empty** note posts
+  `null` — which on a `PUT` is how a note is cleared — while a **whitespace-only** one is a note and
+  is sealed as typed, because the deleted `NormalizeDescription` may not come back one layer up in
+  the browser either. The client has **no path producing the 29-byte envelope over an empty string**,
+  so *cleared* and *never filled* are one thing from this browser even though the server keeps them
+  as two rows; a gap, not a bug. And **`Disallow` does not reach TypeScript**: an object **spread**
+  bypasses excess-property checking entirely, so a stray member on one of these four bodies compiles
+  clean and is caught by a spec alone — measured. A duplicate group **or category** name answers
   **400 keyed on `Name`** on both verbs — deliberately not the payee create's 409, because the input
   to that rule is who *chose* the name and sealing a column does not change it — and a duplicate
   **identifier** answers 409 with its own sentence, on accounts, payees, category groups, categories
@@ -364,8 +370,10 @@ Load-bearing rules, each explained there or in the linked decision:
   round trips**, so the running flag is what stands between a double press and a duplicate
   transaction wearing a legitimate client-minted id — the payee half survives one by accident, the
   transaction half does not.
-  **`/app/categories` is the last screen still sending plaintext, and the transaction form's category
-  picker renders its ciphertext as base64url until that lands.** Neither codec is callerless: `AccountKeyCustodyService` reaches both halves
+  The transaction form's category picker opens those names through the **categories** view model
+  rather than one of its own — `transaction-view.ts` imports the two bindings from `categories/`,
+  because a second model beside it would have been a guaranteed duplicate. Neither codec is
+  callerless: `AccountKeyCustodyService` reaches both halves
   of the narrative one and the whole of the blind index, which is the only way either key can be
   applied without leaving the class that holds it. **The blind index is built**, over its own
   grammar: `budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ normalized name`, looked up **as a pair**
