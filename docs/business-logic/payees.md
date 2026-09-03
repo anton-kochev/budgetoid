@@ -704,19 +704,30 @@ up.
   for one name, and the deduplication this table rests on would stop colliding while appearing to
   work.
 - **Angular client**: `/app/transactions` shows the payee field as a free-text input with a Material
-  autocomplete over `GET /api/payees`, filtered in the browser — **and it has not been moved onto
-  the sealed contract.** `payees-api.service.ts` declares `name` as plain text and offers only
-  `getPayees()`: nothing in the browser calls `POST /api/payees`, `GET /api/payees/{id}` or the
-  `PATCH`, and the autocomplete renders base64url of an envelope. The transaction form still sends
-  `payeeName`, which the transaction routes now refuse by name — see
-  [Edge Cases](#edge-cases--known-gotchas) for the 400 that answers it and what the refusal costs.
-  So today no browser can create or rename a payee, no browser can record a transaction either, and
-  every one of these routes is exercised only from the test suite.
+  autocomplete over `GET /api/payees`, and it is **on the sealed contract**. The browser opens each
+  payee name, recomputes its blind index — no read returns one, which is precisely why that
+  recomputation exists — and matches the typed name **against the index and never against the
+  decrypted text**, so the local match and the server's unique index are decided by the same bytes.
+  No match mints a row id, seals the name and calls `POST /api/payees` before the transaction is
+  posted.
+
+  Three rules there, each silent when broken. A **409 re-reads the list once and then abandons**,
+  never loops: a payee whose own name did not open carries a null index, can never match, and would
+  retry forever. The transaction's note is **sealed before the payee is created**, because the
+  reverse order strands an orphan payee — on a table with **no `DELETE` grant** — the moment a seal
+  refuses. And a 409 is **never read as success**, which would attach the entry to a payee this
+  client never confirmed.
+
+  **`GET /api/payees/{id}` and the `PATCH` still have no caller**, and that is deliberate rather than
+  pending: there is no payee screen, and an API method nobody calls is the same hazard as a mapper
+  nobody calls, one layer down. They are exercised from the test suite alone.
 
 ## Edge Cases & Known Gotchas
 
-- **The Angular transaction form still sends `payeeName`, and every write it makes now answers
-  400.** `CreateTransactionCommand` carries `PayeeId`, and both transaction wire shapes — that
+- **The Angular transaction form sent `payeeName` until it was wired, and every write it made
+  answered 400 — the refusal is what made the gap audible instead of silent, and the argument stands
+  now that the caller is fixed.** `CreateTransactionCommand` carries `PayeeId`, and both transaction
+  wire shapes — that
   record and the `UpdateTransactionRequest` the `PATCH` binds — carry
   `[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]`, so `System.Text.Json`
   refuses a body naming a member it cannot map instead of dropping it. **The attribute is

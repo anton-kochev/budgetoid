@@ -682,16 +682,31 @@ ELSE
   rules and their reasoning live in [budgets.md](budgets.md#constraints). A Transaction's existence
   is also what makes its Budget undeletable, unlike the Budget's other owned entities — the
   budget-level half of the never-as-a-side-effect rule stated under [Constraints](#must-not) above.
-- **Angular client**: `/app/transactions` records and edits entries (`TransactionsComponent`), and
-  **it cannot write at all, now for three reasons rather than one** —
-  `transactions-api.service.ts` still declares `payeeName` on the create request, which the API
-  refuses by name with a 400; it sends no client-minted `id`; and it sends a plaintext `description`
-  where an envelope is required. Removing `payeeName` alone would not make a write succeed, which is
-  the sentence a reader planning the wiring needs. Its **read** finished degrading with this slice:
-  `accountName` and `payeeName` were the first two columns to become base64url, `categoryGroupName`
-  the third, and `categoryName` and the entry's own `description` are the last — so **every text an
-  entry displays is now an envelope**, and nothing in the browser opens one.
-  That is a gap, named here rather than described as if it worked. It
+- **Angular client**: `/app/transactions` records entries (`TransactionsComponent`), and **it is
+  wired**: it mints its own row id, seals the note against it, sends `payeeId` where it used to send
+  `payeeName`, and opens all five narrative members on the way back. Four of those five are
+  ciphertext belonging to **another row** — `accountName` to `accountId`, `payeeName` to `payeeId`,
+  `categoryName` to `categoryId`, `categoryGroupName` to `categoryGroupId` — and only `description`
+  binds to the entry's own id, so each is opened under the **foreign** binding rebuilt from the id
+  already on the DTO. Opening one under this row's id authenticates against nothing, permanently,
+  with no error naming the cause.
+
+  **Resolving the counterparty is the client's, and three of its rules read as fussy until they are
+  not.** It indexes the typed name and matches on the **blind index, never on decrypted text**, so
+  the local match and the server's unique index are decided by the same bytes. A **409 re-reads the
+  payee list once and then abandons** rather than looping — a payee whose own name did not open
+  carries no index, can never match, and would retry until stopped. The note is **sealed before the
+  payee is created**, because the reverse order strands an orphan payee on a table with no `DELETE`
+  grant the moment a seal refuses. And the write is **two round trips**, so the running flag is the
+  only thing between a double press and a duplicate entry wearing a legitimate client-minted id: the
+  payee half survives one by accident, since the second create answers 409, re-reads and matches; the
+  transaction half mints a fresh id and posts again.
+
+  **What is still an envelope on screen is the category picker.** `category_groups.name` and
+  `categories.name` are sealed and this screen prints their base64url, because opening them needs a
+  categories view model that belongs to `/app/categories` — building a second one here would
+  guarantee a duplicate. Named as a gap rather than described as if it worked; it closes when that
+  screen is wired. This screen
   also owns one rule outright rather than restating one:
   the amount input must require a value rather
   than default to `0`, and an edit form must omit a field it did not collect rather than send a

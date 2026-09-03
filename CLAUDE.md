@@ -276,9 +276,10 @@ Load-bearing rules, each explained there or in the linked decision:
   `category_groups.name`, `category_groups.description`, `categories.name`, `categories.description`
   and `transactions.description` are `bytea`, and `accounts.name_key`, `payees.name_key`,
   `category_groups.name_key` and `categories.name_key` hold the indexes; those routes accept a sealed
-  name and refuse a plaintext one, and **one screen has caught up** — `/app/accounts` mints its own
-  row id, seals the name and computes the index, while the transaction form and **both** halves of
-  `/app/categories` still send the old shape and so cannot create or rename until they are wired.
+  name and refuse a plaintext one, and **two screens have caught up** — `/app/accounts` and the
+  transaction form each mint their own row id, seal what they write and compute the index where the
+  column carries one, while **both** halves of `/app/categories` still send the old shape and so
+  cannot create or rename until they are wired.
   Three rules that screen established and the next three inherit, each held by tests alone: **the
   form is usable only when the key status is `unlocked`** and never `!== 'locked'`, so `unlocking`
   and any later state arrive disabled rather than live and silent, while the **locked notice follows
@@ -328,8 +329,9 @@ Load-bearing rules, each explained there or in the linked decision:
   to that rule is who *chose* the name and sealing a column does not change it — and a duplicate
   **identifier** answers 409 with its own sentence, on accounts, payees, category groups, categories
   and transactions alike.
-  **The transaction form is unwired the same way, and it is now
-  audible.** It posts `payeeName`, a member the API no longer binds; that answered **201 with no payee
+  **The transaction form was unwired the same way and is now wired; the argument below is why the
+  gap was audible rather than silent while it lasted.** It posted `payeeName`, a member the API no
+  longer binds; that answered **201 with no payee
   attached** until `[JsonUnmappedMemberHandling(Disallow)]` went onto the **two** shapes that carried
   the retired member — `CreateTransactionCommand` and `TransactionEndpoints.UpdateTransactionRequest`
   — where the same body now answers **400**. The attribute is **per-type, measured**: the options in
@@ -349,11 +351,21 @@ Load-bearing rules, each explained there or in the linked decision:
   `PatchCategoryGroupPosition_WithAnUnknownMember_StillIgnoresIt` is the **one** negative control that
   reddens the day somebody makes it global; the category placement `PATCH` makes the same omission
   and nothing asserts it, which is an absence rather than a second control.
-  The cost is that every write the transaction form makes 400s until the client sends `payeeId` — and
-  now a client-minted `id` and a sealed `description` beside it, so retiring `payeeName` alone would
-  not rescue a single write; chosen, because losing the counterparty invisibly is worse than failing
-  visibly. Nothing in the browser seals
-  anything yet. Neither codec is callerless: `AccountKeyCustodyService` reaches both halves
+  Every write that form made 400'd until it sent `payeeId` beside a client-minted `id` and a sealed
+  `description` — retiring `payeeName` alone would not have rescued a single one; chosen, because
+  losing the counterparty invisibly is worse than failing visibly. **It now sends all three, and
+  resolving a payee is the client's job**: it indexes the typed name and matches **on the blind
+  index, never on decrypted text**, so the local match and the server's uniqueness are decided by the
+  same bytes and case folding comes free. No match mints, seals and `POST`s a payee first. Three
+  rules there a reader will simplify: a **409 re-reads the list once and then abandons**, never
+  loops — a payee whose own name did not open carries no index, can never match, and would retry
+  forever; the note is **sealed before the payee is created**, because the reverse order leaves an
+  orphan payee on a table with **no `DELETE` grant** when the seal refuses; and the write is **two
+  round trips**, so the running flag is what stands between a double press and a duplicate
+  transaction wearing a legitimate client-minted id — the payee half survives one by accident, the
+  transaction half does not.
+  **`/app/categories` is the last screen still sending plaintext, and the transaction form's category
+  picker renders its ciphertext as base64url until that lands.** Neither codec is callerless: `AccountKeyCustodyService` reaches both halves
   of the narrative one and the whole of the blind index, which is the only way either key can be
   applied without leaving the class that holds it. **The blind index is built**, over its own
   grammar: `budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ normalized name`, looked up **as a pair**
