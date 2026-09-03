@@ -1085,6 +1085,26 @@ comparison is the second account-creating path `CLAUDE.md` describes: one line, 
 the column is that shape of mistake with the compiler put in front of it — and the compiler is the
 only thing in front of it.
 
+**The other half of that sentence does have a test, and it is a different claim.** The absence
+covers the eight columns somebody remembered to type; it says nothing about a *copy* landing
+somewhere else, which is the shape a leak actually takes. `NarrativeSecrecyTests` reads every column
+of every relation on a connection holding the application role's credentials and a valid budget
+session, and demands that none of them hold the words a person typed. Two details there are load
+bearing rather than thorough. It scans a `bytea` column **as bytes** and never over its `::text`
+rendering, because that rendering is hex — a write path that skipped sealing and put UTF-8 into
+`accounts.name` is invisible to a text search forever while the plaintext sits in the column. And
+the text leg forces `collate "C"`, because `users.email` is the last column in the schema still
+carrying `case_insensitive`: a substring search over a nondeterministic collation either raises
+`0A000` or, when the needle is longer than the value, quietly answers false.
+
+**Its teeth are in its two controls, not in the census.** The marker plaintext never crosses the
+wire — the client seals it and sends an envelope — so the census cannot fail because of anything the
+*server* does with a value it was handed; it can only fail because a value arrived readable and was
+stored. Each control therefore puts a readable value in front of the same scan through a path a
+client really has, and demands the scan name it. Delete the byte leg and the census stays green over
+an `accounts.name` column literally holding the marker, with only the control reddening. That is
+measured, not argued, and it is why neither control may be retired as a duplicate of the census.
+
 ### Why the wrapped-key entity keeps its own exact width
 
 `WrappedAccountKeys` refuses anything that is not **exactly** 61 bytes, on both columns, and
