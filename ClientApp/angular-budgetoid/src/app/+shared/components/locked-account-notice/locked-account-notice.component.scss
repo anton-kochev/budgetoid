@@ -1,0 +1,27 @@
+// It takes the place of a list inside a screen that already owns its inset, so
+// the host adds no padding of its own. Grid with one column: the layout tool
+// this project reaches for first, and the gap is already right for the day the
+// notice grows a second block.
+:host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-2);
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+}
+
+// `body`, capped at the reading measure like every other sentence in the app.
+.lan-copy {
+  margin: 0;
+  max-width: 65ch;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Underlined, and the underline is the point: colour is never the message, so
+// the link has to be findable with every accent removed. `-text` accent per the
+// contrast table — mint never draws glyphs on paper in light mode.
+.lan-link {
+  color: var(--bud-accent-text);
+  text-decoration: underline;
+}

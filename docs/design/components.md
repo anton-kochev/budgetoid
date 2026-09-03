@@ -1066,13 +1066,30 @@ A narrative value arrives in one of four shapes and each gets its own render. Th
 one [A value read from the network](#a-value-read-from-the-network) states about clearing: what a
 section shows when it has no answer is never a stand-in for an answer it might have had.
 
-- **text** — the value, rendered plainly. An empty string is text and renders as nothing visible; it
-  is a note somebody cleared, not a note nobody wrote.
-- **unreadable** — an em dash, accessible name *couldn't be read*. The value is this account's and
-  the key is present; these particular bytes did not authenticate.
-- **locked** — an em dash, accessible name *locked*. Nothing was attempted; this tab has no key.
+- **text** — the value, rendered plainly. An empty string is text and renders as an **empty
+  element**, not as nothing; it is a note somebody cleared, not a note nobody wrote.
+- **unreadable** — an em dash whose accessible name is **`Couldn’t be read`**. The value is this
+  account's and the key is present; these particular bytes did not authenticate.
+- **locked** — an em dash whose accessible name is **`Locked`**. Nothing was attempted; this tab has
+  no key.
 - **absent** (the column held nothing) — nothing at all, no dash. There is no value here to be
   unable to show.
+
+**The empty string and the absent column hold each other up, and neither case holds alone.**
+Rendering nothing for `''` and rendering an empty element for `null` each redden their own case and
+only their own — measured, both ways. The phrase to keep out of a reader's head is *renders
+nothing*: an empty element is nothing **visible**, and it is not nothing.
+
+**The name rides `role="img"` plus `aria-label` on the dash itself, and both dashes are one element
+in the template.** The role is not decoration: `aria-label` on a bare `<span>` sits on a generic
+element where a name is not required to be exposed at all, and the role is what turns the label into
+the accessible name while the glyph inside goes unread. One element rather than one per state is
+what makes *colour is never the message* structural here — there is no second class for a stylesheet
+to reach for. The cost, recorded rather than hidden: some screen readers announce "image" ahead of
+the name. The alternative — an `aria-hidden` glyph beside visually-hidden text — buys a cleaner
+announcement and puts the word into `textContent`, so it would be copied out with any row. The
+choice stands until a screen-reader pass says otherwise, and that pass is work this chapter waits
+on.
 
 **The two dashes carry different accessible names on purpose.** They look identical and they are
 not: one says the app could not read something it should have been able to read, the other says it
@@ -1138,10 +1155,44 @@ the host's locale, and nothing in this app provides `LOCALE_ID`.
 - The disabled form keeps its labels and its reason in the accessibility tree; a disabled control
   whose explanation is a tooltip is an explanation nobody hears.
 
+### Two things the specs do not hold, measured rather than assumed
+
+Both are recorded here because a chapter that states a rule and names no gate for it is how an
+unenforced rule survives review.
+
+**Colour being the message is not gated by anything.** The markers are one element with one class,
+so a *second class* on one state reddens — but a stylesheet reaching the state through
+`.nv-marker[aria-label="Locked"] { color: … }` leaves every assertion green: same tag, same class,
+same text. Neither spec reads a computed style. The structural choice above is what makes this
+unlikely rather than impossible, and closing it needs a new assertion — a source-text pin over the
+stylesheet, the shape `key-import-single-source.spec.ts` already uses — not another mutation.
+
+**The accessible name is checked by proxy.** jsdom has no accessibility tree, so the specs assert
+`role` and `aria-label` and infer the name from them. Measured: wrapping the marker in an
+`aria-hidden` ancestor leaves all four assertions green while the name reaches nobody. Only a
+screen-reader pass closes that, and it is the same pass the `role="img"` decision above is waiting
+on.
+
+### The book has no link style, and this component invented one
+
+`accessibility.md` knows inline links in prose exist — it exempts them from the 48px target — and
+`typography.md` gives "emphasized links" the `label` type style. **Neither says what an inline text
+link looks like**: no colour, no decoration, no states. The notice's Settings link therefore ships
+`--bud-accent-text` with an underline, chosen so the affordance survives every accent being removed,
+and that choice was made here rather than read from anywhere.
+
+It is recorded as a gap and not quietly adopted as a rule, because the next screen that needs a link
+will invent a second one. Specifying the inline link — anatomy, states, and how it differs from a
+Ghost button — is work this book owes.
+
 ### What ships today
 
 **Nothing in the browser seals anything yet, so no value is ever `locked` or `unreadable` in
-practice** and both components are, today, specified and unreached. The four narrative screens still
+practice** and both components are, today, built and unreached — no screen imports either. One
+consequence worth knowing before trusting a green bar: `tsconfig.app.json` is `files:
+["src/main.ts"]`, so `npm run build` compiles only what `main.ts` reaches and says **nothing** about
+an unimported component. Measured — a mutation that fails `npm test` to compile exits 0 on the
+build. `npm test` is the gate for these until a screen imports them. The four narrative screens still
 send the old plaintext shape and cannot write at all. This chapter is the target the client wiring
 builds to; when it lands, the sentence closing the Account keys section above — that being locked
 costs nothing anybody can see — stops being true and moves in the same commit.
