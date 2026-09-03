@@ -786,10 +786,11 @@ ELSE
     same misspelling silently drops an *edit*: a real defect, and a different one. `Optional<T>` is
     precisely what makes the category-group reason not apply, so the attribute here keeps exactly
     one reason and the paragraph above it must not be widened.
-  What it costs is that `/app/transactions` cannot write — and the cost grew with the sealing, since
-  the form now also needs a client-minted `id` and a sealed `description` before a create can
-  succeed. Chosen, because a
-  screen that fails visibly beats a ledger that quietly loses who the money went to. The caller gets
+  What it cost, until the form was wired, was that `/app/transactions` could not write at all — and
+  the cost grew with the sealing, since the form also needs a client-minted `id` and a sealed
+  `description` before a create can succeed, so removing `payeeName` alone would have rescued
+  nothing. Chosen, because a
+  screen that fails visibly beats a record that quietly loses who the money went to. The caller gets
   a bare 400 dressed as `application/problem+json`, naming no field; the member is named in the
   server log. See [payees.md](payees.md#edge-cases--known-gotchas).
 - **This table's change-tracking class is narrower than the two on `categories` and

@@ -43,7 +43,7 @@ width or the associated-data binding to drift apart, and every symptom of drift 
 silent: bytes of exactly the right shape that decrypt to nothing on a device that did not
 seal them.
 
-**All eight columns now hold a narrative envelope, and no screen seals or opens a field.**
+**All eight columns hold a narrative envelope, and every screen now seals and opens one.**
 `budgets.name` is the first: `bytea`, **nullable**, mapped through a converter over
 `NarrativeField`, with a length band and a version check on the table. Every budget that exists is
 the nameless one registration writes, so that column stores NULL in every row.
@@ -1394,34 +1394,27 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
 
 ## Edge Cases & Known Gotchas
 
-- **No browser in this product seals anything yet, and the narrative functions are reached by one
-  caller that nothing calls.** `sealNarrativeField` and `openNarrativeField` are reached through
-  `AccountKeyCustodyService.sealField` and `openField`, which hold the content key they need; no
-  screen calls those. **What changed is the server, not the client, and the gap between them is now
-  three broken screens with nothing left to break.** `budgets.name` has no route at all, so every row
-  in it is NULL. `accounts.name` and `accounts.name_key` are `NOT NULL` and two routes accept them —
-  but `account-api.service.ts` still sends a plaintext `name`, no `nameKey` and no client-minted
-  `id`, and `accounts.component.ts` renders the response's `name` straight into a list where it is
-  now base64url. `payees.name` and `payees.name_key` are the same story with a sharper edge:
-  `payees-api.service.ts` offers only `getPayees()`, so nothing in the browser can create or rename a
-  payee at all, and the transaction form still posts a `payeeName` that both transaction wire shapes
-  now refuse by name — a **400**, so that screen cannot record an entry either. The refusal is the
-  deliberate half: a body carrying the retired member would otherwise be accepted with the
-  counterparty dropped, which is the one way this gap could lose data rather than render it wrongly,
-  and a screen that fails is the cheaper failure. **`/app/categories` is the third and it is now
-  broken on both halves**: neither of its two API services sends an `id` or a `nameKey`, and both
-  still declare `name` as plain text, so a create on either level is refused on three members and a
-  rename on two. **The category half is what this last slice took**, and a reader who remembers it
-  working is remembering the state before `categories.name` was sealed. The cost on the transaction
-  form grew the same way and for the same reason: even with `payeeName` removed it would still be
-  refused, because `POST /api/transactions` now takes a client-minted `id` and a sealed
-  `description`. So every sealed column is exercised only from the
-  test suite. **The
-  wrapped-key side is the counter-example rather than a companion, and citing the two together is
-  the mistake to avoid**: `unwrapAccountKeys` is called on every passkey sign-in, because what it
-  needed was a route to hand it an envelope and a class to hold what came out, and it has both. The
-  narrative path has the class and waits on the other half — a ciphertext existing anywhere in the
-  product. **Do not delete any of it for want of a caller, and do not relax anything here to make a
+- **Every browser screen seals now, and the gap this section used to describe is closed.**
+  `sealNarrativeField` and `openNarrativeField` are reached through
+  `AccountKeyCustodyService.sealField` and `openField`, which hold the content key they need, and
+  `/app/accounts`, the transaction form and both halves of `/app/categories` all call those. Each
+  mints its own row id, seals what it writes, computes the blind index where the column carries one,
+  and opens what it reads.
+
+  **One column is still NULL in every row and it is not an oversight**: `budgets.name` has no route
+  at all, so nothing can write it. Of the eight, that is the only one no screen reaches.
+
+  **What the refusals bought while the gap lasted is worth keeping, because it is the argument for
+  the next one.** Both transaction wire shapes refuse the retired `payeeName` **by name** with a
+  400; without that, a body carrying it would have been accepted with the counterparty silently
+  dropped, which is the one way that gap could have lost data rather than rendered it wrongly. A
+  screen that fails visibly is the cheaper failure, and it is why the wiring could not be done half
+  way. **The
+  wrapped-key side reached this state first, and the two are now companions rather than a
+  counter-example**: `unwrapAccountKeys` is called on every passkey sign-in, because what it needed
+  was a route to hand it an envelope and a class to hold what came out. The narrative path had the
+  class and waited on the other half — a ciphertext existing anywhere in the product — and now has
+  it. **Do not delete any of it for want of a caller, and do not relax anything here to make a
   later screen easier to write.** The format is a contract with every client that will ever seal an
   envelope; it is being agreed while agreement is still cheap.
 - **An empty plaintext is legal and seals to exactly 29 bytes.** A reader tempted to treat

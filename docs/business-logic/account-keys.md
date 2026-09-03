@@ -930,13 +930,14 @@ member [The one class that holds them](#the-one-class-that-holds-them) exists to
 location was decided by the codecs' signatures. What was left to decide is narrower — which types
 cross the boundary, and what a refusal looks like — and everything below is about that.
 
-**Nothing in the product calls any of them**, and that is now a statement about the client alone.
-Every column exists — all eight narrative columns hold envelopes and all four blind indexes are in
-the schema — but
-no screen seals, opens or keys anything, so `sealField`, `openField` and `blindIndex` have no caller
-but their spec, on the same terms [ciphertext-envelope.md](ciphertext-envelope.md) sets for the
-codecs beneath them: a cross-client format and the custody that will use it are cheaper to agree on
-before data exists under them than after. That argument is **sharper** for the index than for the
+**Every one of the three now has callers in the product.** All eight narrative columns hold
+envelopes, all four blind indexes are in the schema, and `/app/accounts`, the transaction form and
+both halves of `/app/categories` reach `sealField`, `openField` and `blindIndex` through their view
+models and services. They were settled one slice ahead of those callers on the terms
+[ciphertext-envelope.md](ciphertext-envelope.md) sets for the codecs beneath them: a cross-client
+format and the custody that will use it are cheaper to agree on before data exists under them than
+after — and that ordering is what let the screens be wired without a single format decision being
+reopened. That argument is **sharper** for the index than for the
 envelope, and the difference is worth carrying: a grammar or a normalisation settled after a column
 holds index values orphans every row in it, and nothing on this side of the wire can repair them.
 **The window for settling either is now closed everywhere, not just on `accounts`** — every indexed

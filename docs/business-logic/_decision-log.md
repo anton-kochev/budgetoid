@@ -8,6 +8,56 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-04 — Every screen seals, and four rules the browser had to settle for itself
+
+**Context:** the columns had been ciphertext for a slice and no screen could write. Wiring four
+screens onto the sealed contract was expected to be mechanical, and four of its decisions were not —
+each is a place where the obvious implementation is wrong in a way nothing red would have said so.
+
+**Decision:** all four screens mint their own row id, seal what they write, compute the blind index
+where the column carries one, and open what they read **through a narrow function** rather than by
+holding a key. `budgets.name` is the one narrative column no screen reaches, because it has no route.
+
+**A mapper is handed one capability, never the class that holds the keys.** Two function types —
+open, and index — and deliberately no sealer, because nothing seals in a mapper and a type nothing
+is assignable to is decoration. A mapper handed the custody service could reach `unlock`, `lock` and
+`adopt` on the way past. The mechanical trap underneath it is not a compile error: the opener reads a
+`#` private field, so passing it as a bare method reference type-checks perfectly and throws on the
+wrong receiver at runtime, which is why both pins call **through** the typed value instead of merely
+assigning to it.
+
+**The indexer exists because no read returns a blind index.** A payee crosses the wire with no
+`name_key` and no route hands one back, so a client that has just opened a name must recompute the
+value a lookup keys on. That is the whole reason a second seam type earns its place beside the first.
+
+**Two predicates, failing safe in opposite directions, and folding them is a real defect.** The key
+status is three-valued. A form is usable only when it is `unlocked` — written positively, so
+`unlocking` and any state added later arrive disabled rather than live and silent — while the locked
+notice renders on `locked` **alone**, because its sentence is *advice* and advice is already false
+for somebody whose unlock is running. *Disable when unsure; do not advise when unsure.* Written the
+other way round, the form goes live mid-ceremony, or the screen tells somebody to press a button
+they are already holding down.
+
+**A name that cannot be read cannot be renamed, and can still be deleted.** Prefilling an empty
+field and saving overwrites a name nobody can see: a deletion wearing an edit's clothes. Removing
+the row is not rewriting it, and refusing both would strand every unreadable row permanently.
+
+**Resolving a payee is now the client's, and three of its rules look fussy until they are not.** It
+matches on the **blind index and never on decrypted text**, so the local match and the server's
+unique index are decided by the same bytes. A 409 re-reads the list **once and then abandons**,
+never loops — a payee whose own name did not open carries no index, can never match, and would
+retry forever. And the note is **sealed before the payee is created**, because the reverse order
+strands an orphan payee on a table with no `DELETE` grant the moment a seal refuses. The last of
+those three passed as a mutation until a case was written for it.
+
+**A consequence the schema keeps and the browser cannot express.** The server distinguishes a note
+somebody cleared, which is a 29-byte envelope over an empty string, from one nobody filed, which is
+`NULL`. No client path produces the first: an empty note posts `null`. So the two rows stay two rows
+and this browser sees one thing. Named as a gap rather than closed, because closing it means minting
+an envelope over `''` for no reader.
+
+---
+
 ## 2026-09-03 — The last three narrative columns are sealed, and a table with no name needs no index, no key and no apology
 
 **Context:** three columns were left — `categories.name`, `categories.description` and

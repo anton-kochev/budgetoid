@@ -431,14 +431,25 @@ ELSE
 - **[Account Keys](account-keys.md)**: the index key the blind index is computed under, and the
   normalization it is taken over. One index key per **account** — two would produce two index values
   for one name, and the uniqueness rule above would stop colliding while appearing to work.
-- **Angular client**: `/app/accounts` manages the list, and **it has not been moved onto the sealed
-  contract** — this is a gap, named here rather than described as if it worked.
-  `account-api.service.ts` still declares `name` as plain text on both request types, carries no
-  `nameKey` and no client-minted `id`, and `accounts.component.ts` renders `account.name` straight
-  into the list, where the API now returns base64url of an envelope. So today the screen cannot
-  create or rename an account, and the sealed name column is exercised only from the test suite. The
-  currency field is offered on create and hidden in edit mode, which matches — but does not enforce
-  — the immutability rule above.
+- **Angular client**: `/app/accounts` manages the list and is **on the sealed contract** — it was the
+  first screen moved there, so the rules it settled are the ones the other three inherited. It mints
+  its own row id, seals the name against it, computes the blind index, and opens what it reads
+  through a narrow opener function rather than by holding a key.
+
+  Two of its rules read as fussy and are not. **The form is usable only when the key status is
+  `unlocked`**, written positively rather than as `!== 'locked'`, so `unlocking` and any state added
+  later arrive disabled rather than live and silent — while the locked notice follows **`locked`
+  alone**, because its sentence is advice and advice is already false for somebody mid-ceremony.
+  *Disable when unsure; do not advise when unsure.* And **a row whose name did not open cannot be
+  renamed, though it can still be deleted**: prefilling an empty field and saving would overwrite a
+  name nobody can see, which is a deletion wearing an edit's clothes, while removing the row is not
+  rewriting it. On this screen the handler's half of that gate is held by the **compiler** — reading
+  a value off a `NarrativeText` does not type-check until the state is narrowed.
+
+  **Nothing is trimmed any more.** The client may not alter what it seals, so refusing a
+  whitespace-only name moved into a form validator; `Validators.required` had been doing it by
+  accident and stops the moment the trim goes. The currency field is offered on create and hidden in
+  edit mode, which matches — but does not enforce — the immutability rule above.
 - **[Budgets](budgets.md)**: every account is stamped with and filtered by its owning `BudgetId`, and
   its name is unique within that budget — now over the blind index rather than over a
   case-insensitive collation, with the folding done in the browser. The same account name in two

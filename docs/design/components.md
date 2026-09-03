@@ -1773,18 +1773,17 @@ The product's most repeated unit. M3 base: none — a plain semantic list.
 - Uncategorized shows "No category" muted — a plain fact, not a warning.
 - Press: `--bud-state-pressed` layer. No swipe actions (transactions are immutable).
 
-**Two departures, named rather than tidied away. The first: no text on this row is readable today —
-every word of it is ciphertext.** `payees.name`, `accounts.name`, `categories.name` and
-`transactions.description` are all sealed columns, so `payeeName`, `accountName`, `categoryName` and
-`description` on a transaction response are AEAD envelopes in base64url, and `/app/transactions`
-writes each value straight into the line. That reaches **both** lines of the row: line 1's payee and
-its description fallback, and line 2's category beside the account. Nothing in the browser opens one
-yet. The row above stays the target — the line shows the counterparty's name — and what it waits on
-is the client being moved onto the sealed contract: the account's content key is held by
-`AccountKeyCustodyService`, and each envelope has to be opened under the binding for its own table,
-column and **row id**, which is why the response carries `payeeId`, `accountId` and `categoryId`
-beside the names it joined. The transaction's own description is the one envelope on the row bound to
-the transaction's **own** id.
+**Every word on this row arrives as ciphertext and the screen opens it.** `payees.name`,
+`accounts.name`, `categories.name` and `transactions.description` are all sealed columns, so
+`payeeName`, `accountName`, `categoryName` and `description` on a transaction response are AEAD
+envelopes in base64url. `/app/transactions` opens each under the binding for its own table, column
+and **row id** — which is why the response carries `payeeId`, `accountId` and `categoryId` beside
+the names it joined, and why the transaction's own description is the single envelope on the row
+bound to the transaction's **own** id. Opening a foreign name under this row's id authenticates
+against nothing, permanently, with no error naming the cause.
+
+Anything that does not open renders through [`narrative-value`](#the-locked-account) rather than as
+empty text, so a value that failed and a value nobody typed stay distinguishable on the row.
 
 **Two rules of this chapter are unaffected and worth saying so, because they will look like
 casualties.** "Uncategorized shows *No category* muted" still holds: that branch turns on the
