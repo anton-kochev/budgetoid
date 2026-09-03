@@ -51,7 +51,16 @@ import { AccountKeyCustodyService } from './account-key-custody.service';
 // from a pair typed out here: a suite built from entry zero is passed by an
 // implementation that only ever indexes `payees.name`, and the other three are
 // refused with nothing going red.
-import { BLIND_INDEXED_FIELDS, type BlindIndexedField } from './blind-index';
+//
+// `computeBlindIndex` travels with them for one case: the seam pin at the foot
+// of this file asks the codec for the same value under the same key, which is
+// what separates *the service delegated* from *the service answered forty-three
+// stable characters of its own*.
+import {
+  BLIND_INDEXED_FIELDS,
+  computeBlindIndex,
+  type BlindIndexedField,
+} from './blind-index';
 // The codec's own predicate, under the alias `narrative-cipher.ts` gives it.
 // Imported rather than restated, for the reason that module states at its own
 // refusal: a second regular expression here would be a second definition of one
@@ -69,7 +78,17 @@ import {
 // codec, and answering it by hand here would put the very list this file
 // forbids custody from holding into the file that forbids it.
 import * as narrativeCipherModule from './narrative-cipher';
-import type { BlindIndexValue, SealedField } from './narrative-text';
+// The two result unions, and the two **function types** the seam pins at the
+// foot of this file are about. Type-only, so nothing here crosses into the
+// bundle — and the two openers are imported rather than written out, because a
+// signature restated in this file is a signature that cannot disagree with the
+// declaration a mapper will actually be typed against.
+import type {
+  BlindIndexValue,
+  NarrativeIndexer,
+  NarrativeOpener,
+  SealedField,
+} from './narrative-text';
 
 // Three canonical factor ids, distinct and in the spelling the server renders.
 // The identifier a row carries **is** the associated data its two envelopes were
@@ -2586,6 +2605,124 @@ describe('AccountKeyCustodyService', () => {
       await expect(
         custody.blindIndex(BLIND_INDEXED_FIELDS[0], 'Rent, June'),
       ).resolves.toEqual({ state: 'locked' });
+    });
+  });
+
+  // **The one capability a view-model mapper is handed, and the two pins that
+  // say it is really this class's.**
+  //
+  // `narrative-text.ts` declares `NarrativeOpener` and `NarrativeIndexer` so a
+  // mapper can be given a capability rather than this whole service: handed the
+  // class, a row-shaped transform would need a `TestBed` to be exercised at
+  // all, could reach `unlock`, `lock` and `adopt` on the way past, and would
+  // tie a pure function to Angular's injector for the sake of one call. **What
+  // a declaration cannot do is make anything assignable to it.** Until this
+  // describe existed both were named nowhere outside their own file — a type
+  // nothing is typed as is a comment with syntax, and the first mapper written
+  // could still be handed the service with nothing going red.
+  //
+  // **Both cases call *through* the typed value, and that half is the reason
+  // they exist.** A pin that assigned the method to a typed variable and
+  // stopped would prove the signature, which is not where the defect lives:
+  // `openField` reads `#contentKey`, so handing it over as a bare
+  // `custody.openField` rather than as an arrow makes every call a `TypeError`
+  // on the wrong receiver — and **a `#` read on the wrong receiver is not a
+  // compile error**. The lint rule that would find it,
+  // `@typescript-eslint/unbound-method`, is switched **off** for `*.spec.ts` in
+  // `eslint.config.js`, so in this file a call is the only thing that can.
+  //
+  // What the pins do not hold is that a mapper takes the narrow type rather
+  // than the service. Nothing in the compiler can say that, and no mapper
+  // exists yet; it is the argument `narrative-text.ts` makes for the day one
+  // arrives, and it stays held by review.
+  describe('the capability a view-model mapper is handed', () => {
+    // The account's two keys, adopted, and handed back — so a case can seal or
+    // compute *beside* the service and compare, rather than asking the service
+    // both questions and watching it agree with itself.
+    async function adoptedPair(): Promise<{
+      contentKey: CryptoKey;
+      indexKey: CryptoKey;
+    }> {
+      const contentKey = await keyEncryptionKey(0xb0);
+      const indexKey = await importHmacSha256Key(
+        new Uint8Array(ACCOUNT_KEY_BYTES).fill(0xb1),
+      );
+
+      custody.adopt(contentKey, indexKey);
+
+      return { contentKey, indexKey };
+    }
+
+    it('hands openField over as a NarrativeOpener, and opens through it', async () => {
+      // Arrange
+      const { contentKey } = await adoptedPair();
+
+      // Sealed by this file under the key the account is holding, so the answer
+      // below is a statement about a real ciphertext rather than about a seal
+      // and an open that would agree with each other however either was
+      // written.
+      const wire = await sealNarrativeField(
+        contentKey,
+        'Lunch with Ana',
+        BINDING,
+      );
+
+      // **An arrow, and never `custody.openField`.** The bare reference type-
+      // checks — the signatures are identical — and then every call reads
+      // `#contentKey` on a receiver that is not the service, which the language
+      // answers with a `TypeError` no compiler and no lint rule in this file
+      // will report. This is the wiring a mapper's provider has to use, so it
+      // is the wiring the pin uses.
+      const open: NarrativeOpener = (binding, value) =>
+        custody.openField(binding, value);
+
+      // Act
+      const opened = await open(BINDING, wire);
+
+      // Assert
+      // The whole result, so a `state` that came back wrong beside a right
+      // `value` is a finding rather than a pass — and a real one, so a pin that
+      // had only assigned the function would not have got this far.
+      expect(opened).toEqual({ state: 'text', value: 'Lunch with Ana' });
+    });
+
+    it('hands blindIndex over as a NarrativeIndexer, and computes through it', async () => {
+      // Arrange
+      // **The indexer exists because no read hands a blind index back.**
+      // `PayeeDto` carries no `nameKey` on the wire and nothing in the API
+      // returns one, so a mapper that has just opened a name has to recompute
+      // the index it keys on — which it can only do through the account's index
+      // key, which only this class holds.
+      const { indexKey } = await adoptedPair();
+
+      // An arrow for the reason the case above gives: `blindIndex` reads
+      // `#indexKey`, so the bare reference is the same silent `TypeError`.
+      const index: NarrativeIndexer = (indexed, plaintext) =>
+        custody.blindIndex(indexed, plaintext);
+
+      // Act
+      // **Every pair and never entry zero alone**, which is the habit this file
+      // keeps in the describe above and the one a seam pin is most likely to
+      // drop, having a different rule to make. An operation that hard-coded the
+      // first pair would agree with the codec on `payees.name` and answer the
+      // other three under a message nobody asked for.
+      const computed = await Promise.all(
+        BLIND_INDEXED_FIELDS.map((indexed) => index(indexed, "Trader Joe's")),
+      );
+
+      // Assert
+      // Against the codec's own answers under the same key, which is what says
+      // the values came out of the grammar. Any 43 stable characters pass a
+      // width check, a distinctness check and an equality check while matching
+      // no second client and no row already written.
+      const expected = await Promise.all(
+        BLIND_INDEXED_FIELDS.map(async (indexed) => ({
+          state: 'computed',
+          value: await computeBlindIndex(indexKey, indexed, "Trader Joe's"),
+        })),
+      );
+
+      expect(computed).toEqual(expected);
     });
   });
 

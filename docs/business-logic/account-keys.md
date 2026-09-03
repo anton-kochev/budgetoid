@@ -1123,16 +1123,29 @@ Four more decisions in and around those unions, each of which a reader will coll
   whole screen comes back, against this one value is damaged and no ceremony anybody runs will
   change it. It is the split `SessionService` keeps between `anonymous` and `unreachable`, and
   custody's own three failure words one layer up.
-- **`NarrativeOpener` is declared ahead of the mapper it is for, and nothing yet holds the two
-  together.** The type is one function — open this wire value under this binding — and the argument
-  behind it is real: a mapper handed the whole service could reach `unlock`, `lock` and `adopt` on
-  the way past and would need a `TestBed` to be exercised at all, while a mapper handed one
-  function takes exactly the capability it needs and a spec stands it up in two lines. What is
-  **not** true is the enforcement. No mapper exists, the type is named nowhere outside its own
-  declaration in `narrative-text.ts`, and nothing pins that `openField` is even assignable to it —
-  so the first mapper written can be handed the service instead, with nothing going red. It is a
-  decision recorded one commit ahead of its caller, like several others in this chapter, and the
-  assignment is written down the day the caller arrives.
+- **`NarrativeOpener` and `NarrativeIndexer` are declared ahead of the mapper they are for, and
+  both are now pinned assignable.** Each is one function — open this wire value under this
+  binding, key this name for a lookup — and the argument behind them is real: a mapper handed the
+  service could reach `unlock`, `lock` and `adopt` on the way past and would need a `TestBed` to be
+  exercised at all, while a mapper handed one function takes exactly the capability it needs and a
+  spec stands it up in two lines. The indexer exists because **no read hands a blind index back**:
+  a payee crosses the wire carrying no `name_key` and no route returns one, so a mapper that has
+  just opened a name has to recompute the value a lookup keys on — and the only thing that can is
+  the index key, which one class holds and no member gives out.
+- **Both pins call through the typed value, and that half is the rule.** Two cases in
+  `account-key-custody.service.spec.ts` type `openField` as the first and `blindIndex` as the
+  second and then *use* each one. A pin that assigned and stopped would prove the signature, which
+  is not where the defect lives: `openField` reads a `#` field, so handing it over as
+  `custody.openField` rather than as an arrow type-checks perfectly and answers every call with a
+  `TypeError` on the wrong receiver — and `@typescript-eslint/unbound-method`, the rule that would
+  find it, is switched **off** for `*.spec.ts`. Measured: an assign-only pin is green over exactly
+  that defect, holding an opener that throws on every call.
+- **There is deliberately no `NarrativeSealer`.** Nothing seals in a mapper — sealing happens on
+  the way out of a screen, in a service that has already injected custody to save with. A third
+  function type here would be precisely what the two above have just stopped being: named nowhere,
+  assignable from nothing, symmetry standing in for a caller. What is still **not** enforced is
+  that a mapper takes the narrow type rather than the service — no mapper exists, no compiler can
+  say it, and it stays held by review.
 
 **What stays a rejection is as much of the rule as what becomes a result.** Two refusals keep
 throwing: a binding this grammar cannot be built over — a table and column that are not one of the

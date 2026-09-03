@@ -61,18 +61,35 @@
 // `unauthenticated` — the same rule a fourth time, because the mistake is
 // available at every one of them.
 //
-// **{@link NarrativeOpener} is the shape a view-model mapper should be handed,
-// written down one commit ahead of the mapper.** A mapper handed the service
-// would need a `TestBed` to be exercised at all, could reach `unlock`, `lock`
-// and `adopt` on the way past, and would tie a row-shaped transform to Angular's
-// injector for the sake of one capability. A mapper handed this function takes
-// exactly that one — open this wire value under this binding — and a spec stands
-// it up in two lines. **What the narrowness does not do is enforce any of it.**
-// No mapper exists, this type is named nowhere outside its own declaration, and
-// nothing pins that `AccountKeyCustodyService.openField` is even assignable to
-// it — so the first mapper written can still be handed the whole service with
-// nothing going red. It is an argument for what to write the day that caller
-// arrives, and the assignment is written down on that day.
+// **{@link NarrativeOpener} and {@link NarrativeIndexer} are the shapes a
+// view-model mapper is handed, written down ahead of the mapper.** A mapper
+// handed the service would need a `TestBed` to be exercised at all, could reach
+// `unlock`, `lock` and `adopt` on the way past, and would tie a row-shaped
+// transform to Angular's injector for the sake of one capability. A mapper
+// handed one of these functions takes exactly that capability — open this wire
+// value under this binding, key this name for a lookup — and a spec stands it
+// up in two lines.
+//
+// **Both are now pinned assignable, and both pins call through the value.**
+// `account-key-custody.service.spec.ts` types `openField` as the first and
+// `blindIndex` as the second and then *uses* each one, which is the half a bare
+// assignment does not have: `openField` reads a `#` field, so handing it over
+// as `custody.openField` instead of as an arrow type-checks perfectly and
+// answers every call with a `TypeError` on the wrong receiver — and
+// `@typescript-eslint/unbound-method` is switched off for specs, so nothing but
+// a call finds it.
+//
+// **What the pins do not hold is that a mapper takes the narrow type rather
+// than the service**, which no compiler can say and which stays an argument for
+// review. There is still no mapper: these are the shape the day one arrives.
+//
+// **There is deliberately no `NarrativeSealer`.** Nothing seals in a mapper —
+// sealing happens on the way *out* of a screen, in a service that has already
+// injected custody to save with, and a row-shaped transform has nothing to
+// write. A third function type here would be exactly the thing the paragraph
+// above says these two stopped being: named nowhere, assignable from nothing,
+// symmetry standing in for a caller.
+import type { BlindIndexedField } from './blind-index';
 import type { NarrativeFieldBinding } from './narrative-cipher';
 
 /**
@@ -163,3 +180,31 @@ export type NarrativeOpener = (
   binding: NarrativeFieldBinding,
   wire: string,
 ) => Promise<NarrativeText>;
+
+/**
+ * The other capability a view-model mapper needs: key this name so a lookup can
+ * find the rows that share it.
+ *
+ * **It exists because no read hands a blind index back.** A payee crosses the
+ * wire with no `name_key` on it and no route in the product returns one, so a
+ * mapper that has just opened a name and wants the value a query keys on has to
+ * compute it — and the only thing that can is the account's index key, which
+ * one class holds and no member gives out. A mapper cannot be handed the key,
+ * so it is handed this.
+ *
+ * Takes a field and **no row id**, which is the whole shape of the operation
+ * and the deliberate inverse of {@link NarrativeOpener}'s binding: an index has
+ * to be *equal* for equal names across rows, where a narrative value must be
+ * bound to exactly one. `blind-index.ts` argues it at the message itself.
+ *
+ * Rejects on a pair the codec refuses — a table and a column that are not one
+ * of the four it lists, asked as a pair, so a real table beside a column
+ * belonging to another one is refused too. That it stays a rejection is the
+ * load-bearing half, for the reason {@link NarrativeOpener} gives: a caller's
+ * defect turned into a word a screen renders is a bug wearing a UI, shown to
+ * somebody who can do nothing whatever about it.
+ */
+export type NarrativeIndexer = (
+  field: BlindIndexedField,
+  plaintext: string,
+) => Promise<BlindIndexValue>;
