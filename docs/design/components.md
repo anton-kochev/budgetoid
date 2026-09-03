@@ -1034,6 +1034,118 @@ A copy would be a second enforcement with no observable difference, which
 section rather than a screen standing in front of the app — and what the copy above has to keep
 saying for exactly as long as it stays true.
 
+## The locked account
+
+**A locked account and a locked session are two different things, and the screens may not borrow
+each other's words.** A locked *session* is a server fact — the row a federated credential opens,
+reaching exactly one route ([sessions.md](../business-logic/sessions.md)). A locked *account* is a
+browser fact: the session is live, every request is answered, and the words that come back cannot be
+read because this tab holds no content key. Only the second is what this chapter renders.
+[account-keys.md](../business-logic/account-keys.md) owns the rule; this chapter renders it.
+
+**A reload locks the account, and that is the design rather than a gap in it.** The two keys sit on
+private fields of one root-provided service and are persisted nowhere — not to IndexedDB, not across
+a `BroadcastChannel` — each refusal argued where the service is. So closing the tab ends this
+browser's ability to read the account back, and the way in is one press: **Unlock**, in the Account
+keys section of Settings.
+
+### Two components, and why the marker is not inlined
+
+**`narrative-value` renders one value; `locked-account-notice` explains one screen.** They are two
+because they answer two different questions and change for different reasons — a value that failed
+to open is a fact about that value, and a locked account is a fact about the tab.
+
+The marker is its own component rather than three lines of template repeated per screen because the
+em-dash rule would otherwise exist in four copies across three screens, and **the first copy to
+drift is invisible**: a marker that renders the right dash with the wrong accessible name looks
+identical to a sighted reviewer. One component, one pair of names, one place to change them.
+
+### `narrative-value` — four renders, and none of them is a substitute
+
+A narrative value arrives in one of four shapes and each gets its own render. The rule is the same
+one [A value read from the network](#a-value-read-from-the-network) states about clearing: what a
+section shows when it has no answer is never a stand-in for an answer it might have had.
+
+- **text** — the value, rendered plainly. An empty string is text and renders as nothing visible; it
+  is a note somebody cleared, not a note nobody wrote.
+- **unreadable** — an em dash, accessible name *couldn't be read*. The value is this account's and
+  the key is present; these particular bytes did not authenticate.
+- **locked** — an em dash, accessible name *locked*. Nothing was attempted; this tab has no key.
+- **absent** (the column held nothing) — nothing at all, no dash. There is no value here to be
+  unable to show.
+
+**The two dashes carry different accessible names on purpose.** They look identical and they are
+not: one says the app could not read something it should have been able to read, the other says it
+did not try. Collapsing them tells a screen-reader user that their data is damaged when the remedy
+is a single press.
+
+**A mapper may never collapse these into `''` or `'—'` on the way here.** The moment a `locked`
+becomes an empty string, the screen renders "no description" as a claim about the account rather
+than about the tab, and nothing downstream can tell the two apart again.
+
+### `locked-account-notice` — a link, never a redirect
+
+Rendered by each content screen **in place of its list**, and by nothing else. The copy is the
+blocked-action pattern from [voice](voice.md): the fact, then the way forward, and the way forward
+is the smallest act that clears the block — *This tab can't read your account yet. Unlock it in
+Settings.* — with **Settings** a `routerLink` to `/app/settings`.
+
+**It links and does not navigate.** Three shapes were considered and two refused:
+
+- **A route guard** — refused. It would be synchronous against a fact with no resolution on the
+  navigation path, so it could only bounce every reload, and it would put key state where
+  `AccountUnlockService` is built to keep it out of.
+- **Swapping the shell's outlet** — refused, and it is the tempting one because it is a single
+  change covering every screen. It would lock Settings too, and Settings holds Unlock: the one
+  screen that must stay reachable is the one this shape takes away.
+- **A notice each screen renders itself**, which is what ships. Three call sites is the price of the
+  way out staying open.
+
+### The form is disabled in the DOM, with the reason beside it
+
+Each screen's create/edit form is **disabled**, not merely hidden or visually dimmed. An enabled
+form submits, the service refuses because it cannot seal, and nothing happens — which is worse than
+a control that is plainly off, because the person cannot tell a limitation from a failure.
+
+Material's click-halt is anchors only, so a `<button>` left `disabledInteractive` still receives the
+click; the form is disabled through the form itself. This is the same rule the recovery-code
+hand-off states about its acknowledgement gate, and it has been got wrong once already on this
+codebase.
+
+**The reason is a sentence beside the form, never a bare disabled control** — the *Not built yet*
+pattern in [voice](voice.md), except that this is not "not built": it is a capability the tab has
+temporarily lost and can get back. The sentence says so and names the press that returns it.
+
+### Ordering falls out, and is not special-cased
+
+Lists sort through `compareNarrative`: opened text first, then unreadable, then locked. On a locked
+account every value is `locked`, every comparison answers 0, and a stable sort leaves the order the
+rows arrived in. That is the correct behaviour and it is a **consequence** of the ordering rather
+than a branch anybody wrote. Do not add a "if locked, skip sorting" case; there is nothing for it to
+do.
+
+Written down and deliberately not fixed: two opened names compare with `localeCompare`, which reads
+the host's locale, and nothing in this app provides `LOCALE_ID`.
+
+### Accessibility
+
+- Neither component is a live region. The locked state is the answer to a navigation the person
+  made, not an event that arrived — and a list of ten markers in a `role="status"` would narrate ten
+  em dashes as news.
+- The notice is ordinary content in the region the list would have occupied, so it lands in reading
+  order where the reader is already looking.
+- Colour is never the message: both markers and the notice read the same with every accent removed.
+- The disabled form keeps its labels and its reason in the accessibility tree; a disabled control
+  whose explanation is a tooltip is an explanation nobody hears.
+
+### What ships today
+
+**Nothing in the browser seals anything yet, so no value is ever `locked` or `unreadable` in
+practice** and both components are, today, specified and unreached. The four narrative screens still
+send the old plaintext shape and cannot write at all. This chapter is the target the client wiring
+builds to; when it lands, the sentence closing the Account keys section above — that being locked
+costs nothing anybody can see — stops being true and moves in the same commit.
+
 ## The welcome screen
 
 The one public surface, at `/welcome`, and the one screen written in marketing voice
