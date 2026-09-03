@@ -1133,6 +1133,50 @@ codebase.
 pattern in [voice](voice.md), except that this is not "not built": it is a capability the tab has
 temporarily lost and can get back. The sentence says so and names the press that returns it.
 
+**A disabled form reports itself valid, so a control gated on validity alone comes back to life
+exactly when it should not.** Angular's `DISABLED` status excludes a form from validation, which
+makes `form.invalid` **false** — so `[disabled]="form.invalid"` on a submit button *enables* it the
+moment the form is switched off. The lock condition therefore has to be named a second time on the
+control and a third time in the handler. Measured on the accounts screen; it will read as
+belt-and-braces on every screen that copies it, and it is not.
+
+### Two predicates, failing safe in opposite directions
+
+The account key status is three-valued — `locked`, `unlocking`, `unlocked` — and the screen reads it
+**twice**, for two different questions. Folding them into one predicate makes one of two mistakes
+unavoidable.
+
+- **The form is usable only when the status is `unlocked`.** Written positively, so `locked`,
+  `unlocking` and any state added later all arrive **disabled**. A state nobody has thought about
+  yet must be inert and visible, never live and silent.
+- **The notice renders on `locked` alone.** Its sentence is *advice* — press Unlock in Settings —
+  and that advice is already false for somebody whose unlock is running. So during `unlocking` the
+  list stays where it is and every name in it renders its `locked` marker, which is a **statement**
+  rather than advice and cannot go stale the same way.
+
+That is the whole distinction: **disable when unsure, but do not advise when unsure.** Written
+`!== 'locked'` the form goes live mid-ceremony; written `!== 'unlocked'` the notice tells somebody
+to press a button they are already holding down.
+
+`unlocking` is **unreachable from this route today** — the ceremony runs from Settings and there is
+one tab — so the two cases naming it are the only thing keeping the split alive.
+
+### A name that cannot be read cannot be renamed — but it can still be deleted
+
+Edit is disabled on any row whose name is not `text`, with the reason in the row itself rather than
+in a tooltip, because a tooltip is an explanation nobody hears. Prefilling the field with an empty
+value and letting the person save would overwrite a name they cannot see with a blank: that is not
+an edit, it is a deletion wearing an edit's clothes.
+
+**Delete stays available**, and the asymmetry is the point. Somebody looking at a row they cannot
+read may still decide it should not exist; removing a row is not rewriting its contents, and
+refusing both would strand every unreadable row permanently.
+
+On this screen the handler's half of that gate is held by the **compiler** rather than by a test —
+reading the value off a `NarrativeText` does not type-check until the state has been narrowed — so
+the mutation removing it does not compile. That is stronger than a red bar and it is worth knowing
+it is what is holding the rule, because the next screen may not get it for free.
+
 ### Ordering falls out, and is not special-cased
 
 Lists sort through `compareNarrative`: opened text first, then unreadable, then locked. On a locked

@@ -276,9 +276,18 @@ Load-bearing rules, each explained there or in the linked decision:
   `category_groups.name`, `category_groups.description`, `categories.name`, `categories.description`
   and `transactions.description` are `bytea`, and `accounts.name_key`, `payees.name_key`,
   `category_groups.name_key` and `categories.name_key` hold the indexes; those routes accept a sealed
-  name and refuse a plaintext one, and **no screen has caught up** — `/app/accounts`, the transaction
-  form and **both** halves of `/app/categories` still send the old shape, so none of them can create
-  or rename until the client is wired. **`transactions` is the one sealed table with no name column
+  name and refuse a plaintext one, and **one screen has caught up** — `/app/accounts` mints its own
+  row id, seals the name and computes the index, while the transaction form and **both** halves of
+  `/app/categories` still send the old shape and so cannot create or rename until they are wired.
+  Three rules that screen established and the next three inherit, each held by tests alone: **the
+  form is usable only when the key status is `unlocked`** and never `!== 'locked'`, so `unlocking`
+  and any later state arrive disabled rather than live and silent, while the **locked notice follows
+  `locked` alone** because its sentence is advice and advice is false mid-ceremony — *disable when
+  unsure, do not advise when unsure*; **a row whose name did not open cannot be renamed but can
+  still be deleted**, because overwriting a name nobody can read is a deletion wearing an edit's
+  clothes while removing the row is not rewriting it; and **a disabled form reports itself valid**,
+  so `[disabled]="form.invalid"` *enables* a submit button the moment the form is switched off and
+  the lock condition has to be named again on the control and again in the handler. **`transactions` is the one sealed table with no name column
   at all**: no blind index, no unique name index, no `IndexedName`, and **no
   `AK_transactions_id_budget_id`** — a budget-owned table carries that key when something references
   it compositely, and **the referrer is not always `transactions`**: its three `HasPrincipalKey`

@@ -14,6 +14,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatListModule } from '@angular/material/list';
 import { MatSelectModule } from '@angular/material/select';
+import { NarrativeValueComponent } from '@app-shared/components/narrative-value/narrative-value.component';
 import { AccountsService } from '../accounts/accounts.service';
 import { TransactionsService } from './transactions.service';
 
@@ -29,6 +30,7 @@ import { TransactionsService } from './transactions.service';
     MatInputModule,
     MatListModule,
     MatSelectModule,
+    NarrativeValueComponent,
   ],
   styles: `
     :host {
@@ -62,13 +64,20 @@ import { TransactionsService } from './transactions.service';
       <mat-form-field>
         <mat-label>Account</mat-label>
         <mat-select formControlName="accountId">
-          @for (account of accounts.accounts(); track account.id) {
-            <mat-option [value]="account.id">{{ account.name }}</mat-option>
+          @for (account of accounts.accounts() ?? []; track account.id) {
+            <mat-option [value]="account.id">
+              <app-narrative-value [value]="account.name" />
+            </mat-option>
           }
         </mat-select>
       </mat-form-field>
 
-      @if (!accounts.loading() && accounts.accounts().length === 0) {
+      <!--
+        \`?.length === 0\` and never \`(… ?? []).length === 0\`: a null list is
+        "no answer yet", and saying "create an account" over a read that never
+        landed is a claim about the budget rather than about the request.
+      -->
+      @if (!accounts.loading() && accounts.accounts()?.length === 0) {
         <p>Create an account before adding transactions.</p>
       }
 
@@ -115,7 +124,7 @@ import { TransactionsService } from './transactions.service';
         mat-flat-button
         color="primary"
         type="submit"
-        [disabled]="form.invalid || accounts.accounts().length === 0"
+        [disabled]="form.invalid || (accounts.accounts()?.length ?? 0) === 0"
       >
         Add transaction
       </button>
