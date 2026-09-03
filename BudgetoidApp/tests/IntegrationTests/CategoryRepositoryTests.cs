@@ -37,9 +37,10 @@ public sealed class CategoryRepositoryTests
                 UtcNow());
             db.CategoryGroups.Add(categoryGroup);
             db.Categories.Add(Category.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 categoryGroup.Id,
-                "Groceries",
+                SealedNarrative.Indexed("Groceries"),
                 null,
                 0,
                 UtcNow()));
@@ -85,21 +86,23 @@ public sealed class CategoryRepositoryTests
                 0,
                 UtcNow());
             Category category = Category.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 categoryGroup.Id,
-                "Groceries",
+                SealedNarrative.Indexed("Groceries"),
                 null,
                 0,
                 UtcNow());
             db.AddRange(account, categoryGroup, category);
             await db.SaveChangesAsync();
             Transaction transaction = Transaction.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 account.Id,
                 -10m,
                 UsdMinorUnit,
                 new DateOnly(2026, 7, 14),
-                "Food",
+                SealedNarrative.Description("Food"),
                 UtcNow());
             transaction.AssignCategory(category.Id);
             db.Transactions.Add(transaction);

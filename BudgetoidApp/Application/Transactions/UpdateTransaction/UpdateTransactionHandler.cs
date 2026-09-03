@@ -1,9 +1,11 @@
 using Application.Abstractions;
 using Application.Currencies;
+using Application.Security;
 using Domain.Accounts;
 using Domain.Categories;
 using Domain.Common;
 using Domain.Payees;
+using Domain.Security;
 using Domain.Transactions;
 using DomainValidationException = Domain.Common.ValidationException;
 
@@ -21,6 +23,60 @@ public sealed class UpdateTransactionHandler(
         UpdateTransactionCommand command,
         CancellationToken cancellationToken = default)
     {
+        // THE DESCRIPTION IS DECODED ABOVE EVERY MUTATION AND ABOVE THE LOOKUP, for the reason the
+        // account, payee and category resolutions are read above theirs: the entity the repository hands
+        // back is the TRACKED instance in production, so a handler that mutated it and only then threw
+        // would leave a cleared or rewritten note for the next SaveChanges on that context to commit.
+        //
+        // FOUR STATES REACH THIS MEMBER AND ALL FOUR ARE DISTINCT ON THE WIRE. Measured against the
+        // product's own Optional<T> converter under JsonSerializerDefaults.Web with the options
+        // Api/Program.cs registers:
+        //   member absent                  -> IsSet=false            -> leave the note alone
+        //   "description": null            -> IsSet=true, Value=null -> clear the note
+        //   "description": "<base64url>"   -> IsSet=true, Value=text  -> replace the note
+        //   "description": ""              -> IsSet=true, Value=""    -> 400 keyed on Description
+        //
+        // IsSet IS THE OUTER TEST AND `Value is null` THE INNER ONE, IN THAT ORDER. Reversed - branching
+        // on `Value is { } text` first - present-and-null falls through with the absent case, so the one
+        // request that clears a note does nothing and answers 204. It is the same trap the PayeeId and
+        // CategoryId blocks below document, and the description joins it; what makes this one worse is
+        // that the payee's silent no-op leaves a visible counterparty attached, while a note that failed
+        // to clear looks exactly like a note that was never touched.
+        //
+        // "" is refused rather than folded, and `is null` is the whole of the spelling: never
+        // string.IsNullOrEmpty and never string.IsNullOrWhiteSpace. The decoder underneath refuses null
+        // and "" identically, so the distinction cannot live down there, and a forgiving spelling here
+        // reads "" as "clear it" - which is a fourth meaning nobody sent.
+        Optional<NarrativeField?> description = default;
+        if (command.Description.IsSet)
+        {
+            if (command.Description.Value is null)
+            {
+                description = new Optional<NarrativeField?>(null);
+            }
+            else if (CiphertextEnvelopeText.TryDecode(
+                         command.Description.Value,
+                         NarrativeFieldLimits.DescriptionBytes,
+                         out byte[]? decodedDescription))
+            {
+                description = new Optional<NarrativeField?>(
+                    NarrativeField.Sealed(
+                        decodedDescription, NarrativeFieldLimits.DescriptionBytes));
+            }
+            else
+            {
+                throw new DomainValidationException(new Dictionary<string, string[]>
+                {
+                    [nameof(command.Description)] =
+                    [
+                        "The transaction description must be base64url text decoding to a sealed "
+                        + $"envelope of at most {NarrativeFieldLimits.DescriptionBytes} bytes carrying "
+                        + $"envelope version {CiphertextEnvelope.Version}.",
+                    ],
+                });
+            }
+        }
+
         // The lookup runs through the budget query filter, so a transaction belonging to another
         // budget is indistinguishable from one that never existed — both end here as a 404.
         Transaction? transaction = await repository.GetByIdAsync(command.Id, cancellationToken);
@@ -96,7 +152,11 @@ public sealed class UpdateTransactionHandler(
             command.Amount.OrElse(transaction.Amount),
             currency.MinorUnit,
             command.Date.OrElse(transaction.Date),
-            command.Description.OrElse(transaction.Description));
+
+            // OrElse over the DECODED optional and never over command.Description, which holds text this
+            // entity has no member for. Absent means the note the row already carries survives; that is
+            // the one state the entity itself cannot express, because Update is a full assignment.
+            description.OrElse(transaction.Description));
 
         // IsSet IS THE OUTER TEST AND Value THE INNER ONE, AND THE ORDER IS THE THREE-STATE CONTRACT.
         // Reached the other way round — branching on `Value is { } id` first — present-and-null falls

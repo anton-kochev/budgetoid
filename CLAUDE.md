@@ -271,16 +271,28 @@ Load-bearing rules, each explained there or in the linked decision:
   binding comes from. **Every refusal the codec makes about its caller is
   `NarrativeFieldMisuseError`**, thrown before any cipher; a ciphertext that failed to authenticate
   never is, and `openField`'s `catch` re-throwing on that type is the only thing keeping a caller's
-  defect out of `unreadable`. **Five columns are typed for an envelope and three carry a blind index,
-  and no screen has caught up** — `budgets.name`, `accounts.name`, `payees.name`,
-  `category_groups.name` and `category_groups.description` are `bytea`, and `accounts.name_key`,
-  `payees.name_key` and `category_groups.name_key` hold the indexes; those routes accept a sealed
-  name and refuse a plaintext one, and `/app/accounts` still sends the old shape, so that screen
-  cannot create or rename until the client is wired. **`category_groups.description` is the first
-  sealed *free-text* column and it carries rules no name column ever needed.** It is
+  defect out of `unreadable`. **All eight narrative columns are typed for an envelope, four carry a
+  blind index, and the set is closed** — `budgets.name`, `accounts.name`, `payees.name`,
+  `category_groups.name`, `category_groups.description`, `categories.name`, `categories.description`
+  and `transactions.description` are `bytea`, and `accounts.name_key`, `payees.name_key`,
+  `category_groups.name_key` and `categories.name_key` hold the indexes; those routes accept a sealed
+  name and refuse a plaintext one, and **no screen has caught up** — `/app/accounts`, the transaction
+  form and **both** halves of `/app/categories` still send the old shape, so none of them can create
+  or rename until the client is wired. **`transactions` is the one sealed table with no name column
+  at all**: no blind index, no unique name index, no `IndexedName`, and **no
+  `AK_transactions_id_budget_id`** — a budget-owned table carries that key when something references
+  it compositely, and **the referrer is not always `transactions`**: its three `HasPrincipalKey`
+  calls consume the accounts, payees and categories keys, while `AK_category_groups_id_budget_id`
+  has its single consumer in `CategoryConfiguration`, because a *category* is what points at a group.
+  `transactions` is the leaf nothing references, so the asymmetry is the shape of the reference graph
+  rather than an oversight. Said at the element, because an absence cannot be found by grep — and
+  said in full, because the shorter story would retire the group key the day transactions stopped
+  naming categories, taking the categories-to-groups foreign key with it. **`category_groups.description` was the first sealed
+  *free-text* column and it carries rules no name column ever needed.** It is
   **nullable**, capped at `NarrativeFieldLimits.DescriptionBytes` (2560) and not `NameBytes` (1024) —
-  the two are field *classes*, and this column is the first production caller of either the wider cap
-  or `NarrativeField.SealedOrAbsent` — and it gets **no blind index, ever**, because a description is
+  the two are field *classes*, and it was the first production caller of either the wider cap
+  or `NarrativeField.SealedOrAbsent`, which have three between them now — and it gets **no blind
+  index, ever**, because a description is
   never looked up and one would publish a deterministic fingerprint of somebody's free text. **A lost
   description is invisible where a lost name is `23502`**: a write path that decodes one and forgets
   to assign it writes a legal `NULL`, byte-identical to a note nobody filed, so what holds it is that
@@ -290,34 +302,48 @@ Load-bearing rules, each explained there or in the linked decision:
   `is null` and never `IsNullOrEmpty`/`IsNullOrWhiteSpace`, the DTO member stays `string?` with no
   `?? string.Empty`, and the deleted `NormalizeDescription` — which folded whitespace onto `NULL` —
   cannot come back in any form. Its `CHECK` pair also makes this the first table whose alphabetical
-  constraint ordering **crosses two columns** (`description_length` first of six), which is why a
-  `get_byte` spelling on the description's version check is shielded by the length band and caught by
-  **nothing in the suite** — held by review, measurable only with a container probe. And the group
-  half of `/app/categories` is the **third** screen that cannot write: `category-groups-api.service.ts`
-  still sends a plaintext `name` with no `id` and no `nameKey`, so a create 400s on three members at
-  once and a rename on two, while the category half still works because `categories.name` is still
-  text. A duplicate group name answers **400 keyed on `Name`** on both verbs — deliberately not the
-  payee create's 409, because the input to that rule is who *chose* the name and sealing a column
-  does not change it — and a duplicate **identifier** answers 409 with its own sentence, as on
-  accounts and payees.
+  constraint ordering **crosses two columns** (`description_length` first of six). **What that
+  ordering shields is a *spelling*, never the constraint** — and the difference is the sentence a
+  reader will collapse. All **eight** narrative version checks **fire**, under their own names, on
+  any value of legal length carrying a foreign version byte; measured on postgres:17.10, and the
+  suite already asserts several of them. What no `INSERT` can reach is the difference between
+  `substring` and `get_byte`: the one value that would make `get_byte` raise `2202E` instead of
+  answering false is a *present, zero-length* one, and the length band sorts first and takes it. So
+  the wrong spelling is **behaviourally** invisible — but it is not invisible: `pg_get_constraintdef`
+  renders the two differently and `SchemaConstraintSnapshotTests` pins that text, so a `get_byte`
+  spelling reddens there. Do not read any of this as licence to retire a version check as dead
+  weight. And **both** halves of `/app/categories` are screens that
+  cannot write: each still sends a plaintext `name` with no `id` and no `nameKey`, so a create 400s
+  on three members at once and a rename on two. A duplicate group **or category** name answers
+  **400 keyed on `Name`** on both verbs — deliberately not the payee create's 409, because the input
+  to that rule is who *chose* the name and sealing a column does not change it — and a duplicate
+  **identifier** answers 409 with its own sentence, on accounts, payees, category groups, categories
+  and transactions alike.
   **The transaction form is unwired the same way, and it is now
   audible.** It posts `payeeName`, a member the API no longer binds; that answered **201 with no payee
   attached** until `[JsonUnmappedMemberHandling(Disallow)]` went onto the **two** shapes that carried
   the retired member — `CreateTransactionCommand` and `TransactionEndpoints.UpdateTransactionRequest`
   — where the same body now answers **400**. The attribute is **per-type, measured**: the options in
   `Api/Program.cs` stay `Skip` and an unannotated sibling still ignores an unknown member. **It sits on
-  four shapes for two different reasons and the reasons must not be folded**: on the transaction pair it
-  answers wire **drift**, a retired member a released client still sends; on `CreateCategoryGroupCommand`
-  and `CategoryGroupEndpoints.UpdateCategoryGroupRequest` nothing is retired, and what earns it is a
+  six shapes for two different reasons and the reasons must not be folded**: on the transaction pair it
+  answers wire **drift**, a retired member a released client still sends; on the four category and
+  category-group shapes nothing is retired, and what earns it is a
   **nullable narrative column** — under `Skip` a misspelled `descriptionn` binds identically to an absent
   member, so `POST` answered 201 with a note that never arrived and `PUT` answered **204 having cleared a
-  note nobody asked to remove**. Do not
+  note nobody asked to remove**. **The transaction pair does not acquire the second reason, and that is
+  measured rather than assumed**: its description is an `Optional<string?>`, where absent means *leave
+  the note alone* rather than *clear it*, so a misspelling under `Skip` drops an edit instead of
+  destroying data. Writing the nullable-column argument onto that pair would be a false sentence in a
+  file whose sentences are what a reader trusts. Do not
   widen it into a global setting, and do not paste it onto a shape that has made neither decision —
-  refusing what a caller was not asked for is a contract decision each shape makes for itself, and
-  `PatchCategoryGroupPosition_WithAnUnknownMember_StillIgnoresIt` is the negative control that reddens
-  the day somebody makes it global. The
-  cost is that every write the transaction form makes 400s until the client sends `payeeId`; chosen,
-  because losing the counterparty invisibly is worse than failing visibly. Nothing in the browser seals
+  refusing what a caller was not asked for is a contract decision each shape makes for itself.
+  `PatchCategoryGroupPosition_WithAnUnknownMember_StillIgnoresIt` is the **one** negative control that
+  reddens the day somebody makes it global; the category placement `PATCH` makes the same omission
+  and nothing asserts it, which is an absence rather than a second control.
+  The cost is that every write the transaction form makes 400s until the client sends `payeeId` — and
+  now a client-minted `id` and a sealed `description` beside it, so retiring `payeeName` alone would
+  not rescue a single write; chosen, because losing the counterparty invisibly is worse than failing
+  visibly. Nothing in the browser seals
   anything yet. Neither codec is callerless: `AccountKeyCustodyService` reaches both halves
   of the narrative one and the whole of the blind index, which is the only way either key can be
   applied without leaving the class that holds it. **The blind index is built**, over its own
@@ -338,12 +364,27 @@ Load-bearing rules, each explained there or in the linked decision:
   interpret: it never needed to *read* a name to enforce that, only to compare names for equality.
   Case folding **relocated** rather than vanishing — the collation left by force and the client folds
   before hashing, so the database still guarantees two identical index values cannot coexist and no
-  longer guarantees two spellings of one name are recognised as identical. **A blind-indexed name is
+  longer guarantees two spellings of one name are recognised as identical. It left all four name
+  columns the same way, so **`users.email` is the only column in the schema still carrying
+  `case_insensitive`** — a one-entry pin that reads like a leftover and is not: it is one entry beside
+  four absences, each of them an assertion that the sealing held. **A blind-indexed name is
   a pair and the pair travels together** — in the domain (`IndexedName`), in the schema (two `NOT
   NULL` columns) and in `GRANT UPDATE`. Half a grant either forbids the operation outright (`42501`,
   which is what shipped and what no test saw, because the case proving renames issued a one-column
   `UPDATE`) or admits half a row whose uniqueness value disagrees with its content, and nothing can
   see the second: recomputing the digest needs an index key the server does not have.
+  **It shipped a second time, on `categories`, and the measurement is what the rule is now written
+  from.** A genuine rename answers `42501` and **PostgreSQL names only the relation** — no column, no
+  constraint, nothing pointing at which grant entry is missing, because `aclcheck_error` reports the
+  table. What kept it quiet is the commonest edit: a client changing only the *description* re-sends
+  the name it already has, a fresh nonce changes `name` while `name_key` stays byte-identical, the
+  content comparer honestly reports it unchanged, and EF emits a one-column `UPDATE` that **succeeds**
+  under the broken grant. Measured: **zero** genuine category renames reached the database until the
+  route bodies were fixed, so the suite would have shipped it green a third time. **Loudness is
+  decided by which column is missing, never by which table it is on** — `name` or `name_key` missing
+  is loud on any real rename, on all four alike; `description` or `position` missing is quiet. An
+  earlier sentence here split those tables on how EF emits, and that one axis produced two opposite
+  wrong conclusions.
   **`payees.name` is the first column whose sealing took a *capability* away, and the route table
   changed to say so.** The server used to find-or-create a payee by name inside the transaction
   write; it cannot any more — it holds an envelope it has no key for and the index is computed in a
@@ -353,17 +394,19 @@ Load-bearing rules, each explained there or in the linked decision:
   answers two statuses**: a duplicate blind index is a **409** on the create and a **400** on the
   rename, because a create's remedy is "adopt the row that already exists" — not a field anybody can
   correct — and a rename's is "choose another name", which is; collapsing them costs the rename the
-  field-keyed problem document `payees.md` argues for. **The primary key answers a third, on payees,
-  accounts and category groups alike**: the id is client-minted, so a POST retried after a network
+  field-keyed problem document `payees.md` argues for. **The primary key answers a third, on all five
+  client-minted tables alike**: the id is client-minted, so a POST retried after a network
   timeout carries a byte-identical body and collides on
-  `PK_payees` / `PK_accounts` / `PK_category_groups`, not on the name index — measured
+  `PK_payees` / `PK_accounts` / `PK_category_groups` / `PK_categories` / `PK_transactions`, not on
+  the name index — measured
   on postgres:17.10, a row violating **both** is reported under the **key**, because PostgreSQL
   checks a relation's indexes in **OID (creation) order** and the key is created with the table,
   which is a different rule from the alphabetical one ordering a column's `CHECK` constraints. It was
-  measured once, on payees; the later tables inherit it by declaring the key with the table rather
-  than by anybody re-observing it. That
-  also makes `AK_{payees,accounts,category_groups}_id_budget_id` unreachable as a reported name, so
-  nothing matches it. All three repositories translate it to a **409 carrying its own sentence**,
+  measured once, on payees; the four later tables inherit it by declaring the key with the table
+  rather than by anybody re-observing it. That
+  also makes `AK_{payees,accounts,category_groups,categories}_id_budget_id` unreachable as a reported
+  name, so nothing matches it — and `transactions` has no such key to be unreachable, being the leaf
+  nothing references. All five repositories translate it to a **409 carrying its own sentence**,
   never the duplicate-name
   one: the row wearing that id may hold a different name — or sit in a budget the caller cannot read
   — so "re-read your list" would send somebody looking for a name that is not there. The route is
@@ -372,9 +415,12 @@ Load-bearing rules, each explained there or in the linked decision:
   `ITransactionalExecutor`** — each is one `SaveChanges` now, and a transaction around a single save
   reads as load-bearing to the next reader — which makes a payee **orphanable** by a failed
   transaction POST, on a table with no `DELETE` grant; accepted, because every alternative either
-  needs the lookup that no longer exists or gives payees a second creating path. **Case-insensitive
-  reuse survives only as client behaviour**: two integration cases asserting the server did it were
-  deleted with no replacement, because there is no server behaviour left to assert. And the
+  needs the lookup that no longer exists or gives payees a second creating path. Neither category
+  handler was ever given one, for the same reason. **Case-insensitive
+  reuse survives only as client behaviour**: three integration cases asserting the server did it were
+  deleted with no replacement, the last of them on `categories`, because there is no server behaviour
+  left to assert — `bytea` is not collatable, so the collation left by force rather than by choice.
+  And the
   never-materialise habit has a new instance — a **model-only** mutation here cannot be measured by
   the suite at all: changing a `CHECK` in the configuration desynchronises the frozen baseline, and
   `PendingModelChangesWarning` kills ~1200 tests *before* the database ever sees the new constraint,

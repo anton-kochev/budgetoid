@@ -22,6 +22,19 @@ request that brings one into existence, is in [payees.md](payees.md).
 
 - **Transaction** — `Id`, `BudgetId`, required `AccountId`, signed `Amount`, `Date`, optional
   `Description`, optional `PayeeId`, optional `CategoryId`, `CreatedAtUtc`.
+  - **`Description` is a sealed narrative envelope and not text.** The property is typed
+    `NarrativeField?` and the column is nullable `bytea`, capped at
+    `NarrativeFieldLimits.DescriptionBytes` and carrying **no blind index, ever**. That type has no
+    constructor, factory or conversion taking a `string`, so writing plaintext into this column does
+    not compile — see [ciphertext-envelope.md](ciphertext-envelope.md). What it forecloses on *this*
+    table is the most specific disclosure in the product: a memo is what somebody wrote to remind
+    themselves what a particular payment was, beside the amount, the date and the counterparty.
+  - **`Id` is supplied to the factory, never minted inside it.** `Guid.CreateVersion7` has left
+    `Transaction.cs` entirely, with no minting overload behind it; the identifier is the associated
+    data the client sealed `Description` against.
+  - **There is no `Name`, no `NameKey` and no `IndexedName` anywhere on this entity**, and
+    `transactions` is the only sealed table in the product like that. What follows from it is a rule
+    of its own below.
 
 ```mermaid
 erDiagram
@@ -32,14 +45,14 @@ erDiagram
     CATEGORY ||--o{ TRANSACTION : "optionally categorizes"
     CATEGORY_GROUP ||--o{ CATEGORY : contains
     TRANSACTION {
-        guid Id
+        guid Id "client-minted, the description's associated data"
         guid BudgetId
         guid AccountId
         guid PayeeId
         guid CategoryId
         decimal Amount
         date Date
-        string Description
+        bytea Description "sealed envelope, nullable, no index"
         datetime CreatedAtUtc
     }
 ```
@@ -150,13 +163,113 @@ erDiagram
 
 ---
 
-- **Rule**: Description is optional, a blank value is stored as null, and a value is at most 500
-  characters.
-- **Why**: The description is a free-text memo, so an empty string and "no memo" are the same thing
-  and should not be two states a reader has to handle.
-- **Enforced in**: `Transaction.ValidateOrThrow`, shared by `Transaction.Create` and
-  `Transaction.Update`.
-- **Example**: `"   "` is stored as null, not as a blank string.
+- **Rule**: **The description reaches this server sealed, and every rule this file used to state
+  about its text is gone.** Not a trim, not a blankness fold, not a 500-character ceiling. What
+  replaces them is one byte band and one version byte, and nothing else.
+- **Why**: this is a **capability that moved**, not a rule that was quietly dropped, and the
+  distinction is why it is written down rather than left as a gap in a validator. What arrives is an
+  AEAD envelope over text this server has never seen and holds no key for; "is this nothing but
+  spaces?" and "is it longer than a memo?" are questions about plaintext. A reader who finds the
+  absence and restores a check can only restore it against the **envelope** — measuring bytes and
+  calling them characters, or refusing a 29-byte envelope that is the correct sealing of an empty
+  string. Both are wrong answers wearing the shape of the right one. **The old rule's own premise
+  went with it**: it claimed an empty string and "no memo" were the same thing, and the schema now
+  says otherwise — see the two-states rule below.
+- **Enforced in**: `Transaction.ValidateOrThrow` keeps the identifier, the tenancy, the account, the
+  amount's precision and its magnitude, and **no description rule at all**; its old return value went
+  with the normalisation it used to hand back, so the member is `void`. What replaced the ceiling is
+  `NarrativeFieldLimits.DescriptionBytes` — a cap on **stored envelope bytes**, applied by
+  `NarrativeField.SealedOrAbsent` and restated as the upper bound of
+  `CK_transactions_description_length`, with `CiphertextEnvelope.MinimumLength` as its floor and
+  `CK_transactions_description_version` requiring the leading version byte through `substring`.
+  Neither check is the blank-memo rule restored: an envelope over an empty string satisfies both
+  exactly, and both are vacuously satisfied by NULL.
+- **Example**: a client that seals `"   "` gets a `201`. The row is well-formed, the constraints are
+  satisfied, and nothing in this deployment can tell that value from a paragraph.
+- **Counterexample**: adding a floor above the format's own to approximate "not blank". It refuses
+  short real memos, admits long blank ones, and is a rule about ciphertext claiming to be a rule
+  about text.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **"Cleared" and "never filled" are two different rows, and they must stay two.** An
+  emptied memo is an envelope of exactly `CiphertextEnvelope.MinimumLength` bytes; a memo nobody
+  wrote is `NULL`. **`TransactionDto.Description` is therefore `string?` with no `?? string.Empty`.**
+- **Why**: that coercion is the **shipped instance** of this defect, and it lived here rather than
+  anywhere else in the product — the DTO folded a null onto an empty string because a screen had to
+  render something, and the export document already refused to reuse the DTO partly on those
+  grounds. Under a sealed column the coercion stops being lossy-but-tolerable and becomes wrong:
+  `""` is not a legal envelope, so a client that decodes what it is handed gets a failure on a row
+  that is perfectly fine, and it cannot tell the coercion from a value it is expected to open.
+  **And a lost description here is invisible where a lost name elsewhere is `23502`**: the column is
+  nullable, so a write path that decodes a memo and then forgets to assign it writes a legal `NULL`,
+  byte-identical to one belonging to somebody who deliberately filed no memo.
+- **Enforced in**: the member's type and three habits around it. `Transaction.Description` is
+  **assigned and never normalised** — the fold that mapped whitespace onto `null` is deleted and may
+  not return in any form, because there is no `string` on this side to inspect. Both handlers test
+  `is null` and never `string.IsNullOrEmpty` or `string.IsNullOrWhiteSpace`, since the decoder
+  underneath refuses `null` and `""` identically and the distinction cannot live down there. And what
+  holds the *invisible* half is neither a constraint nor a type but a **test shape**: both write
+  paths are covered by a case reading a **non-null** description back through a route, never one
+  asserting the member is merely present or that the response was a 201 or a 204.
+- **Example**: somebody clears the memo on an entry. The row keeps a 29-byte envelope, which is what
+  they wrote — nothing. Somebody who never filed one keeps `NULL`. Both render as no memo and the
+  rows are not the same row.
+- **Counterexample**: restoring `?? string.Empty` on the DTO. It passes every case in the suite
+  except one asserting the member comes back as JSON `null`, and that single case is the whole of
+  what stands between a client and an unopenable `""`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **`transactions` is the only sealed table with no name column, so it has no blind index,
+  no unique name rule and no alternate key** — and none of those absences is an oversight.
+- **Why**: the four blind indexes exist so equal *names* can be found equal, for a uniqueness
+  constraint or a lookup; a memo is none of those things, so an index over one would publish a
+  deterministic per-account fingerprint of somebody's free text with nothing on the other side asking
+  for it. The missing `AK_transactions_id_budget_id` has a sharper reason than "nothing needs it":
+  every other budget-owned table carries `(id, budget_id)` **because `transactions` references it
+  compositely**, and `transactions` is the leaf of that graph — nothing in the schema references it
+  at all. An alternate key here would be a constraint no foreign key points at and no failure can
+  ever report, which is dead code that reads convincingly.
+- **Enforced in**: the absences themselves, and the types that make them safe. `IndexedName` and its
+  self-chosen `NameBytes` ceiling are reachable only *through* a name, so nothing in the established
+  pattern silently assumed one and nothing had to be worked around; `NarrativeField`,
+  `NarrativeFieldLimits` and the envelope edge are name-agnostic by construction. The one place a
+  name was assumed was **prose and fixtures**, not code.
+- **Counterexample**: adding the alternate key for symmetry with the other four tables. It compiles,
+  it migrates, and it creates a constraint name nothing can ever produce — the same dead guard
+  [ciphertext-envelope.md](ciphertext-envelope.md#which-constraint-a-row-is-reported-under-is-decided-by-oid)
+  argues against for the four keys that *do* exist.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: A transaction's identifier is **supplied by the client and crosses as text**, in the
+  lower-case 36-character hyphenated spelling and nothing else, and a create carrying an identifier
+  the table already holds answers **409 with a sentence of its own**.
+- **Why**: the identifier is the associated data the memo was sealed against, and associated data is
+  rebuilt from where a ciphertext was found rather than carried inside it — so this API has to hand
+  back the same spelling it was sent and refuse the ones it cannot reproduce. Bound as a `Guid`,
+  `System.Text.Json` folds the braced, upper-case and canonical forms before any handler sees text,
+  and the refusal becomes **unwritable**. The 409 follows from the same client custody: a retry after
+  a network timeout carries a byte-identical body, and the row already wearing that id may hold a
+  different memo — or sit in a budget the caller cannot read — so a sentence sending them off to
+  re-read a list would send them looking for something that is not on it.
+- **Enforced in**: `CreateTransactionCommand.Id` is a `string`, judged by
+  `CanonicalIdentifier.TryParse` in the handler — first of the opaque members, because a spelling
+  this API cannot reproduce makes the envelope beside it irrelevant. `Transaction.Create` takes the
+  id as a parameter and refuses `Guid.Empty`, reachable for the first time now that the value arrives
+  from outside and refused there rather than left to the primary key, which accepts all-zero as a
+  legal uuid and would answer the *second* such row with a sentence true of the row and wrong about
+  the caller. `TransactionRepository.AddAsync` gains its **first** `catch` block for the
+  `PK_transactions` violation; it needs no second arm, because this table has no other unique rule
+  for a row to break.
+- **Counterexample**: `UpdateTransactionCommand.Id` is a `Guid` and the route parameter stays
+  `{id:guid}`. On an edit the client re-seals against the row's **existing** id, read back from this
+  API in the one form a `Guid` renders, so there is no spelling to preserve. The rule lives where an
+  identifier is *chosen*.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -220,38 +333,45 @@ erDiagram
 
 - **Rule**: Transaction responses are self-contained for display — they carry `CategoryId`,
   `CategoryName`, `CategoryGroupId` and `CategoryGroupName`, plus the account's name, currency code
-  and symbol. **Three of the four names are envelopes and one is still text, and no rule covers all
-  four.**
+  and symbol. **All four names are envelopes now, and so is the transaction's own description, so
+  one rule finally covers every narrative member on this record.**
 - **Why**: A transaction list has to render an amount and its context without the client stitching
   together three other endpoints, and the projection is from current data so a rename shows up
-  immediately. What the sealing changed is not the shape but what three of the members mean:
-  `AccountName`, `PayeeName` and `CategoryGroupName` are still typed `string` and no longer hold
-  names — each is its column's AEAD envelope as unpadded base64url — while `CategoryName` alone is
-  readable text, because `categories.name` is not sealed yet and is the next column to be. Folding the
-  four into one rule is wrong in both directions: decoding the category name as base64url, and
-  rendering a group name as a caption. This paragraph is provisional and is to be **rewritten rather
-  than patched** when that last column moves.
-  **Each envelope is also bound to a different row than the response is about.** Associated data is
-  rebuilt from wherever a ciphertext was found, so opening `PayeeName` needs the binding for
+  immediately. What the sealing changed is not the shape but what the members mean: `AccountName`,
+  `PayeeName`, `CategoryName` and `CategoryGroupName` are all still typed `string` and none of them
+  holds a name — each is its column's AEAD envelope as unpadded base64url. **The paragraph this
+  replaces said three of four and called itself provisional; the fourth has moved, and the rule was
+  rewritten rather than patched, which is what it asked for.** Folding the four into one rule is now
+  correct in the one direction that used to be wrong: there is no member here to render as a caption.
+  **Each envelope is also bound to a different row than the response is about, and there are now
+  five bindings on one record rather than three.** Associated data is rebuilt from wherever a
+  ciphertext was found, so opening `PayeeName` needs the binding for
   `payees.name` under the **payee's** row id — which the client rebuilds from `PayeeId` —
-  `AccountName` needs `accounts.name` under `AccountId`, and `CategoryGroupName` needs
-  `category_groups.name` under `CategoryGroupId`. The argument gets stronger with each member rather
-  than weaker. A client reaching for the transaction's own
+  `AccountName` needs `accounts.name` under `AccountId`, `CategoryName` needs `categories.name` under
+  `CategoryId`, `CategoryGroupName` needs `category_groups.name` under `CategoryGroupId`, and
+  `Description` is the only one bound to the transaction's **own** id. **Keeping `CategoryName` on
+  the record was taken deliberately rather than inherited**: dropping it would mean the list cannot
+  render a category until a second request lands, which is the client-side join this product already
+  considered and rejected. The argument gets stronger with each member rather
+  than weaker. A client reaching for the wrong
   binding gets an authentication failure rather than garbage, with nothing naming the cause; each
-  envelope travels beside the identifier it was sealed against, which is why all three identifiers are
+  envelope travels beside the identifier it was sealed against, which is why all four identifiers are
   on the wire.
 - **Enforced in**: `TransactionDto.FromTransaction`, fed by the handler's resolved account,
-  currency, payee, category and category group. Its three sealed parameters are typed `string` like
-  the one text parameter, so nothing in the signature tells a caller which is which — every caller
+  currency, payee, category and category group. Its sealed parameters are all typed `string`, so
+  nothing in the signature tells a caller which member carries what — every caller
   encodes through `PasskeyEncoding.Encode`, the one alphabet every binary member of this API crosses
   JSON in, and never `System.Text.Json`'s own `byte[]` handling, which emits padded standard base64
-  the client's strict decoder refuses. `TransactionReadService` carries all three sealed names **out**
+  the client's strict decoder refuses. `TransactionReadService` carries **every** sealed name and the
+  description out
   of its `Select` and encodes them once the row has materialised, because a value converter is not
-  something the provider can translate a call over; the category's name stays inside the `Select`,
-  and that split is a statement about today rather than a rule.
-- **Example**: renaming a payee is visible in the transaction list on the next read, because the
-  name is joined rather than snapshotted — and what appears is the new envelope, which only a
-  browser holding the account's content key can turn back into a name.
+  something the provider can translate a call over. **The split this paragraph used to describe is
+  gone**: the category's name left the `Select` with the others when its column was sealed, so there
+  is no member still projected in-query, and the "statement about today" it was hedged with has been
+  answered.
+- **Example**: renaming a payee or a category is visible in the transaction list on the next read,
+  because the name is joined rather than snapshotted — and what appears is the new envelope, which
+  only a browser holding the account's content key can turn back into a name.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -301,6 +421,12 @@ erDiagram
   mutable fields can be cleared. `description`, `payeeId` and `categoryId` accept an explicit null
   and empty out. `amount`, `date` and `accountId` have no empty state: an explicit null for one of
   them is a malformed request answered with 400, not an instruction to empty the field.
+  **`description` has a fourth wire state the other five do not**, and it is the one a reader will
+  fold away: `""` is present-with-a-value, it is not a legal envelope, and it answers **400 keyed on
+  `Description`** — never "clear the memo". Measured against the shipped converter and the shipped
+  request shape: absent arrives unset, explicit null arrives set-and-null, and `""` and `"   "` both
+  arrive set-with-a-value, so all four are distinguishable and the contract is writable rather than
+  aspirational.
 - **Why**: a transaction without an amount, a date or an account is not a transaction — it records
   that nothing happened, nowhere, at no time. The account carries a second load besides identity: it
   is what denominates the amount, so a transaction with no account has no currency and therefore no
@@ -317,7 +443,15 @@ erDiagram
   system is the lowest layer that can state this declaratively.
 - **Example**: `{"description": null}` stores a null description; `{"payeeId": null}` and
   `{"categoryId": null}` detach the payee and the category. `{"amount": null}` is a 400 naming the
-  field, and so are `{"date": null}` and `{"accountId": null}`.
+  field, and so are `{"date": null}` and `{"accountId": null}`. `{"description": ""}` is a 400 too,
+  and it is the one of those that is *not* the type system's doing — the member is legally set, and
+  what refuses it is the envelope decoder above the mutation.
+- **Counterexample, and it is the ordering rather than the shape**: reading `Value is { } text`
+  before `IsSet` on the description. Present-and-null then falls through with absent, the memo the
+  caller asked to remove is silently left attached, and the request answers 204 having done nothing —
+  the same trap this handler already documents for `PayeeId` and `CategoryId`, now with a third
+  member in it. The case that catches it has to read the **column** back, since `octet_length` of
+  NULL is NULL and the 204 is identical either way.
 - **Counterexample**: declaring all six over nullable types and treating a null amount as a clear.
   There is no empty `decimal` to clear to, so the merge falls back on `0` — a perfectly legal amount
   under the sign rule above — and a request that meant nothing coherent silently zeroes the entry
@@ -444,8 +578,16 @@ IF the account id does not resolve in the ambient budget
 ELSE IF the account's currency code has no seeded Currency row
   THEN InvalidOperationException                          ← unreachable; the currency FK forbids it
 ELSE
-  Transaction.Create validates the amount's precision against that currency's minor unit,
-    its magnitude, and the description length
+  judge the opaque members and collect every failure         ← Id first: a spelling this API cannot
+    IF Id is not the lower-case 36-character hyphenated        reproduce makes the envelope beside it
+       uuid, or is the all-zero one                            irrelevant whatever it looks like
+      THEN an error keyed on Id
+    IF Description is present and is not base64url           ← `is null` and never IsNullOrEmpty: an
+       decoding to a v1 envelope within                        absent member is an entry with no memo,
+       NarrativeFieldLimits.DescriptionBytes                    "" is a malformed one
+      THEN an error keyed on Description
+  Transaction.Create validates the amount's precision against that currency's minor unit
+    and its magnitude — and nothing about the memo, which it cannot read
   IF a PayeeId was supplied
     IF it does not resolve in the ambient budget
       THEN validation error "Payee was not found."        ← also the cross-budget answer
@@ -455,7 +597,9 @@ ELSE
       THEN validation error "Category was not found."
     ELSE resolve its Category Group and assign the category
   THEN persist and return the self-contained response     ← one SaveChanges, and no database
-                                                            transaction: there is only one write
+    IF PK_transactions refused it                            transaction: there is only one write
+      THEN 409 with its own sentence                      ← the table's only unique rule, so this
+                                                            arm needs no constraint-name sibling
 ```
 
 The category and payee steps are independent — either, both, or neither may run.
@@ -477,10 +621,18 @@ ELSE
   IF CategoryId was mentioned with a value
     IF it does not resolve in the ambient budget
       THEN validation error "Category was not found."
+  IF Description was mentioned with a value               ← decoded ABOVE every mutation, for the
+    IF it is not base64url decoding to a v1 envelope        tracked-entity reason the account, payee
+       within NarrativeFieldLimits.DescriptionBytes         and category resolutions are: a handler
+      THEN validation error keyed on Description            that mutated and then threw would leave
+                                                            the edit waiting for the next save
   Transaction.Update lays the mentioned fields over the stored ones and re-validates the amount's
-    precision against the target account's currency, its magnitude, and the description length
-  IF PayeeId was mentioned                                ← IsSet outside, the value inside; the
-    THEN assign the resolved payee, or clear it if the      other order drops the clear silently
+    precision against the target account's currency and its magnitude — and nothing about the memo
+  IF Description was mentioned                            ← IsSet outside, the value inside; the
+    THEN assign the decoded envelope, or clear it if the    other order drops the clear silently, on
+         value was null                                     all three of these members alike
+  IF PayeeId was mentioned
+    THEN assign the resolved payee, or clear it if the
          value was null
   IF CategoryId was mentioned
     THEN assign the resolved category, or clear it if the value was null
@@ -513,10 +665,10 @@ ELSE
   Category cannot be deleted; its Category Group cannot be deleted while the Category exists.
   Deleting the last Transaction filed under a Category, or editing it onto another Category or none,
   clears the first refusal the same way, and emptying the Category out of its group clears the
-  second. **The group's name on a transaction response is that group's envelope**, bound to the
-  group's own row id and joined at read time; the category's name is still text. A rename of either
-  reaches every transaction that named it without a transaction row being written, and on the group
-  what arrives is a fresh envelope only a browser holding the account's content key can read.
+  second. **Both the category's name and its group's are envelopes on a transaction response**, each
+  bound to its own row's id and joined at read time. A rename of either
+  reaches every transaction that named it without a transaction row being written, and what arrives
+  is a fresh envelope only a browser holding the account's content key can read.
 - **[Payees](payees.md)**: optional counterparty, **named by id and never created here.** Neither
   handler writes to `payees` any more — the server cannot resolve a name to a row, so a payee is
   created by `POST /api/payees` before the transaction that names it. A Transaction that references
@@ -531,12 +683,14 @@ ELSE
   is also what makes its Budget undeletable, unlike the Budget's other owned entities — the
   budget-level half of the never-as-a-side-effect rule stated under [Constraints](#must-not) above.
 - **Angular client**: `/app/transactions` records and edits entries (`TransactionsComponent`), and
-  **it has not been moved onto the payee-by-id contract, so it cannot write at all** —
-  `transactions-api.service.ts` still declares `payeeName` on the create request, which the API now
-  refuses by name with a 400, and renders the response's `payeeName` straight into the list where it
-  is base64url of an envelope. Its **read** is degrading a column at a time as the slices land:
-  `accountName` and `payeeName` were the first two, and `categoryGroupName` is the third, so the group
-  heading beside each entry is base64url now as well, while `categoryName` is still readable.
+  **it cannot write at all, now for three reasons rather than one** —
+  `transactions-api.service.ts` still declares `payeeName` on the create request, which the API
+  refuses by name with a 400; it sends no client-minted `id`; and it sends a plaintext `description`
+  where an envelope is required. Removing `payeeName` alone would not make a write succeed, which is
+  the sentence a reader planning the wiring needs. Its **read** finished degrading with this slice:
+  `accountName` and `payeeName` were the first two columns to become base64url, `categoryGroupName`
+  the third, and `categoryName` and the entry's own `description` are the last — so **every text an
+  entry displays is now an envelope**, and nothing in the browser opens one.
   That is a gap, named here rather than described as if it worked. It
   also owns one rule outright rather than restating one:
   the amount input must require a value rather
@@ -604,16 +758,38 @@ ELSE
   it sits on and no other: the payee routes' own shapes still ignore an unmappable member, because
   that is a decision each shape makes for itself, and the API's shared JSON options carry no
   `UnmappedMemberHandling` at all. **What earns it here is not what earns it elsewhere** — these two
-  shapes retired a member, so the attribute answers wire *drift*, while the two category-group write
-  shapes carry it for a different reason entirely, a nullable narrative column on which an unmapped
-  member is indistinguishable from an absent one; see
+  shapes retired a member, so the attribute answers wire *drift*, while the four category and
+  category-group write shapes carry it for a different reason entirely, a nullable narrative column
+  on which an unmapped member is indistinguishable from an absent one; see
   [categories.md](categories.md#business-rules--invariants). Do not fold the two arguments, and do
   not paste either onto a shape that has made neither decision.
-  What it costs is that `/app/transactions` cannot write until the client sends `payeeId` — chosen,
-  because a
+  - **Sealing `transactions.description` did not give this pair the second reason, and it is worth
+    saying so because the inference is tidy and wrong.** That argument turns on what *absent* means
+    on the route. On a category-group `PUT` a nullable `string? Description` reads absent as **clear
+    the note**, so a misspelled member under `Skip` clears a note nobody asked to remove — data loss.
+    Here the member is an `Optional<string?>` and absent reads as **leave the memo alone**, so the
+    same misspelling silently drops an *edit*: a real defect, and a different one. `Optional<T>` is
+    precisely what makes the category-group reason not apply, so the attribute here keeps exactly
+    one reason and the paragraph above it must not be widened.
+  What it costs is that `/app/transactions` cannot write — and the cost grew with the sealing, since
+  the form now also needs a client-minted `id` and a sealed `description` before a create can
+  succeed. Chosen, because a
   screen that fails visibly beats a ledger that quietly loses who the money went to. The caller gets
   a bare 400 dressed as `application/problem+json`, naming no field; the member is named in the
   server log. See [payees.md](payees.md#edge-cases--known-gotchas).
+- **This table's change-tracking class is narrower than the two on `categories` and
+  `category_groups`, and the reason is structural rather than an omission.** `description` is the
+  **only** converted property on `transactions`, so no comparer defect here can put a second column
+  into a `SET` clause. Measured: dropping the content comparer reddens the case asserting that a
+  memo rebuilt from identical bytes emits no statement at all, and it does **not** redden the case
+  asserting that a new memo names only `description` — that second case cannot fail from a comparer
+  defect on this table and is a pin against a different class of defect entirely. Its sibling on
+  `categories` reddens only because `name` and `name_key` sit beside the description there. The
+  control column here is `amount` or `date`, values the server can still read, rather than the
+  `position` its neighbours use. The snapshot arm is held by review as on every other sealed table,
+  and that is measured rather than argued: aliasing the copy instead of copying it killed nothing in
+  either suite.
+
 - Renaming a Category or Category Group, or moving a Category, immediately changes historical
   Transaction display; see [categories.md](categories.md#edge-cases--known-gotchas).
 - A missing Currency row for an Account fails loudly rather than guessing a symbol, but the

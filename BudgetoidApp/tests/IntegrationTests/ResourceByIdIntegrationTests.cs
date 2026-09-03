@@ -83,7 +83,8 @@ public sealed class ResourceByIdIntegrationTests
         // observable outside CategoryIntegrationTests, which is why the label had to stop being blind:
         // the two sites are a different projection over a different query and either could re-encode
         // with the other still green.
-        await Assert.That(category["name"]!.GetValue<string>()).IsEqualTo("Groceries");
+        await Assert.That(category["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Groceries"));
         await Assert.That(category["categoryGroupName"]!.GetValue<string>())
             .IsEqualTo(SealedNarrative.EncodedName("Sinking Funds"));
 
@@ -202,11 +203,15 @@ public sealed class ResourceByIdIntegrationTests
     private static async Task<HttpResponseMessage> CreateCategoryAsync(
         HttpClient client,
         Guid categoryGroupId,
-        string name)
+        string label)
     {
+        // The id is minted here and sent, because the route requires one: it is the associated data both
+        // narrative members were sealed against. The label is not the name and is never read back as one.
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/categories", new
         {
-            name,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             description = (string?)null,
             categoryGroupId,
         });
@@ -246,10 +251,11 @@ public sealed class ResourceByIdIntegrationTests
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -42.50m,
             date = "2026-06-12",
             accountId,
-            description = "Groceries",
+            description = SealedNarrative.EncodedDescription("Groceries"),
         });
         response.EnsureSuccessStatusCode();
         return response;

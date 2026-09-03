@@ -90,12 +90,20 @@ public static class TransactionEndpoints
     // map is named in the JsonException, so it reaches the server log and not the response; that is
     // the right way round, since the audience for this refusal is whoever wires the client.
     //
-    // The attribute is per-type: its blast radius is the shape it sits on and no other, so it reaches
-    // exactly these two — this record and CreateTransactionCommand, which the create route binds a
-    // body straight onto. Those are the two that carried payeeName. Do not widen it. No
-    // UnmappedMemberHandling belongs in Api/Program.cs, whose options every route in the product
-    // shares, and no other type gets the attribute for company: whether a shape refuses what it was
-    // not asked for is a contract decision that shape makes for itself.
+    // The attribute is per-type: its blast radius is the shape it sits on and no other, so the DRIFT
+    // argument above covers exactly two shapes — this record and CreateTransactionCommand, which the
+    // create route binds a body straight onto. Those are the two that carried payeeName. Do not widen
+    // it: no UnmappedMemberHandling belongs in Api/Program.cs, whose options every route in the product
+    // shares.
+    //
+    // THIS IS NOT A CENSUS OF THE ATTRIBUTE, and reading it as one is the mistake to avoid. Four other
+    // shapes declare it — the category-group pair and the category pair — and they earn it a DIFFERENT
+    // way: each binds a nullable narrative column, where a misspelled member binds identically to an
+    // absent one, so a PUT answers 204 having cleared a note nobody asked to remove. Those files argue
+    // that at their own shapes. It does not reach this pair and must not be added here for symmetry:
+    // Optional<T> makes an absent member mean "leave this alone", so a member dropped here loses an
+    // edit rather than performing one — measured, not assumed. Whether a shape refuses what it was not
+    // asked for stays a contract decision that shape makes for itself.
     //
     // What it costs, stated rather than left to be discovered: the transaction form stops working
     // until the client is wired to POST /api/payees and send payeeId, because every write it makes now

@@ -10,10 +10,49 @@ namespace Infrastructure.Repositories;
 
 public sealed class TransactionRepository(BudgetoidDbContext dbContext) : ITransactionRepository
 {
+    /// <summary>
+    /// Inserts a transaction the caller minted and sealed, answering a duplicate identifier with a 409.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This method's first catch block, and it arrived with the identifier.</b> The id used to be
+    /// minted here and could not collide; it is the caller's now, because it is the associated data the
+    /// note was sealed against. A POST retried after a network timeout therefore carries a byte-identical
+    /// body and violates <see cref="TransactionConfiguration.PrimaryKeyName"/> — which without this arm
+    /// answers 500 for the most ordinary thing an HTTP client does.
+    /// </para>
+    /// <para>
+    /// <b>One arm and not two, unlike the four sibling repositories.</b> Those match a name index beside
+    /// the key because their tables carry one; this table has no name and no unique index but the key, so
+    /// there is no second 23505 for the constraint name to tell apart — the name is matched anyway, for
+    /// the reason every catch in this folder matches one: <c>SaveChanges</c> flushes every tracked row,
+    /// and a violation belonging to some other row must propagate rather than be reported as this
+    /// caller's identifier.
+    /// </para>
+    /// <para>
+    /// <b>The route stays non-idempotent, deliberately</b>, for the reason
+    /// <c>CategoryRepository.AddAsync</c> gives: deciding whether the existing row is the same one means
+    /// comparing an AEAD envelope this server has no key for.
+    /// </para>
+    /// </remarks>
     public async Task AddAsync(Transaction transaction, CancellationToken cancellationToken = default)
     {
         dbContext.Transactions.Add(transaction);
-        await dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: TransactionConfiguration.PrimaryKeyName,
+        })
+        {
+            // Detached so the failed Added state cannot leak into a later SaveChanges on this
+            // request-scoped context, mirroring the detach-on-conflict every sibling repository does.
+            dbContext.Entry(transaction).State = EntityState.Detached;
+            throw DuplicateTransactionIdConflictException();
+        }
     }
 
     public Task<Transaction?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
@@ -151,6 +190,21 @@ public sealed class TransactionRepository(BudgetoidDbContext dbContext) : ITrans
             entry.State = EntityState.Detached;
         }
     }
+
+    // The 409 this table can raise. ConflictExceptionHandler renders this message as
+    // ProblemDetails.Detail beside a Title fixed for every conflict in the product, and adds no extension
+    // member, so this sentence is the whole of what the caller is told.
+    //
+    // It deliberately does not say "re-read your transactions": the row already wearing this id may carry
+    // a different amount, date and note - or sit in a budget the caller cannot read, in which case
+    // GET /api/transactions/{id} answers 404 - so a client sent to its list would look for something that
+    // is not on it. It names the two readings the server cannot tell apart, a retry that already
+    // succeeded and an identifier reused by mistake, and gives each its own next step, because the CLIENT
+    // can tell them apart: it knows whether it sent this body before.
+    private static ConflictException DuplicateTransactionIdConflictException() => new(
+        "A transaction already exists with this identifier. If this request is a retry, read that "
+        + "transaction back by its identifier instead of posting it again; otherwise mint a fresh "
+        + "identifier and post again.");
 
     // Worded and keyed the same as the up-front checks in the create and update handlers, so a row
     // that vanished under a race is reported to the caller exactly as one that was never there.

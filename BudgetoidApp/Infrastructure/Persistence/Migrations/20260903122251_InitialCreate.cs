@@ -343,8 +343,9 @@ public partial class InitialCreate : Migration
                 id = table.Column<Guid>(type: "uuid", nullable: false),
                 budget_id = table.Column<Guid>(type: "uuid", nullable: false),
                 category_group_id = table.Column<Guid>(type: "uuid", nullable: false),
-                name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, collation: "case_insensitive"),
-                description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
+                name = table.Column<byte[]>(type: "bytea", nullable: false),
+                name_key = table.Column<byte[]>(type: "bytea", nullable: false),
+                description = table.Column<byte[]>(type: "bytea", nullable: true),
                 position = table.Column<int>(type: "integer", nullable: false),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
@@ -352,6 +353,11 @@ public partial class InitialCreate : Migration
             {
                 table.PrimaryKey("PK_categories", x => x.id);
                 table.UniqueConstraint("AK_categories_id_budget_id", x => new { x.id, x.budget_id });
+                table.CheckConstraint("CK_categories_description_length", "length(description) between 29 and 2560");
+                table.CheckConstraint("CK_categories_description_version", "substring(description from 1 for 1) = '\\x01'::bytea");
+                table.CheckConstraint("CK_categories_name_key_length", "length(name_key) = 32");
+                table.CheckConstraint("CK_categories_name_length", "length(name) between 29 and 1024");
+                table.CheckConstraint("CK_categories_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
                 table.CheckConstraint("CK_categories_position", "position >= 0");
                 table.ForeignKey(
                     name: "FK_categories_budgets_budget_id",
@@ -396,7 +402,7 @@ public partial class InitialCreate : Migration
                 account_id = table.Column<Guid>(type: "uuid", nullable: false),
                 amount = table.Column<decimal>(type: "numeric(14,4)", nullable: false),
                 date = table.Column<DateOnly>(type: "date", nullable: false),
-                description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
+                description = table.Column<byte[]>(type: "bytea", nullable: true),
                 payee_id = table.Column<Guid>(type: "uuid", nullable: true),
                 category_id = table.Column<Guid>(type: "uuid", nullable: true),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
@@ -405,6 +411,8 @@ public partial class InitialCreate : Migration
             {
                 table.PrimaryKey("PK_transactions", x => x.id);
                 table.CheckConstraint("CK_transactions_amount", "abs(amount) <= 1000000000");
+                table.CheckConstraint("CK_transactions_description_length", "length(description) between 29 and 2560");
+                table.CheckConstraint("CK_transactions_description_version", "substring(description from 1 for 1) = '\\x01'::bytea");
                 table.ForeignKey(
                     name: "FK_transactions_accounts_account_id_budget_id",
                     columns: x => new { x.account_id, x.budget_id },
@@ -475,9 +483,9 @@ public partial class InitialCreate : Migration
             .Annotation("Npgsql:NullsDistinct", false);
 
         migrationBuilder.CreateIndex(
-            name: "IX_categories_budget_id_name",
+            name: "IX_categories_budget_id_name_key",
             table: "categories",
-            columns: new[] { "budget_id", "name" },
+            columns: new[] { "budget_id", "name_key" },
             unique: true);
 
         migrationBuilder.CreateIndex(

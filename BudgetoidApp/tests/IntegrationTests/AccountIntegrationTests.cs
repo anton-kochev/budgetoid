@@ -266,10 +266,11 @@ public sealed class AccountIntegrationTests
 
         HttpResponseMessage response = await clientB.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10m,
             date = "2026-06-26",
             accountId = accountA,
-            description = "Should fail",
+            description = SealedNarrative.EncodedDescription("Should fail"),
         });
         JsonNode? problem = await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync());
 
@@ -594,10 +595,11 @@ public sealed class AccountIntegrationTests
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10m,
             date = "2026-06-26",
             accountId,
-            description = "Coffee",
+            description = SealedNarrative.EncodedDescription("Coffee"),
         });
         response.EnsureSuccessStatusCode();
     }

@@ -42,10 +42,12 @@ erDiagram
 The document carries a schema version, the user record, and an array of budgets each holding its
 five collections as nested arrays. Property names are camelCase. Every persisted column of every row
 it names ships, **including the parent ids the nesting already implies** — `budgets.userId` and each
-row's `budgetId` — with **three named exceptions, all blind indexes**: `accounts.name_key`,
-`payees.name_key` and `category_groups.name_key` are deliberately absent, argued under
-[Business Rules](#business-rules--invariants). There is deliberately no fourth to omit on
-`category_groups`: a description carries no index at all.
+row's `budgetId` — with **four named exceptions, all blind indexes**: `accounts.name_key`,
+`payees.name_key`, `category_groups.name_key` and `categories.name_key` are deliberately absent,
+argued under [Business Rules](#business-rules--invariants). **That list is now closed rather than
+growing**: four columns in the schema carry a blind index and all four are omitted. None of the
+three description columns adds a fifth, because a description carries no index at all — which is a
+rule about the field class and not an accident of which tables have been sealed so far.
 
 Out of the document: `credentials`, `sessions`, `passkey_public_keys`, `passkey_signature_counters`,
 `webauthn_challenges` and `recovery_code_hashes` are identity material rather than the person's own
@@ -56,13 +58,14 @@ no tenant.
 
 ### MUST
 
-- **Carry every persisted column of every row it names**, less the three blind indexes named
+- **Carry every persisted column of every row it names**, less the four blind indexes named
   below — a row present with a null name, a zeroed balance or a dropped parent id satisfies a set
   comparison exactly, and a person restoring from that file would find the rows there and the data
   gone.
-  `ExportDocument`, pinned by `DataExportCompletenessTests`. The sealed name columns satisfy this by
+  `ExportDocument`, pinned by `DataExportCompletenessTests`. The sealed columns satisfy this by
   shipping the **envelope**: the column's bytes, unaltered, which is the whole of what this side
-  holds.
+  holds — and that is now true of every narrative column in the schema, names and descriptions
+  alike.
 - **Carry a schema version identifier** — a saved file outlives the deployment that wrote it, and
   the version is the only thing telling a reader which shape they hold.
 - **Order every array by `CreatedAtUtc`** — without an `ORDER BY`, PostgreSQL row order is
@@ -134,20 +137,30 @@ no tenant.
 
 - **Rule**: The export document has **its own records**. It does not reuse the DTOs the list
   endpoints return.
-- **Why**: those DTOs are shaped for display and lossy for an archive. `TransactionDto` coerces a
-  null `Description` to `string.Empty`, turning "wrote no description" into "wrote an empty string";
-  `PayeeDto` is `(Id, Name)` and carries neither `CreatedAtUtc` nor `BudgetId`; `AccountDto`
-  denormalizes currency name and symbol, adding fields no column holds. The read services behind
+- **Why**: those DTOs are shaped for display and lossy for an archive. `PayeeDto` is `(Id, Name)`
+  and carries neither `CreatedAtUtc` nor `BudgetId`; `AccountDto`
+  denormalizes currency name and symbol, adding fields no column holds; `TransactionDto` carries
+  four names joined from four other tables, which are context for a screen rather than columns of the
+  row. The read services behind
   them order for display, and **that two of them currently order the way the export contract also
   demands is a coincidence, not a reason to fold them together**: `PayeeReadService` sorts on
   `CreatedAtUtc` then `Id` because a sealed name has no order worth sorting on — the first differing
   byte after the version is the nonce — and it is free to change the day a client asks for something
   else, where the export's ordering is a contract.
+  - **The example this argument used to lead with has been fixed at the source, and the rule
+    outlived it.** `TransactionDto` coerced a null `Description` to `string.Empty`, turning "wrote no
+    memo" into "wrote an empty memo"; sealing that column deleted the coercion, because `""` is not a
+    legal envelope. So the DTO no longer demonstrates the loss — and the document still must not be
+    rebuilt on it, for the three reasons above. A worked example disappearing is not the rule
+    weakening; it is the rule having been applied one layer down.
 - **Enforced in**: `Application/Users/ExportData/ExportDocument.cs` and `ExportReadService`.
-  `DataExportCompletenessTests.Export_PreservesTheNullsAPersistedRowCarries` goes red the moment the
-  document is rebuilt on `TransactionDto`, and asserts present-and-null rather than reading the
+  `DataExportCompletenessTests.Export_PreservesTheNullsAPersistedRowCarries` asserts present-and-null
+  rather than reading the
   value, because a `JsonNode` indexer answers `null` identically for an absent property and a JSON
-  null.
+  null. **What that case now guards is the document's own shape and no longer a difference against
+  `TransactionDto`**, so a reader must not treat it as the pin holding this rule: what holds it is
+  that the record declares the row's columns and the DTO declares a screen's needs, and no test
+  compares the two.
 - **Counterexample**: folding the document back onto the display DTOs to remove "duplication". Those
   shapes are free to change with the screens that consume them, and an export bound to them would
   follow.
@@ -155,38 +168,53 @@ no tenant.
 
 ---
 
-- **Rule**: **Four exported names and one exported description are envelopes, and no blind index
-  ships.** `budgets.name`, `accounts.name`, `payees.name`, `category_groups.name` and
-  `category_groups.description` cross as the column's AEAD envelope in unpadded base64url, under the
-  member names they always had; `accounts.name_key`, `payees.name_key` and
-  `category_groups.name_key` are the only persisted columns the document leaves out.
+- **Rule**: **Every narrative column in the schema is exported as an envelope, and no blind index
+  ships.** Five names — `budgets.name`, `accounts.name`, `payees.name`, `category_groups.name` and
+  `categories.name` — and three descriptions — `category_groups.description`,
+  `categories.description` and `transactions.description` — cross as the column's AEAD envelope in
+  unpadded base64url, under the member names they always had; `accounts.name_key`, `payees.name_key`,
+  `category_groups.name_key` and `categories.name_key` are the only persisted columns the document
+  leaves out. **The document is now entirely unreadable to the operator who assembled it**, save for
+  amounts, dates and identifiers — which is the property this whole design was for, arriving as a
+  fact about the export file rather than as an aspiration in a requirement.
 - **Why**: the server holds no key, so an envelope is the whole of what it can hand back — and the
   member keeps its name because the completeness check maps a table's columns onto a record's
   members, and renaming it would say the export had stopped carrying the column rather than that the
-  column had changed shape. The three index columns are excluded on the opposite argument: a blind
+  column had changed shape. The four index columns are excluded on the opposite argument: a blind
   index is **derivable from the name** by anybody holding the account's index key, which is exactly
   who can read the file, and meaningless to anybody who is not. Shipping one would put a
   deterministic per-budget fingerprint of every name into an artifact that lands in a downloads
   folder, a backup and a cloud sync — and on `payees` that fingerprint is the most telling of the
-  three, because a payee list is the set of counterparties one person deals with. The document is a
+  four, because a payee list is the set of counterparties one person deals with. The document is a
   copy of what a person owns, not of what the server needs to police it.
-  - **The description is the first sealed column here that may legitimately be absent, and its null
-    is carried rather than coerced.** `null` is a note nobody wrote and a 29-byte envelope is a note
+  - **A null description is carried rather than coerced, on all three of the columns that have
+    one.** `null` is a note nobody wrote and a 29-byte envelope is a note
     somebody wrote and then emptied; a copy of a person's data has to keep the two apart, and a
     `?? string.Empty` on the way out would fold them and hand a reader a value that is not a legal
-    envelope. That is the same argument the document already makes for refusing `TransactionDto`'s
-    coercion, reaching a column where the coerced value would also be undecodable.
-  - **There is no `description_key` to omit**, and the absence is a decision rather than a gap in
-    this list: a description is never looked up, so it carries no index anywhere.
+    envelope. `category_groups.description` was the first sealed column here that could legitimately
+    be absent; `categories.description` and `transactions.description` joined it, and the last of the
+    three is where the coercion actually **shipped** — on `TransactionDto`, one layer over, where
+    sealing the column is what deleted it.
+  - **There is no `description_key` to omit on any of the three**, and the absence is a decision
+    rather than a gap in this list: a description is never looked up, so it carries no index
+    anywhere, ever.
 - **Enforced in**: `ExportedBudget.Name`, `ExportedAccount.Name`, `ExportedPayee.Name`,
-  `ExportedCategoryGroup.Name` and `ExportedCategoryGroup.Description` are
+  `ExportedCategoryGroup.Name`, `ExportedCategoryGroup.Description`, `ExportedCategory.Name`,
+  `ExportedCategory.Description` and `ExportedTransaction.Description` are
   `string`s carrying `PasskeyEncoding`-encoded bytes — never `System.Text.Json`'s own `byte[]`
   handling, which emits padded standard base64 the client's strict decoder refuses — and none of
-  `ExportedAccount`, `ExportedPayee` and `ExportedCategoryGroup` declares a `NameKey` member.
+  `ExportedAccount`, `ExportedPayee`, `ExportedCategoryGroup` and `ExportedCategory` declares a
+  `NameKey` member.
   `DataExportCompletenessTests`
   asserts the exact encoded string rather than a substring or an equivalence, which is what makes it
   able to see the wrong alphabet, and counts each row's properties, which is what makes it redden if
   an index member is ever added.
+  - **`categories` and `transactions` moved from an in-query projection to anonymous-row-then-shape
+    with this slice**, the treatment the other three collections already had, because a value
+    converter is not something the provider can translate a `Select` over. **No collection is
+    projected in-query any more**, so the split this file used to describe between the two treatments
+    is gone rather than narrowed — a reader looking for the tables that still project in-query will
+    not find one.
 - **Counterexample**: decoding the names into text on the way out so the file reads nicely. There is
   nothing on this side to decode with, so the only implementable version of that idea is the one
   where the server holds a key — the design the product exists to avoid.

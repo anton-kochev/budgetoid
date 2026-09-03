@@ -290,7 +290,14 @@ public sealed class BudgetRepositoryTests
             0,
             SeedInstant);
         db.CategoryGroups.Add(group);
-        db.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
+        db.Categories.Add(Category.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            group.Id,
+            SealedNarrative.Indexed("Groceries"),
+            null,
+            0,
+            SeedInstant));
         db.Payees.Add(Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant));
         await db.SaveChangesAsync();
     }
@@ -310,12 +317,13 @@ public sealed class BudgetRepositoryTests
         await db.SaveChangesAsync();
 
         db.Transactions.Add(Transaction.Create(
+            Guid.CreateVersion7(),
             budgetId,
             account.Id,
             -10m,
             UsdMinorUnit,
             new DateOnly(2026, 6, 12),
-            "Groceries",
+            SealedNarrative.Description("Groceries"),
             SeedInstant));
         await db.SaveChangesAsync();
     }

@@ -20,9 +20,17 @@ public sealed class CreateTransactionHandlerTests
         Fixture fixture = await Fixture.CreateAsync();
         var date = new DateOnly(2026, 6, 12);
 
-        // Act
-        var dto = await fixture.Handler.HandleAsync(
-            new CreateTransactionCommand(-42.50m, date, fixture.Account.Id, "Groceries"));
+        // Act — the id is minted HERE and threaded in, because the command carries one now: it is the
+        // associated data the note was sealed against, so a handler that ignored it and minted its own
+        // would write a row whose note nobody can ever open. It travels as a STRING in the canonical
+        // spelling, because binding it as a Guid would fold the spellings before any handler saw text.
+        // The description is the SEALED envelope over the label, not the label.
+        var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
+            -42.50m,
+            date,
+            fixture.Account.Id,
+            SealedNarrative.EncodedDescription("Groceries")));
         var stored = (await fixture.Transactions.GetAllAsync()).Single();
 
         // Assert
@@ -58,10 +66,11 @@ public sealed class CreateTransactionHandlerTests
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
                 -4.50m,
                 new DateOnly(2026, 6, 12),
                 Guid.CreateVersion7(),
-                "Coffee",
+                SealedNarrative.EncodedDescription("Coffee"),
                 PayeeId: Guid.CreateVersion7())));
 
         // Assert
@@ -82,10 +91,11 @@ public sealed class CreateTransactionHandlerTests
 
         // Act
         var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
             -4.50m,
             new DateOnly(2026, 6, 12),
             fixture.Account.Id,
-            "Coffee",
+            SealedNarrative.EncodedDescription("Coffee"),
             PayeeId: payee.Id));
         var stored = (await fixture.Transactions.GetAllAsync()).Single();
 
@@ -119,10 +129,11 @@ public sealed class CreateTransactionHandlerTests
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
                 -4.50m,
                 new DateOnly(2026, 6, 12),
                 fixture.Account.Id,
-                "Coffee",
+                SealedNarrative.EncodedDescription("Coffee"),
                 PayeeId: Guid.CreateVersion7())));
 
         // Assert
@@ -140,10 +151,11 @@ public sealed class CreateTransactionHandlerTests
 
         // Act
         var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
             -4.50m,
             new DateOnly(2026, 6, 12),
             fixture.Account.Id,
-            "Coffee"));
+            SealedNarrative.EncodedDescription("Coffee")));
         var stored = (await fixture.Transactions.GetAllAsync()).Single();
 
         // Assert — a payee exists in the budget and is not attached, which is what separates "none was
@@ -164,17 +176,22 @@ public sealed class CreateTransactionHandlerTests
 
         // Act
         var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
             -4.50m,
             new DateOnly(2026, 6, 12),
             fixture.Account.Id,
-            "Food",
+            SealedNarrative.EncodedDescription("Food"),
             CategoryId: category.Id));
         var stored = (await fixture.Transactions.GetAllAsync()).Single();
 
         // Assert
         await Assert.That(stored.CategoryId).IsEqualTo(category.Id);
         await Assert.That(dto.CategoryId).IsEqualTo(category.Id);
-        await Assert.That(dto.CategoryName).IsEqualTo("Groceries");
+
+        // The category's name crosses the DTO as the base64url envelope its column holds, not as text.
+        // It is the fourth name member on this record to make that move and the one that finally makes
+        // the rule uniform — the DTO's own remarks used to carve it out.
+        await Assert.That(dto.CategoryName).IsEqualTo(SealedNarrative.EncodedName("Groceries"));
         await Assert.That(dto.CategoryGroupId).IsEqualTo(categoryGroup.Id);
         await Assert.That(dto.CategoryGroupName)
             .IsEqualTo(SealedNarrative.EncodedName("Essential Obligations"));
@@ -192,10 +209,11 @@ public sealed class CreateTransactionHandlerTests
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
                 -4.50m,
                 new DateOnly(2026, 6, 12),
                 fixture.Account.Id,
-                "Coffee",
+                SealedNarrative.EncodedDescription("Coffee"),
                 PayeeId: payee.Id,
                 CategoryId: Guid.CreateVersion7())));
 
@@ -215,10 +233,11 @@ public sealed class CreateTransactionHandlerTests
         // Act
         _ = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
                 1.234m,
                 new DateOnly(2026, 6, 12),
                 fixture.Account.Id,
-                "Invalid",
+                SealedNarrative.EncodedDescription("Invalid"),
                 PayeeId: payee.Id)));
 
         // Assert
@@ -234,10 +253,11 @@ public sealed class CreateTransactionHandlerTests
 
         // Act
         var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
             0m,
             new DateOnly(2026, 6, 12),
             fixture.Account.Id,
-            "Fully discounted"));
+            SealedNarrative.EncodedDescription("Fully discounted")));
         var stored = (await fixture.Transactions.GetAllAsync()).Single();
 
         // Assert
@@ -259,10 +279,11 @@ public sealed class CreateTransactionHandlerTests
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
                 -42.50m,
                 new DateOnly(2026, 6, 12),
                 yenAccount.Id,
-                "Ramen")));
+                SealedNarrative.EncodedDescription("Ramen"))));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();

@@ -77,12 +77,13 @@ public sealed class TransactionRepositoryTests
 
             await new TransactionRepository(db).AddAsync(
                 Transaction.Create(
+                    Guid.CreateVersion7(),
                     budgetId,
                     account.Id,
                     1m,
                     UsdMinorUnit,
                     new DateOnly(2026, 6, 12),
-                    "Test",
+                    SealedNarrative.Description("Test"),
                     new DateTime(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc)));
         }
 
@@ -145,12 +146,13 @@ public sealed class TransactionRepositoryTests
         // (AccountId, BudgetId) foreign key is what refuses the write.
         await using BudgetoidDbContext crossBudgetDb = new(options, new TestBudgetContext(budgetB));
         crossBudgetDb.Transactions.Add(Transaction.Create(
+            Guid.CreateVersion7(),
             budgetB,
             accountA,
             1m,
             UsdMinorUnit,
             new DateOnly(2026, 6, 12),
-            "Should Fail",
+            SealedNarrative.Description("Should Fail"),
             UtcNow()));
         DbUpdateException? caught = null;
         try
@@ -187,7 +189,14 @@ public sealed class TransactionRepositoryTests
                 0,
                 UtcNow());
             db.CategoryGroups.Add(categoryGroup);
-            Category category = Category.Create(budgetA, categoryGroup.Id, "Groceries", null, 0, UtcNow());
+            Category category = Category.Create(
+                Guid.CreateVersion7(),
+                budgetA,
+                categoryGroup.Id,
+                SealedNarrative.Indexed("Groceries"),
+                null,
+                0,
+                UtcNow());
             db.Categories.Add(category);
             await db.SaveChangesAsync();
             categoryA = category.Id;
@@ -214,12 +223,13 @@ public sealed class TransactionRepositoryTests
         // (CategoryId, BudgetId) foreign key is what refuses the write.
         await using BudgetoidDbContext crossBudgetDb = new(options, new TestBudgetContext(budgetB));
         Transaction transaction = Transaction.Create(
+            Guid.CreateVersion7(),
             budgetB,
             accountB,
             1m,
             UsdMinorUnit,
             new DateOnly(2026, 6, 12),
-            "Should Fail",
+            SealedNarrative.Description("Should Fail"),
             UtcNow());
         transaction.AssignCategory(categoryA);
         crossBudgetDb.Transactions.Add(transaction);
@@ -277,12 +287,13 @@ public sealed class TransactionRepositoryTests
         // (PayeeId, BudgetId) foreign key is what refuses the write.
         await using BudgetoidDbContext crossBudgetDb = new(options, new TestBudgetContext(budgetB));
         Transaction transaction = Transaction.Create(
+            Guid.CreateVersion7(),
             budgetB,
             accountB,
             1m,
             UsdMinorUnit,
             new DateOnly(2026, 6, 12),
-            "Should Fail",
+            SealedNarrative.Description("Should Fail"),
             UtcNow());
         transaction.AssignPayee(payeeA);
         crossBudgetDb.Transactions.Add(transaction);
@@ -325,12 +336,13 @@ public sealed class TransactionRepositoryTests
             await db.SaveChangesAsync();
 
             Transaction transaction = Transaction.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 account.Id,
                 1m,
                 UsdMinorUnit,
                 new DateOnly(2026, 6, 12),
-                "No payee, no category",
+                SealedNarrative.Description("No payee, no category"),
                 UtcNow());
             db.Transactions.Add(transaction);
             await db.SaveChangesAsync();
@@ -671,7 +683,11 @@ public sealed class TransactionRepositoryTests
 
         // The edit a caller made against an account that has since gone.
         transaction.Update(
-            Guid.CreateVersion7(), Money("-15"), UsdMinorUnit, new DateOnly(2026, 6, 13), "Edited");
+            Guid.CreateVersion7(),
+            Money("-15"),
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 13),
+            SealedNarrative.Description("Edited"));
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(transaction));
@@ -779,7 +795,12 @@ public sealed class TransactionRepositoryTests
 
         // A real edit, against the account it already has — so the UPDATE is in the batch and is
         // beyond reproach.
-        transaction.Update(accountId, Money("-15"), UsdMinorUnit, new DateOnly(2026, 6, 13), "Edited");
+        transaction.Update(
+            accountId,
+            Money("-15"),
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 13),
+            SealedNarrative.Description("Edited"));
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(transaction));
@@ -822,12 +843,13 @@ public sealed class TransactionRepositoryTests
     {
         await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
         Transaction transaction = Transaction.Create(
+            Guid.CreateVersion7(),
             budgetId,
             accountId,
             Money("-10"),
             UsdMinorUnit,
             new DateOnly(2026, 6, 12),
-            "Seeded",
+            SealedNarrative.Description("Seeded"),
             UtcNow());
         db.Transactions.Add(transaction);
         await db.SaveChangesAsync();
@@ -980,7 +1002,18 @@ public sealed class TransactionRepositoryTests
         command.Parameters.AddWithValue("account_id", accountId);
         command.Parameters.AddWithValue("amount", amount);
         command.Parameters.AddWithValue("date", new DateOnly(2026, 6, 12));
-        command.Parameters.AddWithValue("description", "At the limit");
+        // A SEALED ENVELOPE AS BYTES, not the label. transactions.description is bytea now, and Npgsql
+        // sends a CLR string as text, which the server refuses with 42804 rather than coercing - so the
+        // plaintext this line used to carry made every case built on this helper fail before its own
+        // claim was ever reached.
+        //
+        // THIS STATEMENT IS RAW ON PURPOSE AND MUST STAY RAW. Every case reaching it is about a value
+        // Transaction.Create refuses client-side - an amount past the magnitude cap, or exactly at it -
+        // so an EF-based write proves nothing about the schema: the domain would reject the row before
+        // the database ever saw it. Going "back through EF to simplify this" deletes the only path that
+        // can hand the database a value the application would not.
+        command.Parameters.AddWithValue(
+            "description", SealedNarrative.Description("At the limit").Envelope.ToArray());
         command.Parameters.AddWithValue("created_at_utc", UtcNow());
         return command;
     }

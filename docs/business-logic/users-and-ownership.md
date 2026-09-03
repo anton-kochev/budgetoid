@@ -70,6 +70,13 @@ tables scoped to a **user** rather than to a budget, and that rule has its canon
   **wider** comparison: `users.email` carries a unique index on the `case_insensitive` collation, so
   at most one user row holds a given address whatever its casing. The address is written once, at
   registration, and no later request changes it.
+  - **This is the only column in the schema still carrying that collation**, and the reason is worth
+    knowing before somebody reads the collation as a general habit. The four name columns that used
+    to share it became `bytea` as they were sealed, and `bytea` is not a collatable type, so each
+    lost it **by force** rather than by choice — the folding those columns needed moved into the
+    client's normalization before it computes a blind index. An address is not narrative and is not
+    sealed, so nothing about that change reaches this column: PostgreSQL still folds the case here,
+    and this is the one place in the product where it does.
 
 ```mermaid
 erDiagram

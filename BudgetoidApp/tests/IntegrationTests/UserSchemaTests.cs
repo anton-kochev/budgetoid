@@ -92,7 +92,14 @@ public sealed class UserSchemaTests
                 0,
                 SeedInstant);
             seed.CategoryGroups.Add(group);
-            seed.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
+            seed.Categories.Add(Category.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                group.Id,
+                SealedNarrative.Indexed("Groceries"),
+                null,
+                0,
+                SeedInstant));
             seed.Payees.Add(Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant));
             await seed.SaveChangesAsync();
         }
@@ -146,12 +153,13 @@ public sealed class UserSchemaTests
         await db.SaveChangesAsync();
 
         db.Transactions.Add(Transaction.Create(
+            Guid.CreateVersion7(),
             budgetId,
             account.Id,
             -10m,
             UsdMinorUnit,
             new DateOnly(2026, 6, 12),
-            "Groceries",
+            SealedNarrative.Description("Groceries"),
             SeedInstant));
         await db.SaveChangesAsync();
     }

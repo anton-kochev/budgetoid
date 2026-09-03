@@ -1707,10 +1707,11 @@ public sealed class PayeeIntegrationTests
         Guid accountId = await CreateAccountAsync(client);
         return await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10m,
             date = "2026-06-24",
             accountId,
-            description = "Coffee",
+            description = SealedNarrative.EncodedDescription("Coffee"),
             payeeId,
         });
     }

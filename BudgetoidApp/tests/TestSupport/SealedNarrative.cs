@@ -106,8 +106,20 @@ public static class SealedNarrative
 
         // Position-varying, and the SAME filler the name uses, which is what makes a description and a
         // name derived from ONE label distinguishable from each other only by their lengths — while two
-        // DIFFERENT labels share no byte at any offset. That is the property the entity tests rely on to
-        // see a factory that assigned one parameter to two fields.
+        // DIFFERENT labels produce arrays that are not EQUAL. That inequality is the property the entity
+        // tests rely on to see a factory that assigned one parameter to two fields, and it is why those
+        // cases must pass two different labels: one label through both doors yields identical bytes, and
+        // a doubled assignment is then invisible.
+        //
+        // THIS COMMENT USED TO SAY TWO DIFFERENT LABELS "SHARE NO BYTE AT ANY OFFSET". THAT IS FALSE and
+        // is corrected here rather than softened, because the next reader builds on the stated reason
+        // and not on the guard. The filler is (labelByte + position * 31) mod 256, so two labels agree
+        // at every offset where their cycling bytes happen to agree — common rather than rare. Measured,
+        // ignoring the version byte at offset 0: Name("Essential Obligations") and
+        // Description("Required spending"), the pair CategoryGroupTests.Create_WithADescription_StoresIt
+        // uses, agree at offsets 39 and 44; Name("Groceries") and Description("Weekly food shop") agree
+        // at offset 35. Per-offset disjointness is not a property of this filler, no case relies on one,
+        // and no case may be written that does.
         for (int position = 1; position < envelope.Length; position++)
         {
             byte source = labelBytes.Length == 0
@@ -244,23 +256,52 @@ public static class SealedNarrative
     /// "Discretionary" and "Sinking Funds" is the whole argument: same width, opposite answers.
     /// </para>
     /// <para>
-    /// <b>FOUR LABELS ARE BLIND, NOT ONE.</b> This paragraph used to end "Essentials was the only label
-    /// of either kind that was blind", and it was wrong. Enumerated over every label reaching
-    /// <see cref="EncodedName(string)" /> or <see cref="EncodedDescription(string)" /> anywhere in
-    /// either suite, and comparing padded standard base64 against unpadded base64url character for
-    /// character:
+    /// <b>ELEVEN LABELS ARE BLIND, AND THE COUNT HAS BEEN WRONG TWICE.</b> This paragraph said "one",
+    /// then "four", and both were undercounts taken from whatever the writer happened to be looking at.
+    /// Re-measured properly: every distinct label reaching any member of this class anywhere in either
+    /// suite — <b>92 of them</b>, string literals and <c>private const string</c> alike, the constants
+    /// being the ones both earlier counts missed — with padded standard base64 compared against unpadded
+    /// base64url character for character.
     /// <list type="bullet">
-    /// <item><description><c>"Essentials"</c> — 39 bytes</description></item>
-    /// <item><description><c>"Discretionary"</c> — 42 bytes</description></item>
-    /// <item><description><c>"Empty note"</c> — 39 bytes</description></item>
+    /// <item><description><c>"Cash"</c>, <c>"Food"</c>, <c>"Only"</c>, <c>"Test"</c> — 33 bytes</description></item>
     /// <item><description><c>"No note"</c> — 36 bytes</description></item>
+    /// <item><description><c>"Blank name"</c>, <c>"Empty note"</c>, <c>"Encumbered"</c>, <c>"Essentials"</c> — 39 bytes</description></item>
+    /// <item><description><c>"Discretionary"</c> — 42 bytes</description></item>
+    /// <item><description><c>"Fully discounted"</c> — 45 bytes</description></item>
     /// </list>
-    /// The last three arrived with the category-group slice, so the count grew in the same commit that
-    /// wrote the sentence claiming it was one. An assertion against a response member built from any of
-    /// them is green under either encoder and is therefore decoration. Four more labels — <c>"Blank
-    /// name"</c>, <c>"Cash"</c>, <c>"Encumbered"</c> and <c>"Only"</c> — are blind too and do not
-    /// matter: they reach <see cref="Name(string)" /> and <see cref="BlindIndex(string)" /> only, where
-    /// nothing is encoded and there is no alphabet to get wrong.
+    /// </para>
+    /// <para>
+    /// <b>TWO STRUCTURAL FACTS MAKE THIS ONE LIST RATHER THAN THREE, and knowing them is what stops the
+    /// count drifting again.</b> First: <see cref="EncodedName(string)" /> and
+    /// <see cref="EncodedDescription(string)" /> over ONE label are always both blind or both not. They
+    /// build the SAME bytes from the same filler and differ only in which cap
+    /// <see cref="NarrativeField.Sealed" /> is called under, so the two can never disagree and a label
+    /// need only be measured once. Second: <see cref="EncodedIndex(string)" /> is blind for NO label,
+    /// ever — a blind index is exactly 32 bytes, 32 is not a multiple of 3, so the encoding always
+    /// produces padding and the two alphabets always differ. A <c>nameKey</c> assertion is therefore
+    /// never decoration on these grounds, whatever its label.
+    /// </para>
+    /// <para>
+    /// <b>FIVE PLACES SEND A BLIND LABEL TO AN ENCODING ASSERTION, AND THEY CANNOT BE FIXED BY ADDING THE
+    /// GUARD.</b> They are <see cref="EncodedName(string)" /> over <c>"Essentials"</c> at three sites in
+    /// <c>CategoryIntegrationTests</c> and one in <c>DataExportCompletenessTests</c>, plus
+    /// <c>"Discretionary"</c> at one. Each still proves the VALUE — the envelope is deterministic in the
+    /// label, so a projection that joined the wrong row or dropped the member fails there — but none
+    /// proves the ENCODING, because a wrong encoder produces the identical string. The in-Arrange
+    /// precondition the paragraph below prescribes is <em>unavailable</em> to them rather than merely
+    /// missing: <c>Convert.ToBase64String(bytes) != </c><see cref="EncodedName(string)" /> is FALSE for a
+    /// blind label, so writing it there turns the case red. The only real fix is a different label, and
+    /// on <c>"Essentials"</c> that is not a local edit — the label is the seeded group name those cases
+    /// read back, so changing it at the assertion alone would compare against a row that was never
+    /// written. Recorded here as a known limit of those five rather than pretended away.
+    /// </para>
+    /// <para>
+    /// <b>Two labels reach an encoded member as INPUT ONLY and do not matter today</b> —
+    /// <c>"Food"</c> and <c>"Fully discounted"</c> both go to <see cref="EncodedDescription(string)" />
+    /// in a request body that nothing reads back. The remaining four blind labels reach
+    /// <see cref="Name(string)" /> and <see cref="BlindIndex(string)" /> only, where nothing is encoded
+    /// and there is no alphabet to get wrong. Nothing stops a later case promoting any of the six into an
+    /// assertion, at which point it silently joins the five above.
     /// </para>
     /// <para>
     /// <b>The list above is a snapshot and the guard is not.</b> A case that pins the ENCODING rather

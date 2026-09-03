@@ -72,11 +72,12 @@ erDiagram
     reference and a struct by pointer, so a value rebuilt from identical bytes reads as an edit and
     one rewritten in place inside the same buffer does not — on `name_key` the second is the one
     that bites, because an index the tracker misses is a row whose uniqueness value stops describing
-    its own name). **Nothing in the suite holds any arm of either comparer here.** The product's one
-    change-tracking class is scoped to `category_groups`, this table has no equivalent, and a broken
+    its own name). **Nothing in the suite holds any arm of either comparer here.** The product's
+    three change-tracking classes are scoped to `category_groups`, `categories` and `transactions`;
+    this table has no equivalent, and a broken
     arm is **quiet** rather than loud: EF restates a column with the bytes the row already holds, and
     `name` and `name_key` both sit inside this table's `UPDATE` grant, so nothing answers `42501` and
-    the spurious statement commits exactly like a rename would. What that class does and does not
+    the spurious statement commits exactly like a rename would. What those classes do and do not
     reach is in [categories.md](categories.md#edge-cases--known-gotchas). The table carries **three**
     `CHECK` constraints, each rendered from the constant
     that owns its number rather than from a literal: `CK_accounts_name_length` bounds the envelope
@@ -501,6 +502,18 @@ ELSE
   still gets a 400 naming the field — but *which* two accounts collided is a question only a browser
   holding the account's index key can answer. The same is true of support: there is no query anyone
   can run to find "the account called Groceries".
+
+- **The rename arm's *attribution* was uncovered until mutation testing went looking, and the wire
+  status was not.** Retargeting `UpdateAsync`'s `when` clause at a constraint the statement can never
+  raise — which leaves the arm unreachable while still compiling — reddens two cases: the endpoint
+  case asserting a rename onto a taken name comes back `BadRequest`, and
+  `UpdateAccount_RenamedOntoATakenName_TranslatesItsOwnUniqueIndex`, which is new and asserts the
+  exception **type** and the `Name` key. The second is what the first cannot say: a status tells a
+  caller something is wrong, not *which rule they broke*. Worth knowing because an unreachable arm
+  does **not** degrade into the neighbouring status — measured on the payee twin, nothing in the
+  handler chain maps `DbUpdateException`, so the response is a **500**. A create's 409 and a rename's
+  400 therefore cannot silently swap places by accident, and a reviewer who deletes an arm gets a
+  loud failure rather than a plausible-looking wrong answer.
 
 - **The width of a blind index is the whole of the server's defence, which is why it is an equality.**
   This side holds no index key, so it can never say a value is the index *of* the name beside it. A

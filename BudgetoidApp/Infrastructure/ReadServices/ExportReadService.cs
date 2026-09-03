@@ -98,12 +98,12 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // so Include is unavailable and the document is stitched by id in the handler. They run in
         // sequence because one DbContext serves one command at a time.
         //
-        // Accounts, category groups and payees are projected into an anonymous row and shaped afterwards,
-        // the way ListOwnedBudgetsAsync above handles budgets.name and for the same reason: the column
-        // carries a value converter, so the provider translates the property itself and the
-        // NarrativeField exists only once the row has materialized. The other two keep their in-query
-        // projection because none of their columns is sealed yet — that is a statement about today, not a
-        // rule, and categories is the next set to move.
+        // ALL FIVE sets are projected into an anonymous row and shaped afterwards, the way
+        // ListOwnedBudgetsAsync above handles budgets.name and for the same reason: the column carries a
+        // value converter, so the provider translates the property itself and the NarrativeField exists
+        // only once the row has materialized. This block used to say that two of them kept an in-query
+        // projection because none of their columns was sealed yet, and named categories as the next set
+        // to move; both moved in the same slice, so the shape is uniform now.
         //
         // name_key is deliberately not among the members. It is the one accounts column this document
         // omits: the blind index is derivable from the name by anybody holding the account's index key —
@@ -141,8 +141,9 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // accounts above give, and this set is the first here to carry TWO sealed columns — the name and
         // the description, which is the first sealed free-text column in the product.
         //
-        // name_key is deliberately not among the members, the third column this document omits and for
-        // the argument ExportedAccount already carries. There is no description_key to omit: a
+        // name_key is deliberately not among the members - the omission EVERY set carrying a blind index
+        // makes here, for the argument ExportedAccount already carries. There is no description_key to
+        // omit: a
         // description carries no blind index at all, because it is never looked up.
         //
         // The ordering is untouched — the creation instant and then the id, neither of them sealed.
@@ -161,9 +162,13 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
             })
             .ToListAsync(cancellationToken);
 
-        // The null description is carried rather than coerced, exactly as the transactions below carry
-        // theirs and for the same reason: a copy of somebody's data must keep "no note" and "a note they
-        // emptied" apart, and the empty string is not a legal envelope for either.
+        // The null description is carried rather than coerced, and that is the rule for EVERY nullable
+        // narrative column this document writes rather than a habit shared with one named neighbour: a
+        // copy of somebody's data must keep "no note" and "a note they emptied" apart, and the empty
+        // string is not a legal envelope for either. Categories and transactions both do the same below.
+        // Stated as the property and not as a roll-call because a roll-call goes stale the day another
+        // collection seals a nullable column - which is exactly what happened to this comment when
+        // categories arrived between this block and the transactions it used to name alone.
         List<ExportedCategoryGroup> categoryGroups =
         [
             .. categoryGroupRows.Select(row => new ExportedCategoryGroup(
@@ -177,26 +182,57 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
                 row.CreatedAtUtc)),
         ];
 
-        List<ExportedCategory> categories = await dbContext.Categories
+        // Categories are projected into an anonymous row and shaped afterwards for the reason the accounts
+        // above give, and this set carries TWO sealed columns like the category groups: the name and the
+        // description.
+        //
+        // name_key is deliberately not among the members - the omission EVERY set carrying a blind index
+        // makes here, for the argument ExportedAccount already carries. There is no description_key to
+        // omit: a
+        // description carries no blind index at all, because it is never looked up.
+        //
+        // The ordering is untouched — the creation instant and then the id, neither of them sealed.
+        var categoryRows = await dbContext.Categories
             .AsNoTracking()
             .OrderBy(category => category.CreatedAtUtc)
             .ThenBy(category => category.Id)
-            .Select(category => new ExportedCategory(
+            .Select(category => new
+            {
                 category.Id,
                 category.BudgetId,
                 category.CategoryGroupId,
                 category.Name,
                 category.Description,
                 category.Position,
-                category.CreatedAtUtc))
+                category.CreatedAtUtc,
+            })
             .ToListAsync(cancellationToken);
+
+        // The null description is carried rather than coerced, exactly as the category groups above and
+        // the transactions below carry theirs and for the same reason: a copy of somebody's data must
+        // keep "no note" and "a note they emptied" apart, and the empty string is not a legal envelope
+        // for either.
+        List<ExportedCategory> categories =
+        [
+            .. categoryRows.Select(row => new ExportedCategory(
+                row.Id,
+                row.BudgetId,
+                row.CategoryGroupId,
+                PasskeyEncoding.Encode(row.Name.Envelope.Span),
+                row.Description is null
+                    ? null
+                    : PasskeyEncoding.Encode(row.Description.Envelope.Span),
+                row.Position,
+                row.CreatedAtUtc)),
+        ];
 
         // Payees are projected into an anonymous row and shaped afterwards for the reason the accounts
         // above give: payees.name carries a value converter, so the provider translates the property
         // itself and the NarrativeField exists only once the row has materialized.
         //
-        // name_key is deliberately not among the members, the second column this document omits and for
-        // the argument ExportedAccount already carries — a per-budget fingerprint of a name is
+        // name_key is deliberately not among the members - the omission EVERY set carrying a blind index
+        // makes here, for the argument ExportedAccount already carries — a per-budget fingerprint of a
+        // name is
         // derivable by anybody holding the index key, which is exactly who can read this file, and
         // meaningless to anybody who is not.
         var payeeRows = await dbContext.Payees
@@ -221,15 +257,18 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
                 row.CreatedAtUtc)),
         ];
 
-        // Description, PayeeId and CategoryId are projected as they are persisted. TransactionDto
-        // coerces a null description to the empty string because a screen has to render something; a
-        // copy of somebody's data must not, or the difference between "no note" and "a blank note" is
-        // gone from every file this writes.
-        List<ExportedTransaction> transactions = await dbContext.Transactions
+        // Transactions are projected into an anonymous row and shaped afterwards for the reason the
+        // accounts above give: transactions.description carries a value converter now, so the provider
+        // translates the property itself and the NarrativeField exists only once the row has
+        // materialized.
+        //
+        // This set omits no column at all — it has no blind index to leave out, because it has no name.
+        var transactionRows = await dbContext.Transactions
             .AsNoTracking()
             .OrderBy(transaction => transaction.CreatedAtUtc)
             .ThenBy(transaction => transaction.Id)
-            .Select(transaction => new ExportedTransaction(
+            .Select(transaction => new
+            {
                 transaction.Id,
                 transaction.BudgetId,
                 transaction.AccountId,
@@ -238,8 +277,29 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
                 transaction.Description,
                 transaction.PayeeId,
                 transaction.CategoryId,
-                transaction.CreatedAtUtc))
+                transaction.CreatedAtUtc,
+            })
             .ToListAsync(cancellationToken);
+
+        // The null description is carried rather than coerced. TransactionDto used to fold it onto the
+        // empty string because a screen had to render something; that fold is gone from the DTO too now
+        // that the column is sealed, but the reason this document never followed it stands on its own: a
+        // copy of somebody's data must keep "no note" and "a note they emptied" apart.
+        List<ExportedTransaction> transactions =
+        [
+            .. transactionRows.Select(row => new ExportedTransaction(
+                row.Id,
+                row.BudgetId,
+                row.AccountId,
+                row.Amount,
+                row.Date,
+                row.Description is null
+                    ? null
+                    : PasskeyEncoding.Encode(row.Description.Envelope.Span),
+                row.PayeeId,
+                row.CategoryId,
+                row.CreatedAtUtc)),
+        ];
 
         // Wrapped rather than handed over as they were materialized. ToListAsync returns a List, and a
         // List behind ExportedBudgetContents' IReadOnlyList is castable back to one by anything holding

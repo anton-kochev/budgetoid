@@ -96,8 +96,10 @@ public sealed class RlsIsolationTests
     /// read-back compares against.
     /// </summary>
     /// <remarks>
-    /// <b><c>accounts.name</c>, <c>payees.name</c> and now <c>category_groups.name</c> are bytea and the
-    /// other two are still text, so the VALUE follows the table.</b> Writing a text literal into a
+    /// <b>EVERY COLUMN IN THIS TABLE IS BYTEA NOW — <c>categories.name</c> and
+    /// <c>transactions.description</c> were the last two text ones and this slice sealed both — so the
+    /// VALUE still follows the table, but the fork is between the two CAPS rather than between sealed
+    /// and plain.</b> Writing a text literal into a
     /// sealed column comes back <c>42804</c> from the type checker, before any policy is consulted —
     /// and this test reads its verdict off an AFFECTED-ROW COUNT, so a type error does not merely
     /// mislead it, it throws out of the loop entirely and DESTROYS the case rather than failing it. A
@@ -106,10 +108,19 @@ public sealed class RlsIsolationTests
     /// three go through the shared fixture, so what is written is an envelope this server would accept
     /// from a client.
     /// </remarks>
-    private static object NarrativeValueFor(string table, string label) =>
-        table is "accounts" or "payees" or "category_groups"
-            ? SealedNarrative.Name(label).Envelope.ToArray()
-            : label;
+    private static object NarrativeValueFor(string table, string label) => table switch
+    {
+        // Four NAME columns, under NarrativeFieldLimits.NameBytes.
+        "accounts" or "payees" or "category_groups" or "categories" =>
+            SealedNarrative.Name(label).Envelope.ToArray(),
+
+        // transactions.description is a DESCRIPTION column and takes the other cap. Folding it in with
+        // the four above would seal it under NameBytes, which is a different number about a different
+        // field class - harmless for these short labels and wrong the day one of them grows.
+        "transactions" => SealedNarrative.Description(label).Envelope.ToArray(),
+
+        _ => label,
+    };
 
     /// <summary>
     /// Compares what a column actually holds against the label it was written from, bytes for the three
@@ -1193,15 +1204,23 @@ public sealed class RlsIsolationTests
             null,
             0,
             SeedInstant);
-        Category category = Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant);
+        Category category = Category.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            group.Id,
+            SealedNarrative.Indexed("Groceries"),
+            null,
+            0,
+            SeedInstant);
         Payee payee = Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant);
         Transaction transaction = Transaction.Create(
+            Guid.CreateVersion7(),
             budgetId,
             account.Id,
             -10m,
             UsdMinorUnit,
             new DateOnly(2026, 6, 12),
-            "Weekly shop",
+            SealedNarrative.Description("Weekly shop"),
             SeedInstant);
 
         seed.Accounts.Add(account);
@@ -1549,9 +1568,15 @@ public sealed class RlsIsolationTests
                 "insert into category_groups (id, budget_id, name, name_key, description, position, created_at_utc) " +
                 "values (@id, @budget_id, @name, @name_key, null, 1, @created_at_utc)",
                 null),
+            // categories joined the sealed tables in this slice and brought the SAME 23502 trap with it:
+            // name_key is NOT NULL, so a probe naming only `name` is refused before any policy is
+            // consulted and this test would read a not-null violation as the row-level-security verdict.
+            // Measured: dropping name_key here answers `23502: null value in column "name_key" of
+            // relation "categories"`. `description` stays null deliberately, for the reason
+            // category_groups gives above.
             "categories" => (
-                "insert into categories (id, budget_id, category_group_id, name, description, position, created_at_utc) " +
-                "values (@id, @budget_id, @parent_id, @name, null, 1, @created_at_utc)",
+                "insert into categories (id, budget_id, category_group_id, name, name_key, description, position, created_at_utc) " +
+                "values (@id, @budget_id, @parent_id, @name, @name_key, null, 1, @created_at_utc)",
                 target.CategoryGroupId),
             // payees carries BOTH halves of a sealed name too, for the same reason and with the same
             // trap: name_key is NOT NULL, so a probe naming only `name` is refused with 23502 before
@@ -1588,14 +1613,17 @@ public sealed class RlsIsolationTests
         // anything seeded, and DERIVING BOTH HALVES FROM ONE DISTINCTIVE LABEL is what keeps that true.
         // A fixed index would collide with whatever a seeder happened to write and answer 23505, which
         // this test would read as the policy firing.
-        if (table is "accounts" or "payees" or "category_groups")
+        // TWO SHAPES. The FOUR tables carrying a blind index beside the name bind both halves; only
+        // transactions does not, because it has no name at all - its @name parameter feeds `description`,
+        // which is why that value comes from NarrativeValueFor rather than from SealedNarrative.Name.
+        if (table is "accounts" or "payees" or "category_groups" or "categories")
         {
             command.Parameters.AddWithValue("name", SealedNarrative.Name(probeName).Envelope.ToArray());
             command.Parameters.AddWithValue("name_key", SealedNarrative.BlindIndex(probeName).ToArray());
         }
         else
         {
-            command.Parameters.AddWithValue("name", probeName);
+            command.Parameters.AddWithValue("name", NarrativeValueFor(table, probeName));
         }
 
         if (parentId is { } parent)

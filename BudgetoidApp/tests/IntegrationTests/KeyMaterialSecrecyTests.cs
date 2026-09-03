@@ -705,6 +705,94 @@ public sealed class KeyMaterialSecrecyTests
             + "operator who moved one budget's name onto another row would produce a value that "
             + "refuses to open rather than one that opens as somebody else's"),
         new(
+            "categories",
+            "name",
+            "a category's name sealed as a narrative field \u2014 an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the same content-key argument budgets.name, accounts.name, category_groups.name and "
+            + "payees.name make, written out again rather than pointed at, because a classification "
+            + "that says \"see above\" stops being a per-column argument: the content key is generated "
+            + "in the browser and reaches this server only as the wrapped_content_key envelopes, each "
+            + "sealed under a key-encryption key derived from a recovery factor the operator never "
+            + "holds. WHAT THIS COLUMN IN PARTICULAR STOPS BEING LEGIBLE sits one level FINER than its "
+            + "group's and is the more revealing of the two for exactly that reason: a group called "
+            + "Medical says somebody has medical costs, while the categories under it \u2014 Therapy, "
+            + "Fertility, a named condition \u2014 say which, and there are tens of them per budget "
+            + "rather than a handful. The same concession as its neighbours and no more: AES-GCM "
+            + "without the key yields the plaintext's LENGTH, which the column's own length already "
+            + "gives away. The tag is the other half \u2014 associated data is rebuilt from where the "
+            + "ciphertext was found, so an operator who moved one category's name onto another row "
+            + "would produce a value that refuses to open rather than one that opens as somebody "
+            + "else's"),
+        new(
+            "categories",
+            "description",
+            "the note filed against a category, sealed as a narrative field under the account's "
+            + "content key \u2014 the second sealed free-text column in the product after "
+            + "category_groups.description, and nullable like it",
+            "the content-key half is category_groups.description's and holds for the same reason, but "
+            + "THE ABSENCE CONCESSION IS NOT THE SAME SIZE AND MUST NOT BE PASTED ACROSS. That column "
+            + "announces which of a person's eleven groups they bothered to annotate; this one "
+            + "announces which of their eighty categories they did, which is a longer and more "
+            + "individuating pattern \u2014 an operator learns not that somebody keeps notes, but "
+            + "roughly WHERE in their ledger they keep them, and a cluster of annotated rows under one "
+            + "group is itself a signal about which part of their life needed explaining. It cannot be "
+            + "closed by writing an envelope over an empty string into every row, because \"cleared\" "
+            + "and \"never filled\" are two states the product deliberately keeps apart. The length "
+            + "concession is the ordinary one, under the wider NarrativeFieldLimits.DescriptionBytes "
+            + "band rather than a name's. There is NO description_key and there never will be, for "
+            + "category_groups.description's reason and not budgets.name's: a note is not looked up, is "
+            + "not unique and is not a name, so no mechanism was ever wanted here, whereas on "
+            + "budgets.name a uniqueness rule was surrendered. The tag is the last half \u2014 "
+            + "associated data is rebuilt from where the ciphertext was found, so a note moved onto "
+            + "another row refuses to open rather than opening as somebody else's"),
+        new(
+            "categories",
+            "name_key",
+            "the blind index over the same name \u2014 HMAC-SHA-256 under the account's index key, "
+            + "computed by the client over the normalised text, and what "
+            + "IX_categories_budget_id_name_key enforces uniqueness over",
+            "IT IS NOT AN ENVELOPE AND NO ENVELOPE ARGUMENT MAY BE PASTED OVER IT, least of all the one "
+            + "two entries up on this same table. There is nothing here to open: a blind index is a "
+            + "keyed digest with no version, no nonce and no tag. Recovering the name means inverting "
+            + "HMAC-SHA-256, or guessing the plaintext AND holding the index key, which is generated in "
+            + "the browser beside the content key and reaches this server only as the wrapped_index_key "
+            + "envelopes. It unwraps nothing in the second sense either: it is an input to no KDF and "
+            + "no wrapping step, so even a recovered index key opens no envelope, it only lets somebody "
+            + "search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE ACCOUNT, and the equality here "
+            + "sits between its two neighbours rather than repeating either. Nothing in the product "
+            + "looks a category up by name, so like category_groups.name_key this index's whole job is "
+            + "to refuse a second row \u2014 but the labels it is refusing duplicates of are FINER and "
+            + "there are far more of them, so what recurs across a person's budgets is a more specific "
+            + "filing habit than the coarse group labels expose, while still being nothing like the set "
+            + "of counterparties payees.name_key gives up. ACROSS ACCOUNTS IT LEAKS NOTHING: the index "
+            + "key is per-account, so the same label in two accounts is two unrelated digests and this "
+            + "column supports no cross-account correlation and no frequency analysis over the "
+            + "population"),
+        new(
+            "transactions",
+            "description",
+            "the note a person wrote on a single movement of money, sealed as a narrative field under "
+            + "the account's content key \u2014 the third sealed free-text column, and the first on a "
+            + "table with NO NAME COLUMN AT ALL",
+            "the content-key half is the other narrative columns' and holds unchanged. WHAT IS "
+            + "PARTICULAR HERE IS THAT THIS IS THE HIGHEST-VOLUME AND MOST INTIMATE OF THE SEALED "
+            + "COLUMNS, and the entry would be dishonest if it read like a name's. A category name is a "
+            + "label somebody chose once; a transaction note is free text written in the moment beside "
+            + "an amount, a date, a counterparty and a category \u2014 every one of which this row "
+            + "still carries in the clear \u2014 so the note is the last unreadable field on a record "
+            + "that is otherwise fully legible to an operator. Sealing it removes the WORDS and removes "
+            + "nothing else; it does not make the transaction private, and claiming otherwise here "
+            + "would be the exact overstatement this file exists to prevent. THE ABSENCE CONCESSION IS "
+            + "THE WIDEST ON THE SURFACE for the same reason: the column is nullable and there are "
+            + "thousands of rows per budget, so which movements a person annotated is a dense, "
+            + "per-transaction pattern rather than a habit over tens of rows. There is NO "
+            + "description_key here and there could not be one even if somebody wanted it \u2014 this "
+            + "table has no name, no blind index and no unique rule for one to serve. The length "
+            + "concession is the ordinary one under DescriptionBytes. The tag is the last half \u2014 "
+            + "associated data is rebuilt from where the ciphertext was found, so a note moved onto "
+            + "another transaction refuses to open rather than opening as somebody else's"),
+        new(
             "category_groups",
             "name",
             "a category group's name sealed as a narrative field \u2014 an AEAD envelope of version, nonce, "
@@ -984,9 +1072,27 @@ public sealed class KeyMaterialSecrecyTests
             + "both would be a single sentence answering for two values nothing here can tell apart, "
             + "which is the confusion that associated data exists to prevent"),
         new("CategoryEndpoints.UpdateCategoryRequest", "Description",
-            "a person's own note about one of their categories"),
+            "base64url over the AEAD envelope holding a person's own note about one of their categories "
+            + "\u2014 or absent, which CLEARS the note, because this route is a PUT and a PUT is a full "
+            + "replacement. It is NOT the note as they typed it; nothing on this route is any more. It "
+            + "was sealed in the browser, bound to the row id in the PATH rather than to a member of "
+            + "this body, under a key derived from a recovery factor this server never sees"),
         new("CategoryEndpoints.UpdateCategoryRequest", "Name",
-            "the name a person gave one of their categories, as they typed it"),
+            "base64url over the AEAD envelope holding the name a person is giving one of their "
+            + "categories. IT IS NOT THE NAME AS THEY TYPED IT, which is what this argument said until "
+            + "this slice and is the sentence to check rather than the member list: a census that "
+            + "compares member NAMES cannot see an argument going false, so an entry left describing "
+            + "plaintext keeps passing forever. It was sealed in the browser, bound to the row id in the "
+            + "PATH, under a key derived from a recovery factor this server never sees"),
+        new("CategoryEndpoints.UpdateCategoryRequest", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this: HMAC-SHA-256 under the account's index key, which lives in a browser. A "
+            + "keyed digest and not an envelope, and not key material \u2014 the index key itself "
+            + "crosses this wire only sealed, as AccountKeyEntry.WrappedIndexKey. IT IS REQUIRED RATHER "
+            + "THAN OPTIONAL, and that is this member's own point: Category.Update writes both halves in "
+            + "one statement, so a body carrying a new envelope without a new index would leave the row "
+            + "holding ciphertext under the PREVIOUS name's index \u2014 invisible on this side "
+            + "forever, because recomputing a digest needs a key this server does not have"),
         new("CategoryGroupEndpoints.UpdateCategoryGroupRequest", "Description",
             "base64url over the AEAD envelope holding a person's own note about one of their category "
             + "groups \u2014 or absent, which is a group filing no note and is NOT the same as an envelope "
@@ -1022,9 +1128,30 @@ public sealed class KeyMaterialSecrecyTests
             + "material — the index key itself crosses this wire only sealed, as "
             + "AccountKeyEntry.WrappedIndexKey"),
         new("CreateCategoryCommand", "Description",
-            "a person's own note about a category they are creating"),
+            "base64url over the AEAD envelope holding a person's own note about a category they are "
+            + "creating \u2014 or absent, which is a category filing no note. THE TWO ARE DIFFERENT "
+            + "ROWS: an emptied note seals to a legal twenty-nine-byte envelope and an unwritten one is "
+            + "NULL, so this member is judged with `is null` and never with a spelling that folds the "
+            + "empty string into absence. It was sealed in the browser, bound to the Id below, under a "
+            + "key derived from a recovery factor this server never sees"),
+        new("CreateCategoryCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid \u2014 the one spelling "
+            + "this API accepts and the one it hands back. It carries no secret; it is here because it "
+            + "is the associated data the two envelopes beside it were sealed against. Written out "
+            + "rather than pointed at CreatePayeeCommand.Id because what an unopenable row COSTS "
+            + "differs: this row seals TWO narrative members against this identifier, so a spelling "
+            + "this server cannot reproduce costs a name and a note together rather than one value"),
         new("CreateCategoryCommand", "Name",
-            "the name a person is giving a new category, as they typed it"),
+            "base64url over the AEAD envelope holding the name a person is giving a new category. IT IS "
+            + "NOT THE NAME AS THEY TYPED IT, which is what this argument said until this slice. It was "
+            + "sealed in the browser, bound to the Id above, under a key derived from a recovery factor "
+            + "this server never sees, so this side can neither read it nor measure characters in it"),
+        new("CreateCategoryCommand", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material. It is what IX_categories_budget_id_name_key enforces one-name-per-budget over, "
+            + "the case folding having moved into the client's normalisation before the HMAC \u2014 so "
+            + "this server no longer performs it and no constraint here can be written to it"),
         new("CreateCategoryGroupCommand", "Description",
             "base64url over the AEAD envelope holding a person's own note about a category group they "
             + "are creating \u2014 or absent, which is a group filing no note. THE TWO ARE DIFFERENT ROWS "
@@ -1073,8 +1200,25 @@ public sealed class KeyMaterialSecrecyTests
             + "AccountKeyEntry.WrappedIndexKey. On this table it is also what REPLACED a server-side "
             + "lookup: the server used to fold a payee name's case and re-read the table, and it can do "
             + "neither now, so uniqueness of counterparties rests entirely on this value"),
+        new("CreateTransactionCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid \u2014 the one spelling "
+            + "this API accepts. It carries no secret; it is here because it is the associated data the "
+            + "Description envelope on this same body was sealed against. Written out rather than "
+            + "pointed at CreateCategoryCommand.Id because what an unopenable row COSTS differs again: "
+            + "this row seals ONE narrative member, so a spelling this server cannot reproduce costs the "
+            + "note and nothing else \u2014 and the note is the only member on a transaction that was "
+            + "ever unreadable, so the row degrades to exactly what it was before the sealing rather "
+            + "than becoming unusable. AccountId, PayeeId and CategoryId stay uuids on this same body "
+            + "and the asymmetry is not drift: none of them is associated data for anything, so the "
+            + "spellings folding together costs nothing"),
         new("CreateTransactionCommand", "Description",
-            "a person's own note about one transaction, as they typed it"),
+            "base64url over the AEAD envelope holding a person's own note about one transaction \u2014 "
+            + "or absent, which is a transaction filing no note, and `\"\"` which is neither and "
+            + "answers 400. IT IS NOT THE NOTE AS THEY TYPED IT, which is what this argument said until "
+            + "this slice. Sealed in the browser, bound to the Id on this same body, under a key derived "
+            + "from a recovery factor this server never sees. This is the highest-volume narrative "
+            + "member on the surface and the last unreadable field on a record whose amount, date, "
+            + "account, payee and category all still cross in the clear"),
         new("CredentialEndpoints.CredentialListEntry", "Type",
             "a response member: one credential's type, as CredentialTypeSpelling writes it"),
         new("CredentialEndpoints.RevocationRequest", "AuthenticatorData",
@@ -1172,7 +1316,12 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the same envelope for the index key, sealed under the same key and bound to "
             + "a different purpose"),
         new("TransactionEndpoints.UpdateTransactionRequest", "Description",
-            "a person's own note about one transaction, present or absent, as they typed it"),
+            "base64url over the AEAD envelope holding a person's own note about one transaction, wrapped "
+            + "in Optional<T> because this route is a PATCH and genuinely has THREE states: absent "
+            + "leaves the note alone, an explicit null CLEARS it, and a value replaces it \u2014 with "
+            + "`\"\"` a fourth thing that is not an envelope and answers 400. IT IS NOT THE NOTE AS "
+            + "THEY TYPED IT, which is what this argument said until this slice. Sealed in the browser, "
+            + "bound to the row id in the PATH rather than to a member of this body"),
     ];
 
     /// <summary>

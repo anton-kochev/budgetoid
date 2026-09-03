@@ -15,12 +15,15 @@ public sealed class TransactionEndpointsTests
         HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
 
+        // The id is minted here and sent, because the command carries one: it is the associated data the
+        // note was sealed against. The description is the sealed envelope over the label, not the label.
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -42.50m,
             date = "2026-06-12",
             accountId,
-            description = "Groceries"
+            description = SealedNarrative.EncodedDescription("Groceries")
         });
         JsonNode? json = await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync());
 
@@ -36,8 +39,95 @@ public sealed class TransactionEndpointsTests
         // that joined the wrong account, or none, fails here.
         await Assert.That(json["accountName"]!.GetValue<string>())
             .IsEqualTo(SealedNarrative.EncodedName("Checking"));
-        await Assert.That(json["description"]!.GetValue<string>()).IsEqualTo("Groceries");
+        await Assert.That(json["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Groceries"));
         await Assert.That(json["createdAtUtc"] is not null).IsTrue();
+    }
+
+    /// <summary>
+    /// A retried <c>POST /api/transactions</c> carrying an identifier that already exists answers
+    /// <b>409</b>, not 500.
+    /// </summary>
+    /// <remarks>
+    /// <b>The wire half of a claim only the repository held.</b>
+    /// <c>RepositoryConstraintAttributionTests.AddTransaction_WithADuplicateIdentifier_TranslatesItsOwnPrimaryKey</c>
+    /// proves the repository raises a <c>ConflictException</c>; nothing proved the route renders it. That
+    /// matters more here than on any sibling: <c>TransactionRepository.AddAsync</c> has a SINGLE catch
+    /// arm — this table has no name index, so there is no second <c>23505</c> — and an unreachable
+    /// translation degrades straight into a <b>500</b> rather than into a neighbouring status.
+    /// </remarks>
+    [Test]
+    public async Task PostTransaction_WithADuplicateIdentifier_AnswersConflict()
+    {
+        // Arrange — a transaction, then the byte-identical body again, which is what a retry sends.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        Guid accountId = await CreateAccountAsync(client);
+        object body = new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            amount = -42.50m,
+            date = "2026-06-12",
+            accountId,
+            description = SealedNarrative.EncodedDescription("Corner shop"),
+        };
+        (await client.PostAsJsonAsync("/api/transactions", body)).EnsureSuccessStatusCode();
+
+        // Act
+        HttpResponseMessage retried = await client.PostAsJsonAsync("/api/transactions", body);
+
+        // Assert — the status AND the sentence, for the reason the category twin gives.
+        await Assert.That(retried.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        JsonNode problem = (await JsonNode.ParseAsync(await retried.Content.ReadAsStreamAsync()))!;
+        await Assert.That(problem["detail"]!.GetValue<string>()).IsEqualTo(
+            "A transaction already exists with this identifier. If this request is a retry, read that "
+            + "transaction back by its identifier instead of posting it again; otherwise mint a fresh "
+            + "identifier and post again.");
+    }
+
+    /// <summary>
+    /// <c>PATCH /api/transactions/{id}</c> with <c>"description": ""</c> answers <b>400</b> keyed on
+    /// <c>Description</c>, and the note the transaction held is untouched.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The fourth state of a three-state member, and the only one nothing covered.</b> Absent leaves
+    /// the note alone, an explicit null clears it, a value replaces it — all three have cases. <c>""</c>
+    /// is none of those: it is a MALFORMED ENVELOPE and is owed a refusal.
+    /// </para>
+    /// <para>
+    /// <b>What made it worth writing is how quietly it breaks.</b> The handler tests <c>is null</c>; a
+    /// forgiving spelling — <c>IsNullOrEmpty</c>, which is one word longer and reads as defensive — folds
+    /// <c>""</c> into the clear branch. The request then answers <b>204 having deleted a note nobody
+    /// asked to remove</b>, which is byte-identical to the legitimate clear and leaves nothing for a
+    /// status, a constraint or a later read to notice.
+    /// </para>
+    /// <para>
+    /// <b>The surviving note is the assertion that matters.</b> A case asserting the 400 alone passes on
+    /// a handler that refused the request AFTER clearing the column.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PatchTransaction_WithAnEmptyDescription_IsRefusedAndLeavesTheNoteStanding()
+    {
+        // Arrange — a transaction that HOLDS a note, or there is nothing for the refusal to fail to
+        // destroy.
+        await using PostgresTestHost host = await StartHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        Guid accountId = await CreateAccountAsync(client);
+        Guid transactionId = await CreateTransactionAsync(client, accountId);
+
+        // Act
+        HttpResponseMessage patch = await client.PatchAsJsonAsync(
+            $"/api/transactions/{transactionId}", new { description = "" });
+        JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
+
+        // Assert — the status, the field it is keyed on, and the note still there.
+        await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        JsonNode problem = (await JsonNode.ParseAsync(await patch.Content.ReadAsStreamAsync()))!;
+        await Assert.That(problem["errors"]!["Description"] is not null).IsTrue();
+        await Assert.That(after["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Coffee"));
     }
 
     [Test]
@@ -51,10 +141,11 @@ public sealed class TransactionEndpointsTests
         // used to serve here and no longer can: zero is a legitimate ledger entry.
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = 1.234m,
             date = "2026-06-12",
             accountId,
-            description = "Groceries"
+            description = SealedNarrative.EncodedDescription("Groceries")
         });
         JsonNode? json = await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync());
 
@@ -64,37 +155,63 @@ public sealed class TransactionEndpointsTests
     }
 
     [Test]
-    public async Task PostTransaction_WithoutDescription_ReturnsCreatedWithEmptyDescription()
+    public async Task PostTransaction_WithNoDescription_RendersItAsJsonNull()
     {
+        // THIS CASE INVERTED RATHER THAN BEING RETYPED, AND THE OLD NAME WAS PART OF THE DEFECT. It was
+        // PostTransaction_WithoutDescription_ReturnsCreatedWithEmptyDescription: it posted `description:
+        // ""` and asserted the response carried `""` back. That was a true description of a server that
+        // coerced a missing note to the empty string with `?? string.Empty` in TransactionDto - a
+        // coercion the record now forbids, because "" IS NOT A LEGAL ENVELOPE and a client handed one
+        // gets a decode failure on a transaction whose owner simply never wrote a note.
+        //
+        // Two things therefore changed. The BODY sends no note at all rather than "": under the sealed
+        // contract `""` is a malformed envelope and answers 400, so the old body no longer expresses
+        // "this person filed no note". And the ASSERTION reads JSON null rather than "". The name says
+        // so, because a case called ReturnsEmptyDescription while asserting null is a lie that a grep
+        // for the old behaviour would believe.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
 
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -42.50m,
             date = "2026-06-12",
             accountId,
-            description = ""
+            description = (string?)null
         });
         JsonNode? json = await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync());
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Created);
-        await Assert.That(json!["description"]!.GetValue<string>()).IsEqualTo("");
+        await Assert.That(json!["description"] is null || json["description"]!.GetValueKind()
+            == System.Text.Json.JsonValueKind.Null).IsTrue();
     }
 
     [Test]
-    public async Task GetTransactions_WithoutDescription_ReturnsEmptyDescription()
+    public async Task GetTransactions_RenderAnAbsentDescriptionAsNull()
     {
+        // The list half of the inversion the POST case above argues, and the one that reads the value
+        // back through a projection rather than off the entity the handler just wrote. Between a client
+        // and an unopenable "" there is this case and the unit-ring one on TransactionDto, and nothing
+        // else: every other case in this file sends a note.
         await using PostgresTestHost host = await StartHostAsync();
         HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
-        await client.PostAsJsonAsync("/api/transactions",
-            new { amount = 1m, date = "2026-06-12", accountId, description = "" });
+        await client.PostAsJsonAsync("/api/transactions", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            amount = 1m,
+            date = "2026-06-12",
+            accountId,
+            description = (string?)null,
+        });
 
         JsonNode? json = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
 
-        await Assert.That(json!["items"]!.AsArray()[0]!["description"]!.GetValue<string>()).IsEqualTo("");
+        JsonNode item = json!["items"]!.AsArray()[0]!;
+        await Assert.That(item["description"] is null || item["description"]!.GetValueKind()
+            == System.Text.Json.JsonValueKind.Null).IsTrue();
     }
 
     [Test]
@@ -116,15 +233,31 @@ public sealed class TransactionEndpointsTests
         HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         await client.PostAsJsonAsync("/api/transactions",
-            new { amount = 1m, date = "2026-06-11", accountId, description = "Older" });
+            new
+            {
+                id = Guid.CreateVersion7().ToString("D"),
+                amount = 1m,
+                date = "2026-06-11",
+                accountId,
+                description = SealedNarrative.EncodedDescription("Older"),
+            });
         await Task.Delay(2);
         await client.PostAsJsonAsync("/api/transactions",
-            new { amount = 2m, date = "2026-06-12", accountId, description = "Newest" });
+            new
+            {
+                id = Guid.CreateVersion7().ToString("D"),
+                amount = 2m,
+                date = "2026-06-12",
+                accountId,
+                description = SealedNarrative.EncodedDescription("Newest"),
+            });
 
         JsonNode? json = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
 
-        await Assert.That(json!["items"]!.AsArray()[0]!["description"]!.GetValue<string>()).IsEqualTo("Newest");
-        await Assert.That(json["items"]!.AsArray()[1]!["description"]!.GetValue<string>()).IsEqualTo("Older");
+        await Assert.That(json!["items"]!.AsArray()[0]!["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Newest"));
+        await Assert.That(json["items"]!.AsArray()[1]!["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Older"));
     }
 
     [Test]
@@ -144,7 +277,14 @@ public sealed class TransactionEndpointsTests
         HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
         Guid accountId = await CreateAccountAsync(client);
         await client.PostAsJsonAsync("/api/transactions",
-            new { amount = -42.50m, date = "2026-06-12", accountId, description = "Groceries" });
+            new
+            {
+                id = Guid.CreateVersion7().ToString("D"),
+                amount = -42.50m,
+                date = "2026-06-12",
+                accountId,
+                description = SealedNarrative.EncodedDescription("Groceries"),
+            });
 
         JsonNode? json = await JsonNode.ParseAsync(await client.GetStreamAsync("/api/transactions"));
         JsonNode item = json!["items"]!.AsArray()[0]!;
@@ -278,7 +418,7 @@ public sealed class TransactionEndpointsTests
         {
             amount = 99.99m,
             date = "2027-01-31",
-            description = "Rent",
+            description = SealedNarrative.EncodedDescription("Rent"),
             accountId = savingsId,
             payeeId = landlordId,
             categoryId = housingId,
@@ -289,7 +429,8 @@ public sealed class TransactionEndpointsTests
         await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
         await Assert.That(after["amount"]!.GetValue<decimal>()).IsEqualTo(99.99m);
         await Assert.That(after["date"]!.GetValue<string>()).IsEqualTo("2027-01-31");
-        await Assert.That(after["description"]!.GetValue<string>()).IsEqualTo("Rent");
+        await Assert.That(after["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Rent"));
         await Assert.That(after["accountId"]!.GetValue<Guid>()).IsEqualTo(savingsId);
         await Assert.That(after["accountName"]!.GetValue<string>())
             .IsEqualTo(SealedNarrative.EncodedName("Savings"));
@@ -297,7 +438,8 @@ public sealed class TransactionEndpointsTests
         await Assert.That(after["payeeName"]!.GetValue<string>())
             .IsEqualTo(SealedNarrative.EncodedName("Landlord"));
         await Assert.That(after["categoryId"]!.GetValue<Guid>()).IsEqualTo(housingId);
-        await Assert.That(after["categoryName"]!.GetValue<string>()).IsEqualTo("Housing");
+        await Assert.That(after["categoryName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Housing"));
 
         // The id and createdAtUtc are not mutable and are not accepted in the body. createdAtUtc
         // records when the row was written, not when it was last touched, so an edit that moves it
@@ -355,7 +497,8 @@ public sealed class TransactionEndpointsTests
         // Assert
         await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
         await Assert.That(after["amount"]!.GetValue<decimal>()).IsEqualTo(-12.75m);
-        await Assert.That(after["description"]!.GetValue<string>()).IsEqualTo("Coffee");
+        await Assert.That(after["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Coffee"));
         await Assert.That(after["payeeId"]!.GetValue<Guid>()).IsEqualTo(payeeId);
         await Assert.That(after["payeeName"]!.GetValue<string>())
             .IsEqualTo(SealedNarrative.EncodedName("Starbucks"));
@@ -396,10 +539,21 @@ public sealed class TransactionEndpointsTests
         });
         JsonNode after = await GetJsonAsync(client, $"/api/transactions/{transactionId}");
 
-        // Assert — the DTO declares Description as non-nullable, so a cleared description reads back
-        // as the empty string. Payee and category are nullable all the way out and read back as null.
+        // Assert — THIS PARAGRAPH USED TO SAY "the DTO declares Description as non-nullable, so a
+        // cleared description reads back as the empty string", AND BOTH HALVES OF THAT ARE NOW FALSE.
+        // TransactionDto.Description is string? and its `?? string.Empty` is gone, so a cleared note
+        // reads back as JSON null exactly like a note nobody ever filed - which is correct, because the
+        // column holds NULL in both cases and "" is not a legal envelope for a client to receive.
+        //
+        // The old assertion did not merely go stale, it CRASHED: `after["description"]!` on a JSON null
+        // is a NullReferenceException, not a failed comparison, so this case died before reaching the
+        // payee and category assertions underneath it. That is why the null test is written as a node
+        // check rather than as GetValue<string>().
+        //
+        // Payee and category are unchanged: nullable all the way out, and read back as null.
         await Assert.That(patch.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
-        await Assert.That(after["description"]!.GetValue<string>()).IsEqualTo("");
+        await Assert.That(after["description"] is null || after["description"]!.GetValueKind()
+            == System.Text.Json.JsonValueKind.Null).IsTrue();
         await Assert.That(after["payeeId"] is null).IsTrue();
         await Assert.That(after["payeeName"] is null).IsTrue();
         await Assert.That(after["categoryId"] is null).IsTrue();
@@ -480,10 +634,11 @@ public sealed class TransactionEndpointsTests
         // Act
         HttpResponseMessage unknown = await clientB.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10m,
             date = "2026-06-26",
             accountId = accountB,
-            description = "Coffee",
+            description = SealedNarrative.EncodedDescription("Coffee"),
             payeeId = Guid.CreateVersion7(),
         });
         JsonNode unknownProblem =
@@ -491,10 +646,11 @@ public sealed class TransactionEndpointsTests
 
         HttpResponseMessage foreign = await clientB.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10m,
             date = "2026-06-26",
             accountId = accountB,
-            description = "Coffee",
+            description = SealedNarrative.EncodedDescription("Coffee"),
             payeeId = payeeA,
         });
         JsonNode foreignProblem =
@@ -600,12 +756,17 @@ public sealed class TransactionEndpointsTests
         Guid accountId = await CreateAccountAsync(client);
 
         // Act — the stale client's body verbatim: a payee NAME and no payeeId.
+        // EVERY MEMBER BUT payeeName IS VALID, DELIBERATELY. The point of this case is that the RETIRED
+        // member is what earns the 400; a body that was also missing the id, or carrying a plaintext
+        // note, would answer 400 for three reasons at once and would keep answering it the day
+        // [JsonUnmappedMemberHandling(Disallow)] came off the shape.
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10m,
             date = "2026-06-26",
             accountId,
-            description = "Coffee",
+            description = SealedNarrative.EncodedDescription("Coffee"),
             payeeName = "Starbucks",
         });
         JsonNode transactions = await GetJsonAsync(client, "/api/transactions");
@@ -691,7 +852,7 @@ public sealed class TransactionEndpointsTests
         // Act
         HttpResponseMessage stranger = await clientB.PatchAsJsonAsync(
             $"/api/transactions/{transactionA}",
-            new { amount = 999m, description = "Hijacked" });
+            new { amount = 999m, description = SealedNarrative.EncodedDescription("Hijacked") });
         JsonNode afterStranger = await GetJsonAsync(clientA, $"/api/transactions/{transactionA}");
         HttpResponseMessage owner = await clientA.PatchAsJsonAsync(
             $"/api/transactions/{transactionA}",
@@ -703,7 +864,8 @@ public sealed class TransactionEndpointsTests
         // The survival check is not redundant with the 404. A handler that wrote the row and only
         // then reported it missing would satisfy the status code alone.
         await Assert.That(afterStranger["amount"]!.GetValue<decimal>()).IsEqualTo(-10m);
-        await Assert.That(afterStranger["description"]!.GetValue<string>()).IsEqualTo("Coffee");
+        await Assert.That(afterStranger["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Coffee"));
 
         // The 204 for the owner is load-bearing for the 404 above, not a duplicate of the other patch
         // tests. An unmapped route answers for every caller alike, so without a success on the very
@@ -825,10 +987,11 @@ public sealed class TransactionEndpointsTests
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10m,
             date = "2026-06-26",
             accountId,
-            description = "Coffee",
+            description = SealedNarrative.EncodedDescription("Coffee"),
             payeeId,
             categoryId,
         });
@@ -888,11 +1051,15 @@ public sealed class TransactionEndpointsTests
     private static async Task<Guid> CreateCategoryAsync(
         HttpClient client,
         Guid categoryGroupId,
-        string name)
+        string label)
     {
+        // The id is minted here and sent, because the route requires one: it is the associated data both
+        // narrative members were sealed against. The label is not the name and is never read back as one.
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/categories", new
         {
-            name,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             description = (string?)null,
             categoryGroupId,
         });

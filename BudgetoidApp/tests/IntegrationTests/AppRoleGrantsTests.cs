@@ -327,7 +327,13 @@ public sealed class AppRoleGrantsTests
                     SeedInstant);
             seed.CategoryGroups.Add(categoryGroup);
             seed.Categories.Add(Category.Create(
-                budgetId, categoryGroup.Id, "Groceries", null, 0, SeedInstant));
+                Guid.CreateVersion7(),
+                budgetId,
+                categoryGroup.Id,
+                SealedNarrative.Indexed("Groceries"),
+                null,
+                0,
+                SeedInstant));
             await seed.SaveChangesAsync();
         }
 

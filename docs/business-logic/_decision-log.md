@@ -8,6 +8,130 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-03 — The last three narrative columns are sealed, and a table with no name needs no index, no key and no apology
+
+**Context:** three columns were left — `categories.name`, `categories.description` and
+`transactions.description`. Two of them are the second instance of a pattern this log already
+records, so the interesting half is the third. `transactions` has **no name column at all**, and
+every sealed table before it had one: a `NOT NULL` envelope, a blind index beside it, a unique rule
+that either survived the sealing or was surrendered, and an `IndexedName` in its write path. Nothing
+in the established shape had ever been asked whether it assumed a name, and the question had to be
+answered before the shape was reused on a table that has none. A second question arrived with it:
+`categories` and `transactions` were the last two Domain factories still minting their own
+identifiers, which is unusable once a narrative field is bound to the row.
+
+**Decision:** **all three are sealed, both factories take the caller's identifier, and
+`transactions` gets no blind index, no unique name rule and no alternate key.** `categories.name`
+becomes `bytea NOT NULL` with a new `categories.name_key` beside it; `categories.description` and
+`transactions.description` become nullable `bytea` capped at `NarrativeFieldLimits.DescriptionBytes`
+and carrying no index, now and never. `Guid.CreateVersion7()` leaves both entity files entirely with
+no minting overload behind it, both creates take a `string Id` judged by `CanonicalIdentifier`, and
+both repositories gain a primary-key arm answering **409** with its own sentence.
+
+**Nothing in the pattern silently assumed a name, and that is a property of the types rather than
+luck.** `IndexedName` and its self-chosen `NameBytes` ceiling are reachable only *through* a name —
+the ceiling is named by the factory precisely so no caller can file a description-sized value into a
+name column — while `NarrativeField`, `NarrativeFieldLimits`, the envelope framing and the
+Application-ring decoder are all name-agnostic by construction. The three places that *did* assume a
+name were prose and fixtures, not code.
+
+**No `AK_transactions_id_budget_id`, and the reason is sharper than "nothing needs it".** Each of
+the other four budget-owned tables carries `(id, budget_id)` because **something references it
+compositely**, and the referencing side is not the same table in all four cases — which is the part
+worth getting right, because a reader who simplifies it will remove the wrong key one day.
+`transactions` is the composite referrer for `accounts`, `payees` and `categories`; the key on
+`category_groups` answers to a different referrer entirely, namely `categories`, and it has exactly
+that one consumer. So the graph is two hops, not one hub. What holds for `transactions` is the
+property none of the four has: **nothing in the schema references it at all.** It is the leaf, so the
+asymmetry is the reference graph showing through rather than an inconsistency, and adding the key for
+symmetry would create a constraint name no failure can ever report — the dead guard this repository
+already refuses on the four keys that do exist. **The inverse inference is the dangerous one and is
+refused here in advance**: the day transactions stop referencing categories, the key on
+`category_groups` is untouched, because it was never transactions' to need.
+
+**The `categories` grant shipped broken and green, and what that measurement corrects is a sentence
+about tables.** `GRANT UPDATE` was missing `name_key`. Measured: a genuine rename answers `42501`,
+and PostgreSQL **names only the relation** — no column, no constraint, nothing pointing at the
+missing entry — while three controls succeeded in the same run. It stayed invisible because the
+commonest edit is description-only: the route takes the name and index together, every seal draws a
+fresh nonce, so `name` changes while `name_key` is byte-identical, the content comparer correctly
+reports the index unchanged, and EF emits a one-column `UPDATE` the broken grant permits. **No
+genuine category rename reached the database at all** until the route bodies were fixed. So loudness
+follows **which column is missing**, never which table it is missing on. The name pair is the loud
+half everywhere: `name` or `name_key` missing is caught by the first genuine rename anybody
+exercises, on all four sealed tables alike, because a rename always names both. Every **other**
+column on a list is the quiet half, and which columns those are differs per table rather than being
+a set of three — `accounts` grants `type` and `opening_balance` beside the pair, `payees` grants
+nothing else at all, and only the two tables in this entry carry a `description` or a `position` for
+a grant to lose. The earlier reading — that `category_groups` is the
+hard table and `accounts` the easy one — split it on the wrong axis and produced two opposite wrong
+conclusions.
+
+**Two things that look like they follow from this slice and do not.** The transaction shapes'
+`[JsonUnmappedMemberHandling(Disallow)]` does **not** gain the category-group reason: that argument
+is about a misspelled member binding identically to an *absent* one where absent means *clear the
+note*, and on a `PATCH` carrying `Optional<string?>` absent means *leave it alone*. Losing an edit is
+a real defect and a different one, so the attribute keeps its single wire-drift reason and the
+paragraph stating it must not be widened. And the two new category shapes earn it on the
+category-group argument, not on drift — nothing there is retired.
+
+**`TransactionDto.Description` loses `?? string.Empty`, which is the shipped instance of a rule this
+log already wrote down.** An empty memo seals to exactly `CiphertextEnvelope.MinimumLength` bytes and
+a memo nobody wrote is `NULL`; the coercion folded them, and under a sealed column it also hands a
+client a value that is not a legal envelope. The member becomes `string?`, the export document's
+argument for refusing to reuse that DTO loses its lead example and keeps its three others, and the
+one case asserting the member comes back as JSON `null` is the whole of what stands between a client
+and an unopenable `""`.
+
+**Alternatives rejected, and they fail differently.** **Give `transactions.description` a blind
+index for symmetry with the four names** — a memo is never looked up, so it would publish a
+deterministic fingerprint of somebody's free text for a lookup nobody performs. **Add
+`AK_transactions_id_budget_id` so all five owned tables match** — an unreachable constraint name that
+reads convincingly. **Keep a `Create` overload that mints the id** — a caller who forgot to thread
+one through would compile, pass every case not asserting the returned identifier, and write a row
+holding ciphertext nobody can open; deleting the minting path forces such a caller to *name* the id
+it invents, on a line a reviewer reads. **Restore a character cap on either description against the
+envelope** — measuring bytes and calling them characters. **Keep
+`CategoryNames_AreCaseInsensitivelyUniqueAcrossGroups`** — the collation left `categories.name` by
+force, so there is no server behaviour left to assert; it is deleted with no replacement, the third
+instance of that deletion after the two payee cases, and the collision itself survives as a
+blind-index violation.
+
+**One claim in the entry below this one is narrowed rather than reversed, and it is recorded here
+because entries are not edited.** That entry closed by saying the length band shields a `get_byte`
+spelling on a version check and that nothing in the suite can catch one. Two halves of that were
+folded together, and measurement separated them. The **version checks fire**: a value of legal length
+carrying the wrong leading byte is refused and reported under the version constraint's own name, on
+every one of the eight. What the length band shields is only the **difference between the two
+spellings**, which shows up on a present, zero-length value and nowhere else. And the **spelling** is
+not uncaught — `SchemaConstraintSnapshotTests` pins each rendered definition, so a swap reddens by
+name. What remains held by review is the *reason*: a moved literal reads as a paste, and the obvious
+repair is to update the expectation. The decision that entry recorded is untouched; only the account
+of what covers it was wider than the facts.
+
+**Consequences.** **`users.email` is the only column in the schema still carrying the
+`case_insensitive` collation.** All eight narrative columns are sealed, so the set is closed and no
+chapter may promise a next one. All four blind indexes exist, so the cross-client blind-index
+contract is in force on every column it will ever cover. `/app/categories` loses the half that still
+worked, joining `/app/accounts` and `/app/transactions` — and the transaction form now needs a
+client-minted `id` and a sealed `description` as well as `payeeId`, so removing the retired member
+alone would not make a write succeed. Two change-tracking classes join the one that existed, and
+mutation testing measured what they hold: the snapshot arm is unobservable on both new tables, the
+transaction class's second case cannot fail from a comparer defect at all because `description` is
+that table's only converted property, and falsifying the category envelope equality reddens one case
+more than its own comments predicted. The same pass found a coverage class rather than a single gap
+— the repository arms translating a unique violation into a field-keyed 400 were uncovered on
+`categories` at every level and uncovered for *attribution* on the account and payee rename legs —
+and answered what an unreachable arm degrades into: a **500**, never the neighbouring status.
+
+**Affected areas:** [categories.md](categories.md), [transactions.md](transactions.md),
+[ciphertext-envelope.md](ciphertext-envelope.md), [budgets.md](budgets.md),
+[accounts.md](accounts.md), [payees.md](payees.md), [export.md](export.md),
+[_overview.md](_overview.md),
+[ADR 0022](../decisions/0022-mint-narrative-row-identifiers-on-the-client.md).
+
+---
+
 ## 2026-09-03 — A sealed description carries no blind index, and "cleared" is not "never filled"
 
 **Context:** `category_groups.description` is the first sealed **free-text** column in the product.

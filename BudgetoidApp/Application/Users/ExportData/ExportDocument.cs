@@ -159,6 +159,31 @@ public sealed record ExportedCategoryGroup(
     int Position,
     DateTime CreatedAtUtc);
 
+/// <summary>One category of a budget — the columns the <c>categories</c> row carries, less one.</summary>
+/// <param name="Id">The category's identifier.</param>
+/// <param name="BudgetId">The budget that owns it.</param>
+/// <param name="CategoryGroupId">The group it is filed under.</param>
+/// <param name="Name">
+/// The category's <b>sealed</b> name as unpadded base64url, for the reason
+/// <see cref="ExportedBudget.Name"/> gives about its own: the column is an AEAD envelope this server
+/// cannot open, and the member keeps its name because the completeness check over this document maps a
+/// table's columns onto a record's members. Renaming it would say the export had stopped carrying the
+/// column.
+/// </param>
+/// <param name="Description">
+/// The category's <b>sealed</b> note as unpadded base64url, or <see langword="null"/> where the category
+/// has none. The null is carried rather than coerced — a copy of somebody's data must keep "no note" and
+/// "a note they emptied" apart.
+/// </param>
+/// <param name="Position">Where the category sits in the person's own ordering within its group.</param>
+/// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
+/// <remarks>
+/// <b><c>name_key</c> is not here, and it is the one column this record deliberately omits</b> — the
+/// treatment <see cref="ExportedAccount"/> argues for its own and <see cref="ExportedPayee"/> and
+/// <see cref="ExportedCategoryGroup"/> repeat, pointed at rather than copied a fourth time. There is
+/// deliberately no <c>description_key</c> to omit: a description carries no blind index at all, because
+/// it is never looked up.
+/// </remarks>
 public sealed record ExportedCategory(
     Guid Id,
     Guid BudgetId,
@@ -189,6 +214,30 @@ public sealed record ExportedCategory(
 /// </remarks>
 public sealed record ExportedPayee(Guid Id, Guid BudgetId, string Name, DateTime CreatedAtUtc);
 
+/// <summary>One transaction of a budget — every column the <c>transactions</c> row carries.</summary>
+/// <param name="Id">The transaction's identifier.</param>
+/// <param name="BudgetId">The budget that owns it.</param>
+/// <param name="AccountId">The account it is filed under.</param>
+/// <param name="Amount">The signed amount, in the account's currency.</param>
+/// <param name="Date">The day the money moved.</param>
+/// <param name="Description">
+/// The <b>sealed</b> note as unpadded base64url, or <see langword="null"/> where the transaction has
+/// none. The null is carried rather than coerced — a copy of somebody's data must keep "no note" and "a
+/// note they emptied" apart.
+/// </param>
+/// <param name="PayeeId">The counterparty, or <see langword="null"/> for none.</param>
+/// <param name="CategoryId">The category, or <see langword="null"/> for none.</param>
+/// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
+/// <remarks>
+/// <b>This record omits nothing, and among the five owned collections on
+/// <see cref="ExportedBudget" /> it is the only one that does not.</b> The other four — accounts,
+/// category groups, categories and payees — each leave out a <c>name_key</c>; <c>transactions</c> has
+/// no name column, so it has no blind index to leave out. <b>The set is named rather than counted,
+/// and the reason is next door</b>: <see cref="ExportedBudget" /> omits nothing either, for an
+/// unrelated reason — <c>budgets.name</c> was given no blind index at all — so a reader who took "the
+/// five" to mean the records in this file would find the claim false while the sentence about the
+/// collections stays true.
+/// </remarks>
 public sealed record ExportedTransaction(
     Guid Id,
     Guid BudgetId,

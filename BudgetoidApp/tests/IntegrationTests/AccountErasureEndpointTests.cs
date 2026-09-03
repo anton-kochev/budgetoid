@@ -276,7 +276,9 @@ public sealed class AccountErasureEndpointTests
         });
         await CreateAsync(client, "/api/categories", new
         {
-            name = "Groceries",
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
             description = (string?)null,
             categoryGroupId,
         });
@@ -591,7 +593,9 @@ public sealed class AccountErasureEndpointTests
         });
         Guid categoryId = await CreateAsync(client, "/api/categories", new
         {
-            name = "Groceries",
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
             description = (string?)null,
             categoryGroupId,
         });
@@ -608,10 +612,11 @@ public sealed class AccountErasureEndpointTests
         });
         await CreateAsync(client, "/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10m,
             date = "2026-06-26",
             accountId,
-            description = "Coffee",
+            description = SealedNarrative.EncodedDescription("Coffee"),
             payeeId,
             categoryId,
         });

@@ -85,8 +85,8 @@ erDiagram
     through a `ValueConverter` over that type, beside a `ValueComparer` over the envelope's bytes
     (without one, EF compares a class by reference and reads a rebuilt-but-identical field as an
     edit while missing an envelope rewritten in place). **No test holds any arm of that comparer,
-    and this table sits furthest from one**: the product's single change-tracking class reads the
-    statements a save composes for `category_groups`
+    and this table sits furthest from one**: the product's three change-tracking classes read the
+    statements a save composes for `category_groups`, `categories` and `transactions`
     ([categories.md](categories.md#edge-cases--known-gotchas)) and nothing here is equivalent. A
     failure could not be quiet, though — the role holds **no `UPDATE` grant on `budgets` of any
     shape**, so a restatement the comparer failed to suppress is refused with `42501` rather than
@@ -157,26 +157,29 @@ erDiagram
     the key is what confines it to the same budget.
 
 - **Account, category group, category and payee names are unique per budget, and two spellings of
-  one name count as one.**
+  one name are meant to count as one — but the second half of that sentence is no longer this
+  server's to keep.**
   - **Why**: the names are how the user tells things apart inside one pool of money. Two accounts
     called "Cash" and "cash" in one budget are an unreadable list, while the same name in two
     different budgets is normal. Scoping uniqueness any wider would make one pool's naming constrain
     another's.
-  - **Enforced in**: a unique index per budget on all four, over **two different columns**, because
-    three of the four have been sealed and one has not.
-    - `accounts`, `payees` and `category_groups` are the sealed ones.
-      `IX_accounts_budget_id_name_key`, `IX_payees_budget_id_name_key` and
-      `IX_category_groups_budget_id_name_key` are unique over `(budget_id, name_key)` — the **blind
-      index**, not the name. Uniqueness over `name` would enforce nothing there: every seal draws a
+  - **Enforced in**: a unique index per budget on all four, over **one column each and the same
+    column on every one of them**, because all four have now been sealed.
+      `IX_accounts_budget_id_name_key`, `IX_payees_budget_id_name_key`,
+      `IX_category_groups_budget_id_name_key` and `IX_categories_budget_id_name_key` are unique over
+      `(budget_id, name_key)` — the **blind
+      index**, not the name. Uniqueness over `name` would enforce nothing on any of them: every seal
+      draws a
       fresh nonce, so two rows holding one name hold different bytes. Case folding did not disappear
       with the collation, which `bytea` cannot carry; it moved into the normalization the client
-      applies before it computes the index, and **nothing on this side can check that it happened**.
+      applies before it computes the index, and **nothing on this side can check that it happened —
+      on any of the four now, where this paragraph used to be able to point at one table where
+      PostgreSQL still did it.**
       See [accounts.md](accounts.md#business-rules--invariants),
       [payees.md](payees.md#business-rules--invariants) and
-      [categories.md](categories.md#constraints).
-    - `categories` alone still holds plaintext: its configuration puts `name` on the
-      `case_insensitive` collation and indexes `(budget_id, name)`, so PostgreSQL folds the case
-      itself. It is the last of the four in that state.
+      [categories.md](categories.md#constraints). Each old `(budget_id, name)` index is **gone**
+      rather than left standing beside its replacement: a unique index over ciphertext refuses
+      nothing and nobody would ever see it fire.
 
     What happens on a collision differs by entity and by verb, and is unaffected by which column the
     index is over. `AccountRepository`, `CategoryRepository` and `CategoryGroupRepository` translate
@@ -190,18 +193,19 @@ erDiagram
     is argued in [payees.md](payees.md#business-rules--invariants); the payee-against-account half,
     which is the one a reader meets first in this paragraph, is argued in the
     [decision log](_decision-log.md). Sealing a table's name column does **not** move it between the
-    two answers, and `category_groups` is the worked example: its name became ciphertext and its
-    create still answers 400, because the person still typed it into a form. What *is* affected is
-    who can read the collision: on the three
-    sealed tables, which rows matched is a question only a browser holding the account's index key
-    can answer.
+    two answers, and there are now two worked examples rather than one: `category_groups` and
+    `categories` each became ciphertext and each create still answers 400, because the person still
+    typed the name into a form. What *is* affected is
+    who can read the collision: on **all four** tables, which rows matched is a question only a
+    browser holding the account's index key can answer, and there is no longer a table where a
+    support query could answer it instead.
 
-    **A third answer exists on two of these tables and it is not about names at all.** `accounts`,
-    `payees` and `category_groups` all take a **client-minted** row identifier now, so a create
-    retried after a network timeout carries a byte-identical body and breaks the primary key rather
-    than the name index; the account and payee repositories answer that with a 409 carrying its own
-    sentence, and so does `CategoryGroupRepository`. `categories` has no such answer because its
-    identifier is still the server's.
+    **A third answer exists on all four of these tables and it is not about names at all.**
+    `accounts`, `payees`, `category_groups` and `categories` every one take a **client-minted** row
+    identifier now, so a create retried after a network timeout carries a byte-identical body and
+    breaks the primary key rather than the name index; each repository answers that with a 409
+    carrying its own sentence. `transactions` takes one too and answers the same way, on the one
+    table here with no name index for the identifier's answer to be told apart from.
 
 - **Ordering is per budget.**
   - **Why**: position is a deliberate personal arrangement of one pool's categories. Order that
@@ -368,13 +372,14 @@ erDiagram
   chosen**: `case_insensitive` is a text collation and `bytea` is not a collatable type — measured,
   declaring one raises `collations are not supported by type bytea`. What could bring the refusal
   back is a **blind index**, the keyed fingerprint that lets a server holding no plaintext see that
-  two names are equal. **That mechanism now exists and is in use on three tables**:
-  `accounts.name_key` is the first, `payees.name_key` the second and `category_groups.name_key` the
-  third, and each unique index over
+  two names are equal. **That mechanism now exists on every table the requirement names, and this
+  column is the one it deliberately skipped**: `accounts.name_key` is the first, `payees.name_key`
+  the second, `category_groups.name_key` the third and `categories.name_key` the fourth and last,
+  and each unique index over
   `(budget_id, name_key)` is this same uniqueness rule surviving this same change, by the same
   mechanism, over bytes the database cannot interpret ([accounts.md](accounts.md#must),
   [payees.md](payees.md#must), [categories.md](categories.md#constraints)). So the exclusion here has
-  been re-read against three working examples
+  been re-read against a **complete** set of working examples
   rather than against an idea nobody tried, and it stands: the requirement
   blind-indexes the name columns on `accounts`, `categories`, `category_groups` and `payees`, and
   leaves this one out. There is no later slice in which this comes back, and the honest word for it
@@ -617,11 +622,18 @@ The user branch that runs before this is in
   `2202E`, which is not a constraint violation at all — no constraint name, no failing row, and
   nothing a handler filtering on `23514` can ever see. **The length check next door saves it only by
   accident, and reading that accident as a guarantee is the trap.** `CK_budgets_name_length` sorts
-  ahead of `CK_budgets_name_version`, so a zero-length name meets the band first, the version
-  predicate is never evaluated on it, and a `get_byte` spelling here would be unreachable through the
-  schema as declared rather than merely quiet. So `substring` is written for the **property** and not
+  ahead of `CK_budgets_name_version`, so a zero-length name meets the band first and the version
+  predicate is never evaluated on it — which makes the **difference between the two spellings**
+  unreachable through the schema as declared, on the one value where they disagree. Read that at its
+  real width and not wider: `CK_budgets_name_version` itself fires perfectly well, and a name of
+  legal length carrying the wrong leading byte is reported under its own name. What is unobservable
+  is which predicate did the refusing, and only on a present, zero-length value. So `substring` is
+  written for the **property** and not
   for the symptom: it makes the predicate total over every length this column can hold, which is what
-  takes the ordering out of the answer. The whole argument, and the rule for whoever writes the next
+  takes the ordering out of the answer. The spelling is not uncaught either —
+  `SchemaConstraintSnapshotTests` pins the rendered definition, so a swap reddens by name, and what
+  is held by argument rather than by a test is the case for not answering that red bar by editing the
+  expectation. The whole of it, and the rule for whoever writes the next
   such constraint, is in
   [ciphertext-envelope.md](ciphertext-envelope.md#two-checks-on-one-column-and-which-one-bites).
 

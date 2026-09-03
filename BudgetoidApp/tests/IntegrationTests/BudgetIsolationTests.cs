@@ -35,12 +35,13 @@ public sealed class BudgetIsolationTests
             await dbA.SaveChangesAsync();
 
             Transaction transaction = Transaction.Create(
+                Guid.CreateVersion7(),
                 budgetA,
                 account.Id,
                 -10m,
                 UsdMinorUnit,
                 new DateOnly(2026, 6, 12),
-                "Budget A groceries",
+                SealedNarrative.Description("Budget A groceries"),
                 new DateTime(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc));
             transactionId = transaction.Id;
             dbA.Transactions.Add(transaction);
@@ -115,10 +116,11 @@ public sealed class BudgetIsolationTests
         Guid accountId = await CreateAccountAsync(clientA);
         HttpResponseMessage created = await clientA.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -42.50m,
             date = "2026-06-12",
             accountId,
-            description = "Budget A lunch",
+            description = SealedNarrative.EncodedDescription("Budget A lunch"),
         });
         await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
 

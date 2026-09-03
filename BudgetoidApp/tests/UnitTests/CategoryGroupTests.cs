@@ -110,8 +110,16 @@ public sealed class CategoryGroupTests
     {
         // Arrange — a description distinct from the name, because the two are the columns most likely to
         // be crossed by a factory assigning one parameter to both fields. SealedNarrative's filler is
-        // position-varying for exactly that reason, so "Required spending" and "Essential Obligations"
-        // produce envelopes that share no byte at any offset.
+        // position-varying for exactly that reason: two DIFFERENT labels produce envelopes that are not
+        // EQUAL, which is what the assertion below compares and what a doubled assignment fails.
+        //
+        // THIS PARAGRAPH USED TO CLAIM THE TWO "SHARE NO BYTE AT ANY OFFSET", AND THAT IS FALSE.
+        // Measured, ignoring the version byte at offset 0, Name("Essential Obligations") and
+        // Description("Required spending") — this case's own pair — agree at offsets 39 and 44. The
+        // filler is (labelByte + position * 31) mod 256, so two labels collide wherever their cycling
+        // bytes happen to agree, which is common rather than rare. Nothing here relies on per-offset
+        // disjointness and nothing should: the guard is whole-array inequality, and a reader who builds
+        // on the stronger reading is building on a property this fixture does not have.
         NarrativeField description = SealedNarrative.Description("Required spending");
 
         // Act

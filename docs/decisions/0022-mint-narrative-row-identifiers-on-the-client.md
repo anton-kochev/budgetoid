@@ -39,11 +39,13 @@ when it slips.
    on `credentials`, whose deletes are issued by primary key against a table carrying no
    row-level security policy, and which is why that id stays server-minted (ADR 0014).
 
-2. **Version 7, not version 4.** Every identifier a Domain factory mints is a version-7 UUID
-   — `Transaction`, `Payee`, `Account`, `Category`, `CategoryGroup`, `Budget`, `Session` and
-   `Credential` all assign `Guid.CreateVersion7()` — which is time-ordered and therefore
-   locally clustered in an index. A row id drawn any other way keeps uniqueness and loses that
-   locality on the tables that will hold the most rows.
+2. **Version 7, not version 4.** Every identifier a Domain factory *still* mints is a version-7
+   UUID — `Session` and `Credential` assign `Guid.CreateVersion7()`, and the six factories this
+   decision moved assigned it before they stopped minting at all — which is time-ordered and
+   therefore locally clustered in an index. A row id drawn any other way keeps uniqueness and
+   loses that locality on the tables that will hold the most rows. **On those six the clause is
+   now a rule about what the *client* emits**, which is where the whole of clause 1 puts it, and
+   where the paragraph on minters below says it is and is not enforceable.
 
    **That is not "every identifier in the schema", and the two exceptions are deliberate.**
    `factor_id` is minted on the client by `factor-id.ts` with `crypto.randomUUID()` — version
@@ -100,50 +102,55 @@ when it slips.
 ### Scope of this decision, stated exactly
 
 This decision fixes **the rule, the canonical form, and the grammar that consumes it**. The
-narrative grammar exists and refuses a non-canonical row id today.
+narrative grammar exists and refuses a non-canonical row id today, and **every row the grammar can
+name now takes its identifier from the client**, which was the part this section used to describe as
+partly built.
 
 **The client-side minter and the server-side refusal have both arrived; what is left is the rest of
 the factories and a caller.** `+core/security/narrative-row-id.ts` mints a version-7 UUID in the
 canonical spelling today, and its spec holds the version nibble, the canonical spelling and the
 big-endian timestamp. **Nothing calls it**: no path seals a narrative field for a row it just created.
 
-**Four of the six Domain factories have changed, and the first of them carries the decision's one
-exception.** `Budget.Create` and `Budget.CreateDefault`, `Account.Create`, `Payee.Create` and
-`CategoryGroup.Create` all take
+**All six Domain factories have changed, and one of them carries the decision's single exception.**
+`Budget.Create` and `Budget.CreateDefault`, `Account.Create`, `Payee.Create`,
+`CategoryGroup.Create`, `Category.Create` and `Transaction.Create` all take
 the row's identifier as a parameter, and `Guid.CreateVersion7()` has left `Budget.cs`, `Account.cs`,
-`Payee.cs` and `CategoryGroup.cs` entirely rather than moving behind an overload — a caller that
-forgot to thread an id
+`Payee.cs`, `CategoryGroup.cs`, `Category.cs` and `Transaction.cs` entirely rather than moving behind
+an overload — a caller that forgot to thread an id
 through would otherwise compile, pass every test that does not assert the returned identifier, and
-produce a row whose sealed name nobody can ever open. Each of the four refuses `Guid.Empty`, which
+produce a row whose sealed value nobody can ever open. Each of the six refuses `Guid.Empty`, which
 is reachable for the first time now that the value arrives from outside. **The exception is that
 registration mints the budget's id server-side**, on one written-out line in `RegisterAccountHandler`:
 the budget it creates carries **no name**, so nothing is sealed, there is nothing to seal against, and
 the browser has no basis on which to choose. A budget that *is* named is created by whoever sealed the
 name and hands its id in with it. See [budgets.md](../business-logic/budgets.md).
 
-**`CategoryGroup.Create` is the first factory where the identifier is the associated data of *two*
+**`CategoryGroup.Create` was the first factory where the identifier is the associated data of *two*
 narrative members**, not one — the sealed name and the sealed description are both bound to it — so a
 spelling this API cannot reproduce costs a name and a note together, with every constraint satisfied
-and nothing red. That widens the blast radius the third clause of this decision is about; it changes
-nothing about the rule.
+and nothing red. `Category.Create` is the second of that shape. That widens the blast radius the
+third clause of this decision is about; it changes nothing about the rule. **`Transaction.Create` is
+the opposite shape and worth naming for it**: one narrative member, no name and no blind index
+anywhere on the entity, so it is the first factory where the identifier is associated data and there
+is nothing else about the row for a reviewer to notice the requirement through.
 
-**The server-side parse that refuses a non-canonical row id is built, and three routes run it.**
+**The server-side parse that refuses a non-canonical row id is built, and five routes run it.**
 `CanonicalIdentifier.TryParse` compares the supplied text **ordinally against what the parsed value
-renders as**, per the Consequences below; `POST /api/accounts`, `POST /api/payees` and
-`POST /api/category-groups` each bind their
+renders as**, per the Consequences below; `POST /api/accounts`, `POST /api/payees`,
+`POST /api/category-groups`, `POST /api/categories` and `POST /api/transactions` each bind their
 `Id` as a `string` and judge it there, first of the opaque members that arrive with it, because a
-spelling this API cannot reproduce makes the envelopes beside it irrelevant. **The three
+spelling this API cannot reproduce makes the envelopes beside it irrelevant. **The five
 `PATCH`/`PUT` legs deliberately do
 not**: on an update the client re-seals against the row's **existing** id, read back from this API in
 the one form a `Guid` renders, so the text in a URL is never what anything was sealed under and there
 is no spelling to preserve.
 
-**The remaining two factories arrive with the work that encrypts their columns** —
-`Transaction.Create` and `Category.Create` still mint their own identifiers,
-and no route accepts one for them. Read those parts of this document as the decision they will be
-built to. **What is still unbuilt on the client is the caller**: `narrative-row-id.ts` mints, and no
+**Every column this decision was written for now exists, and the server half is complete.** There is
+no factory left minting its own identifier and no narrative column left unsealed, so nothing in this
+document is still waiting on a schema change. **What is still unbuilt is entirely on the client, and
+it is the caller**: `narrative-row-id.ts` mints, and no
 path seals a narrative field for a row it just created, because no browser in this product seals
-anything.
+anything. That was true when this ADR was written and it is the only part of it that still is.
 
 ## Alternatives considered
 
@@ -172,10 +179,11 @@ all to avoid a value the client can produce in one call.
 
 **`crypto.randomUUID`, which mints version 4 only.** Available in every browser this app runs
 in, needs no library, and keeps uniqueness — the argument for leaving the budget id out of the
-narrative grammar survives on 122 random bits alone. What it loses is **index locality**: every
-identifier a Domain factory mints is version 7 and clusters by creation time, and narrative rows
-are the ones there will be most of. It is the closest of the five, and it is rejected on that
-one property rather than on correctness.
+narrative grammar survives on 122 random bits alone. What it loses is **index locality**: the
+identifiers these rows carried while the Domain minted them were version 7 and clustered by
+creation time, and narrative rows are the ones there will be most of — `transactions` above all,
+which is now one of the tables the client mints for. It is the closest of the five, and it is
+rejected on that one property rather than on correctness.
 
 ## Consequences
 

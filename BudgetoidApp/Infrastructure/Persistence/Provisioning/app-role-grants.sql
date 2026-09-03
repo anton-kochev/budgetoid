@@ -521,9 +521,33 @@ GRANT UPDATE (name, name_key, description, position) ON category_groups TO budge
 -- categories: budget_id and created_at_utc immutable by omission; category_group_id is
 -- updatable — moving a category between groups is a real operation, and the composite
 -- foreign key to category_groups (id, budget_id) keeps the move inside the budget.
+--
+-- name_key joins name, the pair the accounts block above argues in full. What this table adds to
+-- that argument is a MEASUREMENT of how quiet a half grant is here, taken while the grant really
+-- was broken rather than reasoned about afterwards. The category_groups block above predicted the
+-- shape; this one is where it was observed end to end, through the route, against a live database:
+--
+--   update categories set name = ..., name_key = ...                -> 42501
+--   update categories set description = ..., name = ..., name_key = ... -> 42501
+--   update categories set category_group_id = ...                   -> UPDATE 1
+--   update categories set position = ...                            -> UPDATE 1
+--
+-- PostgreSQL reports 42501 naming the TABLE and nothing else — no column, no constraint, nothing
+-- pointing at which entry of this list is missing. aclcheck_error reports the relation, so anybody
+-- debugging a broken rename from the message alone gets no clue that name_key is the answer. That
+-- is the reason this comment carries the statements rather than a sentence.
+--
+-- The quiet path is the one to hold on to: a client editing only the DESCRIPTION re-sends the name
+-- it already has, every seal draws a fresh nonce, so `name` changes while `name_key` is
+-- byte-identical. The blind index's content comparer correctly reports it unchanged, EF names only
+-- the columns that moved, and that one-column statement SUCCEEDS under a grant missing name_key.
+-- So the hole is invisible on the commonest edit and loud only on a genuine rename — and measured
+-- on this suite, the number of genuine category renames that actually reached the database was
+-- ZERO until the route bodies were fixed. A broken grant would have shipped green.
 REVOKE ALL ON categories FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON categories TO budgetoid_app;
-GRANT UPDATE (name, description, position, category_group_id) ON categories TO budgetoid_app;
+GRANT UPDATE (name, name_key, description, position, category_group_id)
+    ON categories TO budgetoid_app;
 
 -- payees: no DELETE — no delete path exists. budget_id and created_at_utc immutable by
 -- omission.

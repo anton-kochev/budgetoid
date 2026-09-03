@@ -1,5 +1,6 @@
 using Domain.Categories;
 using Domain.Common;
+using TestSupport;
 
 namespace UnitTests;
 
@@ -95,11 +96,25 @@ public sealed class CategoryOrderingTests
         await Assert.That(last.Position).IsEqualTo(1);
     }
 
-    private static Category CreateCategory(Guid categoryGroupId, string name, int position) =>
+    /// <summary>
+    /// A category in <paramref name="categoryGroupId" /> at <paramref name="position" />.
+    /// </summary>
+    /// <param name="label">
+    /// What distinguishes this category from its siblings in a failure message. It is NOT the category's
+    /// name and is never read back as one — the column holds an envelope this side has no key for. Every
+    /// case in this file asserts on <c>Position</c> alone, so the label reaches
+    /// <c>SealedNarrative.Name</c> and <c>SealedNarrative.BlindIndex</c> only and never an encoded
+    /// member; the labels are the ordering words they always were.
+    /// </param>
+    private static Category CreateCategory(Guid categoryGroupId, string label, int position) =>
         Category.Create(
+            // The id is minted HERE and threaded in, because Category.Create no longer mints one: it is
+            // the associated data the name was sealed against, so the factory takes it and never
+            // invents it.
+            Guid.CreateVersion7(),
             Guid.CreateVersion7(),
             categoryGroupId,
-            name,
+            SealedNarrative.Indexed(label),
             null,
             position,
             new DateTime(2026, 7, 14, 10, 0, 0, DateTimeKind.Utc));

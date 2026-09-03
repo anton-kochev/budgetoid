@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BudgetoidDbContext))]
-    [Migration("20260902093424_InitialCreate")]
+    [Migration("20260903122251_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -151,27 +151,30 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
+                    b.Property<byte[]>("Description")
+                        .HasColumnType("bytea")
                         .HasColumnName("description");
 
-                    b.Property<string>("Name")
+                    b.Property<byte[]>("Name")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name")
-                        .UseCollation("case_insensitive");
+                        .HasColumnType("bytea")
+                        .HasColumnName("name");
+
+                    b.Property<byte[]>("NameKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("name_key");
 
                     b.Property<int>("Position")
                         .HasColumnType("integer")
                         .HasColumnName("position");
 
-                    b.HasKey("Id");
+                    b.HasKey("Id")
+                        .HasName("PK_categories");
 
-                    b.HasIndex("BudgetId", "Name")
+                    b.HasIndex("BudgetId", "NameKey")
                         .IsUnique()
-                        .HasDatabaseName("IX_categories_budget_id_name");
+                        .HasDatabaseName("IX_categories_budget_id_name_key");
 
                     b.HasIndex("CategoryGroupId", "BudgetId");
 
@@ -179,6 +182,16 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.ToTable("categories", null, t =>
                         {
+                            t.HasCheckConstraint("CK_categories_description_length", "length(description) between 29 and 2560");
+
+                            t.HasCheckConstraint("CK_categories_description_version", "substring(description from 1 for 1) = '\\x01'::bytea");
+
+                            t.HasCheckConstraint("CK_categories_name_key_length", "length(name_key) = 32");
+
+                            t.HasCheckConstraint("CK_categories_name_length", "length(name) between 29 and 1024");
+
+                            t.HasCheckConstraint("CK_categories_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
+
                             t.HasCheckConstraint("CK_categories_position", "position >= 0");
                         });
                 });
@@ -526,16 +539,16 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("date")
                         .HasColumnName("date");
 
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
+                    b.Property<byte[]>("Description")
+                        .HasColumnType("bytea")
                         .HasColumnName("description");
 
                     b.Property<Guid?>("PayeeId")
                         .HasColumnType("uuid")
                         .HasColumnName("payee_id");
 
-                    b.HasKey("Id");
+                    b.HasKey("Id")
+                        .HasName("PK_transactions");
 
                     b.HasIndex("AccountId", "BudgetId");
 
@@ -549,6 +562,10 @@ namespace Infrastructure.Persistence.Migrations
                     b.ToTable("transactions", null, t =>
                         {
                             t.HasCheckConstraint("CK_transactions_amount", "abs(amount) <= 1000000000");
+
+                            t.HasCheckConstraint("CK_transactions_description_length", "length(description) between 29 and 2560");
+
+                            t.HasCheckConstraint("CK_transactions_description_version", "substring(description from 1 for 1) = '\\x01'::bytea");
                         });
                 });
 

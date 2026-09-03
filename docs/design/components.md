@@ -1561,23 +1561,38 @@ The product's most repeated unit. M3 base: none — a plain semantic list.
 - Uncategorized shows "No category" muted — a plain fact, not a warning.
 - Press: `--bud-state-pressed` layer. No swipe actions (transactions are immutable).
 
-**Two departures, named rather than tidied away. The first: line 1 does not render a payee today, it
-renders ciphertext.** `payees.name` and `accounts.name` are sealed columns, so `payeeName` and
-`accountName` on a transaction response are AEAD envelopes in base64url, and `/app/transactions`
-writes the value straight into the line. Nothing in the browser opens one yet. The row above stays the target — the
-line shows the counterparty's name — and what it waits on is the client being moved onto the sealed
-contract: the account's content key is held by `AccountKeyCustodyService`, and each envelope has to
-be opened under the binding for its own table, column and **row id**, which is why the response
-carries `payeeId` and `accountId` beside the two names.
+**Two departures, named rather than tidied away. The first: no text on this row is readable today —
+every word of it is ciphertext.** `payees.name`, `accounts.name`, `categories.name` and
+`transactions.description` are all sealed columns, so `payeeName`, `accountName`, `categoryName` and
+`description` on a transaction response are AEAD envelopes in base64url, and `/app/transactions`
+writes each value straight into the line. That reaches **both** lines of the row: line 1's payee and
+its description fallback, and line 2's category beside the account. Nothing in the browser opens one
+yet. The row above stays the target — the line shows the counterparty's name — and what it waits on
+is the client being moved onto the sealed contract: the account's content key is held by
+`AccountKeyCustodyService`, and each envelope has to be opened under the binding for its own table,
+column and **row id**, which is why the response carries `payeeId`, `accountId` and `categoryId`
+beside the names it joined. The transaction's own description is the one envelope on the row bound to
+the transaction's **own** id.
+
+**Two rules of this chapter are unaffected and worth saying so, because they will look like
+casualties.** "Uncategorized shows *No category* muted" still holds: that branch turns on the
+category being absent, which is a null the client can still see, not on reading a name. And a row
+whose ciphertext the browser cannot open is the credential list's problem restated — a fact a row is
+composed from has to be **total** over what a 200 can carry — so whatever the wiring does with a
+value that fails to authenticate, it may not throw while composing the row.
 
 **The second departure is larger and points the same way: nothing can be recorded from this screen
-at all.** The entry form still posts `payeeName`, which both transaction wire shapes now refuse by
-name, so every create and every edit answers 400. That is the API's choice rather than an accident,
+at all, and it now takes three fixes rather than one.** The entry form still posts `payeeName`, which
+both transaction wire shapes refuse by
+name, so every create and every edit answers 400. It also sends no client-minted `id` and a plaintext
+`description` where an envelope is required, so **removing the retired member alone would not make a
+write succeed**. The refusal is the API's choice rather than an accident,
 and it is the better of two failures: the alternative — an unmappable member dropped in silence —
 accepts the body and files the transaction with no counterparty on it, which is a ledger quietly
 losing who the money went to. The row above and the entry flow in [patterns](patterns.md) stay the
-target; what closes both departures is one piece of wiring — create the payee through its own route,
-send `payeeId`, and open the two envelopes under their own row ids. See [payees.md](../business-logic/payees.md) and
+target; what closes both departures is one piece of wiring — mint the row id, create the payee
+through its own route, send `payeeId`, seal the memo, and open the four joined envelopes under their
+own row ids. See [payees.md](../business-logic/payees.md) and
 [transactions.md](../business-logic/transactions.md).
 
 ## Cards

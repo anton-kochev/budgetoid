@@ -23,13 +23,20 @@ public sealed class CategoryHandlerTests
             new StubBudgetContext(fixture.BudgetId),
             fixture.TimeProvider);
 
-        // Act
+        // Act — the id is minted HERE and threaded in, because the command carries one now: it is the
+        // associated data both narrative members were sealed against. It travels as a string in the
+        // canonical spelling, because binding it as a Guid would fold the spellings before any handler
+        // saw text. The name and the index are the SEALED pair over the label, not the label.
         var first = await handler.HandleAsync(new CreateCategoryCommand(
-            "Groceries",
+            Guid.CreateVersion7().ToString("D"),
+            SealedNarrative.EncodedName("Groceries"),
+            SealedNarrative.EncodedIndex("Groceries"),
             null,
             fixture.SourceGroupId));
         var second = await handler.HandleAsync(new CreateCategoryCommand(
-            "Utilities",
+            Guid.CreateVersion7().ToString("D"),
+            SealedNarrative.EncodedName("Utilities"),
+            SealedNarrative.EncodedIndex("Utilities"),
             null,
             fixture.SourceGroupId));
 
@@ -54,7 +61,9 @@ public sealed class CategoryHandlerTests
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
             handler.HandleAsync(new CreateCategoryCommand(
-                "Groceries",
+                Guid.CreateVersion7().ToString("D"),
+                SealedNarrative.EncodedName("Groceries"),
+                SealedNarrative.EncodedIndex("Groceries"),
                 null,
                 Guid.CreateVersion7())));
 
@@ -163,7 +172,11 @@ public sealed class CategoryHandlerTests
         // Assert
         await Assert.That(dto).IsNotNull();
         await Assert.That(dto!.Id).IsEqualTo(category.Id);
-        await Assert.That(dto.Name).IsEqualTo("Groceries");
+
+        // The category's own name crosses this DTO as the base64url envelope its column holds, not as
+        // text. "Groceries" is measured to spell DIFFERENTLY under padded standard base64 and unpadded
+        // base64url, so this line still catches a read path reaching for the wrong encoder.
+        await Assert.That(dto.Name).IsEqualTo(SealedNarrative.EncodedName("Groceries"));
         await Assert.That(dto.CategoryGroupName)
             .IsEqualTo(SealedNarrative.EncodedName("Essential Obligations"));
     }

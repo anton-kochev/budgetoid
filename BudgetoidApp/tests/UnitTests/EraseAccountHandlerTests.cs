@@ -66,13 +66,18 @@ public sealed class EraseAccountHandlerTests
         // Arrange — an account with recorded movement in it. transactions → budgets is RESTRICT, so
         // the user row cannot go while this transaction is still there.
         Fixture fixture = Fixture.Build();
+        // The id is minted HERE and threaded in, because Transaction.Create no longer mints one: it is
+        // the associated data the description was sealed against, so the factory takes it and never
+        // invents it. The note is a sealed envelope over a label, and this case never reads it back —
+        // what it counts is rows.
         await fixture.Transactions.AddAsync(Transaction.Create(
+            Guid.CreateVersion7(),
             fixture.BudgetId,
             Guid.CreateVersion7(),
             -10m,
             UsdMinorUnit,
             new DateOnly(2026, 6, 26),
-            "Coffee",
+            SealedNarrative.Description("Corner shop"),
             Fixture.UtcNow));
 
         // Act

@@ -474,9 +474,10 @@ public sealed class DataExportCompletenessTests
         await Assert.That(groceries["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
         await Assert.That(groceries["categoryGroupId"]!.GetValue<Guid>())
             .IsEqualTo(seeded.EssentialsGroupId);
-        await Assert.That(groceries["name"]!.GetValue<string>()).IsEqualTo(GroceriesCategoryName);
+        await Assert.That(groceries["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName(GroceriesCategoryName));
         await Assert.That(groceries["description"]!.GetValue<string>())
-            .IsEqualTo(GroceriesCategoryDescription);
+            .IsEqualTo(SealedNarrative.EncodedDescription(GroceriesCategoryDescription));
         await Assert.That(groceries["position"]!.GetValue<int>()).IsEqualTo(0);
         await Assert.That(groceries["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.GroceriesCategoryId]);
@@ -489,9 +490,10 @@ public sealed class DataExportCompletenessTests
         await Assert.That(transport["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
         await Assert.That(transport["categoryGroupId"]!.GetValue<Guid>())
             .IsEqualTo(seeded.EssentialsGroupId);
-        await Assert.That(transport["name"]!.GetValue<string>()).IsEqualTo(TransportCategoryName);
+        await Assert.That(transport["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName(TransportCategoryName));
         await Assert.That(transport["description"]!.GetValue<string>())
-            .IsEqualTo(TransportCategoryDescription);
+            .IsEqualTo(SealedNarrative.EncodedDescription(TransportCategoryDescription));
         await Assert.That(transport["position"]!.GetValue<int>()).IsEqualTo(1);
         await Assert.That(transport["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.TransportCategoryId]);
@@ -504,9 +506,10 @@ public sealed class DataExportCompletenessTests
         await Assert.That(leisure["budgetId"]!.GetValue<Guid>()).IsEqualTo(budgetId);
         await Assert.That(leisure["categoryGroupId"]!.GetValue<Guid>())
             .IsEqualTo(seeded.LifestyleGroupId);
-        await Assert.That(leisure["name"]!.GetValue<string>()).IsEqualTo(LeisureCategoryName);
+        await Assert.That(leisure["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName(LeisureCategoryName));
         await Assert.That(leisure["description"]!.GetValue<string>())
-            .IsEqualTo(LeisureCategoryDescription);
+            .IsEqualTo(SealedNarrative.EncodedDescription(LeisureCategoryDescription));
         await Assert.That(leisure["position"]!.GetValue<int>()).IsEqualTo(0);
         await Assert.That(leisure["createdAtUtc"]!.GetValue<DateTime>())
             .IsEqualTo(created[seeded.LeisureCategoryId]);
@@ -598,7 +601,8 @@ public sealed class DataExportCompletenessTests
         await Assert.That(coffee["accountId"]!.GetValue<Guid>()).IsEqualTo(seeded.CheckingAccountId);
         await Assert.That(coffee["amount"]!.GetValue<decimal>()).IsEqualTo(-10.25m);
         await Assert.That(coffee["date"]!.GetValue<string>()).IsEqualTo(CoffeeDate);
-        await Assert.That(coffee["description"]!.GetValue<string>()).IsEqualTo(CoffeeDescription);
+        await Assert.That(coffee["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription(CoffeeDescription));
         await Assert.That(coffee["payeeId"]!.GetValue<Guid>()).IsEqualTo(seeded.CoffeeShopPayeeId);
         await Assert.That(coffee["categoryId"]!.GetValue<Guid>())
             .IsEqualTo(seeded.GroceriesCategoryId);
@@ -614,7 +618,8 @@ public sealed class DataExportCompletenessTests
         await Assert.That(busPass["accountId"]!.GetValue<Guid>()).IsEqualTo(seeded.SavingsAccountId);
         await Assert.That(busPass["amount"]!.GetValue<decimal>()).IsEqualTo(-25m);
         await Assert.That(busPass["date"]!.GetValue<string>()).IsEqualTo(BusPassDate);
-        await Assert.That(busPass["description"]!.GetValue<string>()).IsEqualTo(BusPassDescription);
+        await Assert.That(busPass["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription(BusPassDescription));
         await Assert.That(busPass["payeeId"]!.GetValue<Guid>()).IsEqualTo(seeded.TransitPayeeId);
         await Assert.That(busPass["categoryId"]!.GetValue<Guid>())
             .IsEqualTo(seeded.TransportCategoryId);
@@ -681,12 +686,15 @@ public sealed class DataExportCompletenessTests
         });
         Guid categoryId = await CreateAsync(client, "/api/categories", new
         {
-            name = GroceriesCategoryName,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(GroceriesCategoryName),
+            nameKey = SealedNarrative.EncodedIndex(GroceriesCategoryName),
             description = (string?)null,
             categoryGroupId = groupId,
         });
         Guid transactionId = await CreateAsync(client, "/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10.25m,
             date = CoffeeDate,
             accountId,
@@ -823,6 +831,7 @@ public sealed class DataExportCompletenessTests
         {
             seeded.Add(await CreateAsync(client, "/api/transactions", new
             {
+                id = Guid.CreateVersion7().ToString("D"),
                 amount = -1.25m,
                 date = CoffeeDate,
                 accountId,
@@ -1039,23 +1048,29 @@ public sealed class DataExportCompletenessTests
 
         for (int index = 0; index < RowsPerCollection; index++)
         {
+            // The named arguments went positional. With the id inserted ahead of them, `description:`
+            // and `position:` sat at different indexes than the parameters they named, which the
+            // compiler reports as CS8323 rather than as the arity error every other seeder here gives.
             Category category = Category.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 categoryGroups[0],
-                $"Ordered category {index}",
-                description: null,
-                position: index,
+                SealedNarrative.Indexed($"Ordered category {index}"),
+                null,
+                index,
                 StampedAt(index));
             db.Categories.Add(category);
             categories.Add(category.Id);
 
+            // Positional for the reason stated above the category seeder.
             Transaction transaction = Transaction.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 accounts[0],
                 -1.25m,
                 UsdMinorUnit,
                 InversionTransactionDate,
-                description: null,
+                null,
                 StampedAt(index));
             db.Transactions.Add(transaction);
             transactions.Add(transaction.Id);
@@ -1123,6 +1138,10 @@ public sealed class DataExportCompletenessTests
     private const string EssentialsGroupDescription = "Rent, food and the rest of the floor";
     private const string LifestyleGroupName = "Lifestyle";
     private const string LifestyleGroupDescription = "Everything that is a choice";
+    // These five are LABELS, not names: every one of them is fed to SealedNarrative before it reaches a
+    // request body, and read back through the same helper. The column holds an envelope this side has no
+    // key for, so the constant's job is to make two seeded rows differ - by eye in a failure message and
+    // in bytes in the database - which is the job the string literals used to do.
     private const string GroceriesCategoryName = "Groceries";
     private const string GroceriesCategoryDescription = "The weekly shop";
     private const string TransportCategoryName = "Transport";
@@ -1212,20 +1231,26 @@ public sealed class DataExportCompletenessTests
 
         Guid groceriesCategoryId = await CreateAsync(client, "/api/categories", new
         {
-            name = GroceriesCategoryName,
-            description = GroceriesCategoryDescription,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(GroceriesCategoryName),
+            nameKey = SealedNarrative.EncodedIndex(GroceriesCategoryName),
+            description = SealedNarrative.EncodedDescription(GroceriesCategoryDescription),
             categoryGroupId = essentialsGroupId,
         });
         Guid transportCategoryId = await CreateAsync(client, "/api/categories", new
         {
-            name = TransportCategoryName,
-            description = TransportCategoryDescription,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(TransportCategoryName),
+            nameKey = SealedNarrative.EncodedIndex(TransportCategoryName),
+            description = SealedNarrative.EncodedDescription(TransportCategoryDescription),
             categoryGroupId = essentialsGroupId,
         });
         Guid leisureCategoryId = await CreateAsync(client, "/api/categories", new
         {
-            name = LeisureCategoryName,
-            description = LeisureCategoryDescription,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(LeisureCategoryName),
+            nameKey = SealedNarrative.EncodedIndex(LeisureCategoryName),
+            description = SealedNarrative.EncodedDescription(LeisureCategoryDescription),
             categoryGroupId = lifestyleGroupId,
         });
 
@@ -1247,19 +1272,21 @@ public sealed class DataExportCompletenessTests
 
         Guid coffeeTransactionId = await CreateAsync(client, "/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -10.25m,
             date = CoffeeDate,
             accountId = checkingAccountId,
-            description = CoffeeDescription,
+            description = SealedNarrative.EncodedDescription(CoffeeDescription),
             payeeId = coffeeShopPayeeId,
             categoryId = groceriesCategoryId,
         });
         Guid busPassTransactionId = await CreateAsync(client, "/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -25m,
             date = BusPassDate,
             accountId = savingsAccountId,
-            description = BusPassDescription,
+            description = SealedNarrative.EncodedDescription(BusPassDescription),
             payeeId = transitPayeeId,
             categoryId = transportCategoryId,
         });

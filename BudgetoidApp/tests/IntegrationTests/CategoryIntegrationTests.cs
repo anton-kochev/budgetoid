@@ -33,9 +33,19 @@ public sealed class CategoryIntegrationTests
         HttpResponseMessage moveCategory = await client.PatchAsJsonAsync(
             $"/api/categories/{groceriesId}/placement",
             new { categoryGroupId = lifestyleId, position = 0 });
+        // A GENUINE RENAME: both halves of the name change together, which is the only edit that makes
+        // EF emit `name` and `name_key` in one UPDATE. A description-only edit re-sends the same name,
+        // and because every seal draws a fresh nonce the envelope differs while the index is
+        // byte-identical - so the comparer reports name_key unchanged and a ONE-COLUMN update goes out.
+        // That is why this case, and not any of the description edits, is what reaches the grant.
         HttpResponseMessage rename = await client.PutAsJsonAsync(
             $"/api/categories/{groceriesId}",
-            new { name = "Food Shopping", description = "Weekly food" });
+            new
+            {
+                name = SealedNarrative.EncodedName("Food Shopping"),
+                nameKey = SealedNarrative.EncodedIndex("Food Shopping"),
+                description = SealedNarrative.EncodedDescription("Weekly food"),
+            });
         JsonNode groups = await GetJsonAsync(client, "/api/category-groups");
         JsonNode categories = await GetJsonAsync(client, "/api/categories");
 
@@ -49,7 +59,8 @@ public sealed class CategoryIntegrationTests
         await Assert.That(groupItems[1]!["id"]!.GetValue<Guid>()).IsEqualTo(essentialsId);
         JsonArray categoryItems = categories["items"]!.AsArray();
         await Assert.That(categoryItems[0]!["id"]!.GetValue<Guid>()).IsEqualTo(groceriesId);
-        await Assert.That(categoryItems[0]!["name"]!.GetValue<string>()).IsEqualTo("Food Shopping");
+        await Assert.That(categoryItems[0]!["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Food Shopping"));
         await Assert.That(categoryItems[0]!["categoryGroupId"]!.GetValue<Guid>()).IsEqualTo(lifestyleId);
         await Assert.That(categoryItems[0]!["categoryGroupName"]!.GetValue<string>())
             .IsEqualTo(SealedNarrative.EncodedName("Lifestyle"));
@@ -167,30 +178,262 @@ public sealed class CategoryIntegrationTests
     // replacement; the surviving rule - one name per budget, over the blind index - is held by
     // RepositoryConstraintAttributionTests.AddCategoryGroup_WithADuplicateGroupName_TranslatesItsOwnUniqueIndex,
     // which now collides two rows on the SAME index value rather than on two spellings of one name.
+    //
+    // CategoryNames_AreCaseInsensitivelyUniqueAcrossGroups WAS HERE AND IS NOW DELETED TOO, WITH NO
+    // REPLACEMENT AND FOR THE SAME REASON ONE PARAGRAPH UP. It posted "Groceries" into one group and
+    // "groceries" into another and expected a 400 keyed on Name. categories.name has now made the move
+    // category_groups.name made: it is bytea, bytea is not collatable, so the case_insensitive
+    // collation left the column by force and this server can no longer tell two spellings of one name
+    // apart. THE FOLDING DID NOT VANISH - it is trim, NFKC, full case fold, UTF-8, applied in the
+    // browser before the HMAC - but it now happens where no case here can reach it, and its executable
+    // statement is the client's known-answer table rather than anything in this suite. Uniqueness
+    // itself survives, as a collision on identical blind-index bytes.
+    //
+    // THIS IS THE THIRD INSTANCE OF THIS DELETION AND THE PRECEDENT IS RECORDED: the payees slice
+    // deleted two such cases with no replacement, for the identical reason, and CLAUDE.md says so.
+    // A reviewer meeting a deleted assertion with nothing put in its place should find the answer
+    // here rather than having to ask for it.
 
+    /// <summary>
+    /// A category's note survives <c>POST</c> and comes back on BOTH read routes — the list and the row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b><c>GET /api/categories</c> could stop returning <c>description</c> entirely and this suite
+    /// stayed green.</b> The only non-null category note anywhere in the tree was created in
+    /// <c>DataExportCompletenessTests</c> and read back THROUGH THE EXPORT — a different projection in a
+    /// different service. <c>CategoryReadService</c>'s own remarks describe exactly this trap, and until
+    /// this case existed nothing held it: the column is nullable, so a projection that dropped the member
+    /// writes no error, violates no constraint, and answers 200 with a note nobody can tell from a note
+    /// that was never filed.
+    /// </para>
+    /// <para>
+    /// <b>Both routes, because they are two projections.</b> The list and the by-id read are separate
+    /// query shapes; one may carry the member while the other does not, and a case reading only one would
+    /// certify half a surface.
+    /// </para>
+    /// <para>
+    /// <b>The note is asserted as the ENVELOPE, and non-null.</b> An assertion that the member is present
+    /// passes on JSON null; one that reads it back byte-for-byte cannot.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task CategoryNames_AreCaseInsensitivelyUniqueAcrossGroups()
+    public async Task PostThenGetCategory_CarriesTheNoteThroughTheListAndTheRow()
     {
         // Arrange
         await using PostgresTestHost host = await StartApiHostAsync();
         HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
-        Guid essentialsId = await CreateCategoryGroupAsync(client, "Essentials");
-        Guid lifestyleId = await CreateCategoryGroupAsync(client, "Lifestyle");
-        await CreateCategoryAsync(client, essentialsId, "Groceries");
+        Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
+        var id = Guid.CreateVersion7();
 
         // Act
-        HttpResponseMessage duplicate = await client.PostAsJsonAsync("/api/categories", new
+        HttpResponseMessage created = await client.PostAsJsonAsync("/api/categories", new
         {
-            name = "groceries",
-            description = (string?)null,
-            categoryGroupId = lifestyleId,
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
+            description = SealedNarrative.EncodedDescription("Weekly food shop"),
+            categoryGroupId = groupId,
         });
-        JsonNode problem = (await JsonNode.ParseAsync(
-            await duplicate.Content.ReadAsStreamAsync()))!;
+        JsonNode body = (await JsonNode.ParseAsync(await created.Content.ReadAsStreamAsync()))!;
+        JsonNode listed = await GetJsonAsync(client, "/api/categories");
+        JsonNode row = await GetJsonAsync(client, $"/api/categories/{id}");
 
-        // Assert
-        await Assert.That(duplicate.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await Assert.That(problem["errors"]!["Name"] is not null).IsTrue();
+        // Assert — the 201 body first, then the two reads. The 201 is built from the entity the handler
+        // just wrote, so on its own it is a picture of the request rather than evidence about the column;
+        // the two GETs are what go back to the database.
+        await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(body["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Weekly food shop"));
+        JsonNode item = listed["items"]!.AsArray().Single()!;
+        await Assert.That(item["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Weekly food shop"));
+        await Assert.That(row["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Weekly food shop"));
+    }
+
+    /// <summary>
+    /// A <c>PUT</c> that replaces the note writes it, and a <c>PUT</c> that omits one clears it.
+    /// </summary>
+    /// <remarks>
+    /// <b>The write path the slice's own brief named, and nothing read it back.</b> One existing case
+    /// sends a <c>description</c> and never reads it; another sends null. That is defect six from the
+    /// brief — "a lost description is invisible where a lost name is <c>23502</c>" — alive on a route that
+    /// was named in the plan. Both legs are in ONE case deliberately: split apart, a handler that ignored
+    /// the member entirely passes the clearing leg (the seed had a note, the PUT omits one, the column
+    /// ends null either way) while only the replacing leg reddens, and the pair is what tells "wrote the
+    /// new note" from "did nothing".
+    /// </remarks>
+    [Test]
+    public async Task PutCategory_ReplacesTheNoteAndThenClearsIt()
+    {
+        // Arrange — a category that already HOLDS a note, so a replacement is a change rather than a
+        // first write.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
+        var id = Guid.CreateVersion7();
+        (await client.PostAsJsonAsync("/api/categories", new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
+            description = SealedNarrative.EncodedDescription("Weekly food shop"),
+            categoryGroupId = groupId,
+        })).EnsureSuccessStatusCode();
+
+        // Act — replace, read, then clear and read again.
+        HttpResponseMessage replaced = await client.PutAsJsonAsync($"/api/categories/{id}", new
+        {
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
+            description = SealedNarrative.EncodedDescription("Corner shop and the market"),
+        });
+        JsonNode afterReplace = await GetJsonAsync(client, $"/api/categories/{id}");
+        HttpResponseMessage cleared = await client.PutAsJsonAsync($"/api/categories/{id}", new
+        {
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
+            description = (string?)null,
+        });
+        JsonNode afterClear = await GetJsonAsync(client, $"/api/categories/{id}");
+
+        // Assert — the replacement is read back BY VALUE, which is the half that was missing; the clear
+        // is read back as JSON null, which is what an absent member means on a PUT because a PUT is a
+        // full replacement.
+        await Assert.That(replaced.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(afterReplace["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Corner shop and the market"));
+        await Assert.That(cleared.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(afterClear["description"] is null || afterClear["description"]!.GetValueKind()
+            == System.Text.Json.JsonValueKind.Null).IsTrue();
+    }
+
+    /// <summary>
+    /// <c>POST /api/categories</c> refuses a body carrying a member the shape does not declare, and
+    /// writes nothing.
+    /// </summary>
+    /// <remarks>
+    /// <b>The attribute is on <c>CreateCategoryCommand</c> and nothing sent it a misspelled member.</b>
+    /// Every <c>descriptionn</c> in this tree goes to a category GROUP route, and the attribute is
+    /// per-type — one declaration says nothing about another. The argument the group's own cases make
+    /// transfers verbatim and is not restated: under the global <c>Skip</c> a misspelled
+    /// <c>descriptionn</c> binds identically to an absent member, so this route answered 201 with a note
+    /// that never arrived.
+    /// </remarks>
+    [Test]
+    public async Task PostCategory_WithAnUnknownMember_IsRefusedAndWritesNothing()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
+
+        // Act — every declared member is correct and well-formed; the ONLY fault is the extra one.
+        HttpResponseMessage response = await client.PostAsJsonAsync("/api/categories", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
+            descriptionn = SealedNarrative.EncodedDescription("Weekly food shop"),
+            categoryGroupId = groupId,
+        });
+        JsonNode listed = await GetJsonAsync(client, "/api/categories");
+
+        // Assert — refused, and nothing filed. A refusal that still wrote the row is worse than the
+        // silent 201 it replaces: the caller is told the write failed while the note-less category lands.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(listed["items"]!.AsArray().Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// <c>PUT /api/categories/{id}</c> refuses the same, and the note the category held is still there.
+    /// </summary>
+    /// <remarks>
+    /// <b>The destructive half, and it is a separate declaration.</b>
+    /// <c>CategoryEndpoints.UpdateCategoryRequest</c> is a different type in a different project from
+    /// <c>CreateCategoryCommand</c>, so the case above says nothing about it. On a PUT an unmapped
+    /// <c>description</c> is not a note that fails to arrive — it is a note that is DELETED, because the
+    /// route reads an absent member as "this category has none". The surviving description is therefore
+    /// the assertion that matters; the status alone is satisfied by a refusal that already cleared the
+    /// column.
+    /// </remarks>
+    [Test]
+    public async Task PutCategory_WithAnUnknownMember_IsRefusedAndLeavesTheNoteStanding()
+    {
+        // Arrange — a category that HOLDS a note, or there is nothing for the refusal to fail to destroy.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
+        var id = Guid.CreateVersion7();
+        (await client.PostAsJsonAsync("/api/categories", new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
+            description = SealedNarrative.EncodedDescription("Weekly food shop"),
+            categoryGroupId = groupId,
+        })).EnsureSuccessStatusCode();
+
+        // Act — a rename that also means to change the note, with the note's member misspelled.
+        HttpResponseMessage update = await client.PutAsJsonAsync($"/api/categories/{id}", new
+        {
+            name = SealedNarrative.EncodedName("Food Shopping"),
+            nameKey = SealedNarrative.EncodedIndex("Food Shopping"),
+            descriptionn = SealedNarrative.EncodedDescription("Corner shop and the market"),
+        });
+        JsonNode after = await GetJsonAsync(client, $"/api/categories/{id}");
+
+        // Assert — refused, and BOTH columns exactly as they were.
+        await Assert.That(update.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(after["description"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedDescription("Weekly food shop"));
+        await Assert.That(after["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Groceries"));
+    }
+
+    /// <summary>
+    /// A retried <c>POST /api/categories</c> carrying an identifier the budget already holds answers
+    /// <b>409</b>, not 500.
+    /// </summary>
+    /// <remarks>
+    /// <b>The repository-level attribution case is not this claim.</b> That one proves
+    /// <c>CategoryRepository.AddAsync</c> raises a <c>ConflictException</c>; this one proves the wire
+    /// carries it as a 409. Measured by the code owner on the sibling arm: an unreachable translation
+    /// degrades not into a neighbouring status but into a <b>500</b>, so the wire half is not decoration
+    /// — a client retrying after a network timeout is the most ordinary thing an HTTP client does, and it
+    /// is exactly the request that produces this collision.
+    /// </remarks>
+    [Test]
+    public async Task PostCategory_WithADuplicateIdentifier_AnswersConflict()
+    {
+        // Arrange — a category, then the byte-identical body again, which is what a retry sends.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        Guid groupId = await CreateCategoryGroupAsync(client, "Essentials");
+        var id = Guid.CreateVersion7();
+        object body = new
+        {
+            id = id.ToString("D"),
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
+            description = (string?)null,
+            categoryGroupId = groupId,
+        };
+        (await client.PostAsJsonAsync("/api/categories", body)).EnsureSuccessStatusCode();
+
+        // Act
+        HttpResponseMessage retried = await client.PostAsJsonAsync("/api/categories", body);
+
+        // Assert — the status AND the sentence. A retry and a reused identifier are two readings this
+        // server cannot tell apart, so the detail is what gives each its own next step; a 409 carrying
+        // the duplicate-NAME sentence would send somebody to change a name that is not in dispute.
+        await Assert.That(retried.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        JsonNode problem = (await JsonNode.ParseAsync(await retried.Content.ReadAsStreamAsync()))!;
+        await Assert.That(problem["detail"]!.GetValue<string>()).IsEqualTo(
+            "A category already exists with this identifier. If this request is a retry, read that "
+            + "category back by its identifier instead of posting it again; otherwise mint a fresh "
+            + "identifier and post again.");
     }
 
     [Test]
@@ -204,10 +447,11 @@ public sealed class CategoryIntegrationTests
         Guid categoryId = await CreateCategoryAsync(client, categoryGroupId, "Groceries");
         HttpResponseMessage transaction = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -20m,
             date = "2026-07-14",
             accountId,
-            description = "Food",
+            description = SealedNarrative.EncodedDescription("Food"),
             categoryId,
         });
         transaction.EnsureSuccessStatusCode();
@@ -235,10 +479,11 @@ public sealed class CategoryIntegrationTests
         Guid categoryId = await CreateCategoryAsync(client, essentialsId, "Groceries");
         HttpResponseMessage createTransaction = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -20m,
             date = "2026-07-14",
             accountId,
-            description = "Food",
+            description = SealedNarrative.EncodedDescription("Food"),
             categoryId,
         });
         createTransaction.EnsureSuccessStatusCode();
@@ -266,9 +511,15 @@ public sealed class CategoryIntegrationTests
                 nameKey = SealedNarrative.EncodedIndex("Sinking Funds"),
                 description = (string?)null,
             });
+        // The second genuine rename in the file, for the reason stated on the first.
         await client.PutAsJsonAsync(
             $"/api/categories/{categoryId}",
-            new { name = "Food Shopping", description = (string?)null });
+            new
+            {
+                name = SealedNarrative.EncodedName("Food Shopping"),
+                nameKey = SealedNarrative.EncodedIndex("Food Shopping"),
+                description = (string?)null,
+            });
         await client.PatchAsJsonAsync(
             $"/api/categories/{categoryId}/placement",
             new { categoryGroupId = lifestyleId, position = 0 });
@@ -277,7 +528,8 @@ public sealed class CategoryIntegrationTests
 
         // Assert
         await Assert.That(item["categoryId"]!.GetValue<Guid>()).IsEqualTo(categoryId);
-        await Assert.That(item["categoryName"]!.GetValue<string>()).IsEqualTo("Food Shopping");
+        await Assert.That(item["categoryName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Food Shopping"));
         await Assert.That(item["categoryGroupId"]!.GetValue<Guid>()).IsEqualTo(lifestyleId);
         await Assert.That(item["categoryGroupName"]!.GetValue<string>())
             .IsEqualTo(SealedNarrative.EncodedName("Sinking Funds"));
@@ -306,7 +558,9 @@ public sealed class CategoryIntegrationTests
         JsonNode categoriesB = await GetJsonAsync(clientB, "/api/categories");
         HttpResponseMessage crossBudgetCreate = await clientB.PostAsJsonAsync("/api/categories", new
         {
-            name = "Attempt",
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Attempt"),
+            nameKey = SealedNarrative.EncodedIndex("Attempt"),
             description = (string?)null,
             categoryGroupId = categoryGroupA,
         });
@@ -367,9 +621,10 @@ public sealed class CategoryIntegrationTests
         // adopting budget A's group; the query filter alone could not, since this is a write.
         await using BudgetoidDbContext crossBudgetDb = new(options, new TestBudgetContext(budgetB));
         crossBudgetDb.Categories.Add(Category.Create(
+            Guid.CreateVersion7(),
             budgetB,
             categoryGroupId,
-            "Should Fail",
+            SealedNarrative.Indexed("Should Fail"),
             null,
             0,
             UtcNow()));
@@ -1985,14 +2240,30 @@ public sealed class CategoryIntegrationTests
         return id;
     }
 
+    /// <summary>
+    /// A category in <paramref name="categoryGroupId" />, created through the route.
+    /// </summary>
+    /// <param name="label">
+    /// What distinguishes this category's name from the next one's. It is NOT the category's name and is
+    /// never read back as one - the column holds an envelope this side has no key for.
+    /// </param>
+    /// <remarks>
+    /// The id is minted HERE and sent, because the route requires one now: it is the associated data both
+    /// narrative members were sealed against, so the server takes it and never invents it. It travels in
+    /// the canonical spelling, which is what CanonicalIdentifier accepts. The response's own id is read
+    /// back and returned rather than the minted one, so a server that ignored the member would still be
+    /// caught by the cases that compare the two.
+    /// </remarks>
     private static async Task<Guid> CreateCategoryAsync(
         HttpClient client,
         Guid categoryGroupId,
-        string name)
+        string label)
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/categories", new
         {
-            name,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             description = (string?)null,
             categoryGroupId,
         });

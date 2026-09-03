@@ -49,13 +49,16 @@ the third and is the only one reachable **inside** the app — see
 [The third way into custody](#the-third-way-into-custody). The other two write paths are still
 reached only by the integration suite.
 
-**What is *not* built is a browser that produces either.** The places for them exist now:
-`budgets.name`, `accounts.name`, `payees.name`, `category_groups.name` and
-`category_groups.description` are envelope columns; `accounts.name_key`, `payees.name_key` and
-`category_groups.name_key` are blind indexes, each under a unique index; and the account, payee and
-category-group routes accept a sealed name and an index as base64url. What no
-screen does is seal a field, open one, or look a name up — `/app/accounts`, `/app/transactions` and
-the group half of `/app/categories` all still send plaintext, so
+**What is *not* built is a browser that produces either, and the places for them are now complete
+rather than accumulating.** All **eight** narrative columns are envelope columns — `budgets.name`,
+`accounts.name`, `payees.name`, `category_groups.name`, `categories.name` and the three
+descriptions on `category_groups`, `categories` and `transactions`. All **four** blind indexes
+exist — `accounts.name_key`, `payees.name_key`, `category_groups.name_key` and
+`categories.name_key` — each under a unique index; no description column has one or ever will. And
+every route but the budget's accepts the sealed shape. **So the schema has stopped being the thing
+this section is waiting on**: what no
+screen does is seal a field, open one, or look a name up. `/app/accounts`, `/app/transactions` and
+**both** halves of `/app/categories` still send plaintext, so
 those columns are reached only from the test suite. What
 exists is the **custody** — [The one class that holds them](#the-one-class-that-holds-them) — and
 the operations that delegate to what it holds: `sealField`, `openField` and `blindIndex`, whose only
@@ -928,18 +931,21 @@ location was decided by the codecs' signatures. What was left to decide is narro
 cross the boundary, and what a refusal looks like — and everything below is about that.
 
 **Nothing in the product calls any of them**, and that is now a statement about the client alone.
-The columns exist — `accounts.name` holds an envelope and `accounts.name_key` a blind index — but
+Every column exists — all eight narrative columns hold envelopes and all four blind indexes are in
+the schema — but
 no screen seals, opens or keys anything, so `sealField`, `openField` and `blindIndex` have no caller
 but their spec, on the same terms [ciphertext-envelope.md](ciphertext-envelope.md) sets for the
 codecs beneath them: a cross-client format and the custody that will use it are cheaper to agree on
 before data exists under them than after. That argument is **sharper** for the index than for the
 envelope, and the difference is worth carrying: a grammar or a normalisation settled after a column
 holds index values orphans every row in it, and nothing on this side of the wire can repair them.
-**The window for settling either is closed on `accounts` and open nowhere else that matters** — the
-column, its width check and its unique index are in the schema now, so the next indexed column
-inherits the grammar rather than choosing one. The plaintext is
+**The window for settling either is now closed everywhere, not just on `accounts`** — every indexed
+column, its width check and its unique index are in the schema, and there is no next one, so nothing
+is left that could still choose a grammar rather than inherit it. The plaintext is
 encrypted and the only key that could recompute a value lives in a browser, so the migration runs
-through every account's own recovery factors or it does not run at all.
+through every account's own recovery factors or it does not run at all. **Which means the cheapness
+this paragraph rests on has been spent**: the argument for agreeing early was that agreement is free
+until a value is written, and what is left is only that no value has been written yet.
 
 **The rejected shape is an accessor, and it wears three costumes.** A `get contentKey()`, a
 `Signal<CryptoKey | null>`, and a scoped

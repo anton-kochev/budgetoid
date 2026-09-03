@@ -69,12 +69,13 @@ public sealed class TenancySchemaTests
             await seed.SaveChangesAsync();
 
             Transaction transaction = Transaction.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 account.Id,
                 -10m,
                 UsdMinorUnit,
                 new DateOnly(2026, 6, 12),
-                "Groceries",
+                SealedNarrative.Description("Groceries"),
                 SeedInstant);
             seed.Transactions.Add(transaction);
             await seed.SaveChangesAsync();
@@ -116,8 +117,9 @@ public sealed class TenancySchemaTests
         // Arrange — a category always sits in a group, and the reference to that group is composite,
         // so this refusal has no gap either.
         await using RepositoryTestHost host = await StartHostAsync();
-        (_, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (Guid userId, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid categoryId;
+        Guid categoryGroupId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
             CategoryGroup group = CategoryGroup.Create(
@@ -129,10 +131,17 @@ public sealed class TenancySchemaTests
                 SeedInstant);
             seed.CategoryGroups.Add(group);
             Category category = Category.Create(
-                budgetId, group.Id, "Groceries", null, 0, SeedInstant);
+                Guid.CreateVersion7(),
+                budgetId,
+                group.Id,
+                SealedNarrative.Indexed("Groceries"),
+                null,
+                0,
+                SeedInstant);
             seed.Categories.Add(category);
             await seed.SaveChangesAsync();
             categoryId = category.Id;
+            categoryGroupId = group.Id;
         }
 
         // Act — the admin connection, on the same terms as the transaction test above: it is enough
@@ -157,6 +166,53 @@ public sealed class TenancySchemaTests
             .IsEqualTo(1L);
         await Assert.That(await CountRowsAsync(connection, "categories", "budget_id", otherBudgetId))
             .IsEqualTo(0L);
+
+        // THE SUCCESS HALF, AND THIS TABLE HAD NONE AT ALL UNTIL THIS SLICE. Every count above is a
+        // count of rows that did not move, and a refusal proves nothing on its own: a role that could
+        // update NO column of this table satisfies every assertion so far. The pair is what makes the
+        // refusal mean "budget_id is withheld" rather than "categories is read-only to this role".
+        //
+        // THE CONNECTION DIFFERS FROM THE REFUSAL'S, unlike on category_groups, and the reason is the
+        // reason this table never had a control: the refusal above is a composite FOREIGN KEY doing the
+        // work, and a foreign key needs no grant, so it fires on the admin connection and the case was
+        // complete without ever opening an app-role one. That is exactly how a grant hole survives here
+        // — the tenancy question is answered by a constraint, and the grant question is never asked.
+        // The success half therefore opens an app connection of its own, carrying the same user and the
+        // same ambient budget.
+        //
+        // FIVE COLUMNS IN ONE STATEMENT, AND FOUR WOULD NOT DO. This is the longest grant list of the
+        // four sealed tables, and the argument is category_groups' with one more column on it: EF names
+        // only what changed, so a rename leaving the note alone emits `name, name_key` and passes under
+        // a grant missing `description`, while a description-only edit emits `description, name` and
+        // passes under one missing `name_key`. Measured this slice under the real hole,
+        // GRANT UPDATE (name, description, position, category_group_id): a genuine rename answers
+        // `42501: permission denied for table categories`, while `set category_group_id = ...` and
+        // `set position = ...` both answer UPDATE 1 on the same connection in the same request. Naming
+        // all five is the only shape that reddens on any single missing column.
+        //
+        // PostgreSQL names the RELATION and nothing else — `permission denied for table categories`,
+        // from aclcheck_error — so a 42501 here tells a reader which table and never which column. That
+        // is why the statement is spelled out inline: the SQL is the only place the five column names
+        // appear together, and a helper would hide the one list a person debugging this needs to read.
+        //
+        // The values go through SealedNarrative for the reason the account and group cases give, and the
+        // description is deliberately NON-NULL: writing null would still exercise the grant but would
+        // leave the case unable to tell "the column was written" from "the column was cleared".
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(userId, budgetId);
+        IndexedName renamedTo = SealedNarrative.Indexed("Food Shopping");
+        NarrativeField note = SealedNarrative.Description("Weekly food shop");
+        await using NpgsqlCommand rewrite = new(
+            "update categories set name = @name, name_key = @name_key, "
+            + "description = @description, position = @position, "
+            + "category_group_id = @category_group_id where id = @id",
+            app);
+        rewrite.Parameters.AddWithValue("name", renamedTo.Name.Envelope.ToArray());
+        rewrite.Parameters.AddWithValue("name_key", renamedTo.BlindIndex.ToArray());
+        rewrite.Parameters.AddWithValue("description", note.Envelope.ToArray());
+        rewrite.Parameters.AddWithValue("position", 1);
+        rewrite.Parameters.AddWithValue("category_group_id", categoryGroupId);
+        rewrite.Parameters.AddWithValue("id", categoryId);
+        await Assert.That(await rewrite.ExecuteNonQueryAsync()).IsEqualTo(1);
     }
 
     [Test]

@@ -220,7 +220,13 @@ public sealed class SchemaConstraintSnapshotTests
             // now hold different bytes, since every seal draws a fresh nonce, so this index stopped
             // refusing duplicate names and never stopped refusing a second unnamed budget.
             """CREATE UNIQUE INDEX "IX_budgets_user_id_name" ON public.budgets USING btree (user_id, name) NULLS NOT DISTINCT""",
-            """CREATE UNIQUE INDEX "IX_categories_budget_id_name" ON public.categories USING btree (budget_id, name)""",
+            // categories re-keyed onto its blind index in this slice, the fourth table to make the move.
+            // THE NAME OF THE INDEX CHANGED TOO - IX_categories_budget_id_name became
+            // IX_categories_budget_id_name_key - and comparing the WHOLE indexdef rather than searching
+            // it for a substring is what makes that visible: an index still declared over (budget_id,
+            // name) while wearing the new NAME would satisfy any Contains("name_key") check, because the
+            // index's own name contains the substring.
+            """CREATE UNIQUE INDEX "IX_categories_budget_id_name_key" ON public.categories USING btree (budget_id, name_key)""",
             // The same rule — one group name per budget — over the blind index, on the accounts terms
             // the two lines above already argue and which are not restated a third time. The value
             // moved and the identifier did not: CategoryGroupConfiguration.NameIndexName still says
@@ -447,6 +453,15 @@ public sealed class SchemaConstraintSnapshotTests
             // The configuration writes it lower-case with the same keywords; "correcting" this line to
             // match the configuration is how this test starts failing for no reason.
             """CK_budgets_name_version: budgets CHECK ((SUBSTRING(name FROM 1 FOR 1) = '\x01'::bytea))""",
+            // The five categories arms, in the alphabetical order PostgreSQL reports them and this
+            // snapshot preserves. description_length sorts FIRST of the six on this table, which is the
+            // fact that decides which constraint a row breaking several rules at once is reported
+            // under - and it is a fact about the NAMES, not about declaration order.
+            """CK_categories_description_length: categories CHECK (((length(description) >= 29) AND (length(description) <= 2560)))""",
+            """CK_categories_description_version: categories CHECK ((SUBSTRING(description FROM 1 FOR 1) = '\x01'::bytea))""",
+            """CK_categories_name_key_length: categories CHECK ((length(name_key) = 32))""",
+            """CK_categories_name_length: categories CHECK (((length(name) >= 29) AND (length(name) <= 1024)))""",
+            """CK_categories_name_version: categories CHECK ((SUBSTRING(name FROM 1 FOR 1) = '\x01'::bytea))""",
             """CK_categories_position: categories CHECK (("position" >= 0))""",
             // THE FIRST SEALED DESCRIPTION COLUMN IN THE PRODUCT. Same band shape as every narrative
             // length check above, a DIFFERENT ceiling — NarrativeFieldLimits.DescriptionBytes rather
@@ -627,7 +642,14 @@ public sealed class SchemaConstraintSnapshotTests
             // is not the guard against a weak handle; it is the guard against the column holding
             // something that is not a digest.
             """CK_session_tokens_token_hash_length: session_tokens CHECK ((length(token_hash) = 32))""",
+            // transactions takes TWO arms and not five: it is the first sealed table in the product with
+            // no name column, so there is no blind index and no name_key for a width check to be about.
+            // "amount" sorts ahead of both, which is the ordering novelty TransactionConfiguration
+            // records - a description probe written beside an out-of-range amount is reported under
+            // CK_transactions_amount and passes for the wrong reason.
             """CK_transactions_amount: transactions CHECK ((abs(amount) <= (1000000000)::numeric))""",
+            """CK_transactions_description_length: transactions CHECK (((length(description) >= 29) AND (length(description) <= 2560)))""",
+            """CK_transactions_description_version: transactions CHECK ((SUBSTRING(description FROM 1 FOR 1) = '\x01'::bytea))""",
             // The four ceremonies a challenge can belong to. A nonce issued for one and spent on
             // another is the cross-ceremony replay this vocabulary refuses at the column.
             //
@@ -743,23 +765,22 @@ public sealed class SchemaConstraintSnapshotTests
             """);
 
         // Assert — pg_get_indexdef does not render this collation, because it belongs to the column
-        // rather than to the index. IX_categories_budget_id_category_group_id_name enforces
-        // case-insensitive uniqueness only by virtue of categories.name carrying case_insensitive:
-        // drop it from the configuration and every line of the unique-index snapshot stays
-        // byte-identical while the rule quietly flips to case-sensitive. users.email is the one
-        // non-name column in the set, and the one whose collation carries a uniqueness rule rather
-        // than a lookup convenience: drop it and Sam@x.com and sam@x.com become two accounts for one
-        // mailbox.
+        // rather than to the index: drop a collation from the configuration and every line of the
+        // unique-index snapshot above stays byte-identical while the rule it describes quietly flips to
+        // case-sensitive. That is this test's whole reason for existing, and it now has exactly one
+        // subject: users.email, whose collation carries a uniqueness rule rather than a lookup
+        // convenience.
         //
-        // BUDGETS.NAME, ACCOUNTS.NAME, PAYEES.NAME AND NOW CATEGORY_GROUPS.NAME HAVE LEFT THIS SET, AND
-        // EACH ABSENCE IS AS DELIBERATE AS EVERY ENTRY. All four columns are bytea — sealed narrative
+        // EVERY NAME COLUMN IN THE SCHEMA HAS NOW LEFT THIS SET - budgets.name, accounts.name,
+        // payees.name, category_groups.name and, in this slice, categories.name - AND EACH ABSENCE IS AS
+        // DELIBERATE AS THE ONE ENTRY LEFT. All five columns are bytea — sealed narrative
         // fields — and bytea
         // is not a collatable type, so the collation did not lose an argument, it lost the type that
         // could carry one. That is a forced consequence rather than a decision, and it is the preview
         // the budgets paragraph promised arriving on schedule: this set SHRINKS as narrative columns
         // become ciphertext, and shrinking is the schema doing the right thing.
         //
-        // THE FOUR DEPARTURES ARE NOT ONE EVENT, and collapsing them is the mistake to refuse.
+        // THE FIVE DEPARTURES ARE NOT ONE EVENT, and collapsing them is the mistake to refuse.
         // budgets.name left and the case-folding uniqueness rule left with it, because that column has
         // no blind index and the requirement excludes one. accounts.name left and the rule STAYED: it
         // moved to IX_accounts_budget_id_name_key over (budget_id, name_key), which the unique-index
@@ -771,27 +792,32 @@ public sealed class SchemaConstraintSnapshotTests
         // IX_category_groups_budget_id_name_key — and the cost sits between the two neighbours: nothing
         // in the product looks a group up by name, so the index's whole job is to refuse the second
         // row, which is a confusion a person can see rather than a deduplication anything rests on.
+        // categories.name left LAST and on the category_groups terms - the rule moved to
+        // IX_categories_budget_id_name_key - and it is the departure that empties this set of name
+        // columns entirely. Its own case-insensitive test went with it: CategoryIntegrationTests
+        // deleted CategoryNames_AreCaseInsensitivelyUniqueAcrossGroups with no replacement, which is
+        // the third such deletion in the product and is argued at the site.
         // This server cannot check that the folding happened and no constraint here can be written to
         // it, which is the honest cost of the move and is worth writing down rather than leaving a
         // reader to infer that nothing changed.
         //
-        // What is left of this test's leading argument is worth being exact about rather than letting
-        // a reader assume it is now decoration. The "drop it and a snapshot stays byte-identical" half
-        // is INTACT and still covers ONE uniqueness rule that lives nowhere else in this file —
-        // categories enforces case-insensitive names through its column and not through its index —
-        // plus users.email, which is the stronger of the two. It was two such rules until this commit;
-        // category_groups was the other, and the sentence shrank with the set rather than being left
-        // to describe a table that is no longer here.
+        // The "drop it and a snapshot stays byte-identical" half of the argument is INTACT and now
+        // covers users.email alone - categories was the other subject until this slice, and the sentence
+        // shrank with the set rather than being left to describe a column that no longer carries one.
+        // ONE ENTRY REMAINS, AND A ONE-ENTRY PIN IS EXACTLY WHAT A LATER READER DELETES AS A LEFTOVER.
+        // It is not one. users.email is the last collated column in the schema and the only uniqueness
+        // rule in the product still enforced by a collation: drop it and Sam@x.com and sam@x.com become
+        // two accounts for one mailbox, with IX_users_email still present, still unique, still rendered
+        // byte-identically by pg_get_indexdef, and enforcing something weaker than it says.
         //
-        // And the other half — the one this test's own comment already names — is the half that grew
-        // again. Asserting the WHOLE SET rather than three columns individually catches a collation
-        // added where it was not intended, and there are now four such additions worth naming: a
-        // collation reappearing on budgets.name, accounts.name, payees.name or category_groups.name
-        // would mean that column had gone back to text, because bytea cannot carry one. So no absence is a hole in the
-        // coverage; each is an assertion that the sealing survived.
+        // The test's second job survived the shrinking intact and is now the larger one: asserting the
+        // WHOLE SET catches a collation appearing where none was intended. There are five such
+        // additions to catch - budgets.name, accounts.name, payees.name, category_groups.name and now
+        // categories.name - and every one of them would mean that column had gone back to TEXT, because
+        // bytea cannot carry a collation. So this is not a list of one thing; it is a list of one thing
+        // plus five absences, each of which is an assertion that the sealing survived.
         string[] expected =
         [
-            "categories.name COLLATE case_insensitive",
             "users.email COLLATE case_insensitive",
         ];
         await Assert.That(collatedColumns).IsEquivalentTo(expected);

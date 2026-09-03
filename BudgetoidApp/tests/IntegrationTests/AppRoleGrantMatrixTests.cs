@@ -233,13 +233,53 @@ public sealed class AppRoleGrantMatrixTests
         // only the ones that changed, so a rename leaving the description alone emits
         // `name, name_key` and SUCCEEDS under a grant missing `description` —
         // measured on postgres:17.10: that two-column statement answers UPDATE 1, the three-column one
-        // answers 42501, and `set description = null` answers 42501. On accounts and payees any rename
-        // at all names both halves and a half grant is loud on the first one anybody exercises; here
-        // the loud case has to be written on purpose, which is why the raw control in
-        // TenancySchemaTests spells all FOUR columns in one statement — `position` shares this list, so
-        // a three-column control cannot tell a four-column grant from a three-column one.
+        // answers 42501, and `set description = null` answers 42501.
+        //
+        // THIS PARAGRAPH USED TO END BY SPLITTING THE FOUR SEALED TABLES INTO A LOUD GROUP AND A QUIET
+        // ONE — "on accounts and payees any rename at all names both halves and a half grant is loud on
+        // the first one anybody exercises; here the loud case has to be written on purpose" — AND THAT
+        // SPLIT WAS ABOUT THE WRONG VARIABLE. Every one of the four takes an IndexedName and offers no
+        // spelling for half a name, so on ALL of them a rename names both halves; accounts and payees
+        // are not special in that. What actually decides loudness is WHICH COLUMN IS MISSING:
+        //
+        //   name or name_key missing  -> loud on any genuine rename, on all four tables alike;
+        //   description or position missing -> quiet on a rename, because EF names only what changed,
+        //                                      so the hole needs a control written on purpose.
+        //
+        // The second half of the old sentence was worse, because it was a claim about THE SUITE wearing
+        // the grammar of a claim about the schema. "Loud on the first one anybody exercises" is only
+        // true where a rename is actually exercised. Measured this slice on `categories`, whose grant
+        // list was missing `name_key`: a genuine rename answers 42501 — loud, exactly as on accounts —
+        // and the whole suite issued ZERO of them, because every case that renames a category died
+        // earlier on a seeding 400. A hole that is loud in the schema and silent in the run ships.
+        //
+        // The raw control in TenancySchemaTests therefore spells all FOUR columns in one statement here
+        // — `position` shares this list, so a three-column control cannot tell a four-column grant from
+        // a three-column one — and `categories` needed its own for the same reason and did not have one
+        // at all until this slice.
         ("category_groups", ["name", "name_key", "description", "position"]),
-        ("categories", ["name", "description", "position", "category_group_id"]),
+        // name_key JOINS THIS LIST IN THE SAME COMMIT THAT MEASURED ITS ABSENCE, and the entry is
+        // written rather than corrected into agreement, because THE MATRIX IS A MIRROR AND NOT A JUDGE.
+        // This census reads the database's grant matrix and asserts it equals the list above; that
+        // catches DRIFT in either direction and can never catch a list that was wrong the day it was
+        // written. Here both sides were wrong TOGETHER — the SQL granted four columns, this line
+        // expected the same four, they matched, and the one test in the repository named after grants
+        // went green over a rename path the application role could not execute. Nothing was broken; the
+        // expectation simply never asked the right question.
+        //
+        // What that means for the next person is the property the accounts and category_groups entries
+        // above do not state, so it is stated here once for the file: A NEW COLUMN ON THIS LINE IS A
+        // DECISION TO BE ARGUED, NEVER A LINE TO BE BROUGHT INTO AGREEMENT WITH THE SQL. If this census
+        // reddens, exactly one of the two sides is right, and which one is a question about the write
+        // path — not something the diff can answer. Editing this list to match the database is always
+        // available, always makes the red go away, and is wrong roughly half the time.
+        //
+        // The name/name_key argument itself is the accounts entry's and the category_groups entry's and
+        // is not restated. What this table adds beyond them is only that its list is the longest of the
+        // four at FIVE columns — category_group_id is here because a category can be moved between
+        // groups — so its raw control in TenancySchemaTests has to name five in one statement, for the
+        // reason category_groups needed four.
+        ("categories", ["name", "name_key", "description", "position", "category_group_id"]),
         // The same pair, on the same terms, and it is ONE entry rather than two facts sitting beside
         // each other for the reason the accounts line above states: Payee.Rename takes an IndexedName
         // and offers no spelling for half a name, so a rename is one UPDATE naming both columns and a

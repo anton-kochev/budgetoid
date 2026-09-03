@@ -210,54 +210,28 @@ public sealed class BudgetoidDbContextConstructionTests
             .IsTrue();
     }
 
-    /// <summary>
-    /// The one entity whose name is still text this server can read, and whose uniqueness rule is
-    /// therefore still enforced over the name column itself under a case-folding collation.
-    /// </summary>
-    /// <remarks>
-    /// <b><see cref="Account" />, <see cref="Payee" /> and now <see cref="CategoryGroup" /> have all
-    /// left this set, and none of them lost the rule</b> — see
-    /// <see cref="Model_ScopesNameUniquenessToTheBudgetOverTheBlindIndex" />, which is where the same
-    /// rule lives for all three. The absences are worth reading rather than filling back in: an
-    /// argument naming any of them here would look for an index over <c>BudgetId, Name</c> that no
-    /// longer exists and for a collation <c>bytea</c> cannot carry, so restoring one fails loudly
-    /// rather than quietly. What that leaves is the honest shape of the schema mid-migration — one name
-    /// column still in the clear, three sealed — and this set shrinking as the rest are sealed is the
-    /// schema doing the right thing. It is now a single-argument case and stays data-driven for that
-    /// reason: <see cref="Category" /> is the next column to move, and the day it does this member goes
-    /// with it rather than being quietly rewritten around one hard-coded type.
-    /// </remarks>
-    [Test]
-    [Arguments(typeof(Category))]
-    public async Task Model_ScopesNameUniquenessToTheBudget(Type entityClrType)
-    {
-        // Arrange
-        await using BudgetoidDbContext db = CreateDbContext();
-
-        // Act
-        IEntityType entity = db.Model.FindEntityType(entityClrType)!;
-        IIndex budgetNameIndex = entity
-            .GetIndexes()
-            .Single(index => index.Properties.Select(property => property.Name)
-                .SequenceEqual(new[] { "BudgetId", "Name" }));
-        // Collation is not carried by the runtime read-optimized model, only by the design-time one.
-        IProperty designTimeNameProperty = db
-            .GetService<IDesignTimeModel>()
-            .Model
-            .FindEntityType(entityClrType)!
-            .FindProperty("Name")!;
-
-        // Assert
-        await Assert.That(budgetNameIndex.IsUnique).IsTrue();
-        await Assert.That(designTimeNameProperty.GetCollation()).IsEqualTo("case_insensitive");
-    }
+    // Model_ScopesNameUniquenessToTheBudget WAS HERE AND IS DELETED, WITH ITS CLAIM MOVED RATHER THAN
+    // DROPPED. It was already a single-argument case over Category, and its own remark said what to do:
+    // "Category is the next column to move, and the day it does this member goes with it rather than
+    // being quietly rewritten around one hard-coded type." That day is this slice.
+    //
+    // It looked for a unique index over (BudgetId, Name) and for the case_insensitive collation on the
+    // name property. Neither exists on categories any more and neither can: the index is over
+    // (BudgetId, NameKey), and bytea is not collatable, so the collation left the column BY FORCE. The
+    // rule itself - one name per budget - is unchanged and is now asserted by the member below, which
+    // gained Category as a fourth argument. NOTHING WAS WEAKENED: the sibling makes a STRONGER claim,
+    // because it also asserts no index exists over the envelope, which this member never checked.
+    //
+    // What has no home any more is "a name column carries a case-folding collation", and that is
+    // correct rather than a gap - no name column does. The last collation user in the schema is
+    // users.email, pinned by TenancySchemaTests.Schema_PinsCaseInsensitiveNameColumns.
 
     /// <summary>
-    /// The three entities whose name is a sealed envelope, and whose uniqueness rule therefore lives on
+    /// The four entities whose name is a sealed envelope, and whose uniqueness rule therefore lives on
     /// the blind index beside it.
     /// </summary>
     /// <remarks>
-    /// <b>Data-driven over all three rather than one case each, because the rule is one rule.</b> A
+    /// <b>Data-driven over all four rather than one case each, because the rule is one rule.</b> A
     /// second hand-written case would be the place a later reader relaxes one table's assertion without
     /// noticing the others still make it. What the three do NOT share is what a lost rule costs: on
     /// accounts a duplicate name is a nuisance, while on payees this index IS the deduplication of
@@ -266,11 +240,17 @@ public sealed class BudgetoidDbContextConstructionTests
     /// for one counterparty with nothing on this side able to see it. Category groups read as accounts
     /// do: two groups under one name are a confusion a person can see and correct, and nothing in the
     /// product looks a group up by name, so the index's whole job is to refuse the second row.
+    /// <see cref="Category" /> arrived last and reads as the groups do, with one addition: it is the
+    /// table whose <c>GRANT UPDATE</c> list has to name <c>name_key</c> beside <c>name</c>, because
+    /// <c>Category.Update</c> writes both halves in one statement. That is a grant fact rather than a
+    /// model fact and lives in the provisioning SQL, but it is the reason a reader arriving here from a
+    /// <c>42501</c> is in the right neighbourhood.
     /// </remarks>
     [Test]
     [Arguments(typeof(Account))]
     [Arguments(typeof(Payee))]
     [Arguments(typeof(CategoryGroup))]
+    [Arguments(typeof(Category))]
     public async Task Model_ScopesNameUniquenessToTheBudgetOverTheBlindIndex(Type entityClrType)
     {
         // Arrange
@@ -448,6 +428,23 @@ public sealed class BudgetoidDbContextConstructionTests
             // hex-format bytea literal, and the version digit is rendered from CiphertextEnvelope.Version
             // two hex digits wide for the reason the band above is rendered from its own constants.
             "CK_budgets_name_version: budgets substring(name from 1 for 1) = '\\x01'::bytea",
+            // categories joined the sealed tables in this slice and brought FIVE arms with it, which is
+            // the same shape category_groups already carries: a name band, a name version, a name_key
+            // width, a description band and a description version. The ceilings differ between the two
+            // narrative columns on purpose - NameBytes for the name, DescriptionBytes for the note -
+            // because they are caps over field CLASSES, not two guesses at one number.
+            //
+            // The alphabet puts description_length and description_version ahead of name_key_length,
+            // name_length and name_version, so on THIS table the description's band is what a row
+            // breaking several rules at once is reported under. That is a fact about the constraint
+            // NAMES and not about declaration order, and it is why the version predicates are spelled
+            // substring rather than get_byte: substring is total over every length the column can hold.
+            "CK_categories_description_length: categories length(description) between 29 and 2560",
+            "CK_categories_description_version: categories substring(description from 1 for 1) "
+            + "= '\\x01'::bytea",
+            "CK_categories_name_key_length: categories length(name_key) = 32",
+            "CK_categories_name_length: categories length(name) between 29 and 1024",
+            "CK_categories_name_version: categories substring(name from 1 for 1) = '\\x01'::bytea",
             "CK_categories_position: categories position >= 0",
             // THE FIRST SEALED DESCRIPTION COLUMN IN THE PRODUCT, and the first table whose CHECK
             // ordering crosses two columns. Same band shape as every name above, a DIFFERENT ceiling —
@@ -676,6 +673,18 @@ public sealed class BudgetoidDbContextConstructionTests
             // all.
             "CK_session_tokens_token_hash_length: session_tokens length(token_hash) = 32",
             "CK_transactions_amount: transactions abs(amount) <= 1000000000",
+            // transactions is the FIRST SEALED TABLE IN THE PRODUCT WITH NO NAME COLUMN, so it takes two
+            // arms and not five: there is no IndexedName here, no blind index and no name_key, because
+            // the pair type has nothing to be half of. Its ceiling is DescriptionBytes for the reason
+            // categories gives above.
+            //
+            // The alphabet on THIS table is the novelty a reader should notice: "amount" sorts ahead of
+            // both description arms, so a probe written beside an out-of-range amount is reported under
+            // CK_transactions_amount and passes for the wrong reason. Nothing in the suite catches that
+            // - it is held by the comment in TransactionConfiguration and by review.
+            "CK_transactions_description_length: transactions length(description) between 29 and 2560",
+            "CK_transactions_description_version: transactions substring(description from 1 for 1) "
+            + "= '\\x01'::bytea",
         ];
         await Assert.That(checkConstraints).IsEquivalentTo(expected);
     }
@@ -800,7 +809,7 @@ public sealed class BudgetoidDbContextConstructionTests
         // description and forgets to assign it writes a legal NULL row where the NOT NULL name would
         // have answered 23502. Same obligation, unchanged: whoever regenerates the baseline resets
         // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3).
-        const string frozenBaselineId = "20260902093424_InitialCreate";
+        const string frozenBaselineId = "20260903122251_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

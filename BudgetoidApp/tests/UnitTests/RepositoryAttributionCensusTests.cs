@@ -157,6 +157,38 @@ public sealed class RepositoryAttributionCensusTests
     /// every one reachable through a budget, each with both halves — its own constraint translated,
     /// and a stranger's violation propagating rather than wearing this repository's message.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>"BOTH HALVES" IS PER REPOSITORY AND NOT PER VERB, AND THE DIFFERENCE IS WORTH READING BEFORE
+    /// TRUSTING THIS LIST.</b> The two halves are the two DIRECTIONS of attribution — translate my own,
+    /// propagate a stranger's — and every entry has both. What the sentence does not say, and a reader
+    /// will assume, is that it holds for <c>AddAsync</c> and <c>UpdateAsync</c> alike. It does not.
+    /// </para>
+    /// <para>
+    /// <b>The translate half is now on every verb; it was not until this slice.</b> When this list was
+    /// written, <c>AccountRepository.UpdateAsync</c>, <c>PayeeRepository.UpdateAsync</c> and BOTH verbs
+    /// of <c>CategoryRepository</c> had no case translating their duplicate-name arm — four arms of a
+    /// seven-arm class, found by grepping for the SHAPE of the defect rather than for the file the first
+    /// instance turned up in. <c>UpdateAccount_RenamedOntoATakenName_</c>,
+    /// <c>UpdatePayee_RenamedOntoATakenName_</c>, <c>AddCategory_WithADuplicateCategoryName_</c> and
+    /// <c>UpdateCategory_RenamedOntoATakenName_</c> closed them.
+    /// </para>
+    /// <para>
+    /// <b>The propagate half is still CREATE-VERB ONLY on all five, and that is a decision rather than a
+    /// gap.</b> Enumerated: every <c>_WhenATrackedRowBreaks…_LetsTheViolationEscape</c> case in that file
+    /// stages an <c>AddAsync</c>. No rename verb has one. What such a case measures is the narrowing
+    /// predicate — <c>IsUniqueViolationOf</c> on categories and category groups, the inline
+    /// <c>ConstraintName:</c> pattern on accounts and payees — and on each table that predicate is ONE
+    /// helper shared by both verbs, so a second staging on the rename would re-measure it. The exception
+    /// is <c>TransactionRepository</c>, whose <c>UpdateAsync</c> narrows on foreign keys its
+    /// <c>AddAsync</c> does not have and therefore carries its own control in its own file.
+    /// </para>
+    /// <para>
+    /// <b>What that leaves unmeasured is narrow and worth naming</b>: a rename arm whose <c>when</c>
+    /// clause was widened INDEPENDENTLY of the create arm's — two catch blocks, one predicate today, but
+    /// nothing stops somebody inlining a looser test into one of them. No case would see it.
+    /// </para>
+    /// </remarks>
     private static readonly string[] CoveredByAttributionTests =
     [
         nameof(AccountRepository),

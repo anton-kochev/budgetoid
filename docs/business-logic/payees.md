@@ -102,11 +102,12 @@ erDiagram
     reference and a struct by pointer, so a value rebuilt from identical bytes reads as an edit and
     one rewritten in place inside the same buffer does not — on `name_key` the second is the one
     that bites, because an index the tracker misses is a row whose uniqueness value stops describing
-    its own name). **Nothing in the suite holds any arm of either comparer here.** The product's one
-    change-tracking class is scoped to `category_groups`, this table has no equivalent, and a broken
+    its own name). **Nothing in the suite holds any arm of either comparer here.** The product's
+    three change-tracking classes are scoped to `category_groups`, `categories` and `transactions`;
+    this table has no equivalent, and a broken
     arm is **quiet** rather than loud: EF restates a column with the bytes the row already holds, and
     `name` and `name_key` are the whole of this table's `UPDATE` grant, so nothing answers `42501`
-    and the spurious statement commits exactly like a rename would. What that class does and does not
+    and the spurious statement commits exactly like a rename would. What those classes do and do not
     reach is in [categories.md](categories.md#edge-cases--known-gotchas). The table carries **three**
     `CHECK` constraints, each rendered from the constant
     that owns its number rather than from a literal: `CK_payees_name_length` bounds the envelope
@@ -367,6 +368,16 @@ erDiagram
   `…PatchPayee_WithANameHeldByAnotherPayeeInTheSameBudget_ReturnsBadRequest` is its opposite number
   and additionally asserts both rows survive, because a handler that wrote the row and only then
   reported the collision would satisfy the status alone.
+  - **Neither status can drift into the other by accident, and that is measured rather than
+    assumed.** Making the rename arm unreachable — retargeting its `when` clause at a constraint the
+    statement can never raise — does not produce the create's 409. Nothing in the handler chain maps
+    `DbUpdateException`, so `GlobalExceptionHandler` writes a **500**, and the endpoint case above
+    reddens with `InternalServerError` against its expected `BadRequest`. So "consistency" between
+    the two answers can only ever arrive as a deliberate edit somebody has to write and defend, which
+    is what this rule's argument is for. The same mutation also reddened
+    `UpdatePayee_RenamedOntoATakenName_TranslatesItsOwnUniqueIndex`, which is new: the wire status was
+    already pinned here and the **attribution** — the exception type and the `Name` key, i.e. which
+    rule the caller broke — was not.
 - **Example**: two tabs each deciding a counterparty is new and posting the same index. One gets a
   201; the other gets a 409 telling it to re-read the list and use the payee already there. A person
   renaming "Costco" onto a name "Starbucks" already holds gets a 400 with the error on `Name`, and
