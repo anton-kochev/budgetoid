@@ -8,9 +8,17 @@
 // what came out as two `CryptoKey` objects. Three operations delegate to what it
 // holds — seal this field, open that one, index a value so a lookup can key on
 // it — and they are the whole reason no caller has any occasion to ask for a
-// key. No column in this product holds an envelope or an index yet, so all three
-// have landed one commit ahead of their callers and nothing but their spec calls
-// any of them.
+// key. All three have production callers now — one service per screen that
+// renders rows a person typed, and each of those services uses all three: it
+// opens what a read brought back, seals what a write is about to send, and
+// keys a value so the server's unique index has bytes it can judge. So a
+// change to any of the three operations is a change to what those screens show
+// and what they store, and the suite that answers for it is theirs as much as
+// this file's. **Which screens they are is deliberately not written here**: the
+// describe at the foot of this file's spec refuses every table and column of
+// the codec's pairs anywhere in this source, comments included, and a caller
+// list spelled out in prose is exactly where a second copy of that list
+// starts.
 //
 // **`providedIn: 'root'`, and that breaks the habit of the two services beside it
 // deliberately.** `RegisterService` and `SignInService` are provided on their
@@ -196,8 +204,8 @@ export class AccountKeyCustodyService {
   // which is precisely the member `#forget` argues must never exist: a getter
   // turns a key nobody can serialise into a key anybody can decrypt a whole
   // ledger with. So the answer is a suppression carrying its reason, never a
-  // getter — the same shape as every other capability this client has landed one
-  // commit ahead of its caller.
+  // getter — and the reason expires the day the field's operation acquires a
+  // caller, exactly as this one's did.
   #contentKey: CryptoKey | null = null;
   #indexKey: CryptoKey | null = null;
 

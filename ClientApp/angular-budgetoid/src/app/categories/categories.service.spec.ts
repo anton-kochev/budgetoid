@@ -350,14 +350,33 @@ describe('CategoriesService', () => {
       // column and the routes read by it. A client-side sort here would be a
       // second opinion about a fact the API already settled, and on a locked
       // account it would have nothing to sort by at all.
+      //
+      // **Both lists, and two categories.** The name said both and the
+      // assertion read the groups alone; the fixture held one category, and a
+      // one-element list cannot show an ordering defect whatever it is
+      // compared against. The two below arrive in the reverse of the order
+      // this file's own `sortCategories` would put them in — it orders by the
+      // group's position first, and `essentials` is position 0 — so a re-sort
+      // applied on the way out reddens here.
+      const dining = sealedCategory(
+        OTHER_CATEGORY_ID,
+        'Dining out',
+        null,
+        lifestyle,
+        0,
+      );
 
       // Act
-      await loadWith([lifestyle, essentials], [groceries]);
+      await loadWith([lifestyle, essentials], [dining, groceries]);
 
       // Assert
       expect(service.groups()?.map((view) => view.id)).toEqual([
         OTHER_GROUP_ID,
         GROUP_ID,
+      ]);
+      expect(service.categories()?.map((view) => view.id)).toEqual([
+        OTHER_CATEGORY_ID,
+        CATEGORY_ID,
       ]);
     });
 
@@ -431,6 +450,68 @@ describe('CategoriesService', () => {
       expect(service.groups()).toBeNull();
       expect(service.categories()).toBeNull();
       expect(service.loading()).toBe(false);
+    });
+
+    it('drops both opened lists when the account locks', async () => {
+      // Arrange — the lists hold plaintext this browser opened under a key it
+      // no longer has. This service is `providedIn: 'root'`, so nothing
+      // destroys it when a screen goes away and nothing clears it when a
+      // session ends: sign out on `/app/categories` and the previous account's
+      // names and notes are still readable from the root injector for the life
+      // of the tab.
+      await loadWith([essentials], [groceries]);
+      expect(service.groups()).not.toBeNull();
+      expect(service.categories()).not.toBeNull();
+
+      // Act — what `SessionService.ended()` does through `custody.lock()`, and
+      // what a failed unlock does through `#fail`.
+      custody.setStatus('locked');
+      TestBed.tick();
+
+      // Assert — **both**, because they are published together and a category
+      // carries its group's name: one list dropped and the other kept is a
+      // half-cleared screen holding the very words this is here to destroy.
+      expect(service.groups()).toBeNull();
+      expect(service.categories()).toBeNull();
+    });
+
+    it('withdraws a failed read’s word when the account locks', async () => {
+      // Arrange — a read that genuinely failed, so the word is a claim about
+      // something that really happened. `accounts.service.ts` argues once why
+      // a lock has to withdraw it.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      service.load();
+      http.expectOne(CATEGORIES_URL).flush({ items: [] });
+      http
+        .expectOne(GROUPS_URL)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+      await settle();
+      expect(service.failed()).toBe(true);
+
+      // Act
+      custody.setStatus('locked');
+      TestBed.tick();
+
+      // Assert — the lists are `null` because this service emptied them, not
+      // because a request failed, so there is no read left for the word to be
+      // a claim about.
+      expect(service.failed()).toBe(false);
+      expect(service.groups()).toBeNull();
+    });
+
+    it('keeps both lists while an unlock is running', async () => {
+      // Arrange — the control for the case above, and the reason the predicate
+      // is `locked` exactly rather than "anything but unlocked":
+      // `accounts.service.spec.ts` argues it once for all three services.
+      await loadWith([essentials], [groceries]);
+
+      // Act
+      custody.setStatus('unlocking');
+      TestBed.tick();
+
+      // Assert
+      expect(service.groups()).not.toBeNull();
+      expect(service.categories()).not.toBeNull();
     });
 
     it('keeps only the newest load’s answer when two overlap', async () => {
@@ -1162,6 +1243,65 @@ describe('CategoriesService', () => {
 
       // Assert
       expect(categories).toEqual([]);
+    });
+
+    it('answers the same array twice for one group', async () => {
+      // Arrange — the template calls this **twice per group**, once for the
+      // rows and once for `[cdkDropListData]`, and a template call runs on
+      // every change-detection tick in a zone-based app. Filtered per call, the
+      // drop list's data identity changed on every tick and every group's rows
+      // were re-allocated with it.
+      await loadWith([essentials], [groceries]);
+
+      // Act
+      const first = service.categoriesForGroup(GROUP_ID);
+      const second = service.categoriesForGroup(GROUP_ID);
+
+      // Assert — `toBe`, not `toEqual`: identity is the whole claim.
+      expect(second).toBe(first);
+    });
+
+    it('answers the same empty array twice for a group holding none', async () => {
+      // Arrange — the half a `?? []` at the call site would leave open, and it
+      // is the commoner case on a screen somebody has just started filling in.
+      await loadWith([essentials, lifestyle], [groceries]);
+
+      // Act
+      const first = service.categoriesForGroup(OTHER_GROUP_ID);
+      const second = service.categoriesForGroup(OTHER_GROUP_ID);
+
+      // Assert
+      expect(first).toEqual([]);
+      expect(second).toBe(first);
+    });
+
+    it('answers a fresh array once the list underneath it changes', async () => {
+      // Arrange — the positive control. An implementation that answered one
+      // remembered array forever would pass both cases above and show a
+      // deleted category until the next page load.
+      const utilities = sealedCategory(
+        OTHER_CATEGORY_ID,
+        'Utilities',
+        null,
+        essentials,
+        1,
+      );
+
+      await loadWith([essentials], [groceries, utilities]);
+      const before = service.categoriesForGroup(GROUP_ID);
+
+      // Act
+      service.removeCategory(CATEGORY_ID);
+      http
+        .expectOne(`${CATEGORIES_URL}/${CATEGORY_ID}`)
+        .flush(null, { status: 204, statusText: 'No Content' });
+      await settle();
+
+      // Assert
+      const after = service.categoriesForGroup(GROUP_ID);
+
+      expect(after).not.toBe(before);
+      expect(after.map((view) => view.id)).toEqual([OTHER_CATEGORY_ID]);
     });
 
     it('answers only the categories filed under the group asked for', async () => {

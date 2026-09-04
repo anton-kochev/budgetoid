@@ -2632,9 +2632,12 @@ describe('AccountKeyCustodyService', () => {
   // `eslint.config.js`, so in this file a call is the only thing that can.
   //
   // What the pins do not hold is that a mapper takes the narrow type rather
-  // than the service. Nothing in the compiler can say that, and no mapper
-  // exists yet; it is the argument `narrative-text.ts` makes for the day one
-  // arrives, and it stays held by review.
+  // than the service. Nothing in the compiler can say that — and five mappers
+  // take it today (`toAccountView`, `toCategoryView`, `toCategoryGroupView`,
+  // `toTransactionView`, `toPayeeView`), so these pins now protect a habit
+  // already in the tree rather than one predicted for it. A sixth handed the
+  // whole service would redden nothing here; that half stays held by review,
+  // exactly as `narrative-text.ts` says.
   describe('the capability a view-model mapper is handed', () => {
     // The account's two keys, adopted, and handed back — so a case can seal or
     // compute *beside* the service and compare, rather than asking the service
@@ -2711,10 +2714,18 @@ describe('AccountKeyCustodyService', () => {
       );
 
       // Assert
-      // Against the codec's own answers under the same key, which is what says
-      // the values came out of the grammar. Any 43 stable characters pass a
-      // width check, a distinctness check and an equality check while matching
-      // no second client and no row already written.
+      // Against the codec's own answers under the same key, which says that
+      // custody **delegated** — to `computeBlindIndex`, under the index key it
+      // is holding, for the pair it was handed — and says nothing whatever
+      // about the grammar those values came out of. Both sides call the same
+      // function, so dropping the table from the message, changing the
+      // separator or skipping normalization moves the expectation and the
+      // answer together and this case stays green. The grammar is
+      // `blind-index.spec.ts`'s, over frozen vectors. Delegation is worth
+      // pinning on its own: a member that keyed the plaintext raw, hard-coded
+      // one pair for all four, or reached for the content key instead is caught
+      // by exactly this comparison, and by nothing about the width or the
+      // distinctness of what comes back.
       const expected = await Promise.all(
         BLIND_INDEXED_FIELDS.map(async (indexed) => ({
           state: 'computed',

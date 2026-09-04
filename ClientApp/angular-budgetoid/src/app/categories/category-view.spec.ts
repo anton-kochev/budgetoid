@@ -158,8 +158,46 @@ describe('toCategoryView', () => {
     // Act
     const view = await toCategoryView(sealedCategory, opener.open);
 
-    // Assert — the members are listed rather than spread, so an exact
-    // comparison is what says a further member has not been carried in.
+    // Assert — the three members no cipher touches arrive on the view with the
+    // values the row carried.
+    //
+    // **This exact comparison does not hold the mapper's "listed rather than
+    // spread" rule, and it never did.** `CategoryDto` and `CategoryView`
+    // declare the same six keys, so `{ ...dto, name, description,
+    // categoryGroupName }` produces a value indistinguishable from the
+    // written-out list and passes every assertion here. The rule is real only
+    // once a DTO carries a member the view must not, which is what the case
+    // below is.
+    expect(view).toEqual({
+      categoryGroupId: GROUP_ID,
+      categoryGroupName: { state: 'text', value: 'Essentials' },
+      description: { state: 'text', value: 'Food and drink' },
+      id: ROW_ID,
+      name: { state: 'text', value: 'Groceries' },
+      position: 4,
+    });
+  });
+
+  it('leaves behind a member the view does not declare', async () => {
+    // Arrange — the negative control the case above needs to mean anything.
+    // The row is typed as the DTO by assertion rather than by declaration,
+    // because that is the order the day arrives in: a member the server starts
+    // sending is on the wire before it is in this client's interface, and the
+    // mapper is the thing standing between it and a screen. Spread, this one
+    // would land on the view — and the day it is a **fourth sealed column**,
+    // which is the case `category-view.ts` argues at its head, a template
+    // renders ciphertext as though it were text with nothing red.
+    const opener = opensEverything();
+    const withAFutureMember = {
+      ...sealedCategory,
+      budgetId: '0199c3d4-5f6a-7b8c-9d0e-1f2a3b4c5d70',
+    } as CategoryDto;
+
+    // Act
+    const view = await toCategoryView(withAFutureMember, opener.open);
+
+    // Assert
+    expect(view).not.toHaveProperty('budgetId');
     expect(view).toEqual({
       categoryGroupId: GROUP_ID,
       categoryGroupName: { state: 'text', value: 'Essentials' },

@@ -28,6 +28,20 @@
 // whose whole purpose is that equal names collide, and a blind index cannot be
 // recomputed after the fact because the plaintext behind it is encrypted.
 //
+// **Every exit that writes nothing says so, and `add` answers a word rather
+// than `void`.** Five paths end this write with no row on the server and four
+// of them used to return in silence, which from outside is indistinguishable
+// from a write that landed — and the screen, reading nothing, cleared the form
+// on the line after the call. The severe case is not exotic: a payee whose own
+// name does not open carries no index, can never match, 409s, re-reads to the
+// same answer and abandons, so the person dealing with that counterparty can
+// never record a transaction against it again. So the outcome is a value the
+// caller branches on, and the reason goes through `#report`, the one channel
+// this service has. It is
+// `console` and nothing else: this app has no notification convention yet, and
+// inventing one here would put a second one in the product the day it gets its
+// first.
+//
 // **A 409 buys exactly one re-read, and then the write is abandoned.** The
 // conflict says this budget already holds the counterparty and the list this
 // browser had was stale, so re-reading and matching again is the resolution the
@@ -54,10 +68,31 @@
 // string. The non-blank rule the old `.trim()` was accidentally enforcing moved
 // to the form, where refusing is all it does.
 //
-// **The read is `switchMap` and never `mergeMap`.** Decryption widens the
-// overlap between two loads from one round trip to one round trip plus five
-// AEAD opens per row, so a slow first load can finish after a fast second and
-// silently revert the list to rows the person has already replaced.
+// **The name and the key are checked against each other, because no ordering
+// of the two calls closes the window between them.** `blindIndex` compares the
+// generation counter and `sealField` compares key identity, so each refuses an
+// `adopt()` that lands *while it runs* — and an `adopt()` landing strictly
+// between them is invisible to both, whichever goes first. Swapping the two
+// lines moves the window rather than shutting it. What it produces is a payee
+// row whose `name` was sealed under one account's content key and whose
+// `name_key` was computed under another's index key, through the one door the
+// server cannot see: it holds no index key and can never recompute one. So the
+// create asks for the key **again after the seal** and posts only if the two
+// agree — a custody move between the two answers changes the value or answers
+// `locked`, and either abandons. The index is still asked for *first*, and
+// that is forced rather than preferred: it is what decides whether there is a
+// create at all, so sealing ahead of it would seal a name for a row that is
+// usually never made.
+//
+// **All three reads are last-write-wins, and two of them were not.** The list
+// is `switchMap` over a subject; the category picker is the same; the payee
+// read is a bare `await` guarded by a counter, because the conflict branch
+// needs the value it read and not the one a later read published. Decryption
+// widens the overlap between two reads from one round trip to one round trip
+// plus an AEAD open — five of them per transaction row, one plus a MAC per
+// payee — so a slow first read can finish after a fast second and silently
+// revert a list to rows the person has already replaced. `mergeMap` and an
+// unguarded `set` are the same defect written two ways.
 //
 // **The list is `TransactionView[] | null` and clears to `null` when a load
 // starts** — `docs/design/components.md`, "A value read from the network".
@@ -72,12 +107,26 @@
 // append it. The extra round trip buys the server's ordering staying the only
 // one.
 //
+// **All four lists are dropped when the account locks, and this service is
+// where that rule lives rather than in whoever ended the session.**
+// `accounts.service.ts` argues the whole of it: `providedIn: 'root'` means no
+// injector destroys this object and no navigation clears it, so an opened list
+// outlives `custody.lock()`, `SessionService.ended()` and every route change;
+// `SessionService` may not reach for three feature services from `+core`; and
+// the word is `locked` exactly, because `unlocking` resolves back into keys and
+// the screen deliberately keeps the list up through a ceremony. What is this
+// file's own is that **each list returns to its own empty value** — `null` for
+// the two that mean "no answer yet", `[]` for the two picker lists, which mean
+// "nothing to offer" and were never a claim about the account. Setting the
+// pickers to `null` would not compile; setting the other two to `[]` would have
+// the screen say *you have no transactions* over a session that just ended.
+//
 // **`openField` and `blindIndex` are handed over as arrows and never as bare
 // method references.** Each reads a `#` field, so `this.#custody.openField` on
 // its own type-checks perfectly and answers every call with a `TypeError` on
 // the wrong receiver.
 import { HttpErrorResponse } from '@angular/common/http';
-import { Injectable, inject, signal } from '@angular/core';
+import { Injectable, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
@@ -132,6 +181,20 @@ export interface NewTransaction {
   readonly categoryId: string | null;
 }
 
+/**
+ * How a write ended: a row on the server, or nothing at all.
+ *
+ * A word rather than `void`, because the caller has a decision to make on it —
+ * the screen may not destroy what somebody typed over a write that did not
+ * land. `abandoned` covers every exit that wrote nothing, including the ones
+ * that refused before any request: what differs between them is the sentence
+ * `#report` carries, and there is no screen today that could act on the
+ * difference.
+ */
+export type TransactionWrite =
+  | { readonly state: 'recorded' }
+  | { readonly state: 'abandoned' };
+
 // How a load ended, as a word rather than as the absence of a value. A failure
 // that emitted nothing would leave the outer subscription unable to clear the
 // loading line.
@@ -175,7 +238,14 @@ export class TransactionsService {
   readonly #categoryGroups = signal<readonly CategoryGroupView[]>([]);
   readonly #categories = signal<readonly CategoryView[]>([]);
   readonly #loading = signal(false);
+  readonly #failed = signal(false);
   readonly #loads = new Subject<void>();
+  readonly #categoryLoads = new Subject<void>();
+  // Which payee read owns the signal. A counter and not a `switchMap`, because
+  // this read hands its answer back as well as publishing it: the conflict
+  // branch has to match against the list **it** read, and a later read's
+  // answer is not a substitute for it.
+  #payeeReads = 0;
 
   // The two arrows the head of this file argues for. Never
   // `this.#custody.openField` and never `this.#custody.blindIndex`.
@@ -189,6 +259,16 @@ export class TransactionsService {
   public readonly categoryGroups = this.#categoryGroups.asReadonly();
   public readonly categories = this.#categories.asReadonly();
   public readonly loading = this.#loading.asReadonly();
+  /**
+   * Whether the last read of the list came back a failure.
+   *
+   * A fourth state the screen needs and could not infer: the list is `null` at
+   * rest, in flight **and** after a failure, so a screen reading the list and
+   * the running flag alone renders nothing at all over a read that failed —
+   * no sentence, and no way for a person to tell that from an account with
+   * nothing in it.
+   */
+  public readonly failed = this.#failed.asReadonly();
 
   constructor() {
     this.#loads
@@ -210,7 +290,7 @@ export class TransactionsService {
             ),
             map((views): LoadOutcome => ({ state: 'loaded', views })),
             catchError((error: unknown): Observable<LoadOutcome> => {
-              this.#report(error);
+              this.#report('the transactions could not be read', error);
 
               return of({ state: 'failed' });
             }),
@@ -220,6 +300,7 @@ export class TransactionsService {
       )
       .subscribe((outcome) => {
         this.#loading.set(false);
+        this.#failed.set(outcome.state === 'failed');
 
         if (outcome.state === 'loaded') {
           // Published in the order the server sent, which is an order — there
@@ -227,12 +308,78 @@ export class TransactionsService {
           this.#transactions.set(outcome.views);
         }
       });
+
+    // The picker's own read, over the same operator and for the same reason as
+    // the list's. It was a bare `forkJoin` publishing unconditionally, which
+    // this screen reaches on every `ngOnInit`.
+    this.#categoryLoads
+      .pipe(
+        switchMap(() =>
+          forkJoin({
+            groups: this.#categoryGroupsApi.getCategoryGroups(),
+            categories: this.#categoriesApi.getCategories(),
+          }).pipe(
+            switchMap((response) =>
+              from(
+                Promise.all([
+                  Promise.all(
+                    response.groups.items.map((dto) =>
+                      toCategoryGroupView(dto, this.#open),
+                    ),
+                  ),
+                  Promise.all(
+                    response.categories.items.map((dto) =>
+                      toCategoryView(dto, this.#open),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+            // Inside the inner pipe, so a failed read ends that read alone and
+            // leaves the subject able to carry the next one.
+            catchError((error: unknown) => {
+              this.#report('the categories could not be read', error);
+
+              return EMPTY;
+            }),
+          ),
+        ),
+        takeUntilDestroyed(),
+      )
+      .subscribe(([groups, categories]) => {
+        this.#categoryGroups.set(groups);
+        this.#categories.set(categories);
+      });
+
+    // The one reader of custody's status in this file; the head of the file and
+    // `accounts.service.ts` argue why the reaction lives here and why the word
+    // is `locked` exactly. It runs once on construction over four lists that
+    // are already empty, so the first run is a no-op whatever the injection
+    // order was.
+    effect(() => {
+      if (this.#custody.status() === 'locked') {
+        this.#transactions.set(null);
+        this.#payees.set(null);
+        this.#categoryGroups.set([]);
+        this.#categories.set([]);
+
+        // Cleared beside the lists, for the reason `accounts.service.ts`
+        // writes out at its own copy of this line: the word is a claim about
+        // the last read, and after the lines above there is no read left for
+        // it to be a claim about. This service went without it while both
+        // neighbours had it and nothing went red, because the screen's own
+        // `locked()` never lets the word reach a render — a coincidence one
+        // layer away, not a guard.
+        this.#failed.set(false);
+      }
+    });
   }
 
   public load(): void {
     // Set before the subject is pushed, so a screen reading these two
     // synchronously after `load()` sees the state of the load it just started.
     this.#loading.set(true);
+    this.#failed.set(false);
     this.#transactions.set(null);
     this.#loads.next();
   }
@@ -257,39 +404,14 @@ export class TransactionsService {
    * and has to reach the failure branch. `catchError` is what stops that being
    * an unhandled error on a path that previously had no handling at all; the
    * picker is left holding whatever it held, which for a first load is nothing.
+   *
+   * The read itself lives in the constructor, over a subject and a
+   * `switchMap`: two of these in flight is the ordinary case — this screen
+   * asks on every `ngOnInit` — and the slower one publishing last is a picker
+   * showing names that have since been renamed.
    */
   public loadCategories(): void {
-    forkJoin({
-      groups: this.#categoryGroupsApi.getCategoryGroups(),
-      categories: this.#categoriesApi.getCategories(),
-    })
-      .pipe(
-        switchMap((response) =>
-          from(
-            Promise.all([
-              Promise.all(
-                response.groups.items.map((dto) =>
-                  toCategoryGroupView(dto, this.#open),
-                ),
-              ),
-              Promise.all(
-                response.categories.items.map((dto) =>
-                  toCategoryView(dto, this.#open),
-                ),
-              ),
-            ]),
-          ),
-        ),
-        catchError((error: unknown) => {
-          this.#report(error);
-
-          return EMPTY;
-        }),
-      )
-      .subscribe(([groups, categories]) => {
-        this.#categoryGroups.set(groups);
-        this.#categories.set(categories);
-      });
+    this.#categoryLoads.next();
   }
 
   public categoriesForGroup(categoryGroupId: string): readonly CategoryView[] {
@@ -298,7 +420,16 @@ export class TransactionsService {
     );
   }
 
-  public async add(transaction: NewTransaction): Promise<void> {
+  /**
+   * Records one transaction, and answers whether anything was written.
+   *
+   * **Every `abandoned` has already been reported**, here or in the step that
+   * refused, so a caller neither has to nor may report it again. What the
+   * caller does with the word is keep what somebody typed: five paths end this
+   * write with nothing on the server, and a screen that clears its form on the
+   * way past destroys the text before the outcome exists.
+   */
+  public async add(transaction: NewTransaction): Promise<TransactionWrite> {
     // Minted here and used twice — as the binding the note is sealed against,
     // and as the `id` on the wire. The two must be the same value, which is why
     // there is one `const`.
@@ -311,16 +442,28 @@ export class TransactionsService {
       // resolving may *create* a payee row, and the app role holds no `DELETE`
       // on that table, so a note that turns out to be unsealable after one was
       // created leaves a payee nothing names and nothing can remove.
+      //
+      // **It closes that one cause and not the class.** The commoner one is
+      // still open and is not this file's to close: the payee create lands,
+      // the transaction that needed it fails — a 400, a 409, a dropped
+      // connection — and the row stays, unreferenced and unremovable, still in
+      // the autocomplete. The two writes are two requests, so no transaction
+      // spans them; `payees.md` argues why a compensating delete is worse than
+      // the strandings it would answer.
       const note = await this.#sealNote(id, transaction.description);
 
       if (note.state === 'locked') {
-        return;
+        this.#report('the note could not be sealed');
+
+        return { state: 'abandoned' };
       }
 
       const payee = await this.#resolvePayee(transaction.payee);
 
       if (payee.state === 'abandoned') {
-        return;
+        // Already reported, by the step that decided it: only that step knows
+        // which of its four refusals happened.
+        return { state: 'abandoned' };
       }
 
       await firstValueFrom(
@@ -335,9 +478,9 @@ export class TransactionsService {
         }),
       );
     } catch (error: unknown) {
-      this.#report(error);
+      this.#report('the transaction could not be recorded', error);
 
-      return;
+      return { state: 'abandoned' };
     } finally {
       this.#loading.set(false);
     }
@@ -345,6 +488,8 @@ export class TransactionsService {
     // The create's own answer is dropped rather than spliced in: this screen
     // has no ordering of its own, so the server's is the only one there is.
     this.load();
+
+    return { state: 'recorded' };
   }
 
   // `''` exactly, and never `.trim()`: a note of spaces is a note somebody
@@ -370,13 +515,17 @@ export class TransactionsService {
       return { state: 'none' };
     }
 
-    // The index first, because it is what decides the match *and* what a create
-    // would have to carry. A browser holding no index key cannot tell whether
-    // this counterparty is already on the list, and creating one anyway is how
-    // a budget grows a second row for a name it already has.
+    // The index first, and that order is forced rather than preferred: it is
+    // what decides whether there is a create at all, so sealing ahead of it
+    // would seal a name for a row that is usually never made. A browser
+    // holding no index key cannot tell whether this counterparty is already on
+    // the list, and creating one anyway is how a budget grows a second row for
+    // a name it already has.
     const indexed = await this.#index(PAYEE_NAME_FIELD, plaintext);
 
     if (indexed.state === 'locked') {
+      this.#report('the counterparty could not be keyed');
+
       return { state: 'abandoned' };
     }
 
@@ -388,9 +537,11 @@ export class TransactionsService {
       : { state: 'resolved', id: match.id };
   }
 
+  // `matchKey` is the value the miss was decided on, and it comes back here to
+  // be compared rather than posted. The head of this file argues why.
   async #createPayee(
     plaintext: string,
-    nameKey: string,
+    matchKey: string,
   ): Promise<ResolvedPayee> {
     const id = mintNarrativeRowId();
     const sealed = await this.#custody.sealField(
@@ -399,12 +550,35 @@ export class TransactionsService {
     );
 
     if (sealed.state === 'locked') {
+      this.#report('the counterparty’s name could not be sealed');
+
+      return { state: 'abandoned' };
+    }
+
+    // The key again, on the far side of the seal, and the pair is posted only
+    // if the two answers agree. Neither operation can see an `adopt()` that
+    // lands between them — a seal compares key identity and an index compares
+    // the generation counter, and both had returned — so the agreement of two
+    // values taken either side of it is the only evidence this service can
+    // gather that one account owns both halves of the row it is about to
+    // write. A `locked` here is the same refusal by a louder route.
+    const nameKey = await this.#index(PAYEE_NAME_FIELD, plaintext);
+
+    if (nameKey.state === 'locked' || nameKey.value !== matchKey) {
+      this.#report(
+        'the account’s keys changed while the counterparty was being sealed',
+      );
+
       return { state: 'abandoned' };
     }
 
     try {
       const created = await firstValueFrom(
-        this.#payeesApi.createPayee({ id, name: sealed.wire, nameKey }),
+        this.#payeesApi.createPayee({
+          id,
+          name: sealed.wire,
+          nameKey: nameKey.value,
+        }),
       );
 
       // Held locally rather than re-read: this browser sealed that text under a
@@ -412,33 +586,58 @@ export class TransactionsService {
       // is what it just sent. Without this, the next transaction naming the
       // same counterparty pays a conflict and a re-read for something already
       // known.
-      this.#payees.update((payees) => [
-        ...(payees ?? []),
-        { id: created.id, name: { state: 'text', value: plaintext }, nameKey },
-      ]);
+      this.#payees.update((payees) =>
+        // A `null` list is "no answer yet", and appending to it would fabricate
+        // a list of one over a read that never landed — a screen would then
+        // offer one suggestion as though it held the set.
+        payees === null
+          ? payees
+          : [
+              ...payees,
+              {
+                id: created.id,
+                name: { state: 'text', value: plaintext },
+                nameKey: nameKey.value,
+              },
+            ],
+      );
 
       return { state: 'resolved', id: created.id };
     } catch (error: unknown) {
-      this.#report(error);
-
       if (!isConflict(error)) {
+        this.#report('the counterparty could not be created', error);
+
         return { state: 'abandoned' };
       }
 
+      // Reported in the branches below and never here: a conflict is the
+      // documented resolution path, and logging one as an error on the way
+      // through trains a reader to ignore the only channel this service has.
+      //
       // Exactly one re-read, and no second create whatever it finds. The head
       // of this file argues why a loop cannot terminate and why a fresh id
       // would not help.
       const refreshed = await this.#readPayees();
 
       if (refreshed === null) {
+        // `#readPayees` reported the read that failed.
         return { state: 'abandoned' };
       }
 
-      const match = matchPayeeByIndex(refreshed, nameKey);
+      const match = matchPayeeByIndex(refreshed, nameKey.value);
 
-      return match === null
-        ? { state: 'abandoned' }
-        : { state: 'resolved', id: match.id };
+      if (match === null) {
+        // The severe one, and the reason `add` answers a word: the row holding
+        // that name is one this browser cannot read, so every write naming
+        // this counterparty ends here, for as long as the row exists.
+        this.#report(
+          'a counterparty of that name exists and this browser cannot read it',
+        );
+
+        return { state: 'abandoned' };
+      }
+
+      return { state: 'resolved', id: match.id };
     }
   }
 
@@ -446,26 +645,47 @@ export class TransactionsService {
   // the value and the screen needs the signal, and re-reading twice for one
   // question would be two answers that can disagree.
   async #readPayees(): Promise<readonly PayeeView[] | null> {
+    const generation = ++this.#payeeReads;
+
     try {
       const response = await firstValueFrom(this.#payeesApi.getPayees());
       const views = await Promise.all(
         response.items.map((dto) => toPayeeView(dto, this.#open, this.#index)),
       );
 
-      this.#payees.set(views);
+      // Published only by the newest read. An open plus a MAC per row is
+      // enough to let a slow read land after a fast one and put back the
+      // payees a newer answer had already replaced.
+      if (generation === this.#payeeReads) {
+        this.#payees.set(views);
+      }
 
+      // Answered whether it published or not: the caller asked *this* read a
+      // question, and the newer read's answer is not a reply to it.
       return views;
     } catch (error: unknown) {
-      this.#report(error);
+      this.#report('the counterparties could not be read', error);
 
       return null;
     }
   }
 
-  // TODO: surface API errors to the user (e.g. a snackbar) once the app has an
-  // error-notification convention. For now the error is reported so it does not
-  // become an unhandled rejection.
-  #report(error: unknown): void {
-    console.error('Transactions API request failed', error);
+  // The one channel this service has, and the only place it names itself.
+  //
+  // TODO: surface these to the user (a snackbar or the like) once the app has
+  // an error-notification convention; `docs/design/` owes a chapter for it.
+  // Until then this is what an abandoned write leaves behind, which is why
+  // every path that abandons one comes through here — a write that wrote
+  // nothing and said nothing cannot be told from one that landed. `cause` is
+  // absent on the refusals that never reached a request: there is no error
+  // object behind a locked key, and passing `undefined` would print one.
+  #report(reason: string, cause?: unknown): void {
+    if (cause === undefined) {
+      console.error(`Transactions: ${reason}`);
+
+      return;
+    }
+
+    console.error(`Transactions: ${reason}`, cause);
   }
 }

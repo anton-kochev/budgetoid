@@ -136,10 +136,22 @@ export async function toPayeeView(
  *
  * It is also the same bytes the database decides uniqueness on, so a match here
  * and a refusal there can never disagree about what "the same name" means.
+ *
+ * **A row carrying no key matches nothing, and that is checked rather than
+ * implied by the parameter's type.** The rows on the list are `string | null`
+ * by design, so the one shape that turns this function into the opposite of
+ * itself is an asked key that is also `null`: `null === null` reuses a payee
+ * this browser cannot read, and the transaction is filed against a
+ * counterparty nobody chose. The signature forbids it and the signature is not
+ * a runtime, so the comparison names the null it is defending against.
  */
 export function matchPayeeByIndex(
   payees: readonly PayeeView[],
   nameKey: string,
 ): PayeeView | null {
-  return payees.find((payee) => payee.nameKey === nameKey) ?? null;
+  return (
+    payees.find(
+      (payee) => payee.nameKey !== null && payee.nameKey === nameKey,
+    ) ?? null
+  );
 }

@@ -41,7 +41,10 @@ import { AccountsService } from '../accounts/accounts.service';
 import type { PayeeView } from './payee-view';
 import type { TransactionView } from './transaction-view';
 import { TransactionsComponent } from './transactions.component';
-import { TransactionsService } from './transactions.service';
+import {
+  TransactionsService,
+  type TransactionWrite,
+} from './transactions.service';
 
 const TRANSACTION_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000001';
 const ACCOUNT_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000002';
@@ -85,6 +88,15 @@ const cornerShop: PayeeView = {
   nameKey: 'index-corner-shop',
 };
 
+// A second readable payee, so that "the filter kept this one" and "the filter
+// kept everything" are two different answers. With one payee on the list they
+// are the same array.
+const bakery: PayeeView = {
+  id: '0199c3d4-5f6a-7b8c-9d0e-00000000000e',
+  name: { state: 'text', value: 'Bakery' },
+  nameKey: 'index-bakery',
+};
+
 // A payee this browser could not read. There is no text to type-ahead against,
 // so it is not offered as a suggestion — which is a filter and not a collapse:
 // nothing turns its word into a string.
@@ -122,12 +134,14 @@ class TransactionsServiceStub
     },
   ]);
   public readonly loadingSignal = signal(false);
+  public readonly failedSignal = signal(false);
 
   public readonly transactions = this.transactionsSignal.asReadonly();
   public readonly payees = this.payeesSignal.asReadonly();
   public readonly categoryGroups = this.categoryGroupsSignal.asReadonly();
   public readonly categories = this.categoriesSignal.asReadonly();
   public readonly loading = this.loadingSignal.asReadonly();
+  public readonly failed = this.failedSignal.asReadonly();
 
   public load = vi.fn();
   public loadPayees = vi.fn();
@@ -135,7 +149,11 @@ class TransactionsServiceStub
   public categoriesForGroup = vi.fn((): readonly CategoryView[] =>
     this.categoriesSignal(),
   );
-  public add = vi.fn((): Promise<void> => Promise.resolve());
+  // Answers `recorded` by default, because that is the path a case that says
+  // nothing about the outcome means.
+  public add = vi.fn(
+    (): Promise<TransactionWrite> => Promise.resolve({ state: 'recorded' }),
+  );
 }
 
 class AccountsServiceStub
@@ -143,9 +161,14 @@ class AccountsServiceStub
 {
   public readonly accountsSignal = signal<AccountView[] | null>([everyday]);
   public readonly loadingSignal = signal(false);
+  // Present because the compiler's census demands it, and read by nothing on
+  // this screen: the accounts read feeds a picker here, and the sentence a
+  // failed accounts read earns belongs to `/app/accounts`.
+  public readonly failedSignal = signal(false);
 
   public readonly accounts = this.accountsSignal.asReadonly();
   public readonly loading = this.loadingSignal.asReadonly();
+  public readonly failed = this.failedSignal.asReadonly();
 
   public load = vi.fn();
   public add = vi.fn((): Promise<void> => Promise.resolve());
@@ -199,6 +222,25 @@ function exposed(component: TransactionsComponent): {
   add: () => void;
 } {
   return component as unknown as { form: FormGroup; add: () => void };
+}
+
+// The submit, as the promise it now is. Kept apart from {@link exposed} so
+// that the cases which only press the button go on ignoring the result and
+// stay free of a floating promise.
+function pressAdd(component: TransactionsComponent): Promise<void> {
+  return (component as unknown as { add: () => Promise<void> }).add();
+}
+
+// The suggestions the autocomplete renders. Read through the same one cast,
+// and read as a call whether it is a method or a computed signal.
+function suggestions(
+  component: TransactionsComponent,
+): readonly { id: string; name: string }[] {
+  return (
+    component as unknown as {
+      filteredPayees: () => readonly { id: string; name: string }[];
+    }
+  ).filteredPayees();
 }
 
 describe('TransactionsComponent', () => {
@@ -580,6 +622,359 @@ describe('TransactionsComponent', () => {
     ).toHaveLength(2);
   });
 
+  it('keeps what was typed while the write is still in flight', () => {
+    // Arrange — the reset used to run on the line after the call, so the text
+    // was gone before the outcome existed. Four of the service's five exits
+    // write nothing, and one of them — a payee whose name does not open —
+    // abandons **every** write naming that counterparty, forever. Whoever
+    // typed it would watch the form empty each time and be told nothing.
+    transactions.add.mockImplementation(() => new Promise(() => undefined));
+    fill({ description: 'Weekly shop', payee: 'Corner Shop' });
+
+    // Act
+    exposed(fixture.componentInstance).add();
+
+    // Assert
+    const form = exposed(fixture.componentInstance).form;
+
+    expect(form.value).toEqual(
+      expect.objectContaining({
+        description: 'Weekly shop',
+        payee: 'Corner Shop',
+        accountId: ACCOUNT_ID,
+      }),
+    );
+  });
+
+  it('keeps what was typed when the write is abandoned', async () => {
+    // Arrange — the four silent exits of the service, from the screen's side.
+    // Nothing was written and nothing can be said yet, so the least this form
+    // can do is still be holding the entry when the person looks back at it.
+    transactions.add.mockResolvedValue({ state: 'abandoned' });
+    fill({ description: 'Weekly shop', payee: 'Corner Shop' });
+
+    // Act
+    await pressAdd(fixture.componentInstance);
+
+    // Assert
+    expect(exposed(fixture.componentInstance).form.value).toEqual(
+      expect.objectContaining({
+        description: 'Weekly shop',
+        payee: 'Corner Shop',
+      }),
+    );
+  });
+
+  it('empties the form once the write has landed', async () => {
+    // Arrange — the positive control. A form that never cleared would pass the
+    // two cases above and make every second entry a duplicate of the first.
+    fill({ description: 'Weekly shop', payee: 'Corner Shop' });
+
+    // Act
+    await pressAdd(fixture.componentInstance);
+
+    // Assert
+    expect(exposed(fixture.componentInstance).form.value).toEqual(
+      expect.objectContaining({
+        accountId: '',
+        description: '',
+        payee: '',
+      }),
+    );
+  });
+
+  it('says the read failed rather than rendering nothing', () => {
+    // Arrange — null list, no running flag, and before this branch existed
+    // that state drew a form and silence. "You have no transactions" and "we
+    // could not ask" are two different next steps for a person.
+    transactions.transactionsSignal.set(null);
+    transactions.loadingSignal.set(false);
+    transactions.failedSignal.set(true);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(host().textContent ?? '').toContain('couldn’t read your');
+    expect(host().querySelector('mat-list')).toBeNull();
+  });
+
+  it('draws neither the list nor a failure while the read is running', () => {
+    // Arrange — the control for the case above, and for the branch order: a
+    // failure that outranked the running line would put the sentence on screen
+    // during every reload after one failed read.
+    transactions.transactionsSignal.set(null);
+    transactions.loadingSignal.set(true);
+    transactions.failedSignal.set(false);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(host().textContent ?? '').toContain('Reading your transactions');
+    expect(host().textContent ?? '').not.toContain('couldn’t read your');
+  });
+
+  // **Where the two lines land is a property the cases above cannot see.**
+  // Each of them asserts the text is somewhere in the host, and a screen that
+  // draws each sentence in a `role="status"` created at the moment it gains
+  // content passes every one of them while announcing nothing: assistive
+  // technology has to have been watching the node *before* the text arrived.
+  // So the node is taken while it is still empty and the later text is
+  // asserted to arrive **in that same node** — `docs/design/components.md`,
+  // "A value read from the network".
+  function statusRegion(): HTMLElement | null {
+    return host().querySelector<HTMLElement>('[role="status"]');
+  }
+
+  it('holds an empty status region from first paint', () => {
+    // Arrange — the fixture's own default: a list that answered, nothing
+    // running and nothing failed, so there is deliberately nothing to say.
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert — present and silent. `status` and never `assertive`, which is
+    // reserved for a failure to save something a person typed.
+    expect(statusRegion()).not.toBeNull();
+    expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+    expect(
+      host().querySelector('[role="alert"], [aria-live="assertive"]'),
+    ).toBeNull();
+  });
+
+  it('announces the loading line from the region that was already there', () => {
+    // Arrange — taken while it is still empty, which is the whole point of
+    // taking it here rather than after the act.
+    const region = statusRegion();
+
+    // Act
+    transactions.transactionsSignal.set(null);
+    transactions.loadingSignal.set(true);
+    fixture.detectChanges();
+
+    // Assert — the same element, not a second one that arrived with its text.
+    expect(statusRegion()).toBe(region);
+    expect(region?.textContent ?? '').toContain('Reading your transactions');
+  });
+
+  it('announces the failure sentence from that same region', () => {
+    // Arrange
+    const region = statusRegion();
+
+    // Act
+    transactions.transactionsSignal.set(null);
+    transactions.loadingSignal.set(false);
+    transactions.failedSignal.set(true);
+    fixture.detectChanges();
+
+    // Assert
+    expect(statusRegion()).toBe(region);
+    expect(region?.textContent ?? '').toContain('couldn’t read your');
+  });
+
+  it('says nothing at all while the account is locked', () => {
+    // Arrange — the state a lock actually leaves behind: `TransactionsService`
+    // destroys the list and leaves **both** flags standing — it clears neither
+    // the running one nor `failed`, unlike its two neighbours, which clear
+    // `failed` — so a region reading those flags alone tells somebody a read is
+    // in flight, or that one failed, beside a notice saying this tab cannot
+    // read the account. The chain this region replaced answered that by putting
+    // `locked` first, and the predicate has to keep doing it.
+    transactions.transactionsSignal.set(null);
+    transactions.loadingSignal.set(true);
+    custody.setStatus('locked');
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert — still in the DOM, with nothing to say. The notice is what
+    // speaks for this state.
+    expect(statusRegion()).not.toBeNull();
+    expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+  });
+
+  it('says it is reading, not that it failed, when both flags are up', () => {
+    // Arrange — reachable, and not by contrivance: only `load()` clears
+    // `failed`, so a failed read followed by a press on Add leaves the list
+    // null, `failed` true and the running flag true at once. Ordered the other
+    // way the screen tells somebody to check their connection while a request
+    // of theirs is in flight. The text cases above each set one flag, so none
+    // of them can see this.
+    transactions.transactionsSignal.set(null);
+    transactions.failedSignal.set(true);
+    transactions.loadingSignal.set(true);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(statusRegion()?.textContent ?? '').toContain(
+      'Reading your transactions',
+    );
+    expect(statusRegion()?.textContent ?? '').not.toContain(
+      'couldn’t read your',
+    );
+  });
+
+  it('says nothing while a write runs over a list already on screen', () => {
+    // Arrange — `loading` is set by every **write** as well as by the read,
+    // and the list stays up throughout one. The chain this region replaced put
+    // the list ahead of the loading line, so a save never drew "Reading your
+    // transactions…" under the rows; a region reading the running flag alone
+    // brings that back, and the rule is the book's — a section renders at most
+    // one of the value, the loading line and the failure.
+    transactions.loadingSignal.set(true);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert — the value is on screen, so the region has nothing to add.
+    expect(host().querySelector('mat-list')).not.toBeNull();
+    expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+  });
+
+  it('disables the submit while a write is running', () => {
+    // Arrange — the write is **two** round trips, and the running flag is what
+    // stands between a double press and a duplicate entry. What blocks the
+    // second press today is an accident: the form reset clears a `required`
+    // account and the button falls invalid, which evaporates the day the reset
+    // keeps the account selected — and the second POST carries a fresh
+    // client-minted id that collides with nothing.
+    fill({});
+    transactions.loadingSignal.set(true);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    const submit = host().querySelector<HTMLButtonElement>(
+      'button[type="submit"]',
+    );
+
+    expect(submit?.disabled).toBe(true);
+  });
+
+  it('refuses a second press while a write is running', () => {
+    // Arrange — the gate is in the handler as well as on the control, for the
+    // reason this screen gives three times already: Material's click-halt is
+    // applied to anchors only, so a `<button>` still receives the press.
+    fill({});
+    transactions.loadingSignal.set(true);
+    fixture.detectChanges();
+
+    // Act
+    exposed(fixture.componentInstance).add();
+
+    // Assert
+    expect(transactions.add).not.toHaveBeenCalled();
+  });
+
+  it('shows no opened name in the form while the account is locked', () => {
+    // Arrange — the account picker, the payee field and the category picker
+    // sit inside the form rather than inside the notice's branch, so a lock
+    // that lands over a filled form disables the controls and leaves the names
+    // it opened on screen. The notice renders **in place of** account content;
+    // a disabled control still displaying it is the same claim by another
+    // route.
+    fill({ categoryId: CATEGORY_ID });
+    fixture.detectChanges();
+    expect(host().querySelector('form')?.textContent ?? '').toContain(
+      'Everyday',
+    );
+
+    // Act
+    custody.setStatus('locked');
+    fixture.detectChanges();
+
+    // Assert
+    const form = host().querySelector('form')?.textContent ?? '';
+
+    expect(form).not.toContain('Everyday');
+    expect(form).not.toContain('Groceries');
+  });
+
+  it('offers no payee suggestions while the account is locked', () => {
+    // Arrange — the same rule on the third control. A suggestion list is
+    // account content whatever the field around it can do.
+    transactions.payeesSignal.set([cornerShop, bakery]);
+    custody.setStatus('locked');
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(suggestions(fixture.componentInstance)).toEqual([]);
+  });
+
+  it('reads a null account list as no answer yet, in the sentence and on the button alike', () => {
+    // Arrange — `?.length === 0` and `(… ?? 0) === 0` disagree about `null`,
+    // and they disagreed toward silence: a failed accounts read hid the
+    // sentence *and* disabled the button, where the two used to arrive
+    // together. Both read `null` as "no answer yet" now — saying "create an
+    // account" over a read that never landed is a claim about the budget
+    // rather than about the request, and the account control is `required`, so
+    // nothing becomes pressable that a person could not have filled in.
+    const accounts = TestBed.inject(
+      AccountsService,
+    ) as unknown as AccountsServiceStub;
+
+    accounts.accountsSignal.set(null);
+    accounts.loadingSignal.set(false);
+    fill({});
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    const submit = host().querySelector<HTMLButtonElement>(
+      'button[type="submit"]',
+    );
+
+    expect(host().textContent ?? '').not.toContain('Create an account');
+    expect(submit?.disabled).toBe(false);
+  });
+
+  it('still asks for an account when the budget has none', () => {
+    // Arrange — the positive control for the case above: an answered read of
+    // zero rows is a claim about the budget, and it is this screen's to make.
+    const accounts = TestBed.inject(
+      AccountsService,
+    ) as unknown as AccountsServiceStub;
+
+    accounts.accountsSignal.set([]);
+    accounts.loadingSignal.set(false);
+    fill({});
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    const submit = host().querySelector<HTMLButtonElement>(
+      'button[type="submit"]',
+    );
+
+    expect(host().textContent ?? '').toContain('Create an account');
+    expect(submit?.disabled).toBe(true);
+  });
+
+  it('offers only the payees matching what has been typed', () => {
+    // Arrange — the filter's only case read it with an **empty** filter, so an
+    // implementation that dropped the body and returned everything passed. Two
+    // payees and a filter that admits one of them is what tells the two apart.
+    transactions.payeesSignal.set([cornerShop, bakery]);
+    fill({ payee: 'bak' });
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert — case-folded on both sides: what is typed is not what was
+    // stored.
+    expect(
+      suggestions(fixture.componentInstance).map((payee) => payee.id),
+    ).toEqual([bakery.id]);
+  });
+
   it('suggests only the payees it could read', () => {
     // Arrange — an autocomplete offers text to put into a text field, and a row
     // with no text has nothing to offer. Filtering is not collapsing: no word
@@ -590,12 +985,8 @@ describe('TransactionsComponent', () => {
     fixture.detectChanges();
 
     // Assert
-    const suggestions = (
-      fixture.componentInstance as unknown as {
-        filteredPayees: () => readonly { id: string }[];
-      }
-    ).filteredPayees();
-
-    expect(suggestions.map((payee) => payee.id)).toEqual([PAYEE_ID]);
+    expect(
+      suggestions(fixture.componentInstance).map((payee) => payee.id),
+    ).toEqual([PAYEE_ID]);
   });
 });

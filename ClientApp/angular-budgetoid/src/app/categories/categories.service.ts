@@ -66,12 +66,24 @@
 // half-published pair is a list of categories filed under groups this screen
 // has not got. One `forkJoin`, one outcome, one `set` of each.
 //
+// **Both lists are dropped when the account locks, and this service is where
+// that rule lives rather than in whoever ended the session.**
+// `accounts.service.ts` argues the whole of it: `providedIn: 'root'` means no
+// injector destroys this object and no navigation clears it, so an opened list
+// outlives `custody.lock()`, `SessionService.ended()` and every route change;
+// `SessionService` may not reach for three feature services from `+core`; and
+// the word is `locked` exactly, because `unlocking` resolves back into keys and
+// the screen deliberately keeps the hierarchy up through a ceremony. What is
+// this file's own is that the two lists go **together**, for the reason they
+// are published together: a category carries its group's name, so a half-clear
+// leaves the words on screen that the clear exists to destroy.
+//
 // **`openField` is handed to the mappers as an arrow and never as a bare method
 // reference.** It reads a `#` field, so `this.#custody.openField` on its own
 // type-checks perfectly and answers every call with a `TypeError` on the wrong
 // receiver. `account-view.ts` argues it at greater length; this is a third call
 // site the argument is about.
-import { Injectable, inject, signal } from '@angular/core';
+import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
@@ -192,6 +204,19 @@ function moveGroupTo(
   }));
 }
 
+// The one empty list every group holding no categories is answered with.
+//
+// A shared constant rather than a `[]` at the call site, and that is the half a
+// reader will leave out: the lookup below is a `computed`, so a group that
+// *has* rows gets one array for as long as the list stands — and a group that
+// has none would get a fresh one on every call, which on this screen is every
+// change-detection tick. That is the commoner case on a budget somebody has
+// just started filling in, and it feeds `[cdkDropListData]` exactly as the full
+// case does. Frozen because it is handed out to callers who have no business
+// mutating it, and because a `push` onto it would file a category under every
+// empty group at once.
+const NO_CATEGORIES: readonly CategoryView[] = Object.freeze([]);
+
 // Categories by their group's position, then by their own, then by identifier.
 // The last tiebreak is what stops two rows sharing a position from swapping
 // places between renders; it is over the id and never over the name, which is a
@@ -221,15 +246,55 @@ export class CategoriesService {
   readonly #groups = signal<readonly CategoryGroupView[] | null>(null);
   readonly #categories = signal<readonly CategoryView[] | null>(null);
   readonly #loading = signal(false);
+  readonly #failed = signal(false);
   readonly #loads = new Subject<void>();
 
   // The arrow the head of this file argues for. Never `this.#custody.openField`.
   readonly #open: NarrativeOpener = (binding, wire) =>
     this.#custody.openField(binding, wire);
 
+  // Every category filed under the group it names, in the order the published
+  // list holds them. {@link categoriesForGroup} is the only reader and argues
+  // why this is a `computed` rather than a filter at the call site.
+  //
+  // Written out rather than `Map.groupBy`: this project targets ES2022 and that
+  // is ES2024, so the shorter spelling does not type-check here. A group with
+  // no rows is deliberately **absent** from the map rather than present with an
+  // empty array — the lookup answers `NO_CATEGORIES` for a miss, so one frozen
+  // array serves every empty group instead of one being built per group per
+  // load.
+  readonly #byGroup = computed<ReadonlyMap<string, readonly CategoryView[]>>(
+    () => {
+      const grouped = new Map<string, CategoryView[]>();
+
+      for (const category of this.#categories() ?? []) {
+        const filed = grouped.get(category.categoryGroupId);
+
+        if (filed === undefined) {
+          grouped.set(category.categoryGroupId, [category]);
+        } else {
+          filed.push(category);
+        }
+      }
+
+      return grouped;
+    },
+  );
+
   public readonly groups = this.#groups.asReadonly();
   public readonly categories = this.#categories.asReadonly();
   public readonly loading = this.#loading.asReadonly();
+  /**
+   * Whether the last read of the hierarchy came back a failure.
+   *
+   * A fourth state the screen needs and could not infer: both lists are `null`
+   * at rest, in flight **and** after a failure, so a screen reading a list and
+   * the running flag alone renders nothing at all over a read that failed — no
+   * sentence, and no way for a person to tell that from an account with nothing
+   * in it. One flag for the pair, because the pair is read, published and
+   * cleared together.
+   */
+  public readonly failed = this.#failed.asReadonly();
 
   constructor() {
     this.#loads
@@ -277,6 +342,7 @@ export class CategoriesService {
       )
       .subscribe((outcome) => {
         this.#loading.set(false);
+        this.#failed.set(outcome.state === 'failed');
 
         if (outcome.state === 'loaded') {
           // Published in the order the server sent, which is an order: both
@@ -285,12 +351,31 @@ export class CategoriesService {
           this.#categories.set(outcome.categories);
         }
       });
+
+    // The one reader of custody's status in this file; the head of the file and
+    // `accounts.service.ts` argue why the reaction lives here and why the word
+    // is `locked` exactly. It runs once on construction and clears two lists
+    // that are `null` until something loads one, so the first run is a no-op
+    // whatever the injection order was.
+    effect(() => {
+      if (this.#custody.status() === 'locked') {
+        this.#groups.set(null);
+        this.#categories.set(null);
+
+        // Cleared beside the lists, for the reason `accounts.service.ts`
+        // writes out at its own copy of this line: the word is a claim about
+        // the last read, and after these two lines there is no read left for
+        // it to be a claim about.
+        this.#failed.set(false);
+      }
+    });
   }
 
   public load(): void {
     // Set before the subject is pushed, so that a screen reading these
     // synchronously after `load()` sees the state of the load it just started.
     this.#loading.set(true);
+    this.#failed.set(false);
     this.#groups.set(null);
     this.#categories.set(null);
     this.#loads.next();
@@ -587,11 +672,23 @@ export class CategoriesService {
    * on the list itself: this answers *which of the rows I hold belong to that
    * group*, and while there are no rows the answer is honestly none. The screen
    * reads {@link groups} for whether there is an answer at all.
+   *
+   * **The grouping is computed once per change to the list, not once per
+   * call.** The template asks this **twice per group** — once for the rows and
+   * once for `[cdkDropListData]` — and a template call runs on every
+   * change-detection tick in a zone-based app, so the `.filter()` this used to
+   * be handed the drop list a new array identity on every tick and re-allocated
+   * every group's rows with it. The answer is stable for as long as the
+   * underlying list is, which is what a template is entitled to assume of
+   * something it is allowed to call.
+   *
+   * It stays a method rather than becoming a map the template reads, because a
+   * template writing `byGroup().get(id) ?? []` puts the allocation back on the
+   * empty branch — and this is a shape the screen, the spec and the docs
+   * already name.
    */
   public categoriesForGroup(categoryGroupId: string): readonly CategoryView[] {
-    return (this.#categories() ?? []).filter(
-      (category) => category.categoryGroupId === categoryGroupId,
-    );
+    return this.#byGroup().get(categoryGroupId) ?? NO_CATEGORIES;
   }
 
   // The local echo of a placement the server has already accepted. Split out of

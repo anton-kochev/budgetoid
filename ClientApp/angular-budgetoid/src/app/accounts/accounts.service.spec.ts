@@ -310,6 +310,69 @@ describe('AccountsService', () => {
     await settle();
   });
 
+  it('puts the created account into the list without a reload', async () => {
+    // Arrange — a list that already holds an answer, so an append is
+    // distinguishable from a list of one fabricated out of the create. Nothing
+    // held this path: every other create case asserts the request body and
+    // then flushes, so deleting the whole `switchMap`/`toAccountView`/
+    // `subscribe` chain and leaving a bare POST passed the file — and that
+    // chain is the only place a created row enters the list, because this
+    // route is not followed by a re-read.
+    service.load();
+    http
+      .expectOne(ACCOUNTS_URL)
+      .flush({ items: [sealedAccount(EXISTING_ID, 'Rainy day')] });
+    await settle();
+
+    // Act
+    void service.add({
+      name: 'Everyday',
+      type: 'Checking',
+      openingBalance: 0,
+      currencyCode: 'USD',
+    });
+    await settle();
+    const request = http.expectOne(ACCOUNTS_URL);
+    const body = request.request.body as { id: string };
+
+    request.flush(sealedAccount(body.id, 'Everyday'));
+    await settle();
+
+    // Assert — three claims at once, and each is a different way to lose the
+    // row: it is *there*; it is a **word** rather than the wire value, so it
+    // went through the mapper instead of being assembled from what was typed;
+    // and it sits in `compareNarrative` order rather than at the end, which is
+    // what this screen's client-side sort is for.
+    expect(service.accounts()?.map((view) => view.name)).toEqual([
+      { state: 'text', value: 'Everyday' },
+      { state: 'text', value: 'Rainy day' },
+    ]);
+    expect(service.loading()).toBe(false);
+  });
+
+  it('invents no list from a create when no read has answered', async () => {
+    // Arrange — `null` is "no answer yet", and appending to it would leave a
+    // screen offering one row as though it held the set, over a read that
+    // never landed.
+
+    // Act
+    void service.add({
+      name: 'Everyday',
+      type: 'Checking',
+      openingBalance: 0,
+      currencyCode: 'USD',
+    });
+    await settle();
+    const request = http.expectOne(ACCOUNTS_URL);
+    const body = request.request.body as { id: string };
+
+    request.flush(sealedAccount(body.id, 'Everyday'));
+    await settle();
+
+    // Assert
+    expect(service.accounts()).toBeNull();
+  });
+
   it('posts nothing when sealing answers locked', async () => {
     // Arrange — reachable when the account's content key was replaced while the
     // cipher ran.
@@ -609,6 +672,85 @@ describe('AccountsService', () => {
     // invented; the section has nothing to say and says so.
     expect(service.loading()).toBe(false);
     expect(service.accounts()).toBeNull();
+  });
+
+  it('drops the opened names when the account locks', async () => {
+    // Arrange — the list holds plaintext this browser opened under a key it no
+    // longer has. This service is `providedIn: 'root'`, so nothing destroys it
+    // when a screen goes away and nothing clears it when a session ends: sign
+    // out on `/app/accounts` and the previous account's names are still
+    // readable from the root injector for the life of the tab.
+    service.load();
+    http
+      .expectOne(ACCOUNTS_URL)
+      .flush({ items: [sealedAccount(EXISTING_ID, 'Everyday')] });
+    await settle();
+    expect(service.accounts()).not.toBeNull();
+
+    // Act — what `SessionService.ended()` does through `custody.lock()`, and
+    // what a failed unlock does through `#fail`. The status is the only thing
+    // custody publishes about it, so the status is what this service reads.
+    custody.setStatus('locked');
+    TestBed.tick();
+
+    // Assert — `null`, the same word a load that never answered leaves behind:
+    // there is no answer to show, and `[]` would be the sentence *you have no
+    // accounts*.
+    expect(service.accounts()).toBeNull();
+  });
+
+  it('withdraws a failed read’s word when the account locks', async () => {
+    // Arrange — a read that genuinely failed, so the word is a claim about
+    // something that really happened rather than a flag nobody set.
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    service.load();
+    http
+      .expectOne(ACCOUNTS_URL)
+      .flush('nope', { status: 500, statusText: 'Server Error' });
+    await settle();
+    expect(service.failed()).toBe(true);
+
+    // Act
+    custody.setStatus('locked');
+    TestBed.tick();
+
+    // Assert — the list is `null` because this service emptied it, not because
+    // a request failed, so there is no read left for the word to be a claim
+    // about. Left standing it advises somebody to check their connection over
+    // a list nothing asked the server for — and the two situations are the
+    // same `null` from outside, so nothing else can tell them apart. Each of
+    // the three services carries this case because each owns its own effect,
+    // and until they did the clear was deletable with a green suite — which is
+    // how the transactions service came to be shipped without one.
+    expect(service.failed()).toBe(false);
+    expect(service.accounts()).toBeNull();
+  });
+
+  it('keeps the list while an unlock is running', async () => {
+    // Arrange — the control for the case above, and the reason the predicate is
+    // `locked` exactly rather than "anything but unlocked". `unlocking` is a
+    // state whose resolution *restores* the keys, and the screen deliberately
+    // keeps the list up through a ceremony — clearing here empties a list
+    // somebody is looking at and puts nothing in its place, on a screen whose
+    // three other branches all say something untrue about it.
+    //
+    // Custody has already dropped both keys by this point, so a read *started*
+    // now publishes `locked` words rather than text; what survives is a list
+    // opened before the ceremony began, for as long as it runs.
+    service.load();
+    http
+      .expectOne(ACCOUNTS_URL)
+      .flush({ items: [sealedAccount(EXISTING_ID, 'Everyday')] });
+    await settle();
+
+    // Act
+    custody.setStatus('unlocking');
+    TestBed.tick();
+
+    // Assert
+    expect(service.accounts()).toEqual([
+      expect.objectContaining({ name: { state: 'text', value: 'Everyday' } }),
+    ]);
   });
 
   it('orders the list through compareNarrative', async () => {

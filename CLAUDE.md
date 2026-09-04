@@ -286,9 +286,12 @@ Load-bearing rules, each explained there or in the linked decision:
   `locked` alone** because its sentence is advice and advice is false mid-ceremony — *disable when
   unsure, do not advise when unsure*; **a row whose name did not open cannot be renamed but can
   still be deleted**, because overwriting a name nobody can read is a deletion wearing an edit's
-  clothes while removing the row is not rewriting it; and **a disabled form reports itself valid**,
-  so `[disabled]="form.invalid"` *enables* a submit button the moment the form is switched off and
-  the lock condition has to be named again on the control and again in the handler. **`transactions` is the one sealed table with no name column
+  clothes while removing the row is not rewriting it; and **a disabled form is excluded from
+  validation**, so its status becomes the third value `DISABLED` and **both** `valid` and `invalid`
+  answer false — which means `[disabled]="form.invalid"` *enables* a submit button the moment the
+  form is switched off, and the lock condition has to be named again on the control and again in the
+  handler. Measured; it is not that the form calls itself valid, which would be the easier thing to
+  remember and the wrong thing to reason from. **`transactions` is the one sealed table with no name column
   at all**: no blind index, no unique name index, no `IndexedName`, and **no
   `AK_transactions_id_budget_id`** — a budget-owned table carries that key when something references
   it compositely, and **the referrer is not always `transactions`**: its three `HasPrincipalKey`
@@ -326,11 +329,19 @@ Load-bearing rules, each explained there or in the linked decision:
   column, which is where their rules differ from the name-only screens: an **empty** note posts
   `null` — which on a `PUT` is how a note is cleared — while a **whitespace-only** one is a note and
   is sealed as typed, because the deleted `NormalizeDescription` may not come back one layer up in
-  the browser either. The client has **no path producing the 29-byte envelope over an empty string**,
-  so *cleared* and *never filled* are one thing from this browser even though the server keeps them
-  as two rows; a gap, not a bug. And **`Disallow` does not reach TypeScript**: an object **spread**
-  bypasses excess-property checking entirely, so a stray member on one of these four bodies compiles
-  clean and is caught by a spec alone — measured. A duplicate group **or category** name answers
+  the browser either. **No client path produces the 29-byte envelope over an empty string — but the
+  two column classes are held apart by different things, and only one of them structurally.** On a
+  **description** an explicit `=== ''` branch in each service posts `null` instead; on a **name**
+  there is no service-level guard at all, and what stops an empty one is the form's `required` plus
+  the non-blank validator plus the handler's re-check. The codec itself seals `''` happily, to
+  exactly 29 bytes — measured. So *cleared* and *never filled* are one thing from this browser even
+  though the server keeps them as two rows; a gap, not a bug, and on names it is a validator away
+  rather than a branch away. And **`Disallow` reaches TypeScript only as far as the literal**:
+  excess-property checking covers members **written out**, spread or no spread, and exempts only the
+  ones arriving **through** a spread — so `{...base, descriptionn: 'x'}` is a compile error while
+  `{...carrier}` is not. Measured. Every request body in this client is built as a literal today, so
+  the compiler is a real net and the specs are the second one; the hazard is what a future refactor
+  into a spread would silently remove. A duplicate group **or category** name answers
   **400 keyed on `Name`** on both verbs — deliberately not the payee create's 409, because the input
   to that rule is who *chose* the name and sealing a column does not change it — and a duplicate
   **identifier** answers 409 with its own sentence, on accounts, payees, category groups, categories
@@ -719,7 +730,17 @@ Load-bearing rules, each explained there or in the linked decision:
   `SessionService.ended()` — never an
   `effect()` (it fires on construction, and its only honest predicate would have to lock on
   `unreachable` and `unauthenticated` too — destroying the keys over one blinked request, and
-  demanding a full ceremony to get them back) and never the callers. Registration hands the pair over as **objects** on the
+  demanding a full ceremony to get them back) and never the callers. **The three narrative feature
+  services do the opposite and the difference is not an inconsistency**: each drops its *opened*
+  lists — plaintext already decrypted, which outlives the key it came from — through an `effect()`
+  on `custody.status()`, in the service rather than in `SessionService`, because `+core` may not
+  import feature services and because a fifth screen would otherwise need somebody to remember a
+  fifth line here. Both objections above dissolve one layer out: a list is `null` until a read fills
+  it, so the construction run is harmless, and the predicate is **`locked` exactly, never
+  `!== 'unlocked'`** — `unlocking` resolves back into keys and the screens deliberately keep their
+  lists up through a ceremony. `adopt()` is **not** covered and cannot be from a status: it forgets
+  and holds synchronously, so nothing ever publishes `locked`, and registration is its only caller
+  and holds no list. Registration hands the pair over as **objects** on the
   201 (`adopt`) rather than re-reading through the route: re-reading needs the passkey's
   key-encryption key to survive the codes step — the same power one step removed — puts a round trip
   and a new failure mode on the happiest path in the product, and verifies nothing — the read returns

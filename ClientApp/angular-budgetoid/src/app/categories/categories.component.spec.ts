@@ -24,7 +24,7 @@
 import { CdkDragDrop } from '@angular/cdk/drag-drop';
 import { signal, type Signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { FormGroup } from '@angular/forms';
+import { FormGroup, type AbstractControl } from '@angular/forms';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { provideRouter } from '@angular/router';
 import {
@@ -76,10 +76,12 @@ class CategoriesServiceStub
     groceries,
   ]);
   public readonly loadingSignal = signal(false);
+  public readonly failedSignal = signal(false);
 
   public readonly groups = this.groupsSignal.asReadonly();
   public readonly categories = this.categoriesSignal.asReadonly();
   public readonly loading = this.loadingSignal.asReadonly();
+  public readonly failed = this.failedSignal.asReadonly();
 
   public load = vi.fn();
   public addGroup = vi.fn((): Promise<void> => Promise.resolve());
@@ -146,6 +148,7 @@ interface Exposed {
   saveCategory: () => void;
   editGroup: (group: CategoryGroupView) => void;
   editCategory: (category: CategoryView) => void;
+  cancelCategoryEdit: () => void;
   dropGroup: (event: CdkDragDrop<readonly CategoryGroupView[]>) => void;
   dropCategory: (
     event: CdkDragDrop<readonly CategoryView[]>,
@@ -189,6 +192,14 @@ describe('CategoriesComponent', () => {
     );
   }
 
+  // Everything inside the two forms, and nothing from the hierarchy below
+  // them. The locked notice replaces the hierarchy, so a whole-host text search
+  // would pass for a screen that still had an opened name sitting on a dead
+  // control in the form.
+  function editorsText(): string {
+    return host().querySelector('.editors')?.textContent ?? '';
+  }
+
   function submitButtons(): HTMLButtonElement[] {
     return Array.from(
       host().querySelectorAll<HTMLButtonElement>('button[type="submit"]'),
@@ -216,26 +227,31 @@ describe('CategoriesComponent', () => {
     expect(categories.load).toHaveBeenCalledOnce();
   });
 
+  // Both of these used to supply `currentIndex: 0` and expect position `0`,
+  // which is the one value a hard-coded literal also produces: replacing
+  // `event.currentIndex` with `0` passed the pair. The index below is non-zero
+  // for that reason and no other.
   it('persists group drag-and-drop position', () => {
     // Arrange
     const event = {
       item: { data: lifestyle },
-      previousIndex: 1,
-      currentIndex: 0,
+      previousIndex: 0,
+      currentIndex: 2,
     } as unknown as CdkDragDrop<readonly CategoryGroupView[]>;
 
     // Act
     screen().dropGroup(event);
 
     // Assert
-    expect(categories.moveGroup).toHaveBeenCalledWith(OTHER_GROUP_ID, 0);
+    expect(categories.moveGroup).toHaveBeenCalledWith(OTHER_GROUP_ID, 2);
   });
 
   it('persists category drag-and-drop placement', () => {
     // Arrange
     const event = {
       item: { data: groceries },
-      currentIndex: 0,
+      previousIndex: 0,
+      currentIndex: 3,
     } as unknown as CdkDragDrop<readonly CategoryView[]>;
 
     // Act
@@ -245,7 +261,7 @@ describe('CategoriesComponent', () => {
     expect(categories.placeCategory).toHaveBeenCalledWith(
       CATEGORY_ID,
       OTHER_GROUP_ID,
-      0,
+      3,
     );
   });
 
@@ -400,8 +416,14 @@ describe('CategoriesComponent', () => {
       // Act
       fixture.detectChanges();
 
-      // Assert
-      expect(nameInputs().every((input) => input.disabled)).toBe(false);
+      // Assert — `some` and never `every`. `.every(disabled) === false` is
+      // satisfied by **either** form being live, which is exactly the state
+      // this screen shipped once, and the locked case next door is written
+      // correctly (`every` plus a length) so the pair looked symmetrical while
+      // only one half held. `.some(disabled) === false` says every input is
+      // live, and the length says there are two of them to be live.
+      expect(nameInputs()).toHaveLength(2);
+      expect(nameInputs().some((input) => input.disabled)).toBe(false);
       expect(host().querySelector('form p.reason')).toBeNull();
     });
 
@@ -450,6 +472,32 @@ describe('CategoriesComponent', () => {
       expect(submitButtons().every((button) => button.disabled)).toBe(true);
     });
 
+    it('takes the group picker out of the DOM while the account is locked', () => {
+      // Arrange — the picker sits in the **category form**, which is outside
+      // the `@if (locked())` that replaces the hierarchy, so a group name this
+      // browser opened went on being rendered beside a notice saying this tab
+      // cannot read the account.
+      //
+      // **Emptying the option list is not enough, and that was measured in
+      // round one:** a `mat-select` goes on displaying the option it had
+      // selected after the option is gone. The control has to leave the DOM,
+      // and the assertion below is written so that the weaker fix fails it —
+      // it reads the text on screen, not the length of an option list.
+      screen().categoryForm.patchValue({ categoryGroupId: GROUP_ID });
+      fixture.detectChanges();
+      expect(editorsText()).toContain('Essentials');
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(editorsText()).not.toContain('Essentials');
+      expect(
+        host().querySelector('mat-select[formcontrolname="categoryGroupId"]'),
+      ).toBeNull();
+    });
+
     it('keeps the hierarchy on screen while the account is unlocking', () => {
       // Arrange — the notice follows `locked` alone, where the forms follow
       // "anything but unlocked". Two questions, two predicates: the notice's
@@ -463,6 +511,77 @@ describe('CategoriesComponent', () => {
       // Assert
       expect(host().querySelector('app-locked-account-notice')).toBeNull();
       expect(host().querySelector('.category-groups')).not.toBeNull();
+    });
+  });
+
+  // Three places used to set this one control's enabled state — the form-wide
+  // effect, `editCategory` and `cancelCategoryEdit` — and each of the two cases
+  // below is one pair of them disagreeing. Both symptoms are silent, which is
+  // why the fix is that the effect owns the state and derives it, rather than a
+  // fourth call put somewhere to compensate.
+  describe('who owns the group picker’s enabled state', () => {
+    function picker(): AbstractControl | null {
+      return screen().categoryForm.get('categoryGroupId');
+    }
+
+    it('turns the picker off for an edit and on again for the next create', () => {
+      // Arrange — a rename binds three members and the group is not one of
+      // them; a category moves group by being dragged, so the picker is off
+      // while an edit is running. This is the control for the two cases below:
+      // an owner that never enabled anything would pass them both.
+
+      // Act
+      screen().editCategory(groceries);
+      fixture.detectChanges();
+      const duringEdit = picker()?.disabled;
+
+      screen().cancelCategoryEdit();
+      fixture.detectChanges();
+
+      // Assert
+      expect(duringEdit).toBe(true);
+      expect(picker()?.disabled).toBe(false);
+    });
+
+    it('keeps the picker off through a lock and an unlock during an edit', () => {
+      // Arrange — the first silent symptom. The form-wide effect calls
+      // `enable()` on the **group**, which enables every child including this
+      // one, so a lock and an unlock landing mid-edit hand the picker back
+      // live. Somebody then changes the group, presses Save, and the edit
+      // branch sends `{description, name}` — the API answers 204 and the
+      // category has not moved.
+      screen().editCategory(groceries);
+      fixture.detectChanges();
+      expect(picker()?.disabled).toBe(true);
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+      custody.setStatus('unlocked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(picker()?.disabled).toBe(true);
+    });
+
+    it('leaves the whole category form disabled when an edit is cancelled while locked', () => {
+      // Arrange — the second. Cancel is a plain `<button>`, unaffected by the
+      // FormGroup's disabled state, so the press arrives; `cancelCategoryEdit`
+      // then enabled this control unconditionally. A group is `DISABLED` only
+      // while **every** child is, so one live control flips the whole form's
+      // status back — on a screen whose whole point is that it cannot write.
+      screen().editCategory(groceries);
+      fixture.detectChanges();
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Act
+      screen().cancelCategoryEdit();
+      fixture.detectChanges();
+
+      // Assert
+      expect(picker()?.disabled).toBe(true);
+      expect(screen().categoryForm.disabled).toBe(true);
     });
   });
 
@@ -634,18 +753,162 @@ describe('CategoriesComponent', () => {
       expect(host().textContent ?? '').toContain('No category groups yet');
     });
 
-    it('says nothing at all when a load failed', () => {
+    it('says the read failed rather than rendering nothing', () => {
       // Arrange — a failed load leaves the list `null` and `loading` false, and
-      // the previous answer is not restored. Neither sentence is true then.
+      // the previous answer is not restored. This case used to assert that the
+      // screen said **nothing**, which is what it did: two forms on top and
+      // silence beneath them, indistinguishable from an account with no
+      // categories in it. A read that failed and an empty account are two
+      // different next steps for a person — the distinction `SessionService`
+      // keeps between `anonymous` and `unreachable` — and a screen that renders
+      // neither sentence has collapsed them into a blank.
       categories.groupsSignal.set(null);
       categories.loadingSignal.set(false);
+      categories.failedSignal.set(true);
 
       // Act
       fixture.detectChanges();
 
       // Assert
+      expect(host().textContent ?? '').toContain('couldn’t read your');
       expect(host().textContent ?? '').not.toContain('Reading your categories');
       expect(host().textContent ?? '').not.toContain('No category groups yet');
+    });
+
+    it('draws neither the hierarchy nor a failure while the read is running', () => {
+      // Arrange — the control for the case above, and for the branch order: a
+      // failure that outranked the running line would put the sentence on
+      // screen during every reload after one failed read.
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(true);
+      categories.failedSignal.set(false);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().textContent ?? '').toContain('Reading your categories');
+      expect(host().textContent ?? '').not.toContain('couldn’t read your');
+    });
+
+    // **Where the two lines land is a property the four cases above cannot
+    // see.** Every one of them asserts the text is somewhere in the host, and
+    // a screen that draws each sentence in a `role="status"` created at the
+    // moment it gains content passes all four while announcing nothing:
+    // assistive technology has to have been watching the node *before* the
+    // text arrived. So the node is taken while it is still empty and the later
+    // text is asserted to arrive **in that same node** — `docs/design/
+    // components.md`, "A value read from the network".
+    function statusRegion(): HTMLElement | null {
+      return host().querySelector<HTMLElement>('[role="status"]');
+    }
+
+    it('holds an empty status region from first paint', () => {
+      // Arrange — the fixture's own default: lists that answered, nothing
+      // running and nothing failed, so there is deliberately nothing to say.
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — present and silent. `status` and never `assertive`, which is
+      // reserved for a failure to save something a person typed.
+      expect(statusRegion()).not.toBeNull();
+      expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+      expect(
+        host().querySelector('[role="alert"], [aria-live="assertive"]'),
+      ).toBeNull();
+    });
+
+    it('announces the loading line from the region that was already there', () => {
+      // Arrange — taken while it is still empty, which is the whole point of
+      // taking it here rather than after the act.
+      const region = statusRegion();
+
+      // Act
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(true);
+      fixture.detectChanges();
+
+      // Assert — the same element, not a second one that arrived with its
+      // text.
+      expect(statusRegion()).toBe(region);
+      expect(region?.textContent ?? '').toContain('Reading your categories');
+    });
+
+    it('announces the failure sentence from that same region', () => {
+      // Arrange
+      const region = statusRegion();
+
+      // Act
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(false);
+      categories.failedSignal.set(true);
+      fixture.detectChanges();
+
+      // Assert
+      expect(statusRegion()).toBe(region);
+      expect(region?.textContent ?? '').toContain('couldn’t read your');
+    });
+
+    it('says nothing at all while the account is locked', () => {
+      // Arrange — the state a lock actually leaves behind: `CategoriesService`
+      // destroys both lists and clears `failed`, and it does **not** clear the
+      // running flag, so a region reading the load alone tells somebody a read
+      // is in flight beside a notice saying this tab cannot read the account.
+      // The chain this region replaced answered that by putting `locked`
+      // first, and the predicate has to keep doing it.
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(true);
+      custody.setStatus('locked');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — still in the DOM, with nothing to say. The notice is what
+      // speaks for this state.
+      expect(statusRegion()).not.toBeNull();
+      expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+    });
+
+    it('says it is reading, not that it failed, when both flags are up', () => {
+      // Arrange — reachable, and not by contrivance: only `load()` clears
+      // `failed`, so a failed read followed by a press on either Add leaves
+      // both lists null, `failed` true and the running flag true at once.
+      // Ordered the other way the screen tells somebody to check their
+      // connection while a request of theirs is in flight. The four text cases
+      // above each set one flag, so none of them can see this.
+      categories.groupsSignal.set(null);
+      categories.failedSignal.set(true);
+      categories.loadingSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(statusRegion()?.textContent ?? '').toContain(
+        'Reading your categories',
+      );
+      expect(statusRegion()?.textContent ?? '').not.toContain(
+        'couldn’t read your',
+      );
+    });
+
+    it('says nothing while a write runs over a hierarchy already on screen', () => {
+      // Arrange — `loading` is set by every **write** as well as by the read,
+      // and the hierarchy stays up throughout one. The chain this region
+      // replaced put the groups ahead of the loading line, so a save never
+      // drew "Reading your categories…" under them; a region reading the
+      // running flag alone brings that back, and the rule is the book's — a
+      // section renders at most one of the value, the loading line and the
+      // failure.
+      categories.loadingSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — the value is on screen, so the region has nothing to add.
+      expect(host().querySelector('.category-groups')).not.toBeNull();
+      expect((statusRegion()?.textContent ?? '').trim()).toBe('');
     });
   });
 });

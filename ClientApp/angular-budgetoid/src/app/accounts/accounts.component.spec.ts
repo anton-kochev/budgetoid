@@ -12,15 +12,18 @@
 // surface only — so a member the screen starts reaching for is an error here
 // rather than an `is not a function` during change detection.
 //
-// Four behaviours, and each of them is silent when broken. A whitespace-only
+// Five behaviours, and each of them is silent when broken. A whitespace-only
 // name now reaches the server because `Validators.required` admits `'   '` and
 // the `.trim()` that used to catch it is gone — the client may not alter what
 // it seals. A form that stays enabled while the account is locked submits,
 // gets refused where nobody can see it, and leaves somebody unable to tell a
 // limitation from a failure. A list rendered over a locked account is a column
-// of em dashes where the way out is one press on another screen. And an Edit
+// of em dashes where the way out is one press on another screen. An Edit
 // control left live on a row whose name did not open prefills an empty field
-// and seals a blank over a name that is still sitting in the column.
+// and seals a blank over a name that is still sitting in the column. And the
+// list is `null` at rest, in flight **and** after a failure, so a screen
+// reading the list and the running flag alone draws a form and silence over a
+// read that never landed — which reads as an account with nothing in it.
 //
 // **`unlocking` gets its own two cases, because it is where the two predicates
 // disagree.** The form follows "anything but `unlocked`" and the notice
@@ -74,9 +77,11 @@ class AccountsServiceStub
 {
   public readonly accountsSignal = signal<AccountView[] | null>([everyday]);
   public readonly loadingSignal = signal(false);
+  public readonly failedSignal = signal(false);
 
   public readonly accounts = this.accountsSignal.asReadonly();
   public readonly loading = this.loadingSignal.asReadonly();
+  public readonly failed = this.failedSignal.asReadonly();
 
   public load = vi.fn();
   public add = vi.fn((): Promise<void> => Promise.resolve());
@@ -134,16 +139,21 @@ class CurrencyApiStub implements Pick<CurrencyApiService, 'getCurrencies'> {
 // The screen's own members are `protected`, which is right for a template and
 // leaves a spec nothing to hold. The same cast `transactions.component.spec.ts`
 // uses, in one place, so the reach is visible rather than scattered.
-function exposed(component: AccountsComponent): {
+//
+// **`editingId` is reached for because nothing else can see the mode change.**
+// The form starts holding `name: ''`, so a gate replaced by
+// `name: account.name.state === 'text' ? account.name.value : ''` writes the
+// value the prefill assertion already expects and passes it — the refusal has
+// to be observed on the state the press was supposed to change.
+interface Exposed {
+  editingId: Signal<string | null>;
   form: FormGroup;
   save: () => void;
   edit: (account: AccountView) => void;
-} {
-  return component as unknown as {
-    form: FormGroup;
-    save: () => void;
-    edit: (account: AccountView) => void;
-  };
+}
+
+function exposed(component: AccountsComponent): Exposed {
+  return component as unknown as Exposed;
 }
 
 describe('AccountsComponent', () => {
@@ -161,6 +171,17 @@ describe('AccountsComponent', () => {
     return Array.from(
       host().querySelectorAll<HTMLButtonElement>('mat-list-item button'),
     ).filter((button) => (button.textContent ?? '').trim() === 'Edit');
+  }
+
+  // The form's Cancel, which the template renders only while an edit is
+  // running. It is the DOM's own statement about the mode, and the second
+  // discriminator the edit-gate cases needed.
+  function cancelButton(): HTMLButtonElement | null {
+    return (
+      Array.from(
+        host().querySelectorAll<HTMLButtonElement>('form button'),
+      ).find((button) => (button.textContent ?? '').trim() === 'Cancel') ?? null
+    );
   }
 
   beforeEach(async () => {
@@ -333,33 +354,231 @@ describe('AccountsComponent', () => {
     // Arrange — rewriting a value nobody can read is not an edit, it is a
     // deletion wearing an edit's clothes: the field would prefill empty and
     // the save would seal a blank over a name that is still there.
+    //
+    // **The prefill assertion cannot see that on its own**, and the two mode
+    // assertions below are what this case was missing. The form *starts*
+    // holding `name: ''`, so a gate replaced by
+    // `name: account.name.state === 'text' ? account.name.value : ''` writes
+    // exactly the value the prefill check expects — measured — and the two DOM
+    // assertions used to read markup rendered before the press. `editingId` and
+    // the Cancel control are the state the press was supposed to change, so a
+    // handler that entered edit mode over an unreadable row reddens on them.
     accounts.accountsSignal.set([damaged]);
     const screen = exposed(fixture.componentInstance);
 
     // Act
     fixture.detectChanges();
     screen.edit(damaged);
+    fixture.detectChanges();
 
     // Assert — disabled in the DOM, with the reason in the row, and the gate
     // repeated in the handler because Material's click-halt is anchors only.
-    const edit = editButtons().at(0);
-
-    expect(edit?.disabled).toBe(true);
+    expect(editButtons().at(0)?.disabled).toBe(true);
     expect(host().textContent ?? '').toContain('can’t be renamed');
     expect(screen.form.getRawValue()).toMatchObject({ name: '' });
+    expect(screen.editingId()).toBeNull();
+    expect(cancelButton()).toBeNull();
+  });
+
+  describe('a list with no answer', () => {
+    it('says it is reading while a load is in flight', () => {
+      // Arrange — the list is null at rest, in flight and after a failure, so
+      // the loading line is read off the published running state rather than
+      // off the absent value.
+      accounts.accountsSignal.set(null);
+      accounts.loadingSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().textContent ?? '').toContain('Reading your accounts');
+      expect(host().textContent ?? '').not.toContain('No accounts yet');
+    });
+
+    it('says there are none only once a server has answered', () => {
+      // Arrange — `[]` is the sentence *you have no accounts*, which is a claim
+      // only a server that answered may make.
+      accounts.accountsSignal.set([]);
+      accounts.loadingSignal.set(false);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().textContent ?? '').toContain('No accounts yet');
+    });
+
+    it('says the read failed rather than rendering nothing', () => {
+      // Arrange — null list, no running flag, and before this branch existed
+      // that state drew a form and silence beneath it, which reads as an
+      // account with nothing in it. "You have no accounts" and "we couldn't
+      // ask" are two different next steps for a person, and a screen that
+      // renders neither sentence has collapsed them into a blank.
+      accounts.accountsSignal.set(null);
+      accounts.loadingSignal.set(false);
+      accounts.failedSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().textContent ?? '').toContain('couldn’t read your');
+      expect(host().querySelector('mat-list')).toBeNull();
+    });
+
+    it('draws neither the list nor a failure while the read is running', () => {
+      // Arrange — the control for the case above, and for the branch order: a
+      // failure that outranked the running line would put the sentence on
+      // screen during every reload after one failed read.
+      accounts.accountsSignal.set(null);
+      accounts.loadingSignal.set(true);
+      accounts.failedSignal.set(false);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().textContent ?? '').toContain('Reading your accounts');
+      expect(host().textContent ?? '').not.toContain('couldn’t read your');
+    });
+
+    // **Where the two lines land is a property the four cases above cannot
+    // see.** Every one of them asserts the text is somewhere in the host, and
+    // a screen that draws each sentence in a `role="status"` created at the
+    // moment it gains content passes all four while announcing nothing:
+    // assistive technology has to have been watching the node *before* the
+    // text arrived. So the node is taken while it is still empty and the later
+    // text is asserted to arrive **in that same node** — `docs/design/
+    // components.md`, "A value read from the network".
+    function statusRegion(): HTMLElement | null {
+      return host().querySelector<HTMLElement>('[role="status"]');
+    }
+
+    it('holds an empty status region from first paint', () => {
+      // Arrange — the fixture's own default: a list that answered, nothing
+      // running and nothing failed, so there is deliberately nothing to say.
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — present and silent. `status` and never `assertive`, which is
+      // reserved for a failure to save something a person typed.
+      expect(statusRegion()).not.toBeNull();
+      expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+      expect(
+        host().querySelector('[role="alert"], [aria-live="assertive"]'),
+      ).toBeNull();
+    });
+
+    it('announces the loading line from the region that was already there', () => {
+      // Arrange — taken while it is still empty, which is the whole point of
+      // taking it here rather than after the act.
+      const region = statusRegion();
+
+      // Act
+      accounts.accountsSignal.set(null);
+      accounts.loadingSignal.set(true);
+      fixture.detectChanges();
+
+      // Assert — the same element, not a second one that arrived with its
+      // text.
+      expect(statusRegion()).toBe(region);
+      expect(region?.textContent ?? '').toContain('Reading your accounts');
+    });
+
+    it('announces the failure sentence from that same region', () => {
+      // Arrange
+      const region = statusRegion();
+
+      // Act
+      accounts.accountsSignal.set(null);
+      accounts.loadingSignal.set(false);
+      accounts.failedSignal.set(true);
+      fixture.detectChanges();
+
+      // Assert
+      expect(statusRegion()).toBe(region);
+      expect(region?.textContent ?? '').toContain('couldn’t read your');
+    });
+
+    it('says nothing at all while the account is locked', () => {
+      // Arrange — the state a lock actually leaves behind: `AccountsService`
+      // destroys the list and clears `failed`, and it does **not** clear the
+      // running flag, so a region reading the load alone tells somebody a read
+      // is in flight beside a notice saying this tab cannot read the account.
+      // The chain this region replaced answered that by putting `locked`
+      // first, and the predicate has to keep doing it.
+      accounts.accountsSignal.set(null);
+      accounts.loadingSignal.set(true);
+      custody.setStatus('locked');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — still in the DOM, with nothing to say. The notice is what
+      // speaks for this state.
+      expect(statusRegion()).not.toBeNull();
+      expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+    });
+
+    it('says it is reading, not that it failed, when both flags are up', () => {
+      // Arrange — reachable, and not by contrivance: only `load()` clears
+      // `failed`, so a failed read followed by a press on Add leaves the list
+      // null, `failed` true and the running flag true at once. Ordered the
+      // other way the screen tells somebody to check their connection while a
+      // request of theirs is in flight. The four text cases above each set one
+      // flag, so none of them can see this.
+      accounts.accountsSignal.set(null);
+      accounts.failedSignal.set(true);
+      accounts.loadingSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(statusRegion()?.textContent ?? '').toContain(
+        'Reading your accounts',
+      );
+      expect(statusRegion()?.textContent ?? '').not.toContain(
+        'couldn’t read your',
+      );
+    });
+
+    it('says nothing while a write runs over a list already on screen', () => {
+      // Arrange — `loading` is set by every **write** as well as by the read,
+      // and the list stays up throughout one. The chain this region replaced
+      // put the list ahead of the loading line, so a save never drew "Reading
+      // your accounts…" under the rows; a region reading the running flag
+      // alone brings that back, and the rule is the book's — a section renders
+      // at most one of the value, the loading line and the failure.
+      accounts.accountsSignal.set([everyday]);
+      accounts.loadingSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — the value is on screen, so the region has nothing to add.
+      expect(host().querySelector('mat-list')).not.toBeNull();
+      expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+    });
   });
 
   it('allows editing a row whose name opened', () => {
-    // Arrange — the control for the case above.
+    // Arrange — the control for the case above, and it carries the same two
+    // discriminators the other way round: a gate that refused every row would
+    // otherwise pass everything asserted up there.
+    const screen = exposed(fixture.componentInstance);
 
     // Act
     fixture.detectChanges();
-    exposed(fixture.componentInstance).edit(everyday);
+    screen.edit(everyday);
+    fixture.detectChanges();
 
     // Assert
+    expect(screen.editingId()).toBe(everyday.id);
+    expect(cancelButton()).not.toBeNull();
     expect(editButtons().at(0)?.disabled).toBe(false);
-    expect(exposed(fixture.componentInstance).form.getRawValue()).toMatchObject(
-      { name: 'Everyday' },
-    );
+    expect(screen.form.getRawValue()).toMatchObject({ name: 'Everyday' });
   });
 });

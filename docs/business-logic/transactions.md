@@ -691,22 +691,54 @@ ELSE
   already on the DTO. Opening one under this row's id authenticates against nothing, permanently,
   with no error naming the cause.
 
-  **Resolving the counterparty is the client's, and three of its rules read as fussy until they are
+  **Resolving the counterparty is the client's, and four of its rules read as fussy until they are
   not.** It indexes the typed name and matches on the **blind index, never on decrypted text**, so
   the local match and the server's unique index are decided by the same bytes. A **409 re-reads the
   payee list once and then abandons** rather than looping — a payee whose own name did not open
   carries no index, can never match, and would retry until stopped. The note is **sealed before the
-  payee is created**, because the reverse order strands an orphan payee on a table with no `DELETE`
-  grant the moment a seal refuses. And the write is **two round trips**, so the running flag is the
-  only thing between a double press and a duplicate entry wearing a legitimate client-minted id: the
-  payee half survives one by accident, since the second create answers 409, re-reads and matches; the
-  transaction half mints a fresh id and posts again.
+  payee is created**, which closes one cause of an orphan payee and not the other; the Edge Cases
+  entry below has the one that stays open. And the write is **two round trips**, so the running flag
+  is what stands between a double press and a duplicate entry wearing a legitimate client-minted id:
+  the payee half survives one by accident, since the second create answers 409, re-reads and matches;
+  the transaction half mints a fresh id and posts again. It is named on the submit control **and**
+  re-checked in the handler, for the reason this codebase gives about Material's click-halt being
+  anchors only.
 
-  **What is still an envelope on screen is the category picker.** `category_groups.name` and
-  `categories.name` are sealed and this screen prints their base64url, because opening them needs a
-  categories view model that belongs to `/app/categories` — building a second one here would
-  guarantee a duplicate. Named as a gap rather than described as if it worked; it closes when that
-  screen is wired. This screen
+  **The blind index is taken twice, either side of the seal, and the create is abandoned unless the
+  two agree.** The obvious rule — *seal first, then index* — was written down twice on the
+  neighbouring screens and does not hold here, which is worth saying because it looks like an
+  inconsistency to be tidied. `sealField` compares key **identity** and `blindIndex` compares the
+  **generation counter**, so each refuses an `adopt()` landing *during* itself and neither can see
+  one landing strictly *between* them — in either order. Reordering the calls closes nothing and
+  produces a green suite; comparing the two index values does close it. The index has to come first
+  regardless, because it is what decides whether there is a create at all.
+
+  **A write answers `recorded` or `abandoned`, and every abandoning path reports.** Four of the five
+  exits used to be silent, and the component reset the form on the next line after a fire-and-forget
+  call — so what somebody typed was destroyed before the outcome existed. The form is now reset only
+  on `recorded`. There is still **no user-facing notification surface** in this app; the one channel
+  is the console, and the design book owes a chapter for the real one.
+
+  **Both auxiliary reads are last-write-wins.** The category read runs through a subject and
+  `switchMap`; the payee read carries a generation counter checked before it publishes, and returns
+  its own answer whether it published or not — the 409 branch asked *that* read a question and must
+  not be handed a newer one's result. And a failed read renders **its own branch**: a list that is
+  `null` with nothing loading is a read that failed, not an empty account.
+
+  **All four opened lists are dropped when custody reports `locked`, each to its own empty value** —
+  `null` for the two that mean *no answer yet*, `[]` for the two that feed pickers and mean *nothing
+  to choose*. Substituting one for the other would turn a lock into a claim about the account. The
+  reaction lives in the service rather than in `SessionService`, which may not import feature
+  services, and reads **`locked` exactly**: a running unlock resolves back into keys and must not
+  empty a list somebody is looking at. The lock also withdraws the **failed-read word**, for the
+  reason [accounts.md](accounts.md) argues once for all three — this screen is the one that shipped
+  without it, and nothing reddened, because the other two complied by accident.
+
+  **The category picker opens its names through the categories screen's view models**, not through a
+  second set declared here: `transaction-view.ts` imports the two bindings from `categories/`, so
+  there is one definition of what a category's associated data is rather than two that can drift.
+  It printed base64url for exactly the two commits between this screen being wired and that one
+  being wired. This screen
   also owns one rule outright rather than restating one:
   the amount input must require a value rather
   than default to `0`, and an edit form must omit a field it did not collect rather than send a

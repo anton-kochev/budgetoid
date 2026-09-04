@@ -245,11 +245,17 @@ describe('matchPayeeByIndex', () => {
   });
 
   it('never matches on a null key asked for by a caller', () => {
-    // Arrange — a defensive pin over the one shape that would let two
-    // unreadable payees match each other if the key were ever widened.
+    // Arrange — the shape the signature forbids and the runtime can still
+    // deliver, reached through a cast because that is the entire case. A
+    // `PayeeView` carries `nameKey: string | null`, so the day the *asked* key
+    // takes the same widening — a caller passing a view's own key straight
+    // through — `null === null` matches a row this browser cannot read and
+    // files a transaction against a counterparty nobody chose. Asking with
+    // `''` observed none of that: `''` is a string, no real key equals it, and
+    // the case passed against an implementation with no guard at all.
 
     // Act
-    const match = matchPayeeByIndex([unreadable], '');
+    const match = matchPayeeByIndex([unreadable], null as unknown as string);
 
     // Assert
     expect(match).toBeNull();

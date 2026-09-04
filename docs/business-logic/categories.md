@@ -882,9 +882,34 @@ ELSE                                                      ← mutually exclusive
   from the name-only screens.** An **empty** note posts `null`, which on a `PUT` is how a note is
   cleared; a **whitespace-only** note is a note and is sealed as typed. The deleted
   `NormalizeDescription` may not come back one layer up either, so nothing in the browser folds
-  blanks. What the browser cannot express is the *other* clearing: it has no path producing the
-  29-byte envelope over an empty string, so *cleared* and *never filled* are one thing from here even
-  though the server keeps them as two rows. A gap, named rather than described as if it worked.
+  blanks. What the browser cannot express is the *other* clearing: no path here produces the 29-byte
+  envelope over an empty string, so *cleared* and *never filled* are one thing from here even though
+  the server keeps them as two rows. A gap, named rather than described as if it worked — and the
+  mechanism differs by column class, which is the part a reader will assume rather than check. On a
+  **description** the guard is structural: an explicit `=== ''` branch in the service posts `null`.
+  On a **name** there is none, and what keeps an empty one out is the form's `required` plus the
+  non-blank validator plus the handler's re-check. The codec seals `''` to exactly 29 bytes without
+  complaint — measured — so on a name this property is a validator away, not a branch away.
+
+  **Four rules this screen owns that its two siblings state in their own words.** A fourth published
+  state, `failed`, because a list that is `null` with nothing loading is a read that failed and not
+  an empty account — one flag for both lists, because the pair is read, published and cleared
+  together. Both opened lists are **dropped when custody reports `locked`**, in the service rather
+  than in `SessionService` (which may not import feature services) and on **`locked` exactly**, never
+  `!== 'unlocked'`, so a running unlock does not empty a list somebody is looking at — along with the
+  failed-read word, for the reason [accounts.md](accounts.md) argues once for all three. The category
+  form's **group picker leaves the DOM** while locked rather than merely being disabled — measured,
+  a `mat-select` goes on rendering its selected option's text after the option list is emptied, so
+  the weaker fix leaves a decrypted name on a locked screen. And the `writable` effect is the
+  **single owner** of both forms' enabled state, deriving the picker from `writable() && not-editing`
+  rather than letting three call sites set it: the previous shape re-enabled the picker mid-edit, and
+  a save then sent only the name and note, so the API answered 204 and the category did not move.
+
+  `categoriesForGroup` answers a **stable array per group**, from one grouping computed once per
+  change, with a frozen shared empty array for a group with no rows. The obvious alternative —
+  exposing the map and writing `byGroup().get(id) ?? []` in the template — puts the allocation back
+  on the *empty* branch, which is the commoner case on a new budget and which feeds
+  `[cdkDropListData]` exactly as the full case does.
 
   Transaction entry groups Category options under Category Group headings, and **the picker opens
   both through this screen's view models** — `transaction-view.ts` imports the two bindings from

@@ -153,6 +153,15 @@ class CustodyStub
   public readonly sealAnswersByTable = new Map<string, SealedField>();
   /** What `blindIndex` answers with, when it is not the encoded value. */
   public indexAnswer: BlindIndexValue | null = null;
+  /**
+   * Runs at the top of every seal, before the answer is chosen.
+   *
+   * The instrument for the one window a stub cannot otherwise stage: custody
+   * moving **between** two of this class's operations rather than during
+   * either. A case hooks it, changes what the next index answers, and the
+   * write then holds a name and a key that belong to two different accounts.
+   */
+  public onSeal: ((binding: NarrativeFieldBinding) => void) | null = null;
   /** How a wire value is read back. Overridable, so a test can defer or lock. */
   public openWith: (
     binding: NarrativeFieldBinding,
@@ -200,6 +209,7 @@ class CustodyStub
     binding: NarrativeFieldBinding,
     plaintext: string,
   ): Promise<SealedField> {
+    this.onSeal?.(binding);
     this.#sealCalls.push({ binding, plaintext });
 
     return Promise.resolve(
@@ -346,6 +356,109 @@ describe('TransactionsService', () => {
       await settle();
     });
 
+    it('drops every opened list when the account locks', async () => {
+      // Arrange — four signals here hold plaintext this browser opened under a
+      // key it no longer has, and this service is `providedIn: 'root'`: nothing
+      // destroys it when a screen goes away and nothing clears it when a
+      // session ends. Sign out on `/app/transactions` and the previous
+      // account's notes, counterparties and category names are all still
+      // readable from the root injector for the life of the tab.
+      service.load();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [sealedTransaction()] });
+      service.loadPayees();
+      http
+        .expectOne(PAYEES_URL)
+        .flush({ items: [sealedPayee(PAYEE_ID, 'Corner Shop')] });
+      service.loadCategories();
+      http.expectOne(CATEGORY_GROUPS_URL).flush({
+        items: [
+          {
+            id: GROUP_ID,
+            name: sealedWire('category_groups', 'name', GROUP_ID, 'Essentials'),
+            description: null,
+            position: 0,
+          },
+        ],
+      });
+      http.expectOne(CATEGORIES_URL).flush({
+        items: [
+          {
+            id: CATEGORY_ID,
+            name: sealedWire('categories', 'name', CATEGORY_ID, 'Groceries'),
+            description: null,
+            categoryGroupId: GROUP_ID,
+            categoryGroupName: sealedWire(
+              'category_groups',
+              'name',
+              GROUP_ID,
+              'Essentials',
+            ),
+            position: 0,
+          },
+        ],
+      });
+      await settle();
+      expect(service.transactions()).not.toBeNull();
+      expect(service.payees()).not.toBeNull();
+      expect(service.categoryGroups()).not.toEqual([]);
+      expect(service.categories()).not.toEqual([]);
+
+      // Act — what `SessionService.ended()` does through `custody.lock()`, and
+      // what a failed unlock does through `#fail`.
+      custody.setStatus('locked');
+      TestBed.tick();
+
+      // Assert — all four, each back to the value it holds before a server has
+      // answered: `null` for the two that say "no answer yet" and `[]` for the
+      // two picker lists, which say "none to offer" and never "the account has
+      // none".
+      expect(service.transactions()).toBeNull();
+      expect(service.payees()).toBeNull();
+      expect(service.categoryGroups()).toEqual([]);
+      expect(service.categories()).toEqual([]);
+    });
+
+    it('withdraws a failed read’s word when the account locks', async () => {
+      // Arrange — a read that genuinely failed, so the word is a claim about
+      // something that really happened. `accounts.service.ts` argues once why
+      // a lock has to withdraw it.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      service.load();
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+      await settle();
+      expect(service.failed()).toBe(true);
+
+      // Act
+      custody.setStatus('locked');
+      TestBed.tick();
+
+      // Assert — the list is `null` because this service emptied it, not
+      // because a request failed, so there is no read left for the word to be
+      // a claim about. This service shipped without the clear while its two
+      // neighbours had it, and nothing reddened: the screen's own `locked()`
+      // masks the word one layer up, which is a coincidence and not a guard.
+      expect(service.failed()).toBe(false);
+      expect(service.transactions()).toBeNull();
+    });
+
+    it('keeps the list while an unlock is running', async () => {
+      // Arrange — the control for the case above, and the reason the predicate
+      // is `locked` exactly rather than "anything but unlocked":
+      // `accounts.service.spec.ts` argues it once for all three services.
+      service.load();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [sealedTransaction()] });
+      await settle();
+
+      // Act
+      custody.setStatus('unlocking');
+      TestBed.tick();
+
+      // Assert
+      expect(service.transactions()).not.toBeNull();
+    });
+
     it('keeps only the newest load’s answer when two overlap', async () => {
       // Arrange — the first load's opens never settle until this test says so.
       // **Every** resolver is collected, and that is not tidiness: a row here
@@ -437,6 +550,29 @@ describe('TransactionsService', () => {
       // Assert
       expect(service.loading()).toBe(false);
       expect(service.transactions()).toBeNull();
+    });
+
+    it('publishes a failed read as a word, and clears it on the next one', async () => {
+      // Arrange — the list is `null` at rest, in flight and after a failure,
+      // so no screen can tell those apart from the list and the running flag.
+      // Left unpublished, a failed read draws nothing at all.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      service.load();
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+      await settle();
+      expect(service.failed()).toBe(true);
+
+      // Act — and it is cleared where the read starts, not where it lands, so
+      // the sentence goes off the moment somebody retries.
+      service.load();
+
+      // Assert
+      expect(service.failed()).toBe(false);
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+      expect(service.failed()).toBe(false);
     });
   });
 
@@ -709,6 +845,75 @@ describe('TransactionsService', () => {
       http.expectNone(TRANSACTIONS_URL);
     });
 
+    it('reports the abandon when the note cannot be sealed', async () => {
+      // Arrange — four of this write's five exits returned in silence, and a
+      // write that wrote nothing and said nothing is indistinguishable, from
+      // outside this service, from one that landed. There is no notification
+      // surface in this app yet — the design book owes a chapter for it — so
+      // the rule is the narrower one: the one channel that exists may not be
+      // silent on the way past.
+      // The history is cleared, and that is not tidiness. Nothing in this
+      // project restores mocks between cases, so the spy an earlier case
+      // installed is still in place with its calls on it — and
+      // `toHaveBeenCalled()` over that passes whatever this case did.
+      // Measured: all four of these cases passed against a service that
+      // reported nothing at all.
+      const reported = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      reported.mockClear();
+      custody.sealAnswer = { state: 'locked' };
+
+      // Act
+      await service.add(typed());
+      await settle();
+
+      // Assert
+      http.expectNone(TRANSACTIONS_URL);
+      expect(reported).toHaveBeenCalled();
+    });
+
+    it('reports the abandon when the payee index answers locked', async () => {
+      // Arrange — the second silent exit. A browser holding no index key
+      // cannot decide whether this counterparty is already on the list.
+      const reported = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      reported.mockClear();
+      custody.indexAnswer = { state: 'locked' };
+
+      // Act
+      await service.add(typed({ payee: 'Corner Shop' }));
+      await settle();
+
+      // Assert
+      http.expectNone(TRANSACTIONS_URL);
+      http.expectNone(PAYEES_URL);
+      expect(reported).toHaveBeenCalled();
+    });
+
+    it('reports the abandon when the payee name cannot be sealed', async () => {
+      // Arrange — the third. The note sealed, the index was computed, and the
+      // create is the operation that refused.
+      const reported = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      reported.mockClear();
+      custody.sealAnswersByTable.set('payees', { state: 'locked' });
+
+      // Act
+      await service.add(typed({ payee: 'Bakery' }));
+      await settle();
+
+      // Assert
+      http.expectNone(TRANSACTIONS_URL);
+      http.expectNone(PAYEES_URL);
+      expect(reported).toHaveBeenCalled();
+    });
+
     it('re-reads the list rather than guessing where the new row belongs', async () => {
       // Arrange — this screen has no ordering of its own: the rows arrive in
       // the order the server chose and nothing here can reproduce it, so the
@@ -856,7 +1061,13 @@ describe('TransactionsService', () => {
       expect(body.name).toBe(
         sealedWire('payees', 'name', body.id, '  Bakery  '),
       );
+      // **Two** calls, over the same untrimmed text: the second is taken on
+      // the far side of the seal and compared with the first, because an
+      // `adopt()` landing between the two operations is invisible to both. The
+      // pair, not the count, is what this expectation is about — a single call
+      // here would mean the comparison had gone.
       expect(custody.indexCalls).toEqual([
+        { field: { table: 'payees', column: 'name' }, plaintext: '  Bakery  ' },
         { field: { table: 'payees', column: 'name' }, plaintext: '  Bakery  ' },
       ]);
       create.flush(sealedPayee(body.id, '  Bakery  '), {
@@ -1052,6 +1263,177 @@ describe('TransactionsService', () => {
         },
       ]);
     });
+
+    it('adds nothing to a payee list no read has answered', async () => {
+      // Arrange — no `loadPayees()` anywhere: the list is `null`, which is "no
+      // answer yet" and not "this budget has no payees". Appending to it
+      // fabricates a list of one over a read that never landed, and the screen
+      // then offers a single suggestion as though it had the set.
+
+      // Act
+      void service.add(typed({ payee: 'Bakery' }));
+      await settle();
+
+      const create = http.expectOne(PAYEES_URL);
+      const created = create.request.body as { id: string };
+
+      create.flush(sealedPayee(created.id, 'Bakery'), {
+        status: 201,
+        statusText: 'Created',
+      });
+      await settle();
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush(sealedTransaction(), { status: 201, statusText: 'Created' });
+      await settle();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+
+      // Assert
+      expect(service.payees()).toBeNull();
+    });
+
+    it('abandons the create when custody moves between the index and the seal', async () => {
+      // Arrange — the window **neither** ordering closes, and the reason this
+      // path re-asks for the key rather than swapping two lines. `blindIndex`
+      // compares the generation counter and `sealField` compares key identity,
+      // so each refuses an `adopt()` that lands *during* it — and an `adopt()`
+      // that lands strictly between the two is invisible to both, whichever
+      // runs first. What it produces is a payee row whose `name` was sealed
+      // under one account's content key and whose `name_key` was computed
+      // under another's index key: the envelope and the uniqueness value
+      // disagree, through the one door the server cannot see, because it holds
+      // no index key and can never recompute one.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      await loadPayees();
+      custody.onSeal = (binding) => {
+        if (binding.table === 'payees') {
+          custody.indexAnswer = {
+            state: 'computed',
+            value: indexValue('payees', 'name', 'another account'),
+          };
+        }
+      };
+
+      // Act — `void` rather than `await`: an implementation that posts the
+      // mismatched pair leaves a request outstanding, and awaiting it would
+      // report this case as a timeout rather than as the assertion it is.
+      void service.add(typed({ payee: 'Bakery' }));
+      await settle();
+
+      // Assert — nothing is written at all. A payee row is unremovable, so
+      // half a pair is worse than no row.
+      http.expectNone(PAYEES_URL);
+      http.expectNone(TRANSACTIONS_URL);
+    });
+
+    it('reports the abandon when a conflict cannot be resolved', async () => {
+      // Arrange — the fourth silent exit, and the severe one: a payee whose
+      // own name did not open carries no key, can never match, and 409s
+      // forever. Somebody who deals with that counterparty can never record a
+      // transaction against it again, so the least this service can do is say
+      // so somewhere.
+      const reported = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      reported.mockClear();
+      await loadPayees();
+
+      // Act
+      void service.add(typed({ payee: 'Corner Shop' }));
+      await settle();
+      http
+        .expectOne(PAYEES_URL)
+        .flush('conflict', { status: 409, statusText: 'Conflict' });
+      await settle();
+      http.expectOne(PAYEES_URL).flush({ items: [] });
+      await settle();
+
+      // Assert
+      http.expectNone(TRANSACTIONS_URL);
+      expect(reported).toHaveBeenCalled();
+    });
+
+    it('says nothing about a conflict it resolves', async () => {
+      // Arrange — the other polarity, and the reason the report moved into the
+      // branches. A 409 here is the documented resolution path: the list was
+      // stale, the re-read answers, the write goes on. Logging it as an error
+      // on the way past trains a reader to ignore the one channel this service
+      // has, which is what makes the four silent exits above cost anything.
+      const reported = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      reported.mockClear();
+      await loadPayees();
+
+      // Act
+      void service.add(typed({ payee: 'Corner Shop' }));
+      await settle();
+      http
+        .expectOne(PAYEES_URL)
+        .flush('conflict', { status: 409, statusText: 'Conflict' });
+      await settle();
+      http
+        .expectOne(PAYEES_URL)
+        .flush({ items: [sealedPayee(PAYEE_ID, 'Corner Shop')] });
+      await settle();
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush(sealedTransaction(), { status: 201, statusText: 'Created' });
+      await settle();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+
+      // Assert
+      expect(reported).not.toHaveBeenCalled();
+    });
+
+    it('keeps only the newest payee read’s answer when two overlap', async () => {
+      // Arrange — the argument the list read carries, on the path that never
+      // got it: decryption widens the overlap between two reads from one round
+      // trip to one round trip plus an open and a MAC per row, and this one is
+      // called from two places — the screen and the conflict branch — so two
+      // of them in flight is the ordinary case rather than the exotic one.
+      // Every resolver is collected: a single `let` would hold the last one
+      // only, `Promise.all` would never settle, and the case would pass
+      // against an unguarded `set` for a reason that has nothing to do with
+      // what it claims.
+      const releases: ((value: NarrativeText) => void)[] = [];
+
+      custody.openWith = () =>
+        new Promise<NarrativeText>((resolve) => {
+          releases.push(resolve);
+        });
+      service.loadPayees();
+      http
+        .expectOne(PAYEES_URL)
+        .flush({ items: [sealedPayee(PAYEE_ID, 'Stale')] });
+      await settle();
+
+      // Act — a second read overtakes it and lands first.
+      custody.openWith = (binding, wire) => ({
+        state: 'text',
+        value: /\|([^|]*)\)$/.exec(wire)?.[1] ?? binding.rowId,
+      });
+      service.loadPayees();
+      http
+        .expectOne(PAYEES_URL)
+        .flush({ items: [sealedPayee(PAYEE_ID, 'Fresh')] });
+      await settle();
+
+      for (const release of releases) {
+        release({ state: 'text', value: 'Stale' });
+      }
+
+      await settle();
+
+      // Assert
+      expect(service.payees()).toEqual([
+        expect.objectContaining({ name: { state: 'text', value: 'Fresh' } }),
+      ]);
+    });
   });
 
   describe('the category picker', () => {
@@ -1171,6 +1553,63 @@ describe('TransactionsService', () => {
       // Assert — nothing published, rather than the one group that opened.
       expect(service.categoryGroups()).toEqual([]);
       expect(service.categories()).toEqual([]);
+    });
+
+    it('keeps only the newest category load’s answer when two overlap', async () => {
+      // Arrange — the same argument the transaction list's `switchMap` is
+      // written from, on the read it was never applied to. This screen calls
+      // `loadCategories()` from `ngOnInit`, so a person landing on it twice in
+      // quick succession — a route reload, a back-and-forward — has two in
+      // flight, and the slow one publishes last over the fast one's answer.
+      const releases: ((value: NarrativeText) => void)[] = [];
+
+      custody.openWith = () =>
+        new Promise<NarrativeText>((resolve) => {
+          releases.push(resolve);
+        });
+      service.loadCategories();
+      http.expectOne(CATEGORY_GROUPS_URL).flush({
+        items: [
+          {
+            id: GROUP_ID,
+            name: sealedWire('category_groups', 'name', GROUP_ID, 'Stale'),
+            description: null,
+            position: 0,
+          },
+        ],
+      });
+      http.expectOne(CATEGORIES_URL).flush({ items: [] });
+      await settle();
+
+      // Act — a second load overtakes it and lands first.
+      custody.openWith = (binding, wire) => ({
+        state: 'text',
+        value: /\|([^|]*)\)$/.exec(wire)?.[1] ?? binding.rowId,
+      });
+      service.loadCategories();
+      http.expectOne(CATEGORY_GROUPS_URL).flush({
+        items: [
+          {
+            id: GROUP_ID,
+            name: sealedWire('category_groups', 'name', GROUP_ID, 'Fresh'),
+            description: null,
+            position: 0,
+          },
+        ],
+      });
+      http.expectOne(CATEGORIES_URL).flush({ items: [] });
+      await settle();
+
+      for (const release of releases) {
+        release({ state: 'text', value: 'Stale' });
+      }
+
+      await settle();
+
+      // Assert
+      expect(service.categoryGroups()).toEqual([
+        expect.objectContaining({ name: { state: 'text', value: 'Fresh' } }),
+      ]);
     });
   });
 });

@@ -195,6 +195,21 @@ erDiagram
   a cap on **stored envelope bytes**, applied by `IndexedName.Of` and restated as the upper bound of
   `CK_accounts_name_length`. `CiphertextEnvelope.MinimumLength` is the floor of that same check, and
   it is **not** the blank-name rule restored: an envelope over an empty string satisfies it exactly.
+
+  **The client's own ceiling is still 200, and the two numbers meet in a way worth writing down
+  because the obvious arithmetic gets it wrong.** `Validators.maxLength(200)` counts **UTF-16 code
+  units**, not characters and not bytes. So the worst case is *not* a four-byte code point — an
+  astral character costs 4 UTF-8 bytes across **2** units, or 2 bytes per unit, while a three-byte
+  BMP character (CJK, most of Devanagari) costs 3 bytes for **1**. Measured by exhaustive search over
+  every non-surrogate code point: the binding worst case is `U+0800`-and-above at 3 bytes per unit,
+  giving 200 × 3 + 29 = **629** against a cap of 1024, and 500 × 3 + 29 = **1529** against 2560.
+  Roughly 39% and 40% headroom — real margin, not luck.
+
+  Two consequences. The cliff is at a client ceiling near **331**, not near 200, and it would bite
+  **only CJK users** — a 900-character Latin name would pass where a 350-character Chinese one takes
+  a 400. And **neither validator names the byte limit it is protecting**, on either the `maxLength`
+  or the HTML `maxlength`, so raising one is a change nothing reddens and that fails selectively by
+  language.
 - **Example**: a client that seals `"   "` gets a `201`. The row is well-formed, the constraints are
   satisfied, and nothing in this deployment can tell that value from `"Everyday Checking"`.
 - **Counterexample**: adding `if (envelope.Length < 40)` to approximate "not blank". It refuses
@@ -450,6 +465,35 @@ ELSE
   whitespace-only name moved into a form validator; `Validators.required` had been doing it by
   accident and stops the moment the trim goes. The currency field is offered on create and hidden in
   edit mode, which matches — but does not enforce — the immutability rule above.
+
+  **The service publishes a fourth state, because the list alone cannot express one.** A list that is
+  `null` means *no answer yet* and is what a load clears to; `null` with nothing loading is a read
+  that **failed**, and the two are different next steps for a person. `failed` is published rather
+  than inferred, for the same reason the loading flag is.
+
+  **The opened list is dropped when custody reports `locked`, and the rule lives here rather than in
+  `SessionService`.** These signals hold something stronger than the key — every name already
+  decrypted — so they must not outlive it. The reaction sits in the service because `+core` may not
+  import feature services, and because a list added by a fifth screen would otherwise need somebody
+  to remember a fifth line in `SessionService.ended()`. The predicate is **`locked` exactly, never
+  `!== 'unlocked'`**: `unlocking` resolves back into keys and the screen deliberately keeps its list
+  up through a ceremony, so widening it empties a list somebody is looking at. **`adopt()` is not
+  covered and cannot be from a status** — it forgets and holds synchronously, so nothing ever
+  publishes `locked`; registration is its only caller and holds no list.
+
+  **A lock withdraws the failed-read word too, not only the list.** `failed` is a claim about the
+  *last read*, and after a lock the list is empty because the service emptied it rather than because
+  a request came back badly — so leaving the word standing advises somebody to check their connection
+  over a list nobody asked the server for. From outside, the two situations are the same `null`, and
+  no consumer can tell them apart. The argument is written **once**, here, and the other two services
+  point at it; but each keeps its own case, because a shared sentence pins nothing and each service
+  has its own effect. Measured: one of the three shipped without the line and nothing reddened,
+  because the other two complied by accident rather than by anything holding them.
+
+  One residual, unreachable today and written down rather than fixed: after a lock clears a list, an
+  **unlock on a live screen** leaves it absent with nothing loading until a navigation reloads it.
+  The only caller of `lock()` navigates away and destroys the component, and a failed unlock happens
+  on Settings with these screens unmounted.
 - **[Budgets](budgets.md)**: every account is stamped with and filtered by its owning `BudgetId`, and
   its name is unique within that budget — now over the blind index rather than over a
   case-insensitive collation, with the folding done in the browser. The same account name in two

@@ -6,19 +6,19 @@
 // **binding** — which table, which column, which row a ciphertext belongs to —
 // and the wire form the column stores, unpadded base64url.
 //
-// **One caller, and no screen behind it.** `AccountKeyCustodyService` holds the
-// account's content key, and the two of its operations that reach for that key
-// — `sealField` and `openField` — are what call `sealNarrativeField` and
-// `openNarrativeField`. Nothing calls *those*: no column in this product holds
-// an envelope, so the only thing reaching that pair today is its spec. The
-// claim this module makes about its own standing is therefore a smaller one
-// than it used to be — called, but not yet from anywhere a person can walk to —
-// and the order is still deliberate rather than a module left behind: the
-// format is a cross-client contract, so it can be pinned against an answer
-// computed outside this codebase —
+// **One caller, and screens behind it now.** `AccountKeyCustodyService` holds
+// the account's content key, and the two of its operations that reach for that
+// key — `sealField` and `openField` — are what call `sealNarrativeField` and
+// `openNarrativeField`. That pair is still this module's only caller, and it is
+// no longer the end of the chain: `accounts.service.ts`,
+// `categories.service.ts` and `transactions.service.ts` open every sealed column
+// a read brings back and seal every one a write sends, so a change to the
+// framing or the binding here is a change a person can see. The order the
+// module was built in stays worth recording: the format is a cross-client
+// contract, so it was pinned against answers computed outside this codebase —
 // `docs/business-logic/vectors/narrative-field-v1.json` — before a single
-// column holds an envelope, and a format is far cheaper to agree on before it
-// has data written under it than after.
+// column held an envelope, which is far cheaper than agreeing on a format after
+// it has data written under it.
 //
 // **The key crosses as a parameter, and never the other way round.** Custody
 // owns the content key and its lifetime; this module owns the binding and the

@@ -135,8 +135,45 @@ describe('toCategoryGroupView', () => {
     // Act
     const view = await toCategoryGroupView(sealedGroup, opener.open);
 
-    // Assert — the members are listed rather than spread, so an exact
-    // comparison is what says a ninth member has not been carried in.
+    // Assert — the two members no cipher touches arrive on the view with the
+    // values the row carried.
+    //
+    // **This exact comparison does not hold the mapper's "listed rather than
+    // spread" rule, and it never did.** `CategoryGroupDto` and
+    // `CategoryGroupView` declare the same four keys, so `{ ...dto, name,
+    // description }` produces a value indistinguishable from the written-out
+    // list and passes every assertion here. The rule is real only once a DTO
+    // carries a member the view must not, which is what the case below is.
+    expect(view).toEqual({
+      description: { state: 'text', value: 'The bills' },
+      id: ROW_ID,
+      name: { state: 'text', value: 'Essentials' },
+      position: 3,
+    });
+  });
+
+  it('leaves behind a member the view does not declare', async () => {
+    // Arrange — the negative control the case above needs to mean anything.
+    // The row is typed as the DTO by assertion rather than by declaration,
+    // because that is the order the day arrives in: a member the server starts
+    // sending is on the wire before it is in this client's interface, and the
+    // mapper is the thing standing between it and a screen. Spread, this one
+    // would land on the view — and the day it is a *sealed* column, a template
+    // renders ciphertext with nothing red.
+    const opener = opensTo(
+      { state: 'text', value: 'Essentials' },
+      { state: 'text', value: 'The bills' },
+    );
+    const withAFutureMember = {
+      ...sealedGroup,
+      budgetId: '0199c3d4-5f6a-7b8c-9d0e-1f2a3b4c5d70',
+    } as CategoryGroupDto;
+
+    // Act
+    const view = await toCategoryGroupView(withAFutureMember, opener.open);
+
+    // Assert
+    expect(view).not.toHaveProperty('budgetId');
     expect(view).toEqual({
       description: { state: 'text', value: 'The bills' },
       id: ROW_ID,

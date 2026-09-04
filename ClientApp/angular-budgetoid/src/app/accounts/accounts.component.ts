@@ -47,6 +47,25 @@
 // person who can see the row is entitled to remove it, and removing is not
 // rewriting.
 //
+// **A failed read has a line of its own.** The list is `null` at rest, in
+// flight **and** after a failure, so a screen reading the list and the running
+// flag alone rendered nothing whatever over a read that never landed — a form
+// on top and silence beneath it, which is what an account with no rows in it
+// looks like. `AccountsService.failed` is the fourth state that tells them
+// apart, and `loading` still outranks it so that one failed read does not put
+// the sentence on screen for every reload after it.
+//
+// **Both lines live in a `role="status"` region that is in the DOM from first
+// paint**, the rule `docs/design/components.md` states under "A value read
+// from the network", and the reason it has to be *from first paint* is that a
+// live region created together with its text is announced by nothing —
+// assistive technology has to have been watching the node already. The two
+// sentences used to be the last two branches of the chain below, which meant
+// each of them arrived with its own node and neither was ever announced. What
+// stops that coming back is a spec case that takes the node while it is silent
+// and asserts the later text lands in that same element, because a case
+// asserting only that the sentence is *somewhere* on screen passes either way.
+//
 // **The non-blank validator is what the removed `.trim()` was accidentally
 // doing.** The service may not alter what it seals — a trimmed seal beside an
 // untrimmed index keys a row to a value nothing looks up — so the rule moved
@@ -263,14 +282,34 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
           <mat-list-item>No accounts yet.</mat-list-item>
         }
       </mat-list>
-    } @else if (accounts.loading()) {
-      <!--
-        The list is null at rest, in flight and after a failure, so the
-        loading line is read off the published running state rather than off
-        the absent value. "No accounts yet" belongs to a server that answered.
-      -->
-      <p class="reason">Reading your accounts…</p>
     }
+
+    <!--
+      **In the DOM from first paint and empty until there is something to
+      say**, which is docs/design/components.md under "A value read from the
+      network". A live region created at the moment it gains content is
+      announced unreliably — assistive technology has to have been watching the
+      node before the text landed — so a template that wrapped each sentence in
+      its own role="status" would render identically and say nothing to
+      anybody. It is status and never assertive: these are results of a read
+      this screen started on its own, and assertive is reserved for a failure
+      to save something a person typed.
+
+      Which of the two lines it carries is one word off readState(), never two
+      conditions compared here, so loading and failure are exclusive by
+      structure rather than by the order somebody happened to write the
+      branches in.
+    -->
+    <div role="status">
+      @if (readState() === 'loading') {
+        <p class="reason">Reading your accounts…</p>
+      } @else if (readState() === 'failed') {
+        <p class="reason">
+          We couldn’t read your accounts. Check your connection and reload the
+          page.
+        </p>
+      }
+    </div>
   `,
 })
 export class AccountsComponent implements OnInit {
@@ -301,6 +340,34 @@ export class AccountsComponent implements OnInit {
   protected readonly locked = computed(
     () => this.custody.status() === 'locked',
   );
+
+  /**
+   * The one line the status region carries, or `null` when it has nothing to
+   * say.
+   *
+   * **A published word rather than two conditions compared in the template**,
+   * which is what makes loading and failure exclusive by *structure* — one
+   * value can only be one of them — instead of by the order the branches were
+   * written in.
+   *
+   * `null` while the account is locked and `null` while a list is on screen:
+   * the notice and the list are this section's value, and the region speaks
+   * only for a read with no value to show. `loading` outranks `failed` for the
+   * reason the branch order used to carry: a reload started after one failed
+   * read would otherwise keep the failure sentence up throughout it.
+   */
+  protected readonly readState = computed<'loading' | 'failed' | null>(() => {
+    if (this.locked() || this.accounts.accounts() !== null) {
+      return null;
+    }
+
+    if (this.accounts.loading()) {
+      return 'loading';
+    }
+
+    return this.accounts.failed() ? 'failed' : null;
+  });
+
   protected readonly accountTypes: AccountType[] = [
     'Checking',
     'Savings',

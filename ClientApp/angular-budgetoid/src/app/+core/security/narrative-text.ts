@@ -44,9 +44,10 @@
 // filled in. The two facts are also known at different moments: whether a column
 // is null is known before any key is involved, and whether it opens is known only
 // after one is. `null` on the outside keeps them apart, and a mapper written
-// against it answers the row's question before it asks this one — no such mapper
-// exists yet, so that ordering is a rule for the one that arrives rather than a
-// description of anything running.
+// against it answers the row's question before it asks this one. That ordering
+// is running: `toCategoryGroupView` returns the `null` arm for an absent
+// description without building a binding or asking for a key, so an empty
+// column never travels far enough to become a value that failed to open.
 //
 // **Which is the same reason {@link NarrativeText} itself is not `null`.**
 // Collapsed to `string | null`, `locked` and `unreadable` become one word — and
@@ -81,7 +82,16 @@
 //
 // **What the pins do not hold is that a mapper takes the narrow type rather
 // than the service**, which no compiler can say and which stays an argument for
-// review. There is still no mapper: these are the shape the day one arrives.
+// review — but it is a rule being kept now rather than one waiting for its first
+// occasion. Every mapper in the product that opens a narrative field is written
+// against these: `toAccountView`, `toCategoryView`, `toCategoryGroupView`,
+// `toTransactionView` and `toPayeeView`, the last of them the only one taking
+// the indexer as well. Read `toPayeeView` as the worked example — handed `open`
+// and `index` and nothing else, it is stood up by a spec with two arrows and no
+// `TestBed`, and there is no `unlock`, `lock` or `adopt` within its reach to be
+// called by accident. Nothing in the compiler stops the next mapper being handed
+// `AccountKeyCustodyService` instead; what stops it is a reviewer noticing that a
+// row-shaped transform has started needing an injector.
 //
 // **There is deliberately no `NarrativeSealer`.** Nothing seals in a mapper —
 // sealing happens on the way *out* of a screen, in a service that has already
@@ -156,8 +166,10 @@ export type BlindIndexValue =
 
 /**
  * The one capability a view-model mapper needs: open this wire value under this
- * binding. Nothing is typed as this today; the head of the file says what that
- * costs.
+ * binding. Every mapper that reads a sealed column takes it — `toAccountView`,
+ * `toCategoryView`, `toCategoryGroupView`, `toTransactionView` and
+ * `toPayeeView` — and each of the three services that own a screen supplies it
+ * as an arrow closing over the one class holding a content key.
  *
  * Rejects on a binding the codec refuses: a table and column that are not one
  * of the pairs it publishes — asked as a pair, so a real table beside a column

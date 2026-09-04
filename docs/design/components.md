@@ -203,6 +203,33 @@ assertive is reserved for a failure to save something the person typed
 ([accessibility](accessibility.md)). Colour is never the message — every failure sentence reads the
 same with `--bud-over` removed.
 
+**A list that is absent with nothing loading is a read that failed, and it gets its own render.**
+Three states are not enough for a section whose value is a list: locked, the list, and "the read is
+running" leave a fourth — absent, not loading — with no branch, so a failed read draws **nothing at
+all**. All three content screens shipped that way; the fourth state is now one of two words a
+**published predicate** answers with, inside the region below, rather than a fourth arm of the render
+chain.
+
+**That predicate is where the exclusivity actually lives, and three things it has to get right were
+each held by nothing until they were measured.** The running flag is set by every **write**, not only
+by reads — so a predicate that reads the flag alone draws *reading…* underneath a list that is
+already on screen, every time somebody saves. The two flags are **simultaneously reachable**: the
+failure flag is cleared by a read starting, so a failed read followed by a write raises both, and
+which one wins has to be decided rather than fallen into — *reading* wins, because that request is
+in flight now. And the predicate is **silent while the locked notice is up**, because the notice
+speaks for that state itself.
+
+Two more traps from the same work. A screen mixing `?.length === 0` in one place with `?? 0` in
+another disagrees with itself about `null` and disagrees **toward silence** — a sentence vanishes
+while a control stays disabled. And on one screen a spec case *asserted* the blank render by name,
+so the fix arrived as a red bar and would have looked like a regression to anyone who did not read
+it.
+
+**A region created at the moment it gains content passes every test that only checks the text.**
+Measured: the naive fix — wrapping the region in the same condition as its content — was green over
+the entire existing suite. What holds the rule is a case asserting the node is present **before**
+there is anything to say.
+
 **A stale value is not equally harmful in every section, and the section it harms most sets the rule
 for all of them.** A count that is stale is merely old. An address is *wrong*: it is the single
 value that answers the only question its row exists for, and the same read is what updates it on the
@@ -1136,12 +1163,31 @@ codebase.
 pattern in [voice](voice.md), except that this is not "not built": it is a capability the tab has
 temporarily lost and can get back. The sentence says so and names the press that returns it.
 
-**A disabled form reports itself valid, so a control gated on validity alone comes back to life
-exactly when it should not.** Angular's `DISABLED` status excludes a form from validation, which
-makes `form.invalid` **false** — so `[disabled]="form.invalid"` on a submit button *enables* it the
-moment the form is switched off. The lock condition therefore has to be named a second time on the
-control and a third time in the handler. Measured on the accounts screen; it will read as
-belt-and-braces on every screen that copies it, and it is not.
+**A disabled form is excluded from validation, so a control gated on validity alone comes back to
+life exactly when it should not.** Angular's status becomes the third value `DISABLED`, and **both**
+`valid` and `invalid` then answer false — so `[disabled]="form.invalid"` on a submit button *enables*
+it the moment the form is switched off. The lock condition therefore has to be named a second time
+on the control and a third time in the handler. Measured. Note the mechanism rather than the
+shorthand: the form does not call itself *valid*, which is the easier sentence to remember and the
+wrong one to reason from — a control gated on `form.valid` stays off, and one gated on `form.invalid`
+comes on. It will read as belt-and-braces on every screen that copies it, and it is not.
+
+### A control holding an opened value leaves the DOM; disabling it is not enough
+
+A disabled control still renders what it holds, and on these screens what it holds is decrypted.
+**Measured on `mat-select`: emptying its option list does not clear the trigger** — it goes on
+rendering the selected option's text after the option is gone. So the account select, the payee
+autocomplete and the category picker are behind the same predicate as the list, not merely disabled
+beside it.
+
+This is the rule the notice already states, applied one level in: the notice renders **in place of**
+anything showing account content, and a form control holding an opened name is account content.
+
+**Four instances and one deliberate zero.** The transaction form's account select, payee autocomplete
+and category picker; the category form's group picker. `/app/accounts` has none — its form holds a
+text input, two selects over string literals, and a number — so the absence there is the rule being
+satisfied rather than the rule being skipped. Said out loud because an absence cannot be found by
+grep, and the next reader will otherwise "fix" the inconsistency.
 
 ### Two predicates, failing safe in opposite directions
 

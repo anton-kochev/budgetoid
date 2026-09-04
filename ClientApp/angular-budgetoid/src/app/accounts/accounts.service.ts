@@ -44,12 +44,45 @@
 // leaves it `null` rather than restoring the previous answer, because a reader
 // cannot tell a kept answer from a fresh one.
 //
+// **The list is dropped when the account locks, and this service is where that
+// rule lives rather than in whoever ended the session.** `providedIn: 'root'`
+// means no injector destroys this object and no navigation clears it, so an
+// opened list outlives `custody.lock()`, `SessionService.ended()` and every
+// route change: sign out on `/app/accounts` and the previous account's names
+// are still readable from the root injector for the life of the tab. That is
+// the failure `SessionService.ended()`'s own comment argues about a key, one
+// layer up and over plaintext rather than over the key that produced it.
+//
+// **`SessionService` may not do it, and the reason is the dependency
+// direction.** It lives in `+core`, this file is a feature, and a `+core`
+// module importing three feature services inverts the edge the whole folder
+// layout exists to state — and would grow a fourth import the day a fourth
+// screen opens a narrative column, which is the list somebody forgets. The
+// custody status is already an edge this file has: every screen and every
+// narrative service reads it. So the reaction sits beside the state it clears,
+// where a service that stops clearing is a diff in the file holding the
+// plaintext.
+//
+// **`locked` exactly, and never {@link AccountsService.loading}'s complement or
+// "anything but unlocked".** `unlocking` is a state whose resolution *restores*
+// the keys, and the screens deliberately keep the list on screen through a
+// ceremony — clearing there empties a list somebody is looking at and puts
+// nothing in its place. Custody has already dropped both keys by then, so a
+// read starting during `unlocking` publishes `locked` words rather than text;
+// what survives is a list opened before it, for as long as the ceremony runs.
+//
+// **`adopt()` is not covered and cannot be, from a status.** It forgets and
+// holds in one synchronous pair, so the signal never publishes `locked` and an
+// effect sees `unlocked` throughout. Registration is its only caller and holds
+// no list at that moment; a second adopter would need a stronger signal than
+// this one, and this comment is where that reader should start.
+//
 // **`openField` is handed to the mapper as an arrow and never as a bare method
 // reference.** It reads a `#` field, so `this.#custody.openField` on its own
 // type-checks perfectly and answers every call with a `TypeError` on the wrong
 // receiver. `account-view.ts` argues it at greater length; this is the call
 // site the argument is about.
-import { Injectable, inject, signal } from '@angular/core';
+import { Injectable, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import {
   AccountApiService,
@@ -124,6 +157,7 @@ export class AccountsService {
   readonly #custody = inject(AccountKeyCustodyService);
   readonly #accounts = signal<AccountView[] | null>(null);
   readonly #loading = signal(false);
+  readonly #failed = signal(false);
   readonly #loads = new Subject<void>();
 
   // The arrow the head of this file argues for. Never `this.#custody.openField`.
@@ -132,6 +166,16 @@ export class AccountsService {
 
   public readonly accounts = this.#accounts.asReadonly();
   public readonly loading = this.#loading.asReadonly();
+  /**
+   * Whether the last read of the list came back a failure.
+   *
+   * A fourth state the screen needs and could not infer: the list is `null` at
+   * rest, in flight **and** after a failure, so a screen reading the list and
+   * the running flag alone renders nothing at all over a read that failed — no
+   * sentence, and no way for a person to tell that from an account with nothing
+   * in it.
+   */
+  public readonly failed = this.#failed.asReadonly();
 
   constructor() {
     this.#loads
@@ -161,17 +205,51 @@ export class AccountsService {
       )
       .subscribe((outcome) => {
         this.#loading.set(false);
+        this.#failed.set(outcome.state === 'failed');
 
         if (outcome.state === 'loaded') {
           this.#accounts.set(byName(outcome.views));
         }
       });
+
+    // The one reader of custody's status in this file, and the head of the file
+    // argues both halves of it: why the reaction lives here and not in whoever
+    // ended the session, and why the word is `locked` exactly.
+    //
+    // It runs once on construction, which is harmless here and is not harmless
+    // everywhere — `SessionService` refuses this shape for exactly that reason.
+    // The difference is what the first run does: there it would wipe a key set
+    // that may already have been adopted, and injection order decides which. A
+    // list is `null` until something loads one, so the first run clears nothing
+    // whatever the order was.
+    effect(() => {
+      if (this.#custody.status() === 'locked') {
+        this.#accounts.set(null);
+
+        // **Cleared beside the list, and this is the one place the reason is
+        // written — `categories.service.ts` and `transactions.service.ts` do
+        // the same thing and point here.** `failed` is a claim about the
+        // **last read**, and after this line there is no read it can be a
+        // claim about: the list is empty because this service emptied it, not
+        // because a request came back wrong. Left standing it advises somebody
+        // to check their connection over a list nothing asked the server for,
+        // and the two situations are the same `null` from outside, so no
+        // caller can tell them apart. Each of the three services carries a
+        // case for it, because each owns its own effect and a shared argument
+        // pins nothing: the transactions service shipped without this line
+        // while its neighbours had it, and nothing reddened — its screen's own
+        // `locked()` masks the word one layer up, which is a coincidence
+        // rather than a guard.
+        this.#failed.set(false);
+      }
+    });
   }
 
   public load(): void {
-    // Set before the subject is pushed, so that a screen reading these two
+    // Set before the subject is pushed, so that a screen reading these three
     // synchronously after `load()` sees the state of the load it just started.
     this.#loading.set(true);
+    this.#failed.set(false);
     this.#accounts.set(null);
     this.#loads.next();
   }

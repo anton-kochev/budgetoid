@@ -25,20 +25,20 @@
 // share a separator and a join, and can never share a message — which is why
 // they are neighbours rather than one file with a flag.
 //
-// **One caller, and no screen behind it.** `AccountKeyCustodyService` holds the
-// account's index key, and the operation that delegates to it — `blindIndex` —
-// is what calls `computeBlindIndex`, with `refuseUnindexedField` beside it.
-// Nothing calls *that*: no column in this product holds a blind index and no
-// query keys on one, so the only thing reaching custody's third operation today
-// is its spec. What this module claims about its own standing is therefore the
-// same smaller claim `narrative-cipher.ts` makes next door — called, but not yet
-// from anywhere a person can walk to — and the order is still deliberate rather
-// than a module left behind: the value is a cross-client contract, so it can be
-// pinned against answers computed outside this codebase —
-// `docs/business-logic/vectors/blind-index-v1.json` — before a single row is
-// written under it, and a format is far cheaper to agree on before it has data
-// than after. Do not delete it for want of a caller, and do not relax it to make
-// a later screen easier.
+// **One caller, and screens behind it now.** `AccountKeyCustodyService` holds
+// the account's index key, and the operation that delegates to it — `blindIndex`
+// — is what calls `computeBlindIndex`, with `refuseUnindexedField` beside it.
+// That operation is still this module's only caller, and it is no longer the end
+// of the chain: `accounts.service.ts` and `categories.service.ts` key the name
+// on every create and rename they send, and `transactions.service.ts` keys a
+// payee's name both to send and to *match* — `matchPayeeByIndex` compares index
+// values and never text, so a change to this message decides which counterparty
+// a transaction is filed against. The order the module was built in stays worth
+// recording: the value is a cross-client contract, so it was pinned against
+// answers computed outside this codebase —
+// `docs/business-logic/vectors/blind-index-v1.json` — before a single row was
+// written under it, which is far cheaper than agreeing on a format after it has
+// data. Do not relax any of it to make a later screen easier.
 //
 // **The key crosses as a parameter and is never held.** Same rule as
 // `narrative-cipher.ts`: custody owns the index key and its lifetime, this module

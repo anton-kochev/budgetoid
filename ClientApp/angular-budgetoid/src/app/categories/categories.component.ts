@@ -20,13 +20,48 @@
 // notice's sentence is *advice* and that advice is already wrong for somebody
 // whose unlock is running. Disable when unsure; do not advise when unsure.
 //
-// **The lock is named three times per form and none of them is redundant.** A
+// **The lock is named three times per form and none of them is redundant, and
+// a fourth time on the one control that renders a value somebody opened.** A
 // disabled form's status is `DISABLED`, which excludes it from validation and
 // makes `form.invalid` answer **false** — so `[disabled]="form.invalid"` alone
 // *enables* the submit button the moment the form is switched off. It is named
 // on the form (the `effect`), again on the control, and again in the handler,
 // because Material's click-halt is applied to anchors only and a `<button>`
-// still receives the press.
+// still receives the press. The fourth is the category form's group picker,
+// which **leaves the DOM** rather than being switched off: it sits outside the
+// `@if (locked())` that replaces the hierarchy, and disabling a `mat-select`
+// does not stop it displaying the option it had selected — measured — so a lock
+// landing over a filled form left a group's opened name beside a notice saying
+// this tab cannot read the account.
+//
+// **The group picker's enabled state has one owner and it is the `effect`.** It
+// is off for the whole of an edit — a rename binds three members and the group
+// is not one of them, so a category moves group by being dragged — and that was
+// once set by `editCategory` and unset by `cancelCategoryEdit`, which gave one
+// control three writers and two silent failures. `categoryForm.enable()`
+// reaches every child, so a lock and an unlock mid-edit handed the picker back
+// live and a Save then sent `{description, name}`: a 204, and a category that
+// did not move. And Cancel, a plain `<button>` unaffected by the FormGroup's
+// disabled state, enabled it unconditionally — one live control on a locked
+// form, which flips the form's own status out of `DISABLED`, because a group is
+// `DISABLED` only while every child is. Derived from `writable()` and
+// `editingCategoryId()` in one place, neither is reachable.
+//
+// **A failed read has a line of its own.** Both lists are `null` at rest, in
+// flight **and** after a failure, so a screen reading a list and the running
+// flag alone rendered nothing whatever over a read that never landed — two
+// forms and silence, which is what an account with no categories looks like.
+//
+// **Both lines live in a `role="status"` region that is in the DOM from first
+// paint**, the rule `docs/design/components.md` states under "A value read
+// from the network", and the reason it has to be *from first paint* is that a
+// live region created together with its text is announced by nothing —
+// assistive technology has to have been watching the node already. The two
+// sentences used to be the last two branches of the chain below, which meant
+// each of them arrived with its own node and neither was ever announced. What
+// stops that coming back is a spec case that takes the node while it is silent
+// and asserts the later text lands in that same element, because a case
+// asserting only that the sentence is *somewhere* on screen passes either way.
 //
 // **A row whose words did not open cannot be renamed, and this screen has a
 // half the accounts screen never had.** Both `PUT` routes carry the note
@@ -274,27 +309,45 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
             maxlength="500"
           ></textarea>
         </mat-form-field>
-        <mat-form-field>
-          <mat-label>Category group</mat-label>
-          <mat-select formControlName="categoryGroupId">
-            @for (group of categories.groups() ?? []; track group.id) {
-              <!--
-                The group's name is a word rather than a string, so the option
-                renders it through the component that knows the four shapes one
-                comes in. A member interpolated straight in here prints an
-                object, and one collapsed to '' or a dash on the way past makes
-                the picker claim something about the account when the truth is
-                about this tab.
-              -->
-              <mat-option [value]="group.id">
-                <app-narrative-value [value]="group.name" />
-              </mat-option>
+        <!--
+          The one control on this screen that renders a value somebody had to
+          open, and it leaves the DOM while the account is locked rather than
+          merely being switched off. It sits in a form, which is **outside** the
+          @if (locked()) that replaces the hierarchy, so a group name opened a
+          moment earlier went on being displayed beside a notice saying this tab
+          cannot read the account.
+
+          Emptying the option list is not enough and that is measured: a
+          mat-select goes on displaying the option it had selected after the
+          option is gone. locked() exactly, matching the notice rather than
+          !writable(): an unlock in flight is not a reason to take a control
+          away from somebody who is looking at it.
+        -->
+        @if (!locked()) {
+          <mat-form-field>
+            <mat-label>Category group</mat-label>
+            <mat-select formControlName="categoryGroupId">
+              @for (group of categories.groups() ?? []; track group.id) {
+                <!--
+                  The group's name is a word rather than a string, so the option
+                  renders it through the component that knows the four shapes
+                  one comes in. A member interpolated straight in here prints an
+                  object, and one collapsed to '' or a dash on the way past
+                  makes the picker claim something about the account when the
+                  truth is about this tab.
+                -->
+                <mat-option [value]="group.id">
+                  <app-narrative-value [value]="group.name" />
+                </mat-option>
+              }
+            </mat-select>
+            @if (editingCategoryId()) {
+              <mat-hint>
+                Move an existing category by dragging it below.
+              </mat-hint>
             }
-          </mat-select>
-          @if (editingCategoryId()) {
-            <mat-hint>Move an existing category by dragging it below.</mat-hint>
-          }
-        </mat-form-field>
+          </mat-form-field>
+        }
         <div class="actions">
           <button
             mat-flat-button
@@ -429,14 +482,34 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
           <p>No category groups yet. Add one before creating categories.</p>
         }
       </div>
-    } @else if (categories.loading()) {
-      <!--
-        The list is null at rest, in flight and after a failure, so the loading
-        line is read off the published running state rather than off the absent
-        value. "No category groups yet" belongs to a server that answered.
-      -->
-      <p class="reason">Reading your categories…</p>
     }
+
+    <!--
+      **In the DOM from first paint and empty until there is something to
+      say**, which is docs/design/components.md under "A value read from the
+      network". A live region created at the moment it gains content is
+      announced unreliably — assistive technology has to have been watching the
+      node before the text landed — so a template that wrapped each sentence in
+      its own role="status" would render identically and say nothing to
+      anybody. It is status and never assertive: these are results of a read
+      this screen started on its own, and assertive is reserved for a failure
+      to save something a person typed.
+
+      Which of the two lines it carries is one word off readState(), never two
+      conditions compared here, so loading and failure are exclusive by
+      structure rather than by the order somebody happened to write the
+      branches in.
+    -->
+    <div role="status">
+      @if (readState() === 'loading') {
+        <p class="reason">Reading your categories…</p>
+      } @else if (readState() === 'failed') {
+        <p class="reason">
+          We couldn’t read your categories. Check your connection and reload the
+          page.
+        </p>
+      }
+    </div>
   `,
 })
 export class CategoriesComponent implements OnInit {
@@ -467,6 +540,37 @@ export class CategoriesComponent implements OnInit {
     () => this.custody.status() === 'locked',
   );
 
+  /**
+   * The one line the status region carries, or `null` when it has nothing to
+   * say.
+   *
+   * **A published word rather than two conditions compared in the template**,
+   * which is what makes loading and failure exclusive by *structure* — one
+   * value can only be one of them — instead of by the order the branches were
+   * written in.
+   *
+   * `null` while the account is locked and `null` while the hierarchy is on
+   * screen: the notice and the groups are this section's value, and the region
+   * speaks only for a read with no value to show. `loading` outranks `failed`
+   * for the reason the branch order used to carry: a reload started after one
+   * failed read would otherwise keep the failure sentence up throughout it.
+   *
+   * It reads `groups()` and not `categories()`, matching the render below —
+   * the hierarchy is drawn from the groups, and a category list that arrived
+   * without one has nowhere to be drawn.
+   */
+  protected readonly readState = computed<'loading' | 'failed' | null>(() => {
+    if (this.locked() || this.categories.groups() !== null) {
+      return null;
+    }
+
+    if (this.categories.loading()) {
+      return 'loading';
+    }
+
+    return this.categories.failed() ? 'failed' : null;
+  });
+
   protected readonly editingGroupId = signal<string | null>(null);
   protected readonly editingCategoryId = signal<string | null>(null);
   protected readonly categoryListIds = computed(() =>
@@ -493,16 +597,45 @@ export class CategoriesComponent implements OnInit {
   });
 
   constructor() {
-    // Disabled through the forms themselves, because Material's click-halt is
-    // applied to anchors only: on a `<button>`, `disabledInteractive` leaves
-    // the DOM `disabled` false and the click still arrives.
+    // **One owner for both forms' enabled state, and the group picker's second
+    // rule is derived here rather than set from the handlers.** Disabled
+    // through the forms themselves, because Material's click-halt is applied to
+    // anchors only: on a `<button>`, `disabledInteractive` leaves the DOM
+    // `disabled` false and the click still arrives.
+    //
+    // The picker used to be switched by `editCategory` and switched back by
+    // `cancelCategoryEdit`, which gave one control three owners and two silent
+    // failures. `categoryForm.enable()` enables the **group**, so every child
+    // goes live with it: a lock and an unlock landing mid-edit handed the
+    // picker back, somebody changed the group, pressed Save, and the edit
+    // branch sent `{description, name}` — a 204, and a category that did not
+    // move. And `cancelCategoryEdit` enabled it unconditionally, so a Cancel
+    // pressed on a locked screen — a plain `<button>`, unaffected by the
+    // FormGroup's disabled state — left one live control on a form nobody may
+    // write through, and a group is `DISABLED` only while **every** child is,
+    // so the form's own status flipped back with it.
     effect(() => {
-      if (this.writable()) {
+      const writable = this.writable();
+
+      if (writable) {
         this.groupForm.enable({ emitEvent: false });
         this.categoryForm.enable({ emitEvent: false });
       } else {
         this.groupForm.disable({ emitEvent: false });
         this.categoryForm.disable({ emitEvent: false });
+      }
+
+      // **After the form-wide call and never before it**, because the call
+      // above reaches every child: ordered the other way this line is undone by
+      // its own neighbour. A rename binds three members and the group is not
+      // one of them — a category moves group by being dragged — so the picker
+      // is off for the whole of an edit and on for a create.
+      const picker = this.categoryForm.controls.categoryGroupId;
+
+      if (writable && this.editingCategoryId() === null) {
+        picker.enable({ emitEvent: false });
+      } else {
+        picker.disable({ emitEvent: false });
       }
     });
   }
@@ -591,6 +724,9 @@ export class CategoriesComponent implements OnInit {
       return;
     }
 
+    // No `disable()` here and no `enable()` in the cancel below: the effect in
+    // the constructor derives the picker's state from this signal and owns it
+    // alone. Setting it here as well is what put three writers on one control.
     this.editingCategoryId.set(category.id);
     this.categoryForm.setValue({
       categoryGroupId: category.categoryGroupId,
@@ -598,12 +734,10 @@ export class CategoriesComponent implements OnInit {
         category.description === null ? '' : category.description.value,
       name: category.name.value,
     });
-    this.categoryForm.controls.categoryGroupId.disable();
   }
 
   protected cancelCategoryEdit(): void {
     this.editingCategoryId.set(null);
-    this.categoryForm.controls.categoryGroupId.enable();
     this.categoryForm.reset({
       name: '',
       description: '',
