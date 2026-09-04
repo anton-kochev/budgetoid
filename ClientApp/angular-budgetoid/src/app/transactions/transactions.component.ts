@@ -389,10 +389,21 @@ function nonBlankWhenPresent(
                 <span>&nbsp;·&nbsp;</span>
                 <app-narrative-value [value]="transaction.categoryName" />
               }
-              <span>
-                &nbsp;· {{ transaction.date }} · {{ transaction.currencySymbol
-                }}{{ transaction.amount }}
-              </span>
+              <!--
+                The angle brackets hug the text at both ends, which is not a
+                formatting quirk: whitespace inside this span is **rendered**.
+                Angular collapses a run of whitespace to one space rather than
+                dropping it, so an opening tag followed by a newline puts a
+                space in front of the &amp;nbsp; and this separator arrives
+                twice as wide as its three neighbours — on every row, with a
+                category and without. Prettier owns the wrapping here and will
+                re-break a long line; this is the form it settles on, so the
+                fix survives npm run format rather than being undone by it.
+              -->
+              <span
+                >&nbsp;· {{ transaction.date }} · {{ transaction.currencySymbol
+                }}{{ transaction.amount }}</span
+              >
             </span>
           </mat-list-item>
         } @empty {

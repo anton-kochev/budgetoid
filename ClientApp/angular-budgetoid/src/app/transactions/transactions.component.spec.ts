@@ -243,6 +243,77 @@ function suggestions(
   ).filteredPayees();
 }
 
+// A run of whitespace written as the code points it is made of.
+//
+// **Rendered, because every character this exists to tell apart is the same
+// shape on screen and in a diff.** What shipped was U+0020 followed by U+00A0,
+// and a failure message that printed the string back would show that pair as
+// one ordinary space; U+00A0 on its own is likewise indistinguishable from the
+// U+0020 that does not hold a separator to the word in front of it. So the
+// expectations below are written in escapes and this file holds neither
+// character as a literal. `\s` is the right class rather than `' '` — U+00A0 is
+// whitespace to the regexp engine and a space to the layout engine, and it is
+// exactly half of the defect.
+//
+// **Nothing here normalizes, and nothing may.** A case that ran `.trim()`, a
+// `.replace(/\s+/gu, ' ')` or a comparison against a normalized expectation
+// would be doing to the text precisely what the browser does not do, and would
+// go green over the defect it was written for.
+function spell(whitespace: string): string {
+  return Array.from(whitespace)
+    .map(
+      (character) =>
+        `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    )
+    .join('');
+}
+
+// The two spellings a metadata line can contain, named so that an expectation
+// reads as a sentence instead of as four hex digits.
+//
+// Built from character codes rather than from literals, and that is the same
+// argument as `spell`'s one line up: a no-break space written out here is an
+// invisible character in a source file, so the day somebody "tidies" it into an
+// ordinary one these two constants become equal, the no-break rule below stops
+// being a rule, and nothing goes red.
+const NO_BREAK_SPACE = spell(String.fromCharCode(0xa0));
+const ORDINARY_SPACE = spell(String.fromCharCode(0x20));
+
+// Every `·` in the line with the whitespace run on each side of it, each run
+// spelled out.
+//
+// This is the whole of "exactly one space either side of every separator", and
+// then one thing more: a side that lost its space renders as an empty run, a
+// side that gained one renders as two code points, and a no-break space quietly
+// demoted to an ordinary one renders as a **different** code point. The last is
+// what a rule counting characters cannot see, and it is the entire reason the
+// `&nbsp;` is written there — demoted, the separator is free to wrap onto the
+// next line by itself.
+//
+// The trailing run is taken through a lookahead so that it is not consumed:
+// consumed, two separators that ended up adjacent would report the second as
+// having nothing in front of it.
+function separatorSpacing(text: string): readonly string[] {
+  return Array.from(text.matchAll(/(\s*)·(?=(\s*))/gu), (match) => {
+    const [, before = '', after = ''] = match;
+
+    return `${spell(before)}·${spell(after)}`;
+  });
+}
+
+// Any whitespace the line begins or ends with, which no rule about separators
+// can see: a single space left inside the last span is a run of one, sits
+// beside no `·`, and renders as nothing anybody can point at.
+function edgeWhitespace(text: string): readonly string[] {
+  const leading = /^\s+/u.exec(text)?.[0] ?? '';
+  const trailing = /\s+$/u.exec(text)?.[0] ?? '';
+
+  return [
+    ...(leading === '' ? [] : [`start:${spell(leading)}`]),
+    ...(trailing === '' ? [] : [`end:${spell(trailing)}`]),
+  ];
+}
+
 describe('TransactionsComponent', () => {
   let transactions: TransactionsServiceStub;
   let custody: CustodyStub;
@@ -250,6 +321,21 @@ describe('TransactionsComponent', () => {
 
   function host(): HTMLElement {
     return fixture.nativeElement as HTMLElement;
+  }
+
+  // The first row's metadata line, as the browser renders it — text taken off
+  // the one element, never off `host()`, whose text carries the form above it.
+  // It throws rather than answering `''` when the line is missing, so a
+  // selector that stopped matching reddens as a selector rather than passing as
+  // a string with no whitespace in it.
+  function metadataLine(): string {
+    const line = host().querySelector('mat-list-item [matListItemLine]');
+
+    if (line === null) {
+      throw new Error('no metadata line to read on the first transaction row');
+    }
+
+    return line.textContent ?? '';
   }
 
   function fill(values: {
@@ -620,6 +706,77 @@ describe('TransactionsComponent', () => {
     expect(
       host().querySelectorAll('mat-list-item app-narrative-value'),
     ).toHaveLength(2);
+  });
+
+  it('puts exactly one space either side of every separator on a full row and none at its ends', () => {
+    // Arrange — `weeklyShop` carries a payee, a group and a category, so every
+    // separator this row can draw renders: three spans between the opened
+    // names, and the last span's two, one in front of the date and one between
+    // the date and the amount. The defect was on the fourth: its span opened
+    // and then broke the line, and the leading newline collapses to a rendered
+    // space that the `&nbsp;` after it then doubles.
+    //
+    // **The expectation is each separator's *spelling*, not a count of the
+    // characters around it**, and the difference is the reason it is written
+    // this way. A count cannot tell U+00A0 from U+0020, so an `&nbsp;` demoted
+    // to an ordinary space passes a counting rule while the separator it was
+    // holding becomes free to wrap onto a line of its own — which is the whole
+    // job of that entity and not a detail of it.
+    //
+    // **The list is deliberately not uniform.** The last span spells its two
+    // inner separators with ordinary spaces, because the date and the amount
+    // may break apart; flattening the expectation to one value would be
+    // asserting a rule this template does not follow, and would have to be
+    // "fixed" by changing the screen.
+
+    // Act
+    fixture.detectChanges();
+    const line = metadataLine();
+
+    // Assert — the anchor first, so a case that read the wrong node says so
+    // instead of passing on an empty string.
+    expect(line).toContain('2026-07-14');
+    expect(separatorSpacing(line)).toEqual([
+      `${NO_BREAK_SPACE}·${NO_BREAK_SPACE}`,
+      `${NO_BREAK_SPACE}·${NO_BREAK_SPACE}`,
+      `${NO_BREAK_SPACE}·${NO_BREAK_SPACE}`,
+      `${NO_BREAK_SPACE}·${ORDINARY_SPACE}`,
+      `${ORDINARY_SPACE}·${ORDINARY_SPACE}`,
+    ]);
+    // A tail no separator rule can reach: one space left inside the last span
+    // is a run of one, sits beside no `·`, and shows up nowhere on screen.
+    expect(edgeWhitespace(line)).toEqual([]);
+  });
+
+  it('puts exactly one space either side of every separator on a row with no category and none at its ends', () => {
+    // Arrange — the doubling is not a consequence of the category branch, and
+    // this is the case that says so: with the group and the category gone the
+    // last span follows the payee and doubles there instead. Three separators
+    // now, and the two the last span draws are the same two as above — this
+    // shape re-checks them against a different neighbour rather than repeating
+    // the case.
+    transactions.transactionsSignal.set([
+      {
+        ...weeklyShop,
+        categoryGroupId: null,
+        categoryGroupName: null,
+        categoryId: null,
+        categoryName: null,
+      },
+    ]);
+
+    // Act
+    fixture.detectChanges();
+    const line = metadataLine();
+
+    // Assert
+    expect(line).toContain('2026-07-14');
+    expect(separatorSpacing(line)).toEqual([
+      `${NO_BREAK_SPACE}·${NO_BREAK_SPACE}`,
+      `${NO_BREAK_SPACE}·${ORDINARY_SPACE}`,
+      `${ORDINARY_SPACE}·${ORDINARY_SPACE}`,
+    ]);
+    expect(edgeWhitespace(line)).toEqual([]);
   });
 
   it('keeps what was typed while the write is still in flight', () => {
