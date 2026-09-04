@@ -71,6 +71,42 @@
 // read starting during `unlocking` publishes `locked` words rather than text;
 // what survives is a list opened before it, for as long as the ceremony runs.
 //
+// **The list is read again when the account is unlocked, and that arm is a
+// *transition* rather than a value.** A lock leaves the list `null` with
+// nothing loading and nothing failed, which is the one combination that renders
+// blank — no list, no sentence, no notice — and after an unlock on a screen
+// that stayed mounted there is no `ngOnInit` left to ask for it. This is not a
+// second reader of custody: it is a second arm of the reader that already
+// exists, one file away from the clear it undoes, and what a person expects
+// from pressing Unlock is their names back rather than a navigation they have
+// to think of. **Not the value**, or a service built into an account that is
+// already open reads a list nobody asked it for, on the first run of the
+// effect, once per service the injector happens to build. **Any word but
+// `unlocked` counts as the far side**, never `locked` alone: effects are
+// glitch-free rather than replayed, so whether `unlocking` is observed between
+// the two ends is decided by when the flush lands, and a reaction keyed on
+// `locked` restores the list on one schedule and leaves it empty on the other.
+// **The hole it closes is unreachable and the arm itself is not, and the two
+// are different sentences.** No live path reaches an unlock with one of these
+// screens mounted: the only caller of `lock()` is `SessionService.ended()`,
+// whose two callers both navigate to `/welcome`. What *is* live is the other
+// road to `locked` — a **failed** unlock reaches it through custody's own
+// `#fail`, which navigates nowhere — so somebody who visited a ledger screen,
+// walked to Settings and unlocked there is a transition these services see with
+// their screens unmounted, and the cost is one round of reads nobody is looking
+// at. That is accepted rather than overlooked: the only way to spend less is to
+// know whether a screen is mounted, which is a fact about components that a
+// root-provided service is not entitled to hold, and the screens re-read on
+// `ngOnInit` anyway.
+//
+// One thing the paragraph below does **not** say twice: `adopt()` is invisible
+// to the clearing arm and is not invisible to this one. It publishes `unlocked`
+// over a first run that saw `locked`, which is a transition, so a service built
+// before a registration finished would read a list here. That costs one read of
+// an account whose lists are empty, and it needs a tab that reached a ledger
+// screen before registering — which no route table allows, because `/app` is
+// behind `authGuard` and `/register` is behind `guestGuard`.
+//
 // **`adopt()` is not covered and cannot be, from a status.** It forgets and
 // holds in one synchronous pair, so the signal never publishes `locked` and an
 // effect sees `unlocked` throughout. Registration is its only caller and holds
@@ -88,7 +124,10 @@ import {
   AccountApiService,
   type AccountType,
 } from '@app-core/api/account-api.service';
-import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import {
+  AccountKeyCustodyService,
+  type AccountKeyStatus,
+} from '@app-core/security/account-key-custody.service';
 import { mintNarrativeRowId } from '@app-core/security/narrative-row-id';
 import type { NarrativeOpener } from '@app-core/security/narrative-text';
 import { compareNarrative } from '@app-shared/compare-narrative';
@@ -212,18 +251,33 @@ export class AccountsService {
         }
       });
 
+    // The word this effect saw last, and `null` until it has run at all. A
+    // local rather than a field, so that the one reaction allowed to hold it is
+    // the one it is declared beside: the *unlock* arm below is a transition and
+    // is not a value, and nothing outside this closure has any business
+    // deciding what "the previous status" was.
+    let seen: AccountKeyStatus | null = null;
+
     // The one reader of custody's status in this file, and the head of the file
-    // argues both halves of it: why the reaction lives here and not in whoever
-    // ended the session, and why the word is `locked` exactly.
+    // argues every half of it: why the reaction lives here and not in whoever
+    // ended the session, why the word is `locked` exactly on the clearing arm,
+    // and why the arm that reads the list again is written as a transition out
+    // of any word but `unlocked`.
     //
     // It runs once on construction, which is harmless here and is not harmless
     // everywhere — `SessionService` refuses this shape for exactly that reason.
     // The difference is what the first run does: there it would wipe a key set
     // that may already have been adopted, and injection order decides which. A
     // list is `null` until something loads one, so the first run clears nothing
-    // whatever the order was.
+    // whatever the order was — and it reads nothing either, because a first run
+    // has no transition behind it.
     effect(() => {
-      if (this.#custody.status() === 'locked') {
+      const status = this.#custody.status();
+      const previous = seen;
+
+      seen = status;
+
+      if (status === 'locked') {
         this.#accounts.set(null);
 
         // **Cleared beside the list, and this is the one place the reason is
@@ -241,6 +295,23 @@ export class AccountsService {
         // `locked()` masks the word one layer up, which is a coincidence
         // rather than a guard.
         this.#failed.set(false);
+
+        return;
+      }
+
+      // The far side of a ceremony, and the reason the head of this file gives
+      // for each half of the condition: a first run has no transition behind
+      // it, and every word but `unlocked` is a lawful near side. `unlocked`
+      // exactly on this side, never "not locked" — the other word left here is
+      // `unlocking`, where custody has already dropped both keys and a read
+      // started now publishes `locked` words over a list somebody is looking
+      // at.
+      if (
+        status === 'unlocked' &&
+        previous !== null &&
+        previous !== 'unlocked'
+      ) {
+        this.load();
       }
     });
   }

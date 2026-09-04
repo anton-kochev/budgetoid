@@ -121,6 +121,16 @@
 // pickers to `null` would not compile; setting the other two to `[]` would have
 // the screen say *you have no transactions* over a session that just ended.
 //
+// **All four are read again when the account is unlocked**, on the *transition*
+// into `unlocked` out of any other word and never on the value —
+// `accounts.service.ts` argues every half of that, including why a first run
+// reads nothing and why the near side is not `locked` alone. What is this
+// file's own is that the arm asks for **all four** and not for the list alone:
+// the lock empties four signals and the screen's own `ngOnInit` calls three
+// loaders, so a re-read of the transactions by itself hands back the list and
+// leaves the form's counterparty suggestions and its category picker empty —
+// the same blank one control further in, on a screen that never remounts.
+//
 // **`openField` and `blindIndex` are handed over as arrows and never as bare
 // method references.** Each reads a `#` field, so `this.#custody.openField` on
 // its own type-checks perfectly and answers every call with a `TypeError` on
@@ -132,7 +142,10 @@ import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.serv
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { PayeesApiService } from '@app-core/api/payees-api.service';
 import { TransactionsApiService } from '@app-core/api/transactions-api.service';
-import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import {
+  AccountKeyCustodyService,
+  type AccountKeyStatus,
+} from '@app-core/security/account-key-custody.service';
 import { mintNarrativeRowId } from '@app-core/security/narrative-row-id';
 import type {
   NarrativeIndexer,
@@ -351,13 +364,25 @@ export class TransactionsService {
         this.#categories.set(categories);
       });
 
+    // The word this effect saw last, and `null` until it has run at all. A
+    // local rather than a field, for the reason `accounts.service.ts` gives at
+    // its own copy: nothing outside this closure may decide what "the previous
+    // status" was.
+    let seen: AccountKeyStatus | null = null;
+
     // The one reader of custody's status in this file; the head of the file and
-    // `accounts.service.ts` argue why the reaction lives here and why the word
-    // is `locked` exactly. It runs once on construction over four lists that
-    // are already empty, so the first run is a no-op whatever the injection
-    // order was.
+    // `accounts.service.ts` argue why the reaction lives here, why the clearing
+    // word is `locked` exactly, and why the reading arm is a transition. It
+    // runs once on construction over four lists that are already empty, so the
+    // first run is a no-op whatever the injection order was — and it reads
+    // nothing either, because a first run has no transition behind it.
     effect(() => {
-      if (this.#custody.status() === 'locked') {
+      const status = this.#custody.status();
+      const previous = seen;
+
+      seen = status;
+
+      if (status === 'locked') {
         this.#transactions.set(null);
         this.#payees.set(null);
         this.#categoryGroups.set([]);
@@ -371,6 +396,20 @@ export class TransactionsService {
         // `locked()` never lets the word reach a render — a coincidence one
         // layer away, not a guard.
         this.#failed.set(false);
+
+        return;
+      }
+
+      // The far side of a ceremony, and the three loaders the screen's own
+      // `ngOnInit` calls. The head of this file argues why it is all three.
+      if (
+        status === 'unlocked' &&
+        previous !== null &&
+        previous !== 'unlocked'
+      ) {
+        this.load();
+        this.loadPayees();
+        this.loadCategories();
       }
     });
   }

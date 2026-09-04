@@ -734,6 +734,12 @@ ELSE
   reason [accounts.md](accounts.md) argues once for all three — this screen is the one that shipped
   without it, and nothing reddened, because the other two complied by accident.
 
+  **The same effect reloads on the transition back into `unlocked`**, argued once in
+  [accounts.md](accounts.md). This screen's half of it is that it calls **all three** loaders, not
+  one: its lock empties four signals and its `ngOnInit` starts three reads, so restoring the entry
+  list alone would leave the counterparty suggestions and the category picker empty — the same blank,
+  one control further in.
+
   **The category picker opens its names through the categories screen's view models**, not through a
   second set declared here: `transaction-view.ts` imports the two bindings from `categories/`, so
   there is one definition of what a category's associated data is rather than two that can drift.

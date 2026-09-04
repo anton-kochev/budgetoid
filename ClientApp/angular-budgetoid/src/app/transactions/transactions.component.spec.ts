@@ -743,6 +743,55 @@ describe('TransactionsComponent', () => {
     ).toBeNull();
   });
 
+  it('carries exactly one status region in every state it renders', () => {
+    // Arrange — the **count**, which no case above can see. `querySelector`
+    // takes the first match in document order, so a second region added after
+    // this one leaves every one of them green while the screen announces its
+    // reads twice — and which of the two a person hears is then decided by the
+    // order the template happens to be written in. Counted in each state the
+    // section renders, because a region added inside a branch is invisible
+    // from any other one; **where** the region sits is deliberately not
+    // asserted, that being a layout decision `docs/design/components.md` owns.
+    const states = [
+      { apply: () => undefined, name: 'a list on screen' },
+      {
+        apply: () => {
+          transactions.transactionsSignal.set(null);
+          transactions.loadingSignal.set(true);
+        },
+        name: 'a read in flight',
+      },
+      {
+        apply: () => {
+          transactions.transactionsSignal.set(null);
+          transactions.loadingSignal.set(false);
+          transactions.failedSignal.set(true);
+        },
+        name: 'a read that failed',
+      },
+      {
+        apply: () => {
+          transactions.transactionsSignal.set(null);
+          custody.setStatus('locked');
+        },
+        name: 'a locked account',
+      },
+    ];
+
+    for (const state of states) {
+      // Act
+      state.apply();
+      fixture.detectChanges();
+
+      // Assert — wrapped with the state's name so a failure says which one
+      // grew the second region.
+      expect({
+        regions: host().querySelectorAll('[role="status"]').length,
+        state: state.name,
+      }).toEqual({ regions: 1, state: state.name });
+    }
+  });
+
   it('announces the loading line from the region that was already there', () => {
     // Arrange — taken while it is still empty, which is the whole point of
     // taking it here rather than after the act.

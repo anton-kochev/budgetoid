@@ -230,6 +230,14 @@ Measured: the naive fix — wrapping the region in the same condition as its con
 the entire existing suite. What holds the rule is a case asserting the node is present **before**
 there is anything to say.
 
+**There is exactly one such region per screen, and each screen counts them in every state it
+renders** — value on screen, read in flight, read failed, account locked — because a second region
+added inside a branch is invisible from any other. A duplicate is not cosmetic: a screen reader
+announces both, and the first one in document order is the only one a `querySelector`-shaped test can
+see, so the twin is silent to the suite and loud to the person. The region's **position** is
+deliberately unpinned: that is a layout decision this book owns, and a spec asserting DOM order would
+fight the next legitimate change.
+
 **A stale value is not equally harmful in every section, and the section it harms most sets the rule
 for all of them.** A count that is stale is merely old. An address is *wrong*: it is the single
 value that answers the only question its row exists for, and the same read is what updates it on the

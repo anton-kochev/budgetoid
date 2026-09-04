@@ -459,6 +459,87 @@ describe('TransactionsService', () => {
       expect(service.transactions()).not.toBeNull();
     });
 
+    it('reads every list again when the account is unlocked', async () => {
+      // Arrange — the four lists a lock empties, each holding an answer. The
+      // answers are empty on purpose: what this case is about is which reads
+      // are asked for again, not what came back in them. After the lock the
+      // list is `null` with nothing loading and nothing failed, which is the
+      // one combination that renders blank.
+      service.load();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      service.loadPayees();
+      http.expectOne(PAYEES_URL).flush({ items: [] });
+      service.loadCategories();
+      http.expectOne(CATEGORY_GROUPS_URL).flush({ items: [] });
+      http.expectOne(CATEGORIES_URL).flush({ items: [] });
+      await settle();
+      custody.setStatus('locked');
+      TestBed.tick();
+      expect(service.transactions()).toBeNull();
+
+      // Act — the keys come back with the screen still mounted, so no
+      // `ngOnInit` runs to ask for any of this a second time.
+      custody.setStatus('unlocked');
+      TestBed.tick();
+
+      // Assert — **all four**, because all four were emptied and the screen's
+      // own `ngOnInit` asks for all four. Restoring the transactions alone
+      // leaves the form's counterparty suggestions and its category picker
+      // empty on a screen that never remounts, which is the same hole one
+      // control further in.
+      expect(service.loading()).toBe(true);
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      http.expectOne(PAYEES_URL).flush({ items: [] });
+      http.expectOne(CATEGORY_GROUPS_URL).flush({ items: [] });
+      http.expectOne(CATEGORIES_URL).flush({ items: [] });
+      await settle();
+      expect(service.transactions()).not.toBeNull();
+      expect(service.payees()).not.toBeNull();
+    });
+
+    it('reads every list again when the ceremony itself was seen running', async () => {
+      // Arrange — the same close, over the path an effect usually sees.
+      // `accounts.service.ts` argues why the near side is every word but
+      // `unlocked` rather than `locked` alone.
+      service.load();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+      custody.setStatus('locked');
+      TestBed.tick();
+      custody.setStatus('unlocking');
+      TestBed.tick();
+
+      // Act
+      custody.setStatus('unlocked');
+      TestBed.tick();
+
+      // Assert
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      http.expectOne(PAYEES_URL).flush({ items: [] });
+      http.expectOne(CATEGORY_GROUPS_URL).flush({ items: [] });
+      http.expectOne(CATEGORIES_URL).flush({ items: [] });
+      await settle();
+      expect(service.transactions()).not.toBeNull();
+    });
+
+    it('asks for nothing when the first status it sees is unlocked', () => {
+      // Arrange — the control that makes the reaction a *transition* rather
+      // than a value: this service is `providedIn: 'root'` and is built on
+      // first injection, which on an open account is `unlocked` from the first
+      // run of the effect. Four reads nobody asked for is what a value-keyed
+      // arm costs here.
+
+      // Act
+      TestBed.tick();
+
+      // Assert
+      http.expectNone(TRANSACTIONS_URL);
+      http.expectNone(PAYEES_URL);
+      http.expectNone(CATEGORY_GROUPS_URL);
+      http.expectNone(CATEGORIES_URL);
+      expect(service.loading()).toBe(false);
+    });
+
     it('keeps only the newest load’s answer when two overlap', async () => {
       // Arrange — the first load's opens never settle until this test says so.
       // **Every** resolver is collected, and that is not tidiness: a row here

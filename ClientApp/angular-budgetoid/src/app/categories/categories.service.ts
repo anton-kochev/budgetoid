@@ -78,6 +78,13 @@
 // are published together: a category carries its group's name, so a half-clear
 // leaves the words on screen that the clear exists to destroy.
 //
+// **Both lists are read again when the account is unlocked**, on the
+// *transition* into `unlocked` out of any other word and never on the value —
+// `accounts.service.ts` argues every half of that, including why a first run
+// reads nothing and why the near side is not `locked` alone. What is this
+// file's own is the same thing the clear's is: the pair goes together, so the
+// re-read is the one `load()` that asks for both.
+//
 // **`openField` is handed to the mappers as an arrow and never as a bare method
 // reference.** It reads a `#` field, so `this.#custody.openField` on its own
 // type-checks perfectly and answers every call with a `TypeError` on the wrong
@@ -87,7 +94,10 @@ import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
-import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import {
+  AccountKeyCustodyService,
+  type AccountKeyStatus,
+} from '@app-core/security/account-key-custody.service';
 import type { BlindIndexedField } from '@app-core/security/blind-index';
 import type { NarrativeFieldBinding } from '@app-core/security/narrative-cipher';
 import { mintNarrativeRowId } from '@app-core/security/narrative-row-id';
@@ -352,13 +362,26 @@ export class CategoriesService {
         }
       });
 
+    // The word this effect saw last, and `null` until it has run at all. A
+    // local rather than a field, for the reason `accounts.service.ts` gives at
+    // its own copy: nothing outside this closure may decide what "the previous
+    // status" was.
+    let seen: AccountKeyStatus | null = null;
+
     // The one reader of custody's status in this file; the head of the file and
-    // `accounts.service.ts` argue why the reaction lives here and why the word
-    // is `locked` exactly. It runs once on construction and clears two lists
-    // that are `null` until something loads one, so the first run is a no-op
-    // whatever the injection order was.
+    // `accounts.service.ts` argue why the reaction lives here, why the clearing
+    // word is `locked` exactly, and why the reading arm is a transition. It
+    // runs once on construction and clears two lists that are `null` until
+    // something loads one, so the first run is a no-op whatever the injection
+    // order was — and it reads nothing either, because a first run has no
+    // transition behind it.
     effect(() => {
-      if (this.#custody.status() === 'locked') {
+      const status = this.#custody.status();
+      const previous = seen;
+
+      seen = status;
+
+      if (status === 'locked') {
         this.#groups.set(null);
         this.#categories.set(null);
 
@@ -367,6 +390,19 @@ export class CategoriesService {
         // the last read, and after these two lines there is no read left for
         // it to be a claim about.
         this.#failed.set(false);
+
+        return;
+      }
+
+      // The far side of a ceremony. One `load()`, because the pair is read and
+      // published together and half a hierarchy is categories filed under
+      // groups this screen has not got.
+      if (
+        status === 'unlocked' &&
+        previous !== null &&
+        previous !== 'unlocked'
+      ) {
+        this.load();
       }
     });
   }

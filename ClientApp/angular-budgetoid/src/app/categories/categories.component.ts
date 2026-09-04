@@ -116,6 +116,10 @@ import { AccountKeyCustodyService } from '@app-core/security/account-key-custody
 import { LockedAccountNoticeComponent } from '@app-shared/components/locked-account-notice/locked-account-notice.component';
 import { NarrativeValueComponent } from '@app-shared/components/narrative-value/narrative-value.component';
 import {
+  NARRATIVE_DESCRIPTION_CHARACTERS,
+  NARRATIVE_NAME_CHARACTERS,
+} from '@app-shared/narrative-field-caps';
+import {
   categoryGroupIsReadable,
   type CategoryGroupView,
 } from './category-group-view';
@@ -254,14 +258,26 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
         }
         <mat-form-field>
           <mat-label>Name</mat-label>
-          <input matInput formControlName="name" maxlength="200" />
+          <!--
+            Both caps are bound rather than typed, so an attribute and the
+            validator beside it cannot drift apart, and so the numbers stay
+            beside the byte caps they protect —
+            @app-shared/narrative-field-caps holds the whole argument. This
+            screen states each of them twice, once per form, which is the
+            reason they are named here rather than written out.
+          -->
+          <input
+            matInput
+            formControlName="name"
+            [attr.maxlength]="nameCharacters"
+          />
         </mat-form-field>
         <mat-form-field>
           <mat-label>Description</mat-label>
           <textarea
             matInput
             formControlName="description"
-            maxlength="500"
+            [attr.maxlength]="descriptionCharacters"
           ></textarea>
         </mat-form-field>
         <div class="actions">
@@ -299,14 +315,18 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
         }
         <mat-form-field>
           <mat-label>Name</mat-label>
-          <input matInput formControlName="name" maxlength="200" />
+          <input
+            matInput
+            formControlName="name"
+            [attr.maxlength]="nameCharacters"
+          />
         </mat-form-field>
         <mat-form-field>
           <mat-label>Description</mat-label>
           <textarea
             matInput
             formControlName="description"
-            maxlength="500"
+            [attr.maxlength]="descriptionCharacters"
           ></textarea>
         </mat-form-field>
         <!--
@@ -571,6 +591,18 @@ export class CategoriesComponent implements OnInit {
     return this.categories.failed() ? 'failed' : null;
   });
 
+  /**
+   * The caps the templates' `maxlength` attributes read, and the same values
+   * the four validators below are built from.
+   *
+   * `@app-shared/narrative-field-caps` argues them: these are UX ceilings in
+   * UTF-16 code units, and what makes each safe is that it cannot seal past its
+   * column's byte cap even when every unit is a three-byte character. Two
+   * numbers over field *classes* and not four over fields, which is the shape
+   * `NarrativeFieldLimits` already gives the byte caps.
+   */
+  protected readonly nameCharacters = NARRATIVE_NAME_CHARACTERS;
+  protected readonly descriptionCharacters = NARRATIVE_DESCRIPTION_CHARACTERS;
   protected readonly editingGroupId = signal<string | null>(null);
   protected readonly editingCategoryId = signal<string | null>(null);
   protected readonly categoryListIds = computed(() =>
@@ -583,16 +615,30 @@ export class CategoriesComponent implements OnInit {
     // `nonBlank` beside `required`, not instead of it: `required` refuses an
     // empty control and admits `'   '`, and the trim that used to catch the
     // second is gone from the service on purpose.
-    name: ['', [Validators.required, nonBlank, Validators.maxLength(200)]],
+    name: [
+      '',
+      [
+        Validators.required,
+        nonBlank,
+        Validators.maxLength(NARRATIVE_NAME_CHARACTERS),
+      ],
+    ],
     // No `nonBlank` here, and that is the decision this screen makes: the note
     // is indexed by nothing, so a note of three spaces collides with nothing
     // and is a note somebody typed.
-    description: ['', [Validators.maxLength(500)]],
+    description: ['', [Validators.maxLength(NARRATIVE_DESCRIPTION_CHARACTERS)]],
   });
 
   protected readonly categoryForm = this.formBuilder.nonNullable.group({
-    name: ['', [Validators.required, nonBlank, Validators.maxLength(200)]],
-    description: ['', [Validators.maxLength(500)]],
+    name: [
+      '',
+      [
+        Validators.required,
+        nonBlank,
+        Validators.maxLength(NARRATIVE_NAME_CHARACTERS),
+      ],
+    ],
+    description: ['', [Validators.maxLength(NARRATIVE_DESCRIPTION_CHARACTERS)]],
     categoryGroupId: ['', [Validators.required]],
   });
 

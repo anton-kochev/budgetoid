@@ -91,6 +91,7 @@ import { AccountType } from '@app-core/api/account-api.service';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { LockedAccountNoticeComponent } from '@app-shared/components/locked-account-notice/locked-account-notice.component';
 import { NarrativeValueComponent } from '@app-shared/components/narrative-value/narrative-value.component';
+import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
 import type { AccountView } from './account-view';
 import {
   CurrencyApiService,
@@ -171,7 +172,17 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
 
       <mat-form-field>
         <mat-label>Name</mat-label>
-        <input matInput formControlName="name" maxlength="200" />
+        <!--
+          The cap is bound rather than typed, so this attribute and the
+          validator below cannot drift apart, and so the number stays beside
+          the byte cap it protects — @app-shared/narrative-field-caps holds
+          the whole argument.
+        -->
+        <input
+          matInput
+          formControlName="name"
+          [attr.maxlength]="nameCharacters"
+        />
       </mat-form-field>
 
       <mat-form-field>
@@ -374,6 +385,16 @@ export class AccountsComponent implements OnInit {
     'Cash',
     'CreditCard',
   ];
+  /**
+   * The cap the template's `maxlength` reads, and the same value the validator
+   * below is built from.
+   *
+   * `@app-shared/narrative-field-caps` argues it: this is a UX ceiling in
+   * UTF-16 code units, and what makes it safe is that 200 units cannot seal
+   * past `accounts.name`'s byte cap even when every one of them is a
+   * three-byte character.
+   */
+  protected readonly nameCharacters = NARRATIVE_NAME_CHARACTERS;
   protected readonly editingId = signal<string | null>(null);
   protected readonly currencies = signal<CurrencyDto[]>([]);
 
@@ -381,7 +402,14 @@ export class AccountsComponent implements OnInit {
     // `nonBlank` beside `required`, not instead of it: `required` refuses an
     // empty control and admits `'   '`, and the trim that used to catch the
     // second is gone from the service on purpose.
-    name: ['', [Validators.required, nonBlank, Validators.maxLength(200)]],
+    name: [
+      '',
+      [
+        Validators.required,
+        nonBlank,
+        Validators.maxLength(NARRATIVE_NAME_CHARACTERS),
+      ],
+    ],
     type: ['Checking' as AccountType, [Validators.required]],
     openingBalance: [0, [Validators.required]],
     currencyCode: ['USD', [Validators.required]],

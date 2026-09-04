@@ -205,11 +205,27 @@ erDiagram
   giving 200 × 3 + 29 = **629** against a cap of 1024, and 500 × 3 + 29 = **1529** against 2560.
   Roughly 39% and 40% headroom — real margin, not luck.
 
-  Two consequences. The cliff is at a client ceiling near **331**, not near 200, and it would bite
-  **only CJK users** — a 900-character Latin name would pass where a 350-character Chinese one takes
-  a 400. And **neither validator names the byte limit it is protecting**, on either the `maxLength`
-  or the HTML `maxlength`, so raising one is a change nothing reddens and that fails selectively by
-  language.
+  The cliff is at a client ceiling near **331**, not near 200, and it would bite **only CJK users** —
+  a 900-character Latin name would pass where a 350-character Chinese one takes a 400.
+
+  **Both caps and the byte caps they protect now live in one module**, `+shared/narrative-field-caps.ts`,
+  with the three-bytes-per-code-unit worst case and a `charactersAlwaysFitting(envelopeBytes)`
+  ceiling; every validator and every `maxlength` attribute binds to them rather than typing a number,
+  and the attribute is bound from the same constant as its validator so the two cannot drift. **The
+  caps are deliberately *not* derived from the byte caps** — deriving gives 331 and 843, and raising a
+  name cap by two thirds is a product decision the design book owns, exactly as `NarrativeFieldLimits`
+  argues on the server side that writing these numbers as sums would dress a choice up as a
+  consequence. What is derived is the **ceiling**, and a spec holds each chosen cap under it, so
+  raising one past the cliff now reddens.
+
+  Three things that spec measures and one it cannot. It measures the worst bytes-per-code-unit over
+  **every** code point, lone surrogates included — they encode as U+FFFD at three bytes for one unit,
+  so the qualifier "non-surrogate" that this paragraph used to carry was unnecessary; it measures a
+  worst-case string at each cap against its byte cap; it measures that `maxLength` counts **units, not
+  characters**, by admitting a 200-character BMP string and refusing a 200-character astral one; and
+  it scans `src/` for a cap written as a number, with a planted control. What no case can hold is that
+  the byte caps here are a **transcription** of C# constants — nothing in either build reads both — so
+  that one stays review's.
 - **Example**: a client that seals `"   "` gets a `201`. The row is well-formed, the constraints are
   satisfied, and nothing in this deployment can tell that value from `"Everyday Checking"`.
 - **Counterexample**: adding `if (envelope.Length < 40)` to approximate "not blank". It refuses
@@ -490,10 +506,22 @@ ELSE
   has its own effect. Measured: one of the three shipped without the line and nothing reddened,
   because the other two complied by accident rather than by anything holding them.
 
-  One residual, unreachable today and written down rather than fixed: after a lock clears a list, an
-  **unlock on a live screen** leaves it absent with nothing loading until a navigation reloads it.
-  The only caller of `lock()` navigates away and destroys the component, and a failed unlock happens
-  on Settings with these screens unmounted.
+  **The same effect reloads on the way back**, so an unlock does not leave a screen holding a list it
+  cleared. It is one effect with two arms rather than a second reader of the status: a first run that
+  observes nothing, so a service built into an already-open account asks for nothing, and a
+  **transition into `unlocked` out of any other word** — not out of `locked` alone, because effects
+  are glitch-free rather than replayed and whether `unlocking` is observed between the two ends
+  depends on when the flush lands, which would restore the list on one schedule and not the other.
+  The far side is `unlocked` **exactly**: during `unlocking` custody has already dropped both keys,
+  so a read started there comes back as locked markers.
+
+  **This is not dead code, and the earlier claim that it was is corrected here.** `lock()` does
+  navigate away — but custody reaches `locked` by a second road, its own failure path, which
+  navigates nowhere. So somebody who visits a ledger screen, walks to Settings, fails an unlock and
+  then succeeds is a live transition these root-provided services observe with the screens unmounted.
+  The arm therefore costs one round of reads nobody is looking at, and that is accepted: the only way
+  to spend less is to know whether a screen is mounted, which is a fact about components that a
+  root-provided service is not entitled to hold.
 - **[Budgets](budgets.md)**: every account is stamped with and filtered by its owning `BudgetId`, and
   its name is unique within that budget — now over the blind index rather than over a
   case-insensitive collation, with the folding done in the browser. The same account name in two

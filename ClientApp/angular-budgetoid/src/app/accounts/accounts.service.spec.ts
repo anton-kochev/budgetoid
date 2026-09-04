@@ -753,6 +753,84 @@ describe('AccountsService', () => {
     ]);
   });
 
+  it('reads the list again when the account is unlocked', async () => {
+    // Arrange — a list that was opened and then emptied by a lock. What that
+    // leaves is the hole the fourth state was added to remove, one step along:
+    // `null` with nothing loading and nothing failed renders neither the list,
+    // nor a sentence, nor the notice. Nothing today reaches it — the only
+    // caller of `lock()` navigates to `/welcome` and destroys the screen — so
+    // this is the state being closed while it is still cheap.
+    service.load();
+    http
+      .expectOne(ACCOUNTS_URL)
+      .flush({ items: [sealedAccount(EXISTING_ID, 'Everyday')] });
+    await settle();
+    custody.setStatus('locked');
+    TestBed.tick();
+    expect(service.accounts()).toBeNull();
+
+    // Act — the keys come back with the screen still mounted, so no `ngOnInit`
+    // runs to ask for the list a second time.
+    custody.setStatus('unlocked');
+    TestBed.tick();
+
+    // Assert — the read is in flight before anything is flushed, which is the
+    // claim: the service asked, rather than a later screen asking for it.
+    const request = http.expectOne(ACCOUNTS_URL);
+
+    expect(service.loading()).toBe(true);
+    request.flush({ items: [sealedAccount(EXISTING_ID, 'Everyday')] });
+    await settle();
+    expect(service.accounts()).toEqual([
+      expect.objectContaining({ name: { state: 'text', value: 'Everyday' } }),
+    ]);
+  });
+
+  it('reads the list again when the ceremony itself was seen running', async () => {
+    // Arrange — the same close, over the path an effect usually sees. Effects
+    // are glitch-free rather than replayed, so whether `unlocking` is observed
+    // between the two ends depends on when the flush lands: a reaction keyed on
+    // "the previous word was `locked`" restores the list in the case above and
+    // leaves it empty here, and the difference is a scheduling detail no screen
+    // can control.
+    service.load();
+    http
+      .expectOne(ACCOUNTS_URL)
+      .flush({ items: [sealedAccount(EXISTING_ID, 'Everyday')] });
+    await settle();
+    custody.setStatus('locked');
+    TestBed.tick();
+    custody.setStatus('unlocking');
+    TestBed.tick();
+
+    // Act
+    custody.setStatus('unlocked');
+    TestBed.tick();
+
+    // Assert
+    http
+      .expectOne(ACCOUNTS_URL)
+      .flush({ items: [sealedAccount(EXISTING_ID, 'Everyday')] });
+    await settle();
+    expect(service.accounts()).not.toBeNull();
+  });
+
+  it('asks for nothing when the first status it sees is unlocked', () => {
+    // Arrange — the control that makes the reaction a *transition* rather than
+    // a value. This service is `providedIn: 'root'` and is built on first
+    // injection, which on an open account is a status of `unlocked` from the
+    // first run of the effect. A reaction reading the value alone fires a read
+    // here that nobody asked for — before any screen has mounted, and again
+    // for every service the injector happens to build.
+
+    // Act
+    TestBed.tick();
+
+    // Assert
+    http.expectNone(ACCOUNTS_URL);
+    expect(service.loading()).toBe(false);
+  });
+
   it('orders the list through compareNarrative', async () => {
     // Arrange — a mixed list is reachable: custody can move between the first
     // row's open and the last one's.

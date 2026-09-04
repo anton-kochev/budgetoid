@@ -514,6 +514,69 @@ describe('CategoriesService', () => {
       expect(service.categories()).not.toBeNull();
     });
 
+    it('reads both lists again when the account is unlocked', async () => {
+      // Arrange — two lists that were opened and then emptied by a lock. What
+      // that leaves is the hole the fourth state was added to remove, one step
+      // along: `null` with nothing loading and nothing failed renders neither
+      // the hierarchy, nor a sentence, nor the notice.
+      await loadWith([essentials], [groceries]);
+      custody.setStatus('locked');
+      TestBed.tick();
+      expect(service.groups()).toBeNull();
+
+      // Act — the keys come back with the screen still mounted, so no
+      // `ngOnInit` runs to ask for the hierarchy a second time.
+      custody.setStatus('unlocked');
+      TestBed.tick();
+
+      // Assert — **both** requests, because the pair is read, published and
+      // cleared together: half a re-read is a list of categories filed under
+      // groups this screen has not got.
+      expect(service.loading()).toBe(true);
+      http.expectOne(GROUPS_URL).flush({ items: [essentials] });
+      http.expectOne(CATEGORIES_URL).flush({ items: [groceries] });
+      await settle();
+      expect(service.groups()).not.toBeNull();
+      expect(service.categories()).not.toBeNull();
+    });
+
+    it('reads both lists again when the ceremony itself was seen running', async () => {
+      // Arrange — the same close, over the path an effect usually sees.
+      // `accounts.service.ts` argues why the near side is every word but
+      // `unlocked` rather than `locked` alone.
+      await loadWith([essentials], [groceries]);
+      custody.setStatus('locked');
+      TestBed.tick();
+      custody.setStatus('unlocking');
+      TestBed.tick();
+
+      // Act
+      custody.setStatus('unlocked');
+      TestBed.tick();
+
+      // Assert
+      http.expectOne(GROUPS_URL).flush({ items: [essentials] });
+      http.expectOne(CATEGORIES_URL).flush({ items: [groceries] });
+      await settle();
+      expect(service.groups()).not.toBeNull();
+      expect(service.categories()).not.toBeNull();
+    });
+
+    it('asks for nothing when the first status it sees is unlocked', () => {
+      // Arrange — the control that makes the reaction a *transition* rather
+      // than a value: this service is `providedIn: 'root'` and is built on
+      // first injection, which on an open account is `unlocked` from the first
+      // run of the effect.
+
+      // Act
+      TestBed.tick();
+
+      // Assert
+      http.expectNone(GROUPS_URL);
+      http.expectNone(CATEGORIES_URL);
+      expect(service.loading()).toBe(false);
+    });
+
     it('keeps only the newest load’s answer when two overlap', async () => {
       // Arrange — the first load's opens never settle until this case says so.
       // **Every** resolver is collected, and that is the whole instrument: a

@@ -118,6 +118,10 @@ import { MatSelectModule } from '@angular/material/select';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { LockedAccountNoticeComponent } from '@app-shared/components/locked-account-notice/locked-account-notice.component';
 import { NarrativeValueComponent } from '@app-shared/components/narrative-value/narrative-value.component';
+import {
+  NARRATIVE_DESCRIPTION_CHARACTERS,
+  NARRATIVE_NAME_CHARACTERS,
+} from '@app-shared/narrative-field-caps';
 import { AccountsService } from '../accounts/accounts.service';
 import { TransactionsService } from './transactions.service';
 
@@ -256,7 +260,19 @@ function nonBlankWhenPresent(
 
       <mat-form-field>
         <mat-label>Description</mat-label>
-        <input matInput formControlName="description" maxlength="500" />
+        <!--
+          Both caps are bound rather than typed, so an attribute and the
+          validator beside it cannot drift apart, and so the numbers stay beside
+          the byte caps they protect — @app-shared/narrative-field-caps holds
+          the whole argument. The two differ here because the note is a
+          description column and the counterparty is a name column, which is the
+          same split the server's byte caps are written over.
+        -->
+        <input
+          matInput
+          formControlName="description"
+          [attr.maxlength]="descriptionCharacters"
+        />
       </mat-form-field>
 
       @if (!locked()) {
@@ -265,7 +281,7 @@ function nonBlankWhenPresent(
           <input
             matInput
             formControlName="payee"
-            maxlength="200"
+            [attr.maxlength]="nameCharacters"
             [matAutocomplete]="payeeAutocomplete"
           />
           <mat-autocomplete #payeeAutocomplete="matAutocomplete">
@@ -519,14 +535,37 @@ export class TransactionsComponent implements OnInit {
     },
   );
 
+  /**
+   * The caps the template's `maxlength` attributes read, and the same values
+   * the two validators below are built from.
+   *
+   * `@app-shared/narrative-field-caps` argues them: these are UX ceilings in
+   * UTF-16 code units, and what makes each safe is that it cannot seal past its
+   * column's byte cap even when every unit is a three-byte character. The note
+   * takes the description cap and the counterparty the name one, because
+   * `transactions.description` and `payees.name` are fields of those two
+   * classes.
+   */
+  protected readonly nameCharacters = NARRATIVE_NAME_CHARACTERS;
+  protected readonly descriptionCharacters = NARRATIVE_DESCRIPTION_CHARACTERS;
+
   protected readonly form = this.formBuilder.nonNullable.group({
     amount: [0, [Validators.required]],
     date: [new Date(), [Validators.required]],
     accountId: ['', [Validators.required]],
     // `nonBlankWhenPresent` beside the length cap and not instead of it: both
     // fields are optional, so `''` has to pass, and `'   '` must not.
-    description: ['', [Validators.maxLength(500), nonBlankWhenPresent]],
-    payee: ['', [Validators.maxLength(200), nonBlankWhenPresent]],
+    description: [
+      '',
+      [
+        Validators.maxLength(NARRATIVE_DESCRIPTION_CHARACTERS),
+        nonBlankWhenPresent,
+      ],
+    ],
+    payee: [
+      '',
+      [Validators.maxLength(NARRATIVE_NAME_CHARACTERS), nonBlankWhenPresent],
+    ],
     categoryId: [''],
   });
 

@@ -67,10 +67,19 @@ const VERSION_BYTES = 1;
 // functions below cannot disagree about it.
 const SEALED_OFFSET = VERSION_BYTES + ENVELOPE_NONCE_BYTES;
 
-// The shortest thing that can be an envelope: a version, a nonce and a tag, with
-// no ciphertext between them. An empty plaintext is a legitimate value and seals
-// to exactly this, so the refusal below is `<` and not `<=`.
-const MINIMUM_ENVELOPE_BYTES = SEALED_OFFSET + ENVELOPE_TAG_BYTES;
+/**
+ * The shortest thing that can be an envelope: a version, a nonce and a tag, with
+ * no ciphertext between them.
+ *
+ * An empty plaintext is a legitimate value and seals to exactly this, so the
+ * refusal in {@link openEnvelope} is `<` and not `<=`. AES-GCM ciphertext is
+ * exactly as long as its plaintext, so this is also the whole of what an
+ * envelope adds to the UTF-8 of the text inside it — which is why it is
+ * exported: `@app-shared/narrative-field-caps` subtracts it from a column's byte
+ * cap to say how much text can always fit, and a second copy of the arithmetic
+ * beside that subtraction would be a second definition of the layout.
+ */
+export const MINIMUM_ENVELOPE_BYTES = SEALED_OFFSET + ENVELOPE_TAG_BYTES;
 
 const BITS_PER_BYTE = 8;
 

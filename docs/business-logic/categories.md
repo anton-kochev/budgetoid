@@ -897,7 +897,9 @@ ELSE                                                      ← mutually exclusive
   together. Both opened lists are **dropped when custody reports `locked`**, in the service rather
   than in `SessionService` (which may not import feature services) and on **`locked` exactly**, never
   `!== 'unlocked'`, so a running unlock does not empty a list somebody is looking at — along with the
-  failed-read word, for the reason [accounts.md](accounts.md) argues once for all three. The category
+  failed-read word, for the reason [accounts.md](accounts.md) argues once for all three. The same
+  effect **reloads on the transition back into `unlocked`**, argued there too; both lists come back
+  together, as they were cleared. The category
   form's **group picker leaves the DOM** while locked rather than merely being disabled — measured,
   a `mat-select` goes on rendering its selected option's text after the option list is emptied, so
   the weaker fix leaves a decrypted name on a locked screen. And the `writable` effect is the
