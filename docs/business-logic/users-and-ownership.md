@@ -888,10 +888,29 @@ The budget branch that runs after this, on every path, is in
   `josé@example.com` and `jose@example.com` are two distinct rows and both can exist at once.
   Correct for email — the two are genuinely different addresses.
 
-- **The collation is nondeterministic, so `LIKE` does not work against `users.email`.** A pattern
-  match fails with SQLSTATE `0A000`. Nothing queries `users.email` today, so this is not a present
-  defect — but the first search-by-email or autocomplete over it needs an explicit `COLLATE` on the
-  expression, and the failure arrives at runtime rather than at compile time.
+- **The collation is nondeterministic, and what that costs depends on the server version.** Measured
+  on **postgres:17.10**, the version this suite runs against: `LIKE`, `position`/`strpos` and a regex
+  match against `users.email` all fail with SQLSTATE `0A000` — the message differs by operation
+  ("for LIKE" against "for substring searches") and the SQLSTATE does not. Measured on
+  **postgres:18.3**: 18 lifted the restriction for `LIKE` **and** for substring search, both of which
+  now answer. **`ILIKE` and regular expressions still refuse with `0A000` on both servers** — and
+  `ILIKE` is the first thing anybody reaches for on being told `LIKE` fails, so it is worth knowing
+  it is not the way out.
+
+  **The explicit `COLLATE` does not become merely optional on 18 — it changes the answer, and that is
+  the trap.** Measured: a bare `LIKE` on 18 folds case under the column's own collation and matches
+  both `AB@X.COM` and `ab@x.com`; the same pattern under `COLLATE "C"` matches **neither**. So one
+  spelling cannot mean the same thing on both servers, and pasting `COLLATE "C"` into an 18 query to
+  satisfy a comment written for 17 silently discards the case-insensitivity the column exists for.
+  Whichever way a future search is written, it has to be written knowing which server it runs on, and
+  the failure arrives at runtime rather than at compile time on either. Nothing queries this column
+  today, so none of it is a present defect — but do not read the shorter sentence this replaces, that
+  pattern matching simply does not work here, as still true.
+
+  One more measured wrinkle on 17, because it is the one that shipped a security test green for the
+  wrong reason: a substring search raises only when the needle is **no longer than** the value. When
+  the needle is longer, it quietly answers false. See
+  [ciphertext-envelope.md](ciphertext-envelope.md).
 
 - **An over-long email from the identity provider fails *registration* with a 400, and nothing after
   it.** The 254-character bound is checked where the value is written, so an existing account never

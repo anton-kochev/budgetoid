@@ -1094,16 +1094,51 @@ bearing rather than thorough. It scans a `bytea` column **as bytes** and never o
 rendering, because that rendering is hex — a write path that skipped sealing and put UTF-8 into
 `accounts.name` is invisible to a text search forever while the plaintext sits in the column. And
 the text leg forces `collate "C"`, because `users.email` is the last column in the schema still
-carrying `case_insensitive`: a substring search over a nondeterministic collation either raises
-`0A000` or, when the needle is longer than the value, quietly answers false.
+carrying `case_insensitive`: on **postgres:17.10**, the version the suite runs against, a substring
+search over a nondeterministic collation either raises `0A000` or — when the needle is longer than
+the value — **quietly answers false**, which is the branch that shipped this file green for the wrong
+reason. Measured on **postgres:18.3** the search simply succeeds: 18 lifted the restriction for
+`LIKE` and substring search, leaving it on `ILIKE` and regular expressions. A reader on a newer
+server must not conclude the trap was imaginary.
 
-**Its teeth are in its two controls, not in the census.** The marker plaintext never crosses the
+**On 18 the `collate "C"` stops being required and does not become a no-op**, which is why it stays
+written rather than being tidied away as legacy. Dropping the collation makes the comparison fold
+case under the column's own rules; keeping it makes the comparison ordinal. This scan wants ordinal —
+it hunts bytes and applies its own `lower()` — so `collate "C"` is the correct spelling on both
+servers for *this* use and is emphatically not a spelling to copy into a query that wants to find a
+person by their address. `users-and-ownership.md` has that half.
+
+**Its teeth are in its three controls, not in the census.** The marker plaintext never crosses the
 wire — the client seals it and sends an envelope — so the census cannot fail because of anything the
 *server* does with a value it was handed; it can only fail because a value arrived readable and was
 stored. Each control therefore puts a readable value in front of the same scan through a path a
 client really has, and demands the scan name it. Delete the byte leg and the census stays green over
 an `accounts.name` column literally holding the marker, with only the control reddening. That is
-measured, not argued, and it is why neither control may be retired as a duplicate of the census.
+measured, not argued, and it is why no control may be retired as a duplicate of the census.
+
+**The third control is over a *synthetic* relation, and that is forced rather than lazy.** The
+predicate has three branches — bytes for binary columns, folded text for text ones, and a third for
+everything else — and the first two have a control each while the third had none: a predicate
+answering `false` for every `uuid`, `jsonb`, array, numeric or `timestamptz` column passed the whole
+census. Measured against the baseline migration, **no shipped column of a third-branch type can be
+made to hold a marker**, so there was no real column the control could have used; it creates its own
+relation with a `jsonb` and a `text[]` column, and per-test databases keep it invisible to everything
+else. Do not "correct" it onto a real column later.
+
+**Two limits the census has by construction, recorded so they are not mistaken for coverage.** A
+plaintext copy that was **re-encoded** — base64, hex, UTF-16, compressed, JSON-escaped — is invisible
+to a byte search, and the enumeration of encodings has no end, so the scan does not chase them. And a
+row **hidden from this session by RLS** returns no rows and is reported read-and-clean rather than
+unread: a copy sitting in another tenant's rows is out of scope by the criterion's own wording, which
+names *this* session.
+
+**One non-vacuity guard is derived rather than authored, and the reason is a measurement.** Counting
+the columns a probe was actually built for — rather than the columns the catalog listed — is the
+honest count, and on its own it would still not have caught the defect: the floor sits far enough
+below the real number that fifteen skipped columns leave it green, measured. So a catalog column that
+receives no probe is **reported** into the unscannable set the census already asserts empty. Derived
+from the catalog, it catches a future probe arm that declines a column with nobody remembering to
+say so.
 
 ### Why the wrapped-key entity keeps its own exact width
 

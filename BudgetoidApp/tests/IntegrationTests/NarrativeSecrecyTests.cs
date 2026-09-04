@@ -59,6 +59,19 @@ namespace IntegrationTests;
 /// test's teeth are: each one puts a readable value in front of the same scan, through a path a
 /// client really has, and demands the scan name it.
 /// </para>
+/// <para>
+/// <b>Two further limits, recorded rather than closed, because a green run here is narrower than the
+/// sentence at the top of this file.</b> First, the scan hunts for the marker's own UTF-8 bytes, so a
+/// plaintext copy that was <em>re-encoded</em> on the way in — base64, hex, UTF-16, compressed, or
+/// escaped into a JSON string — carries none of those bytes and is reported clean. Widening the search
+/// to chase encodings is not the answer: the set of encodings is open, and a census that guessed at a
+/// few of them would read as covering all of them. Second, the scan reads on the app role's own
+/// session, which is the criterion's word and also its blind spot — a row a row-level security policy
+/// hides from that session is not reported as <em>unread</em>, it is simply not among the rows counted,
+/// so the run says read-and-clean over a database it saw part of. Neither limit has a control here and
+/// neither should grow one; they are written down so the next reader does not infer coverage the run
+/// does not have.
+/// </para>
 /// </remarks>
 public sealed class NarrativeSecrecyTests
 {
@@ -292,6 +305,120 @@ public sealed class NarrativeSecrecyTests
         await Assert.That(scan.Offenders).DoesNotContain(Offence("users", "id", marker));
     }
 
+    /// <summary>
+    /// The control for the rest of the third branch: a readable value in a column that is neither
+    /// <c>text</c> nor <c>bytea</c> is named by the scan.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The two controls above leave a hole this one closes.</b> One of them puts its leak in a
+    /// <c>bytea</c> column and the other in a <c>varchar</c> one, so between them they exercise the
+    /// first arm of <see cref="Predicate" /> and the <em>text-shaped</em> corner of the third. The
+    /// third arm's actual claim is much wider — it is the arm that catches <c>uuid</c>, <c>jsonb</c>,
+    /// enums, numerics, timestamps and arrays, because PostgreSQL renders every one of them into a
+    /// text form on the way through <c>::text</c>. Nothing proved it fires there. Measured: a fourth
+    /// arm reading
+    /// <c>if (column.TypeName is not ("text" or "varchar" or "bpchar" or "bytea")) return "false";</c>
+    /// passes both controls above and the whole census, and reddens only this one. It would have
+    /// turned an audit table's <c>jsonb</c> payload into a column the census reported as looked at
+    /// and clean.
+    /// </para>
+    /// <para>
+    /// <b>Over a relation this test creates, and that is forced rather than convenient.</b> The
+    /// sibling control argues for a real column and is right to: reaching the relations that exist is
+    /// half of what the census claims, and it has two controls making that half. But the shipped
+    /// schema carries no column of a third-branch type that can hold a marker at all — measured off
+    /// the baseline migration, the non-text types in it are <c>uuid</c>, <c>timestamptz</c>,
+    /// <c>date</c>, <c>numeric</c>, <c>integer</c> and <c>bigint</c>, and none of them can be made to
+    /// render any of the eight markers. So the choice is between a relation nobody ships and no
+    /// control, and a synthetic relation is the honest one. It is also the shape the class remarks
+    /// name as the leak this census exists for — an audit trail or a denormalised projection that
+    /// arrives later — which is why it is <c>jsonb</c> and <c>text[]</c> rather than an invented type.
+    /// </para>
+    /// <para>
+    /// <b><c>tags</c> carries the array claim, which had no control either.</b> <c>ScanAsync</c>'s
+    /// remarks assert that an array of a text-ish type is covered by the third arm because PostgreSQL
+    /// renders its elements into the array's text form. That is now measured rather than reasoned.
+    /// The <c>bytea[]</c> arm is still unexercised — no relation in this schema has one, and it cannot
+    /// be given a control that is about anything but itself.
+    /// </para>
+    /// <para>
+    /// Per-test databases are what make this safe: <c>PostgresTestHost</c> clones one database per
+    /// test out of the template, so a table created in <c>public</c> here is invisible to every other
+    /// test in the assembly, including the census. <c>id</c> is the innocent neighbour on the same
+    /// row, and the empty-<c>Unscannable</c> assertion is doing two jobs — it proves the <c>GRANT</c>
+    /// landed, and it is the negative control for the column-skipping report added beside the probe
+    /// builder.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Scan_ReportsAPlaintextValueInAColumnOfNeitherTextNorBinaryType()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        ApiFactory.SignedInClient session = await host.Factory.CreateSignedInClientAsync();
+        string payloadMarker = MarkerFor("category_groups", "description");
+        string tagMarker = MarkerFor("transactions", "description");
+
+        await using (NpgsqlConnection admin = new(host.ConnectionString))
+        {
+            await admin.OpenAsync();
+
+            await using (NpgsqlCommand create = new(
+                $"""
+                create table public.{ProbeRelation} (
+                    id uuid not null primary key,
+                    payload jsonb not null,
+                    tags text[] not null)
+                """,
+                admin))
+            {
+                await create.ExecuteNonQueryAsync();
+            }
+
+            await using (NpgsqlCommand leak = new(
+                $"""
+                insert into public.{ProbeRelation} (id, payload, tags)
+                values (gen_random_uuid(), jsonb_build_object('note', @payload), array[@tag]::text[])
+                """,
+                admin))
+            {
+                leak.Parameters.AddWithValue("payload", payloadMarker);
+                leak.Parameters.AddWithValue("tag", tagMarker);
+                await leak.ExecuteNonQueryAsync();
+            }
+
+            // Without this the relation lands in Unscannable rather than in Offenders, and the test
+            // would be red for a reason that is about the grant instead of about the predicate.
+            await using NpgsqlCommand grant = new(
+                $"grant select on public.{ProbeRelation} to {DatabaseProvisioning.AppRoleName}", admin);
+            await grant.ExecuteNonQueryAsync();
+        }
+
+        // Act
+        await using NpgsqlConnection app =
+            await OpenAppSessionAsync(host, session.UserId, session.BudgetId);
+        NarrativeScan scan = await ScanAsync(app, readsBinaryColumnsAsBytes: true);
+
+        // Assert — both offences are named, each by the field whose words are sitting in it.
+        await Assert.That(scan.Offenders).Contains(Offence(ProbeRelation, "payload", payloadMarker));
+        await Assert.That(scan.Offenders).Contains(Offence(ProbeRelation, "tags", tagMarker));
+
+        // The neighbour is not, so this cannot be passing because the probe reports everything.
+        await Assert.That(scan.Offenders).DoesNotContain(Offence(ProbeRelation, "id", payloadMarker));
+
+        // And every column of the new relation was reached: an ungranted table or a column the probe
+        // builder declined would both show up here rather than shrinking the census in silence.
+        await Assert.That(string.Join(Environment.NewLine, scan.Unscannable)).IsEqualTo(string.Empty);
+        await Assert.That(scan.Relations).Contains(ProbeRelation);
+    }
+
+    /// <summary>
+    /// The relation <see cref="Scan_ReportsAPlaintextValueInAColumnOfNeitherTextNorBinaryType" />
+    /// creates. Named so it cannot be mistaken for something the product ships.
+    /// </summary>
+    private const string ProbeRelation = "narrative_scan_probe";
+
     /// <summary>One narrative column and the plaintext this run puts behind it.</summary>
     private sealed record NarrativeMarker(string Table, string Column, string Marker)
     {
@@ -416,7 +543,25 @@ public sealed class NarrativeSecrecyTests
                 BuildRelationProbe(relation.Key, columns, readsBinaryColumnsAsBytes);
 
             relations.Add(relation.Key);
-            columnsExamined += columns.Length;
+
+            // Counted off the probes rather than off the catalog listing, and the difference is the
+            // whole value of the number. The floor asserted over it is a claim about what the scan
+            // LOOKED AT; incremented from columns.Length it would report ninety-five examined columns
+            // while a probe builder that had stopped emitting a predicate for some type searched none
+            // of them — the same arithmetic whether or not anything was ever asked about the column.
+            HashSet<string> probed = new(probes.Select(probe => probe.Column.Column), StringComparer.Ordinal);
+            columnsExamined += probed.Count;
+
+            // And a catalog column that got no probe is REPORTED, for the same reason the unreadable
+            // relation below is. The floor is deliberately loose — dropping a dozen columns out of
+            // ninety-five leaves it green — so counting honestly is not on its own enough to make a
+            // skipped column visible. This is derived from the catalog rather than authored, so a
+            // future arm of BuildRelationProbe that declines a column is caught without anybody
+            // remembering to say so. The caller asserts this set is empty.
+            foreach (CatalogColumn skipped in columns.Where(column => !probed.Contains(column.Column)))
+            {
+                unscannable.Add($"{skipped.Relation}.{skipped.Column} — no probe was built for this column");
+            }
 
             await using NpgsqlCommand command = new(sql, connection);
             for (int index = 0; index < Markers.Length; index++)
@@ -429,6 +574,16 @@ public sealed class NarrativeSecrecyTests
                 await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
                 if (!await reader.ReadAsync())
                 {
+                    // This branch cannot fire against the probe as BuildRelationProbe builds it: the
+                    // statement is a bare aggregate with no GROUP BY, so PostgreSQL answers exactly
+                    // one row even over an empty relation. It is kept as a belt against a future probe
+                    // shape — a GROUP BY, a LIMIT, a set-returning arm — because the alternative is
+                    // reading GetInt64 off a reader that is not on a row, which throws somewhere less
+                    // legible. Measured on postgres:17.10 over an empty table, an empty view and an
+                    // empty materialized view — the row-bearing kinds the discovery predicate admits
+                    // that could plausibly be empty: one row every time. Do not read a green run as
+                    // this line having been exercised. The catch below is uncovered for the same kind
+                    // of reason — nothing here makes a relation unreadable — and both are belts.
                     unscannable.Add($"{relation.Key} — the probe returned no row");
                     continue;
                 }
