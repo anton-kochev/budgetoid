@@ -1667,19 +1667,14 @@ there is nothing to press.
 
 ### What ships today
 
-**The section is on `/app/settings` under its specified heading, and neither its copy nor its
-position is the one above.** Both are departures this chapter names as work rather than describes
-as the design.
+**The section is on `/app/settings` under its specified heading, its copy is the copy above, and
+its position is not.** The placement is a departure this chapter names as work rather than
+describes as the design.
 
-**The copy.** What renders is one paragraph, and its first sentence's inventory is correct —
-amounts, dates, currency codes, account types, positions, row timestamps, identifiers and the email
-address are all read in the clear. Its last two sentences are not: they state that the names and
-notes a person types are readable to the operator and that no key is held by that person alone,
-and the eight sealed narrative columns make both false. That is an overclaim of **exposure**, which
-is the safe direction and therefore the one that can stand unremarked, exactly as the asymmetry
-above predicts. The paragraph also says nothing about the four blind-indexed columns or about
-envelope lengths, which the block above owes the reader. Rendering the three paragraphs is a
-later trip; nobody invents copy in the template.
+**The copy.** `settings.component.html` renders all three paragraphs, character for character and
+in the specified order: the inventory, the names-and-notes paragraph with its length clause, and
+the paragraph about the short code beside each name. Nothing in the template invents copy, and
+none of the three is summarised, shortened or split.
 
 **The position.** It renders below Erase, where the placement rule puts it above Export. Moving it
 is one section's worth of work and changes nothing else on the screen.

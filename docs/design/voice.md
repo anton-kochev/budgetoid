@@ -23,7 +23,10 @@ string is a fact or a next step, in words a person uses at a kitchen table.
 - Money is always numerals, never words, formatted per [patterns](patterns.md).
 - Dates in the user's locale; relative words ("Today", "Yesterday") only in lists,
   absolute dates everywhere else.
-- Contractions are welcome ("It's ready."); apostrophes are typographic (').
+- Contractions are welcome ("It’s ready."); apostrophes are typographic (’). **A quoted
+  string that ships is transcribed and not typeset**, which is why the quotations below do
+  not all spell the apostrophe the same way: the convention, and the reason it runs one
+  direction only, is stated once in the [components](components.md) preamble.
 - The product name is lowercase **budgetoid** only in the lockup; in prose it is
   Budgetoid.
 
@@ -73,7 +76,7 @@ figures, not to copy that could just say the number).
   retry." Never blame the person; the subject of an error sentence is the system.
 - **Not built yet**: name the missing piece and what it waits on, in the same breath as
   the control it disables: "Erasing has to be confirmed with a passkey Budgetoid checks
-  itself, and this screen doesn't ask for one yet. The button stays off until it does."
+  itself, and this screen doesn’t ask for one yet. The button stays off until it does."
   A disabled control
   with no sentence beside it reads as a bug, and the person cannot tell a limitation from
   a failure.
@@ -137,7 +140,7 @@ things no other screen does: say where the value came from, say that it will not
 again, and state a loss nobody can reverse — without any of it reading as alarm.
 
 - **Say who made it and who never sees it, in that order.** "Your browser made these ten
-  codes. Budgetoid never receives one, and this is the only time they're shown." The
+  codes. Budgetoid never receives one, and this is the only time they’re shown." The
   provenance is the reassurance; the finality is the instruction.
 - **State the loss as a fact about the system, not a threat to the reader.** "Budgetoid
   keeps no copy of either, so if you lose the passkey and every code, everything you
@@ -151,7 +154,7 @@ again, and state a loss nobody can reverse — without any of it reading as alar
   clipboard, where other apps on this device can read them." Not a hidden footnote and
   not a confirmation dialog — a plain sentence next to the button, so the person chooses
   with the cost in view.
-- **The acknowledgement is what the person did, not what they promise.** "I've saved
+- **The acknowledgement is what the person did, not what they promise.** "I’ve saved
   these codes somewhere I can get to them." — past tense, about an act. "I understand the
   risk" asks for a feeling, which is not checkable and not what is wanted.
 - **Say what is not yet true, on every step.** "Nothing is saved until the last step."
